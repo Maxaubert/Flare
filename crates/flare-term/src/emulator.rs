@@ -24,9 +24,12 @@ use crate::cells::{
 use crate::click_caret::MouseTracking;
 use crate::find::{CountJob, FindMatch, FindOpts, Finder, index_of, scroll_to_show};
 use crate::grid_map::snapshot_grid;
+use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
+use crate::link_target::{TermPathAt, menu_link, shown_link_over};
 use crate::links::find_links;
 use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
+use crate::path_links::{Found, PathLinks, path_candidates};
 use crate::replies::{Ground, colour_query_replies, xtversion_reply};
 use crate::scan::{ScanEvent, Scanner};
 use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
@@ -106,6 +109,9 @@ pub struct Emulator {
     find_job: Option<CountJob>,
     find_hits: Vec<FindMatch>,
     find_active: Option<FindMatch>,
+    links: LinkScanner,
+    /// The marks of the last `link_marks` call; None before the first scan.
+    link_last: Option<Vec<LinkMark>>,
 }
 
 /// What the find bar shows: the counted matches (at most `HIGHLIGHT_LIMIT`), the active match
@@ -152,6 +158,8 @@ impl Emulator {
             find_job: None,
             find_hits: Vec::new(),
             find_active: None,
+            links: LinkScanner::new(),
+            link_last: None,
         }
     }
 
@@ -442,6 +450,22 @@ impl SelEnv for TermSelEnv<'_> {
 
     fn link_at(&self, row: usize, col: usize) -> Option<Span> {
         let cols = self.cols();
+        if let Some(vrow) = row.checked_sub(self.emu.viewport_top())
+            && vrow < self.emu.view_rows()
+            && let Some(mark) = self.emu.link_at_view(vrow, col)
+            && let (Some(a), Some(b)) = (mark.pieces.first(), mark.pieces.last())
+        {
+            return Some(Span {
+                start: Anchor {
+                    row: a.row,
+                    b: a.col,
+                },
+                end: Anchor {
+                    row: b.row,
+                    b: b.col + b.width,
+                },
+            });
+        }
         let ll = logical_line(&self.buf, cols, row);
         let lc = self.line_cells(row);
         let at = (row - lc.first) * cols + col;
@@ -769,6 +793,203 @@ impl Emulator {
             .map(|m| visible_pieces(m, cols, top, rows))
             .unwrap_or_default();
         (all, active)
+    }
+}
+
+/// What a right click lands on (Prism Terminal's `termContextAt`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermContext {
+    pub selection: String,
+    pub link: Option<LinkMark>,
+    /// What the menu copies and opens for `link` (an OSC 8 label that shows another address: that one).
+    pub link_text: Option<String>,
+    pub path: Option<TermPathAt>,
+}
+
+impl Emulator {
+    /// The marks on the viewport (D5). Only the logical lines on screen are scanned, and a line
+    /// that did not change is not scanned again.
+    pub fn link_marks(
+        &mut self,
+        paths: &mut PathLinks,
+        owner: &str,
+        cwd: Option<&str>,
+        now_ms: u64,
+        ink_key: u32,
+    ) -> Vec<LinkMark> {
+        let cols = self.cols();
+        let rows = self.view_rows();
+        if cols == 0 || rows == 0 {
+            self.link_last = Some(Vec::new());
+            return Vec::new();
+        }
+        let top = self.viewport_top();
+        let last = top + rows - 1;
+        let hist = self.history_size();
+        let term = &self.term;
+        let buf = TermBuf::window(term, top, last);
+        let hyperlink = |row: usize, col: usize| {
+            if col >= cols {
+                return None;
+            }
+            let cell = &term.grid()[Point::new(abs_to_line(hist, row), Column(col))];
+            cell.hyperlink()
+                .map(|h| (h.id().to_string(), h.uri().to_string()))
+        };
+        let mut ctx = LinkCtx {
+            paths,
+            owner,
+            cwd,
+            now_ms,
+            ink_key,
+            hyperlink: &hyperlink,
+        };
+        let marks = self.links.scan(&buf, cols, top, last, &mut ctx);
+        self.link_last = Some(marks.clone());
+        marks
+    }
+
+    /// A path answer arrived: the lines that waited for it are scanned again.
+    pub fn links_revisit(&mut self) {
+        self.links.revisit();
+    }
+
+    /// Drops every cached scan.
+    pub fn links_repaint(&mut self) {
+        self.links.repaint();
+    }
+
+    pub fn links_hidden(&mut self, hidden: bool) {
+        self.links.set_hidden(hidden);
+    }
+
+    /// Logical lines scanned so far (a test and the speed guard read it).
+    pub fn lines_scanned(&self) -> usize {
+        self.links.lines_scanned()
+    }
+
+    /// The mark under a viewport cell, from the last `link_marks` (None before the first scan).
+    pub fn link_at_view(&self, row: usize, col: usize) -> Option<LinkMark> {
+        let abs = self.viewport_top() + row;
+        self.link_last
+            .as_ref()?
+            .iter()
+            .find(|m| {
+                m.pieces
+                    .iter()
+                    .any(|p| p.row == abs && col >= p.col && col < p.col + p.width)
+            })
+            .cloned()
+    }
+
+    /// The logical line of a mark and the char range the mark covers on it.
+    fn mark_chars(&self, mark: &LinkMark) -> Option<(crate::cells::LogicalLine, usize, usize)> {
+        let cols = self.cols();
+        let (a, b): (&Piece, &Piece) = (mark.pieces.first()?, mark.pieces.last()?);
+        let buf = TermBuf::window(&self.term, a.row, b.row);
+        let ll = logical_line(&buf, cols, a.row);
+        let s = (a.row - ll.first) * cols + a.col;
+        let e = (b.row - ll.first) * cols + b.col + b.width;
+        let from = *ll.index.get(s)?;
+        let to = *ll.index.get(e.min(ll.index.len() - 1))?;
+        Some((ll, from, to))
+    }
+
+    /// For a click: the address an OSC 8 label shows (Prism Terminal's `shownLinkOver`).
+    pub fn shown_for(&self, mark: &LinkMark) -> Option<String> {
+        if !matches!(mark.target, LinkTarget::Osc8 { .. }) {
+            return None;
+        }
+        let (ll, from, to) = self.mark_chars(mark)?;
+        shown_link_over(&ll.text, from, to)
+    }
+
+    /// What a right click lands on: the selection text, the link under the cell and, when there
+    /// is none and a folder is known, a path that exists. Nothing is statted here.
+    pub fn context_at(
+        &self,
+        row: usize,
+        col: usize,
+        paths: &mut PathLinks,
+        owner: &str,
+        cwd: Option<&str>,
+        now_ms: u64,
+    ) -> TermContext {
+        let mut ctx = TermContext {
+            selection: self.sel_text(),
+            link: None,
+            link_text: None,
+            path: None,
+        };
+        let cols = self.cols();
+        if cols == 0 || row >= self.view_rows() {
+            return ctx;
+        }
+        let abs = self.viewport_top() + row;
+        let mark = self
+            .link_at_view(row, col)
+            .or_else(|| self.plain_link_at(abs, col));
+        if let Some(m) = mark
+            && !matches!(m.target, LinkTarget::Path { .. })
+        {
+            let shown = self.shown_for(&m);
+            ctx.link_text = Some(menu_link(&m.target, shown.as_deref()));
+            ctx.link = Some(m);
+            return ctx;
+        }
+        let Some(cwd) = cwd else { return ctx };
+        let buf = TermBuf::window(&self.term, abs, abs);
+        let ll = logical_line(&buf, cols, abs);
+        let c = char_at_cell(&ll, cols, abs as i32, col as i32);
+        let Some(cand) = path_candidates(&ll.text)
+            .into_iter()
+            .find(|p| p.start <= c && c < p.end)
+        else {
+            return ctx;
+        };
+        if let Found::Hit(f) = paths.find_path(owner, cwd, &cand.path, now_ms) {
+            ctx.path = Some(TermPathAt {
+                kind: f.hit.kind,
+                abs: f.hit.abs,
+                text: cand.path,
+                base: f.base,
+            });
+        }
+        ctx
+    }
+
+    /// A web link found in the line's text, for a right click before any scan ran.
+    fn plain_link_at(&self, abs: usize, col: usize) -> Option<LinkMark> {
+        let cols = self.cols();
+        let buf = TermBuf::window(&self.term, abs, abs);
+        let ll = logical_line(&buf, cols, abs);
+        let c = char_at_cell(&ll, cols, abs as i32, col as i32);
+        let chars: Vec<char> = ll.text.chars().collect();
+        let m = find_links(&ll.text)
+            .into_iter()
+            .find(|m| m.start <= c && c < m.end)?;
+        let n = ll.widths.len();
+        let s = (0..n).find(|&i| ll.index[i] >= m.start && ll.widths[i] > 0)?;
+        let e = (0..n)
+            .find(|&i| ll.index[i] >= m.end)
+            .unwrap_or(n)
+            .max(s + 1);
+        let mut pieces = Vec::new();
+        let mut i = s;
+        while i < e {
+            let r = i / cols;
+            let stop = e.min((r + 1) * cols);
+            pieces.push(Piece {
+                row: ll.first + r,
+                col: i % cols,
+                width: stop - i,
+            });
+            i = stop;
+        }
+        Some(LinkMark {
+            target: LinkTarget::Web(chars[m.start..m.end.min(chars.len())].iter().collect()),
+            pieces,
+        })
     }
 }
 
@@ -1374,5 +1595,144 @@ mod tests {
         assert!(v.matches.is_empty());
         assert_eq!(v.active, None);
         assert_eq!(v.count, 0);
+    }
+
+    fn marks(e: &mut Emulator) -> Vec<LinkMark> {
+        e.link_marks(&mut PathLinks::new(), "t1", None, 0, 1)
+    }
+
+    #[test]
+    fn marks_cover_the_viewport_only() {
+        let mut e = Emulator::new(40, 4);
+        for i in 0..40 {
+            let nl = if i < 39 { "\r\n" } else { "" };
+            e.feed(format!("see https://a.io/{i}{nl}").as_bytes());
+        }
+        let m = marks(&mut e);
+        assert!(m.len() <= 4 && !m.is_empty());
+        assert_eq!(e.lines_scanned(), 4);
+    }
+
+    #[test]
+    fn a_wrapped_link_is_one_mark_with_two_pieces() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"https://example.com/abc");
+        let m = marks(&mut e);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].pieces.len(), 3);
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Web("https://example.com/abc".into())
+        );
+    }
+
+    #[test]
+    fn an_osc8_link_comes_from_the_cell() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"\x1b]8;;https://x.io/a\x07label\x1b]8;;\x07");
+        let m = marks(&mut e);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Osc8 {
+                uri: "https://x.io/a".into()
+            }
+        );
+        assert_eq!(
+            m[0].pieces,
+            vec![Piece {
+                row: 0,
+                col: 0,
+                width: 5
+            }]
+        );
+    }
+
+    #[test]
+    fn an_alternate_screen_osc8_label_is_marked() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"\x1b[?1049h\x1b]8;;https://x.io/a\x07label\x1b]8;;\x07");
+        assert_eq!(marks(&mut e).len(), 1);
+    }
+
+    #[test]
+    fn a_hyperlink_does_not_survive_being_overwritten() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"\x1b]8;;https://x.io/a\x07label\x1b]8;;\x07");
+        assert_eq!(marks(&mut e).len(), 1);
+        e.feed(b"\rplain");
+        assert!(marks(&mut e).is_empty());
+    }
+
+    #[test]
+    fn context_over_a_link_gives_the_whole_wrapped_url() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"https://example.com/abc");
+        marks(&mut e);
+        let c = e.context_at(1, 2, &mut PathLinks::new(), "t1", None, 0);
+        assert_eq!(c.link_text.as_deref(), Some("https://example.com/abc"));
+        assert!(c.link.is_some() && c.path.is_none());
+    }
+
+    fn primed(e: &mut Emulator) -> PathLinks {
+        let mut pl = PathLinks::new();
+        e.link_marks(&mut pl, "t1", Some("C:\\w"), 0, 1);
+        pl.advance(40);
+        if let Some(ask) = pl.take_ask() {
+            let hits = ask
+                .paths
+                .iter()
+                .map(|p| {
+                    Some(crate::path_open::PathHit {
+                        kind: crate::path_open::PathKind::File,
+                        abs: format!("C:\\w\\{p}"),
+                    })
+                })
+                .collect();
+            pl.answer(&ask, Some(hits), 50);
+        }
+        pl
+    }
+
+    #[test]
+    fn context_over_a_path_that_exists_offers_it() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"see a.txt here");
+        let mut pl = primed(&mut e);
+        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 60);
+        assert!(c.link.is_none());
+        let p = c.path.expect("a path");
+        assert_eq!((p.text.as_str(), p.base.as_str()), ("a.txt", "C:\\w"));
+        let c = e.context_at(0, 1, &mut pl, "t1", Some("C:\\w"), 60);
+        assert!(c.link.is_none() && c.path.is_none());
+    }
+
+    #[test]
+    fn context_over_an_unknown_path_offers_nothing_and_stats_nothing() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"see a.txt here");
+        let mut pl = PathLinks::new();
+        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 0);
+        assert!(c.path.is_none());
+        pl.advance(100);
+        assert!(pl.take_ask().is_none());
+    }
+
+    #[test]
+    fn context_carries_the_selection() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        let c = e.context_at(0, 1, &mut PathLinks::new(), "t1", None, 0);
+        assert_eq!(c.selection, "hello");
+    }
+
+    #[test]
+    fn an_osc8_label_showing_another_host_copies_what_it_shows() {
+        let mut e = Emulator::new(60, 3);
+        e.feed(b"\x1b]8;;https://evil.io\x07see https://github.com/x\x1b]8;;\x07");
+        marks(&mut e);
+        let c = e.context_at(0, 1, &mut PathLinks::new(), "t1", None, 0);
+        assert_eq!(c.link_text.as_deref(), Some("https://github.com/x"));
     }
 }
