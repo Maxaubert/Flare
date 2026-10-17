@@ -29,6 +29,21 @@ fn the_clawd_glyph_is_the_agent_crates_path() {
 }
 
 #[test]
+fn clawd_is_filled_from_the_theme_token_that_holds_the_agent_crates_orange() {
+    let theme = ui_file("theme.slint");
+    let line = theme
+        .lines()
+        .find(|l| l.contains("property <color> clawd:"))
+        .expect("Theme.clawd declared");
+    assert!(
+        line.contains(flare_agent::icon::CLAWD_ORANGE),
+        "Theme.clawd is {}: {line}",
+        flare_agent::icon::CLAWD_ORANGE
+    );
+    assert!(ui_file("tabmark.slint").contains("fill: Theme.clawd;"));
+}
+
+#[test]
 fn the_check_and_the_cross_are_the_sixteen_unit_strokes() {
     let g = glyphs();
     assert_eq!(glyph(&g, "check"), "M3.2 8.6l3 3 6.6-7.2");

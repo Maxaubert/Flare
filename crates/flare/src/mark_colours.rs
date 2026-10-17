@@ -1,7 +1,6 @@
 //! The mark colours from the look and the agent picks (Task 27). Source: PT `tabLooks.ts` (the palette
 //! block), `agentColors.ts` (both copies) and M4's `marks` and `agent_colours`. The picks come from
 //! `LookStore` (decision D13); failed is always the theme's red.
-#![allow(dead_code, reason = "Task 28 wires the tab marks to these; remove this allow there")]
 
 use flare_agent::tab_mark::{Indicator, MarkState};
 use flare_settings::look::{AgentColourState, AgentIndicator, LookStore};

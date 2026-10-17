@@ -196,6 +196,13 @@ mod tests {
             c.to_lowercase().contains("claude")
         });
         let me = child.id();
+        // Killing cmd alone leaves its ping running for seconds: end the whole tree this test made.
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/T", "/F", "/PID", &me.to_string()])
+            .creation_flags(0x0800_0000)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(); // sync-ok: test code on the test thread only
         let _ = child.kill();
         let _ = child.wait(); // sync-ok: test code on the test thread only
         let rows = rows.expect("snapshot");
