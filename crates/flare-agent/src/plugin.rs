@@ -61,17 +61,170 @@ pub fn candidate_plugin_dirs(env_dir: Option<&str>, exe_dir: Option<&Path>) -> V
     out
 }
 
-/// The first candidate that has `hooks\hooks.json`; None when none does (then no shell is handed
-/// a plugin).
+/// What the shipped `hooks.json` carries where the program goes. It is never a valid command:
+/// [`install_plugin`] replaces it with the absolute System32 `cmd.exe`, and nothing hands the
+/// template itself to Claude Code.
+pub const SYSTEM_CMD_PLACEHOLDER: &str = "@@FLARE_SYSTEM_CMD@@";
+
+/// The Windows system folder (`C:\Windows\System32`) from `GetSystemDirectoryW`, never from an
+/// environment variable. None off Windows or when the call fails.
+pub fn system_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+        let mut buf = [0u16; 520];
+        // SAFETY: the buffer is valid for `buf.len()` u16 units and the call writes at most that many.
+        let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if len == 0 || len >= buf.len() {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_wide(&buf[..len])))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// `<system_dir>\cmd.exe` when `system_dir` is a drive-rooted folder named `System32` (any case);
+/// else None.
+pub fn system_cmd_path(system_dir: &Path) -> Option<String> {
+    let named = system_dir
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("system32"));
+    if !named {
+        return None;
+    }
+    let path = system_dir.join("cmd.exe").to_string_lossy().to_string();
+    is_drive_path(&path).then_some(path)
+}
+
+/// `X:\...` only: a rooted path without a drive, or a relative one, is still found by search rules.
+fn is_drive_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+/// The template with every placeholder replaced by `cmd_path` (JSON-escaped). None when the
+/// template has no placeholder, `cmd_path` is not an absolute `...\System32\cmd.exe`, or a bare
+/// program name would survive.
+pub fn render_hooks(template: &str, cmd_path: &str) -> Option<String> {
+    if !is_drive_path(cmd_path) || !cmd_path.to_lowercase().ends_with("\\system32\\cmd.exe") {
+        return None;
+    }
+    if !template.contains(SYSTEM_CMD_PLACEHOLDER) {
+        return None;
+    }
+    let quoted = serde_json::to_string(cmd_path).ok()?;
+    let escaped = &quoted[1..quoted.len() - 1];
+    let out = template.replace(SYSTEM_CMD_PLACEHOLDER, escaped);
+    hooks_commands_are_absolute(&out).then_some(out)
+}
+
+/// True when `hooks.json` text parses, has at least one hook, and every `command` is an absolute
+/// drive path: no program is ever found by name.
+pub fn hooks_commands_are_absolute(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let Some(events) = value.get("hooks").and_then(|hooks| hooks.as_object()) else {
+        return false;
+    };
+    let mut count = 0usize;
+    for groups in events.values() {
+        for group in groups.as_array().into_iter().flatten() {
+            for hook in group
+                .get("hooks")
+                .and_then(|list| list.as_array())
+                .into_iter()
+                .flatten()
+            {
+                count += 1;
+                let command = hook.get("command").and_then(|c| c.as_str()).unwrap_or("");
+                if !is_drive_path(command) {
+                    return false;
+                }
+            }
+        }
+    }
+    count > 0
+}
+
+/// Install (or refresh) the plugin from `src` into `dest`: every file is copied as is, except
+/// `hooks\hooks.json`, which is written with the absolute `cmd.exe` of `system_dir`. A file whose
+/// bytes already match is left alone, so the identity check covers the rewritten file too: an
+/// installed `hooks.json` with a bare name (or a stale path) differs and is rewritten. Returns how
+/// many files were written; an error when the template cannot be rendered (nothing is written).
+pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Result<usize> {
+    let bad = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_string());
+    let cmd = system_cmd_path(system_dir).ok_or_else(|| bad("not an absolute System32 folder"))?;
+    // sync-ok: install on the spawn worker
+    let template = std::fs::read_to_string(src.join("hooks").join("hooks.json"))?;
+    let hooks =
+        render_hooks(&template, &cmd).ok_or_else(|| bad("hooks.json cannot be rendered"))?;
+    let hooks_rel = Path::new("hooks").join("hooks.json");
+    let mut written = 0usize;
+    let mut pending = vec![PathBuf::new()];
+    while let Some(rel) = pending.pop() {
+        // sync-ok: install on the spawn worker
+        for entry in std::fs::read_dir(src.join(&rel))? {
+            let entry = entry?;
+            let child = rel.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                pending.push(child);
+                continue;
+            }
+            let bytes = if child == hooks_rel {
+                hooks.clone().into_bytes()
+            } else {
+                std::fs::read(entry.path())? // sync-ok: install on the spawn worker
+            };
+            let target = dest.join(&child);
+            // sync-ok: install on the spawn worker
+            if std::fs::read(&target).is_ok_and(|have| have == bytes) {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?; // sync-ok: install on the spawn worker
+            }
+            std::fs::write(&target, bytes)?; // sync-ok: install on the spawn worker
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
+/// Where the installed copy lives: `%LOCALAPPDATA%\Flare\claude-plugin`.
+pub fn installed_plugin_path() -> Option<PathBuf> {
+    let local = std::env::var("LOCALAPPDATA")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    Some(PathBuf::from(local).join("Flare").join("claude-plugin"))
+}
+
+/// The plugin folder to hand a shell: the bundled template is installed (refreshed) into
+/// `%LOCALAPPDATA%\Flare\claude-plugin` with the absolute System32 `cmd.exe`, and that copy is
+/// returned. None when no template is found or the install fails (then no shell is handed a
+/// plugin; the template itself is never handed out).
 pub fn plugin_dir() -> Option<PathBuf> {
     let env_dir = std::env::var("FLARE_CLAUDE_PLUGIN_DIR").ok();
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    plugin_dir_in(&candidate_plugin_dirs(
+    let src = plugin_dir_in(&candidate_plugin_dirs(
         env_dir.as_deref(),
         exe_dir.as_deref(),
-    ))
+    ))?;
+    let dest = installed_plugin_path()?;
+    let system = system_directory()?;
+    match install_plugin(&src, &dest, &system) {
+        Ok(_) => Some(dest),
+        Err(err) => {
+            log::warn!("claude plugin install failed: {err}");
+            None
+        }
+    }
 }
 
 /// The first of `candidates` that holds a `hooks\hooks.json`.
@@ -152,7 +305,7 @@ mod tests {
         let mut got: Vec<(String, String, String)> = Vec::new();
         for (event, matcher, joined, hook) in hook_entries(&value) {
             assert_eq!(hook["type"].as_str(), Some("command"));
-            assert_eq!(hook["command"].as_str(), Some("cmd.exe"));
+            assert_eq!(hook["command"].as_str(), Some(SYSTEM_CMD_PLACEHOLDER));
             assert!(hook["timeout"].as_u64().expect("timeout") <= 10);
             let args: Vec<&str> = hook["args"]
                 .as_array()
@@ -233,10 +386,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let folder = tmp.path().join("Flare [x] (T)");
         std::fs::create_dir_all(&folder).expect("folder"); // sync-ok: test
-        std::fs::copy(plugin_root().join("hook.cmd"), folder.join("hook.cmd")).expect("copy"); // sync-ok: test
+        let system = system_directory().expect("system directory");
+        install_plugin(&plugin_root(), &folder, &system).expect("install"); // sync-ok: test
         let folder_text = folder.to_string_lossy().to_string();
 
-        let value = hooks_value();
+        let installed = std::fs::read_to_string(folder.join("hooks").join("hooks.json")) // sync-ok: test
+            .expect("installed hooks");
+        let value: serde_json::Value = serde_json::from_str(&installed).expect("json");
         let entries = hook_entries(&value);
         assert_eq!(entries.len(), 25);
         for (_event, _matcher, joined, hook) in entries {
@@ -249,7 +405,7 @@ mod tests {
                     text.replace("${CLAUDE_PLUGIN_ROOT}", &folder_text)
                 })
                 .collect();
-            let output = Command::new("cmd.exe") // sync-ok: test
+            let output = Command::new(hook["command"].as_str().expect("command")) // sync-ok: test
                 .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -278,6 +434,123 @@ mod tests {
             assert_eq!(parse_agent_signal(payload), Some(want), "payload {payload}");
         }
         assert!(started.elapsed().as_secs() < 20, "25 spawns took too long");
+    }
+
+    fn fake_system32(tmp: &Path) -> PathBuf {
+        let dir = tmp.join("Windows").join("System32");
+        std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test
+        dir
+    }
+
+    fn installed_cmd_commands(dest: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        hook_entries(&value)
+            .into_iter()
+            .map(|(_, _, _, hook)| hook["command"].as_str().expect("command").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_template_is_never_valid_as_is() {
+        let text = read_plugin_file("hooks/hooks.json");
+        assert!(text.contains(SYSTEM_CMD_PLACEHOLDER));
+        assert!(!hooks_commands_are_absolute(&text));
+    }
+
+    #[test]
+    fn install_leaves_no_bare_program_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system = fake_system32(tmp.path());
+        let dest = tmp.path().join("home").join(".claude-test").join("plug");
+        let written = install_plugin(&plugin_root(), &dest, &system).expect("install");
+        assert!(written >= 3);
+        let commands = installed_cmd_commands(&dest);
+        assert_eq!(commands.len(), 25);
+        for command in &commands {
+            assert!(
+                Path::new(command).is_absolute(),
+                "{command} is not absolute"
+            );
+            assert!(
+                command.to_lowercase().ends_with("system32\\cmd.exe"),
+                "{command}"
+            );
+            assert!(!command.contains(SYSTEM_CMD_PLACEHOLDER));
+        }
+        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("read"); // sync-ok: test
+        assert!(hooks_commands_are_absolute(&text));
+        assert!(dest.join("hook.cmd").is_file());
+        assert!(is_our_plugin(&dest.to_string_lossy()));
+    }
+
+    #[test]
+    fn a_second_install_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system = fake_system32(tmp.path());
+        let dest = tmp.path().join("plug");
+        install_plugin(&plugin_root(), &dest, &system).expect("install");
+        assert_eq!(
+            install_plugin(&plugin_root(), &dest, &system).expect("again"),
+            0
+        );
+    }
+
+    #[test]
+    fn an_installed_plugin_with_a_bare_name_is_rewritten() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system = fake_system32(tmp.path());
+        let dest = tmp.path().join("plug");
+        install_plugin(&plugin_root(), &dest, &system).expect("install");
+        let hooks = dest.join("hooks").join("hooks.json");
+        let good = std::fs::read_to_string(&hooks).expect("read"); // sync-ok: test
+        let bare = good.replace(
+            &system_cmd_path(&system).expect("cmd").replace('\\', "\\\\"),
+            "cmd.exe",
+        );
+        assert_ne!(bare, good);
+        assert!(!hooks_commands_are_absolute(&bare));
+        std::fs::write(&hooks, &bare).expect("plant"); // sync-ok: test
+        assert_eq!(
+            install_plugin(&plugin_root(), &dest, &system).expect("refresh"),
+            1
+        );
+        assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test
+    }
+
+    #[test]
+    fn a_moved_system_folder_is_rewritten() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let one = fake_system32(tmp.path());
+        let other = tmp.path().join("Other").join("System32");
+        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test
+        let dest = tmp.path().join("plug");
+        install_plugin(&plugin_root(), &dest, &one).expect("install");
+        assert_eq!(
+            install_plugin(&plugin_root(), &dest, &other).expect("refresh"),
+            1
+        );
+    }
+
+    #[test]
+    fn a_relative_or_misnamed_system_folder_installs_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dest = tmp.path().join("plug");
+        for bad in [Path::new("System32"), Path::new(""), tmp.path()] {
+            assert!(install_plugin(&plugin_root(), &dest, bad).is_err());
+        }
+        assert!(!dest.exists());
+        assert_eq!(render_hooks("{}", "C:\\Windows\\System32\\cmd.exe"), None);
+        assert_eq!(render_hooks(SYSTEM_CMD_PLACEHOLDER, "cmd.exe"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_real_system_directory_is_an_absolute_system32() {
+        let system = system_directory().expect("GetSystemDirectoryW");
+        let cmd = system_cmd_path(&system).expect("cmd path");
+        assert!(Path::new(&cmd).is_file(), "{cmd}"); // sync-ok: test
+        assert!(cmd.to_lowercase().ends_with("system32\\cmd.exe"));
     }
 
     #[test]

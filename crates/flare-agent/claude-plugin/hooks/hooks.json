@@ -1,5 +1,5 @@
 {
-  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets.",
+  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets.",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -102,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -121,7 +121,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -140,7 +140,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -159,7 +159,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -176,7 +176,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -193,7 +193,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -212,7 +212,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -231,7 +231,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -249,7 +249,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -267,7 +267,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -285,7 +285,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -303,7 +303,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -321,7 +321,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -339,7 +339,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -357,7 +357,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -375,7 +375,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -393,7 +393,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -411,7 +411,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -429,7 +429,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
@@ -447,7 +447,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cmd.exe",
+            "command": "@@FLARE_SYSTEM_CMD@@",
             "args": [
               "/d",
               "/c",
