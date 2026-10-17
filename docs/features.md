@@ -65,4 +65,6 @@ are added as milestones land.
 - **Tests that hold the rest.** The Prism Terminal ledger is in `docs/test-port.md` (section "M2
   ledger"); every M2 line of `docs/parity.md` names its test or the milestone that holds it.
 - **Regression rules.** `docs/regression-rules.md` rule 22 is amended (resolved in M2), and rules 137
-  to 141 hold the ConPTY start-up, environment, query and synchronized-update lessons.
+  to 141 hold the ConPTY start-up, environment, query and synchronized-update lessons; rules 133
+  to 136 hold the security fixes (cd lines, UNC reports, the click-to-open allowlist, inert paste,
+  the PowerShell 7 lookup).

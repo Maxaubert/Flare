@@ -453,7 +453,7 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
             // the pseudo console linger 1.5 to 3 s, so the quit wait runs out. The shell is dying,
             // so answer both ourselves (measured 2026-10-17: close 3 s -> under 10 ms).
             if let Some(tx) = lk(&s2.writer_tx).take() {
-                let _ = tx.send(b"[1;1R[?1;2c".to_vec());
+                let _ = tx.send(b"\x1b[1;1R\x1b[?1;2c".to_vec());
             }
             let proc = lk(&s2.proc).take();
             if let Some(mut p) = proc {

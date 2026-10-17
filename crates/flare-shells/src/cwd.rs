@@ -26,11 +26,21 @@ pub fn has_control(p: &str) -> bool {
         .any(|c| c < ' ' || ('\u{7f}'..='\u{9f}').contains(&c))
 }
 
-/// True for a UNC path (`\\host\share`, also with forward slashes or the `\\?\UNC\` form).
+/// True for a path that may leave this machine: a UNC path (`\\host\share`, also with forward
+/// slashes) and every device form (`\\?\`, `\\.\`) except one naming a local drive (`\\?\C:\`).
+/// `\\?\UNC\`, `\\.\UNC\` and `\\?\GLOBALROOT\Device\Mup\` all reach SMB, so they count.
 pub fn is_unc(p: &str) -> bool {
-    let n = p.replace('/', "\\").to_lowercase();
-    (n.starts_with("\\\\") && !n.starts_with("\\\\?\\") && !n.starts_with("\\\\.\\"))
-        || n.starts_with("\\\\?\\unc\\")
+    let n = p.replace('/', "\\");
+    if !n.starts_with("\\\\") {
+        return false;
+    }
+    match n.get(..4) {
+        Some("\\\\?\\") | Some("\\\\.\\") => {
+            let b = &n.as_bytes()[4..];
+            !(b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
+        }
+        _ => true,
+    }
 }
 
 /// The folder a tab may spawn, restore or stat after an OSC 9 report: a UNC report is never trusted (Windows
@@ -99,8 +109,9 @@ fn norm(p: &str) -> String {
 }
 
 /// pwsh and powershell: format!("Set-Location -LiteralPath '{}'\r", ps_escape(path)) where every one of
-/// ' U+2018 U+2019 U+201A U+201B is doubled. cmd: None if the path has '%' or '"', else format!("cd /d \"{path}\"\r").
-/// Anything else (wsl-*, None) or an empty path: None.
+/// ' U+2018 U+2019 U+201A U+201B is doubled. cmd: None if the path has '%', '"', '!' or '^', else
+/// format!("cd /d \"{path}\"\r"). Anything else (wsl-*, None), an empty path or one holding a control
+/// character (C0, DEL, C1): None (regression rule 133).
 pub fn cd_command(shell_id: Option<&str>, path: &str) -> Option<String> {
     if path.is_empty() || has_control(path) {
         return None;
@@ -245,12 +256,21 @@ mod tests {
 
     #[test]
     fn a_unc_report_never_replaces_the_local_folder() {
-        for unc in ["\\\\evil\\share", "//evil/share", "\\\\?\\UNC\\evil\\share"] {
+        for unc in [
+            "\\\\evil\\share",
+            "//evil/share",
+            "\\\\?\\UNC\\evil\\share",
+            "\\\\.\\UNC\\evil\\share",
+            "\\\\.\\unc\\evil\\share",
+            "\\\\?\\GLOBALROOT\\Device\\Mup\\evil\\share",
+            "//?/UNC/evil/share",
+        ] {
             assert!(is_unc(unc), "{unc}");
             assert_eq!(folder_after_report("C:\\work", unc), "C:\\work");
         }
         assert!(!is_unc("C:\\work"));
         assert!(!is_unc("\\\\?\\C:\\work"));
+        assert!(!is_unc("\\\\.\\D:\\work"));
         assert_eq!(folder_after_report("C:\\work", "D:\\other"), "D:\\other");
     }
 

@@ -77,7 +77,7 @@ pub fn quote_paths(paths: &[String], shell: Option<PathShell>) -> Option<String>
 
 /// files non-empty -> Text(quote_paths(..)), or None when a path is refused; else image -> Key;
 /// else sanitised text non-empty -> Text(it); else None. Every Text payload passes the control
-/// filter, so nothing can end the bracketed paste early (regression rule 133).
+/// filter, so nothing can end the bracketed paste early (regression rule 135).
 pub fn decide_paste(clip: &ClipboardState, shell: Option<PathShell>) -> PasteDecision {
     if !clip.files.is_empty() {
         return match quote_paths(&clip.files, shell) {

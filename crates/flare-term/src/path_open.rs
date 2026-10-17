@@ -46,9 +46,10 @@ const OPENABLE: &[&str] = &[
     // audio and video
     "mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "mp4", "mkv", "webm", "mov", "avi",
     "m4v", "wmv",
-    // source code (never one whose default verb runs it: no py, js, sh, rb, pl, ps1)
+    // source code (never one whose default verb runs it: no py, js, sh, rb, pl, ps1, and no lua
+    // or php, whose installers may register a run verb)
     "rs", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift",
-    "css", "scss", "sql", "slint", "lua", "php", "vue", "svelte",
+    "css", "scss", "sql", "slint", "vue", "svelte",
 ];
 
 /// True when a click may open a file of this name. Unknown and runnable types answer false, and so
@@ -546,6 +547,8 @@ mod tests {
             "README",
             "noext.",
             "a.unknownext",
+            "b.lua",
+            "c.php",
         ] {
             assert!(!may_open(f), "{f}");
         }
