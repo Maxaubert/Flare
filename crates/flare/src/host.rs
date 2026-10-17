@@ -2,14 +2,15 @@
 
 use std::time::Instant;
 
-use flare_render::color::Palette;
+use flare_render::color::{Palette, Rgba};
 use flare_render::cpu::{RgbaImage, paint_scene};
+use flare_render::decor::{Decor, build_scene_decor, hair_px};
 use flare_render::glyph::GlyphSource;
 use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::Grid;
 use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{GroundPaint, Scene, build_scene_ground};
+use flare_render::scene::{GroundPaint, Scene};
 use flare_render::stats::FrameStats;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -22,6 +23,10 @@ pub trait GridSource {
     /// Something changed since the last `grid()` (output arrived). Default false.
     fn dirty(&self) -> bool {
         false
+    }
+    /// The decoration to paint over the grid now (selection, find, links). Default none.
+    fn decor(&mut self) -> Decor {
+        Decor::default()
     }
 }
 
@@ -233,15 +238,23 @@ impl GridHost {
             self.source.resize(cols, rows);
             self.dims = Some((cols, rows));
         }
-        let grid = self.source.grid();
-        Some(build_scene_ground(
-            &grid,
+        let mut grid = self.source.grid();
+        let decor = self.source.decor();
+        let mut scene = build_scene_decor(
+            &mut grid,
             &self.palette,
             &metrics,
             w,
             h,
-            self.ground,
-        ))
+            &decor,
+            hair_px(self.scale),
+        );
+        // By UI: the grid clears to transparent so the glass shows through (build_scene_ground's
+        // rule for the clear colour; the cell rects follow the same default-background test).
+        if self.ground == GroundPaint::ByUi {
+            scene.clear = Rgba::default();
+        }
+        Some(scene)
     }
 
     /// Lays out and paints one frame with the active painter. None for a 0x0 size.
@@ -309,8 +322,10 @@ impl GridHost {
 mod tests {
     use super::*;
     use flare_render::color::Color;
+    use flare_render::decor::{DecorInk, RowSpan};
     use flare_render::glyph::FakeGlyphs;
     use flare_render::gpu::headless_device;
+    use flare_render::metrics::cell_origin;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
@@ -413,6 +428,115 @@ mod tests {
         let mut h = host(GridPainter::Cpu);
         h.resize(200, 100, 2.25);
         assert_eq!(h.metrics().cell_w, 17);
+    }
+
+    /// A source that paints a blank grid of the given size and one fixed decoration.
+    struct DecorSource {
+        cols: usize,
+        rows: usize,
+        decor: Decor,
+    }
+
+    impl GridSource for DecorSource {
+        fn resize(&mut self, cols: usize, rows: usize) {
+            self.cols = cols;
+            self.rows = rows;
+        }
+        fn grid(&mut self) -> Grid {
+            let mut g = Grid::new(self.cols, self.rows);
+            g.cursor.visible = false;
+            g
+        }
+        fn decor(&mut self) -> Decor {
+            self.decor.clone()
+        }
+    }
+
+    fn decor_source(decor: Decor) -> Box<DecorSource> {
+        Box::new(DecorSource {
+            cols: 0,
+            rows: 0,
+            decor,
+        })
+    }
+
+    fn span(row: usize, col: usize, width: usize) -> RowSpan {
+        RowSpan { row, col, width }
+    }
+
+    /// The centre pixel of a cell in a rendered frame.
+    fn centre(img: &RgbaImage, m: &CellMetrics, col: usize, row: usize) -> [u8; 4] {
+        let (x, y) = cell_origin(col, row, m);
+        img.pixel(x as u32 + m.cell_w / 2, y as u32 + m.cell_h / 2)
+    }
+
+    const SCALES: [f32; 8] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0];
+
+    #[test]
+    fn a_selection_span_paints_at_every_scale() {
+        for scale in SCALES {
+            let mut h = host(GridPainter::Cpu);
+            h.set_source(decor_source(Decor {
+                selection: vec![span(1, 1, 3)],
+                ..Default::default()
+            }));
+            h.resize(1600, 1000, scale);
+            let m = h.metrics();
+            let img = h.render_rgba().expect("image");
+            // The opaque blend of the selection colour over the pt-default ground (decor.rs test).
+            assert_eq!(centre(img, &m, 2, 1), [78, 78, 78, 255], "scale {scale}");
+            assert_ne!(centre(img, &m, 5, 1), [78, 78, 78, 255], "scale {scale}");
+        }
+    }
+
+    #[test]
+    fn the_underline_hair_follows_the_scale() {
+        for (scale, hair) in [(1.0_f32, 1_usize), (2.25, 2)] {
+            let mut h = host(GridPainter::Cpu);
+            h.set_source(decor_source(Decor {
+                links: vec![span(1, 1, 3)],
+                ..Default::default()
+            }));
+            h.resize(1600, 1000, scale);
+            let m = h.metrics();
+            let img = h.render_rgba().expect("image");
+            let (x, y) = cell_origin(2, 1, &m);
+            let cx = x as u32 + m.cell_w / 2;
+            let bottom = y as u32 + m.cell_h;
+            let ink = DecorInk::pt_default();
+            let bg = Palette::pt_default().bg;
+            let faint = flare_render::blend::blend_mask(
+                [bg.r, bg.g, bg.b, 255],
+                ink.link,
+                ink.link_underline_alpha,
+            );
+            for r in 1..=hair as u32 {
+                let px = img.pixel(cx, bottom - r);
+                assert_eq!(
+                    &px[..3],
+                    &faint[..3],
+                    "scale {scale}, row {r} from the bottom"
+                );
+            }
+            assert_ne!(
+                &img.pixel(cx, bottom - hair as u32 - 1)[..3],
+                &faint[..3],
+                "scale {scale}: the row above the underline is not ink"
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_clears_dirty_with_a_decor() {
+        let mut h = host(GridPainter::Cpu);
+        h.set_source(decor_source(Decor {
+            selection: vec![span(0, 0, 2)],
+            ..Default::default()
+        }));
+        h.resize(1600, 1000, 1.0);
+        assert!(h.is_dirty());
+        h.render();
+        assert!(!h.is_dirty());
     }
 
     fn host(painter: GridPainter) -> GridHost {
