@@ -10,8 +10,8 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::time::Instant;
+use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 
 use flare_theme::edges::WindowEdges;
 use flare_theme::ground::DEFAULT_GROUND;
@@ -96,6 +96,61 @@ impl EdgeTarget for DwmEdgeTarget {
     }
 }
 
+/// Wakes the UI thread once, when the material next has something to do. The material arms it after
+/// every change and disarms it when nothing is due, so an idle window runs no timer at all (the border
+/// wait is the only timed work; a glass change itself is synchronous).
+pub trait Wake {
+    /// Fire once after `after`; a later call replaces the earlier one.
+    fn wake_in(&self, after: Duration);
+    /// Nothing is due: no wake.
+    fn cancel(&self);
+}
+
+/// The live wake: one Slint single-shot timer that ticks the window's shared material.
+pub struct SlintWake {
+    timer: slint::Timer,
+    fire: Rc<dyn Fn()>,
+}
+
+impl SlintWake {
+    /// Ticks the material in `slot` when it fires; holds the slot weakly (the material owns this).
+    pub fn new(slot: Weak<RefCell<Option<WindowMaterial>>>) -> Self {
+        let fire: Rc<dyn Fn()> = Rc::new(move || fire_material(&slot));
+        Self {
+            timer: slint::Timer::default(),
+            fire,
+        }
+    }
+}
+
+fn fire_material(slot: &Weak<RefCell<Option<WindowMaterial>>>) {
+    let Some(rc) = slot.upgrade() else { return };
+    match rc.try_borrow_mut() {
+        // The tick arms the next wake itself, or disarms it.
+        Ok(mut m) => {
+            if let Some(m) = m.as_mut() {
+                m.tick(Instant::now());
+            }
+        }
+        // Busy (a re-entrant moment): look again on the next frame rather than lose the border.
+        Err(_) => {
+            let slot = slot.clone();
+            slint::Timer::single_shot(Duration::from_millis(16), move || fire_material(&slot));
+        }
+    }
+}
+
+impl Wake for SlintWake {
+    fn wake_in(&self, after: Duration) {
+        let fire = self.fire.clone();
+        self.timer
+            .start(slint::TimerMode::SingleShot, after, move || fire());
+    }
+    fn cancel(&self) {
+        self.timer.stop();
+    }
+}
+
 pub struct WindowMaterial<S: FsSurface = DwmSurface> {
     material: Material<S>,
     edge: EdgeApplier<DwmEdgeTarget>,
@@ -103,6 +158,7 @@ pub struct WindowMaterial<S: FsSurface = DwmSurface> {
     bg: Rc<RefCell<String>>,
     edges: Rc<Cell<WindowEdges>>,
     flat: Rc<Cell<bool>>,
+    wake: Option<Box<dyn Wake>>,
 }
 
 impl WindowMaterial<DwmSurface> {
@@ -178,6 +234,22 @@ impl<S: FsSurface> WindowMaterial<S> {
             bg,
             edges,
             flat,
+            wake: None,
+        }
+    }
+
+    /// Who wakes the UI thread when the border is due; armed now if something already is.
+    pub fn set_wake(&mut self, wake: Box<dyn Wake>, now: Instant) {
+        self.wake = Some(wake);
+        self.rearm(now);
+    }
+
+    /// Arms the wake for the next deadline, or disarms it when nothing is due.
+    fn rearm(&self, now: Instant) {
+        let Some(w) = &self.wake else { return };
+        match self.next_deadline() {
+            Some(due) => w.wake_in(due.saturating_duration_since(now)),
+            None => w.cancel(),
         }
     }
 
@@ -194,6 +266,7 @@ impl<S: FsSurface> WindowMaterial<S> {
         }
         self.edges.set(edges);
         self.edge.apply(now);
+        self.rearm(now);
     }
 
     /// Glass on or off. The OS rewrites window attributes on a backdrop change, so the border is
@@ -201,6 +274,7 @@ impl<S: FsSurface> WindowMaterial<S> {
     pub fn set_glass(&mut self, on: bool, now: Instant) {
         self.material.set_acrylic(on);
         self.edge.apply(now);
+        self.rearm(now);
     }
 
     pub fn glass_on(&self) -> bool {
@@ -218,10 +292,12 @@ impl<S: FsSurface> WindowMaterial<S> {
         self.material.surface().set_fullscreen(fullscreen);
         self.material.settled();
         self.edge.apply(now);
+        self.rearm(now);
     }
 
     pub fn tick(&mut self, now: Instant) {
         self.edge.tick(now);
+        self.rearm(now);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
@@ -426,6 +502,67 @@ mod tests {
         m.on_window_state(true, false, t0);
         m.tick(t0 + Duration::from_millis(250));
         assert_eq!(seen.borrow().last(), Some(&None));
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum W {
+        In(Duration),
+        Cancel,
+    }
+
+    struct FakeWake(Rc<RefCell<Vec<W>>>);
+
+    impl Wake for FakeWake {
+        fn wake_in(&self, after: Duration) {
+            self.0.borrow_mut().push(W::In(after));
+        }
+        fn cancel(&self) {
+            self.0.borrow_mut().push(W::Cancel);
+        }
+    }
+
+    #[test]
+    fn the_wake_runs_only_while_the_border_is_due() {
+        let (mut m, _) = wm(true, true);
+        let wakes = Rc::new(RefCell::new(Vec::new()));
+        let t0 = Instant::now();
+        m.set_wake(Box::new(FakeWake(wakes.clone())), t0);
+        // Nothing due: no timer at all.
+        assert_eq!(*wakes.borrow(), vec![W::Cancel]);
+        wakes.borrow_mut().clear();
+        m.set_solid_ground("#0b0b0f", WindowEdges::Hairline, t0);
+        assert_eq!(*wakes.borrow(), vec![W::In(Duration::from_millis(250))]);
+        // A change part way restarts the wait from then (the debounce).
+        wakes.borrow_mut().clear();
+        let t1 = t0 + Duration::from_millis(100);
+        m.on_window_state(false, false, t1);
+        assert_eq!(*wakes.borrow(), vec![W::In(Duration::from_millis(250))]);
+        // An early fire keeps waiting for what is left.
+        wakes.borrow_mut().clear();
+        m.tick(t1 + Duration::from_millis(200));
+        assert_eq!(*wakes.borrow(), vec![W::In(Duration::from_millis(50))]);
+        // The border applied: the wake is disarmed and stays so while idle.
+        wakes.borrow_mut().clear();
+        m.tick(t1 + Duration::from_millis(250));
+        assert_eq!(*wakes.borrow(), vec![W::Cancel]);
+        assert_eq!(m.next_deadline(), None);
+    }
+
+    #[test]
+    fn under_e2e_the_wake_is_never_armed() {
+        let (mut m, _) = wm(true, false);
+        let wakes = Rc::new(RefCell::new(Vec::new()));
+        let t0 = Instant::now();
+        m.set_wake(Box::new(FakeWake(wakes.clone())), t0);
+        m.set_solid_ground("#0b0b0f", WindowEdges::Hairline, t0);
+        m.set_glass(true, t0);
+        m.on_window_state(true, false, t0);
+        m.tick(t0 + Duration::from_secs(1));
+        assert!(
+            wakes.borrow().iter().all(|w| *w == W::Cancel),
+            "{:?}",
+            wakes.borrow()
+        );
     }
 
     #[test]

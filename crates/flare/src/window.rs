@@ -51,7 +51,7 @@ use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
 use crate::look_ctl::LookCtl;
-use crate::material_ctl::WindowMaterial;
+use crate::material_ctl::{SlintWake, WindowMaterial};
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
@@ -807,6 +807,8 @@ pub fn run_window(
     {
         let now = Instant::now();
         if let Some(mut m) = WindowMaterial::new(&app, os_version(), args.e2e) {
+            // No polling: the material arms a one-shot wake only while the border is due.
+            m.set_wake(Box::new(SlintWake::new(Rc::downgrade(&material))), now);
             m.on_window_state(
                 app.window().is_maximized(),
                 app.window().is_fullscreen(),
@@ -818,17 +820,6 @@ pub fn run_window(
             }
         }
     }
-    let material_timer = slint::Timer::default();
-    material_timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), {
-        let material = material.clone();
-        move || {
-            if let Ok(mut m) = material.try_borrow_mut()
-                && let Some(m) = m.as_mut()
-            {
-                m.tick(Instant::now());
-            }
-        }
-    });
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
