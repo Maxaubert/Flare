@@ -16,6 +16,9 @@ use flare_term::session::{RealShells, SessionManager, SessionOptions, SessionSin
 static SERIAL: Mutex<()> = Mutex::new(());
 
 const CPR_QUERY: &[u8] = b"\x1b[6n";
+/// ConPTY 1.25 also asks for the primary device attributes at startup and holds the shell's
+/// output (and, later, its own close) until the answer comes, as a real emulator gives it.
+const DA1_QUERY: &[u8] = b"\x1b[c";
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -25,11 +28,13 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
-/// Records output and exits, and answers ConPTY's startup cursor query (no emulator is here to).
+/// Records output and exits, and answers ConPTY's startup cursor and device attribute queries
+/// (no emulator is here to).
 struct CprSink {
     mgr: OnceLock<Weak<SessionManager>>,
     data: Mutex<Vec<(String, Vec<u8>)>>,
     answered: Mutex<HashMap<String, usize>>,
+    da_answered: Mutex<HashMap<String, usize>>,
     exits: Mutex<Vec<(String, Option<u32>)>>,
     first_data: Mutex<Option<Instant>>,
 }
@@ -40,6 +45,7 @@ impl CprSink {
             mgr: OnceLock::new(),
             data: Mutex::new(Vec::new()),
             answered: Mutex::new(HashMap::new()),
+            da_answered: Mutex::new(HashMap::new()),
             exits: Mutex::new(Vec::new()),
             first_data: Mutex::new(None),
         })
@@ -82,13 +88,24 @@ impl SessionSink for CprSink {
             }
         }
         lk(&self.data).push((id.to_string(), bytes));
-        let total = count(&self.bytes_of(id), CPR_QUERY);
+        let all = self.bytes_of(id);
+        let total = count(&all, CPR_QUERY);
+        let da_total = count(&all, DA1_QUERY);
         let mut answered = lk(&self.answered);
         let done = answered.entry(id.to_string()).or_insert(0);
         while *done < total {
             *done += 1;
             if let Some(m) = self.mgr.get().and_then(Weak::upgrade) {
                 m.write(id, b"\x1b[1;1R");
+            }
+        }
+        drop(answered);
+        let mut da = lk(&self.da_answered);
+        let done = da.entry(id.to_string()).or_insert(0);
+        while *done < da_total {
+            *done += 1;
+            if let Some(m) = self.mgr.get().and_then(Weak::upgrade) {
+                m.write(id, b"\x1b[?1;2c");
             }
         }
     }

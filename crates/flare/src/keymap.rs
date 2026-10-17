@@ -4,9 +4,6 @@
 //! Terminal's W3C convention: `code` is the Debug name of the physical `KeyCode`
 //! ("KeyC", "Digit1", "NumpadEnter"), which is the W3C code name for that key.
 
-// The live tab's window filter (Task 27) is the first caller; until it lands, nothing uses these.
-#![allow(dead_code)]
-
 use flare_term::keys::KeyEvent;
 use slint::winit_030::winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 

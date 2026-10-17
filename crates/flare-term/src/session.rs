@@ -108,6 +108,9 @@ struct Session {
     space_cv: Condvar,
     /// Held while a batch is taken AND handed over, so batches never reorder.
     dest: Mutex<Dest>,
+    /// Set (under the manager's `st` lock) once the finisher reported the exit to a sink, so a
+    /// spawn that loses the race with a shell dying at birth never registers it.
+    reported: AtomicBool,
     /// Set (under `dest`) when the session ended while it was still a warm spare.
     finished: Mutex<Option<Option<u32>>>,
     writer_tx: Mutex<Option<Sender<Vec<u8>>>>,
@@ -171,14 +174,41 @@ struct Shared {
     shells: Arc<dyn ShellSource>,
     opts: SessionOptions,
     st: Mutex<State>,
-    dying: Mutex<usize>,
+    /// Killed shells not yet gone, and spawns or prewarms still in flight.
+    dying: Mutex<Counts>,
     dying_cv: Condvar,
+    /// Bumped by `kill_all`: a prewarm that started before it must not keep its spare.
+    quit_gen: AtomicU64,
     ticks: AtomicU64,
     next_token: AtomicU64,
 }
 
+#[derive(Default)]
+struct Counts {
+    dying: usize,
+    starting: usize,
+}
+
 pub struct SessionManager {
     sh: Arc<Shared>,
+}
+
+/// Counts a spawn or prewarm in flight, so the quit wait also covers a shell that is still being
+/// started when the window closes (it is then killed by the `killed_pending` or `quit_gen` check).
+struct StartGuard<'a>(&'a Shared);
+
+impl<'a> StartGuard<'a> {
+    fn new(sh: &'a Shared) -> Self {
+        lk(&sh.dying).starting += 1;
+        Self(sh)
+    }
+}
+
+impl Drop for StartGuard<'_> {
+    fn drop(&mut self) {
+        lk(&self.0.dying).starting -= 1;
+        self.0.dying_cv.notify_all();
+    }
 }
 
 /// Removes the id from `pending` and `killed_pending` on every way out of `spawn`.
@@ -290,6 +320,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         banner_cap: sh.opts.warm_banner_cap,
         killed: AtomicBool::new(false),
         exited: AtomicBool::new(false),
+        reported: AtomicBool::new(false),
         proc: Mutex::new(Some(proc)),
         state: Mutex::new(IoState {
             batcher: OutputBatcher::new(sh.opts.batch_window, BATCH_MAX_BYTES),
@@ -391,6 +422,7 @@ fn finish(sh: &Arc<Shared>, s: &Arc<Session>, code: Option<u32>) {
                     sink.exit(id, code);
                     let (id, tok) = (id.clone(), s.token);
                     let mut st = lk(&sh.st);
+                    s.reported.store(true, Ordering::SeqCst);
                     if st.sessions.get(&id).is_some_and(|x| x.token == tok) {
                         st.sessions.remove(&id);
                         st.desired.remove(&id);
@@ -409,17 +441,19 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
     if s.killed.swap(true, Ordering::SeqCst) {
         return;
     }
-    *lk(&sh.dying) += 1;
+    lk(&sh.dying).dying += 1;
     let sh2 = Arc::clone(sh);
     let s2 = Arc::clone(&s);
     let r = std::thread::Builder::new()
         .name("flare-pty-kill".into())
         .spawn(move || {
             s2.stop_io();
-            // A shell killed before its startup cursor query (ESC[6n) was answered makes the pseudo
-            // console wait about 3 s on close. The shell is dying, so answer it ourselves.
+            // ConPTY asks for the cursor (ESC[6n) and the device attributes (ESC[c) at startup and
+            // waits for both answers, on close too: a shell killed before they were answered makes
+            // the pseudo console linger 1.5 to 3 s, so the quit wait runs out. The shell is dying,
+            // so answer both ourselves (measured 2026-10-17: close 3 s -> under 10 ms).
             if let Some(tx) = lk(&s2.writer_tx).take() {
-                let _ = tx.send(b"[1;1R".to_vec());
+                let _ = tx.send(b"[1;1R[?1;2c".to_vec());
             }
             let proc = lk(&s2.proc).take();
             if let Some(mut p) = proc {
@@ -441,12 +475,12 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
             s2.join_threads(|t| t.reader.take());
             s2.join_threads(|t| t.pump.take());
             s2.join_threads(|t| t.writer.take());
-            *lk(&sh2.dying) -= 1;
+            lk(&sh2.dying).dying -= 1;
             sh2.dying_cv.notify_all();
         });
     if let Err(e) = r {
         log::warn!("could not start the killer thread: {e}");
-        *lk(&sh.dying) -= 1;
+        lk(&sh.dying).dying -= 1;
         sh.dying_cv.notify_all();
     }
 }
@@ -469,10 +503,11 @@ impl SessionManager {
                     desired: HashMap::new(),
                     warm: Vec::new(),
                 }),
-                dying: Mutex::new(0),
+                dying: Mutex::new(Counts::default()),
                 dying_cv: Condvar::new(),
                 ticks: AtomicU64::new(0),
                 next_token: AtomicU64::new(1),
+                quit_gen: AtomicU64::new(0),
             }),
         })
     }
@@ -536,6 +571,9 @@ impl SessionManager {
             st.pending.insert(id.to_string());
         }
         let _guard = PendingGuard { sh: &self.sh, id };
+        // Declared after the pending guard, so it drops first: a kill made below is counted in
+        // `dying` before this spawn stops counting as `starting`.
+        let _starting = StartGuard::new(&self.sh);
         let list = self.sh.shells.shells();
         let Some(def) = shell_by_id(shell_id, &list).cloned() else {
             return false;
@@ -595,6 +633,10 @@ impl SessionManager {
             kill_pty(&self.sh, s);
             return false;
         }
+        if s.reported.load(Ordering::SeqCst) {
+            // The shell already ended and its exit went to the sink: nothing to register.
+            return true;
+        }
         st.sessions.insert(id.to_string(), Arc::clone(&s));
         let want = st.desired.get(id).copied().filter(|w| *w != size);
         drop(st);
@@ -636,6 +678,8 @@ impl SessionManager {
 
     /// BLOCKING, best effort, never panics: keeps a started shell ready for the next tab in `root`.
     pub fn prewarm(&self, root: &str, shell_id: Option<&str>, plugin: Option<&PluginEnv>) {
+        let _starting = StartGuard::new(&self.sh);
+        let gen0 = self.sh.quit_gen.load(Ordering::SeqCst);
         let list = self.sh.shells.shells();
         let Some(def) = shell_by_id(shell_id, &list).cloned() else {
             return;
@@ -677,6 +721,12 @@ impl SessionManager {
         let mut old = None;
         {
             let mut st = lk(&self.sh.st);
+            if self.sh.quit_gen.load(Ordering::SeqCst) != gen0 {
+                // Everything was killed while this spare started: it must not outlive the quit.
+                drop(st);
+                self.dispose(s);
+                return;
+            }
             if let Some(i) = st.warm.iter().position(|(k, _)| *k == key) {
                 old = Some(st.warm.remove(i).1);
             }
@@ -785,6 +835,7 @@ impl SessionManager {
     pub fn kill_all(&self) {
         let all: Vec<Arc<Session>> = {
             let mut st = lk(&self.sh.st);
+            self.sh.quit_gen.fetch_add(1, Ordering::SeqCst);
             let pending: Vec<String> = st.pending.iter().cloned().collect();
             st.killed_pending.extend(pending);
             st.desired.retain(|k, _| k.is_empty());
@@ -833,18 +884,19 @@ impl SessionManager {
     }
 
     pub fn shells_dying(&self) -> usize {
-        *lk(&self.sh.dying)
+        lk(&self.sh.dying).dying
     }
 
-    /// true when every shell we killed is gone; false when `timeout` ran out.
+    /// true when every shell we killed is gone and no spawn or prewarm is still in flight;
+    /// false when `timeout` ran out.
     pub fn shells_gone(&self, timeout: Duration) -> bool {
         let guard = lk(&self.sh.dying);
         let (g, _) = self
             .sh
             .dying_cv
-            .wait_timeout_while(guard, timeout, |n| *n > 0) // sync-ok: the quit path waits on purpose, with a cap
+            .wait_timeout_while(guard, timeout, |n| n.dying + n.starting > 0) // sync-ok: the quit path waits on purpose, with a cap
             .unwrap_or_else(|p| p.into_inner());
-        *g == 0
+        g.dying + g.starting == 0
     }
 
     /// Bumped once per chunk read from any shell; only goes up.
@@ -855,6 +907,11 @@ impl SessionManager {
     #[cfg(test)]
     fn is_pending(&self, id: &str) -> bool {
         lk(&self.sh.st).pending.contains(id)
+    }
+
+    #[cfg(test)]
+    fn starting(&self) -> usize {
+        lk(&self.sh.dying).starting
     }
 }
 
@@ -1021,6 +1078,43 @@ mod tests {
         assert!(!h.join().unwrap());
         assert!(wait_until(|| sp.made().iter().all(|f| f.killed())));
         assert!(m.live_pids().iter().all(|(id, _)| id != "t1"));
+    }
+
+    #[test]
+    fn the_quit_wait_covers_a_shell_still_starting() {
+        let sp = FakeSpawner::new();
+        let (shells, opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        let m2 = Arc::clone(&m);
+        let h =
+            std::thread::spawn(move || m2.spawn("t1", "C:\\x", Some("pwsh"), null(), None, None));
+        assert!(wait_until(|| m.is_pending("t1")));
+        m.kill_all();
+        assert!(!m.shells_gone(Duration::from_millis(5)));
+        let m3 = Arc::clone(&m);
+        let gone = std::thread::spawn(move || m3.shells_gone(Duration::from_secs(5)));
+        assert!(!settled(&gone));
+        opener.open();
+        assert!(!h.join().unwrap());
+        assert!(gone.join().unwrap());
+        assert!(sp.made().iter().all(|f| f.killed()));
+        assert!(m.live_pids().is_empty());
+    }
+
+    #[test]
+    fn a_prewarm_still_starting_at_the_quit_keeps_no_spare() {
+        let sp = FakeSpawner::new();
+        let (shells, opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        let m2 = Arc::clone(&m);
+        let h = std::thread::spawn(move || m2.prewarm("C:\\home", Some("pwsh"), None));
+        assert!(wait_until(|| m.starting() == 1));
+        m.kill_all();
+        opener.open();
+        h.join().unwrap();
+        assert!(m.shells_gone(Duration::from_secs(3)));
+        assert_eq!(sp.made().len(), 1);
+        assert!(sp.made()[0].killed());
     }
 
     #[test]
