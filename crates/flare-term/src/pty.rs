@@ -94,7 +94,7 @@ impl PortablePty {
         let waiter = std::thread::Builder::new()
             .name("flare-pty-wait".into())
             .spawn(move || {
-                let code = child.wait().ok().map(|s| s.exit_code());
+                let code = child.wait().ok().map(|s| s.exit_code()); // sync-ok: the waiter thread of a session, ended when the process exits
                 let cb = {
                     let mut st = exit_w.lock().unwrap_or_else(|p| p.into_inner());
                     st.done = true;

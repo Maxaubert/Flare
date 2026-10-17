@@ -416,7 +416,11 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
         .name("flare-pty-kill".into())
         .spawn(move || {
             s2.stop_io();
-            *lk(&s2.writer_tx) = None;
+            // A shell killed before its startup cursor query (ESC[6n) was answered makes the pseudo
+            // console wait about 3 s on close. The shell is dying, so answer it ourselves.
+            if let Some(tx) = lk(&s2.writer_tx).take() {
+                let _ = tx.send(b"[1;1R".to_vec());
+            }
             let proc = lk(&s2.proc).take();
             if let Some(mut p) = proc {
                 p.kill();

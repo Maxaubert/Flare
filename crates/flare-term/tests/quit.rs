@@ -12,6 +12,9 @@ use flare_term::fake::FakeShells;
 use flare_term::pty::PortableSpawner;
 use flare_term::session::{RealShells, SessionManager, SessionOptions, SessionSink};
 
+/// Tests that count this process's child shells must not overlap.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 const CPR_QUERY: &[u8] = b"\x1b[6n";
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -161,6 +164,7 @@ fn my_children(name: &str) -> Vec<u32> {
 
 #[test]
 fn ten_real_shells_killed_none_remain() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-ten");
     let root = dir.path().to_string_lossy().into_owned();
     let (mgr, sink) = real_manager();
@@ -204,6 +208,7 @@ fn ten_real_shells_killed_none_remain() {
 
 #[test]
 fn kill_while_output_flows_50_times() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-fifty");
     let root = dir.path().to_string_lossy().into_owned();
     let shells = FakeShells::with(vec![ShellDef {
@@ -247,6 +252,7 @@ fn kill_while_output_flows_50_times() {
 
 #[test]
 fn a_warm_shell_is_adopted_and_the_banner_is_there() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-warm");
     let root = dir.path().to_string_lossy().into_owned();
     let (mgr, sink) = real_manager();
@@ -269,6 +275,7 @@ fn a_warm_shell_is_adopted_and_the_banner_is_there() {
 
 #[test]
 fn a_warm_spare_is_killed_at_quit() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-spare");
     let root = dir.path().to_string_lossy().into_owned();
     let (mgr, _sink) = real_manager();
@@ -293,6 +300,7 @@ fn a_warm_spare_is_killed_at_quit() {
 
 #[test]
 fn a_shell_that_exits_by_itself_is_reported_and_removed() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-selfexit");
     let root = dir.path().to_string_lossy().into_owned();
     let (mgr, sink) = real_manager();
@@ -319,6 +327,7 @@ fn a_shell_that_exits_by_itself_is_reported_and_removed() {
 
 #[test]
 fn spawn_and_first_output_time_is_reported() {
+    let _serial = lk(&SERIAL);
     let dir = temp_dir_named("flare-m2-timing");
     let root = dir.path().to_string_lossy().into_owned();
 
