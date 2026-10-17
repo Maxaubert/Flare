@@ -13,8 +13,8 @@
 //! server; the cursor-at-the-edge watch for a collapsed sidebar.
 #![allow(dead_code)] // the window (Task 30b) is the caller
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -23,8 +23,17 @@ use std::time::Duration;
 use flare_agent::close::holds_window_close;
 use flare_agent::keys::AgentView;
 use flare_agent::kinds::{AgentKind, CODEX_RESUME, DetectedAgent};
+use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_clock, pulse_at};
+use flare_agent::tab_look::{Switches, TabSets};
+use flare_agent::tab_mark::MarkState;
+use flare_diag::agent_diag::NullSink;
 use flare_render::metrics::CellMetrics;
+use flare_settings::agent_prefs::{
+    agent_done_on, agent_failed_on, agent_question_on, agent_rainbow, on_agent_look_change,
+};
 use flare_settings::kv::PrefStore;
+use flare_settings::kv::Subscription;
+use flare_settings::look::LookStore;
 use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use flare_settings::recent_roots::{pinned_roots, recent_roots};
 use flare_settings::sidebar::{SidebarMode, sidebar_mode};
@@ -50,6 +59,9 @@ use flare_term::emulator::TermEvent;
 use flare_term::handle::TermHandle;
 use flare_term::keys::{KeyEvent, KeyState, term_key_action};
 use flare_term::path_open::{PathOpeners, StatFn};
+use flare_theme::agent_colours::theme_agent_colours;
+use flare_theme::look::apply_look;
+use flare_theme::resolve::preset_accent;
 use flare_win::argv::{folders_from_argv, own_files};
 use flare_win::clipboard_port::ClipboardPort;
 use flare_win::dblclick::DoubleClick;
@@ -57,8 +69,10 @@ use flare_win::single_instance::Handoff;
 use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
+use crate::agent_hub::{AgentHub, HubDeps, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::font_ctl::{FontCtl, effective_px};
+use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
 use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
@@ -67,13 +81,14 @@ use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
 use crate::tabs_ui::{
-    GeomData, MarkRole, SideDrag, StripDrag, View, ViewInput, build_view, slot_to_model, sync_rows,
+    AgentRows, GeomData, RowData, SideDrag, StripDrag, View, ViewInput, build_view, needs_of,
+    slot_to_model, sync_rows,
 };
 use crate::term_menu::to_menu_row;
 use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
-use crate::{AppWindow, MenuRow, OverflowRow, Place, StripGeom, TabRow};
+use crate::{AppWindow, MarkMotion, MenuRow, OverflowRow, Place, StripGeom, TabRow};
 use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
@@ -93,6 +108,8 @@ pub enum UiMsg {
     HostWake,
     /// A worker's answer for the terminal controller (clipboard read, copy result, path stats).
     Term(TermMsgBox),
+    /// The theme, the indicator, a colour pick or an attention switch changed.
+    LookChanged,
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -189,6 +206,93 @@ const BAR_H: f32 = 36.0;
 const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
+/// The mark clock's frame (about 60 per second); it runs only while a mark moves.
+const MARK_FRAME_MS: u64 = 16;
+
+/// The one clock behind every moving mark, the skeleton's pulse included. The timer runs only
+/// while something moves, a window is showing and Windows' animation effects are on.
+struct MarkClock {
+    timer: slint::Timer,
+    /// Shared with the timer's body: a minimised window moves no mark.
+    pause: Rc<RefCell<MarksPause>>,
+    /// The pause clock's reading when the marks started moving; `None` while nothing moves, so a
+    /// restart after a pure stop begins at phase zero and a restore after minimising goes on.
+    start: Option<u64>,
+}
+
+impl MarkClock {
+    fn new() -> Self {
+        Self {
+            timer: slint::Timer::default(),
+            pause: Rc::new(RefCell::new(MarksPause::new())),
+            start: None,
+        }
+    }
+}
+
+/// A row's mark state integer back to the state (0 is none).
+fn mark_state_of(n: i32) -> Option<MarkState> {
+    match n {
+        1 => Some(MarkState::Working),
+        2 => Some(MarkState::Question),
+        3 => Some(MarkState::Done),
+        4 => Some(MarkState::Failed),
+        _ => None,
+    }
+}
+
+/// Puts one instant of every moving mark on the window.
+fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
+    let g = app.global::<MarkMotion>();
+    g.set_still(p.still);
+    g.set_spin(p.spin_deg);
+    g.set_breathe(p.breathe);
+    g.set_run(p.run_t);
+    g.set_flow(p.flow_px);
+    g.set_pulse(pulse);
+}
+
+/// The marks the look and the picks give now.
+fn compute_marks(prefs: &PrefStore) -> UiMarks {
+    let store = LookStore::new(prefs.clone());
+    let snap = store.input_snapshot();
+    let look = apply_look(&snap.as_input(false));
+    let accent = preset_accent(
+        &look.theme_id,
+        &look.theme_id,
+        snap.custom.as_ref(),
+        snap.draft.as_ref(),
+    );
+    let themed = theme_agent_colours(
+        &look.term,
+        accent.as_deref(),
+        snap.background.as_deref(),
+        snap.accent.as_deref(),
+    );
+    let rainbow = agent_rainbow(prefs);
+    let text = look
+        .chrome
+        .vars
+        .get("--p-text")
+        .cloned()
+        .unwrap_or_default();
+    ui_marks(
+        &current_palette(&look, &themed, &picks_from(&store), rainbow),
+        rainbow,
+        &text,
+    )
+}
+
+/// The attention switches and the indicator style now.
+fn switches_of(prefs: &PrefStore) -> Switches {
+    Switches {
+        indicator: indicator_of(&LookStore::new(prefs.clone())),
+        done_on: agent_done_on(prefs),
+        question_on: agent_question_on(prefs),
+        failed_on: agent_failed_on(prefs),
+        rainbow: agent_rainbow(prefs),
+    }
+}
 
 pub struct AppCtl {
     weak: slint::Weak<AppWindow>,
@@ -235,6 +339,25 @@ pub struct AppCtl {
     term_hot: u8,
     /// The find bar was shown at the last push (focus follows it opening and closing).
     find_shown: bool,
+    /// The agent indicator, the arm state, the poll and the question watches (Task 28).
+    hub: AgentHub,
+    /// The tabs the hub has been given a handle for; one that goes away is forgotten.
+    hub_known: HashSet<String>,
+    /// The hub's view of the host's handles, refreshed before every hub call.
+    handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>>,
+    /// The colours the marks wear, from the look and the picks.
+    marks: UiMarks,
+    /// The rainbow switch `marks` was made with.
+    marks_rainbow: bool,
+    _look_subs: Vec<Subscription>,
+    /// The mark clock (Task 29).
+    clock: MarkClock,
+    /// Windows' "animation effects" switch; tests inject it.
+    animations: Rc<dyn Fn() -> bool>,
+    /// The window is minimised: no mark moves.
+    minimised: bool,
+    /// The resume skeleton shows over the front tab (it pulses on the mark clock).
+    skeleton: Rc<Cell<bool>>,
 }
 
 /// The front shell tab as owned pieces; `info` lends them to the terminal controller.
@@ -351,19 +474,6 @@ macro_rules! bind {
     }};
 }
 
-fn role_colour(role: MarkRole) -> slint::Color {
-    match role {
-        MarkRole::Working => slint::Color::from_rgb_u8(0xd9, 0xa4, 0x41),
-        MarkRole::Done => slint::Color::from_rgb_u8(0x6f, 0xb3, 0x6f),
-        MarkRole::Question => slint::Color::from_rgb_u8(0x5b, 0x9b, 0xd5),
-        MarkRole::Failed => slint::Color::from_rgb_u8(0xd9, 0x5b, 0x5b),
-    }
-}
-
-fn mark_colour(role: Option<MarkRole>) -> slint::Color {
-    role.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), role_colour)
-}
-
 fn menu_row(r: &MenuRowData) -> MenuRow {
     MenuRow {
         label: r.label.as_str().into(),
@@ -377,7 +487,8 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
     }
 }
 
-fn overflow_row(r: &OverflowRowData) -> OverflowRow {
+fn overflow_row(r: &OverflowRowData, rows: &[RowData]) -> OverflowRow {
+    let row = rows.iter().find(|x| x.id == r.id);
     OverflowRow {
         id: r.id.as_str().into(),
         label: r.label.as_str().into(),
@@ -385,9 +496,9 @@ fn overflow_row(r: &OverflowRowData) -> OverflowRow {
         needs: r.needs,
         loading: r.loading,
         settings: r.settings,
-        mark_state: 0,
-        mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
-        agent: 0,
+        mark_state: row.map_or(0, |x| x.mark_state),
+        mark_color: row.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), |x| x.mark_color),
+        agent: row.map_or(0, |x| x.agent),
     }
 }
 
@@ -411,6 +522,40 @@ impl AppCtl {
         let model = TabModel::boot(&boot_saved, now);
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
+        let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
+        let hub = {
+            let mgr = deps.host.manager();
+            let by_id = Rc::clone(&handles);
+            let post = Arc::clone(&deps.post);
+            AgentHub::new(HubDeps {
+                prefs: prefs.clone(),
+                now: Rc::clone(&deps.clock),
+                handle: Rc::new(move |id| by_id.borrow().get(id).cloned()),
+                token: Rc::new(move |id| mgr.tab_token(id)),
+                // Under --e2e and in tests nothing is posted to a real Sonara.
+                post_question: if deps.e2e {
+                    Arc::new(|_, _| {})
+                } else {
+                    sonara_post()
+                },
+                diag: Arc::new(NullSink),
+                wake: Arc::new(move || post(UiMsg::HostWake)),
+                reports_off: Rc::new(|_| {}),
+            })
+        };
+        let marks = compute_marks(&prefs);
+        let marks_rainbow = agent_rainbow(&prefs);
+        let look_subs = {
+            let on_change = {
+                let post = Arc::clone(&deps.post);
+                move || post(UiMsg::LookChanged)
+            };
+            vec![
+                LookStore::new(prefs.clone()).on_look_change(on_change.clone()),
+                on_agent_look_change(&prefs, on_change),
+            ]
+        };
+        Self::push_rainbow(app, &marks);
         let ctl = AppCtl {
             weak: app.as_weak(),
             me: Weak::new(),
@@ -461,6 +606,16 @@ impl AppCtl {
             term_due: None,
             term_hot: 0,
             find_shown: false,
+            hub,
+            hub_known: HashSet::new(),
+            handles,
+            marks,
+            marks_rainbow,
+            _look_subs: look_subs,
+            clock: MarkClock::new(),
+            animations: Rc::new(flare_win::motion::animations_enabled),
+            minimised: false,
+            skeleton: Rc::new(Cell::new(false)),
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -686,18 +841,48 @@ impl AppCtl {
             1.0
         };
         let strip_phys = app.get_strip_phys_width();
+        self.sync_hub();
+        self.sync_marks(&app);
         let none: HashMap<String, f32> = HashMap::new();
-        let needs: HashMap<String, MarkRole> = HashMap::new();
-        let base = build_view(&ViewInput {
-            model: &self.model,
-            home: &self.deps.home,
-            query: &self.query,
-            strip_phys,
-            scale: self.scale,
-            needs: &needs,
-            offsets: &none,
-            carried: None,
-        });
+        let base = {
+            let ind = self.hub.indicator();
+            let mut kinds = HashMap::new();
+            let mut failed_kinds = HashMap::new();
+            for t in &self.model.state.tabs {
+                if let Some(k) = self.hub.agent_kind(&t.id) {
+                    kinds.insert(t.id.clone(), k);
+                }
+                if let Some(f) = self.hub.failed_kind(&t.id) {
+                    failed_kinds.insert(t.id.clone(), f.to_string());
+                }
+            }
+            let agent = AgentRows {
+                sets: TabSets {
+                    agents: ind.agent_ids(),
+                    working: ind.working_ids(),
+                    question: ind.question_ids(),
+                    failed: ind.failed_ids(),
+                    done: ind.done_ids(),
+                },
+                sw: switches_of(&self.prefs),
+                marks: &self.marks,
+                kinds,
+                failed_kinds,
+                loading: HashSet::new(),
+            };
+            let needs = needs_of(self.model.state.tabs.iter().map(|t| t.id.as_str()), &agent);
+            build_view(&ViewInput {
+                model: &self.model,
+                home: &self.deps.home,
+                query: &self.query,
+                strip_phys,
+                scale: self.scale,
+                needs: &needs,
+                offsets: &none,
+                carried: None,
+                agent: &agent,
+            })
+        };
         let mut offsets = HashMap::new();
         if self.strip_drag.carrying() {
             offsets = self.strip_drag.offsets(&base);
@@ -715,9 +900,9 @@ impl AppCtl {
             r.carried = carried.as_deref() == Some(r.id.as_str());
         }
 
-        sync_rows(&self.rows_model, &view.rows, &mark_colour);
+        sync_rows(&self.rows_model, &view.rows);
         if self.last_geom.as_ref() != Some(&view.geom) {
-            let dots: Vec<slint::Color> = view.geom.dots.iter().copied().map(role_colour).collect();
+            let dots: Vec<slint::Color> = view.geom.dots.iter().map(|d| d.colour).collect();
             app.set_strip_geom(StripGeom {
                 more_x: view.geom.more_x,
                 more_w: view.geom.more_w,
@@ -809,8 +994,171 @@ impl AppCtl {
         }
 
         self.push_term();
+        self.update_clock();
         app.window().request_redraw();
         self.kick();
+    }
+
+    // ---- the agent hub and the mark clock -----------------------------------------------------
+
+    /// The hub sees the host's handles as they are now, and forgets a tab that has gone.
+    fn sync_hub(&mut self) {
+        let live: HashMap<String, Arc<TermHandle>> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter_map(|t| self.deps.host.handle(&t.id).map(|h| (t.id.clone(), h)))
+            .collect();
+        let gone: Vec<String> = self
+            .hub_known
+            .iter()
+            .filter(|id| !live.contains_key(*id))
+            .cloned()
+            .collect();
+        *self.handles.borrow_mut() = live;
+        for id in gone {
+            self.hub.on_closed(&id);
+        }
+        self.hub_known = self.handles.borrow().keys().cloned().collect();
+    }
+
+    /// The rainbow switch moves the stops with it; the other changes arrive as `LookChanged`.
+    fn sync_marks(&mut self, app: &AppWindow) {
+        let rainbow = agent_rainbow(&self.prefs);
+        if rainbow != self.marks_rainbow {
+            self.marks_rainbow = rainbow;
+            self.marks = compute_marks(&self.prefs);
+            Self::push_rainbow(app, &self.marks);
+        }
+    }
+
+    fn push_rainbow(app: &AppWindow, marks: &UiMarks) {
+        app.global::<MarkMotion>()
+            .set_rainbow(ModelRc::new(VecModel::from(marks.rainbow.clone())));
+    }
+
+    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours.
+    pub fn on_look_changed(&mut self) {
+        self.marks = compute_marks(&self.prefs);
+        self.marks_rainbow = agent_rainbow(&self.prefs);
+        if let Some(app) = self.app() {
+            Self::push_rainbow(&app, &self.marks);
+        }
+        self.refresh();
+    }
+
+    /// Windows' animation-effects switch (tests inject one).
+    pub fn set_animations_source(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.animations = f;
+        self.update_clock();
+    }
+
+    /// The resume skeleton shows (or no longer shows) over the front tab.
+    pub fn set_skeleton_shown(&mut self, shown: bool) {
+        self.skeleton.set(shown);
+        self.update_clock();
+    }
+
+    /// The window was minimised or restored: nothing moves while it is down, and the marks go on
+    /// from where they stood.
+    pub fn on_minimised(&mut self, minimised: bool) {
+        if minimised == self.minimised {
+            return;
+        }
+        self.minimised = minimised;
+        let now = self.now();
+        self.clock.pause.borrow_mut().set_minimized(minimised, now);
+        self.update_clock();
+    }
+
+    /// Whether the mark clock's timer is running (it must not while no mark moves).
+    pub fn mark_clock_running(&self) -> bool {
+        self.clock.timer.running()
+    }
+
+    /// Decides after every refresh whether the clock runs: a mark that moves, a window that shows
+    /// and Windows' animation effects on. Otherwise the timer is stopped and the marks stand still.
+    fn update_clock(&mut self) {
+        let Some(app) = self.app() else { return };
+        let states: Vec<MarkState> = self
+            .view
+            .rows
+            .iter()
+            .filter_map(|r| mark_state_of(r.mark_state))
+            .collect();
+        let loading = self.view.rows.iter().any(|r| r.loading) || self.skeleton.get();
+        let sw = switches_of(&self.prefs);
+        let need = needs_clock(&states, sw.indicator, sw.rainbow, loading) && (self.animations)();
+        if !need {
+            self.clock.timer.stop();
+            self.clock.start = None;
+            push_frame(&app, STILL, 1.0);
+            return;
+        }
+        if self.minimised {
+            // Frozen where they stood.
+            self.clock.timer.stop();
+            return;
+        }
+        let now = self.now();
+        let start = *self
+            .clock
+            .start
+            .get_or_insert_with(|| self.clock.pause.borrow().clock(now));
+        if !self.clock.timer.running() {
+            let weak = app.as_weak();
+            let pause = Rc::clone(&self.clock.pause);
+            let clock = Rc::clone(&self.deps.clock);
+            let skeleton = Rc::clone(&self.skeleton);
+            self.clock.timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(MARK_FRAME_MS),
+                move || {
+                    let Some(app) = weak.upgrade() else { return };
+                    let now = clock();
+                    if app.window().is_minimized() {
+                        pause.borrow_mut().set_minimized(true, now);
+                        return;
+                    }
+                    Self::mark_frame(&app, &pause.borrow(), now, start, skeleton.get());
+                },
+            );
+        }
+        Self::mark_frame(
+            &app,
+            &self.clock.pause.borrow(),
+            now,
+            start,
+            self.skeleton.get(),
+        );
+    }
+
+    /// One frame of every moving mark at `now`.
+    fn mark_frame(app: &AppWindow, pause: &MarksPause, now: u64, start: u64, skeleton: bool) {
+        let ms = pause.clock(now).saturating_sub(start);
+        let pulse = if skeleton { pulse_at(ms) } else { 1.0 };
+        push_frame(app, mark_phase(ms), pulse);
+    }
+
+    /// Runs the clock's body once at the controller's clock (the timer's own tick, for tests).
+    #[cfg(test)]
+    fn mark_frame_now(&self) {
+        let Some(app) = self.app() else { return };
+        if let Some(start) = self.clock.start {
+            Self::mark_frame(
+                &app,
+                &self.clock.pause.borrow(),
+                self.now(),
+                start,
+                self.skeleton.get(),
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn hub_mut(&mut self) -> &mut AgentHub {
+        &mut self.hub
     }
 
     // ---- the restore ----------------------------------------------------------------------------
@@ -1243,7 +1591,7 @@ impl AppCtl {
             Some(o) => {
                 let rows: Vec<OverflowRow> = overflow_rows(&self.view, o.all, &o.query)
                     .iter()
-                    .map(overflow_row)
+                    .map(|r| overflow_row(r, &self.view.rows))
                     .collect();
                 app.set_overflow_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
                 app.set_overflow_open(true);
@@ -1584,6 +1932,9 @@ impl AppCtl {
     /// The timer's body; stops the timer when nothing is pending.
     pub fn tick(&mut self) {
         let now = self.now();
+        if let Some(app) = self.app() {
+            self.on_minimised(app.window().is_minimized());
+        }
         let events = self.sidebar.tick(now);
         let changed = !events.is_empty();
         for ev in events {
@@ -1768,6 +2119,7 @@ impl AppCtl {
     pub fn on_geometry(&mut self, o: Observed) {
         self.bounds.observe(&o);
         self.maximised = o.maximised;
+        self.on_minimised(o.minimised);
         if let Some(state) = self.bounds.state(o.maximised) {
             self.deps.window_store.save(&state);
         }
@@ -1996,6 +2348,7 @@ impl AppCtl {
             }
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
+            UiMsg::LookChanged => self.on_look_changed(),
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
@@ -2015,6 +2368,12 @@ impl AppCtl {
         let events = self.deps.host.drain_events();
         let mut changed = false;
         let mut terminal_news = false;
+        self.sync_hub();
+        self.hub.on_host_events(&events);
+        self.hub.drain_poll();
+        if self.hub.take_changed() {
+            changed = true;
+        }
         for ev in events {
             match ev {
                 HostEvent::Cwd { id, path } => {
@@ -2138,7 +2497,7 @@ impl ChordTarget for Target<'_> {
 mod tests {
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
-    use crate::ui_harness::Harness;
+    use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
     use flare_render::metrics::cell_metrics;
     use flare_settings::new_tab::set_new_tab_mode;
@@ -2183,6 +2542,8 @@ mod tests {
         launch: Vec<String>,
         real_fs: bool,
         pick_answer: Option<PathBuf>,
+        /// The window's display scale; 0 is 1.
+        scale: f32,
     }
 
     struct Fx {
@@ -2312,7 +2673,8 @@ mod tests {
                 mark_grid_dirty: Rc::new(|| {}),
             },
         };
-        let h = Harness::new(1.0, 1000, 640, || AppWindow::new().unwrap());
+        let scale = if opts.scale > 0.0 { opts.scale } else { 1.0 };
+        let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
         Fx {
             h,
@@ -3243,5 +3605,227 @@ mod tests {
         f.ctl.borrow_mut().request_close(&id);
         f.pump();
         assert_eq!(inputs.borrow().paths.owners_kept(), 0);
+    }
+
+    // ---- the marks on the rows, the mark clock, reduced motion and minimise (Task 29) -------------
+
+    const OSC_WORKING: &str = "\x1b]777;flare-agent;state=working\x07";
+    const OSC_QUESTION: &str = "\x1b]777;flare-agent;state=question\x07";
+    const OSC_DONE: &str = "\x1b]777;flare-agent;state=done\x07";
+    const OSC_FAILED: &str = "\x1b]777;flare-agent;state=failed;kind=rate_limit\x07";
+
+    impl Fx {
+        /// Opens `paths` as tabs (the last in front), all away from the user's eyes.
+        fn open_tabs(&self, paths: &[&str]) -> Vec<String> {
+            let mut ids = Vec::new();
+            for p in paths {
+                ids.push(self.ctl.borrow_mut().open_folder(p));
+                self.wait_made(p);
+            }
+            self.ctl.borrow_mut().hub_mut().set_looking(None, false);
+            ids
+        }
+
+        /// What the shell of `cwd` prints (an agent's hook signal, say).
+        fn say(&self, cwd: &str, text: &str) {
+            self.made_with(cwd)[0].feed(text.as_bytes());
+        }
+
+        fn row(&self, i: usize) -> TabRow {
+            self.h.comp.get_tab_rows().row_data(i).expect("a row")
+        }
+
+        fn motion(&self) -> (bool, f32, f32, f32) {
+            let g = self.h.comp.global::<MarkMotion>();
+            (g.get_still(), g.get_spin(), g.get_breathe(), g.get_pulse())
+        }
+
+        fn clock_running(&self) -> bool {
+            self.ctl.borrow().mark_clock_running()
+        }
+    }
+
+    #[test]
+    fn a_hook_signal_marks_the_row_in_place() {
+        let f = fx();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        let model = f.h.comp.get_tab_rows();
+        let ptr = |m: &ModelRc<TabRow>| m.as_any() as *const dyn std::any::Any as *const ();
+        let before = ptr(&model);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("a working row", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).agent, 1, "the indicator knows an agent is here");
+        assert_eq!(f.row(0).mark_kind, 1, "Ring is the default");
+        assert_eq!(f.row(1).mark_state, 0);
+        assert_eq!(
+            ptr(&f.h.comp.get_tab_rows()),
+            before,
+            "the model is never replaced"
+        );
+        assert_eq!(f.rows(), 2);
+    }
+
+    #[test]
+    fn the_clock_runs_only_while_something_moves() {
+        let f = fx();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        assert!(!f.clock_running(), "idle");
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.clock.set(100);
+        f.ctl.borrow().mark_frame_now();
+        let (still, spin_a, ..) = f.motion();
+        assert!(!still);
+        f.clock.set(400);
+        f.ctl.borrow().mark_frame_now();
+        let (_, spin_b, ..) = f.motion();
+        assert_ne!(spin_a, spin_b, "the spinner turns with the clock");
+        // Finished under Ring is a still mark: no clock.
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished", |f| f.row(0).mark_state == 3);
+        assert!(!f.clock_running());
+        assert!(f.motion().0, "the marks stand still");
+    }
+
+    #[test]
+    fn the_clock_is_stopped_while_minimised_and_goes_on_after() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.clock.set(1300);
+        f.ctl.borrow().mark_frame_now();
+        let shown = f.motion().1;
+        f.clock.set(1400);
+        f.ctl.borrow_mut().on_minimised(true);
+        assert!(!f.clock_running());
+        assert_eq!(f.motion().1, shown, "values frozen while minimised");
+        f.clock.set(9000);
+        // Even a frame asked for later reads the paused clock: 400 ms in, not 8000.
+        f.ctl.borrow().mark_frame_now();
+        assert_eq!(
+            f.motion().1,
+            flare_agent::mark_motion::mark_phase(400).spin_deg
+        );
+        f.ctl.borrow_mut().on_minimised(false);
+        assert!(f.clock_running());
+        // 1400 ms stood for 7600 ms: the clock reads 1400 now, 400 ms after it started at 1000.
+        let want = flare_agent::mark_motion::mark_phase(400).spin_deg;
+        assert_eq!(f.motion().1, want, "goes on from where it stood");
+    }
+
+    #[test]
+    fn animation_effects_off_stills_every_mark() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(!f.clock_running());
+        let (still, spin, breathe, pulse) = f.motion();
+        assert!(still);
+        assert_eq!((spin, breathe, pulse), (0.0, 1.0, 1.0));
+        // Back on: the clock runs again.
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| true));
+        assert!(f.clock_running());
+        assert!(!f.motion().0);
+    }
+
+    #[test]
+    fn a_loading_tab_needs_the_clock_and_a_skeleton_needs_the_pulse() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", Some(AgentKind::Claude))],
+            ..Opts::default()
+        });
+        assert!(f.row(0).loading);
+        assert!(f.clock_running(), "a tab coming back needs the clock");
+        assert_eq!(f.motion().3, 1.0, "no skeleton, no pulse");
+        f.clock.set(500);
+        f.ctl.borrow_mut().set_skeleton_shown(true);
+        assert_eq!(f.motion().3, flare_agent::mark_motion::pulse_at(500));
+        f.ctl.borrow_mut().set_skeleton_shown(false);
+        assert_eq!(f.motion().3, 1.0);
+    }
+
+    #[test]
+    fn a_palette_change_recolours_the_rows() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        let before = f.row(0).mark_color;
+        let store = flare_settings::look::LookStore::new(f.prefs.clone());
+        let other = if store.theme_id() == "paper" {
+            "pt-default"
+        } else {
+            "paper"
+        };
+        store.set_theme_id(other);
+        f.pump_until("the new colour", |f| f.row(0).mark_color != before);
+    }
+
+    #[test]
+    fn the_indicator_pick_turns_a_ring_row_into_a_run_bar() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).mark_kind, 1);
+        flare_settings::look::LookStore::new(f.prefs.clone())
+            .set_agent_indicator(flare_settings::look::AgentIndicator::Minimal);
+        f.pump_until("a run bar", |f| f.row(0).mark_kind == 3);
+    }
+
+    #[test]
+    fn a_failed_row_carries_the_kind_in_its_tip() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_FAILED);
+        f.pump_until("failed", |f| f.row(0).mark_state == 4);
+        assert_eq!(f.row(0).tip.as_str(), "C:\\a\nFailed: rate limit");
+    }
+
+    #[test]
+    fn eight_scales() {
+        // Three marked tabs under Bar: question, failed and finished lines, standing still.
+        for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            let f = fx_with_prefs(
+                Opts {
+                    scale,
+                    ..Opts::default()
+                },
+                |p| {
+                    flare_settings::look::LookStore::new(p.clone())
+                        .set_agent_indicator(flare_settings::look::AgentIndicator::Minimal);
+                    flare_settings::agent_prefs::set_agent_rainbow(p, false);
+                },
+            );
+            f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+            f.open_tabs(&["C:\\a", "C:\\b", "C:\\c", "C:\\d"]);
+            f.say("C:\\a", OSC_QUESTION);
+            f.say("C:\\b", OSC_FAILED);
+            f.say("C:\\c", OSC_DONE);
+            f.pump_until("three marks", |f| (0..3).all(|i| f.row(i).mark_kind == 2));
+            f.h.advance(50);
+            let frame = f.h.render();
+            let want = (3.0 * scale).round() as u32;
+            for i in 0..3 {
+                let row = f.row(i);
+                let c = row.mark_color;
+                let target = [c.red(), c.green(), c.blue(), 255];
+                let top = (40.0 * scale) as u32;
+                let bb = frame
+                    .bbox_where(0, 0, frame.w, top, |p| Frame::near(p, target, 2))
+                    .unwrap_or_else(|| panic!("no band for tab {i} at {scale}"));
+                assert_eq!(
+                    bb.3 - bb.1 + 1,
+                    want,
+                    "tab {i} at {scale}: the foot band is round(3 * scale) device pixels"
+                );
+            }
+        }
     }
 }

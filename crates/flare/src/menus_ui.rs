@@ -355,6 +355,36 @@ mod tests {
             m.open_tab(&format!(r"C:\w\p{i}"));
         }
         let offsets = HashMap::new();
+        let none = std::collections::HashSet::new();
+        let black = slint::Color::from_rgb_u8(0, 0, 0);
+        let marks = crate::mark_colours::UiMarks {
+            working: black,
+            finished: black,
+            question: black,
+            failed: black,
+            rainbow: Vec::new(),
+            ink: black,
+        };
+        let agent = crate::tabs_ui::AgentRows {
+            sets: flare_agent::tab_look::TabSets {
+                agents: &none,
+                working: &none,
+                question: &none,
+                failed: &none,
+                done: &none,
+            },
+            sw: flare_agent::tab_look::Switches {
+                indicator: flare_agent::tab_mark::Indicator::Ring,
+                done_on: true,
+                question_on: true,
+                failed_on: true,
+                rainbow: true,
+            },
+            marks: &marks,
+            kinds: HashMap::new(),
+            failed_kinds: HashMap::new(),
+            loading: std::collections::HashSet::new(),
+        };
         build_view(&ViewInput {
             model: &m,
             home: r"C:\Users\Admin",
@@ -364,6 +394,7 @@ mod tests {
             needs,
             offsets: &offsets,
             carried: None,
+            agent: &agent,
         })
     }
 

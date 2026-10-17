@@ -5,6 +5,11 @@
 //! one edge where a row meets Slint.
 #![allow(dead_code)] // the controller (Task 30) is the caller
 
+use crate::mark_colours::{UiMarks, colour_of};
+use flare_agent::icon::{IconKind, icon_kind};
+use flare_agent::kinds::DetectedAgent;
+use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
+use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
 use flare_tabs::model::TabModel;
 use flare_tabs::sidebar_rows::{find_keeps, folder_line};
 use flare_tabs::strip_layout::{layout_strip, room_for_plan};
@@ -47,6 +52,24 @@ pub struct RowData {
     pub carried: bool,
     /// What this tab needs from you, if anything (the +N list sorts by it, the dots show it).
     pub need: Option<MarkRole>,
+    /// 0 shell, 1 claude, 2 codex (the tab icon).
+    pub agent: i32,
+    /// 0 none, 1 working, 2 question, 3 finished, 4 failed.
+    pub mark_state: i32,
+    /// 0 none, 1 ring, 2 line, 3 run.
+    pub mark_kind: i32,
+    /// The state's line colour; transparent while there is no state.
+    pub mark_color: slint::Color,
+    /// A finished Bar line wears the flowing rainbow.
+    pub mark_rainbow: bool,
+}
+
+/// One dot on the +N button: the hidden tab's need, wearing the look's colour for it (a state
+/// whose switch is off draws a transparent dot).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dot {
+    pub role: MarkRole,
+    pub colour: slint::Color,
 }
 
 /// The +N button, the + button and the dots on the +N button.
@@ -57,7 +80,55 @@ pub struct GeomData {
     pub plus_x: i32,
     pub plus_w: i32,
     pub more_count: i32,
-    pub dots: Vec<MarkRole>,
+    pub dots: Vec<Dot>,
+}
+
+/// What the agent indicator says about the tabs (borrowed from the hub for one `build_view`).
+pub struct AgentRows<'a> {
+    pub sets: TabSets<'a>,
+    pub sw: Switches,
+    pub marks: &'a UiMarks,
+    pub kinds: HashMap<String, DetectedAgent>,
+    pub failed_kinds: HashMap<String, String>,
+    /// Tabs coming back to an agent that the model does not know about yet.
+    pub loading: HashSet<String>,
+}
+
+fn role_of(state: MarkState) -> MarkRole {
+    match state {
+        MarkState::Working => MarkRole::Working,
+        MarkState::Done => MarkRole::Done,
+        MarkState::Question => MarkRole::Question,
+        MarkState::Failed => MarkRole::Failed,
+    }
+}
+
+/// The `needs` of the strip: the done, question and failed tabs, RAW (before the switches). A
+/// tab's role is its look's state when it has one, else the highest raw set it is in (question,
+/// failed, done).
+pub fn needs_of<'i>(
+    ids: impl Iterator<Item = &'i str>,
+    agent: &AgentRows<'_>,
+) -> HashMap<String, MarkRole> {
+    let mut out = HashMap::new();
+    for id in ids {
+        let (q, f, d) = (
+            agent.sets.question.contains(id),
+            agent.sets.failed.contains(id),
+            agent.sets.done.contains(id),
+        );
+        if !(q || f || d) {
+            continue;
+        }
+        let role = match tab_look(id, &agent.sets, &agent.sw).state {
+            Some(state) => role_of(state),
+            None if q => MarkRole::Question,
+            None if f => MarkRole::Failed,
+            None => MarkRole::Done,
+        };
+        out.insert(id.to_string(), role);
+    }
+    out
 }
 
 pub struct ViewInput<'a> {
@@ -67,6 +138,7 @@ pub struct ViewInput<'a> {
     pub strip_phys: i32,
     pub scale: f64,
     pub needs: &'a HashMap<String, MarkRole>,
+    pub agent: &'a AgentRows<'a>,
     pub offsets: &'a HashMap<String, f32>,
     pub carried: Option<&'a str>,
 }
@@ -110,14 +182,24 @@ pub fn build_view(inp: &ViewInput) -> View {
             StripSlot::Icon => 1,
             StripSlot::Hidden => 2,
         };
+        let look = tab_look(&tab.id, &inp.agent.sets, &inp.agent.sw);
+        let tab_agent = inp
+            .agent
+            .kinds
+            .get(&tab.id)
+            .filter(|_| inp.agent.sets.agents.contains(&tab.id))
+            .copied();
+        let tip = tab_title(
+            &tab.cwd,
+            settings,
+            look.failed,
+            inp.agent.failed_kinds.get(&tab.id).map(String::as_str),
+        )
+        .unwrap_or_default();
         rows.push(RowData {
             id: tab.id.clone(),
             label: labels[i].clone(),
-            tip: if settings {
-                String::new()
-            } else {
-                tab.cwd.clone()
-            },
+            tip,
             folder: if settings {
                 String::new()
             } else {
@@ -125,7 +207,7 @@ pub fn build_view(inp: &ViewInput) -> View {
             },
             settings,
             active: Some(tab.id.as_str()) == active_id,
-            loading: tab.pending == Some(Pending::Agent),
+            loading: tab.pending == Some(Pending::Agent) || inp.agent.loading.contains(&tab.id),
             mode,
             x: slot.map_or(0, |s| s.x),
             w: slot.map_or(0, |s| s.w),
@@ -133,13 +215,36 @@ pub fn build_view(inp: &ViewInput) -> View {
             offset_css: inp.offsets.get(&tab.id).copied().unwrap_or(0.0),
             carried: inp.carried == Some(tab.id.as_str()),
             need: inp.needs.get(&tab.id).copied(),
+            agent: match icon_kind(tab_agent, settings) {
+                IconKind::Claude => 1,
+                IconKind::Codex => 2,
+                IconKind::Shell | IconKind::Settings => 0,
+            },
+            mark_state: look.state.map_or(0, state_int),
+            mark_kind: match look.mark.place {
+                MarkPlace::None => 0,
+                MarkPlace::Ring => 1,
+                MarkPlace::Line => 2,
+                MarkPlace::Run => 3,
+            },
+            mark_color: look
+                .state
+                .map_or(slint::Color::from_argb_u8(0, 0, 0, 0), |s| {
+                    colour_of(inp.agent.marks, s)
+                }),
+            mark_rainbow: look.mark.colour == Some(MarkColour::Rainbow),
         });
     }
 
-    let dots: Vec<MarkRole> = rows
+    let dots: Vec<Dot> = rows
         .iter()
         .filter(|r| r.mode == 2)
-        .filter_map(|r| r.need)
+        .filter_map(|r| {
+            r.need.map(|role| Dot {
+                role,
+                colour: r.mark_color,
+            })
+        })
         .take(MAX_DOTS)
         .collect();
     let geom = GeomData {
@@ -170,11 +275,18 @@ pub fn build_view(inp: &ViewInput) -> View {
     }
 }
 
+/// 1 working, 2 question, 3 finished, 4 failed.
+fn state_int(s: MarkState) -> i32 {
+    match s {
+        MarkState::Working => 1,
+        MarkState::Question => 2,
+        MarkState::Done => 3,
+        MarkState::Failed => 4,
+    }
+}
+
 /// The edge: nothing else touches Slint.
-pub fn to_slint_row(
-    row: &RowData,
-    mark_colour: &dyn Fn(Option<MarkRole>) -> slint::Color,
-) -> crate::TabRow {
+pub fn to_slint_row(row: &RowData) -> crate::TabRow {
     crate::TabRow {
         id: row.id.as_str().into(),
         label: row.label.as_str().into(),
@@ -189,11 +301,11 @@ pub fn to_slint_row(
         offset: row.offset_css,
         carried: row.carried,
         kept: row.kept,
-        mark_kind: 0,
-        mark_color: mark_colour(row.need),
-        mark_state: 0,
-        mark_rainbow: false,
-        agent: 0,
+        mark_kind: row.mark_kind,
+        mark_color: row.mark_color,
+        mark_state: row.mark_state,
+        mark_rainbow: row.mark_rainbow,
+        agent: row.agent,
         failed_tip: "".into(),
     }
 }
@@ -201,20 +313,16 @@ pub fn to_slint_row(
 /// Updates the ONE `VecModel` that `tab-rows` was given at startup IN PLACE (a new model would
 /// destroy the rows' TouchAreas and end a carry mid-drag): rows that differ are set, extra rows
 /// are pushed or removed from the end. Never `set_vec`, never a new `ModelRc`.
-pub fn sync_rows(
-    target: &slint::VecModel<crate::TabRow>,
-    rows: &[RowData],
-    mark_colour: &dyn Fn(Option<MarkRole>) -> slint::Color,
-) {
+pub fn sync_rows(target: &slint::VecModel<crate::TabRow>, rows: &[RowData]) {
     let shared = target.row_count().min(rows.len());
     for (i, row) in rows.iter().enumerate().take(shared) {
-        let new = to_slint_row(row, mark_colour);
+        let new = to_slint_row(row);
         if target.row_data(i).as_ref() != Some(&new) {
             target.set_row_data(i, new);
         }
     }
     for row in rows.iter().skip(shared) {
-        target.push(to_slint_row(row, mark_colour));
+        target.push(to_slint_row(row));
     }
     while target.row_count() > rows.len() {
         target.remove(target.row_count() - 1);
@@ -425,7 +533,92 @@ impl SideDrag {
 mod tests {
     use super::*;
     use flare_agent::kinds::AgentKind;
+    use flare_agent::tab_mark::Indicator;
     use flare_tabs::restore::{Restored, SavedTab, SavedTabs};
+
+    const WORKING: (u8, u8, u8) = (1, 1, 1);
+    const DONE: (u8, u8, u8) = (2, 2, 2);
+    const QUESTION: (u8, u8, u8) = (3, 3, 3);
+    const FAILED: (u8, u8, u8) = (4, 4, 4);
+
+    fn rgb(c: (u8, u8, u8)) -> slint::Color {
+        slint::Color::from_rgb_u8(c.0, c.1, c.2)
+    }
+
+    fn marks() -> UiMarks {
+        UiMarks {
+            working: rgb(WORKING),
+            finished: rgb(DONE),
+            question: rgb(QUESTION),
+            failed: rgb(FAILED),
+            rainbow: Vec::new(),
+            ink: rgb((9, 9, 9)),
+        }
+    }
+
+    fn switches(indicator: Indicator) -> Switches {
+        Switches {
+            indicator,
+            done_on: true,
+            question_on: true,
+            failed_on: true,
+            rainbow: true,
+        }
+    }
+
+    /// What the hub would hold, as owned sets.
+    #[derive(Default)]
+    struct World {
+        agents: HashSet<String>,
+        working: HashSet<String>,
+        question: HashSet<String>,
+        failed: HashSet<String>,
+        done: HashSet<String>,
+        kinds: HashMap<String, DetectedAgent>,
+        failed_kinds: HashMap<String, String>,
+    }
+
+    impl World {
+        fn rows<'a>(&'a self, sw: Switches, m: &'a UiMarks) -> AgentRows<'a> {
+            AgentRows {
+                sets: TabSets {
+                    agents: &self.agents,
+                    working: &self.working,
+                    question: &self.question,
+                    failed: &self.failed,
+                    done: &self.done,
+                },
+                sw,
+                marks: m,
+                kinds: self.kinds.clone(),
+                failed_kinds: self.failed_kinds.clone(),
+                loading: HashSet::new(),
+            }
+        }
+    }
+
+    fn set_of(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn view_in(m: &TabModel, strip_phys: i32, w: &World, sw: Switches) -> View {
+        let marks = marks();
+        let agent = w.rows(sw, &marks);
+        let ids: Vec<&str> = m.state.tabs.iter().map(|t| t.id.as_str()).collect();
+        let needs = needs_of(ids.into_iter(), &agent);
+        let offsets = HashMap::new();
+        build_view(&ViewInput {
+            model: m,
+            home: HOME,
+            query: "",
+            strip_phys,
+            scale: 1.0,
+            needs: &needs,
+            offsets: &offsets,
+            carried: None,
+            agent: &agent,
+        })
+    }
 
     const HOME: &str = r"C:\Users\Admin";
 
@@ -439,6 +632,9 @@ mod tests {
 
     fn view_of(m: &TabModel, strip_phys: i32, scale: f64, query: &str) -> View {
         let (needs, offsets) = (HashMap::new(), HashMap::new());
+        let world = World::default();
+        let marks = marks();
+        let agent = world.rows(switches(Indicator::Ring), &marks);
         build_view(&ViewInput {
             model: m,
             home: HOME,
@@ -448,6 +644,7 @@ mod tests {
             needs: &needs,
             offsets: &offsets,
             carried: None,
+            agent: &agent,
         })
     }
 
@@ -459,10 +656,6 @@ mod tests {
         let paths: Vec<String> = (0..40).map(|i| format!(r"C:\w\p{i}")).collect();
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         model_of(&refs)
-    }
-
-    fn colour(_: Option<MarkRole>) -> slint::Color {
-        slint::Color::from_rgb_u8(1, 2, 3)
     }
 
     fn ids_of(m: &TabModel) -> Vec<String> {
@@ -546,46 +739,89 @@ mod tests {
     }
 
     #[test]
-    fn dots_are_the_roles_of_hidden_needy_tabs_at_most_four() {
+    fn dots_are_the_needs_of_hidden_tabs_up_to_four() {
         let m = forty();
         let ids = ids_of(&m);
+        let strs: Vec<&str> = ids.iter().map(String::as_str).collect();
         // Most tabs need you, so some needy ones are pushed into the list.
-        let roles = [
-            MarkRole::Done,
-            MarkRole::Question,
-            MarkRole::Failed,
-            MarkRole::Working,
-        ];
-        let needs: HashMap<String, MarkRole> = ids
-            .iter()
-            .enumerate()
-            .skip(1)
-            .take(35)
-            .map(|(i, id)| (id.clone(), roles[i % 4]))
-            .collect();
-        let offsets = HashMap::new();
-        let v = build_view(&ViewInput {
-            model: &m,
-            home: HOME,
-            query: "",
-            strip_phys: 1000,
-            scale: 1.0,
-            needs: &needs,
-            offsets: &offsets,
-            carried: None,
-        });
-        let hidden_needy: Vec<MarkRole> = v
+        let mut w = World::default();
+        for (i, id) in strs.iter().enumerate().skip(1).take(35) {
+            match i % 3 {
+                0 => w.done.insert(id.to_string()),
+                1 => w.question.insert(id.to_string()),
+                _ => w.failed.insert(id.to_string()),
+            };
+        }
+        let v = view_in(&m, 1000, &w, switches(Indicator::Ring));
+        let hidden_needy: Vec<(MarkRole, slint::Color)> = v
             .rows
             .iter()
             .filter(|r| r.mode == 2)
-            .filter_map(|r| r.need)
+            .filter_map(|r| r.need.map(|n| (n, r.mark_color)))
             .collect();
         assert!(hidden_needy.len() > 4);
         assert_eq!(v.geom.dots.len(), 4);
-        assert_eq!(v.geom.dots, hidden_needy[..4].to_vec());
+        let dots: Vec<(MarkRole, slint::Color)> =
+            v.geom.dots.iter().map(|d| (d.role, d.colour)).collect();
+        assert_eq!(dots, hidden_needy[..4].to_vec());
+        for (role, colour) in dots {
+            let want = match role {
+                MarkRole::Done => rgb(DONE),
+                MarkRole::Question => rgb(QUESTION),
+                MarkRole::Failed => rgb(FAILED),
+                MarkRole::Working => rgb(WORKING),
+            };
+            assert_eq!(colour, want);
+        }
         // None hidden needy: no dots.
         let plain = view_of(&m, 1000, 1.0, "");
         assert!(plain.geom.dots.is_empty());
+    }
+
+    #[test]
+    fn a_switched_off_state_draws_a_transparent_dot() {
+        let m = forty();
+        let ids = ids_of(&m);
+        let mut w = World::default();
+        for id in ids.iter().skip(1) {
+            w.question.insert(id.clone());
+        }
+        let mut sw = switches(Indicator::Ring);
+        sw.question_on = false;
+        let v = view_in(&m, 1000, &w, sw);
+        assert_eq!(v.geom.dots.len(), 4);
+        for d in &v.geom.dots {
+            assert_eq!(d.role, MarkRole::Question);
+            assert_eq!(d.colour.alpha(), 0);
+        }
+    }
+
+    #[test]
+    fn needs_are_the_raw_sets_and_the_role_is_the_look_state() {
+        let m = three();
+        let ids = ids_of(&m);
+        let mut w = World::default();
+        w.done.insert(ids[0].clone());
+        w.question.insert(ids[1].clone());
+        w.agents.insert(ids[2].clone());
+        w.working.insert(ids[2].clone());
+        w.done.insert(ids[2].clone());
+        let marks = marks();
+        let strs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut sw = switches(Indicator::Ring);
+        let rows = w.rows(sw, &marks);
+        let needs = needs_of(strs.iter().copied(), &rows);
+        assert_eq!(needs[&ids[0]], MarkRole::Done);
+        assert_eq!(needs[&ids[1]], MarkRole::Question);
+        // Working wins in the look, and the tab is still a need through the done set.
+        assert_eq!(needs[&ids[2]], MarkRole::Working);
+        // A switched-off question still keeps its tab visible (the raw set), as a question.
+        sw.question_on = false;
+        let rows = w.rows(sw, &marks);
+        assert_eq!(
+            needs_of(strs.iter().copied(), &rows)[&ids[1]],
+            MarkRole::Question
+        );
     }
 
     #[test]
@@ -756,6 +992,11 @@ mod tests {
             offset_css: offset,
             carried: false,
             need: None,
+            agent: 0,
+            mark_state: 0,
+            mark_kind: 0,
+            mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
+            mark_rainbow: false,
         }
     }
 
@@ -763,11 +1004,11 @@ mod tests {
     fn sync_rows_updates_in_place_and_only_grows_or_shrinks_at_the_end() {
         let target = slint::VecModel::<crate::TabRow>::default();
         let three = [row("a", 0.0), row("b", 0.0), row("c", 0.0)];
-        sync_rows(&target, &three, &colour);
+        sync_rows(&target, &three);
         assert_eq!(target.row_count(), 3);
         let before: Vec<crate::TabRow> = (0..3).map(|i| target.row_data(i).unwrap()).collect();
         let moved = [row("a", 0.0), row("b", 12.5), row("c", 0.0)];
-        sync_rows(&target, &moved, &colour);
+        sync_rows(&target, &moved);
         assert_eq!(target.row_count(), 3);
         assert_eq!(target.row_data(1).unwrap().offset, 12.5);
         assert_eq!(target.row_data(0).unwrap(), before[0]);
@@ -779,11 +1020,188 @@ mod tests {
             row("d", 0.0),
             row("e", 0.0),
         ];
-        sync_rows(&target, &five, &colour);
+        sync_rows(&target, &five);
         assert_eq!(target.row_count(), 5);
         assert_eq!(target.row_data(1).unwrap().offset, 12.5);
-        sync_rows(&target, &five[..2], &colour);
+        sync_rows(&target, &five[..2]);
         assert_eq!(target.row_count(), 2);
         assert_eq!(target.row_data(1).unwrap().id, "b");
+    }
+
+    fn one_tab_world(state: &str) -> (TabModel, String, World) {
+        let m = model_of(&[r"C:\a"]);
+        let id = ids_of(&m)[0].clone();
+        let mut w = World::default();
+        w.agents.insert(id.clone());
+        match state {
+            "working" => w.working.insert(id.clone()),
+            "question" => w.question.insert(id.clone()),
+            "done" => w.done.insert(id.clone()),
+            _ => w.failed.insert(id.clone()),
+        };
+        (m, id, w)
+    }
+
+    #[test]
+    fn a_working_tab_gets_a_ring_mark_row_under_ring_and_a_run_bar_under_bar() {
+        let (m, _, w) = one_tab_world("working");
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (1, 1));
+        let r = view_in(&m, 1000, &w, switches(Indicator::Bar))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (3, 1));
+        assert_eq!(r.mark_color, rgb(WORKING));
+        assert!(!r.mark_rainbow);
+
+        let (m, _, w) = one_tab_world("question");
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (1, 2));
+        let r = view_in(&m, 1000, &w, switches(Indicator::Bar))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (2, 2));
+        assert_eq!(r.mark_color, rgb(QUESTION));
+
+        let (m, _, w) = one_tab_world("done");
+        let r = view_in(&m, 1000, &w, switches(Indicator::Bar))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (2, 3));
+        assert!(
+            r.mark_rainbow,
+            "a finished line flows when the rainbow is on"
+        );
+        let mut sw = switches(Indicator::Bar);
+        sw.rainbow = false;
+        let r = view_in(&m, 1000, &w, sw).rows.remove(0);
+        assert!(!r.mark_rainbow);
+        assert_eq!(r.mark_color, rgb(DONE));
+
+        let (m, _, w) = one_tab_world("failed");
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (1, 4));
+        assert_eq!(r.mark_color, rgb(FAILED));
+
+        let plain = view_of(&three(), 1000, 1.0, "");
+        assert!(
+            plain
+                .rows
+                .iter()
+                .all(|r| r.mark_kind == 0 && r.mark_state == 0)
+        );
+    }
+
+    #[test]
+    fn the_switches_hide_their_marks() {
+        let (m, _, w) = one_tab_world("question");
+        let mut sw = switches(Indicator::Ring);
+        sw.question_on = false;
+        let r = view_in(&m, 1000, &w, sw).rows.remove(0);
+        assert_eq!((r.mark_kind, r.mark_state), (0, 0));
+        assert_eq!(r.mark_color.alpha(), 0);
+
+        // Failed off: the tab shows finished when it is also in done.
+        let (m, id, mut w) = one_tab_world("failed");
+        w.done.insert(id);
+        let mut sw = switches(Indicator::Ring);
+        sw.failed_on = false;
+        let r = view_in(&m, 1000, &w, sw).rows.remove(0);
+        assert_eq!(r.mark_state, 3);
+        // Done off too: none.
+        sw.done_on = false;
+        let r = view_in(&m, 1000, &w, sw).rows.remove(0);
+        assert_eq!(r.mark_state, 0);
+    }
+
+    #[test]
+    fn a_failed_tab_tooltip_carries_the_kind() {
+        let (m, id, mut w) = one_tab_world("failed");
+        w.failed_kinds.insert(id.clone(), "rate_limit".into());
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!(r.tip, "C:\\a\nFailed: rate limit");
+        w.failed_kinds.clear();
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!(r.tip, "C:\\a\nFailed");
+        // A tab that is not failed keeps its plain path.
+        let (m, _, w) = one_tab_world("done");
+        let r = view_in(&m, 1000, &w, switches(Indicator::Ring))
+            .rows
+            .remove(0);
+        assert_eq!(r.tip, "C:\\a");
+        // The Settings tab has none.
+        let mut m = three();
+        m.open_settings();
+        let v = view_in(&m, 1000, &World::default(), switches(Indicator::Ring));
+        assert_eq!(v.rows.iter().find(|r| r.settings).unwrap().tip, "");
+    }
+
+    #[test]
+    fn the_icon_follows_the_agent_only_while_present() {
+        let m = model_of(&[r"C:\a"]);
+        let id = ids_of(&m)[0].clone();
+        let mut w = World::default();
+        w.kinds.insert(id.clone(), DetectedAgent::Claude);
+        let agent_of = |w: &World| view_in(&m, 1000, w, switches(Indicator::Ring)).rows[0].agent;
+        assert_eq!(agent_of(&w), 0, "a Claude kind without a present agent");
+        w.agents.insert(id.clone());
+        assert_eq!(agent_of(&w), 1);
+        w.kinds.insert(id.clone(), DetectedAgent::Codex);
+        assert_eq!(agent_of(&w), 2);
+        w.kinds.insert(id, DetectedAgent::Other);
+        assert_eq!(agent_of(&w), 0);
+        let mut m = three();
+        m.open_settings();
+        let v = view_in(&m, 1000, &World::default(), switches(Indicator::Ring));
+        assert_eq!(v.rows.iter().find(|r| r.settings).unwrap().agent, 0);
+    }
+
+    #[test]
+    fn sixteen_tabs_six_hidden_five_marked_gives_four_dots_in_strip_order() {
+        let paths: Vec<String> = (0..16).map(|i| format!(r"C:\w\p{i}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let m = model_of(&refs);
+        // Every tab but the first needs you, so the plan cannot keep them all visible.
+        let ids = ids_of(&m);
+        let mut w = World::default();
+        for (i, id) in ids.iter().enumerate().skip(1) {
+            match i % 3 {
+                0 => w.done.insert(id.clone()),
+                1 => w.question.insert(id.clone()),
+                _ => w.failed.insert(id.clone()),
+            };
+        }
+        let v = (200..=700)
+            .rev()
+            .step_by(20)
+            .map(|px| view_in(&m, px, &w, switches(Indicator::Ring)))
+            .find(|v| {
+                v.rows
+                    .iter()
+                    .filter(|r| r.mode == 2 && r.need.is_some())
+                    .count()
+                    >= 5
+            })
+            .expect("a width that hides five tabs");
+        let hidden_needs: Vec<(MarkRole, slint::Color)> = v
+            .rows
+            .iter()
+            .filter(|r| r.mode == 2)
+            .filter_map(|r| r.need.map(|n| (n, r.mark_color)))
+            .collect();
+        assert!(hidden_needs.len() >= 5);
+        let dots: Vec<(MarkRole, slint::Color)> =
+            v.geom.dots.iter().map(|d| (d.role, d.colour)).collect();
+        assert_eq!(dots, hidden_needs[..4].to_vec(), "four, in strip order");
     }
 }
