@@ -43,6 +43,7 @@ struct Shared {
     last_typed: Mutex<Option<Instant>>,
     last_bell: Mutex<Option<u64>>,
     sync_armed: AtomicBool,
+    output_pending: AtomicBool,
     t0: Instant,
 }
 
@@ -74,8 +75,20 @@ impl Shared {
         }
     }
 
+    /// Typing: `Typed` is queued and the next output queues a fresh `Output` after it.
     fn mark_typed(&self) {
         *lk(&self.last_typed) = Some(Instant::now());
+        let mut evs = lk(&self.events);
+        evs.push(TermEvent::Typed);
+        self.output_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// One `Output` per drained batch: queued only when none is waiting.
+    fn note_output(&self) {
+        let mut evs = lk(&self.events);
+        if !self.output_pending.swap(true, Ordering::SeqCst) {
+            evs.push(TermEvent::Output);
+        }
     }
 
     fn snap_to_bottom(&self) {
@@ -94,6 +107,7 @@ impl SessionSink for Sink {
             let evs = sh.emu.lock().feed(slice);
             sh.handle(evs);
         }
+        sh.note_output();
         sh.wake();
         arm_sync(&sh);
     }
@@ -163,6 +177,7 @@ impl TermHandle {
             last_typed: Mutex::new(None),
             last_bell: Mutex::new(None),
             sync_armed: AtomicBool::new(false),
+            output_pending: AtomicBool::new(false),
             t0: Instant::now(),
         });
         Arc::new(Self { sh, emu })
@@ -237,6 +252,7 @@ impl TermHandle {
         self.emu.lock().resize(cols, rows);
         self.sh.mgr.resize(&self.sh.id, cols, rows);
         self.sh.dirty.store(true, Ordering::SeqCst);
+        lk(&self.sh.events).push(TermEvent::Resized);
     }
 
     pub fn scroll_view(&self, delta_lines: i32) {
@@ -270,6 +286,10 @@ impl TermHandle {
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
         self.sh.mark_typed();
+        let data = String::from_utf8_lossy(&bytes);
+        if flare_agent::question::answers_question(&data) {
+            lk(&self.sh.events).push(TermEvent::AnswerKey(data.into_owned()));
+        }
         true
     }
 
@@ -314,7 +334,19 @@ impl TermHandle {
     }
 
     pub fn drain_events(&self) -> Vec<TermEvent> {
-        std::mem::take(&mut *lk(&self.sh.events))
+        let mut evs = lk(&self.sh.events);
+        self.sh.output_pending.store(false, Ordering::SeqCst);
+        std::mem::take(&mut *evs)
+    }
+
+    /// The last non-blank line of the buffer and the lines above it (see `Emulator::text_tail`).
+    pub fn screen_tail(&self, rows: usize) -> Vec<String> {
+        self.emu.lock().text_tail(rows)
+    }
+
+    /// The question watch's rows: the live screen and a screen of history above it.
+    pub fn question_rows(&self) -> Vec<String> {
+        self.emu.lock().watch_rows()
     }
 
     pub fn last_typed(&self) -> Option<Instant> {
@@ -645,6 +677,150 @@ mod tests {
         assert!(evs.contains(&TermEvent::Title("t".into())));
         assert!(evs.contains(&TermEvent::Cwd("C:\\w".into())));
         assert!(evs.contains(&TermEvent::ClipboardWrite("hi".into())));
+    }
+
+    fn key(k: &str, code: &str) -> KeyEvent {
+        KeyEvent::new(k, code)
+    }
+
+    #[test]
+    fn output_is_one_event_per_drained_batch() {
+        let t = T::started();
+        t.h.drain_events();
+        for _ in 0..5 {
+            t.h.sh.emu.lock().feed(b"x");
+            t.h.sh.note_output();
+        }
+        assert_eq!(t.h.drain_events(), vec![TermEvent::Output]);
+        t.h.sh.note_output();
+        assert_eq!(t.h.drain_events(), vec![TermEvent::Output]);
+        t.fake().exit(0);
+        wait_until("the exit", || t.has(&TermEvent::Exited(Some(0))));
+        assert_eq!(t.h.drain_events(), vec![TermEvent::Exited(Some(0))]);
+    }
+
+    #[test]
+    fn output_does_not_reorder_a_title() {
+        let t = T::started();
+        t.h.drain_events();
+        t.fake().feed(b"\x1b]0;t1\x07text");
+        wait_until("Output", || t.has(&TermEvent::Output));
+        assert_eq!(
+            t.h.drain_events(),
+            vec![TermEvent::Title("t1".into()), TermEvent::Output]
+        );
+    }
+
+    #[test]
+    fn typing_is_one_typed_event_and_the_next_output_queues_after_it() {
+        let t = T::started();
+        t.h.drain_events();
+        t.h.send_key(&key_a());
+        t.fake().feed(b"echo");
+        wait_until("Output", || t.has(&TermEvent::Output));
+        assert_eq!(
+            t.h.drain_events(),
+            vec![TermEvent::Typed, TermEvent::Output]
+        );
+
+        t.fake().feed(b"one");
+        wait_until("Output", || t.has(&TermEvent::Output));
+        t.h.send_key(&key_a());
+        t.fake().feed(b"two");
+        wait_until("two Outputs", || {
+            lk(&t.h.sh.events)
+                .iter()
+                .filter(|e| **e == TermEvent::Output)
+                .count()
+                == 2
+        });
+        assert_eq!(
+            t.h.drain_events(),
+            vec![TermEvent::Output, TermEvent::Typed, TermEvent::Output]
+        );
+
+        t.h.send_text("x");
+        t.h.paste("x");
+        assert_eq!(t.h.drain_events(), vec![TermEvent::Typed, TermEvent::Typed]);
+
+        // A terminal reply (a DA answer) is not typing.
+        t.fake().feed(b"\x1b[c");
+        wait_until("the reply", || {
+            String::from_utf8_lossy(&t.fake().written()).contains("\x1b[?")
+        });
+        wait_until("Output", || t.has(&TermEvent::Output));
+        assert_eq!(t.h.drain_events(), vec![TermEvent::Output]);
+    }
+
+    #[test]
+    fn only_the_answer_keys_are_reported() {
+        let t = T::started();
+        let answers = [
+            (key("Enter", "Enter"), "\r"),
+            (key("Escape", "Escape"), "\x1b"),
+            (key("c", "KeyC").ctrl(), "\x03"),
+            (key("1", "Digit1").text("1"), "1"),
+            (key("9", "Digit9").text("9"), "9"),
+        ];
+        for (k, data) in answers {
+            t.h.drain_events();
+            assert!(t.h.send_key(&k));
+            assert_eq!(
+                t.h.drain_events(),
+                vec![TermEvent::Typed, TermEvent::AnswerKey(data.into())],
+                "{data:?}"
+            );
+        }
+        let others = [
+            key("0", "Digit0").text("0"),
+            key_a(),
+            key("ArrowDown", "ArrowDown"),
+            key("Tab", "Tab"),
+            key(" ", "Space").text(" "),
+        ];
+        for k in others {
+            t.h.drain_events();
+            assert!(t.h.send_key(&k));
+            assert_eq!(t.h.drain_events(), vec![TermEvent::Typed], "{}", k.key);
+        }
+    }
+
+    #[test]
+    fn a_resize_is_reported_even_when_the_size_is_equal() {
+        let t = T::started();
+        t.h.drain_events();
+        t.h.resize(80, 24);
+        t.h.resize(80, 24);
+        assert_eq!(
+            t.h.drain_events(),
+            vec![TermEvent::Resized, TermEvent::Resized]
+        );
+        t.h.resize(1, 24);
+        assert!(t.h.drain_events().is_empty());
+    }
+
+    #[test]
+    fn the_handle_reads_through_the_emulator() {
+        let t = T::started();
+        t.fake().feed(b"one\r\ntwo");
+        wait_until("two", || {
+            t.h.screen_tail(16).last().map(String::as_str) == Some("two")
+        });
+        assert_eq!(t.h.screen_tail(16), t.h.with_emu_quiet(|e| e.text_tail(16)));
+        assert_eq!(t.h.question_rows(), t.h.with_emu_quiet(|e| e.watch_rows()));
+        let feeder = {
+            let h = Arc::clone(&t.h);
+            std::thread::spawn(move || {
+                for i in 0..1000 {
+                    h.sh.emu.lock().feed(format!("f{i}\r\n").as_bytes());
+                }
+            })
+        };
+        for _ in 0..1000 {
+            let _ = t.h.screen_tail(16);
+            let _ = t.h.question_rows();
+        }
+        feeder.join().expect("feeder");
     }
 
     #[test]
