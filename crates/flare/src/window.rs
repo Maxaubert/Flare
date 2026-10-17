@@ -503,16 +503,17 @@ pub fn run_window(
             let post = Arc::clone(&post);
             Arc::new(move || post(UiMsg::HostWake))
         };
+        let e2e_on = args.e2e;
         let tab_host = TabHost::new(
             Arc::new(PortableSpawner),
             Arc::new(RealShells),
             prefs.clone(),
             waker,
+            crate::startup::production_plugin_dir(e2e_on),
         );
         let argv: Vec<String> = std::env::args().collect();
         let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
         let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
-        let e2e_on = args.e2e;
         // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
         // touch the desktop, and a url click is only recorded.
         let backends = Backends::new(e2e_on);
@@ -524,7 +525,12 @@ pub fn run_window(
             tabs_store: Arc::clone(&tabs_store),
             window_store: Arc::clone(&window_store),
             host: tab_host,
-            lookup: Arc::new(NoSessions),
+            // Under --e2e nothing resumes the owner's real conversations.
+            lookup: if e2e_on {
+                Arc::new(NoSessions)
+            } else {
+                crate::startup::production_lookup()
+            },
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
             home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()),
@@ -617,7 +623,7 @@ pub fn run_window(
             term: TermPorts {
                 clip_port: Arc::clone(&backends.clip_port),
                 openers: Arc::clone(&backends.openers),
-                agent: Rc::new(flare_agent::keys::NoAgent),
+                agent: None,
                 dbl: system_double_click(),
                 stat: Arc::new(FsStat),
                 metrics: {
@@ -845,6 +851,17 @@ pub fn run_window(
     app.show()?;
     if args.e2e {
         apply_e2e_style(&app);
+    }
+    // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
+    // exists now). Under --e2e the overlay is never touched.
+    if let Some(rc) = &ctl {
+        let mut c = rc.borrow_mut();
+        c.start_agent_poll();
+        if !args.e2e
+            && let Some(hwnd) = hwnd_of(&app)
+        {
+            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
+        }
     }
     if initial.as_ref().is_some_and(|i| i.maximise) {
         app.window().set_maximized(true);
@@ -1155,6 +1172,11 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
             }
             WindowEvent::Focused(false) => {
                 with_ctl(&mut |c| c.on_focus_lost());
+                EventResult::Propagate
+            }
+            WindowEvent::Focused(true) => {
+                // Coming back to the window is a look at the tab in front.
+                with_ctl(&mut |c| c.on_focus(true));
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {

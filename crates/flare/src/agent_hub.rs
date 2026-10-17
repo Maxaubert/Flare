@@ -29,6 +29,7 @@ use flare_diag::agent_diag::{AgentDiag, DiagSink, MarkSets};
 use flare_settings::kv::PrefStore;
 use flare_term::handle::TermHandle;
 use flare_term::session::SessionManager;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -161,7 +162,7 @@ pub fn sonara_post() -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
 pub struct AgentHub {
     deps: HubDeps,
     ind: Indicator,
-    arms: HashMap<String, AgentArm>,
+    arms: ArmMap,
     watches: HashMap<String, QuestionWatch>,
     /// Tabs the hub has heard of and not yet been told closed.
     tabs: HashSet<String>,
@@ -179,7 +180,7 @@ impl AgentHub {
         Self {
             deps,
             ind: Indicator::new(),
-            arms: HashMap::new(),
+            arms: ArmMap::default(),
             watches: HashMap::new(),
             tabs: HashSet::new(),
             diag,
@@ -237,10 +238,7 @@ impl AgentHub {
     }
 
     fn arm_of(&self, tab: &str) -> AgentArm {
-        self.arms
-            .get(tab)
-            .cloned()
-            .unwrap_or_else(|| arm_at_start(None))
+        self.arms.get(tab).unwrap_or_else(|| arm_at_start(None))
     }
 
     fn apply_arm(&mut self, tab: &str, step: ArmStep) {
@@ -490,6 +488,11 @@ impl AgentHub {
     }
 
     /// True once after the marks, an agent kind or a failed kind changed.
+    /// The arm state as the keyboard path's `AgentView` (it follows the hub without borrowing it).
+    pub fn view(&self) -> Rc<dyn flare_agent::keys::AgentView> {
+        Rc::new(self.arms.clone())
+    }
+
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
@@ -550,7 +553,42 @@ impl AgentHub {
 
 impl flare_agent::keys::AgentView for AgentHub {
     fn armed(&self, tab: &str) -> Option<AgentKind> {
-        let arm = self.arms.get(tab)?;
+        flare_agent::keys::AgentView::armed(&self.arms, tab)
+    }
+}
+
+/// The arm state of every tab. Shared (the keyboard path holds a clone as its `AgentView`), so it
+/// reads the hub's state without borrowing the hub.
+#[derive(Clone, Default)]
+pub struct ArmMap(Rc<RefCell<HashMap<String, AgentArm>>>);
+
+impl ArmMap {
+    fn get(&self, tab: &str) -> Option<AgentArm> {
+        self.0.borrow().get(tab).cloned()
+    }
+
+    fn insert(&self, tab: String, arm: AgentArm) {
+        self.0.borrow_mut().insert(tab, arm);
+    }
+
+    fn remove(&self, tab: &str) {
+        self.0.borrow_mut().remove(tab);
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, tab: &str) -> bool {
+        self.0.borrow().contains_key(tab)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+}
+
+impl flare_agent::keys::AgentView for ArmMap {
+    fn armed(&self, tab: &str) -> Option<AgentKind> {
+        let arm = self.get(tab)?;
         if !arm.here {
             return None;
         }
@@ -669,7 +707,7 @@ mod tests {
             let sp = FakeSpawner::new();
             let prefs = PrefStore::memory();
             let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            let mut host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker);
+            let mut host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker, None);
             host.set_dims(200, 60, None);
             let mgr = host.manager();
             let host = Rc::new(RefCell::new(host));
