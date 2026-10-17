@@ -1,25 +1,138 @@
-//! The Slint window: wires the chrome, the grid host and the renderer notifier together.
+//! The Slint window: wires the chrome, the grid host, the renderer notifier, the winit filter,
+//! the saved position and size, the hand-off server and the quit to [`AppCtl`].
+//!
+//! Source: M2 Task 27 (the winit filter, `shutdown`), Prism Terminal's `index.ts`
+//! (`createWindow`, `win.on('close')`, `second-instance`) and `windowState.ts`.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
+use flare_settings::kv::{FileBackend, PrefStore};
+use flare_tabs::restore::NoSessions;
+use flare_tabs::tabs_store::TabsStore;
+use flare_term::handle::TermHandle;
+use flare_term::keys::{KeyState, TermKeyAction, term_key_action};
+use flare_term::pty::PortableSpawner;
+use flare_term::session::RealShells;
+use flare_win::argv::{folders_from_argv, own_files};
+use flare_win::clipboard;
+use flare_win::edge_watch::{EdgeNear, EdgeWatch, FAR, PointF, RectF, real_cursor_phys};
+use flare_win::monitors::work_areas;
+use flare_win::pick::{ParentWindow, PickOptions, pick_folder};
+use flare_win::session_end::SessionEndWatch;
+use flare_win::shell_open;
+use flare_win::single_instance::{InstanceGuard, InstanceNames, serve};
+use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use slint::winit_030::winit::keyboard::ModifiersState;
+use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::{EventResult, WinitWindowAccessor};
 use slint::{CloseRequestResponse, ComponentHandle, GraphicsAPI, RenderingState};
-
-use flare_term::keys::{KeyState, TermKeyAction, term_key_action};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW,
+};
 
 use crate::AppWindow;
+use crate::appctl::{AppCtl, CloseDecision, Deps, KeyOutcome, Post, UiMsg};
 use crate::backend::BackendOutcome;
-use crate::config::RendererChoice;
+use crate::config::{Args, RendererChoice};
+use crate::e2e;
 use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
-use crate::live::{Live, LiveSource, WheelAccum, cell_at, shutdown, start_live};
+use crate::live::{LiveSource, WheelAccum, cell_at};
 use crate::memory::process_memory;
+use crate::startup::{Profile, RaiseStep, raise_plan};
+use crate::tab_host::TabHost;
+
+/// How long the state files wait before they are written (Prism Terminal's debounce).
+const SAVE_DELAY: Duration = Duration::from_millis(400);
+/// The bar's height in css pixels (`Theme.bar-height`).
+const BAR_CSS: f64 = 36.0;
+
+/// The first instance's claim on the profile: the lock, kept for the whole run, and the names the
+/// hand-off server listens on.
+pub struct Instance {
+    pub profile: Profile,
+    pub names: InstanceNames,
+    /// Held only so the lock lasts as long as the run.
+    pub _guard: Option<InstanceGuard>,
+}
+
+/// Where the window opens, made safe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitialWindow {
+    /// Physical position, `None` for "let the system place it".
+    pub pos: Option<(i32, i32)>,
+    /// Logical size.
+    pub logical_size: (u32, u32),
+    pub maximise: bool,
+}
+
+/// The saved state made safe: never under the minimum, and a position only when some monitor
+/// would still show the window (`parse_window_state` did the same work already; this is the
+/// belt for a state that did not come from the file).
+pub fn initial_window(state: &WindowState, areas: &[Area]) -> InitialWindow {
+    let w = state.width.max(MIN_WINDOW.0);
+    let h = state.height.max(MIN_WINDOW.1);
+    let scale = if state.scale.is_finite() && state.scale > 0.0 {
+        state.scale
+    } else {
+        1.0
+    };
+    let pos = match (state.x, state.y) {
+        (Some(x), Some(y)) => {
+            let pw = (f64::from(w) * scale).round() as i32;
+            let ph = (f64::from(h) * scale).round() as i32;
+            let shown = areas.is_empty()
+                || areas.iter().any(|a| {
+                    x < a.x + a.width && x + pw > a.x && y < a.y + a.height && y + ph > a.y
+                });
+            shown.then_some((x, y))
+        }
+        _ => None,
+    };
+    InitialWindow {
+        pos,
+        logical_size: (w as u32, h as u32),
+        maximise: state.maximised,
+    }
+}
+
+/// The extended style of an `--e2e` window: it can never take the focus or the foreground, and
+/// it stays off the taskbar.
+pub fn e2e_ex_style(current: u32) -> u32 {
+    (current | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterAction {
+    PreventDefault,
+    Propagate,
+}
+
+/// What the winit filter does with an `AppCtl` key outcome, and whether the pty gets the key.
+pub fn key_outcome_to_filter(o: KeyOutcome) -> (FilterAction, bool) {
+    match o {
+        KeyOutcome::Consumed => (FilterAction::PreventDefault, false),
+        KeyOutcome::Pty => (FilterAction::PreventDefault, true),
+        KeyOutcome::Slint => (FilterAction::Propagate, false),
+    }
+}
+
+fn to_event_result(a: FilterAction) -> EventResult {
+    match a {
+        FilterAction::PreventDefault => EventResult::PreventDefault,
+        FilterAction::Propagate => EventResult::Propagate,
+    }
+}
 
 /// The overlay text: renderer, grid painter, frame statistics and memory.
 fn overlay_text(
@@ -56,13 +169,115 @@ fn repaint_due(dirty: bool) -> bool {
     dirty
 }
 
+type CtlRc = Rc<RefCell<AppCtl>>;
+/// The shell the grid shows now: kept by the `set_grid_source` dependency, read by the filter.
+type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
+
+thread_local! {
+    /// The controller the worker threads' messages land on. Filled at startup, emptied at exit.
+    static APP_CTL: RefCell<Option<(CtlRc, slint::Weak<AppWindow>)>> = const { RefCell::new(None) };
+}
+
+/// The production `post`: a worker's message hops onto the event loop and lands on `AppCtl`.
+/// Wake-ups are coalesced: at most one is queued however fast the output arrives.
+fn make_post() -> Post {
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    Arc::new(move |msg: UiMsg| {
+        let is_wake = matches!(msg, UiMsg::HostWake);
+        if is_wake && wake_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let flag = Arc::clone(&wake_pending);
+        let queued = slint::invoke_from_event_loop(move || {
+            if is_wake {
+                flag.store(false, Ordering::SeqCst);
+            }
+            let target = APP_CTL.with(|cell| cell.borrow().clone());
+            // A message after the window closed is dropped.
+            let Some((ctl, weak)) = target else { return };
+            if weak.upgrade().is_none() {
+                return;
+            }
+            if let Ok(mut c) = ctl.try_borrow_mut() {
+                c.on_msg(msg);
+            }
+        });
+        if queued.is_err() {
+            log::debug!("post: event loop closed");
+        }
+    })
+}
+
+/// The window's HWND, when it has one.
+fn hwnd_of(app: &AppWindow) -> Option<isize> {
+    app.window()
+        .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
+fn apply_e2e_style(app: &AppWindow) {
+    let Some(hwnd) = hwnd_of(app) else {
+        log::warn!("e2e: the window has no handle, its style is unchanged");
+        return;
+    };
+    let hwnd = hwnd as *mut std::ffi::c_void;
+    // SAFETY: `hwnd` is this process's own live window on the UI thread; reading and writing its
+    // extended style touches no memory of ours.
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, e2e_ex_style(current) as isize);
+    }
+}
+
+/// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
+fn raise_window(app: &AppWindow, e2e: bool) {
+    let minimised = app.window().is_minimized();
+    for step in raise_plan(e2e, minimised) {
+        app.window().with_winit_window(|w| match step {
+            RaiseStep::ShowInactive | RaiseStep::Show => w.set_visible(true),
+            RaiseStep::Restore => w.set_minimized(false),
+            RaiseStep::TopmostOn => w.set_window_level(WindowLevel::AlwaysOnTop),
+            RaiseStep::Focus => w.focus_window(),
+            RaiseStep::TopmostOff => w.set_window_level(WindowLevel::Normal),
+        });
+    }
+}
+
+/// What the window says about itself, for the saved bounds.
+fn observe(window: &slint::Window) -> Observed {
+    let size = window.size();
+    let pos = window.position();
+    Observed {
+        width_phys: size.width as i32,
+        height_phys: size.height as i32,
+        x: pos.x,
+        y: pos.y,
+        scale: f64::from(window.scale_factor()),
+        maximised: window.is_maximized(),
+        minimised: window.is_minimized(),
+        fullscreen: window.is_fullscreen(),
+    }
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 /// Runs the window until it closes. `start` is main's start time, for the first-frame log.
-/// `sample` keeps M1's sample grid instead of a live shell.
+/// `args.sample` keeps M1's sample grid instead of the tabs; then `instance` is `None`.
 pub fn run_window(
     outcome: BackendOutcome,
     start: Instant,
-    sample: bool,
+    args: &Args,
+    instance: Option<Instance>,
 ) -> Result<(), slint::PlatformError> {
+    let sample = args.sample;
     let app = AppWindow::new()?;
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
@@ -72,14 +287,6 @@ pub fn run_window(
         Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0)),
         painter,
     )));
-    let live: Option<Rc<Live>> = if sample {
-        None
-    } else {
-        let live = Rc::new(start_live(app.as_weak()));
-        host.borrow_mut()
-            .set_source(Box::new(LiveSource::new(Arc::clone(&live.handle))));
-        Some(live)
-    };
     // Why the grid is not on the GPU even though it was asked for, set by the notifier.
     let note: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(outcome.fallback_reason.clone()));
     let effective = outcome.effective;
@@ -169,13 +376,188 @@ pub fn run_window(
         log::info!("grid on the CPU: no rendering notifier ({e})");
     }
 
+    // ---- the saved position and size, applied BEFORE show() -----------------------------------
+    let profile_window_file = instance.as_ref().map(|i| i.profile.window_file());
+    let initial = profile_window_file.as_ref().map(|file| {
+        let areas = work_areas();
+        initial_window(&WindowStateStore::read(file, &areas), &areas)
+    });
+    if let Some(init) = &initial {
+        apply_initial(&app, init);
+    }
+
+    // ---- the controller -----------------------------------------------------------------------
+    let front: FrontCell = Rc::new(RefCell::new(None));
+    let mut ctl: Option<CtlRc> = None;
+    let mut serve_guard = None;
+    let mut session_end = None;
+    let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
+    if let (false, Some(inst)) = (sample, instance.as_ref()) {
+        let post = make_post();
+        let prefs = PrefStore::new(Arc::new(FileBackend::open(
+            inst.profile.settings_file(),
+            SAVE_DELAY,
+        )));
+        let tabs_store = Arc::new(TabsStore::new(inst.profile.tabs_file(), SAVE_DELAY));
+        let window_store = Arc::new(WindowStateStore::new(
+            inst.profile.window_file(),
+            SAVE_DELAY,
+        ));
+        let waker: Arc<dyn Fn() + Send + Sync> = {
+            let post = Arc::clone(&post);
+            Arc::new(move || post(UiMsg::HostWake))
+        };
+        let tab_host = TabHost::new(
+            Arc::new(PortableSpawner),
+            Arc::new(RealShells),
+            prefs.clone(),
+            waker,
+        );
+        let argv: Vec<String> = std::env::args().collect();
+        let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup
+        let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup
+        let e2e_on = args.e2e;
+        let deps = Deps {
+            prefs: prefs.clone(),
+            tabs_store: Arc::clone(&tabs_store),
+            window_store: Arc::clone(&window_store),
+            host: tab_host,
+            lookup: Arc::new(NoSessions),
+            // sync-ok: runs on the stat workers, never on the UI thread
+            is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
+            home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()),
+            clock: Rc::new(epoch_ms),
+            post: Arc::clone(&post),
+            pick_folder: {
+                let weak = app.as_weak();
+                Rc::new(move |default_dir, answer| {
+                    let parent = weak
+                        .upgrade()
+                        .and_then(|a| hwnd_of(&a))
+                        .map(|hwnd| ParentWindow { hwnd });
+                    let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+                    pick_folder(
+                        PickOptions {
+                            parent,
+                            default_dir,
+                            seam,
+                        },
+                        move |p| answer(p),
+                    );
+                })
+            },
+            clipboard: Rc::new(|text: &str| {
+                // The clipboard can be busy for a moment: a worker does the retries.
+                let text = text.to_string();
+                let r = std::thread::Builder::new()
+                    .name("flare-clipboard".into())
+                    .spawn(move || {
+                        if let Err(e) = clipboard::set_text(&text) {
+                            log::warn!("copy failed: {e}");
+                        }
+                    });
+                if let Err(e) = r {
+                    log::warn!("could not start the clipboard worker: {e}");
+                }
+            }),
+            open_url: Rc::new(|url: &str| {
+                if let Err(e) = shell_open::open_url(url) {
+                    log::warn!("open {url} failed: {e}");
+                }
+            }),
+            set_grid_source: {
+                let host = host.clone();
+                let front = front.clone();
+                let weak = app.as_weak();
+                Rc::new(move |handle: Option<Arc<TermHandle>>| {
+                    *front.borrow_mut() = handle.clone();
+                    match handle {
+                        Some(h) => host.borrow_mut().set_source(Box::new(LiveSource::new(h))),
+                        None => host
+                            .borrow_mut()
+                            .set_source(Box::new(crate::host::SampleSource::new())),
+                    }
+                    if let Some(app) = weak.upgrade() {
+                        app.window().request_redraw();
+                    }
+                })
+            },
+            raise: {
+                let weak = app.as_weak();
+                Rc::new(move || {
+                    if let Some(app) = weak.upgrade() {
+                        raise_window(&app, e2e_on);
+                    }
+                })
+            },
+            quit: Rc::new(|| {
+                if let Err(e) = slint::quit_event_loop() {
+                    log::debug!("quit: {e}");
+                }
+            }),
+            hide: {
+                let weak = app.as_weak();
+                Rc::new(move || {
+                    if let Some(app) = weak.upgrade() {
+                        let _ = app.hide();
+                    }
+                })
+            },
+            launch_folders,
+            e2e: e2e_on,
+        };
+        let rc = AppCtl::new(&app, deps);
+        APP_CTL.with(|cell| *cell.borrow_mut() = Some((rc.clone(), app.as_weak())));
+        // The second launch's folders arrive on the pipe thread and hop onto the event loop.
+        serve_guard = match serve(&inst.names, {
+            let post = Arc::clone(&post);
+            move |h| post(UiMsg::Handoff(h))
+        }) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log::warn!("the hand-off server did not start: {e}");
+                None
+            }
+        };
+        // A logoff or shutdown flushes both stores synchronously (the OS ends us right after).
+        session_end = match SessionEndWatch::start({
+            let tabs = Arc::clone(&tabs_store);
+            let window = Arc::clone(&window_store);
+            let prefs = prefs.clone();
+            move || {
+                window.flush();
+                tabs.flush();
+                prefs.flush();
+            }
+        }) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("no session-end watcher: {e}");
+                None
+            }
+        };
+        stores = Some((tabs_store, window_store, prefs));
+        ctl = Some(rc);
+    }
+
+    // ---- the callbacks the controller leaves to the window -----------------------------------
     app.on_grid_resized({
         let host = host.clone();
         let render_now = render_now.clone();
+        let ctl = ctl.as_ref().map(Rc::downgrade);
         move |w, h, scale| {
             host.borrow_mut()
                 .resize(w.max(0) as u32, h.max(0) as u32, scale);
             render_now();
+            let (cols, rows) = host.borrow().dims();
+            if cols == 0 || rows == 0 {
+                return;
+            }
+            if let Some(rc) = ctl.as_ref().and_then(std::rc::Weak::upgrade)
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                c.on_grid_dims(cols, rows);
+            }
         }
     });
     app.on_minimize_clicked({
@@ -195,30 +577,49 @@ pub fn run_window(
             }
         }
     });
+    // Every route out of the window ends at the controller's close handler (rule 27).
+    let close_decision = {
+        let ctl = ctl.as_ref().map(Rc::downgrade);
+        move || -> CloseDecision {
+            match &ctl {
+                None => CloseDecision::Close,
+                Some(weak) => match weak.upgrade() {
+                    None => CloseDecision::Close,
+                    Some(rc) => match rc.try_borrow_mut() {
+                        Ok(mut c) => c.on_close_requested(),
+                        Err(_) => CloseDecision::KeepOpen,
+                    },
+                },
+            }
+        }
+    };
     app.on_close_clicked({
         let weak = app.as_weak();
-        let live = live.clone();
+        let close_decision = close_decision.clone();
         move || {
-            if let Some(live) = &live {
-                shutdown(live);
+            if close_decision() == CloseDecision::Close {
+                if let Some(app) = weak.upgrade() {
+                    let _ = app.hide();
+                }
+                let _ = slint::quit_event_loop();
             }
-            if let Some(app) = weak.upgrade() {
-                let _ = app.hide();
-            }
-            let _ = slint::quit_event_loop();
         }
     });
-    app.window().on_close_requested({
-        let live = live.clone();
-        move || {
-            if let Some(live) = &live {
-                shutdown(live);
-            }
-            CloseRequestResponse::HideWindow
-        }
-    });
-    if let Some(live) = live.clone() {
-        install_input_filter(&app, live, host.clone());
+    app.window()
+        .on_close_requested(move || match close_decision() {
+            CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
+            CloseDecision::Close => CloseRequestResponse::HideWindow,
+        });
+    if let Some(rc) = &ctl {
+        install_window_filter(
+            &app,
+            FilterState {
+                ctl: Rc::downgrade(rc),
+                front: front.clone(),
+                host: host.clone(),
+                initial: initial.clone(),
+            },
+        );
     }
     app.on_toggle_grid_renderer({
         let host = host.clone();
@@ -258,6 +659,12 @@ pub fn run_window(
     }
 
     app.show()?;
+    if args.e2e {
+        apply_e2e_style(&app);
+    }
+    if initial.as_ref().is_some_and(|i| i.maximise) {
+        app.window().set_maximized(true);
+    }
     if !sample {
         app.window().with_winit_window(|w| w.set_ime_allowed(true));
     }
@@ -269,26 +676,215 @@ pub fn run_window(
     );
     render_now();
     refresh_overlay();
+    if let Some(rc) = &ctl {
+        // Placeholders are drawn already; the restore answers on a worker and settles in place.
+        AppCtl::start_restore(rc);
+    }
     let result = app.run();
+
+    // After run(): the end of life once more (idempotent), so no path leaves a shell behind.
+    if let Some(rc) = &ctl
+        && let Ok(mut c) = rc.try_borrow_mut()
+    {
+        let _ = c.on_close_requested();
+    }
+    if let Some((tabs, window, prefs)) = &stores {
+        window.flush();
+        tabs.flush();
+        prefs.flush();
+    }
+    APP_CTL.with(|cell| *cell.borrow_mut() = None);
+    if let Some(s) = serve_guard {
+        s.stop();
+    }
+    if let Some(w) = session_end {
+        w.stop();
+    }
     drop(timer);
     drop(frame_timer);
+    drop(instance); // the lock is released last
     result
 }
 
-/// One winit filter: physical keys, IME text and the wheel go to the live shell.
-fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHost>>) {
+/// The size (logical) and position (physical) the window opens with.
+fn apply_initial(app: &AppWindow, init: &InitialWindow) {
+    let window = app.window();
+    window.set_size(slint::LogicalSize::new(
+        init.logical_size.0 as f32,
+        init.logical_size.1 as f32,
+    ));
+    if let Some((x, y)) = init.pos {
+        window.set_position(slint::PhysicalPosition::new(x, y));
+    }
+}
+
+struct FilterState {
+    ctl: std::rc::Weak<RefCell<AppCtl>>,
+    front: FrontCell,
+    host: Rc<RefCell<GridHost>>,
+    initial: Option<InitialWindow>,
+}
+
+/// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
+/// the window's own movements are reported to it. Physical keys, IME text and the wheel reach the
+/// FRONT shell; a chord never does (the controller consumes it first).
+fn install_window_filter(app: &AppWindow, st: FilterState) {
+    let FilterState {
+        ctl,
+        front,
+        host,
+        initial,
+    } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
     let accum = RefCell::new(WheelAccum::new());
+    // Codes whose press the app consumed: their release must not reach the shell either.
+    let consumed: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    let reapply = Cell::new(initial.filter(|i| !i.maximise));
     let weak = app.as_weak();
-    app.window().on_winit_window_event(move |_window, event| {
+
+    // While the pointer is OUTSIDE the window and the sidebar is collapsed, the cursor is read from
+    // the system every 50 ms so the reveal zone just outside the edge still works.
+    let edge_timer = Rc::new(slint::Timer::default());
+    let edge = Rc::new(RefCell::new(EdgeWatch::new(
+        Box::new({
+            let weak = weak.clone();
+            move || {
+                let app = weak.upgrade()?;
+                let w = app.window();
+                let scale = f64::from(w.scale_factor()).max(0.01);
+                let (p, s) = (w.position(), w.size());
+                Some(RectF {
+                    x: f64::from(p.x) / scale,
+                    y: f64::from(p.y) / scale,
+                    width: f64::from(s.width) / scale,
+                    height: f64::from(s.height) / scale,
+                })
+            }
+        }),
+        Box::new({
+            let weak = weak.clone();
+            move || {
+                let scale = weak
+                    .upgrade()
+                    .map_or(1.0, |a| f64::from(a.window().scale_factor()))
+                    .max(0.01);
+                real_cursor_phys().map_or(
+                    PointF {
+                        x: -1.0e6,
+                        y: -1.0e6,
+                    },
+                    |(x, y)| PointF {
+                        x: f64::from(x) / scale,
+                        y: f64::from(y) / scale,
+                    },
+                )
+            }
+        }),
+        Box::new({
+            let ctl = ctl.clone();
+            move |near: EdgeNear| {
+                let Some(rc) = ctl.upgrade() else { return };
+                let Ok(mut c) = rc.try_borrow_mut() else {
+                    return;
+                };
+                if near.x == FAR.x && near.y == FAR.y {
+                    c.on_cursor_left();
+                } else {
+                    c.on_cursor(near.x as f32, near.y as f32);
+                }
+            }
+        }),
+    )));
+
+    app.window().on_winit_window_event(move |window, event| {
+        let with_ctl = |f: &mut dyn FnMut(&mut AppCtl)| {
+            if let Some(rc) = ctl.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                f(&mut c);
+            }
+        };
+        let scale = f64::from(window.scale_factor()).max(0.01);
         match event {
             WindowEvent::ModifiersChanged(m) => {
                 mods.set(m.state());
                 EventResult::Propagate
             }
+            WindowEvent::CursorEntered { .. } => {
+                edge_timer.stop();
+                edge.borrow_mut().set(false);
+                EventResult::Propagate
+            }
+            WindowEvent::CursorLeft { .. } => {
+                with_ctl(&mut |c| c.on_cursor_left());
+                if weak.upgrade().is_some_and(|a| a.get_sidebar_collapsed()) {
+                    edge.borrow_mut().set(true);
+                    let edge = edge.clone();
+                    edge_timer.start(
+                        slint::TimerMode::Repeated,
+                        Duration::from_millis(flare_win::edge_watch::EDGE_EVERY_MS),
+                        move || edge.borrow_mut().tick(),
+                    );
+                }
+                EventResult::Propagate
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 cursor.set((position.x, position.y));
+                let (x, y) = ((position.x / scale) as f32, (position.y / scale) as f32);
+                with_ctl(&mut |c| c.on_cursor(x, y));
+                EventResult::Propagate
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => {
+                with_ctl(&mut |c| c.on_pointer_down());
+                EventResult::Propagate
+            }
+            WindowEvent::HoveredFile(_) => {
+                with_ctl(&mut |c| c.on_hovered_file());
+                EventResult::Propagate
+            }
+            WindowEvent::HoveredFileCancelled => {
+                with_ctl(&mut |c| c.on_hovered_file_cancelled());
+                EventResult::Propagate
+            }
+            WindowEvent::DroppedFile(path) => {
+                // File drags send no CursorMoved: read where the pointer is now.
+                let at = real_cursor_phys()
+                    .map(|(x, y)| {
+                        let p = window.position();
+                        (f64::from(x - p.x) / scale, f64::from(y - p.y) / scale)
+                    })
+                    .unwrap_or_else(|| (cursor.get().0 / scale, cursor.get().1 / scale));
+                let path: PathBuf = path.clone();
+                with_ctl(&mut |c| c.on_dropped_path(path.clone(), (at.0 as f32, at.1 as f32)));
+                EventResult::Propagate
+            }
+            WindowEvent::Focused(false) => {
+                with_ctl(&mut |c| c.on_focus_lost());
+                EventResult::Propagate
+            }
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                let o = observe(window);
+                with_ctl(&mut |c| c.on_geometry(o));
+                EventResult::Propagate
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // The saved scale may differ from the monitor the window opened on: set the
+                // saved logical size and physical position once more at the real scale.
+                if let Some(init) = reapply.take() {
+                    window.set_size(slint::LogicalSize::new(
+                        init.logical_size.0 as f32,
+                        init.logical_size.1 as f32,
+                    ));
+                    if let Some((x, y)) = init.pos {
+                        window.set_position(slint::PhysicalPosition::new(x, y));
+                    }
+                }
+                let o = observe(window);
+                with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate
             }
             WindowEvent::KeyboardInput {
@@ -306,6 +902,32 @@ fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHo
                 if reserved_for_slint(&ev.code) {
                     return EventResult::Propagate;
                 }
+                let chrome_focus = weak.upgrade().is_some_and(|a| a.get_chrome_has_focus());
+                let outcome = if ev.pressed {
+                    let mut out = KeyOutcome::Slint;
+                    with_ctl(&mut |c| out = c.on_key(&ev));
+                    if out == KeyOutcome::Consumed {
+                        consumed.borrow_mut().insert(ev.code.clone());
+                    }
+                    out
+                } else {
+                    with_ctl(&mut |c| c.on_key_up(&ev));
+                    if consumed.borrow_mut().remove(&ev.code) {
+                        KeyOutcome::Consumed
+                    } else if chrome_focus {
+                        KeyOutcome::Slint
+                    } else {
+                        KeyOutcome::Pty
+                    }
+                };
+                let (action, to_pty) = key_outcome_to_filter(outcome);
+                if !to_pty {
+                    return to_event_result(action);
+                }
+                let Some(handle) = front.borrow().clone() else {
+                    // Nothing to type into (Settings, the start screen): swallow the key.
+                    return EventResult::PreventDefault;
+                };
                 let mut no_delete = || false;
                 let mut state = KeyState {
                     has_selection: false,
@@ -315,7 +937,7 @@ fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHo
                 };
                 match term_key_action(&ev, &mut state) {
                     TermKeyAction::Pty => {
-                        live.handle.send_key(&ev);
+                        handle.send_key(&ev);
                         EventResult::PreventDefault
                     }
                     // The clipboard path is M5.
@@ -324,18 +946,35 @@ fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHo
                 }
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
-                live.handle.send_text(s);
-                EventResult::PreventDefault
+                if weak.upgrade().is_some_and(|a| a.get_chrome_has_focus()) {
+                    return EventResult::Propagate;
+                }
+                match front.borrow().as_ref() {
+                    Some(handle) => {
+                        handle.send_text(s);
+                        EventResult::PreventDefault
+                    }
+                    None => EventResult::Propagate,
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let Some(app) = weak.upgrade() else {
                     return EventResult::Propagate;
                 };
-                let scale = app.get_scale();
+                let Some(handle) = front.borrow().clone() else {
+                    return EventResult::Propagate;
+                };
+                let scale_f = app.get_scale();
                 let (x, y) = cursor.get();
-                if y < (36.0 * f64::from(scale)).round() {
+                if y < (BAR_CSS * f64::from(scale_f)).round() || app.get_chrome_has_focus() {
                     return EventResult::Propagate;
                 }
+                // The grid starts right of an open sidebar.
+                let grid_x = if app.get_layout_vertical() && !app.get_sidebar_collapsed() {
+                    f64::from(app.get_sidebar_width()) * f64::from(scale_f)
+                } else {
+                    0.0
+                };
                 let (m, (cols, rows)) = {
                     let h = host.borrow();
                     (h.metrics(), h.dims())
@@ -345,8 +984,8 @@ fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHo
                     MouseScrollDelta::PixelDelta(p) => accum.borrow_mut().add(p.y, m.cell_h),
                 };
                 if notches != 0 {
-                    let (col, row) = cell_at(x, y, scale, &m, cols, rows);
-                    live.handle.wheel(notches, col, row);
+                    let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
+                    handle.wheel(notches, col, row);
                 }
                 EventResult::PreventDefault
             }
@@ -358,6 +997,9 @@ fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flare_win::window_state::parse_window_state;
+
+    const NO_AREAS: &[Area] = &[];
 
     #[test]
     fn overlay_names_the_fallback() {
@@ -391,5 +1033,89 @@ mod tests {
     fn overlay_names_gpu() {
         let text = overlay_text(RendererChoice::Gpu, None, GridPainter::Gpu, "x", "y");
         assert!(text.starts_with("renderer: GPU (femtovg-wgpu)\ngrid: wgpu\n"));
+    }
+
+    #[test]
+    fn the_initial_window_uses_the_saved_state() {
+        let state = WindowState {
+            width: 1400,
+            height: 900,
+            x: Some(100),
+            y: Some(51),
+            maximised: true,
+            scale: 1.5,
+        };
+        let init = initial_window(&state, NO_AREAS);
+        assert_eq!(init.pos, Some((100, 51)));
+        assert_eq!(init.logical_size, (1400, 900));
+        assert!(init.maximise);
+    }
+
+    #[test]
+    fn the_initial_window_is_never_below_the_minimum() {
+        let areas = [Area {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        }];
+        let state = parse_window_state(
+            r#"{"width":10,"height":10,"x":0,"y":0,"maximised":false}"#,
+            &areas,
+        );
+        assert_eq!(initial_window(&state, &areas).logical_size, (560, 400));
+        // A state that did not come through the parser is held to the floor as well.
+        let raw = WindowState {
+            width: 10,
+            height: 10,
+            x: None,
+            y: None,
+            maximised: false,
+            scale: 1.0,
+        };
+        assert_eq!(initial_window(&raw, NO_AREAS).logical_size, (560, 400));
+    }
+
+    #[test]
+    fn a_position_off_every_monitor_is_dropped() {
+        let areas = [Area {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        }];
+        let state = WindowState {
+            width: 800,
+            height: 600,
+            x: Some(5000),
+            y: Some(5000),
+            maximised: false,
+            scale: 1.0,
+        };
+        assert_eq!(initial_window(&state, &areas).pos, None);
+    }
+
+    #[test]
+    fn e2e_style_is_no_activate_tool_window_and_not_app_window() {
+        let style = e2e_ex_style(WS_EX_APPWINDOW);
+        assert_ne!(style & WS_EX_NOACTIVATE, 0);
+        assert_ne!(style & WS_EX_TOOLWINDOW, 0);
+        assert_eq!(style & WS_EX_APPWINDOW, 0);
+    }
+
+    #[test]
+    fn outcomes_map_to_filter_actions() {
+        assert_eq!(
+            key_outcome_to_filter(KeyOutcome::Consumed),
+            (FilterAction::PreventDefault, false)
+        );
+        assert_eq!(
+            key_outcome_to_filter(KeyOutcome::Pty),
+            (FilterAction::PreventDefault, true)
+        );
+        assert_eq!(
+            key_outcome_to_filter(KeyOutcome::Slint),
+            (FilterAction::Propagate, false)
+        );
     }
 }

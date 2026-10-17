@@ -54,7 +54,7 @@ pub fn key_event_from_parts(
     }
 }
 
-/// Keys Slint keeps for itself until M3's keymap exists: F12 (the debug overlay).
+/// Keys Slint keeps for itself: F12 (the debug overlay). Every chord is `AppCtl`'s.
 pub fn reserved_for_slint(code: &str) -> bool {
     code == "F12"
 }
