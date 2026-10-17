@@ -4,16 +4,14 @@
 import { TabRow, StripGeom } from "types.slint";
 import { Theme, Px } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
+import { MarkMotion, MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
 
-// The ring of a tab coming back: a 9 px circle, 1.5 px line at 22% ink, with a quarter
-// of accent turning once a second. It exists only while loading, so nothing animates at rest.
-component LoadingRing inherits Rectangle {
-    property <angle> turn: 360deg;
-    animate turn {
-        duration: 1s;
-        iteration-count: -1;
-        easing: linear;
-    }
+// The ring of a tab coming back: a 9 px circle, 1.5 px line at 22% ink, with a quarter of accent turning
+// once a second. It exists only while loading, so nothing animates at rest. The turn is the window's one
+// mark clock (MarkMotion.spin); under MarkMotion.still two quarters stand.
+export component LoadingRing inherits Rectangle {
+    property <angle> arc-from: MarkMotion.still ? -135deg : MarkMotion.spin - 135deg;
+    property <angle> arc-to: MarkMotion.still ? 44.9deg : MarkMotion.spin - 45deg;
     Path {
         x: (parent.width - 9px) / 2;
         y: (parent.height - 9px) / 2;
@@ -33,8 +31,8 @@ component LoadingRing inherits Rectangle {
         height: 9px;
         viewbox-width: 9;
         viewbox-height: 9;
-        commands: "M" + (4.5 + 3.75 * cos(root.turn - 90deg)) + " " + (4.5 + 3.75 * sin(root.turn - 90deg))
-            + "A3.75 3.75 0 0 1 " + (4.5 + 3.75 * cos(root.turn)) + " " + (4.5 + 3.75 * sin(root.turn));
+        commands: "M" + (4.5 + 3.75 * cos(root.arc-from)) + " " + (4.5 + 3.75 * sin(root.arc-from))
+            + "A3.75 3.75 0 0 1 " + (4.5 + 3.75 * cos(root.arc-to)) + " " + (4.5 + 3.75 * sin(root.arc-to));
         fill: transparent;
         stroke: Theme.accent-solid;
         stroke-width: 1.5px;
@@ -49,17 +47,21 @@ export component TabEnd inherits Rectangle {
     in property <length> glyph: 10px;
     in property <bool> shown: true;
     in property <bool> loading: false;
+    // A mark ring at the end (1 working .. 4 failed), in the name's ink; 0 none.
+    in property <int> mark-state: 0;
+    in property <color> ink;
     in property <bool> row-hover: false;
     out property <bool> hovered: xta.has-hover;
     callback closed();
     callback menu(length, length);
 
-    property <length> xw: root.loading ? ((root.row-hover || xta.has-hover) ? root.box : 0px) : root.box;
+    property <bool> has-ring: root.loading || root.mark-state != 0;
+    property <length> xw: root.has-ring ? ((root.row-hover || xta.has-hover) ? root.box : 0px) : root.box;
     animate xw {
         duration: 150ms;
         easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
-    width: root.loading ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.xw : root.box;
+    width: root.has-ring ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.xw : root.box;
     height: root.box;
 
     if root.loading : LoadingRing {
@@ -68,9 +70,15 @@ export component TabEnd inherits Rectangle {
         width: root.box;
         height: root.box;
     }
+    if !root.loading && root.mark-state != 0 : MarkRing {
+        x: Px.snap((root.box - self.width) / 2);
+        y: Px.snap((root.box - self.height) / 2);
+        state: root.mark-state;
+        ink: root.ink;
+    }
 
     Rectangle {
-        x: root.loading ? root.box + 2px : 0px;
+        x: root.has-ring ? root.box + 2px : 0px;
         y: 0px;
         width: root.xw;
         height: root.box;
@@ -173,19 +181,11 @@ export component TabStrip inherits Rectangle {
 
         // Named tab: icon, name, end.
         if row.mode == 0 : Rectangle {
-            Path {
+            AgentIcon {
                 x: 10px;
                 y: (parent.height - 18px) / 2;
-                width: 18px;
-                height: 18px;
-                viewbox-width: 24;
-                viewbox-height: 24;
-                commands: row.settings ? Glyphs.cog : Glyphs.prompt;
-                fill: transparent;
-                stroke: tab.ink;
-                stroke-width: (row.settings ? 1.7 : 2.2) * 18px / 24;
-                stroke-line-cap: round;
-                stroke-line-join: round;
+                kind: row.settings ? 3 : row.agent;
+                ink: tab.ink;
             }
             Text {
                 x: 34px;
@@ -208,6 +208,8 @@ export component TabStrip inherits Rectangle {
             y: (parent.height - self.height) / 2;
             shown: row.active || tab.hov;
             loading: row.loading;
+            mark-state: row.mark-kind == 1 ? row.mark-state : 0;
+            ink: tab.ink;
             row-hover: tab.hov;
             closed => { root.closed(row.id); }
             menu(mx, my) => { root.tab-menu(row.id, mx, my); }
@@ -215,28 +217,37 @@ export component TabStrip inherits Rectangle {
 
         // Icon tab: the icon centred, no X.
         if row.mode == 1 : Rectangle {
-            Path {
+            AgentIcon {
                 x: (parent.width - 18px) / 2;
                 y: (parent.height - 18px) / 2;
-                width: 18px;
-                height: 18px;
-                viewbox-width: 24;
-                viewbox-height: 24;
-                commands: row.settings ? Glyphs.cog : Glyphs.prompt;
-                fill: transparent;
-                stroke: tab.ink;
-                stroke-width: (row.settings ? 1.7 : 2.2) * 18px / 24;
-                stroke-line-cap: round;
-                stroke-line-join: round;
+                kind: row.settings ? 3 : row.agent;
+                ink: tab.ink;
             }
-            if row.mark-kind != 0 : Rectangle {
+            if row.mark-kind == 1 : Rectangle {
                 x: parent.width - 2px - 15px;
                 y: 3px;
                 width: 15px;
                 height: 15px;
                 border-radius: 7.5px;
                 background: Theme.tabs;
+                MarkRing {
+                    x: Px.snap((parent.width - self.width) / 2);
+                    y: Px.snap((parent.height - self.height) / 2);
+                    state: row.mark-state;
+                    ink: tab.ink;
+                }
             }
+        }
+
+        // The Bar mark along the tab's foot: over the background, under the divider. Pointer-transparent.
+        if row.mark-kind >= 2 : MarkBar {
+            x: 0px;
+            y: parent.height - self.height;
+            width: parent.width;
+            kind: row.mark-kind;
+            state: row.mark-state;
+            colour: row.mark-color;
+            rainbow: row.mark-rainbow;
         }
 
         // The active mark: a snapped bar along the top edge.

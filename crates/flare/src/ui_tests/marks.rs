@@ -4,7 +4,10 @@ use flare_agent::mark_motion::run_bar_x;
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
 
 use crate::ui_harness::{Frame, Harness, SCALES};
-use crate::{MarkMotion, MarkPreview, Theme};
+use crate::{
+    MarkMotion, MarkPreview, MenusPreview, OverflowRow, StripGeom, TabRow, TabSidebarPreview,
+    TabStripPreview, Theme,
+};
 
 const GROUND: [u8; 4] = [23, 23, 23, 255];
 const INK: [u8; 4] = [0xde, 0xda, 0xcf, 255];
@@ -637,6 +640,1018 @@ fn the_still_set_stills_everything() {
         assert_eq!(
             a.rgba, b.rgba,
             "kind {kind} state {state} rainbow {rainbow}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task 25: the marks on the strip, the sidebar and the +N list.
+// ---------------------------------------------------------------------------------------------
+
+const DIM: [u8; 4] = [0x92, 0x90, 0x89, 255];
+const ACCENT: [u8; 4] = [0xfe, 0x8f, 0x34, 255];
+const ACCENT_HI: [u8; 4] = [0xf6, 0xa2, 0x5b, 255];
+
+#[derive(Clone, Copy)]
+struct Tab {
+    mode: i32,
+    active: bool,
+    kind: i32,
+    state: i32,
+    colour: [u8; 4],
+    rainbow: bool,
+    agent: i32,
+    settings: bool,
+    loading: bool,
+}
+
+impl Default for Tab {
+    fn default() -> Self {
+        Self {
+            mode: 0,
+            active: false,
+            kind: 0,
+            state: 0,
+            colour: WORKING,
+            rainbow: false,
+            agent: 0,
+            settings: false,
+            loading: false,
+        }
+    }
+}
+
+fn tab_row(i: usize, t: &Tab) -> TabRow {
+    TabRow {
+        id: format!("t{i}").into(),
+        label: format!("tab {i}").into(),
+        tip: format!("C:\\work\\t{i}").into(),
+        folder: format!("~\\work\\t{i}").into(),
+        active: t.active,
+        loading: t.loading,
+        kept: true,
+        mark_kind: t.kind,
+        mark_color: col(t.colour),
+        mark_state: t.state,
+        mark_rainbow: t.rainbow,
+        agent: t.agent,
+        settings: t.settings,
+        ..TabRow::default()
+    }
+}
+
+macro_rules! set_any_motion {
+    ($h:expr, $m:expr) => {{
+        let m: MotionSet = $m;
+        let g = $h.comp.global::<MarkMotion>();
+        g.set_still(m.still);
+        g.set_spin(m.spin);
+        g.set_breathe(m.breathe);
+        g.set_run(m.run);
+        g.set_flow(m.flow);
+    }};
+}
+
+struct StripRig {
+    h: Harness<TabStripPreview>,
+    /// Each tab's left edge and width in device pixels.
+    xs: Vec<(u32, u32)>,
+    s: f32,
+}
+
+fn strip_with(s: f32, tabs: &[Tab], geom: Option<StripGeom>) -> StripRig {
+    let mut x = 0u32;
+    let mut xs = Vec::new();
+    let mut rows = Vec::new();
+    for (i, t) in tabs.iter().enumerate() {
+        let w = ((if t.mode == 0 { 150.0 } else { 40.0 }) * s).round() as u32;
+        let mut r = tab_row(i, t);
+        r.mode = t.mode;
+        r.x = x as i32;
+        r.w = w as i32;
+        rows.push(r);
+        xs.push((x, w));
+        x += w;
+    }
+    let geom = geom.unwrap_or(StripGeom {
+        more_x: 0,
+        more_w: 0,
+        plus_x: (900.0 * s).round() as i32,
+        plus_w: (40.0 * s).round() as i32,
+        more_count: 0,
+        dots: ModelRc::default(),
+    });
+    let h = Harness::new(s, 1000, 36, move || {
+        let c = TabStripPreview::new().unwrap();
+        c.set_rows(ModelRc::new(VecModel::from(rows)));
+        c.set_geom(geom);
+        c.set_new_tab_title("New tab".into());
+        c
+    });
+    set_any_motion!(h, MotionSet::default());
+    StripRig { h, xs, s }
+}
+
+fn strip(s: f32, tabs: &[Tab]) -> StripRig {
+    strip_with(s, tabs, None)
+}
+
+fn hair(s: f32) -> u32 {
+    s.floor().max(1.0) as u32
+}
+
+/// The strip's own height in device pixels (the window is one hairline taller).
+fn strip_h(f: &Frame, s: f32) -> u32 {
+    f.h - hair(s)
+}
+
+fn strip_cy(s: f32) -> f32 {
+    (36.0 * s - hair(s) as f32) / 2.0
+}
+
+fn is_ground(p: [u8; 4]) -> bool {
+    Frame::near(p, GROUND, 1)
+}
+
+fn is_bright(p: [u8; 4]) -> bool {
+    (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3 > 90
+}
+
+fn dv(s: f32, css: f32) -> u32 {
+    (css * s).round() as u32
+}
+
+/// The box of tab `i`'s end (the ring or the X), widened, clear of the top rule and the bar.
+fn end_region(r: &StripRig, i: usize) -> (u32, u32, u32, u32) {
+    let (x, w) = r.xs[i];
+    let s = r.s;
+    (
+        ((x + w) as f32 - 10.0 * s - 16.0 * s - 2.0) as u32,
+        (4.0 * s) as u32,
+        ((x + w) as f32 - 10.0 * s + 2.0) as u32,
+        (30.0 * s) as u32,
+    )
+}
+
+fn mark_bbox(r: &StripRig, f: &Frame, i: usize) -> Option<(u32, u32, u32, u32)> {
+    let b = end_region(r, i);
+    f.bbox_where(b.0, b.1, b.2, b.3, |p| !is_ground(p))
+}
+
+fn centre_x_of(r: &StripRig, i: usize) -> f32 {
+    let (x, w) = r.xs[i];
+    (x + w) as f32 - 18.0 * r.s
+}
+
+fn count_near(f: &Frame, b: (u32, u32, u32, u32), want: [u8; 4], tol: u8) -> usize {
+    f.count_where(b.0, b.1, b.2, b.3, |p| Frame::near(p, want, tol))
+}
+
+/// The bar band rows of the strip: [top, bottom).
+fn band_rows(f: &Frame, s: f32) -> (u32, u32) {
+    let bottom = strip_h(f, s);
+    (bottom - bar_rows(s), bottom)
+}
+
+#[test]
+fn ring_sits_in_the_close_buttons_place_and_the_x_slides_in_after_it() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let r = strip(
+            s,
+            &[
+                Tab {
+                    active: true,
+                    ..Tab::default()
+                },
+                Tab {
+                    kind: 1,
+                    state: 1,
+                    ..Tab::default()
+                },
+            ],
+        );
+        let f = r.h.render();
+        let bb = mark_bbox(&r, &f, 1).expect("the spinner shows");
+        let (cx, cy) = centre_of(bb);
+        assert!(
+            (cx - centre_x_of(&r, 1)).abs() <= 1.5,
+            "cx {cx} want {} at {s}",
+            centre_x_of(&r, 1)
+        );
+        assert!((cy - strip_cy(s)).abs() <= 1.5, "cy {cy} at {s}");
+
+        let (x, w) = r.xs[1];
+        let label = |f: &Frame| {
+            f.bbox_where(
+                x + (30.0 * s) as u32,
+                (4.0 * s) as u32,
+                x + (104.0 * s) as u32,
+                (30.0 * s) as u32,
+                is_bright,
+            )
+            .expect("the label shows")
+        };
+        let before = label(&f);
+
+        r.h.move_to((x + w / 2) as f32 / s, 18.0);
+        r.h.advance(200);
+        let g = r.h.render();
+        // The ring moved left by the X's width and the gap; the X is where the ring was.
+        let end_right = (x + w) as f32 - 10.0 * s;
+        let rb = g
+            .bbox_where(
+                (end_right - 34.0 * s - 2.0) as u32,
+                (4.0 * s) as u32,
+                (end_right - 18.0 * s) as u32,
+                (30.0 * s) as u32,
+                |p| !is_ground(p),
+            )
+            .expect("the ring is still there");
+        let (rcx, _) = centre_of(rb);
+        assert!(
+            (rcx - (end_right - 34.0 * s + 8.0 * s)).abs() <= 2.0,
+            "ring cx {rcx} at {s}"
+        );
+        let x_px = g.count_where(
+            (end_right - 16.0 * s) as u32,
+            (4.0 * s) as u32,
+            end_right as u32,
+            (30.0 * s) as u32,
+            is_bright,
+        );
+        assert!(x_px > 0, "X glyph pixels appear right of the ring at {s}");
+        let after = label(&g);
+        let shift = (centre_of(before).0 - centre_of(after).0).abs();
+        assert!(
+            (7.0 * s..=11.0 * s).contains(&shift),
+            "the name box shrank by the X: shift {shift} at {s}"
+        );
+    }
+}
+
+#[test]
+fn an_idle_tab_shows_neither_ring_nor_x() {
+    for s in [1.0f32, 2.0] {
+        let r = strip(
+            s,
+            &[
+                Tab {
+                    active: true,
+                    ..Tab::default()
+                },
+                Tab::default(),
+            ],
+        );
+        let f = r.h.render();
+        assert!(mark_bbox(&r, &f, 1).is_none(), "nothing at the end at {s}");
+    }
+}
+
+#[test]
+fn a_background_tab_with_a_finished_ring_shows_the_check_in_the_names_ink() {
+    for s in [1.0f32, 2.25] {
+        let both = Tab {
+            kind: 1,
+            state: 3,
+            colour: FINISHED,
+            ..Tab::default()
+        };
+        let r = strip(
+            s,
+            &[
+                Tab {
+                    active: true,
+                    ..both
+                },
+                both,
+            ],
+        );
+        let f = r.h.render();
+        let brightest = |i: usize| {
+            let b = end_region(&r, i);
+            let sum = |p: [u8; 4]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+            let mut best = [0u8; 4];
+            for y in b.1..b.3 {
+                for x in b.0..b.2 {
+                    let p = f.px(x, y);
+                    if sum(p) > sum(best) {
+                        best = p;
+                    }
+                }
+            }
+            best
+        };
+        assert!(
+            Frame::near(brightest(0), INK, 24),
+            "active check is Theme.text at {s}: {:?}",
+            brightest(0)
+        );
+        assert!(
+            Frame::near(brightest(1), DIM, 24),
+            "background check is Theme.dim at {s}: {:?}",
+            brightest(1)
+        );
+        assert_eq!(
+            count_near(&f, end_region(&r, 1), FINISHED, 20),
+            0,
+            "the check never wears the palette at {s}"
+        );
+    }
+}
+
+#[test]
+fn the_bar_sits_along_the_foot_of_each_marked_tab() {
+    let s = 1.5;
+    let run = Tab {
+        kind: 3,
+        state: 1,
+        ..Tab::default()
+    };
+    let r = strip(
+        s,
+        &[
+            run,
+            run,
+            run,
+            Tab {
+                kind: 2,
+                state: 3,
+                colour: FINISHED,
+                ..Tab::default()
+            },
+            Tab::default(),
+        ],
+    );
+    let f = r.h.render();
+    let (top, bottom) = band_rows(&f, s);
+    let h = hair(s);
+    for i in 0..3 {
+        let (x, w) = r.xs[i];
+        assert!(
+            count_near(&f, (x, top, x + w - h, bottom), WORKING, 2) > 0,
+            "run bar {i} at its foot"
+        );
+        assert_eq!(
+            count_near(&f, (x, 0, x + w - h, top), WORKING, 8),
+            0,
+            "run bar {i} stays in its band"
+        );
+    }
+    let (x, w) = r.xs[3];
+    assert_eq!(
+        f.run_len_h(bottom - 1, x, |p| p == FINISHED),
+        w - h,
+        "the finished line spans the tab"
+    );
+    let (x, w) = r.xs[4];
+    assert_eq!(
+        f.count_where(x, top, x + w - h, bottom, |p| !is_ground(p)),
+        0,
+        "the idle tab has no band"
+    );
+}
+
+#[test]
+fn the_divider_draws_over_the_bar() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let r = strip(
+            s,
+            &[Tab {
+                kind: 2,
+                state: 3,
+                colour: FINISHED,
+                ..Tab::default()
+            }],
+        );
+        let f = r.h.render();
+        let (_, bottom) = band_rows(&f, s);
+        let (x, w) = r.xs[0];
+        let over = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * 18.0 / 255.0).round() as u8;
+        let want = [over(FINISHED[0]), over(FINISHED[1]), over(FINISHED[2]), 255];
+        let last = f.px(x + w - 1, bottom - 1);
+        assert!(
+            Frame::near(last, want, 3),
+            "divider over bar {last:?} at {s}"
+        );
+        assert!(!Frame::near(last, FINISHED, 1), "not the bar colour at {s}");
+        let before = f.px(x + w - hair(s) - 1, bottom - 1);
+        assert!(
+            Frame::near(before, FINISHED, 1),
+            "bar up to the divider at {s}"
+        );
+    }
+}
+
+#[test]
+fn the_active_tabs_top_rule_and_the_bar_coexist() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let r = strip(
+            s,
+            &[Tab {
+                active: true,
+                kind: 2,
+                state: 2,
+                colour: QUESTION,
+                ..Tab::default()
+            }],
+        );
+        let f = r.h.render();
+        let xm = r.xs[0].1 / 2;
+        assert_eq!(
+            f.run_len_v(xm, 0, |p| Frame::near(p, ACCENT_HI, 2)),
+            (2.0 * s).round() as u32,
+            "the top rule at {s}"
+        );
+        let (top, bottom) = band_rows(&f, s);
+        for y in top..bottom {
+            assert!(
+                Frame::near(f.px(xm, y), QUESTION, 2),
+                "the bottom line at row {y} at {s}"
+            );
+        }
+    }
+}
+
+/// A bounding box of the matching pixels within a circle.
+fn bbox_in_circle(
+    f: &Frame,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    pred: impl Fn([u8; 4]) -> bool,
+) -> Option<(u32, u32, u32, u32)> {
+    let mut out: Option<(u32, u32, u32, u32)> = None;
+    for y in (cy - r).floor().max(0.0) as u32..((cy + r).ceil() as u32).min(f.h) {
+        for x in (cx - r).floor().max(0.0) as u32..((cx + r).ceil() as u32).min(f.w) {
+            let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+            if dx * dx + dy * dy <= r * r && pred(f.px(x, y)) {
+                out = Some(match out {
+                    None => (x, y, x, y),
+                    Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x), d.max(y)),
+                });
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn an_icon_tab_has_the_bar_and_the_corner_disc() {
+    const BG: [u8; 4] = [0x30, 0x30, 0x30, 255];
+    for s in [1.0f32, 1.5, 2.25] {
+        // Ring: the 15 px disc (Theme.tabs) with the spinner centred in it.
+        let r = strip(
+            s,
+            &[Tab {
+                mode: 1,
+                active: true,
+                kind: 1,
+                state: 1,
+                ..Tab::default()
+            }],
+        );
+        r.h.comp
+            .global::<Theme>()
+            .set_tab_active(Color::from_rgb_u8(0x30, 0x30, 0x30));
+        let f = r.h.render();
+        let w = r.xs[0].1 as f32;
+        let (dcx, dcy) = (w - (2.0 + 7.5) * s, 10.5 * s);
+        let disc = bbox_in_circle(&f, dcx, dcy, 8.5 * s, |p| Frame::near(p, GROUND, 2))
+            .expect("the disc shows");
+        assert!(
+            ((disc.2 - disc.0 + 1) as f32 - 15.0 * s).abs() <= 2.0,
+            "the disc is 15 css px at {s}: {disc:?}"
+        );
+        // The spinner is found inside the disc proper, clear of its anti-aliased rim.
+        let (mx, my) = centre_of(disc);
+        let spin = bbox_in_circle(&f, mx, my, 6.9 * s, |p| {
+            !Frame::near(p, GROUND, 6) && !Frame::near(p, BG, 6)
+        })
+        .expect("the spinner shows in the disc");
+        assert!(
+            ((spin.2 - spin.0 + 1) as f32 - 12.0 * s).abs() <= 1.0,
+            "the spinner is 12 css px at {s}: {spin:?}"
+        );
+        let (cx, cy) = centre_of(spin);
+        assert!((cx - mx).abs() <= 1.5, "spinner cx {cx} want {mx} at {s}");
+        assert!((cy - my).abs() <= 1.5, "spinner cy {cy} want {my} at {s}");
+
+        // Bar: no disc, the line across the foot.
+        let r = strip(
+            s,
+            &[Tab {
+                mode: 1,
+                active: true,
+                kind: 2,
+                state: 3,
+                colour: FINISHED,
+                ..Tab::default()
+            }],
+        );
+        r.h.comp
+            .global::<Theme>()
+            .set_tab_active(Color::from_rgb_u8(0x30, 0x30, 0x30));
+        let f = r.h.render();
+        assert!(
+            bbox_in_circle(&f, dcx, dcy, 8.5 * s, |p| Frame::near(p, GROUND, 2)).is_none(),
+            "no disc under the Bar indicator at {s}"
+        );
+        let (_, bottom) = band_rows(&f, s);
+        assert_eq!(
+            f.run_len_h(bottom - 1, 0, |p| p == FINISHED),
+            r.xs[0].1 - hair(s),
+            "the line crosses the icon tab at {s}"
+        );
+    }
+}
+
+// The sidebar -------------------------------------------------------------------------------
+
+fn side(s: f32, tabs: &[Tab]) -> Harness<TabSidebarPreview> {
+    let rows: Vec<TabRow> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| tab_row(i, t))
+        .collect();
+    let h = Harness::new(s, 700, 500, move || {
+        let c = TabSidebarPreview::new().unwrap();
+        c.set_rows(ModelRc::new(VecModel::from(rows)));
+        c
+    });
+    set_any_motion!(h, MotionSet::default());
+    h.advance(0);
+    h
+}
+
+#[test]
+fn the_sidebar_row_has_the_bar_clipped_by_its_corners_and_the_ring_at_its_end() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let h = side(
+            s,
+            &[
+                Tab {
+                    kind: 3,
+                    state: 1,
+                    ..Tab::default()
+                },
+                Tab {
+                    kind: 1,
+                    state: 3,
+                    colour: FINISHED,
+                    ..Tab::default()
+                },
+            ],
+        );
+        // Still, the run is a full line: its ends meet the card's corners.
+        set_any_motion!(
+            h,
+            MotionSet {
+                still: true,
+                ..MotionSet::default()
+            }
+        );
+        let f = h.render();
+        // Row 0: css y 50..96, x 8..212.
+        let bottom = dv(s, 96.0);
+        let rows = bar_rows(s);
+        let xin = dv(s, 20.0);
+        let inside = f.px(xin, bottom - 1);
+        assert!(
+            Frame::near(inside, WORKING, 3),
+            "bar inside the card {inside:?} at {s}"
+        );
+        let top_of_band = f.px(xin, bottom - rows);
+        assert!(
+            Frame::near(top_of_band, WORKING, 3),
+            "band is {rows} rows at {s}"
+        );
+        let above = f.px(xin, bottom - rows - 1);
+        assert!(
+            !Frame::near(above, WORKING, 20),
+            "band stops at {rows} rows at {s}"
+        );
+        // The corner pixels are exactly what the same card shows without a mark.
+        let bare = side(s, &[Tab::default(), Tab::default()]).render();
+        for x in [dv(s, 8.0), dv(s, 9.0), dv(s, 212.0) - 1, dv(s, 211.0) - 1] {
+            for y in [bottom - 1, bottom - rows] {
+                assert_eq!(
+                    f.px(x, y),
+                    bare.px(x, y),
+                    "no bar pixel outside the rounded corner at ({x}, {y}) at {s}"
+                );
+            }
+        }
+        // And the bar does reach the curve's end.
+        let reach = f.px(dv(s, 8.0) + dv(s, 9.0), bottom - 1);
+        assert!(
+            Frame::near(reach, WORKING, 3),
+            "the bar reaches {reach:?} at {s}"
+        );
+        // Row 1: css y 100..146; the check sits in the end box (css x 186..204).
+        let b = (dv(s, 184.0), dv(s, 102.0), dv(s, 206.0), dv(s, 144.0));
+        let bb = f
+            .bbox_where(b.0, b.1, b.2, b.3, is_bright)
+            .expect("the check shows at the end");
+        let (cx, cy) = centre_of(bb);
+        assert!((cx - 195.0 * s).abs() <= 1.5, "check cx {cx} at {s}");
+        assert!((cy - 123.0 * s).abs() <= 1.5, "check cy {cy} at {s}");
+    }
+}
+
+fn icon_counts(f: &Frame, r: (u32, u32, u32, u32)) -> (usize, usize) {
+    (count_near(f, r, CLAWD, 4), count_near(f, r, INK, 10))
+}
+
+#[test]
+fn the_agent_icon_follows_the_agent() {
+    let tabs = [
+        Tab {
+            agent: 0,
+            ..Tab::default()
+        },
+        Tab {
+            agent: 1,
+            ..Tab::default()
+        },
+        Tab {
+            agent: 2,
+            ..Tab::default()
+        },
+        Tab {
+            settings: true,
+            ..Tab::default()
+        },
+    ];
+    for s in [1.0f32, 1.5, 2.25] {
+        for active in [false, true] {
+            let mut t = tabs;
+            t[1].active = active;
+            let r = strip(s, &t);
+            let f = r.h.render();
+            for i in 0..4 {
+                let (x, _) = r.xs[i];
+                let reg = (x + dv(s, 8.0), dv(s, 4.0), x + dv(s, 30.0), dv(s, 32.0));
+                let (clawd, _) = icon_counts(&f, reg);
+                let any = f.count_where(reg.0, reg.1, reg.2, reg.3, |p| !is_ground(p));
+                assert!(any > 0, "icon {i} shows in the strip at {s}");
+                if i == 1 {
+                    assert!(clawd > 0, "Clawd stays orange (active {active}) at {s}");
+                } else {
+                    assert_eq!(clawd, 0, "icon {i} is not Clawd at {s}");
+                }
+            }
+        }
+        // The sidebar: the icon band, css x 8..54 of each 46 px row.
+        let h = side(s, &tabs);
+        let f = h.render();
+        for i in 0..4usize {
+            let y0 = 50.0 + 50.0 * i as f32;
+            let reg = (dv(s, 20.0), dv(s, y0 + 4.0), dv(s, 42.0), dv(s, y0 + 42.0));
+            let (clawd, ink) = icon_counts(&f, reg);
+            if i == 1 {
+                assert!(clawd > 0, "Clawd in the sidebar at {s}");
+                assert_eq!(ink, 0, "Clawd wears no ink in the sidebar at {s}");
+            } else {
+                assert_eq!(clawd, 0, "icon {i} is not Clawd in the sidebar at {s}");
+                assert!(ink > 0, "icon {i} wears the ink in the sidebar at {s}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_plus_n_dots_wear_the_mark_colours() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let colours = [WORKING, QUESTION, FINISHED, FAILED, WORKING];
+        let geom = StripGeom {
+            more_x: dv(s, 400.0) as i32,
+            more_w: dv(s, 90.0) as i32,
+            plus_x: dv(s, 494.0) as i32,
+            plus_w: dv(s, 40.0) as i32,
+            more_count: 5,
+            dots: ModelRc::new(VecModel::from(
+                colours.iter().map(|c| col(*c)).collect::<Vec<_>>(),
+            )),
+        };
+        let r = strip_with(s, &[Tab::default()], Some(geom));
+        let f = r.h.render();
+        let y = (18.0 * s) as u32;
+        let which = |p: [u8; 4]| {
+            [WORKING, QUESTION, FINISHED, FAILED]
+                .iter()
+                .position(|c| Frame::near(p, *c, 2))
+        };
+        // Runs of dot-coloured pixels along the middle row, in order.
+        let mut runs: Vec<(usize, u32)> = Vec::new();
+        for x in dv(s, 400.0)..dv(s, 490.0) {
+            if let Some(k) = which(f.px(x, y)) {
+                match runs.last_mut() {
+                    Some(last) if last.0 == k && x > 0 && which(f.px(x - 1, y)) == Some(k) => {
+                        last.1 += 1;
+                    }
+                    _ => runs.push((k, 1)),
+                }
+            }
+        }
+        let order: Vec<usize> = runs.iter().map(|r| r.0).collect();
+        assert_eq!(
+            order,
+            vec![0, 1, 2, 3],
+            "four dots, in order, at {s}: {runs:?}"
+        );
+        for (_, len) in &runs {
+            assert!(
+                (3.5 * s..=6.0 * s + 1.0).contains(&(*len as f32)),
+                "a dot is up to 6 css px at {s}: {len}"
+            );
+        }
+    }
+}
+
+// The +N list and the tip -------------------------------------------------------------------
+
+fn list_row(mark_state: i32, agent: i32) -> OverflowRow {
+    OverflowRow {
+        id: "t9".into(),
+        label: "tab nine".into(),
+        folder: "C:\\work".into(),
+        needs: false,
+        loading: false,
+        settings: false,
+        mark_state,
+        mark_color: Color::from_argb_u8(0, 0, 0, 0),
+        agent,
+    }
+}
+
+fn list_harness(s: f32, row: OverflowRow) -> Harness<MenusPreview> {
+    let h = Harness::new(s, 400, 300, || MenusPreview::new().unwrap());
+    h.comp.set_ov_rows(ModelRc::new(VecModel::from(vec![row])));
+    h.comp.set_ov_right(450.0);
+    h.comp.set_ov_bottom(36.0);
+    h.comp.set_ov_open(true);
+    h.advance(0);
+    set_any_motion!(h, MotionSet::default());
+    h
+}
+
+fn diff_bbox(a: &Frame, b: &Frame) -> Option<(u32, u32, u32, u32)> {
+    let mut out: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..a.h {
+        for x in 0..a.w {
+            if a.px(x, y) != b.px(x, y) {
+                out = Some(match out {
+                    None => (x, y, x, y),
+                    Some((p, q, r, t)) => (p.min(x), q.min(y), r.max(x), t.max(y)),
+                });
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_marked_list_row_shows_its_ring_and_icon() {
+    for s in [1.0f32, 1.5, 2.25] {
+        let plain = list_harness(s, list_row(0, 0)).render();
+        let h = list_harness(s, list_row(1, 0));
+        let marked = h.render();
+        let d = diff_bbox(&plain, &marked).expect("the spinner is drawn at the row's end");
+        let (w, hgt) = ((d.2 - d.0 + 1) as f32, (d.3 - d.1 + 1) as f32);
+        assert!(
+            (w - 12.0 * s).abs() <= 2.0 * s.max(1.0),
+            "ring wide {w} at {s}"
+        );
+        assert!(
+            (hgt - 12.0 * s).abs() <= 2.0 * s.max(1.0),
+            "ring high {hgt} at {s}"
+        );
+        let box_x = h.comp.get_ov_box_x() * s;
+        let box_w = h.comp.get_ov_box_w() * s;
+        assert!(
+            d.0 as f32 > box_x + box_w / 2.0,
+            "the ring is at the row's end: {d:?} in box {box_x} + {box_w}"
+        );
+        // Claude's row wears Clawd's orange.
+        let clawd = list_harness(s, list_row(0, 1)).render();
+        assert!(
+            count_near(&clawd, (0, 0, clawd.w, clawd.h), CLAWD, 4) > 0,
+            "the list row shows the agent icon at {s}"
+        );
+        assert_eq!(
+            count_near(&plain, (0, 0, plain.w, plain.h), CLAWD, 4),
+            0,
+            "a shell row shows no Clawd at {s}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_tip_has_two_lines() {
+    // Placement (centred under the tab) is M3's TipHost rule and does not change; this is the box.
+    let one = Harness::new(1.0, 400, 300, || MenusPreview::new().unwrap());
+    one.comp.set_tip_text("C:\\a".into());
+    one.comp.set_tip_visible(true);
+    one.advance(200);
+    let two = Harness::new(1.0, 400, 300, || MenusPreview::new().unwrap());
+    two.comp.set_tip_text("C:\\a\nFailed: rate limit".into());
+    two.comp.set_tip_visible(true);
+    two.advance(200);
+    let grow = two.comp.get_tip_h() - one.comp.get_tip_h();
+    assert!(
+        (10.0..=24.0).contains(&grow),
+        "the box grows by about one line: {} vs {}",
+        two.comp.get_tip_h(),
+        one.comp.get_tip_h()
+    );
+    assert!(two.comp.get_tip_w() >= one.comp.get_tip_w());
+    // Two lines are drawn: two runs of rows holding ink inside the bubble.
+    let f = two.render();
+    let (bx, by) = (20u32, 20u32);
+    let (bw, bh) = (two.comp.get_tip_w() as u32, two.comp.get_tip_h() as u32);
+    let mut lines = 0;
+    let mut prev = false;
+    for y in by + 3..by + bh - 3 {
+        let ink = f.count_where(bx + 6, y, bx + bw - 6, y + 1, is_bright) > 0;
+        if ink && !prev {
+            lines += 1;
+        }
+        prev = ink;
+    }
+    assert_eq!(lines, 2, "two separate text lines");
+}
+
+// The one clock and the empty state ---------------------------------------------------------
+
+fn accent_near(f: &Frame, x: f32, y: f32) -> bool {
+    let (x, y) = (x.round() as i64, y.round() as i64);
+    (-1..=1).any(|dy| {
+        (-1..=1).any(|dx| {
+            let (px, py) = (x + dx, y + dy);
+            px >= 0
+                && py >= 0
+                && (px as u32) < f.w
+                && (py as u32) < f.h
+                && Frame::near(f.px(px as u32, py as u32), ACCENT, 40)
+        })
+    })
+}
+
+#[test]
+fn the_loading_ring_uses_the_one_clock() {
+    let s = 2.25;
+    let r = strip(
+        s,
+        &[
+            Tab {
+                active: true,
+                ..Tab::default()
+            },
+            Tab {
+                loading: true,
+                ..Tab::default()
+            },
+        ],
+    );
+    let cx = centre_x_of(&r, 1);
+    let cy = strip_cy(s);
+    let rad = 3.75 * s;
+    let probe = |m: MotionSet| {
+        set_any_motion!(r.h, m);
+        let f = r.h.render();
+        (
+            accent_near(&f, cx, cy - rad),
+            accent_near(&f, cx + rad, cy),
+            accent_near(&f, cx, cy + rad),
+            accent_near(&f, cx - rad, cy),
+        )
+    };
+    // (top, right, bottom, left)
+    assert_eq!(
+        probe(MotionSet::default()),
+        (true, false, false, false),
+        "spin 0 puts the arc on top"
+    );
+    assert_eq!(
+        probe(MotionSet {
+            spin: 90.0,
+            ..MotionSet::default()
+        }),
+        (false, true, false, false),
+        "spin 90 puts the arc on the right"
+    );
+    assert_eq!(
+        probe(MotionSet {
+            still: true,
+            spin: 200.0,
+            ..MotionSet::default()
+        }),
+        (true, true, false, false),
+        "still gives the two-sided arc"
+    );
+}
+
+#[test]
+fn no_mark_is_drawn_for_an_empty_state() {
+    for s in [1.0f32, 2.0] {
+        let stale = |mode: i32| Tab {
+            mode,
+            state: 3,
+            ..Tab::default()
+        };
+        let clean = |mode: i32| Tab {
+            mode,
+            ..Tab::default()
+        };
+        let shown = |tabs: &[Tab]| {
+            let r = strip(s, tabs);
+            (r.h.render(), r.xs.clone())
+        };
+        let (a, xs) = shown(&[clean(0), stale(0), stale(1)]);
+        let (b, _) = shown(&[clean(0), clean(0), clean(1)]);
+        // A stale state with kind 0 renders exactly what an empty tab renders.
+        assert_eq!(a.rgba, b.rgba, "kind 0 draws nothing at {s}");
+        let (top, bottom) = band_rows(&a, s);
+        let (x, w) = xs[1];
+        assert_eq!(
+            a.count_where(x, top, x + w - hair(s), bottom, |p| !is_ground(p)),
+            0,
+            "no bar at {s}"
+        );
+    }
+}
+
+#[test]
+fn every_mark_works_at_the_eight_scales() {
+    for s in SCALES {
+        let r = strip(
+            s,
+            &[
+                Tab {
+                    active: true,
+                    ..Tab::default()
+                },
+                Tab {
+                    kind: 1,
+                    state: 1,
+                    agent: 1,
+                    ..Tab::default()
+                },
+                Tab {
+                    kind: 2,
+                    state: 3,
+                    colour: FINISHED,
+                    ..Tab::default()
+                },
+            ],
+        );
+        let f = r.h.render();
+        // The ring: 12 css px, centred in the end box.
+        let bb = mark_bbox(&r, &f, 1).expect("the ring shows");
+        let size = 12.0 * s;
+        assert!(
+            ((bb.2 - bb.0 + 1) as f32 - size).abs() <= 1.0,
+            "ring wide at {s}: {bb:?}"
+        );
+        assert!(
+            ((bb.3 - bb.1 + 1) as f32 - size).abs() <= 1.0,
+            "ring high at {s}: {bb:?}"
+        );
+        let (cx, cy) = centre_of(bb);
+        assert!((cx - centre_x_of(&r, 1)).abs() <= 1.5, "ring cx at {s}");
+        assert!((cy - strip_cy(s)).abs() <= 1.5, "ring cy at {s}");
+        // The bar: bar_rows tall along the foot.
+        let (top, bottom) = band_rows(&f, s);
+        let (x, w) = r.xs[2];
+        let xm = x + w / 2;
+        assert_eq!(
+            f.run_len_v(xm, top, |p| p == FINISHED),
+            bottom - top,
+            "bar rows at {s}"
+        );
+        assert!(
+            !Frame::near(f.px(xm, top - 1), FINISHED, 2),
+            "the row above the bar at {s}"
+        );
+        // Clawd: within 18 css px, centred left of the name.
+        let (x1, _) = r.xs[1];
+        let reg = (x1 + dv(s, 8.0), dv(s, 4.0), x1 + dv(s, 30.0), dv(s, 32.0));
+        let cb = f
+            .bbox_where(reg.0, reg.1, reg.2, reg.3, |p| Frame::near(p, CLAWD, 40))
+            .expect("Clawd shows");
+        assert!(
+            ((cb.2 - cb.0 + 1) as f32) <= 18.0 * s + 1.0
+                && ((cb.3 - cb.1 + 1) as f32) <= 18.0 * s + 1.0,
+            "Clawd fits 18 css px at {s}: {cb:?}"
+        );
+        let (ccx, ccy) = centre_of(cb);
+        assert!(
+            (ccx - (x1 as f32 + 19.0 * s)).abs() <= 2.0 * s.max(1.0),
+            "Clawd cx at {s}"
+        );
+        assert!(
+            (ccy - strip_cy(s)).abs() <= 2.0 * s.max(1.0),
+            "Clawd cy at {s}"
         );
     }
 }

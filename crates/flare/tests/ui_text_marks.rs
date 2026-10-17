@@ -34,3 +34,29 @@ fn the_check_and_the_cross_are_the_sixteen_unit_strokes() {
     assert_eq!(glyph(&g, "check"), "M3.2 8.6l3 3 6.6-7.2");
     assert_eq!(glyph(&g, "cross"), "M4 4l8 8M12 4l-8 8");
 }
+
+fn ui_file(name: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("ui")
+        .join(name);
+    fs::read_to_string(p).unwrap_or_else(|e| panic!("read {name}: {e}"))
+}
+
+#[test]
+fn no_private_ring_clock_remains_in_the_tab_files() {
+    for name in ["tabs.slint", "sidebar.slint", "menus.slint"] {
+        let text = ui_file(name);
+        assert!(
+            !text.contains("animate turn"),
+            "{name} still animates its own turn"
+        );
+        assert!(
+            !text.contains("animation-tick"),
+            "{name} still reads its own animation clock"
+        );
+    }
+    assert!(
+        ui_file("tabs.slint").contains("MarkMotion.spin"),
+        "the loading ring reads the one clock"
+    );
+}

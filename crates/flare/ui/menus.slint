@@ -4,6 +4,8 @@ import { MenuRow, OverflowRow } from "types.slint";
 import { Theme, Px } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { Tip } from "tip.slint";
+import { MarkRing, AgentIcon } from "tabmark.slint";
+import { LoadingRing } from "tabs.slint";
 
 component MenuItem inherits Rectangle {
     in property <MenuRow> item;
@@ -195,17 +197,10 @@ component OverflowItem inherits Rectangle {
             spacing: 10px;
             Rectangle {
                 width: 18px;
-                Path {
-                    width: 18px;
-                    height: 18px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: root.item.settings ? Glyphs.cog : Glyphs.prompt;
-                    fill: transparent;
-                    stroke: ta.has-hover ? Theme.text : Theme.text-soft;
-                    stroke-width: (root.item.settings ? 1.7 : 2.2) * 18px / 24;
-                    stroke-line-cap: round;
-                    stroke-line-join: round;
+                AgentIcon {
+                    y: (parent.height - 18px) / 2;
+                    kind: root.item.settings ? 3 : root.item.agent;
+                    ink: ta.has-hover ? Theme.text : Theme.text-soft;
                 }
             }
             HorizontalLayout {
@@ -230,16 +225,15 @@ component OverflowItem inherits Rectangle {
             }
             Rectangle {
                 width: 16px;
-                if root.item.loading: Path {
-                    width: 14px;
-                    height: 14px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    commands: "M12 3a9 9 0 0 1 9 9";
-                    fill: transparent;
-                    stroke: Theme.accent-solid;
-                    stroke-width: 2.4 * 14px / 24;
-                    stroke-line-cap: round;
+                if root.item.loading: LoadingRing {
+                    width: 16px;
+                    height: 16px;
+                }
+                if !root.item.loading && root.item.mark-state != 0: MarkRing {
+                    x: Px.snap((parent.width - self.width) / 2);
+                    y: Px.snap((parent.height - self.height) / 2);
+                    state: root.item.mark-state;
+                    ink: ta.has-hover ? Theme.text : Theme.text-soft;
                 }
             }
         }
