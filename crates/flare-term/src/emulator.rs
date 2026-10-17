@@ -22,6 +22,7 @@ use crate::cells::{
     BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
 use crate::click_caret::MouseTracking;
+use crate::find::{CountJob, FindMatch, FindOpts, Finder, index_of, scroll_to_show};
 use crate::grid_map::snapshot_grid;
 use crate::links::find_links;
 use crate::osc8::is_web_link;
@@ -101,6 +102,22 @@ pub struct Emulator {
     events: Receiver<Event>,
     fg: String,
     bg: String,
+    find_query: String,
+    find_job: Option<CountJob>,
+    find_hits: Vec<FindMatch>,
+    find_active: Option<FindMatch>,
+}
+
+/// What the find bar shows: the counted matches (at most `HIGHLIGHT_LIMIT`), the active match
+/// and its place among the counted (None when it is not one of them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindView {
+    pub matches: Vec<FindMatch>,
+    pub active: Option<FindMatch>,
+    pub count: usize,
+    pub index: Option<usize>,
+    /// True when the count has walked the whole buffer, or no search runs.
+    pub done: bool,
 }
 
 /// alacritty answers DA1 with `ESC[?6c`; xterm.js (and the e2e parity check) say `ESC[?1;2c`.
@@ -131,6 +148,10 @@ impl Emulator {
             events: rx,
             fg: "#dedacf".to_string(),
             bg: "#171717".to_string(),
+            find_query: String::new(),
+            find_job: None,
+            find_hits: Vec::new(),
+            find_active: None,
         }
     }
 
@@ -596,6 +617,170 @@ impl Emulator {
     pub fn sel_clear(&mut self) {
         self.term.selection = None;
     }
+
+    /// Selects one match: a Simple selection over its cells. The end is the last cell's
+    /// boundary plus one, so a match ending at a row's last cell stays on that row.
+    fn select_match(&mut self, m: FindMatch) {
+        let cols = self.cols();
+        if cols == 0 {
+            return;
+        }
+        let last = m.row * cols + m.col + m.size.max(1) - 1;
+        self.sel_apply(SelOut::Set(SelSpec {
+            block: false,
+            start: Anchor {
+                row: m.row,
+                b: m.col,
+            },
+            end: Anchor {
+                row: last / cols,
+                b: last % cols + 1,
+            },
+        }));
+    }
+
+    /// The match a search starts from: the active one, else a zero-size match at the selection's
+    /// start (xterm starts from the terminal's selection).
+    fn find_anchor(&self) -> Option<FindMatch> {
+        if let Some(a) = self.find_active {
+            return Some(a);
+        }
+        let ((row, b), _, _) = self.sel_bounds()?;
+        Some(FindMatch {
+            row,
+            col: b,
+            size: 0,
+        })
+    }
+
+    /// Makes `found` the active match, selects it and says how far to scroll to show it.
+    /// No match clears the active one and leaves the selection as it is.
+    fn find_land(&mut self, found: Option<FindMatch>) -> Option<(FindMatch, Option<i32>)> {
+        let Some(m) = found else {
+            self.find_active = None;
+            return None;
+        };
+        self.find_active = Some(m);
+        self.select_match(m);
+        let scroll = scroll_to_show(m.row, self.viewport_top(), self.view_rows());
+        Some((m, scroll))
+    }
+
+    /// A new query: forgets the counted matches and starts a new count, but keeps the active
+    /// match, so the incremental search that follows starts at it. No scroll, no selection.
+    pub fn find_set(&mut self, query: &str) {
+        if query.is_empty() {
+            self.find_clear();
+            return;
+        }
+        self.find_query = query.to_string();
+        self.find_restart();
+    }
+
+    fn find_restart(&mut self) {
+        self.find_hits.clear();
+        let total = self.total_rows();
+        self.find_job =
+            Finder::new(&self.find_query, FindOpts::default()).map(|f| CountJob::new(f, total));
+    }
+
+    /// Enter (`incremental: false`) and typing (`incremental: true`): the next match after the
+    /// anchor. Returns the match and the scroll the caller applies as `scroll_view(-scroll)`.
+    pub fn find_next(
+        &mut self,
+        query: &str,
+        incremental: bool,
+    ) -> Option<(FindMatch, Option<i32>)> {
+        let f = Finder::new(query, FindOpts::default())?;
+        let prev = self.find_anchor();
+        let cols = self.cols();
+        let found = {
+            let b = TermBuf::all(&self.term);
+            f.next(&b, cols, prev.as_ref(), !incremental)
+        };
+        self.find_land(found)
+    }
+
+    /// Shift+Enter and the up button: the match before the anchor.
+    pub fn find_prev(&mut self, query: &str) -> Option<(FindMatch, Option<i32>)> {
+        let f = Finder::new(query, FindOpts::default())?;
+        let prev = self.find_anchor();
+        let cols = self.cols();
+        let found = {
+            let b = TermBuf::all(&self.term);
+            f.previous(&b, cols, prev.as_ref(), true)
+        };
+        self.find_land(found)
+    }
+
+    /// Runs one slice of the count job. True when the counted matches or the done state changed.
+    pub fn find_step(&mut self, now: &dyn Fn() -> f64) -> bool {
+        let cols = self.cols();
+        let Some(job) = self.find_job.as_mut() else {
+            return false;
+        };
+        let before_hits = self.find_hits.clone();
+        let before_done = job.done();
+        let done = {
+            let b = TermBuf::all(&self.term);
+            job.step(&b, cols, now)
+        };
+        self.find_hits = job.results();
+        self.find_hits != before_hits || done != before_done
+    }
+
+    /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match.
+    pub fn find_refresh(&mut self) {
+        if !self.find_query.is_empty() {
+            self.find_restart();
+        }
+    }
+
+    /// Closing the bar: the highlights and the active match go; the selection stays (D17).
+    pub fn find_clear(&mut self) {
+        self.find_query.clear();
+        self.find_job = None;
+        self.find_hits.clear();
+        self.find_active = None;
+    }
+
+    pub fn find_view(&self) -> FindView {
+        FindView {
+            matches: self.find_hits.clone(),
+            active: self.find_active,
+            count: self.find_hits.len(),
+            index: self.find_active.and_then(|a| index_of(&self.find_hits, &a)),
+            done: self.find_job.as_ref().is_none_or(|j| j.done()),
+        }
+    }
+
+    /// The visible pieces on viewport rows: every counted match, then the active match's.
+    pub fn find_spans(&self) -> (Vec<RowSpan>, Vec<RowSpan>) {
+        let cols = self.cols();
+        let top = self.viewport_top();
+        let rows = self.view_rows();
+        let all = self
+            .find_hits
+            .iter()
+            .flat_map(|m| visible_pieces(*m, cols, top, rows))
+            .collect();
+        let active = self
+            .find_active
+            .map(|m| visible_pieces(m, cols, top, rows))
+            .unwrap_or_default();
+        (all, active)
+    }
+}
+
+/// A match's pieces that fall on the viewport `top..top + rows`, as viewport rows.
+fn visible_pieces(m: FindMatch, cols: usize, top: usize, rows: usize) -> Vec<RowSpan> {
+    m.pieces(cols)
+        .into_iter()
+        .filter_map(|(row, col, width)| {
+            let r = row.checked_sub(top)?;
+            (r < rows).then_some(RowSpan { row: r, col, width })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1020,5 +1205,174 @@ mod tests {
         assert_eq!(env.cell_width(0, 0), 2);
         assert_eq!(env.cell_width(0, 1), 0);
         assert_eq!(env.cell_width(0, 2), 1);
+    }
+
+    /// A clock that moves one unit per read, so a slice holds a handful of rows.
+    fn find_clock() -> impl Fn() -> f64 {
+        let t = std::cell::Cell::new(0.0f64);
+        move || {
+            t.set(t.get() + 1.0);
+            t.get()
+        }
+    }
+
+    /// Runs the count to its end, as the frame pump does.
+    fn count_all(e: &mut Emulator) {
+        let now = find_clock();
+        for _ in 0..100_000 {
+            if e.find_view().done {
+                return;
+            }
+            e.find_step(&now);
+        }
+        panic!("the count never finished");
+    }
+
+    #[test]
+    fn typing_selects_the_first_match_and_keeps_it_while_it_still_matches() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar foo");
+        for q in ["f", "fo", "foo"] {
+            e.find_set(q);
+            let (m, _) = e.find_next(q, true).unwrap();
+            assert_eq!((m.row, m.col), (0, 0));
+        }
+    }
+
+    #[test]
+    fn enter_after_typing_moves_to_the_second() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar foo");
+        e.find_set("foo");
+        e.find_next("foo", true);
+        let (m, _) = e.find_next("foo", false).unwrap();
+        assert_eq!((m.row, m.col), (0, 8));
+    }
+
+    #[test]
+    fn enter_steps_and_wraps() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo foo foo");
+        let got: Vec<usize> = (0..4)
+            .map(|_| e.find_next("foo", false).unwrap().0.col)
+            .collect();
+        assert_eq!(got, vec![0, 4, 8, 0]);
+    }
+
+    #[test]
+    fn previous_steps_back() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo foo foo");
+        e.find_next("foo", false);
+        e.find_next("foo", false);
+        let (m, _) = e.find_prev("foo").unwrap();
+        assert_eq!(m.col, 0);
+    }
+
+    #[test]
+    fn the_match_is_selected() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar foo");
+        e.find_next("foo", false);
+        assert_eq!(e.sel_text(), "foo");
+    }
+
+    #[test]
+    fn a_match_outside_the_view_asks_for_a_scroll_to_the_middle() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"foo\r\n");
+        for _ in 0..40 {
+            e.feed(b"row\r\n");
+        }
+        let top = e.viewport_top();
+        let (m, scroll) = e.find_next("foo", false).unwrap();
+        assert_eq!(m.row, 0);
+        assert_eq!(scroll, crate::find::scroll_to_show(0, top, e.view_rows()));
+        assert!(scroll.unwrap() < 0);
+    }
+
+    #[test]
+    fn a_match_in_view_asks_for_no_scroll() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo");
+        assert_eq!(e.find_next("foo", false).unwrap().1, None);
+    }
+
+    #[test]
+    fn the_count_grows_with_steps_and_caps_at_1000() {
+        let mut e = Emulator::new(20, 3);
+        for _ in 0..3000 {
+            e.feed(b"foo\r\n");
+        }
+        e.find_set("foo");
+        count_all(&mut e);
+        let v = e.find_view();
+        assert_eq!(v.count, 1000);
+        assert!(v.done);
+        // The 1001st match is active; it is not among the counted, so it has no index.
+        for _ in 0..1001 {
+            e.find_next("foo", false);
+        }
+        assert_eq!(e.find_view().index, None);
+    }
+
+    #[test]
+    fn refresh_keeps_the_active_match_and_does_not_scroll() {
+        let mut e = Emulator::new(20, 10);
+        e.feed(b"foo");
+        e.find_set("foo");
+        e.find_next("foo", false);
+        let active = e.find_view().active;
+        e.feed(b"\r\nfoo");
+        e.find_refresh();
+        assert_eq!(e.find_view().active, active);
+        assert_eq!(e.display_offset(), 0);
+        count_all(&mut e);
+        assert_eq!(e.find_view().count, 2);
+    }
+
+    #[test]
+    fn clear_drops_highlights_but_not_the_selection() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        assert!(!e.find_spans().0.is_empty());
+        e.find_clear();
+        assert_eq!(e.find_spans(), (Vec::new(), Vec::new()));
+        assert!(e.has_selection());
+    }
+
+    #[test]
+    fn highlights_cover_the_alternate_screen() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"\x1b[?1049h");
+        e.feed(b"foo");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        assert_eq!(
+            e.find_spans().0,
+            vec![RowSpan {
+                row: 0,
+                col: 0,
+                width: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn an_empty_query_clears() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        e.find_set("");
+        let v = e.find_view();
+        assert!(v.matches.is_empty());
+        assert_eq!(v.active, None);
+        assert_eq!(v.count, 0);
     }
 }
