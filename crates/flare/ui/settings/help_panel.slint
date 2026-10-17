@@ -1,4 +1,790 @@
-// The help panel (M7 Task 39).
-export component HelpPanelPreview inherits Window {}
-export component HelpPanel inherits Rectangle {}
-export global HelpBridge {}
+// The command help panel (M7 Task 39). Prism Terminal v0.55.6 core/renderer/components/HelpPanel.tsx.
+// Rust drives it through HelpBridge: the panel draws what it is handed and reports events back.
+// It shows and copies on request and nothing else (rule 82): the only outward effect is a callback.
+import { Theme, Px, SettingsInk, SettingsFixed } from "../theme.slint";
+import { HelpRowData, HelpChip } from "types.slint";
+
+export global HelpBridge {
+    in-out property <bool> open;
+    in-out property <length> panel-w: 620px;
+    in-out property <string> mono: "Cascadia Mono";
+    in-out property <[HelpRowData]> rows;
+    // Key caps of the rows that are keys to press (parallel to `rows`; empty for the others).
+    // Slint cannot split a string, so Rust hands the caps over already split.
+    in-out property <[[string]]> key-caps;
+    in-out property <[HelpChip]> chips;
+    in-out property <string> query;
+    in-out property <string> count-text;
+    in-out property <string> said;
+    in-out property <bool> empty;
+    in-out property <string> empty-text;
+    in-out property <string> search-label;
+    in-out property <string> placeholder;
+    in-out property <int> active-index;
+    in-out property <bool> still;
+    // The panel width when the grip was pressed: grip-dragged reports the travel since then.
+    in-out property <length> grip-from;
+    callback closed();
+    callback query-edited(string);
+    callback chip-picked(string);
+    callback row-pressed(int);
+    callback row-clicked(int, length);
+    callback copy-clicked(int);
+    // key(name, shift, ctrl): name is Up, Down, PageUp, PageDown, Enter or Escape. A chord is never sent.
+    callback key(string, bool, bool);
+    callback pointer-over-list();
+    callback near-end();
+    // grip-dragged(travel): how far the pointer has moved left since the press (positive grows the panel).
+    callback grip-dragged(length);
+    callback grip-key(string, bool);
+    callback tip(string, length, length, length, length);
+}
+
+// One key cap (kbd): 1 px line, radius 4.
+component KeyCap inherits Rectangle {
+    in property <string> text;
+    in property <length> size: 11px;
+    in property <brush> fill: transparent;
+    in property <length> pad-x: 6px;
+    in property <length> pad-y: 1px;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    border-radius: 4px;
+    background: root.fill;
+    in property <string> face: HelpBridge.mono;
+    width: cap-text.preferred-width + 2 * root.pad-x + 2 * Px.hair();
+    height: cap-text.preferred-height + 2 * root.pad-y + 2 * Px.hair();
+    cap-text := Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.text;
+        font-family: root.face;
+        font-size: root.size;
+        font-weight: 600;
+        color: Theme.text-soft;
+    }
+}
+
+component HelpRow inherits Rectangle {
+    in property <HelpRowData> d;
+    in property <int> index;
+    in property <bool> open;
+    in property <bool> interactive;
+    in property <bool> still;
+    in property <string> mono;
+    in property <[string]> caps;
+    callback pressed();
+    callback clicked(length);
+    callback copy();
+    callback pointed();
+    callback tip(string, length, length, length, length);
+    callback height-is(length);
+    callback became-active(length, length);
+
+    property <length> pad-x: 16px;
+    property <length> gap: 14px;
+    property <length> avail: root.width - 2 * root.pad-x - root.gap;
+    property <length> name-w: root.avail * 0.85 / 2.1;
+    property <length> well-w: root.avail * 1.25 / 2.1;
+    property <length> well-h: 30px;
+    property <bool> in-well;
+    property <bool> on-btn;
+    property <bool> hov: ta.has-hover || root.in-well || root.on-btn;
+    property <bool> risen: root.open;
+    property <bool> act: root.d.active;
+    property <duration> rise-delay: root.still ? 0ms : (root.open ? (min(root.index, 12) * 18 + 120) * 1ms : 220ms);
+    property <duration> rise-time: root.still || !root.open ? 0ms : 300ms;
+    property <float> check-t: root.d.copied ? 1.0 : 0.0;
+
+    height: max(36px, min(name.preferred-height, 32.5px) + 6px);
+    changed height => { root.height-is(self.height); }
+    init => { root.height-is(self.height); }
+    changed act => {
+        if (root.act) {
+            root.became-active(root.absolute-position.y, root.height);
+        }
+    }
+
+    accessible-role: list-item;
+    accessible-label: root.d.name;
+    accessible-description: root.d.danger ? "Careful." : "";
+
+    body := Rectangle {
+        y: root.risen ? 0px : 6px;
+        opacity: root.risen ? 1 : 0;
+        animate y { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
+        animate opacity { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
+        background: root.d.active ? SettingsInk.help-active : (root.hov ? SettingsInk.help-hover : (root.d.striped ? SettingsInk.help-stripe : transparent));
+        animate background { duration: root.still ? 0ms : 120ms; }
+
+        ta := TouchArea {
+            enabled: root.interactive;
+            mouse-cursor: root.d.keys ? MouseCursor.default : MouseCursor.pointer;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.pressed();
+                } else if (e.kind == PointerEventKind.move) {
+                    root.pointed();
+                }
+            }
+            clicked => {
+                if (!root.d.keys) {
+                    root.clicked(Math.sqrt(Math.pow((self.mouse-x - self.pressed-x) / 1px, 2) + Math.pow((self.mouse-y - self.pressed-y) / 1px, 2)) * 1px);
+                }
+            }
+        }
+
+        name := Text {
+            x: root.pad-x;
+            width: root.name-w;
+            height: min(self.preferred-height, 32.5px);
+            y: (root.height - self.height) / 2;
+            text: root.d.name;
+            wrap: word-wrap;
+            overflow: elide;
+            max-lines: 2;
+            vertical-alignment: center;
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            color: Theme.text;
+        }
+
+        if root.d.keys: Rectangle {
+            x: root.pad-x + root.name-w + root.gap;
+            width: root.well-w;
+            height: 20.5px;
+            y: (root.height - self.height) / 2;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 4px;
+                for cap in root.caps: KeyCap {
+                    text: cap;
+                    size: 11px;
+                    pad-x: 6px;
+                    pad-y: 1px;
+                }
+            }
+        }
+
+        if !root.d.keys: well := Rectangle {
+            x: root.pad-x + root.name-w + root.gap;
+            width: root.well-w;
+            height: root.well-h;
+            y: (root.height - self.height) / 2;
+            border-radius: 6px;
+            border-width: Px.hair();
+            border-color: (root.d.active || root.hov) ? Theme.line : transparent;
+            background: SettingsInk.help-well;
+
+            // A press in the well copies nothing: it is for selecting.
+            well-ta := TouchArea {
+                enabled: root.interactive;
+                mouse-cursor: MouseCursor.text;
+                changed has-hover => { root.in-well = self.has-hover; }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.pressed();
+                    } else if (e.kind == PointerEventKind.move) {
+                        root.pointed();
+                    }
+                }
+            }
+
+            property <length> code-x: Px.hair() + 10px;
+            property <length> code-w: btn.x - 6px - self.code-x;
+
+            clipper := Rectangle {
+                x: well.code-x;
+                width: well.code-w;
+                height: parent.height;
+                clip: true;
+                // What is seen: elided with an ellipsis.
+                shown := Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.d.command;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    font-family: root.mono;
+                    font-size: 12.5px;
+                    color: Theme.text;
+                }
+                // What is selected: a read-only field laid exactly over it, its own ink clear, so a drag
+                // selects and only the selected glyphs are drawn.
+                sel := TextInput {
+                    enabled: root.interactive;
+                    // As wide as the text, so the empty rest of the well is the well's own and a press
+                    // there is a plain press, not a selection.
+                    width: min(self.preferred-width + 2px, parent.width);
+                    height: parent.height;
+                    text: root.d.command;
+                    read-only: true;
+                    single-line: true;
+                    wrap: no-wrap;
+                    vertical-alignment: center;
+                    font-family: root.mono;
+                    font-size: 12.5px;
+                    color: transparent;
+                    selection-foreground-color: Theme.text;
+                    selection-background-color: SettingsInk.selection;
+                    accessible-label: root.d.command;
+                }
+            }
+
+            btn := TouchArea {
+                x: parent.width - Px.hair() - 1px - 26px;
+                y: 2px;
+                width: 26px;
+                height: 26px;
+                enabled: root.interactive;
+                mouse-cursor: MouseCursor.pointer;
+                accessible-role: button;
+                accessible-label: "Copy: " + root.d.command;
+                accessible-action-default => { root.copy(); }
+                clicked => { root.copy(); }
+                changed has-hover => {
+                    root.on-btn = self.has-hover;
+                    if (self.has-hover) {
+                        root.tip(root.d.failed ? "Could not copy" : (root.d.copied ? "Copied" : "Copy"), self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                    } else {
+                        root.tip("", 0px, 0px, 0px, 0px);
+                    }
+                }
+                Rectangle {
+                    border-radius: 5px;
+                    background: root.d.failed ? transparent : (root.d.copied ? SettingsFixed.copied-fill : (btn.has-hover ? Theme.hover-hi : transparent));
+                }
+                // The copy icon, and the check it turns into.
+                Path {
+                    x: (parent.width - 15px) / 2;
+                    y: (parent.height - 15px) / 2;
+                    width: 15px;
+                    height: 15px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: "M11 9h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z M5 15V6a2 2 0 0 1 2-2h9";
+                    fill: transparent;
+                    stroke: root.d.failed ? SettingsFixed.copy-failed : ((btn.has-hover) ? Theme.text : Theme.icon);
+                    stroke-width: 1.8 * 15px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                    opacity: root.d.copied ? 0 : 1;
+                    animate opacity { duration: root.still ? 0ms : 200ms; easing: ease-out; }
+                }
+                // The path is revealed left to right over 340 ms, 60 ms after the press.
+                check-clip := Rectangle {
+                    x: (parent.width - 17px) / 2;
+                    y: (parent.height - 17px) / 2;
+                    width: 17px * root.check-t;
+                    height: 17px;
+                    clip: true;
+                    animate width { duration: root.still ? 0ms : (root.d.copied ? 340ms : 0ms); delay: root.still ? 0ms : (root.d.copied ? 60ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                    Path {
+                        x: 0px;
+                        y: 0px;
+                        width: 17px;
+                        height: 17px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: "M5 12.5l4.5 4.5L19 7.5";
+                        fill: transparent;
+                        stroke: SettingsFixed.copied;
+                        stroke-width: 2.4 * 17px / 24;
+                        stroke-line-cap: round;
+                        stroke-line-join: round;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component HelpPanel inherits Rectangle {
+    // Geometry for the previews and the tests, all inside the panel's own container.
+    out property <length> sheet-x: sheet.x;
+    out property <length> sheet-w: sheet.width;
+    out property <length> list-h: flick.height;
+    out property <length> list-y: flick.y;
+    out property <length> header-h: head.height;
+    out property <length> search-h: field.height;
+    out property <length> search-w: input.width;
+    out property <length> chip-h: chip-row.height;
+    in-out property <length> row0-h;
+    out property <length> footer-y: foot.y;
+    in-out property <length> viewport-y <=> flick.content-y;
+
+    // The panel sits flush to the right edge of the container and takes no part in its layout.
+    clip: true;
+    background: transparent;
+
+    property <bool> is-open: HelpBridge.open;
+    property <bool> interactive: HelpBridge.open;
+    property <bool> shown;
+    property <length> w: max(0px, min(HelpBridge.panel-w, root.width - 120px));
+    property <bool> searching: HelpBridge.query != "";
+
+    changed is-open => {
+        if (root.is-open) {
+            hide-timer.running = false;
+            root.shown = true;
+            focus-timer.running = true;
+        } else {
+            hide-timer.interval = HelpBridge.still ? 1ms : 220ms;
+            hide-timer.running = true;
+        }
+    }
+    init => { root.shown = HelpBridge.open; }
+
+    hide-timer := Timer {
+        interval: 220ms;
+        running: false;
+        triggered => {
+            root.shown = false;
+            self.running = false;
+        }
+    }
+    // After the first frame of the slide, so the field is there to focus.
+    focus-timer := Timer {
+        interval: 60ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            input.focus();
+        }
+    }
+
+    sheet := Rectangle {
+        visible: root.shown;
+        width: root.w;
+        height: parent.height;
+        x: HelpBridge.open ? parent.width - self.width : parent.width - self.width + 1.04 * self.width;
+        animate x {
+            duration: HelpBridge.still ? 0ms : (HelpBridge.open ? 460ms : 220ms);
+            easing: HelpBridge.open ? cubic-bezier(0.16, 1, 0.3, 1) : cubic-bezier(0.4, 0, 0.6, 1);
+        }
+        background: Theme.side-flat;
+        drop-shadow-offset-x: -12px;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: SettingsFixed.shadow;
+        accessible-role: groupbox;
+        accessible-label: "Command help";
+
+        // Out, the panel takes no keys and no clicks; open, it handles the list keys itself.
+        keys := FocusScope {
+            enabled: root.interactive;
+            capture-key-pressed(e) => {
+                if (!root.interactive || e.modifiers.control || e.modifiers.alt || e.modifiers.meta) {
+                    return EventResult.reject;
+                }
+                if (e.text == Key.Escape) {
+                    HelpBridge.key("Escape", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                if (e.text == Key.UpArrow) {
+                    HelpBridge.key("Up", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                if (e.text == Key.DownArrow) {
+                    HelpBridge.key("Down", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                if (e.text == Key.PageUp) {
+                    HelpBridge.key("PageUp", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                if (e.text == Key.PageDown) {
+                    HelpBridge.key("PageDown", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                if (e.text == Key.Return) {
+                    HelpBridge.key("Enter", e.modifiers.shift, false);
+                    return EventResult.accept;
+                }
+                return EventResult.reject;
+            }
+
+            // The left edge line.
+            Rectangle {
+                x: 0px;
+                width: Px.hair();
+                background: Theme.divider;
+            }
+
+            col-box := Rectangle {
+              x: Px.hair();
+              width: parent.width - Px.hair();
+              height: parent.height;
+              col := VerticalLayout {
+                spacing: 0px;
+
+                head := Rectangle {
+                    height: 14px + 28px + 10px + 36px + 10px + chip-row.height + 10px;
+                    VerticalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-top: 14px;
+                        padding-bottom: 10px;
+                        spacing: 10px;
+
+                        title-row := HorizontalLayout {
+                            height: 28px;
+                            spacing: 8px;
+                            Text {
+                                text: "Command help";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                font-family: Theme.font-ui;
+                                font-size: 14.5px;
+                                font-weight: 600;
+                                color: Theme.text;
+                            }
+                            close := Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 4px;
+                                background: close-ta.has-hover ? Theme.hover-hi : transparent;
+                                accessible-role: button;
+                                accessible-label: "Close";
+                                accessible-action-default => { HelpBridge.closed(); }
+                                close-ta := TouchArea {
+                                    enabled: root.interactive;
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { HelpBridge.closed(); }
+                                    changed has-hover => {
+                                        if (self.has-hover) {
+                                            HelpBridge.tip("Close (Esc)", self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                                        } else {
+                                            HelpBridge.tip("", 0px, 0px, 0px, 0px);
+                                        }
+                                    }
+                                }
+                                Path {
+                                    x: (parent.width - 13px) / 2;
+                                    y: (parent.height - 13px) / 2;
+                                    width: 13px;
+                                    height: 13px;
+                                    viewbox-width: 24;
+                                    viewbox-height: 24;
+                                    commands: "M7 7l10 10M17 7L7 17";
+                                    fill: transparent;
+                                    stroke: close-ta.has-hover ? Theme.text : Theme.icon;
+                                    stroke-width: 1.8 * 13px / 24;
+                                    stroke-line-cap: round;
+                                }
+                            }
+                        }
+
+                        field := Rectangle {
+                            height: 36px;
+                            border-radius: 8px;
+                            border-width: Px.hair();
+                            border-color: input.has-focus ? Theme.accent-hi : Theme.line;
+                            background: SettingsInk.help-field;
+                            animate border-color { duration: HelpBridge.still ? 0ms : 120ms; }
+                            // The 3 px focus glow.
+                            Rectangle {
+                                x: -3px;
+                                y: -3px;
+                                width: parent.width + 6px;
+                                height: parent.height + 6px;
+                                border-radius: 11px;
+                                border-width: input.has-focus ? 3px : 0px;
+                                border-color: SettingsInk.help-focus-glow;
+                                background: transparent;
+                            }
+                            Path {
+                                x: Px.hair() + 12px;
+                                y: (parent.height - 15px) / 2;
+                                width: 15px;
+                                height: 15px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: "M17.5 11a6.5 6.5 0 1 1-13 0a6.5 6.5 0 0 1 13 0z M16 16l4.5 4.5";
+                                fill: transparent;
+                                stroke: Theme.dim;
+                                stroke-width: 2 * 15px / 24;
+                                stroke-line-cap: round;
+                            }
+                            input := TextInput {
+                                x: Px.hair() + 12px + 15px + 10px;
+                                width: parent.width - self.x - 12px - Px.hair();
+                                height: parent.height;
+                                enabled: root.interactive;
+                                text <=> HelpBridge.query;
+                                single-line: true;
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 13.5px;
+                                color: Theme.text;
+                                selection-background-color: SettingsInk.selection;
+                                accessible-role: combobox;
+                                accessible-label: HelpBridge.search-label;
+                                edited => { HelpBridge.query-edited(self.text); }
+                            }
+                            if HelpBridge.query == "": Text {
+                                x: input.x;
+                                width: input.width;
+                                height: parent.height;
+                                text: HelpBridge.placeholder;
+                                overflow: elide;
+                                vertical-alignment: center;
+                                font-family: Theme.font-ui;
+                                font-size: 13.5px;
+                                color: Theme.dim2;
+                            }
+                        }
+
+                        chip-row := HorizontalLayout {
+                            height: 26px + 2 * Px.hair();
+                            spacing: 6px;
+                            accessible-role: groupbox;
+                            accessible-label: "Shell";
+                            for chip in HelpBridge.chips: Rectangle {
+                                width: chip-text.preferred-width + 20px + 2 * Px.hair();
+                                border-radius: self.height / 2;
+                                border-width: Px.hair();
+                                border-color: chip.on ? transparent : Theme.line;
+                                background: chip.on ? Theme.accent : (chip-ta.has-hover ? Theme.hover : transparent);
+                                accessible-role: button;
+                                accessible-label: chip.name;
+                                accessible-checkable: true;
+                                accessible-checked: chip.on;
+                                accessible-action-default => { HelpBridge.chip-picked(chip.id); }
+                                chip-ta := TouchArea {
+                                    enabled: root.interactive;
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { HelpBridge.chip-picked(chip.id); }
+                                }
+                                chip-text := Text {
+                                    x: 10px + Px.hair();
+                                    y: 4px + Px.hair();
+                                    height: 18px;
+                                    text: chip.name;
+                                    vertical-alignment: center;
+                                    font-family: Theme.font-ui;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    color: chip.on ? Theme.on-accent : (chip-ta.has-hover ? Theme.text : Theme.text-soft);
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: HelpBridge.count-text;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                font-family: Theme.font-ui;
+                                font-size: 11.5px;
+                                color: Theme.dim;
+                                accessible-role: text;
+                                accessible-label: HelpBridge.count-text;
+                            }
+                        }
+                    }
+                }
+
+                // The answers. The list scrolls, the panel does not; no bar is drawn.
+                flick := Flickable {
+                    vertical-stretch: 1;
+                    interactive: root.interactive;
+                    content-width: self.width;
+                    changed content-y => {
+                        if (self.content-height + self.content-y - self.height < 600px) {
+                            HelpBridge.near-end();
+                        }
+                    }
+                    accessible-role: list;
+                    accessible-label: root.searching ? "Results" : "All commands";
+
+                    VerticalLayout {
+                        alignment: start;
+                        padding-bottom: 8px;
+                        width: flick.width;
+                        if HelpBridge.empty: Text {
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            text: HelpBridge.empty-text;
+                            font-family: Theme.font-ui;
+                            font-size: 12.5px;
+                            color: Theme.dim;
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 32px;
+                            padding-bottom: 32px;
+                        }
+                        for r[i] in HelpBridge.rows: VerticalLayout {
+                            if r.header != "": Rectangle {
+                                height: 14px + 17.25px + 6px;
+                                Text {
+                                    x: 16px;
+                                    y: 14px;
+                                    width: parent.width - 32px;
+                                    height: 17.25px;
+                                    text: r.header;
+                                    vertical-alignment: center;
+                                    font-family: Theme.font-ui;
+                                    font-size: 11.5px;
+                                    font-weight: 600;
+                                    color: Theme.dim;
+                                }
+                            }
+                            HelpRow {
+                                d: r;
+                                index: i;
+                                open: HelpBridge.open;
+                                interactive: root.interactive;
+                                still: HelpBridge.still;
+                                mono: HelpBridge.mono;
+                                caps: HelpBridge.key-caps[i];
+                                pressed => { HelpBridge.row-pressed(i); }
+                                clicked(moved) => { HelpBridge.row-clicked(i, moved); }
+                                copy => { HelpBridge.copy-clicked(i); }
+                                pointed => { HelpBridge.pointer-over-list(); }
+                                tip(t, x, y, w, h) => { HelpBridge.tip(t, x, y, w, h); }
+                                height-is(h) => {
+                                    if (i == 0) {
+                                        root.row0-h = h;
+                                    }
+                                }
+                                became-active(abs-y, h) => {
+                                    // A move made by key scrolls the row into view, nearest edge.
+                                    let top = abs-y - flick.absolute-position.y;
+                                    if (top < 0px) {
+                                        flick.content-y = min(0px, flick.content-y - top);
+                                    } else if (top + h > flick.height) {
+                                        flick.content-y = max(flick.height - flick.content-height, flick.content-y - (top + h - flick.height));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The keys, and nothing else.
+                foot := Rectangle {
+                    height: Px.hair() + 8px + 19.75px + 8px;
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: Px.hair();
+                        background: Theme.line;
+                    }
+                    Rectangle {
+                        x: 0px;
+                        y: Px.hair() + 8px;
+                        width: parent.width;
+                        height: 19.75px;
+                        keys-row := HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            alignment: end;
+                            spacing: 6px;
+                            KeyCap { text: "Up"; face: Theme.font-ui; size: 10.5px; pad-x: 4px; pad-y: 1px; fill: Theme.control; }
+                            KeyCap { text: "Down"; face: Theme.font-ui; size: 10.5px; pad-x: 4px; pad-y: 1px; fill: Theme.control; }
+                            Text { text: "move"; vertical-alignment: center; font-family: Theme.font-ui; font-size: 11.5px; color: Theme.dim; }
+                            Rectangle { width: 6px; }
+                            KeyCap { text: "Enter"; face: Theme.font-ui; size: 10.5px; pad-x: 4px; pad-y: 1px; fill: Theme.control; }
+                            Text { text: "copy"; vertical-alignment: center; font-family: Theme.font-ui; font-size: 11.5px; color: Theme.dim; }
+                            Rectangle { width: 6px; }
+                            KeyCap { text: "Esc"; face: Theme.font-ui; size: 10.5px; pad-x: 4px; pad-y: 1px; fill: Theme.control; }
+                            Text { text: "close"; vertical-alignment: center; font-family: Theme.font-ui; font-size: 11.5px; color: Theme.dim; }
+                        }
+                    }
+                }
+              }
+            }
+
+            // What a screen reader hears: the check on the row is for the eye.
+            Text {
+                width: 0px;
+                height: 0px;
+                text: HelpBridge.said;
+                accessible-role: text;
+                accessible-label: HelpBridge.said;
+            }
+
+            // The left edge resizes: 8 px wide, 4 inside and 4 outside. It draws nothing.
+            grip := FocusScope {
+                x: -4px;
+                width: 8px;
+                height: parent.height;
+                enabled: root.interactive;
+                accessible-role: slider;
+                accessible-label: "Panel width";
+                accessible-value: round(root.w / 1px);
+                accessible-value-minimum: 420;
+                accessible-value-maximum: 1100;
+                key-pressed(e) => {
+                    if (e.text == Key.LeftArrow) {
+                        HelpBridge.grip-key("Left", e.modifiers.shift);
+                        return EventResult.accept;
+                    }
+                    if (e.text == Key.RightArrow) {
+                        HelpBridge.grip-key("Right", e.modifiers.shift);
+                        return EventResult.accept;
+                    }
+                    return EventResult.reject;
+                }
+                property <length> start-x;
+                grip-ta := TouchArea {
+                    enabled: root.interactive;
+                    mouse-cursor: MouseCursor.ew-resize;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            grip.focus();
+                            grip.start-x = self.absolute-position.x + self.mouse-x;
+                            HelpBridge.grip-from = root.w;
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            HelpBridge.grip-dragged(grip.start-x - (self.absolute-position.x + self.mouse-x));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The panel over a dummy terminal region, in a 1000 by 640 window with a 36 px title bar as
+// Prism Terminal's metrics were taken.
+export component HelpPanelPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Theme.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    out property <length> sheet-x: panel.sheet-x;
+    out property <length> sheet-w: panel.sheet-w;
+    out property <length> header-h: panel.header-h;
+    out property <length> search-h: panel.search-h;
+    out property <length> search-w: panel.search-w;
+    out property <length> chip-h: panel.chip-h;
+    out property <length> row0-h: panel.row0-h;
+    out property <length> list-y: panel.list-y;
+    out property <length> list-h: panel.list-h;
+    out property <length> footer-y: panel.footer-y;
+    in-out property <length> viewport-y <=> panel.viewport-y;
+    in-out property <int> terminal-clicks;
+
+    // The dummy terminal: a click on it must still land when the panel is out.
+    Rectangle {
+        y: 36px;
+        height: parent.height - 36px;
+        background: Theme.ground-solid;
+        TouchArea { clicked => { root.terminal-clicks += 1; } }
+    }
+    panel := HelpPanel {
+        y: 36px;
+        width: parent.width;
+        height: parent.height - 36px;
+    }
+}
