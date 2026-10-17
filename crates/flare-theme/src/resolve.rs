@@ -1,11 +1,11 @@
 //! Resolving a theme: preset, Custom and the picked ground (Task 10).
 //! Source: PT `core/renderer/lib/termTheme.ts` (the resolvers and `presetAccent`) and `termGround.ts`.
 
-use crate::ansi::{PartialAnsi, derive_ansi, ensure_contrast, legible_palette, normalize_color};
+use crate::ansi::{derive_ansi, ensure_contrast, legible_palette, normalize_color, PartialAnsi};
 use crate::colour::{opaque, parse_colour};
 use crate::colour_contrast::{composite, legible_on};
 use crate::ground::DEFAULT_GROUND;
-use crate::preset::{DEFAULT_TERM_THEME, HOST_DEFAULT_THEME, Preset, find_preset};
+use crate::preset::{find_preset, Preset, DEFAULT_TERM_THEME, HOST_DEFAULT_THEME};
 use crate::retired::live_theme_id;
 
 /// Text needs 4.5:1, as everywhere else in the app.
@@ -193,7 +193,7 @@ pub(crate) fn theme_from_json(v: &serde_json::Value) -> TermTheme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::{ANSI_KEYS, contrast_ratio};
+    use crate::ansi::{contrast_ratio, ANSI_KEYS};
     use crate::colour::with_alpha;
     use crate::preset::presets;
     use crate::testutil::fixture;
