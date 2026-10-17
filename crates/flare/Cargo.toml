@@ -8,12 +8,17 @@ build = "build.rs"
 
 [dependencies]
 flare-render = { path = "../flare-render" }
+flare-term = { path = "../flare-term" }
+flare-shells = { path = "../flare-shells" }
 slint.workspace = true
 wgpu.workspace = true
 png.workspace = true
 log.workspace = true
 env_logger.workspace = true
 windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

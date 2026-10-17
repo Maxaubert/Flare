@@ -1,9 +1,12 @@
 [package]
 name = "flare-shells"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 publish = false
+
+[dependencies]
+log.workspace = true
 
 [lints]
 workspace = true
