@@ -336,6 +336,13 @@ export component OverflowList inherits Rectangle {
                         single-line: true;
                         edited => { root.query-edited(self.text); }
                         accepted => { root.accepted(); }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape {
+                                root.dismissed();
+                                return accept;
+                            }
+                            return reject;
+                        }
                     }
                     if root.query == "": Text {
                         text: "Find a tab";

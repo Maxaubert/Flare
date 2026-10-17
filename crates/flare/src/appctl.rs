@@ -834,6 +834,11 @@ impl AppCtl {
         let first = self.view.rows.iter().find(|r| r.kept).map(|r| r.id.clone());
         if let Some(id) = first {
             self.model.pick(&id);
+            // PT TabSidebar.tsx clears the query on Enter, like Escape does.
+            self.query.clear();
+            if let Some(app) = self.app() {
+                app.set_sidebar_find("".into());
+            }
             self.refresh();
             self.focus_terminal();
         }
