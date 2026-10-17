@@ -1,8 +1,13 @@
 //! Single instance (Task 15, decision D4): a named mutex says who is first, a named pipe carries the
-//! second launch's folders to the first. Both names are keyed by a hash of the profile folder, so an
-//! e2e run (its own profile) never hands its folders to the owner's running Flare.
+//! second launch's folders to the first. Both names are keyed by the user SID, the session id and a
+//! hash of the profile folder, so an e2e run (its own profile) never hands its folders to the owner's
+//! running Flare, and another user or session cannot squat the name. The pipe is created first-instance
+//! with a DACL for the current user only; the client checks the server's user and session before it
+//! writes a byte, and lets only that verified pid take the foreground (never ASFW_ANY).
 
 use std::io::Write;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,17 +16,28 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError,
-    INVALID_HANDLE_VALUE,
+    INVALID_HANDLE_VALUE, LocalFree,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::{
+    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND, ReadFile, SECURITY_IDENTIFICATION,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
-use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcessId, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
 pub const MAX_HANDOFF: usize = 65_536;
 pub const MAX_ARGS: usize = 256;
@@ -48,13 +64,148 @@ pub fn profile_hash(profile: &Path) -> String {
     format!("{h:016x}")
 }
 
-/// Mutex `Local\Flare.Single.<hash>`, pipe `\\.\pipe\Flare.Handoff.<hash>`.
-pub fn instance_names(profile: &Path) -> InstanceNames {
-    let hash = profile_hash(profile);
-    InstanceNames {
-        mutex: format!("Local\\Flare.Single.{hash}"),
-        pipe: format!("\\\\.\\pipe\\Flare.Handoff.{hash}"),
+/// Who a process is: its user SID (string form) and its session id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub sid: String,
+    pub session: u32,
+}
+
+/// Where identities come from. The real source asks Windows; a test supplies a fake one.
+pub trait IdentitySource {
+    /// The identity of the process `pid`, or None when it cannot be read (then it is not trusted).
+    fn of_pid(&self, pid: u32) -> Option<Identity>;
+}
+
+/// The real source: the process token's user and `ProcessIdToSessionId`.
+pub struct WindowsIdentity;
+
+impl IdentitySource for WindowsIdentity {
+    fn of_pid(&self, pid: u32) -> Option<Identity> {
+        let mut session: u32 = 0;
+        // SAFETY: `session` outlives the call.
+        if unsafe { ProcessIdToSessionId(pid, &mut session) } == 0 {
+            return None;
+        }
+        // SAFETY: plain call; the handle (if any) is closed below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let sid = token_sid_string(process);
+        // SAFETY: the handle came from OpenProcess and is closed once.
+        unsafe { CloseHandle(process) };
+        Some(Identity { sid: sid?, session })
     }
+}
+
+/// The identity of this process.
+pub fn current_identity() -> Option<Identity> {
+    // SAFETY: GetCurrentProcessId has no preconditions.
+    let pid = unsafe { GetCurrentProcessId() };
+    WindowsIdentity.of_pid(pid)
+}
+
+fn token_sid_string(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    let mut token = std::ptr::null_mut();
+    // SAFETY: `token` outlives the call; `process` is a valid process handle.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let result = (|| {
+        let mut len: u32 = 0;
+        // SAFETY: the size probe: a null buffer of length 0 and a valid `len`.
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len) };
+        if len == 0 {
+            return None;
+        }
+        // u64 elements keep the buffer 8-byte aligned for TOKEN_USER.
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        // SAFETY: `buf` is at least `len` bytes; `len` is a valid out-pointer.
+        let ok = unsafe {
+            GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
+        };
+        if ok == 0 {
+            return None;
+        }
+        // SAFETY: the call above filled `buf` with a TOKEN_USER.
+        let user = unsafe { &*(buf.as_ptr().cast::<TOKEN_USER>()) };
+        let mut text: *mut u16 = std::ptr::null_mut();
+        // SAFETY: the SID is valid for the life of `buf`; `text` receives a LocalAlloc'd string.
+        if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } == 0 || text.is_null() {
+            return None;
+        }
+        let mut n = 0;
+        // SAFETY: `text` is NUL-terminated, as ConvertSidToStringSidW promises.
+        while unsafe { *text.add(n) } != 0 {
+            n += 1;
+        }
+        // SAFETY: `n` units were just walked.
+        let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, n) });
+        // SAFETY: freeing the string the call allocated, once.
+        unsafe { LocalFree(text.cast()) };
+        Some(s)
+    })();
+    // SAFETY: the token came from OpenProcessToken and is closed once.
+    unsafe { CloseHandle(token) };
+    result
+}
+
+/// The server is trusted only when it runs as the same user in the same session.
+pub fn verify_peer(me: &Identity, peer: Option<&Identity>) -> Result<(), String> {
+    match peer {
+        None => Err("the hand-off server's identity could not be read".into()),
+        Some(p) if p.sid != me.sid => Err("the hand-off server runs as another user".into()),
+        Some(p) if p.session != me.session => {
+            Err("the hand-off server runs in another session".into())
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+/// Mutex `Local\Flare.Single.<sid>.<session>.<hash>`, pipe `\\.\pipe\Flare.Handoff.<sid>.<session>.<hash>`.
+/// `Local\` is per-session already; the pipe namespace is not, so both carry the user and the session.
+pub fn instance_names_for(profile: &Path, who: &Identity) -> InstanceNames {
+    let hash = profile_hash(profile);
+    let tag = format!("{}.{}.{hash}", who.sid, who.session);
+    InstanceNames {
+        mutex: format!("Local\\Flare.Single.{tag}"),
+        pipe: format!("\\\\.\\pipe\\Flare.Handoff.{tag}"),
+    }
+}
+
+/// The names for this user and session. If Windows will not say who we are the names still work (they
+/// carry `unknown`), but `serve` then refuses to build the pipe, since it cannot make the DACL.
+pub fn instance_names(profile: &Path) -> InstanceNames {
+    let who = current_identity().unwrap_or(Identity {
+        sid: "unknown".into(),
+        session: 0,
+    });
+    instance_names_for(profile, &who)
+}
+
+/// The SDDL of a protected DACL with one ACE: full access for `sid` and nobody else.
+pub fn dacl_sddl(sid: &str) -> String {
+    format!("D:P(A;;GA;;;{sid})")
+}
+
+/// Builds the pipe's security descriptor (LocalAlloc'd; free with LocalFree).
+fn security_descriptor(sid: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
+    let sddl = wide(&dacl_sddl(sid));
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `sddl` is NUL-terminated and outlives the call; `sd` receives the descriptor.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 || sd.is_null() {
+        return Err("could not build the hand-off pipe's DACL".into());
+    }
+    Ok(sd)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,7 +366,15 @@ pub fn serve(
     on_handoff: impl Fn(Handoff) + Send + 'static,
 ) -> Result<PipeServer, String> {
     let name = wide(&names.pipe);
-    // SAFETY: `name` is a NUL-terminated UTF-16 buffer that outlives the call; no security attributes.
+    let who = current_identity().ok_or("could not read the current user for the hand-off pipe")?;
+    let sd = security_descriptor(&who.sid)?;
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd,
+        bInheritHandle: 0,
+    };
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer and `attrs` points at a valid descriptor; both
+    // outlive the call.
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -225,12 +384,14 @@ pub fn serve(
             4096,
             65_536,
             0,
-            std::ptr::null(),
+            &attrs,
         )
     };
+    // SAFETY: reads the thread's last error right after the call, before anything can change it.
+    let err = unsafe { GetLastError() };
+    // SAFETY: the descriptor came from the SDDL conversion; the pipe keeps its own copy.
+    unsafe { LocalFree(sd) };
     if handle == INVALID_HANDLE_VALUE {
-        // SAFETY: reads the thread's last error right after the failed call.
-        let err = unsafe { GetLastError() };
         return Err(format!("CreateNamedPipeW failed (error {err})"));
     }
     let stop = Arc::new(AtomicBool::new(false));
@@ -266,30 +427,81 @@ pub fn serve(
     })
 }
 
+/// Why a hand-off did not go through.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HandoffError {
+    /// A server answered the name but is not this user in this session: nothing was written, and the
+    /// caller starts as a normal instance.
+    Untrusted(String),
+    /// No server, or the write failed.
+    Failed(String),
+}
+
+impl std::fmt::Display for HandoffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Untrusted(m) | Self::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
 pub fn send_handoff(
     names: &InstanceNames,
     h: &Handoff,
     total_wait: Duration,
-) -> Result<(), String> {
-    // SAFETY: plain call with a constant; lets the first instance raise its window.
-    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+) -> Result<(), HandoffError> {
+    send_handoff_with(names, h, total_wait, &WindowsIdentity)
+}
+
+/// `send_handoff` with the identity source made explicit, so a test can stand in another user.
+pub fn send_handoff_with(
+    names: &InstanceNames,
+    h: &Handoff,
+    total_wait: Duration,
+    source: &dyn IdentitySource,
+) -> Result<(), HandoffError> {
+    let me = current_identity()
+        .ok_or_else(|| HandoffError::Failed("could not read the current user".into()))?;
     let started = Instant::now();
     let bytes = encode_handoff(h);
     loop {
-        match std::fs::OpenOptions::new().write(true).open(&names.pipe) {
+        // SECURITY_IDENTIFICATION: a server can learn who we are but never act as us.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(&names.pipe)
+        {
             Ok(mut file) => {
+                let mut pid: u32 = 0;
+                // SAFETY: the handle is the open pipe; `pid` outlives the call.
+                let got =
+                    unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as _, &mut pid) };
+                if got == 0 {
+                    return Err(HandoffError::Untrusted(
+                        "could not tell which process serves the hand-off pipe".into(),
+                    ));
+                }
+                verify_peer(&me, source.of_pid(pid).as_ref()).map_err(HandoffError::Untrusted)?;
+                // The verified pid only, never ASFW_ANY: lets that process raise its window.
+                // SAFETY: plain call with a pid.
+                unsafe { AllowSetForegroundWindow(pid) };
                 return file
                     .write_all(&bytes)
-                    .map_err(|e| format!("hand-off write failed: {e}"));
+                    .map_err(|e| HandoffError::Failed(format!("hand-off write failed: {e}")));
             }
             Err(e) => {
                 let retry = e.kind() == std::io::ErrorKind::NotFound
                     || e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32);
                 if !retry {
-                    return Err(format!("hand-off open failed: {e}"));
+                    // Access denied is what a pipe made by another user answers with.
+                    return Err(HandoffError::Untrusted(format!(
+                        "hand-off open refused: {e}"
+                    )));
                 }
                 if started.elapsed() >= total_wait {
-                    return Err(format!("no running Flare answered: {e}"));
+                    return Err(HandoffError::Failed(format!(
+                        "no running Flare answered: {e}"
+                    )));
                 }
                 std::thread::sleep(Duration::from_millis(50)); // sync-ok: second instance, nothing else runs
             }
@@ -487,5 +699,88 @@ mod tests {
         server.stop();
         assert!(started.elapsed() < Duration::from_secs(3));
         drop(held);
+    }
+
+    fn fake(sid: &str, session: u32) -> Identity {
+        Identity {
+            sid: sid.into(),
+            session,
+        }
+    }
+
+    struct Fake(Option<Identity>);
+    impl IdentitySource for Fake {
+        fn of_pid(&self, _pid: u32) -> Option<Identity> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn names_carry_the_user_sid_and_the_session() {
+        let p = Path::new("C:\\a\\Flare");
+        let a = instance_names_for(p, &fake("S-1-5-21-1", 1));
+        assert!(a.mutex.contains("S-1-5-21-1.1."));
+        assert!(a.pipe.contains("S-1-5-21-1.1."));
+        assert_ne!(a, instance_names_for(p, &fake("S-1-5-21-2", 1)));
+        assert_ne!(a, instance_names_for(p, &fake("S-1-5-21-1", 2)));
+        let real = current_identity().expect("the test process has an identity");
+        assert!(instance_names(p).pipe.contains(&real.sid));
+        assert!(
+            instance_names(p)
+                .pipe
+                .contains(&format!(".{}.", real.session))
+        );
+    }
+
+    #[test]
+    fn a_server_of_another_user_or_session_is_refused() {
+        let me = fake("S-1-5-21-1", 1);
+        assert!(verify_peer(&me, Some(&fake("S-1-5-21-1", 1))).is_ok());
+        assert!(verify_peer(&me, Some(&fake("S-1-5-21-9", 1))).is_err());
+        assert!(verify_peer(&me, Some(&fake("S-1-5-21-1", 2))).is_err());
+        assert!(verify_peer(&me, None).is_err());
+    }
+
+    #[test]
+    fn nothing_is_written_to_a_server_that_is_another_user() {
+        let n = names_for_test();
+        let (tx, rx) = mpsc::channel();
+        let _server = serve(&n, move |h| {
+            let _ = tx.send(h);
+        })
+        .unwrap();
+        let stranger = Fake(Some(fake("S-1-5-21-9999", 1)));
+        let r = send_handoff_with(&n, &sample(), Duration::from_secs(3), &stranger);
+        assert!(matches!(r, Err(HandoffError::Untrusted(_))), "{r:?}");
+        let unreadable = Fake(None);
+        let r = send_handoff_with(&n, &sample(), Duration::from_secs(3), &unreadable);
+        assert!(matches!(r, Err(HandoffError::Untrusted(_))), "{r:?}");
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    #[test]
+    fn the_dacl_is_one_ace_for_the_current_sid() {
+        let sid = current_identity().unwrap().sid;
+        let sddl = dacl_sddl(&sid);
+        assert_eq!(sddl, format!("D:P(A;;GA;;;{sid})"));
+        assert_eq!(sddl.matches('(').count(), 1);
+        let sd = security_descriptor(&sid).unwrap();
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+        // SAFETY: `sd` is a valid descriptor; the out-pointers outlive the call.
+        let ok = unsafe {
+            windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+                sd,
+                &mut present,
+                &mut acl,
+                &mut defaulted,
+            )
+        };
+        assert!(ok != 0 && present != 0 && !acl.is_null());
+        // SAFETY: the ACL lives inside `sd`, still allocated.
+        assert_eq!(unsafe { (*acl).AceCount }, 1);
+        // SAFETY: freeing the descriptor once.
+        unsafe { LocalFree(sd) };
     }
 }

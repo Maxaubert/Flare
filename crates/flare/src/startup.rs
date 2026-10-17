@@ -87,6 +87,17 @@ pub fn launch(profile: &Profile, argv: &[String], wait: Duration) -> Result<Laun
             };
             match send_handoff(&names, &handoff, wait) {
                 Ok(()) => Ok(Launch::HandedOver),
+                Err(flare_win::single_instance::HandoffError::Untrusted(e)) => {
+                    // Something answered the name that is not this user in this session: write
+                    // nothing to it and run as a normal instance (no lock to hold).
+                    log::warn!(
+                        "the hand-off server was not trusted ({e}); running as a normal instance"
+                    );
+                    Ok(Launch::First {
+                        guard: None,
+                        server_names: names,
+                    })
+                }
                 Err(e) => match acquire(&names) {
                     Ok(Acquired::First(guard)) => {
                         log::warn!("the running Flare did not answer ({e}); running as the first");
