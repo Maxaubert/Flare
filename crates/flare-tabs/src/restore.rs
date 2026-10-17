@@ -112,8 +112,11 @@ impl SessionLookup for NoSessions {
 /// Security: a folder that is a UNC path or holds a control character is never statted or spawned
 /// in on restore (Windows would connect over SMB and could leak the user's NTLM hash). An explicit
 /// user action may take a tab there; a restore never does.
+/// The test is flare-shells' own (`is_unc`, `has_control`, the rule behind `folder_after_report`),
+/// so mixed separators (`\/host/share`, `/\host\share`) and the device forms that reach SMB
+/// (`\\?\UNC\`, `\\.\UNC\`) count too.
 pub fn is_unsafe_restore_folder(cwd: &str) -> bool {
-    cwd.starts_with("\\\\") || cwd.starts_with("//") || cwd.chars().any(char::is_control)
+    flare_shells::cwd::is_unc(cwd) || flare_shells::cwd::has_control(cwd)
 }
 
 /// Port of planRestore: drop gone folders, keep the active tab pointing right, hand Claude tabs of
@@ -585,12 +588,18 @@ mod tests {
                 st("\\\\evil\\share", None),
                 st("//evil/share", None),
                 st("C:\\bad\u{7}dir", None),
+                st("\\/evil/share", None),
+                st("/\\evil\\share", None),
+                st("\\\\?\\UNC\\evil\\share", None),
+                st("C:\\c1\u{85}dir", None),
                 st("C:\\ok", None),
             ],
             active: 0,
         };
         let r = plan_restore(&saved, &all, &no_sessions);
-        assert_eq!(r.tabs, vec![rt("C:\\ok", None, Some(3))]);
+        assert_eq!(r.tabs, vec![rt("C:\\ok", None, Some(7))]);
+        // A device path naming a local drive is a local folder.
+        assert!(!is_unsafe_restore_folder("\\\\?\\C:\\work"));
         // The parallel resolver never even stats them (a stat over SMB leaks the hash).
         let statted = Arc::new(Mutex::new(Vec::<String>::new()));
         let s2 = Arc::clone(&statted);

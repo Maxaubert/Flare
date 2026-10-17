@@ -10,6 +10,7 @@ flare-agent = { path = "../flare-agent" }
 flare-settings = { path = "../flare-settings" }
 flare-win = { path = "../flare-win" }
 flare-term = { path = "../flare-term" }
+flare-shells = { path = "../flare-shells" }
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true

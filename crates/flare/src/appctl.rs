@@ -2256,7 +2256,20 @@ mod tests {
         let id = f.ctl.borrow_mut().open_folder("C:\\a");
         f.wait_made("C:\\a");
         let m = f.made_with("C:\\a").remove(0);
-        m.feed(b"\x1b]9;9;\\\\evil\\share\x07");
+        // Each share report gets its own drain, so a briefly adopted one would show.
+        for report in [
+            &b"\x1b]9;9;\\\\evil\\share\x07"[..],
+            b"\x1b]9;9;\\/evil/share\x07",
+            b"\x1b]9;9;\\\\?\\UNC\\evil\\share\x07",
+        ] {
+            m.feed(report);
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_millis(150) {
+                f.pump();
+                assert_eq!(f.cwds(), ["C:\\a"], "a share report was adopted");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         m.feed(b"\x1b]9;9;C:\\w\x07");
         f.pump_until("the local report", |f| f.cwds() == ["C:\\w"]);
         assert_eq!(f.ctl.borrow().model().state.tabs[0].id, id);
