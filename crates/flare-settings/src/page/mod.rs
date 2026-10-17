@@ -342,3 +342,165 @@ mod tests {
         assert!(!plain_row(def, Control::None).tap);
     }
 }
+
+/// The page for a rail id (M7 Task 23). An unknown id builds Appearance.
+pub fn build_page(id: &str, env: &PageEnv<'_>, dictation: &dyn DictationPage) -> PageModel {
+    match id {
+        "terminal" => terminal::build_terminal(env),
+        "agents" => agents::build(env),
+        "dictation" => misc::build_dictation(env, dictation),
+        "diagnostics" => misc::build_diagnostics(env),
+        "about" => misc::build_about(env),
+        _ => appearance::build(env),
+    }
+}
+
+/// The fixture the page tests share: a page environment over fresh stores.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use super::*;
+
+    fn face(_: &str) -> String {
+        String::new()
+    }
+
+    /// A page environment with the given version, copyright, diagnostics state and mark, and
+    /// the shells detection found (`None` until it answers).
+    pub(crate) fn with_env_full<R>(
+        version: &str,
+        copyright: &str,
+        diag: DiagInfo,
+        diag_marked: bool,
+        shells: Option<Vec<(String, String)>>,
+        f: impl FnOnce(&PageEnv<'_>) -> R,
+    ) -> R {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        let face_of: &dyn Fn(&str) -> String = &face;
+        let env = PageEnv {
+            prefs: &prefs,
+            look: &look,
+            shells,
+            verb: VerbState::Busy,
+            home: String::new(),
+            version: version.to_string(),
+            copyright: copyright.to_string(),
+            glass: GlassSupport::Ok,
+            diag,
+            diag_marked,
+            nvidia: false,
+            dictation_wired: false,
+            theme_colours: ThemeColours {
+                accent: String::new(),
+                background: String::new(),
+                secondary: String::new(),
+            },
+            agent_colours: [String::new(), String::new(), String::new()],
+            agent_key_labels: String::new(),
+            face_of,
+        };
+        f(&env)
+    }
+
+    /// A page environment with the given version, copyright, diagnostics state and mark; no
+    /// shells yet.
+    pub(crate) fn with_env_fields<R>(
+        version: &str,
+        copyright: &str,
+        diag: DiagInfo,
+        diag_marked: bool,
+        f: impl FnOnce(&PageEnv<'_>) -> R,
+    ) -> R {
+        with_env_full(version, copyright, diag, diag_marked, None, f)
+    }
+
+    /// A page environment with default values and one shell found, so the Shell section draws.
+    pub(crate) fn with_env<R>(f: impl FnOnce(&PageEnv<'_>) -> R) -> R {
+        with_env_full(
+            "0.0.0",
+            "",
+            DiagInfo {
+                verbose: false,
+                dir: String::new(),
+            },
+            false,
+            Some(vec![("pwsh".to_string(), "PowerShell".to_string())]),
+            f,
+        )
+    }
+}
+
+#[cfg(test)]
+mod cross_page_tests {
+    use super::test_env::with_env;
+    use super::*;
+    use crate::rows::{DICTATION_OPTIONS, ROW_ORDER, row};
+    use std::collections::BTreeSet;
+
+    const SIX: [&str; 6] = [
+        "appearance",
+        "terminal",
+        "agents",
+        "dictation",
+        "diagnostics",
+        "about",
+    ];
+
+    #[test]
+    fn build_page_for_an_unknown_id_builds_appearance() {
+        with_env(|env| {
+            assert_eq!(
+                build_page("nope", env, &PlaceholderDictation).id,
+                "appearance"
+            );
+            for id in SIX {
+                assert_eq!(build_page(id, env, &PlaceholderDictation).id, id);
+            }
+        });
+    }
+
+    #[test]
+    fn every_row_of_every_page_is_in_the_row_order_exactly_once() {
+        with_env(|env| {
+            let drawn: Vec<&str> = SIX
+                .iter()
+                .flat_map(|id| all_row_ids(&build_page(id, env, &PlaceholderDictation)))
+                .collect();
+            let unique: BTreeSet<&str> = drawn.iter().copied().collect();
+            assert_eq!(unique.len(), drawn.len(), "a row is drawn twice: {drawn:?}");
+            let expected: BTreeSet<&str> = ROW_ORDER
+                .iter()
+                .copied()
+                .filter(|id| !DICTATION_OPTIONS.iter().any(|d| d.id == *id))
+                .collect();
+            assert_eq!(unique, expected);
+        });
+    }
+
+    #[test]
+    fn the_drawn_order_inside_each_section_follows_the_tables() {
+        with_env(|env| {
+            for id in SIX {
+                let page = build_page(id, env, &PlaceholderDictation);
+                for section in &page.sections {
+                    let drawn: Vec<&str> = section
+                        .blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            BlockModel::Row(r) => Some(r.id),
+                            _ => None,
+                        })
+                        .collect();
+                    // The placeholder Dictation page draws none of the nine dictation rows.
+                    let expected: Vec<&str> = ROW_ORDER
+                        .iter()
+                        .copied()
+                        .filter(|rid| !DICTATION_OPTIONS.iter().any(|d| d.id == *rid))
+                        .filter(|rid| row(rid).is_some_and(|d| d.section == section.id))
+                        .collect();
+                    assert_eq!(drawn, expected, "section {} on page {id}", section.id);
+                }
+            }
+        });
+    }
+}
