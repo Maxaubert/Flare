@@ -49,6 +49,7 @@ use flare_win::eyedrop::PickResult;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::appctl::{Post, UiMsg};
+use crate::picker_ctl::{PickerCtl, PickerCtx, RowColour};
 use crate::{
     AppWindow, BlockKind as SlintBlock, EditorWell, RailItem, SetButton, SetHit, SetKind,
     SetOption, SetRow, SetSection, SettingsBridge, SettingsFixed, WallCard,
@@ -152,8 +153,9 @@ pub struct SettingsCtl {
     watch: Option<FlashWatch>,
     marked_until: Option<u64>,
     pending_pick: RefCell<Option<String>>,
-    /// Typed colour codes, by row id. picker: Task 42 moves these into its own fields.
-    drafts: HashMap<String, CodeField>,
+    /// The colour popover, the typed codes of the colour rows and the dropper.
+    picker: PickerCtl,
+    picker_timer: slint::Timer,
     /// Typed codes of the theme editor's wells, by key.
     well_drafts: HashMap<String, CodeField>,
     built: Option<Built>,
@@ -445,7 +447,8 @@ impl SettingsCtl {
             watch: None,
             marked_until: None,
             pending_pick: RefCell::new(None),
-            drafts: HashMap::new(),
+            picker: PickerCtl::default(),
+            picker_timer: slint::Timer::default(),
             well_drafts: HashMap::new(),
             built: None,
             frame: None,
@@ -605,8 +608,49 @@ impl SettingsCtl {
         on!(app, rc, on_escape_unhandled, |c| {
             c.escape();
         });
-        // picker: the swatch, the popover and the dropper callbacks (`colour-swatch`,
-        // `editor-well-swatch`, `picker-*`) are bound by Task 42's PickerCtl.
+        on!(
+            app,
+            rc,
+            on_colour_swatch,
+            |c, id: SharedString, x: f32, y: f32, w: f32, h: f32| c.picker_open(
+                &id,
+                false,
+                [x, y, w, h].map(f64::from)
+            )
+        );
+        on!(
+            app,
+            rc,
+            on_editor_well_swatch,
+            |c, k: SharedString, x: f32, y: f32, w: f32, h: f32| c.picker_open(
+                &k,
+                true,
+                [x, y, w, h].map(f64::from)
+            )
+        );
+        on!(app, rc, on_picker_sv, |c, x: f32, y: f32, k: bool| c
+            .picker_do(|p, _| p.on_sv(f64::from(x), f64::from(y), k)));
+        on!(app, rc, on_picker_hue_moved, |c, x: f32, k: bool| c
+            .picker_do(|p, _| p.on_hue(f64::from(x), k)));
+        on!(app, rc, on_picker_alpha_moved, |c, x: f32, k: bool| c
+            .picker_do(|p, _| p.on_alpha(f64::from(x), k)));
+        on!(
+            app,
+            rc,
+            on_picker_key,
+            |c, w: i32, k: SharedString, s: bool| c.picker_do(|p, _| p.on_key(w, &k, s))
+        );
+        on!(app, rc, on_picker_format_clicked, |c| c
+            .picker_do(|p, ctx| p.format_clicked(ctx)));
+        on!(app, rc, on_picker_dropper, |c| c
+            .picker_do(|p, ctx| p.dropper(ctx)));
+        on!(app, rc, on_picker_escape, |c| c.picker_do(|p, _| {
+            p.escape();
+        }));
+        on!(app, rc, on_picker_outside, |c| c
+            .picker_do(|p, _| p.outside()));
+        on!(app, rc, on_picker_focus_left, |c| c
+            .picker_do(|p, _| p.focus_left()));
     }
 
     // ---- the window's calls -------------------------------------------------------------------------
@@ -616,17 +660,16 @@ impl SettingsCtl {
         self.visible = true;
         self.ask_verb();
         self.rebuild();
-        // picker: recall the kept picker here.
+        self.picker_do(|p, ctx| p.recall(ctx));
     }
 
     /// Another tab came to the front: keep the page, close the overlays.
     pub fn hide(&mut self) {
         self.visible = false;
         self.close_select();
+        self.picker_do(|p, _| p.hide_for_tab_switch());
         if let Some(app) = self.weak.upgrade() {
-            let b = app.global::<SettingsBridge>();
-            b.set_picker_open(false);
-            // picker: remember (key, opened) in the KeptPicker before closing.
+            app.global::<SettingsBridge>().set_picker_open(false);
         }
     }
 
@@ -643,6 +686,7 @@ impl SettingsCtl {
         self.wall_anim = None;
         self.ask_open = false;
         self.stale = true;
+        self.picker_do(|p, _| p.outside());
         if let Some(app) = self.weak.upgrade() {
             let b = app.global::<SettingsBridge>();
             b.set_find_text("".into());
@@ -671,8 +715,8 @@ impl SettingsCtl {
                 actions::folder_picked(&self.deps.prefs, dir);
                 self.refresh_if_visible();
             }
-            SettingsMsg::Dropper(_) => {
-                // picker: Task 42 hands the answer to the open picker.
+            SettingsMsg::Dropper(r) => {
+                self.picker_do(|p, _| p.dropper_done(r));
             }
             SettingsMsg::Changed => {
                 if self.dirty.swap(false, Ordering::SeqCst) {
@@ -714,9 +758,11 @@ impl SettingsCtl {
             self.event(Event::EditorCancel);
             return true;
         }
-        if b.get_picker_open() {
-            // picker: Task 42 reverts what the picker wrote before it closes.
-            b.set_picker_open(false);
+        if self.picker.is_open() {
+            // The picker reverts what it wrote, then closes.
+            self.picker_do(|p, _| {
+                p.escape();
+            });
             return true;
         }
         if b.get_select_open() {
@@ -852,7 +898,7 @@ impl SettingsCtl {
         let flash = self.flash_strength();
         let ctx = RowCtx {
             format,
-            drafts: &self.drafts,
+            drafts: self.picker.fields(),
             hair,
             flash_row: self.flash.as_ref().and_then(|f| f.row.as_deref()),
             flash_section: self.flash.as_ref().and_then(|f| f.section.as_deref()),
@@ -1049,7 +1095,7 @@ impl SettingsCtl {
                     colour: colour_of(&value),
                     text: text.into(),
                     wide: format != ColourFormat::Hex,
-                    open: false,
+                    open: self.picker.is_open_for(&key, true),
                     label: label.into(),
                     key: key.into(),
                 }
@@ -1196,42 +1242,200 @@ impl SettingsCtl {
         self.rebuild();
     }
 
-    // ---- colour codes (picker: Task 42 owns the popover, the swatch and the dropper) -------------------
+    // ---- colour codes, the popover and the dropper (PickerCtl owns the session) ------------------------
 
-    /// The colour row `id` of the page now.
-    fn colour_row(&self, id: &str) -> Option<(String, flare_theme::colour_contrast::AlphaRange)> {
-        let built = self.built.as_ref()?;
-        let row = flare_settings::page::row_of(&built.model, id)?;
+    /// What the colour row (or editor well) `id` holds now.
+    fn colour_info(
+        built: Option<&Built>,
+        look: &LookStore,
+        id: &str,
+        in_editor: bool,
+    ) -> Option<RowColour> {
+        if in_editor {
+            return Self::well_info(look, id);
+        }
+        let row = flare_settings::page::row_of(&built?.model, id)?;
         match &row.control {
-            Control::Colour { value, range, .. } => Some((value.clone(), *range)),
+            Control::Colour {
+                value,
+                range,
+                alpha_disabled,
+            } => Some(RowColour {
+                label: row.label.clone(),
+                value: value.clone(),
+                stored: row.reset.then(|| value.clone()),
+                range: *range,
+                alpha_disabled: *alpha_disabled,
+            }),
             _ => None,
         }
     }
 
+    /// A well of the theme editor: its colour in force and what the draft stores.
+    fn well_info(look: &LookStore, key: &str) -> Option<RowColour> {
+        let draft = look.draft()?;
+        let drawn = resolve_custom_theme(&draft, None);
+        let (label, value, stored, alpha_max) = match key {
+            "bg" => (
+                "Background".to_string(),
+                draft.bg.clone(),
+                Some(draft.bg.clone()),
+                1.0,
+            ),
+            "fg" => (
+                "Foreground".to_string(),
+                draft.fg.clone(),
+                Some(draft.fg.clone()),
+                1.0,
+            ),
+            "cursor" => (
+                "Cursor".to_string(),
+                draft.cursor.clone(),
+                Some(draft.cursor.clone()),
+                1.0,
+            ),
+            "selection" => (
+                "Selection".to_string(),
+                draft
+                    .selection
+                    .clone()
+                    .unwrap_or_else(|| drawn.selection_background.clone()),
+                draft.selection.clone(),
+                254.0 / 255.0,
+            ),
+            k => {
+                let i = ANSI_KEYS.iter().position(|a| *a == k)?;
+                (
+                    k.to_string(),
+                    draft.ansi[i].clone().unwrap_or_else(unset_ansi),
+                    draft.ansi[i].clone(),
+                    1.0,
+                )
+            }
+        };
+        Some(RowColour {
+            label,
+            value,
+            stored,
+            range: flare_theme::colour_contrast::AlphaRange {
+                alpha: true,
+                alpha_min: 0.0,
+                alpha_max,
+            },
+            alpha_disabled: false,
+        })
+    }
+
+    /// Runs `f` against the picker with its world, applies the events it produced, redraws the
+    /// popover and keeps the 16 ms frame timer running only while a write is queued.
+    fn picker_do<R>(&mut self, f: impl FnOnce(&mut PickerCtl, &PickerCtx) -> R) -> Option<R> {
+        let app = self.weak.upgrade()?;
+        let scale = Self::scale_of(&app);
+        let size = app.window().size();
+        let window = (
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        );
+        let built = &self.built;
+        let look = &self.deps.look;
+        let lookup =
+            |id: &str, in_editor: bool| Self::colour_info(built.as_ref(), look, id, in_editor);
+        let ctx = PickerCtx {
+            prefs: &self.deps.prefs,
+            window,
+            lookup: &lookup,
+            seam: crate::e2e::global().env(&["FLARE_E2E", "_PICK_COLOUR"].concat()),
+            post: &self.deps.post,
+        };
+        let r = f(&mut self.picker, &ctx);
+        let events = self.picker.take_events();
+        let editor = events.iter().any(|e| matches!(e, Event::EditorSet { .. }));
+        for e in events {
+            self.event(e);
+        }
+        if editor {
+            self.rebuild();
+        }
+        self.push_picker(&app);
+        self.picker_frames();
+        Some(r)
+    }
+
+    fn picker_frames(&mut self) {
+        if !self.picker.needs_frame() {
+            self.picker_timer.stop();
+            return;
+        }
+        if self.picker_timer.running() {
+            return;
+        }
+        let me = self.me.clone();
+        self.picker_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(16),
+            move || {
+                if let Some(rc) = me.upgrade()
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.picker_do(|p, _| p.frame());
+                }
+            },
+        );
+    }
+
+    fn picker_open(&mut self, id: &str, in_editor: bool, anchor: [f64; 4]) {
+        let rect = Rect {
+            x: anchor[0],
+            y: anchor[1],
+            w: anchor[2],
+            h: anchor[3],
+        };
+        self.close_select();
+        self.picker_do(|p, ctx| p.open(id, in_editor, rect, ctx));
+    }
+
+    /// The popover's properties on the bridge, and the editor wells' open marks.
+    fn push_picker(&self, app: &AppWindow) {
+        let b = app.global::<SettingsBridge>();
+        let Some(v) = self.picker.view(&self.deps.prefs) else {
+            b.set_picker_open(false);
+            return;
+        };
+        b.set_picker_x(v.x as f32);
+        b.set_picker_y(v.y as f32);
+        b.set_picker_label(v.label.as_str().into());
+        b.set_picker_hue(v.hue as f32);
+        b.set_picker_sat(v.sat as f32);
+        b.set_picker_val(v.val as f32);
+        b.set_picker_alpha(v.alpha as f32);
+        b.set_picker_solid(rgba_colour(&v.solid));
+        b.set_picker_start(rgba_colour(&v.start));
+        b.set_picker_now(rgba_colour(&v.now));
+        b.set_picker_hue_colour(rgba_colour(&v.hue_colour));
+        b.set_picker_alpha_on(v.alpha_on);
+        b.set_picker_alpha_disabled(v.alpha_disabled);
+        b.set_picker_dropper_on(v.dropper_on);
+        b.set_picker_format(v.format.into());
+        b.set_picker_sv_text(v.sv_text.as_str().into());
+        b.set_picker_hue_text(v.hue_text.as_str().into());
+        b.set_picker_alpha_text(v.alpha_text.as_str().into());
+        b.set_picker_sv_now(v.sv_now);
+        b.set_picker_hue_now(v.hue_now);
+        b.set_picker_alpha_now(v.alpha_now);
+        b.set_picker_open(true);
+    }
+
     fn colour_edited(&mut self, id: &str, text: &str) {
-        self.drafts.entry(id.to_string()).or_default().edit(text);
+        self.picker.field_edited(id, text);
     }
 
     fn colour_committed(&mut self, id: &str) {
-        let Some((value, range)) = self.colour_row(id) else {
-            return;
-        };
-        let stored = self
-            .drafts
-            .remove(id)
-            .and_then(|mut f| f.commit(&value, &range));
-        if let Some(stored) = stored {
-            self.event(Event::ColourCommit {
-                row: id.to_string(),
-                stored,
-            });
-        }
+        self.picker_do(|p, ctx| p.field_committed(id, ctx));
         self.rebuild();
     }
 
     fn colour_escape(&mut self, id: &str) {
-        if self.drafts.get_mut(id).is_some_and(CodeField::escape) {
-            self.drafts.remove(id);
+        if self.picker.field_escape(id) {
             self.rebuild();
         }
     }
@@ -2263,7 +2467,8 @@ mod tests {
         b.set_ask_open(true);
         let id = wall::wall_cards(&f.look)[0].id.clone();
         f.ctl.borrow_mut().event(Event::WallEdit { id });
-        b.set_picker_open(true);
+        b.invoke_colour_swatch("window-accent".into(), 300.0, 100.0, 36.0, 24.0);
+        assert!(b.get_picker_open());
         b.set_select_open(true);
         assert!(f.ctl.borrow_mut().escape(), "the question first");
         assert!(!b.get_ask_open());
@@ -2278,6 +2483,21 @@ mod tests {
         assert!(f.ctl.borrow_mut().escape(), "then the select");
         assert!(!b.get_select_open());
         assert!(!f.ctl.borrow_mut().escape(), "nothing left: the host's");
+    }
+
+    #[test]
+    fn the_swatch_opens_the_popover_and_escape_puts_the_theme_back() {
+        let f = fx();
+        let b = f.b();
+        b.invoke_colour_swatch("window-accent".into(), 300.0, 100.0, 36.0, 24.0);
+        assert!(b.get_picker_open());
+        assert_eq!(b.get_picker_label().as_str(), "Accent colour");
+        b.invoke_picker_hue_moved(0.7, false);
+        f.ctl.borrow_mut().picker_do(|p, _| p.frame());
+        assert!(ACCENT.get(&f.prefs).is_some(), "the drag was written");
+        b.invoke_picker_escape();
+        assert!(!b.get_picker_open());
+        assert_eq!(ACCENT.get(&f.prefs), None, "back to following the theme");
     }
 
     #[test]
