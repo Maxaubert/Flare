@@ -31,6 +31,9 @@ pub struct FontCtl {
     store: LookStore,
     host: Rc<RefCell<GridHost>>,
     refit: Option<Box<dyn FnMut(usize, usize)>>,
+    /// `--font` and `--font-pct` for this run (decision D13); they write nothing.
+    font_id: Option<String>,
+    font_pct: Option<u32>,
 }
 
 impl FontCtl {
@@ -39,7 +42,21 @@ impl FontCtl {
             store,
             host,
             refit: None,
+            font_id: None,
+            font_pct: None,
         }
+    }
+
+    /// The one-run face and size flags, laid over the store.
+    pub fn with_overrides(mut self, font_id: Option<String>, font_pct: Option<u32>) -> Self {
+        self.font_id = font_id;
+        self.font_pct = font_pct;
+        self
+    }
+
+    /// The size percent in force: this run's flag, else the settings.
+    pub fn pct(&self) -> u32 {
+        self.font_pct.unwrap_or_else(|| self.store.font_pct())
     }
 
     /// Where a changed grid size goes: `TabHost::refit_all` for every open tab.
@@ -51,10 +68,19 @@ impl FontCtl {
     /// Gives the grid the face and size in force for the active tab. A no-op when neither changed.
     /// Returns the new `(cols, rows)` when the grid changed (every tab has been refitted then).
     pub fn apply(&mut self, active_override: Option<i32>) -> Option<(usize, usize)> {
-        let px = effective_px(active_override, self.store.font_pct());
-        let families = font_families(self.store.font_id());
+        let px = effective_px(active_override, self.pct());
+        let id = self
+            .font_id
+            .as_deref()
+            .unwrap_or_else(|| self.store.font_id());
+        let families = font_families(id);
         let refs: Vec<&str> = families.iter().map(String::as_str).collect();
-        let dims = self.host.borrow_mut().set_font(&refs, px as f32)?;
+        // A busy grid (a re-entrant moment) keeps its face; the next apply catches up.
+        let dims = self
+            .host
+            .try_borrow_mut()
+            .ok()?
+            .set_font(&refs, px as f32)?;
         if let Some(refit) = self.refit.as_mut() {
             refit(dims.0, dims.1);
         }
@@ -72,7 +98,7 @@ impl FontCtl {
         if !ctrl || delta_y == 0.0 || !delta_y.is_finite() {
             return WheelAction::PassThrough;
         }
-        let current = effective_px(*active_override, self.store.font_pct());
+        let current = effective_px(*active_override, self.pct());
         let next = zoom_step(current, if delta_y > 0.0 { 1 } else { -1 });
         *active_override = Some(next);
         self.apply(*active_override);
@@ -187,7 +213,7 @@ mod tests {
         let before = (
             r.store.font_pct(),
             r.store.font_id(),
-            r.prefs.get("flare.term.font-pct"),
+            r.prefs.get("flare.term.fontPct"),
             r.prefs.get("flare.term.zoom"),
         );
         let mut ov = None;
@@ -197,7 +223,7 @@ mod tests {
             (
                 r.store.font_pct(),
                 r.store.font_id(),
-                r.prefs.get("flare.term.font-pct"),
+                r.prefs.get("flare.term.fontPct"),
                 r.prefs.get("flare.term.zoom")
             ),
             before

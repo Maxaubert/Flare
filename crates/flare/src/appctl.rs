@@ -51,6 +51,7 @@ use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::chords::{self, ChordTarget, Dispatch};
+use crate::font_ctl::{FontCtl, effective_px};
 use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
@@ -62,6 +63,7 @@ use crate::tabs_ui::{
     GeomData, MarkRole, SideDrag, StripDrag, View, ViewInput, build_view, slot_to_model, sync_rows,
 };
 use crate::{AppWindow, MenuRow, OverflowRow, Place, StripGeom, TabRow};
+use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
 /// `slint::invoke_from_event_loop` closures: the headless platform has no event loop proxy, and an
@@ -177,6 +179,8 @@ pub struct AppCtl {
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
     working: HashMap<String, u64>,
     ended: bool,
+    /// The grid's face and size (Task 27); set by the window after the controller is made.
+    font: Option<FontCtl>,
 }
 
 /// Binds one callback of the window to a method of the controller.
@@ -294,6 +298,7 @@ impl AppCtl {
             last_saved: None,
             working: HashMap::new(),
             ended: false,
+            font: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -558,6 +563,8 @@ impl AppCtl {
         if want_id != self.source_id {
             self.source_id = want_id;
             (self.deps.set_grid_source)(want.map(|w| w.1));
+            // The tab in front may wear its own zoom.
+            self.apply_font();
         }
 
         // Rule 37: nothing is written before the restore answered.
@@ -1327,6 +1334,61 @@ impl AppCtl {
         self.deps.host.set_dims(cols, rows, front.as_deref());
     }
 
+    /// The window hands over the font controller; the face and size in force apply at once.
+    pub fn set_font_ctl(&mut self, f: FontCtl) {
+        self.font = Some(f);
+        self.apply_font();
+    }
+
+    /// The face and size in force for the tab in front (its own zoom, else the settings). A change of
+    /// the cell grid refits every open tab, visible or not, through the resize path (Task 27).
+    pub fn apply_font(&mut self) {
+        let front = self.model.active_shell().map(|t| t.id.clone());
+        let ov = front.and_then(|id| self.deps.host.font_override(&id));
+        let Some(f) = self.font.as_mut() else { return };
+        if let Some((cols, rows)) = f.apply(ov)
+            && cols >= 2
+            && rows >= 1
+        {
+            self.grid_dims = (cols, rows);
+            self.deps.host.refit_all(cols, rows);
+        }
+        if let Some(app) = self.app() {
+            app.window().request_redraw();
+        }
+    }
+
+    /// Ctrl+wheel over the grid: the tab in front zooms one pixel per notch (never saved). False when
+    /// there is no shell in front to zoom.
+    pub fn zoom_front(&mut self, delta_y: f64) -> bool {
+        let Some(id) = self.model.active_shell().map(|t| t.id.clone()) else {
+            return false;
+        };
+        let Some(f) = self.font.as_mut() else {
+            return false;
+        };
+        if delta_y == 0.0 || !delta_y.is_finite() {
+            return false;
+        }
+        let ov = self.deps.host.font_override(&id);
+        let next = zoom_step(
+            effective_px(ov, f.pct()),
+            if delta_y > 0.0 { 1 } else { -1 },
+        );
+        self.deps.host.set_font_override(&id, Some(next));
+        // The front tab only: the others keep their size until they come to the front.
+        if let Some((cols, rows)) = f.apply(Some(next))
+            && cols >= 2
+            && rows >= 1
+        {
+            self.on_grid_dims(cols, rows);
+        }
+        if let Some(app) = self.app() {
+            app.window().request_redraw();
+        }
+        true
+    }
+
     /// Folders from a second launch: raise the window, then each folder is a new tab.
     pub fn handoff(&mut self, h: Handoff) {
         (self.deps.raise)();
@@ -1531,6 +1593,8 @@ impl ChordTarget for Target<'_> {
 
     fn toggle_fullscreen(&mut self) {
         if let Some(app) = self.0.app() {
+            // The UI turns solid and the backdrop comes off before the OS is asked (D7).
+            crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
             let w = app.window();
             w.set_fullscreen(!w.is_fullscreen());
         }
@@ -1884,6 +1948,44 @@ mod tests {
     fn file_tabs(f: &Fx) -> Option<usize> {
         let raw = std::fs::read_to_string(f.dir.path().join("tabs.json")).ok()?; // sync-ok: test code only, never the app
         Some(flare_tabs::restore::parse_tabs(&raw).tabs.len())
+    }
+
+    #[test]
+    fn ctrl_wheel_zooms_the_front_tab_only_and_a_switch_wears_each_tabs_own_size() {
+        use crate::host::{GridHost, GridPainter};
+        use flare_render::glyph::FakeGlyphs;
+        use flare_settings::look::LookStore;
+        let f = fx();
+        f.start_restore_and_wait();
+        let grid = Rc::new(RefCell::new(GridHost::new(
+            Box::new(FakeGlyphs::new(8, 16)),
+            GridPainter::Cpu,
+        )));
+        grid.borrow_mut().resize(648, 264, 1.0);
+        f.ctl
+            .borrow_mut()
+            .set_font_ctl(FontCtl::new(LookStore::new(f.prefs.clone()), grid.clone()));
+        let base = f.ctl.borrow().grid_dims;
+        f.ctl.borrow_mut().new_tab();
+        f.ctl.borrow_mut().new_tab();
+        let b = f.ctl.borrow().front_id().unwrap();
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        assert_eq!(f.ctl.borrow().deps.host.font_override(&b), Some(15));
+        let zoomed = f.ctl.borrow().grid_dims;
+        assert_ne!(zoomed, base, "the grid follows the zoom");
+        // Switching to the other tab wears the settings' size again; back to b wears its zoom.
+        let rows = f.ctl.borrow().model.state.tabs.len();
+        assert!(rows >= 2);
+        let a = f.ctl.borrow().model.state.tabs[rows - 2].id.clone();
+        f.ctl.borrow_mut().model.pick(&a);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.ctl.borrow().grid_dims, base);
+        f.ctl.borrow_mut().model.pick(&b);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.ctl.borrow().grid_dims, zoomed);
+        // Nothing of it is stored.
+        assert_eq!(f.prefs.get("flare.term.fontPct"), None);
     }
 
     #[test]

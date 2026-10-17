@@ -33,7 +33,7 @@ use crate::backend::BackendOutcome;
 use crate::chrome_apply::{apply_chrome, apply_to_host};
 pub use crate::config::LookOverrides;
 use crate::host::GridHost;
-use crate::material_ctl::{WindowMaterial, apply_in_order, order_for};
+use crate::material_ctl::{Order, WindowMaterial, order_for};
 
 // ---- the two sides of an apply -----------------------------------------------------------------
 
@@ -50,6 +50,8 @@ pub trait LookMaterial {
     fn supported(&self) -> bool;
     fn set_solid_ground(&mut self, hex: &str, edges: WindowEdges, now: Instant);
     fn set_glass(&mut self, on: bool, now: Instant);
+    /// What the material wears now: false when the OS refused the backdrop or full screen holds it off.
+    fn glass_on(&self) -> bool;
 }
 
 /// The window material shared with the window's own timer and state callbacks.
@@ -73,6 +75,9 @@ impl LookMaterial for SharedMaterial {
         if let Some(m) = self.borrow_mut().as_mut() {
             m.set_glass(on, now);
         }
+    }
+    fn glass_on(&self) -> bool {
+        self.borrow().as_ref().is_some_and(WindowMaterial::glass_on)
     }
 }
 
@@ -159,7 +164,10 @@ pub struct LookCtl {
     shared: Option<SharedMaterial>,
     /// The window was created transparent on the GPU renderer (decision D8).
     outcome_glass: bool,
+    /// What the UI last wore: glass only when the material wore it too.
     was_glass: bool,
+    /// What the settings last asked of the material.
+    was_wanted: bool,
     last_light: bool,
     queued: Arc<AtomicBool>,
     scheduler: Arc<dyn Fn() + Send + Sync>,
@@ -209,6 +217,7 @@ impl LookCtl {
             shared: None,
             outcome_glass: glass_possible,
             was_glass: false,
+            was_wanted: false,
             last_light: false,
             queued: Arc::new(AtomicBool::new(false)),
             scheduler,
@@ -228,6 +237,27 @@ impl LookCtl {
         }
         CURRENT.with(|cur| *cur.borrow_mut() = Some(rc.clone()));
         rc
+    }
+
+    /// Puts this controller where the window's state changes find it, without listening to the store
+    /// (`--e2e` and the headless-style runs apply once, with overrides).
+    pub fn install_quiet(self) -> Rc<RefCell<LookCtl>> {
+        let rc = Rc::new(RefCell::new(self));
+        CURRENT.with(|cur| *cur.borrow_mut() = Some(rc.clone()));
+        rc
+    }
+
+    /// Runs `f` on the thread's controller; false when there is none or it is busy.
+    pub fn with_current(f: impl FnOnce(&mut LookCtl)) -> bool {
+        let rc = CURRENT.with(|c| c.borrow().clone());
+        let Some(rc) = rc else { return false };
+        match rc.try_borrow_mut() {
+            Ok(mut ctl) => {
+                f(&mut ctl);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Lets go of the thread's controller (the window closed).
@@ -297,29 +327,87 @@ impl LookCtl {
         apply_look(&self.snapshot().as_input(self.glass_usable()))
     }
 
+    /// The same look with the ground opaque: what the window wears while the material is not glass.
+    fn opaque_look(&self) -> AppliedLook {
+        apply_look(&self.snapshot().as_input(false))
+    }
+
     /// Reads the settings and wears them: the UI and the material, in the order the glass change needs.
-    /// While no material is attached the window stays opaque (no translucent frame without a backdrop).
+    /// While no material is attached the window stays opaque (no translucent frame without a backdrop),
+    /// and the UI wears glass only when the material does: a refused backdrop or a full screen leaves
+    /// the window solid (rule 74).
     pub fn apply_now(&mut self) {
         self.queued.store(false, Ordering::SeqCst);
         let look = self.current_look();
         let now = Instant::now();
-        let order = order_for(self.was_glass, look.glass);
-        let glass_changed = look.glass != self.was_glass;
-        let Self { ui, material, .. } = self;
-        apply_in_order(
-            order,
-            || ui.apply(&look),
-            || {
-                if let Some(m) = material.as_mut() {
-                    m.set_solid_ground(&look.solid_ground, look.edges, now);
-                    if glass_changed {
-                        m.set_glass(look.glass, now);
-                    }
-                }
-            },
-        );
-        self.was_glass = look.glass;
-        self.last_light = look.light;
+        let wanted_changed = look.glass != self.was_wanted;
+        let material_first = order_for(self.was_glass, look.glass) == Order::MaterialThenUi;
+        if material_first {
+            self.apply_material(&look, wanted_changed, now);
+        }
+        let worn_glass = look.glass && self.material.as_ref().is_some_and(|m| m.glass_on());
+        let worn = if look.glass && !worn_glass {
+            self.opaque_look()
+        } else {
+            look.clone()
+        };
+        self.ui.apply(&worn);
+        if !material_first {
+            self.apply_material(&look, wanted_changed, now);
+        }
+        self.was_glass = worn_glass;
+        self.was_wanted = look.glass;
+        self.last_light = worn.light;
+    }
+
+    fn apply_material(&mut self, look: &AppliedLook, wanted_changed: bool, now: Instant) {
+        if let Some(m) = self.material.as_mut() {
+            m.set_solid_ground(&look.solid_ground, look.edges, now);
+            if wanted_changed {
+                m.set_glass(look.glass, now);
+            }
+        }
+    }
+
+    /// Before the window goes full screen: the UI turns solid FIRST, then the backdrop comes off (D7).
+    pub fn before_fullscreen(&mut self) {
+        let Some(shared) = self.shared.clone() else {
+            return;
+        };
+        if self.was_glass {
+            let opaque = self.opaque_look();
+            self.ui.apply(&opaque);
+            self.was_glass = false;
+        }
+        if let Ok(mut m) = shared.try_borrow_mut()
+            && let Some(m) = m.as_mut()
+        {
+            m.before_fullscreen();
+        }
+    }
+
+    /// The window was maximised, restored, moved or went full screen. Going full screen turns the UI
+    /// solid before the backdrop leaves; when the backdrop comes back the UI follows it.
+    pub fn window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
+        let Some(shared) = self.shared.clone() else {
+            return;
+        };
+        if fullscreen && self.was_glass {
+            let opaque = self.opaque_look();
+            self.ui.apply(&opaque);
+            self.was_glass = false;
+        }
+        let after = {
+            let Ok(mut m) = shared.try_borrow_mut() else {
+                return;
+            };
+            let Some(m) = m.as_mut() else { return };
+            m.on_window_state(maximised, fullscreen, now);
+            m.glass_on()
+        };
+        if after != self.was_glass {
+            self.apply_now();
+        }
     }
 
     /// The window has a handle: keep the material and apply again (glass turning on goes backdrop first).
@@ -464,6 +552,8 @@ mod tests {
         log: Log,
         supported: bool,
         chrome_calls: Rc<Cell<usize>>,
+        on: bool,
+        refuse: bool,
     }
     impl LookMaterial for FakeMat {
         fn attached(&self) -> bool {
@@ -475,8 +565,12 @@ mod tests {
         fn set_solid_ground(&mut self, _hex: &str, _edges: WindowEdges, _now: Instant) {
             self.chrome_calls.set(self.chrome_calls.get() + 1);
         }
-        fn set_glass(&mut self, _on: bool, _now: Instant) {
+        fn set_glass(&mut self, on: bool, _now: Instant) {
             self.log.borrow_mut().push("material");
+            self.on = on && !self.refuse;
+        }
+        fn glass_on(&self) -> bool {
+            self.on
         }
     }
 
@@ -506,6 +600,8 @@ mod tests {
             log: log.clone(),
             supported: true,
             chrome_calls: Rc::new(Cell::new(0)),
+            on: false,
+            refuse: false,
         })
     }
 
@@ -609,6 +705,47 @@ mod tests {
             "{}",
             look.chrome.vars["--p-bg"]
         );
+    }
+
+    /// A UI that records the ground it was given.
+    struct GroundUi(Rc<RefCell<Vec<String>>>);
+    impl LookUi for GroundUi {
+        fn apply(&mut self, look: &AppliedLook) {
+            self.0.borrow_mut().push(look.chrome.vars["--p-bg"].clone());
+        }
+    }
+
+    #[test]
+    fn a_refused_backdrop_leaves_the_window_solid() {
+        let prefs = PrefStore::memory();
+        let store = LookStore::new(prefs);
+        let grounds = Rc::new(RefCell::new(Vec::new()));
+        let mut c = LookCtl::with_parts(
+            Box::new(GroundUi(grounds.clone())),
+            store.clone(),
+            true,
+            LookOverrides::default(),
+            noop_scheduler(),
+        );
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        c.attach_port(Box::new(FakeMat {
+            log: log.clone(),
+            supported: true,
+            chrome_calls: Rc::new(Cell::new(0)),
+            on: false,
+            refuse: true,
+        }));
+        store.set_see_through(40);
+        c.apply_now();
+        let last = grounds.borrow().last().cloned().unwrap();
+        assert_eq!(last.len(), 7, "opaque after a refusal: {last}");
+        assert!(!c.was_glass);
+        // Another change does not ask the OS again and stays solid.
+        log.borrow_mut().clear();
+        store.set_see_through(50);
+        c.apply_now();
+        assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+        assert_eq!(grounds.borrow().last().unwrap().len(), 7);
     }
 
     struct FakeTab {

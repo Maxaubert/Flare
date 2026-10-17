@@ -46,6 +46,7 @@ use crate::appctl::{AppCtl, CloseDecision, Deps, KeyOutcome, Post, UiMsg};
 use crate::backend::BackendOutcome;
 use crate::config::{Args, RendererChoice};
 use crate::e2e;
+use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
@@ -468,6 +469,8 @@ pub fn run_window(
     let front: FrontCell = Rc::new(RefCell::new(None));
     let mut ctl: Option<CtlRc> = None;
     let mut session_end = None;
+    // A font setting changed: the grid takes the new face and size (Task 27).
+    let mut _font_sub = None;
     let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
@@ -605,6 +608,24 @@ pub fn run_window(
                 None
             }
         };
+        // The grid's face and size (Task 27): the settings, or this run's --font and --font-pct.
+        rc.borrow_mut().set_font_ctl(
+            FontCtl::new(LookStore::new(prefs.clone()), host.clone())
+                .with_overrides(args.look.font.clone(), args.look.font_pct),
+        );
+        _font_sub = Some(LookStore::new(prefs.clone()).on_look_change(|| {
+            let queued = slint::invoke_from_event_loop(|| {
+                let target = APP_CTL.with(|cell| cell.borrow().clone());
+                if let Some((rc, _)) = target
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.apply_font();
+                }
+            });
+            if queued.is_err() {
+                log::debug!("font: event loop closed");
+            }
+        }));
         stores = Some((tabs_store, window_store, prefs));
         ctl = Some(rc);
     }
@@ -745,9 +766,9 @@ pub fn run_window(
         );
         if args.e2e || sample {
             // Headless-style runs apply once, with their overrides, and never listen.
-            let mut ctl = ctl;
-            ctl.apply_now();
-            Rc::new(RefCell::new(ctl))
+            let rc = ctl.install_quiet();
+            rc.borrow_mut().apply_now();
+            rc
         } else {
             let rc = ctl.install();
             rc.borrow_mut().apply_now();
@@ -1045,14 +1066,14 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                if let Ok(mut m) = material.try_borrow_mut()
+                let (maximised, fullscreen) = (window.is_maximized(), window.is_fullscreen());
+                // The look controller keeps the UI and the material in step (D7); without one
+                // the material alone follows.
+                if !LookCtl::with_current(|l| l.window_state(maximised, fullscreen, Instant::now()))
+                    && let Ok(mut m) = material.try_borrow_mut()
                     && let Some(m) = m.as_mut()
                 {
-                    m.on_window_state(
-                        window.is_maximized(),
-                        window.is_fullscreen(),
-                        Instant::now(),
-                    );
+                    m.on_window_state(maximised, fullscreen, Instant::now());
                 }
                 let o = observe(window);
                 with_ctl(&mut |c| c.on_geometry(o));
@@ -1171,6 +1192,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                     MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
                     MouseScrollDelta::PixelDelta(p) => accum.borrow_mut().add(p.y, m.cell_h),
                 };
+                // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
+                if mods.get().control_key() {
+                    for _ in 0..notches.unsigned_abs().min(64) {
+                        with_ctl(&mut |c| {
+                            c.zoom_front(f64::from(notches.signum()));
+                        });
+                    }
+                    return EventResult::PreventDefault;
+                }
                 if notches != 0 {
                     let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
                     handle.wheel(notches, col, row);
