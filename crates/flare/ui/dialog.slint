@@ -1,5 +1,254 @@
-// The question and notice dialog (filled by Task 24).
+// modal-scrim: the only declaration of a scrim
+// The question and notice dialog (Task 24). PT Dialog.tsx on the core's Modal frame (Modal.tsx):
+// Escape cancels unless locked and is swallowed either way; a plain Tab (and Shift+Tab) moves
+// between the two buttons and never leaves the dialog; a press outside cancels unless locked;
+// focus lands on the primary button on open and again when the title changes.
+// Slint's StyledText has no line-height, so the body is not the 1.625 of PT (noted in the commit).
+import { Theme, Px } from "theme.slint";
 
-export component Dialog inherits Rectangle { }
+// One of the two buttons. PT: rounded-lg, px 14, py 6, 12.5 px weight 600.
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> is-primary: false;
+    in property <bool> danger: false;
+    in property <bool> ringed: false;
+    callback clicked();
+    property <color> base: root.is-primary ? (root.danger ? Theme.danger-fill : Theme.accent) : Theme.hover;
+    height: 30px;
+    width: lbl.preferred-width + 28px;
+    border-radius: 8px;
+    background: ta.has-hover && root.is-primary ? root.base.brighter(0.1) : root.base;
+    border-width: root.is-primary ? 0px : Px.hair();
+    border-color: Theme.divider;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        lbl := Text {
+            text: root.label;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: root.is-primary ? Theme.on-accent : (ta.has-hover ? Theme.text : Theme.text-soft);
+        }
+    }
+    // The keyboard focus ring: 2 px in accent-hi, drawn over the button.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: root.ringed ? Theme.accent-hi : transparent;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
 
-export component DialogPreview inherits Window { }
+export component Dialog inherits Rectangle {
+    in property <bool> open;
+    in property <string> title;
+    in property <styled-text> body;
+    in property <string> primary-label;
+    in property <string> cancel-label: "Cancel";
+    in property <bool> danger: false;
+    in property <bool> locked: false;
+    callback cancel();
+    callback confirm();
+
+    // 0 is Cancel, 1 is the primary button.
+    property <int> focus-idx: 1;
+    out property <bool> chrome-has-focus: fs.has-focus;
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> primary-x: primary-btn.absolute-position.x;
+    out property <length> primary-y: primary-btn.absolute-position.y;
+    out property <length> primary-w: primary-btn.width;
+    out property <length> primary-h: primary-btn.height;
+    out property <length> cancel-x: cancel-btn.absolute-position.x;
+    out property <length> cancel-y: cancel-btn.absolute-position.y;
+    out property <length> cancel-w: cancel-btn.width;
+    out property <length> cancel-h: cancel-btn.height;
+
+    public function focus-primary() {
+        root.focus-idx = 1;
+        fs.focus();
+    }
+
+    // Pointer-and-key frame: invisible and inert while closed.
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            root.focus-idx = 1;
+            fs.focus();
+        }
+    }
+    changed title => {
+        if root.open {
+            root.focus-idx = 1;
+            fs.focus();
+        }
+    }
+
+    // The scrim: a press outside the box cancels unless locked.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    scrim := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && !root.locked {
+                root.cancel();
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if !root.locked {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if e.text == Key.Return {
+                if root.focus-idx == 1 {
+                    root.confirm();
+                } else {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                root.focus-idx = 1 - root.focus-idx;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: min(420px, root.width - 48px);
+        height: col.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 24px;
+        drop-shadow-blur: 70px;
+        drop-shadow-color: #00000099;
+        // swallows presses inside the box, so they never reach the scrim
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+        col := VerticalLayout {
+            padding: 20px;
+            Text {
+                text: root.title;
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 14.5px;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Rectangle { height: 6px; }
+            StyledText {
+                text: root.body;
+                default-color: Theme.dim;
+                default-font-size: 12.5px;
+                default-font-family: Theme.font-ui;
+            }
+            Rectangle { height: 20px; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                cancel-btn := DialogButton {
+                    label: root.cancel-label;
+                    ringed: root.focus-idx == 0;
+                    clicked => { root.cancel(); }
+                }
+                primary-btn := DialogButton {
+                    label: root.primary-label;
+                    is-primary: true;
+                    danger: root.danger;
+                    ringed: root.focus-idx == 1;
+                    clicked => { root.confirm(); }
+                }
+            }
+        }
+    }
+}
+
+// The preview: a terminal stand-in under the dialog (it holds the focus until the dialog opens),
+// counts of what the dialog reported, and a TouchArea behind it that must never be reached.
+export component DialogPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 600px;
+    background: Theme.ground;
+
+    in-out property <bool> open;
+    in-out property <string> dialog-title;
+    in-out property <styled-text> body;
+    in-out property <string> primary-label;
+    in-out property <string> cancel-label: "Cancel";
+    in-out property <bool> danger;
+    in-out property <bool> locked;
+    in-out property <int> cancels;
+    in-out property <int> confirms;
+    in-out property <int> behind-clicks;
+    in-out property <string> term-key;
+    out property <bool> chrome-has-focus: dlg.chrome-has-focus;
+    out property <length> box-x: dlg.box-x;
+    out property <length> box-y: dlg.box-y;
+    out property <length> box-w: dlg.box-w;
+    out property <length> box-h: dlg.box-h;
+    out property <length> primary-x: dlg.primary-x;
+    out property <length> primary-y: dlg.primary-y;
+    out property <length> primary-w: dlg.primary-w;
+    out property <length> primary-h: dlg.primary-h;
+    out property <length> cancel-x: dlg.cancel-x;
+    out property <length> cancel-y: dlg.cancel-y;
+    out property <length> cancel-w: dlg.cancel-w;
+    out property <length> cancel-h: dlg.cancel-h;
+
+    public function focus-terminal() {
+        term.focus();
+    }
+
+    behind := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.behind-clicks += 1; }
+    }
+    term := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            root.term-key = e.text;
+            accept
+        }
+    }
+    dlg := Dialog {
+        open: root.open;
+        title: root.dialog-title;
+        body: root.body;
+        primary-label: root.primary-label;
+        cancel-label: root.cancel-label;
+        danger: root.danger;
+        locked: root.locked;
+        cancel => { root.cancels += 1; }
+        confirm => { root.confirms += 1; }
+    }
+}
