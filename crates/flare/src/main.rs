@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod backend;
 mod config;
 mod headless;
@@ -19,6 +21,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if args.probe_backend || args.screenshot.is_some() || args.bench_frames.is_some() {
+        attach_parent_console();
+    }
 
     if args.probe_backend {
         match backend::select_backend(args.renderer) {
@@ -70,3 +76,19 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+/// The release build has no console of its own (windows subsystem). A headless mode run from a
+/// terminal attaches to the parent's console so its output shows; redirected pipes and files
+/// are unaffected, and with no parent console this does nothing.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: AttachConsole takes a process id constant, touches no memory of ours and fails
+    // harmlessly (returns 0) when there is no parent console.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}

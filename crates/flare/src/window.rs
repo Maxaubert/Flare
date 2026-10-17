@@ -1,6 +1,6 @@
 //! The Slint window: wires the chrome, the grid host and the renderer notifier together.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,21 @@ fn overlay_text(
         GridPainter::Cpu => "cpu",
     };
     format!("renderer: {renderer}\ngrid: {grid}\nframe: {frame}\nmemory: {memory}")
+}
+
+/// Fires once: the first call to `fire` answers true, every later one false.
+#[derive(Debug, Default)]
+struct Once(bool);
+
+impl Once {
+    fn fire(&mut self) -> bool {
+        !std::mem::replace(&mut self.0, true)
+    }
+}
+
+/// Without a rendering notifier, a repaint is due when the grid is dirty.
+fn repaint_due(dirty: bool) -> bool {
+    dirty
 }
 
 /// Runs the window until it closes. `start` is main's start time, for the first-frame log.
@@ -69,13 +84,22 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
     };
 
     // Renders into the window's image now.
+    let no_notifier = Rc::new(Cell::new(false));
+    let first_software_frame = Rc::new(RefCell::new(Once::default()));
     let render_now = {
         let host = host.clone();
         let weak = app.as_weak();
+        let no_notifier = no_notifier.clone();
+        let first_software_frame = first_software_frame.clone();
         move || {
             let Some(app) = weak.upgrade() else { return };
-            if let Some(image) = host.borrow_mut().render() {
+            let image = host.borrow_mut().render();
+            if let Some(image) = image {
                 app.set_grid_image(image);
+                // No notifier means no AfterRendering: log the first frame from here.
+                if no_notifier.get() && first_software_frame.borrow_mut().fire() {
+                    log::info!("first frame after {} ms", start.elapsed().as_millis());
+                }
             }
         }
     };
@@ -117,6 +141,7 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
             })
     };
     if let Err(e) = notifier_result {
+        no_notifier.set(true);
         host.borrow_mut().detach_gpu();
         *note.borrow_mut() = Some(format!("no rendering notifier: {e}"));
         log::info!("grid on the CPU: no rendering notifier ({e})");
@@ -180,6 +205,20 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
         }
     });
 
+    // Without a notifier nothing re-renders a dirty grid, so poll for it (M2's live output).
+    let frame_timer = slint::Timer::default();
+    if no_notifier.get() {
+        frame_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), {
+            let host = host.clone();
+            let render_now = render_now.clone();
+            move || {
+                if repaint_due(host.borrow().is_dirty()) {
+                    render_now();
+                }
+            }
+        });
+    }
+
     app.show()?;
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
@@ -191,6 +230,7 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
     refresh_overlay();
     let result = app.run();
     drop(timer);
+    drop(frame_timer);
     result
 }
 
@@ -210,6 +250,20 @@ mod tests {
         assert!(text.starts_with("renderer: software (fallback: no adapter)\n"));
         assert!(text.contains("grid: cpu"));
         assert!(text.contains("frame: no frames"));
+    }
+
+    #[test]
+    fn once_fires_a_single_time() {
+        let mut once = Once::default();
+        assert!(once.fire());
+        assert!(!once.fire());
+        assert!(!once.fire());
+    }
+
+    #[test]
+    fn repaint_follows_dirty() {
+        assert!(repaint_due(true));
+        assert!(!repaint_due(false));
     }
 
     #[test]
