@@ -45,6 +45,7 @@ portable-pty, cosmic-text or swash, Velopack, cargo-nextest, cargo-deny, cargo-a
   to a usable prompt under 300 ms; idle memory at most a third of Prism Terminal's; heavy-output
   throughput at least twice Prism Terminal's with no frame over 33 ms (GPU); the software renderer
   at least matches Prism Terminal on all three.
+- **Every display scaling works** (owner, 2026-10-17 call: "it has to work on all sorts of different DPI scalings, like 150 or 200 percent"): 100, 125, 150, 175, 200, 225, 250 and 300 percent, on both renderers, including moving the window between monitors with different scalings. Every UI milestone screenshots that matrix and its tests cover fractional scales.
 - Each UI milestone's PR includes side-by-side screenshots of Flare and Prism Terminal on the same
   theme.
 - Builders: Sonnet (mechanical stages Haiku). Reviews: Opus. Never Fable.
