@@ -3,6 +3,12 @@ targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 version = 2
+# RUSTSEC-2026-0192 (ttf-parser unmaintained) reaches us only through cosmic-text 0.19.0 (pinned) -> fontdb 0.23.0.
+# No safe upgrade exists; it is an unmaintained notice, not a vulnerability. Drop this entry when cosmic-text
+# moves to a font parser that is maintained (check on each cosmic-text bump).
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by cosmic-text 0.19.0 via fontdb; no safe upgrade" },
+]
 
 [licenses]
 version = 2
