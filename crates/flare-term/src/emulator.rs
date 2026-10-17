@@ -14,7 +14,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52 as AlacrittyOsc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
-use flare_render::decor::RowSpan;
+use flare_render::decor::{Decor, DecorInk, RowSpan};
 use flare_render::grid::Grid;
 use flare_shells::cwd::{has_control, parse_osc9};
 
@@ -993,6 +993,64 @@ impl Emulator {
     }
 }
 
+/// The inputs of one frame's decoration (Task 16d). `paths`, `owner`, `cwd`, `now_ms` and
+/// `ink_key` go to the link scan; `hover` is the viewport cell under the pointer.
+pub struct DecorReq<'a> {
+    pub paths: &'a mut PathLinks,
+    pub owner: &'a str,
+    pub cwd: Option<&'a str>,
+    pub now_ms: u64,
+    pub ink_key: u32,
+    pub hover: Option<(usize, usize)>,
+    pub find_open: bool,
+    pub ink: Option<DecorInk>,
+}
+
+impl Emulator {
+    /// Everything one frame paints over the grid, on viewport rows. The link marks come from
+    /// `link_marks`, so a frame scans only the logical lines that changed.
+    pub fn decor(&mut self, req: &mut DecorReq) -> Decor {
+        let marks = self.link_marks(&mut *req.paths, req.owner, req.cwd, req.now_ms, req.ink_key);
+        let top = self.viewport_top();
+        let rows = self.view_rows();
+        let cols = self.cols();
+        let on_view = |pieces: &[Piece]| -> Vec<RowSpan> {
+            pieces
+                .iter()
+                .filter_map(|p| {
+                    let r = p.row.checked_sub(top)?;
+                    (r < rows && p.col < cols).then_some(RowSpan {
+                        row: r,
+                        col: p.col,
+                        width: p.width.min(cols.saturating_sub(p.col)),
+                    })
+                })
+                .collect()
+        };
+        let links: Vec<RowSpan> = marks.iter().flat_map(|m| on_view(&m.pieces)).collect();
+        let hover = match req.hover {
+            Some((row, col)) => self
+                .link_at_view(row, col)
+                .map(|m| on_view(&m.pieces))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let (find, find_active) = if req.find_open {
+            self.find_spans()
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        Decor {
+            selection: self.sel_spans(),
+            find,
+            find_active,
+            links,
+            hover,
+            ink: req.ink,
+        }
+    }
+}
+
 /// A match's pieces that fall on the viewport `top..top + rows`, as viewport rows.
 fn visible_pieces(m: FindMatch, cols: usize, top: usize, rows: usize) -> Vec<RowSpan> {
     m.pieces(cols)
@@ -1734,5 +1792,99 @@ mod tests {
         marks(&mut e);
         let c = e.context_at(0, 1, &mut PathLinks::new(), "t1", None, 0);
         assert_eq!(c.link_text.as_deref(), Some("https://github.com/x"));
+    }
+
+    fn decor_of(
+        e: &mut Emulator,
+        pl: &mut PathLinks,
+        hover: Option<(usize, usize)>,
+        find_open: bool,
+    ) -> Decor {
+        e.decor(&mut DecorReq {
+            paths: pl,
+            owner: "t1",
+            cwd: None,
+            now_ms: 0,
+            ink_key: 1,
+            hover,
+            find_open,
+            ink: None,
+        })
+    }
+
+    #[test]
+    fn selection_find_and_links_all_appear_in_one_decor() {
+        let mut e = Emulator::new(40, 4);
+        e.feed(b"see https://example.com/x alpha\r\nalpha");
+        e.find_set("alpha");
+        count_all(&mut e);
+        e.find_next("alpha", true);
+        e.sel_apply(sel(false, 0, 0, 0, 2));
+        let d = decor_of(&mut e, &mut PathLinks::new(), None, true);
+        assert!(!d.selection.is_empty());
+        assert!(!d.find.is_empty());
+        assert!(!d.find_active.is_empty());
+        assert!(!d.links.is_empty());
+    }
+
+    #[test]
+    fn find_pieces_appear_only_while_the_bar_is_open() {
+        let mut e = Emulator::new(40, 4);
+        e.feed(b"alpha beta alpha");
+        e.find_set("alpha");
+        count_all(&mut e);
+        e.find_next("alpha", true);
+        let closed = decor_of(&mut e, &mut PathLinks::new(), None, false);
+        assert!(closed.find.is_empty() && closed.find_active.is_empty());
+        let open = decor_of(&mut e, &mut PathLinks::new(), None, true);
+        assert!(!open.find.is_empty() && !open.find_active.is_empty());
+    }
+
+    #[test]
+    fn rows_are_viewport_rows() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..9 {
+            e.feed(format!("l{i}\r\n").as_bytes());
+        }
+        e.feed(b"l9");
+        e.scroll_view(3);
+        let top = e.viewport_top();
+        e.sel_apply(sel(false, top + 1, 0, top + 1, 2));
+        let d = decor_of(&mut e, &mut PathLinks::new(), None, false);
+        assert_eq!(
+            d.selection,
+            vec![RowSpan {
+                row: 1,
+                col: 0,
+                width: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn a_hovered_link_is_in_hover_too() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"see https://a.io/x now");
+        let d = decor_of(&mut e, &mut PathLinks::new(), Some((0, 6)), false);
+        assert!(!d.links.is_empty());
+        assert_eq!(d.hover, d.links);
+        let d = decor_of(&mut e, &mut PathLinks::new(), Some((0, 0)), false);
+        assert!(d.hover.is_empty());
+    }
+
+    #[test]
+    fn a_big_scrollback_frame_stays_fast() {
+        let mut e = Emulator::new(80, 24);
+        for i in 0..10_200 {
+            e.feed(format!("https://x.io/{i}\r\n").as_bytes());
+        }
+        let mut pl = PathLinks::new();
+        decor_of(&mut e, &mut pl, None, false);
+        let first = e.lines_scanned();
+        assert!(first <= 24, "the first frame scanned {first} lines");
+        for _ in 0..9 {
+            decor_of(&mut e, &mut pl, None, false);
+        }
+        assert_eq!(e.lines_scanned(), first);
     }
 }

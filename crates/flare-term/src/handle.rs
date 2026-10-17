@@ -4,12 +4,13 @@
 //! FAIR lock in slices of at most 64 KiB (so the UI's `snapshot` gets its turn between slices), and
 //! every reply the emulator makes goes back to the pty without counting as typing (rule 9, rule 10).
 
-use crate::emulator::{Emulator, ModeSnapshot, TermEvent};
+use crate::emulator::{DecorReq, Emulator, ModeSnapshot, TermEvent};
 use crate::keys::KeyEvent;
 use crate::replies::bell_gate;
 use crate::session::{SessionManager, SessionSink};
 use crate::wheel::{WheelAction, WheelContext, wheel_action};
 use alacritty_terminal::sync::FairMutex;
+use flare_render::decor::Decor;
 use flare_shells::env::PluginEnv;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -324,6 +325,12 @@ impl TermHandle {
     /// Read only: no dirty flag, no wake.
     pub fn with_emu_quiet<R>(&self, f: impl FnOnce(&Emulator) -> R) -> R {
         f(&self.emu.lock())
+    }
+
+    /// One frame's decoration (Task 16d). Locks the emulator (the link scan may run) and does not
+    /// mark the view dirty; a frame calls it right after `snapshot`.
+    pub fn decor(&self, req: &mut DecorReq) -> Decor {
+        self.emu.lock().decor(req)
     }
 
     pub fn kill(&self) {
