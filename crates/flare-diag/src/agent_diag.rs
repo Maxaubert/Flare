@@ -37,24 +37,6 @@ pub const WHY_MS: u64 = 1_000;
 /// A mark within this long of a restore carries `restored`.
 pub const RESTORED_MS: u64 = 60_000;
 
-/// Claude Code's own StopFailure kinds (Prism Terminal's `STOP_FAILURE_KINDS`); any other kind is
-/// pty bytes and is written as `other`.
-/// TODO(Task 2): replace with `flare_agent::signal::STOP_FAILURE_KINDS` once Task 2 is committed.
-const KNOWN_KINDS: &[&str] = &[
-    "rate_limit",
-    "overloaded",
-    "authentication_failed",
-    "oauth_org_not_allowed",
-    "account_on_hold",
-    "billing_error",
-    "invalid_request",
-    "model_not_found",
-    "server_error",
-    "max_output_tokens",
-    "cloud_credential_error",
-    "unknown",
-];
-
 /// The fields a diagnostics line may carry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DiagValue {
@@ -470,7 +452,13 @@ impl AgentDiag {
 
     /// A hook signal reached the tab. A failure kind outside Claude's own list is written as `other`.
     pub fn log_hook(&mut self, id: &str, state: &str, kind: Option<&str>, now: u64) {
-        let known = kind.map(|k| if KNOWN_KINDS.contains(&k) { k } else { "other" });
+        let known = kind.map(|k| {
+            if flare_agent::signal::STOP_FAILURE_KINDS.contains(&k) {
+                k
+            } else {
+                "other"
+            }
+        });
         let lines = self.fold.offer(id, state, known, now);
         self.write_hooks(lines, now);
         self.arm_sweep(now);
