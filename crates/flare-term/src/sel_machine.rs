@@ -222,11 +222,7 @@ impl SelMachine {
         self.scroll = drag_scroll_amount(d.past_css_px);
         let past = d.past_css_px != 0.0 && !self.block;
         let b = if past {
-            if d.past_css_px > 0.0 {
-                cols
-            } else {
-                0
-            }
+            if d.past_css_px > 0.0 { cols } else { 0 }
         } else {
             boundary_of(env, row, d.col, d.right)
         };
@@ -279,11 +275,7 @@ impl SelMachine {
 
     /// Every DRAG_SCROLL_MS while dragging: the lines to scroll (positive = toward newer).
     pub fn scroll_lines(&self) -> i32 {
-        if self.dragging {
-            self.scroll
-        } else {
-            0
-        }
+        if self.dragging { self.scroll } else { 0 }
     }
 
     /// After the caller scrolled: the end moves to the last (or first) visible row, column `cols`

@@ -48,8 +48,8 @@ const OPENABLE: &[&str] = &[
     "m4v", "wmv",
     // source code (never one whose default verb runs it: no py, js, sh, rb, pl, ps1, and no lua
     // or php, whose installers may register a run verb, and no jsx, which Adobe apps run)
-    "rs", "ts", "tsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift",
-    "css", "scss", "sql", "slint", "vue", "svelte",
+    "rs", "ts", "tsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift", "css",
+    "scss", "sql", "slint", "vue", "svelte",
 ];
 
 /// True when a click may open a file of this name. Unknown and runnable types answer false, and so

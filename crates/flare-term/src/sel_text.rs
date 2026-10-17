@@ -1,6 +1,6 @@
 //! The text of a selection, cell by cell (rule 21: one cell-to-text function).
 
-use crate::cells::{buffer_row_cells, BufferLike, CellInfo, LineLike, ScratchCell};
+use crate::cells::{BufferLike, CellInfo, LineLike, ScratchCell, buffer_row_cells};
 
 /// The text of a selection. `start` and `end` are boundaries `(row, b)` with `start <= end` in reading order
 /// (the caller orders them); a boundary at `b == cols` means the row end. Normal: first row from `start.b`
