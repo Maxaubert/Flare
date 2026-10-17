@@ -156,6 +156,48 @@ fn gpu_matches_cpu_on_a_transparent_ground() {
     }
 }
 
+/// Slint reads an imported texture as straight alpha (docs/material.md E3): under glass the grid
+/// goes through the un-premultiply pass; an opaque grid is handed over as painted.
+#[test]
+fn paint_straight_unpremultiplies_a_see_through_grid_only() {
+    let (device, queue) = device_or_skip!();
+    let mut fake = FakeGlyphs::new(6, 12);
+    let mut gpu = GpuPainter::new(&device, &queue);
+    let mut scene = empty_scene(32, 16);
+    scene.clear = flare_render::color::Rgba {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
+    // A premultiplied half-alpha fill, as the painter leaves a half-covered glyph pixel.
+    scene.rects.push(RectFill {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 8,
+        color: flare_render::color::Rgba {
+            r: 64,
+            g: 32,
+            b: 16,
+            a: 128,
+        },
+    });
+    let tex = gpu.paint_straight(&scene, &mut fake);
+    let got = read_texture(&device, &queue, &tex);
+    let px = |x: usize, y: usize| &got[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
+    for (g, want) in px(2, 2).iter().zip([128u8, 64, 32, 128]) {
+        assert!(g.abs_diff(want) <= 1, "{:?}", px(2, 2));
+    }
+    assert_eq!(px(20, 10), [0, 0, 0, 0], "a clear pixel stays clear");
+
+    // Opaque: the same bytes as the painted grid.
+    let opaque = empty_scene(32, 16);
+    let a = read_texture(&device, &queue, &gpu.paint(&opaque, &mut fake));
+    let b = read_texture(&device, &queue, &gpu.paint_straight(&opaque, &mut fake));
+    assert_eq!(a, b);
+}
+
 #[test]
 fn texture_is_importable() {
     let (device, queue) = device_or_skip!();

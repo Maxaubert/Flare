@@ -253,7 +253,9 @@ impl GridHost {
         if self.painter == GridPainter::Gpu
             && let Some(gpu) = self.gpu.as_mut()
         {
-            let texture = gpu.paint(&scene, self.glyphs.as_mut());
+            // Slint reads an imported texture as straight alpha (docs/material.md E3): under glass
+            // the grid is un-premultiplied first, or text would be darker at its edges.
+            let texture = gpu.paint_straight(&scene, self.glyphs.as_mut());
             match Image::try_from(texture) {
                 Ok(img) => image = Some(img),
                 Err(e) => {
