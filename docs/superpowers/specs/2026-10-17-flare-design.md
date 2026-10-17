@@ -92,7 +92,7 @@ The builder's first task is to turn this into a complete checklist from Prism Te
 
 - **Tabs:** one shell and its folder per tab; strip along the top or as a sidebar (#162); new,
   close, reorder, rename, close confirmation; tab restore on start, with agent resume.
-- **Shells:** PowerShell 7, Windows PowerShell, cmd, WSL, Git Bash, as Prism Terminal detects them;
+- **Shells:** PowerShell 7, Windows PowerShell, cmd and WSL, as Prism Terminal detects them;
   the bundled ConPTY.
 - **The + button:** ask / fixed-folder modes, pinned and recent folders list.
 - **Start screen.**

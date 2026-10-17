@@ -111,7 +111,7 @@ losing the prompt line, scrollback, clean quit waiting for every shell. Heavy-ou
 
 ## Milestone 3: Tabs, restore, single instance (branch `m3-tabs`)
 
-Tab strip top and sidebar, new/close/reorder/rename, close confirmation, the + button with ask and
+Tab strip top and sidebar, new/close/reorder, close confirmation, the + button with ask and
 fixed-folder modes and the pinned/recent list, start screen, tab restore, single instance with
 argument hand-off, window state, closing the window quits.
 

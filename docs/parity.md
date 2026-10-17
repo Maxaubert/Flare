@@ -1141,26 +1141,39 @@ Scope is v0.55.6 dictation: Parakeet, warm-up and the GPU pack are in; dictate-a
 - [ ] promptLayout (8107): after a narrow then wide resize the prompt is whole and typing lands where the prompt is.
 - [ ] Installer side by side (M9): both apps installed; no shared lock, profile, verb, plugin or signal.
 
-## Open decisions for the owner
+## Decisions (2026-10-17)
 
-- [ ] O1: the cd line. The spec says the only command Flare writes is the agent resume, but Prism Terminal also writes an idle-prompt cd line (core/shared/termCwd.ts cdCommand, #99). Keep for parity (recommended) or drop.
-- [ ] O2: Slint key events may not expose the physical key; Ctrl+C/V by key code and the dictation key need a scan-code path (winit KeyCode or Win32 raw input) or an accepted limitation.
-- [ ] O3: alacritty_terminal reflows the whole grid on resize; confirm whether the cursor-line carry is still needed.
-- [ ] O4: Explorer verb label. Prism Terminal's rule is that it does not name the app ("Open terminal here"); the Flare brief says "Open in Flare". Owner chooses.
-- [ ] O5: resume in Git Bash, WSL and other shells is absent in Prism Terminal; keep parity or add.
-- [ ] O6: Sonara reads PRISM_TAB_ID; Flare exports FLARE_TAB_ID. Bridge with PRISM_TAB_ID or wait for Sonara's own change.
-- [ ] O7: the colour picker eyedropper depends on Chromium; drop at first (recommended) or add a Win32 screen pick.
-- [ ] O8: the See-through sub is 9 words against the 8-word copy rule; check whether the rule applies to that row.
-- [ ] O9: Flare's About line.
-- [ ] O10: keep the `prism.*` key names inside Flare's settings file (recommended, simplest import) or rename to `flare.*` with an import map.
-- [ ] O11: help panel close slide 220 ms (code) vs 260 ms (spec); use the code.
-- [ ] O12: whether Settings is a tab (as in Prism Terminal, recommended) or a page inside the window.
-- [ ] O13: dictation start cue leaking into the clip without echo cancellation: trim the first ~200 ms, delay capture (forbidden by the owner's rule), or use a communications capture path.
-- [ ] O14: shared dictation model folder and marker (`%LOCALAPPDATA%\PrismDictation`, `prism-installed.json`): share so a Prism user does not re-download about 3 GB, or a new `FlareDictation` folder.
-- [ ] O15: Velopack replaces the GitHub asset scan and the handoff script; one-click vs wizard install; release feed and tag scheme.
-- [ ] O16: native equivalents of the page-stack watchdog and IPC timing in the diagnostics.
-- [ ] O17: Flare icon artwork and the XTVERSION name string.
-- [ ] O18: Prism Terminal's spec lists Tab width and Show title bar rows that the shipped 0.55.x build does not have; port the shipped build.
-- [ ] O19: the media pause mechanism (native GSMTC through the `windows` crate) and the unzip step (PowerShell Expand-Archive or a Rust zip crate) each add a recorded dependency decision.
-- [ ] O20: `rename` appears in roadmap M3 but not in Prism Terminal (see M3); Explorer verbs sit in M9, not M3; schedule once.
-- [ ] O21: Git Bash. Prism Terminal v0.55.6 detects no Git Bash (core/main/shells.ts), but the design spec lists it. Port parity (no Git Bash, recommended for the parity sweep) or add it as a new feature with its own detection rule (for example `where bash.exe` filtered to a Git for Windows install, or the Git install path from the registry), quoting as bash and no resume (O5).
+Settled by the builder under the owner's standing rule (obvious picks decided, parity by default);
+only O17's artwork waits for the owner.
+
+- O1 the cd line: KEEP for parity (`termCwd.ts cdCommand`). The design's "only command is the
+  resume" is read as Prism Terminal's actual rule, which includes the idle-prompt cd line.
+- O2 physical keys: the builder of M2 reads physical keys (scan codes) through the window's native
+  key events (winit `KeyCode` or Win32), never a limitation; Ctrl+C/V and the dictation key match
+  the physical key.
+- O3 cursor-line carry: M2 tests whether `alacritty_terminal`'s reflow keeps the prompt line under
+  ConPTY; the carry is ported only if a test shows it is needed.
+- O4 Explorer verb: "Open in Flare" (both apps can be installed, so the label must say which).
+- O5 resume shells: parity, no new shells.
+- O6 tab id: `FLARE_TAB_ID` only; Sonara learns it in its own repo later (raised with the owner then).
+- O7 eyedropper: ported in M7 with a Win32 screen pick (parity); if it proves hard, it moves to M10.
+- O8 See-through sub: keep Prism Terminal's text verbatim (parity beats the copy rule here).
+- O9 About line: "Flare <version>. Made with Slint." plus the copyright line from LICENSE.
+- O10 setting keys: `flare.*` inside Flare, with an import map from Prism Terminal's `prism.*` keys.
+- O11 help panel close slide: 220 ms, as the code does.
+- O12 Settings: a tab, as in Prism Terminal.
+- O13 dictation start cue: do what Prism Terminal v0.55.6 does (parity).
+- O14 dictation models: Flare's own `%LOCALAPPDATA%\FlareDictation`; on first use it reuses models
+  already in `%LOCALAPPDATA%\PrismDictation` when their pinned checksums match (copy or hard link),
+  so nobody downloads 3 GB twice. Flare never writes into Prism's folder.
+- O15 Velopack: one-click per-user install, releases feed on GitHub Releases, tags `v<version>`;
+  the update chip and window stay as the UI (off until the repo is public).
+- O16 diagnostics: a native stall watchdog (UI thread heartbeat) and timing of slow work replace
+  the page-stack and IPC timings; M9 builder's call within that.
+- O17 icon: a placeholder until the owner picks artwork (asked at the next status call);
+  XTVERSION reports `Flare <version>`.
+- O18 rows: port the shipped v0.55.6 build, not Prism Terminal's spec.
+- O19 media pause: native GSMTC through the `windows` crate; unzip with a Rust zip crate. Both
+  recorded in README and THIRD-PARTY-NOTICES when added.
+- O20 rename: not in Prism Terminal, so not in Flare; Explorer verbs are M9.
+- O21 Git Bash: parity, not detected.
