@@ -128,8 +128,8 @@ component NavDivider inherits Rectangle {
 export component StartScreen inherits Rectangle {
     in property <[Place]> places;
     in property <string> version-text;          // "Version 0.1.0" or ""
-    in property <string> new-key;               // "Ctrl+T"
-    in property <string> settings-key;          // "Ctrl+,"
+    in property <string> new-key;               // from the chord table, e.g. Ctrl+T
+    in property <string> settings-key;          // from the chord table, e.g. Ctrl+,
     in property <bool> shown;                   // rising edge plays the entrance
     callback new-terminal();
     callback place-picked(string);
@@ -287,8 +287,8 @@ export component StartScreenPreview inherits Window {
 
     in property <[Place]> places;
     in property <string> version-text: "Version 0.1.0";
-    in property <string> new-key: "Ctrl+T";
-    in property <string> settings-key: "Ctrl+,";
+    in property <string> new-key;               // the tests set it from the chord table
+    in property <string> settings-key;
     in property <bool> shown: true;
     out property <length> new-y: sc.new-y;
 

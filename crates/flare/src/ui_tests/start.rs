@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use flare_tabs::keymap::{ChordId, key_label};
 use slint::{ModelRc, VecModel};
 
 use crate::ui_harness::{Frame, Harness};
@@ -41,8 +42,16 @@ fn place(path: &str, pinned: bool) -> Place {
     }
 }
 
+/// The preview with its key labels from the chord table, as AppCtl sets them.
+fn preview() -> StartScreenPreview {
+    let c = StartScreenPreview::new().unwrap();
+    c.set_new_key(key_label(ChordId::NewTab, true).into());
+    c.set_settings_key(key_label(ChordId::Settings, true).into());
+    c
+}
+
 fn screen(scale: f32, places: Vec<Place>) -> Harness<StartScreenPreview> {
-    let h = Harness::new(scale, W, H, || StartScreenPreview::new().unwrap());
+    let h = Harness::new(scale, W, H, preview);
     h.comp.set_places(ModelRc::new(VecModel::from(places)));
     h.comp.set_shown(true);
     h.advance(500);
@@ -222,7 +231,7 @@ fn no_places_means_one_divider_before_settings() {
 
 #[test]
 fn the_entrance_plays_once() {
-    let h = Harness::new(1.0, W, H, || StartScreenPreview::new().unwrap());
+    let h = Harness::new(1.0, W, H, preview);
     h.comp.set_places(ModelRc::new(VecModel::from(vec![])));
     // The first rest is the fade-out from the default `shown: true`: let it finish (each step
     // is drawn, so the animation is evaluated where the test expects it).

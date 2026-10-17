@@ -490,7 +490,8 @@ export component TabSidebarPreview inherits Window {
     in property <bool> sliding;
     in property <bool> carrying;
     in-out property <string> find-text <=> sb.find-text;
-    in property <string> find-key: "Ctrl+Shift+K";
+    // The label comes from the chord table (the tests set it); never typed by hand here.
+    in property <string> find-key;
     in property <string> new-tab-title: "New tab (Ctrl+T). Right-click for recent folders";
     out property <bool> find-has-focus: sb.find-has-focus;
     out property <length> slot-width: sb.slot-width;

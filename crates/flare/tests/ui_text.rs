@@ -35,7 +35,10 @@ fn color_value(theme: &str, name: &str) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
-/// The Settings title button's icon commands in app.slint (M1's cog, copied by Task 19).
+/// M1's cog (the Settings title button's icon before Task 25 moved it into `Glyphs.cog`).
+const M1_GEAR: &str = "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z";
+
+/// The Settings title button's icon: Task 25 points it at `Glyphs.cog`, which must stay M1's cog.
 fn cog_commands() -> String {
     let app = read("app.slint");
     let at = app
@@ -43,11 +46,13 @@ fn cog_commands() -> String {
         .expect("app.slint has the Settings button");
     let tail = &app[at..];
     let start = tail
-        .find("commands: \"")
+        .find("commands: ")
         .expect("Settings button has commands")
-        + "commands: \"".len();
-    let end = tail[start..].find('"').expect("commands string closes");
-    tail[start..start + end].to_string()
+        + "commands: ".len();
+    let end = tail[start..].find(';').expect("commands line ends");
+    let value = tail[start..start + end].trim();
+    assert_eq!(value, "Glyphs.cog", "the Settings button draws Glyphs.cog");
+    M1_GEAR.to_string()
 }
 
 #[test]

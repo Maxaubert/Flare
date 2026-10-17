@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use flare_tabs::keymap::{ChordId, key_label};
 use slint::platform::{Key, PointerEventButton};
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -36,6 +37,8 @@ fn harness(scale: f32) -> Harness<TabSidebarPreview> {
         TabSidebarPreview::new().expect("the preview builds")
     });
     h.comp.set_rows(ModelRc::new(VecModel::from(rows(1))));
+    h.comp
+        .set_find_key(key_label(ChordId::FindTab, true).into());
     h.advance(0);
     h
 }
