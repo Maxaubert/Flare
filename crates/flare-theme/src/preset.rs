@@ -33,7 +33,7 @@ pub fn find_preset(id: &str) -> Option<&'static Preset> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::{contrast_ratio, ANSI_KEYS};
+    use crate::ansi::{ANSI_KEYS, contrast_ratio};
     use crate::ground::DEFAULT_GROUND;
     use crate::testutil::fixture;
     use std::collections::HashSet;
@@ -190,10 +190,8 @@ mod tests {
             "crates/flare-theme/src/knob.rs",
             "crates/flare-theme/src/presets_data.rs",
         ];
-        // M2's own copy of the fallback ground (flare-term). Task 11c deletes it with its luminance copy.
-        const ALLOWED_UNTIL_11C: [&str; 1] = ["crates/flare-term/src/replies.rs"];
         for (name, text) in shipped_sources() {
-            if OWNERS.contains(&name.as_str()) || ALLOWED_UNTIL_11C.contains(&name.as_str()) {
+            if OWNERS.contains(&name.as_str()) {
                 continue;
             }
             let lower = text.to_lowercase();
@@ -208,12 +206,9 @@ mod tests {
 
     #[test]
     fn no_source_compares_a_luminance_with_a_typed_0_4() {
-        // Everyone compares with ground::LIGHT_GROUND. Task 11c deletes the replies.rs entry.
-        const ALLOWED_UNTIL_11C: [&str; 1] = ["crates/flare-term/src/replies.rs"];
+        // Everyone compares with ground::LIGHT_GROUND.
         for (name, text) in shipped_sources() {
-            if name == "crates/flare-theme/src/ground.rs"
-                || ALLOWED_UNTIL_11C.contains(&name.as_str())
-            {
+            if name == "crates/flare-theme/src/ground.rs" {
                 continue;
             }
             for line in text.lines() {
