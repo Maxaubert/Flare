@@ -1177,3 +1177,7 @@ only O17's artwork waits for the owner.
   recorded in README and THIRD-PARTY-NOTICES when added.
 - O20 rename: not in Prism Terminal, so not in Flare; Explorer verbs are M9.
 - O21 Git Bash: parity, not detected.
+- O22 click-to-open: an ALLOWLIST, not the Prism Terminal denylist (safer than parity). Only known
+  document, text, data, image, audio, video and non-running source types open; every other type is
+  revealed in Explorer, never opened. Trailing dot or space segments and `:` streams are refused,
+  and the extension is read from the canonicalised path. Folders keep opening. Rule 134.

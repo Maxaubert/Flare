@@ -33,77 +33,55 @@ pub struct PathHit {
     pub abs: String,
 }
 
-const RUNNABLE: &[&str] = &[
-    "exe",
-    "com",
-    "scr",
-    "pif",
-    "cpl",
-    "msc",
-    "msi",
-    "msp",
-    "msix",
-    "msixbundle",
-    "appx",
-    "appxbundle",
-    "appref-ms",
-    "application",
-    "gadget",
-    "bat",
-    "cmd",
-    "ps1",
-    "psm1",
-    "psd1",
-    "ps1xml",
-    "vbs",
-    "vbe",
-    "js",
-    "jse",
-    "wsf",
-    "wsh",
-    "ws",
-    "wsc",
-    "sct",
-    "hta",
-    "jar",
-    "py",
-    "pyw",
-    "pyc",
-    "pyz",
-    "rb",
-    "pl",
-    "sh",
-    "bash",
-    "ahk",
-    "au3",
-    "lnk",
-    "url",
-    "website",
-    "reg",
-    "inf",
-    "ins",
-    "isp",
-    "scf",
-    "shb",
-    "shs",
-    "library-ms",
-    "settingcontent-ms",
-    "search-ms",
-    "diagcab",
-    "xbap",
-    "vsto",
+/// The only file types a click may open (decided 2026-10-17, safer than Prism Terminal's denylist):
+/// documents, text, data, code that no default verb runs, images, audio and video. Everything else
+/// (unknown, runnable, scripts, shortcuts, disk images, certificates) is revealed, never opened.
+const OPENABLE: &[&str] = &[
+    // text and data
+    "txt", "md", "markdown", "rst", "log", "json", "jsonc", "yaml", "yml", "toml", "csv", "tsv",
+    "ini", "cfg", "conf", "xml", "lock", "diff", "patch", "env", // documents
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "epub",
+    // images
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "tif", "tiff", "avif", "heic",
+    // audio and video
+    "mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "mp4", "mkv", "webm", "mov", "avi",
+    "m4v", "wmv",
+    // source code (never one whose default verb runs it: no py, js, sh, rb, pl, ps1)
+    "rs", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift",
+    "css", "scss", "sql", "slint", "lua", "php", "vue", "svelte",
 ];
 
-/// True when Windows would run this file (a program, a script, a shortcut, an installer).
-pub fn is_runnable(file: &str) -> bool {
-    let name = file.rsplit(['\\', '/']).next().unwrap_or(file);
+/// True when a click may open a file of this name. Unknown and runnable types answer false, and so
+/// does every name Windows would read differently from what is shown (a trailing dot or space on
+/// any segment, a `:` stream).
+pub fn may_open(file: &str) -> bool {
+    let body = file.strip_prefix(r"\\?\").unwrap_or(file);
+    let rest = if has_drive_root(body) {
+        &body[2..]
+    } else {
+        body
+    };
+    if rest.contains(':') {
+        return false;
+    }
+    if rest
+        .split(is_sep)
+        .any(|seg| seg.ends_with('.') || seg.ends_with(' '))
+    {
+        return false;
+    }
+    let name = rest.rsplit(is_sep).next().unwrap_or(rest);
     match name.rfind('.') {
-        Some(i) => {
-            let ext = name[i + 1..].to_lowercase();
-            RUNNABLE.contains(&ext.as_str())
-        }
+        Some(i) => OPENABLE.contains(&name[i + 1..].to_lowercase().as_str()),
         None => false,
     }
+}
+
+/// The path as the file system names it (links and 8.3 names resolved), or None when it cannot be.
+fn canonical(abs: &str) -> Option<String> {
+    let c = std::fs::canonicalize(abs).ok()?; // sync-ok: runs on the click's own worker only
+    let s = c.to_string_lossy().into_owned();
+    Some(s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s))
 }
 
 fn has_drive_root(s: &str) -> bool {
@@ -369,7 +347,7 @@ pub enum Opened {
 }
 
 /// Open or reveal what `text` names, after resolving and checking it here. One unmetered stat.
-/// Clicking text must never start a program: a runnable file is revealed instead.
+/// Clicking text must never start a program: a file not on the allowlist is revealed instead.
 pub fn open_term_path(
     cwd: &str,
     text: &str,
@@ -381,7 +359,10 @@ pub fn open_term_path(
     let hit = path_kinds(cwd, &[text.to_string()], &gate, home)
         .into_iter()
         .next()??;
-    if mode == OpenMode::Reveal || (hit.kind == PathKind::File && is_runnable(&hit.abs)) {
+    if mode == OpenMode::Reveal
+        || (hit.kind == PathKind::File
+            && !(may_open(&hit.abs) && canonical(&hit.abs).is_some_and(|c| may_open(&c))))
+    {
         openers.reveal_path(&hit.abs);
         return Some(Opened::Revealed);
     }
@@ -529,17 +510,110 @@ mod tests {
     }
 
     #[test]
-    fn is_runnable_knows_programs_not_documents() {
+    fn may_open_allows_documents_media_and_safe_code_only() {
         for f in [
-            "a.exe", "b.BAT", "c.ps1", "d.lnk", "e.msi", "f.js", "g.vbs", "h.py", "i.url", "j.reg",
+            "a.pdf", "b.md", "c.png", "d.txt", "e.docx", "f.ts", "g.json", "h.MP4", "i.rs",
         ] {
-            assert!(is_runnable(f), "{f}");
+            assert!(may_open(f), "{f}");
         }
         for f in [
-            "a.pdf", "b.md", "c.png", "d.txt", "e.docx", "f.ts", "g.json", "README",
+            "a.exe",
+            "b.BAT",
+            "c.ps1",
+            "d.lnk",
+            "e.msi",
+            "f.js",
+            "g.vbs",
+            "h.py",
+            "i.url",
+            "j.reg",
+            "k.pif",
+            "l.scr",
+            "m.cpl",
+            "n.msc",
+            "o.hta",
+            "p.chm",
+            "q.jar",
+            "r.scf",
+            "s.xll",
+            "t.wsf",
+            "u.theme",
+            "v.themepack",
+            "w.iso",
+            "x.cer",
+            "y.docm",
+            "z.vhd",
+            "README",
+            "noext.",
+            "a.unknownext",
         ] {
-            assert!(!is_runnable(f), "{f}");
+            assert!(!may_open(f), "{f}");
         }
+    }
+
+    #[test]
+    fn trailing_dot_space_and_streams_are_refused() {
+        for f in [
+            r"C:\x\evil.exe.",
+            r"C:\x\evil.exe ",
+            r"C:\x\evil.txt.",
+            r"C:\x\ok.txt ",
+            r"C:\x\evil.exe:stream",
+            r"C:\x\ok.txt:evil.exe",
+            r"C:\x\dir.\ok.txt",
+            r"C:\x\dir \ok.txt",
+            r"C:\x\...\ok.txt",
+        ] {
+            assert!(!may_open(f), "{f}");
+        }
+        assert!(may_open(r"C:\x\ok.txt"));
+        assert!(may_open(r"C:\x y\ok.txt"));
+    }
+
+    #[test]
+    fn an_unknown_type_is_revealed_never_opened() {
+        let (d, root) = tree();
+        std::fs::write(d.path().join("disk.iso"), b"x").unwrap();
+        std::fs::write(d.path().join("noext"), b"x").unwrap();
+        let r = Rec::default();
+        for t in ["disk.iso", "noext", "run.bat"] {
+            assert_eq!(
+                open_term_path(&root, t, OpenMode::Open, &r, ""),
+                Some(Opened::Revealed),
+                "{t}"
+            );
+        }
+        assert!(lock(&r.opened).is_empty());
+    }
+
+    #[test]
+    fn a_trailing_dot_exe_is_revealed_never_opened() {
+        let (d, root) = tree();
+        std::fs::write(d.path().join("evil.exe"), b"x").unwrap();
+        let r = Rec::default();
+        for t in ["evil.exe.", "evil.exe ", "evil.exe:stream"] {
+            let got = open_term_path(&root, t, OpenMode::Open, &r, "");
+            assert_ne!(got, Some(Opened::Opened), "{t}");
+        }
+        assert!(lock(&r.opened).is_empty());
+    }
+
+    #[test]
+    fn the_extension_comes_from_the_canonical_path() {
+        // A link hides the real extension: the real one decides.
+        let (d, root) = tree();
+        let target = d.path().join("evil.exe");
+        std::fs::write(&target, b"x").unwrap();
+        let link = d.path().join("innocent.txt");
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            return; // no symlink privilege on this machine
+        }
+        let r = Rec::default();
+        assert_eq!(
+            open_term_path(&root, "innocent.txt", OpenMode::Open, &r, ""),
+            Some(Opened::Revealed)
+        );
+        assert!(lock(&r.opened).is_empty());
     }
 
     #[test]
