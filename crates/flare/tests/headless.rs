@@ -269,3 +269,152 @@ fn a_missing_bundle_fails_loudly_and_exits_three() {
         "no screenshot is written after a failed check"
     );
 }
+
+/// The scenes `--scene` takes, in the order the screenshot plan lists them.
+const SCENE_NAMES: [&str; 12] = [
+    "strip-3",
+    "strip-hover",
+    "strip-many",
+    "strip-list",
+    "sidebar-open",
+    "sidebar-find",
+    "sidebar-collapsed",
+    "start",
+    "menu-places",
+    "menu-tab",
+    "dialog-close",
+    "tip",
+];
+
+/// Runs `--scene <name>` at `scale` (software renderer, 1000x640 logical) and decodes the PNG.
+fn scene_png(name: &str, scale: &str) -> (TempDir, Decoded) {
+    let dir = TempDir::new(&format!("scene-{name}-{}", scale.replace('.', "_")));
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            name,
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--scale",
+            scale,
+            "--size",
+            "1000x640",
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "{name} at {scale}: exit {:?}, stderr {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let img = decode(&png);
+    (dir, img)
+}
+
+#[test]
+fn every_scene_renders_at_the_three_scales() {
+    for name in SCENE_NAMES {
+        for scale in ["1", "1.5", "2.25"] {
+            let (_dir, img) = scene_png(name, scale);
+            let s: f32 = scale.parse().expect("scale");
+            let want = ((1000.0 * s).round() as u32, (640.0 * s).round() as u32);
+            assert_eq!((img.0, img.1), want, "{name} at {scale}");
+            let corner = pixel(&img, 0, 0);
+            let mut differ = 0;
+            for y in 0..img.1 {
+                for x in 0..img.0 {
+                    if pixel(&img, x, y) != corner {
+                        differ += 1;
+                    }
+                }
+            }
+            assert!(
+                differ > 500,
+                "{name} at {scale}: only {differ} pixels differ from the corner"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unknown_scene_is_an_error() {
+    let dir = TempDir::new("scene-unknown");
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            "no-such-scene",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for name in SCENE_NAMES {
+        assert!(stderr.contains(name), "stderr names {name}: {stderr:?}");
+    }
+    assert!(!png.exists(), "no screenshot for an unknown scene");
+}
+
+#[test]
+fn scenes_differ_from_each_other() {
+    let (_a, strip) = scene_png("strip-3", "1");
+    let (_b, sidebar) = scene_png("sidebar-open", "1");
+    let mut differ = 0;
+    for y in 0..strip.1 {
+        for x in 0..strip.0 {
+            if pixel(&strip, x, y) != pixel(&sidebar, x, y) {
+                differ += 1;
+            }
+        }
+    }
+    assert!(differ > 5000, "only {differ} pixels differ");
+}
+
+#[test]
+fn the_strip_scene_has_crisp_dividers_at_every_scale() {
+    // The strip's divider colour (Theme.divider in the default theme).
+    const DIVIDER: [u8; 3] = [39, 39, 39];
+    for scale in ["1", "1.5", "2.25"] {
+        let s: f32 = scale.parse().expect("scale");
+        let hair = s.floor().max(1.0) as u32;
+        let (_dir, img) = scene_png("strip-3", scale);
+        // Below the tab labels, inside the strip; the mark's own line sits left of the strip.
+        let y = (28.0 * s).round() as u32;
+        let is_divider = |x: u32| {
+            let p = pixel(&img, x, y);
+            p.iter().zip(DIVIDER).all(|(a, b)| a.abs_diff(b) <= 2)
+        };
+        let mut runs = Vec::new();
+        let mut x = (44.0 * s).round() as u32;
+        while x < img.0 {
+            if is_divider(x) {
+                let start = x;
+                while x < img.0 && is_divider(x) {
+                    x += 1;
+                }
+                runs.push(x - start);
+            } else {
+                x += 1;
+            }
+        }
+        assert!(
+            runs.len() >= 2,
+            "scale {scale}: only {} dividers",
+            runs.len()
+        );
+        for run in runs {
+            assert_eq!(
+                run, hair,
+                "scale {scale}: a divider is {run} px, want {hair}"
+            );
+        }
+    }
+}

@@ -43,8 +43,25 @@ fn main() {
         || args.screenshot.is_some()
         || args.bench_frames.is_some()
         || args.live_screenshot.is_some()
+        || args.scene.is_some()
     {
         attach_parent_console();
+    }
+
+    // `--scene <name>` draws one fixed state of the window (Task 32) and exits, like --screenshot.
+    if args.scene.is_some() {
+        match headless::run_scene(&args) {
+            Ok(()) => std::process::exit(0),
+            Err(message) => {
+                eprintln!("flare: {message}");
+                let code = if message.starts_with("GPU unavailable") {
+                    2
+                } else {
+                    1
+                };
+                std::process::exit(code);
+            }
+        }
     }
 
     if args.probe_backend {
