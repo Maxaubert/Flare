@@ -26,6 +26,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWi
 pub const MAX_HANDOFF: usize = 65_536;
 pub const MAX_ARGS: usize = 256;
 pub const MAX_ARG_LEN: usize = 32_768;
+/// How long `PipeServer::stop` tries to reach its own pipe before it leaves the thread behind.
+const STOP_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceNames {
@@ -147,9 +149,26 @@ impl PipeServer {
             return;
         };
         self.stop.store(true, Ordering::SeqCst);
-        // Connect once so the blocked ConnectNamedPipe returns.
-        let _ = std::fs::OpenOptions::new().write(true).open(&self.pipe);
-        let _ = thread.join(); // sync-ok: stopping the worker at quit
+        // Connect once so the blocked ConnectNamedPipe returns. The one pipe instance may be busy
+        // with a client (a second launch mid-write, or one that connected and never closes): try
+        // for a bounded time, and never join a thread that was not unblocked, or the quit hangs.
+        let started = Instant::now();
+        let unblocked = loop {
+            match std::fs::OpenOptions::new().write(true).open(&self.pipe) {
+                Ok(_) => break true,
+                // The server already closed its pipe: the thread is on its way out.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break true,
+                Err(_) if started.elapsed() < STOP_WAIT => {
+                    std::thread::sleep(Duration::from_millis(20)); // sync-ok: quit, bounded by STOP_WAIT
+                }
+                Err(_) => break thread.is_finished(),
+            }
+        };
+        if unblocked {
+            let _ = thread.join(); // sync-ok: stopping the worker at quit; it was unblocked
+        } else {
+            log::warn!("the hand-off server is held by a client; leaving its thread behind");
+        }
     }
 }
 
@@ -447,5 +466,26 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         let again = serve(&n, |_| {}).unwrap();
         again.stop();
+    }
+
+    #[test]
+    fn stop_never_hangs_on_a_client_that_holds_the_pipe() {
+        let n = names_for_test();
+        let server = serve(&n, |_| {}).unwrap();
+        // A client connects and never writes or closes: the one instance stays busy.
+        let started = Instant::now();
+        let held = loop {
+            match std::fs::OpenOptions::new().write(true).open(&n.pipe) {
+                Ok(f) => break f,
+                Err(_) if started.elapsed() < Duration::from_secs(3) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("could not connect: {e}"),
+            }
+        };
+        let started = Instant::now();
+        server.stop();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(held);
     }
 }
