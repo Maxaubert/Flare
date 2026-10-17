@@ -77,7 +77,7 @@ mod tests {
             active: 0,
         });
         s.flush();
-        let raw = std::fs::read_to_string(&f).unwrap(); // sync-ok: test
+        let raw = std::fs::read_to_string(&f).unwrap(); // sync-ok: test code only, never the app
         assert_eq!(parse_tabs(&raw).tabs, vec![one("C:\\a")]);
         assert_eq!(s.load().tabs.len(), 1);
     }
@@ -107,7 +107,7 @@ mod tests {
         while !f.exists() && t.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let raw = std::fs::read_to_string(&f).unwrap(); // sync-ok: test
+        let raw = std::fs::read_to_string(&f).unwrap(); // sync-ok: test code only, never the app
         assert_eq!(parse_tabs(&raw), want);
     }
 
@@ -115,7 +115,7 @@ mod tests {
     fn store_loads_the_pending_save() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("tabs.json");
-        std::fs::write(&f, r#"{"tabs":[{"cwd":"C:\\old"}],"active":0}"#).unwrap(); // sync-ok: test
+        std::fs::write(&f, r#"{"tabs":[{"cwd":"C:\\old"}],"active":0}"#).unwrap(); // sync-ok: test code only, never the app
         let s = TabsStore::new(&f, Duration::from_secs(60));
         s.save(&SavedTabs {
             tabs: vec![one("C:\\new")],

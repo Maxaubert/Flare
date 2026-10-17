@@ -133,7 +133,7 @@ impl Fx {
                     .collect(),
                 active: opts.active,
             };
-            std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test
+            std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
         let prefs = PrefStore::memory();
         prep(&prefs);
@@ -1186,7 +1186,7 @@ fn a_handed_folder_is_a_new_tab_even_when_shown_already() {
         ..Opts::default()
     });
     let sub = f.dir.path().join("sub");
-    std::fs::create_dir(&sub).unwrap(); // sync-ok: test
+    std::fs::create_dir(&sub).unwrap(); // sync-ok: test code only, never the app
     f.restore();
     f.open_via_handoff("sub");
     f.pump_until("the tab", |f| f.rows() == 1);

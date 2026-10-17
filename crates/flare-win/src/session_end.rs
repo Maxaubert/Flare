@@ -133,12 +133,13 @@ impl SessionEndWatch {
             })
             .map_err(|e| e.to_string())?;
         match rx.recv() {
+            // sync-ok: startup, waits for the watcher thread to report
             Ok(Ok(hwnd)) => Ok(Self {
                 hwnd,
                 thread: Some(thread),
             }),
             Ok(Err(e)) => {
-                let _ = thread.join();
+                let _ = thread.join(); // sync-ok: startup failure, the watcher ends at once
                 Err(e)
             }
             Err(_) => Err("the session-end thread died".into()),
@@ -158,7 +159,7 @@ impl SessionEndWatch {
         if let Some(t) = self.thread.take() {
             // SAFETY: posting to a window of ours; a dead window just fails.
             unsafe { PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0) };
-            let _ = t.join();
+            let _ = t.join(); // sync-ok: quit, the watcher ends after WM_CLOSE
         }
     }
 }

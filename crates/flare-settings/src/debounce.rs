@@ -115,11 +115,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn wait<'a, T>(cv: &Condvar, g: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-    cv.wait(g).unwrap_or_else(PoisonError::into_inner)
+    cv.wait(g).unwrap_or_else(PoisonError::into_inner) // sync-ok: the debounced writer thread waits on its own condvar
 }
 
 fn wait_timeout<'a, T>(cv: &Condvar, g: MutexGuard<'a, T>, d: Duration) -> MutexGuard<'a, T> {
-    cv.wait_timeout(g, d)
+    cv.wait_timeout(g, d) // sync-ok: the debounced writer thread waits on its own condvar
         .map(|(g, _)| g)
         .unwrap_or_else(|e| e.into_inner().0)
 }

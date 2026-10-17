@@ -59,12 +59,12 @@ mod tests {
         let needle = ["\"FLARE_E2E", "_"].concat();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for entry in std::fs::read_dir(&dir).unwrap() {
-            // sync-ok: test
+            // sync-ok: test code only, never the app
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|e| e != "rs") || path.ends_with("e2e.rs") {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).unwrap(); // sync-ok: test
+            let text = std::fs::read_to_string(&path).unwrap(); // sync-ok: test code only, never the app
             // Only the code before the test module counts.
             let code = text.split("#[cfg(test)]").next().unwrap_or("");
             assert!(

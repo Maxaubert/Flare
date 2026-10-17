@@ -189,7 +189,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn wait<'a, T>(cv: &Condvar, g: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-    cv.wait(g).unwrap_or_else(PoisonError::into_inner)
+    cv.wait(g).unwrap_or_else(PoisonError::into_inner) // sync-ok: the atomic writer waits on its own worker, never the UI
 }
 
 #[cfg(test)]

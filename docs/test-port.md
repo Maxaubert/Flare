@@ -7,39 +7,39 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 
 | Crate | PT test file | Action | Note |
 |---|---|---|---|
-| flare | `core/renderer/components/Modal.test.ts` | port | one modal frame rules; the aria-modal source scan is dropped |
+| flare-tabs | `core/renderer/components/Modal.test.ts` | port (split: flare-tabs T9, flare T24) | one modal frame rules; the aria-modal source scan is dropped |
 | flare | `core/renderer/components/TabMark.test.ts` | port (partial) | mark assertions as render-model tests; DOM attribute and CSS class checks dropped |
-| flare | `core/renderer/lib/fitHold.test.ts` | port | hold the terminal size while the sidebar animates |
-| flare | `core/renderer/lib/hiddenTitle.test.ts` | port | tooltip only when text is cut or the label is hidden |
+| flare-tabs | `core/renderer/lib/fitHold.test.ts` | port | hold the terminal size while the sidebar animates |
+| flare-tabs | `core/renderer/lib/hiddenTitle.test.ts` | port | tooltip only when text is cut or the label is hidden |
 | flare | `core/renderer/lib/tabMark.test.ts` | port | which mark a tab wears for each indicator, state, front or back, rainbow |
-| flare | `core/renderer/lib/tipPlace.test.ts` | port | tooltip placement: centred under, inside right edge, above, beside and flip |
+| flare-tabs | `core/renderer/lib/tipPlace.test.ts` | port | tooltip placement: centred under, inside right edge, above, beside and flip |
 | flare | `core/renderer/styles/marks.test.ts` | dropped | CSS stylesheet test; its rules (every motion has a rule, reduced motion stills all, minimised pauses, transform-only motion) are re-pinned as Slint animation tests |
-| flare | `src/main/closeFlow.test.ts` | port | window close question state: veto, go-ahead, quit resume, install pre-agree |
+| flare-tabs | `src/main/closeFlow.test.ts` | port | window close question state: veto, go-ahead, quit resume, install pre-agree |
 | flare | `src/main/e2eOnly.test.ts` | port | every test-hook registration sits behind the test flag (re-expressed as a Rust test) |
-| flare | `src/main/planRestore.test.ts` | port | restore plan: folder gone, active index, claude newest and second newest, codex marker, no-agent no-resume |
-| flare | `src/main/tabsStore.test.ts` | port | tabs.json shape, cap 50, debounce, flush, pending load |
+| flare-tabs | `src/main/planRestore.test.ts` | port | restore plan: folder gone, active index, claude newest and second newest, codex marker, no-agent no-resume |
+| flare-tabs | `src/main/tabsStore.test.ts` | port | tabs.json shape, cap 50, debounce, flush, pending load |
 | flare | `src/renderer/src/components/modals.test.ts` | dropped | React source scan "declares no modal of its own"; kept as a review check that every dialog is its own module |
 | flare | `src/renderer/src/components/tabParts.test.ts` | dropped | reads TabStrip.tsx and TabSidebar.tsx source text; Slint has one tab component set, the rule is kept as a design rule |
 | flare | `src/renderer/src/components/termMenu.test.ts` | port | terminal menu rows fit what was clicked, Command help last, no Close tab |
-| flare | `src/renderer/src/lib/hoverReveal.test.ts` | port | open delay 60 ms, close grace 100 ms, hold |
-| flare | `src/renderer/src/lib/keymap.test.ts` | port | chord table, labels, agent hotkeys, vertical-only sidebar key, F1 and Ctrl+F rules, agent guard keys |
-| flare | `src/renderer/src/lib/restorePlan.test.ts` | port | peek placeholders and settleRestore |
-| flare | `src/renderer/src/lib/revealZones.test.ts` | port | sidebar reveal zone |
-| flare | `src/renderer/src/lib/sidebarRows.test.ts` | port | folder line and find-a-tab word matching |
-| flare | `src/renderer/src/lib/stripPlan.test.ts` | port | three-step overflow, front tab never hidden |
-| flare | `src/renderer/src/lib/tabDrop.test.ts` | port | drop slot from the carried tab's leading edge |
-| flare | `src/renderer/src/lib/tabMru.test.ts` | port | most-recent list and the Ctrl hold walk |
-| flare | `src/renderer/src/lib/tabs.test.ts` | port | tab list model: add, close handover, step wrap, setCwd, labels, settings toggle, reorder |
+| flare-tabs | `src/renderer/src/lib/hoverReveal.test.ts` | port | open delay 60 ms, close grace 100 ms, hold |
+| flare-tabs | `src/renderer/src/lib/keymap.test.ts` | port | chord table, labels, agent hotkeys, vertical-only sidebar key, F1 and Ctrl+F rules, agent guard keys |
+| flare-tabs | `src/renderer/src/lib/restorePlan.test.ts` | port | peek placeholders and settleRestore |
+| flare-tabs | `src/renderer/src/lib/revealZones.test.ts` | port | sidebar reveal zone |
+| flare-tabs | `src/renderer/src/lib/sidebarRows.test.ts` | port | folder line and find-a-tab word matching |
+| flare-tabs | `src/renderer/src/lib/stripPlan.test.ts` | port | three-step overflow, front tab never hidden |
+| flare-tabs | `src/renderer/src/lib/tabDrop.test.ts` | port | drop slot from the carried tab's leading edge |
+| flare-tabs | `src/renderer/src/lib/tabMru.test.ts` | port | most-recent list and the Ctrl hold walk |
+| flare-tabs | `src/renderer/src/lib/tabs.test.ts` | port | tab list model: add, close handover, step wrap, setCwd, labels, settings toggle, reorder |
 | flare | `src/shared/channels.test.ts` | dropped | Electron IPC channel table parity; Flare has typed channels checked by the compiler |
 | flare-agent | `core/main/agentDetect.test.ts` | port | signatures, first-token rule, dev-folder rule, tree walk with injected rows |
-| flare-agent | `core/main/agentKinds.test.ts` | port | resumable kinds list |
+| flare-agent | `core/main/agentKinds.test.ts` | port (M3: isResumable only; detection is M6) | resumable kinds list |
 | flare-agent | `core/main/agentPoll.test.ts` | port | back-off, failure back-off, forced-look gap, ask-again, forget; injected pids, ticks, query and clock |
 | flare-agent | `core/main/agentResume.test.ts` | port | validResume, claude store per folder, interactive head, async walk; temp home folder |
 | flare-agent | `core/main/sonaraLink.test.ts` | port | SONARA_HOME / LOCALAPPDATA resolution, POST to a local fake, quiet failure |
 | flare-agent | `core/renderer/lib/agentArm.test.ts` | port | arm and disarm by resume, title, poll, prompt; doubted resume; WSL title-armed case |
 | flare-agent | `core/renderer/lib/agentBackground.test.ts` | port | screen fixtures from agentBackground.screens.json |
-| flare-agent | `core/renderer/lib/agentClock.test.ts` | port | clock reconcile and humanFor wording |
-| flare-agent | `core/renderer/lib/agentClose.test.ts` | port | close question rule (plain shell silent, agent asks, window held only while working) and dialog texts |
+| flare-agent | `core/renderer/lib/agentClock.test.ts` | port (M3: humanFor only; the clock reconcile group is M6) | clock reconcile and humanFor wording |
+| flare-agent | `core/renderer/lib/agentClose.test.ts` | port (M3: ported; the close rule now lives in flare-agent close.rs) | close question rule (plain shell silent, agent asks, window held only while working) and dialog texts |
 | flare-agent | `core/renderer/lib/agentHookSignal.test.ts` | port | parseAgentSignal, failedLabel, manifest and hooks.json table reads of Flare's flare-status folder |
 | flare-agent | `core/renderer/lib/agentHookState.test.ts` | port | hookStep rules, raisedWhileSeen, settle and background steps |
 | flare-agent | `core/renderer/lib/agentHookState.timelines.test.ts` | port | measured timelines A, B, C, C3, D, E, G2 replayed through hookStep (fixtures copied from PT) |
@@ -211,3 +211,52 @@ Tests for `tabMark.test.ts` and `TabMark.test.ts` in flare cover the mark spec; 
 | `core/shared/termCwd.test.ts` | 8 | `cwd.rs` (4) | `parse_osc9_*` (2), `decide_follow_tells_same_inside_outside`, `cd_command_*` (5) | none |
 | `core/renderer/lib/termPaste.test.ts` | 16 (+ 2 groups) | `paste.rs` (5) | `decide_paste_*` (8), `sanitize_paste_*` (3), `quote_path_*` (4), `quote_paths_joins_with_spaces` | `imagePasteKey`, `newlineKey` groups (flare-agent, M6) |
 | `src/main/nodePtyPin.test.ts` | dropped | `conpty.rs` (17) | replaced by `bundled_files_match_the_pinned_hashes`, `verify_loads_the_bundled_dll_by_absolute_path` | none |
+
+## M3 ledger
+
+`n` = Prism Terminal `it(...)` cases; "Flare" = the test names in the task's table (the task is the authority). Dropped = not ported, with the reason.
+
+| PT test file | n | Flare crate and task | Flare tests / note |
+|---|---|---|---|
+| `src/renderer/src/lib/tabs.test.ts` | 13 | flare-tabs, T5 | `adds_at_the_end_and_activates` ... `reorders_correcting_for_the_removed_slot` (13) + 4 new |
+| `.../lib/stripPlan.test.ts` | 7 | flare-tabs, T6 | the seven of the table + layout tests |
+| `.../lib/tabDrop.test.ts` | 7 + 2 | flare-tabs, T7 | 7 ported; the 2 "Prompt segments overlapping" dropped (Prompt tab style removed; one tab style, parity.md) |
+| `.../components/useTabReorder.ts` (no test) | 0 | flare-tabs, T7 | `TabDrag`: 9 new tests from its behaviour |
+| `.../lib/tabMru.test.ts` | 12 | flare-tabs, T8 | all 12 (the identity case as `touching_the_front_tab_changes_nothing`: equality in Rust) |
+| `.../lib/agentKeysPrefs.ts` (no test) | 0 | flare-settings, T3 | `agent_keys_are_on_until_turned_off` (new) |
+| `.../lib/sidebarRows.test.ts` | 3 | flare-tabs, T9 | all 3 |
+| `core/renderer/lib/tipPlace.test.ts` | 4 | flare-tabs, T9 | all 4 |
+| `core/renderer/lib/hiddenTitle.test.ts` | 3 + 3 | flare-tabs, T9 | 3 ported; the 3 TSX source scans dropped (design rule, ledger note) |
+| `core/renderer/components/Modal.test.ts` | 3 | flare-tabs T9 + flare T24 | `returnsFocus` -> `focus_returns_only_when_nothing_else_took_it`; the two source scans -> `only_dialog_slint_declares_a_scrim` (T24) |
+| `src/renderer/src/lib/keymap.test.ts` | 12 | flare-tabs, T10 | all 12 (the source scan becomes the `.slint` scan) + 4 new |
+| `.../lib/hoverReveal.test.ts` | 6 | flare-tabs, T11 | all 6 |
+| `.../lib/revealZones.test.ts` | 4 | flare-tabs, T11 | all 4 |
+| `core/renderer/lib/fitHold.test.ts` | 3 | flare-tabs, T11 | all 3 |
+| `.../lib/sidebarPrefs.test.ts` (slide part) | 1 | flare-tabs, T11 | `pinning_and_unpinning_slide_and_hold_the_fit` |
+| `src/main/closeFlow.test.ts` | 6 | flare-tabs, T12 | all 6 |
+| `core/renderer/lib/agentClose.test.ts` | 3 | flare-agent, T12 | all 3 (+ body, label tests) |
+| `core/renderer/lib/agentClock.test.ts` (`humanFor`) | 3 | flare-agent, T12 | 3 ported; the clock reconcile group is M6 |
+| `core/main/agentKinds.test.ts` | 3 | flare-agent, T12 | `isResumable` only; detection and prefilter groups are M6 |
+| `src/main/tabsStore.test.ts` | 10 | flare-tabs, T13 | 4 parse + 5 store + the shape test; the "same empty object" case is n/a in Rust |
+| `src/main/planRestore.test.ts` | 8 | flare-tabs, T13 | all 8 |
+| `src/renderer/src/lib/restorePlan.test.ts` | 7 | flare-tabs, T13 | all 7 |
+| `core/main/atomicWrite.test.ts` | 6 | flare-settings, T2 | all 6 (+ 2 new) |
+| `src/renderer/src/lib/tabLayoutPrefs.test.ts` | 4 | flare-settings, T3 | all 4 |
+| `.../lib/tabSwitchPrefs.test.ts` | 4 | flare-settings, T3 | all 4 |
+| `.../lib/sidebarPrefs.test.ts` | 5 + 1 | flare-settings, T3 (+ T11) | 5 + the toggle test in T3; the slide test in T11 |
+| `.../lib/newTabPrefs.test.ts` | 4 | flare-settings, T3 | all 4 |
+| `core/renderer/lib/recentRoots.test.ts` | 8 | flare-settings, T4 | all 8 |
+| `core/renderer/lib/recentRoots.pins.test.ts` | 3 | flare-settings, T4 | all 3 |
+| `core/renderer/lib/prefStore.test.ts` | (M7) | flare-settings, T3 | the store and its helpers are built here with their own tests; M7 ports the rest of `prefStore.test.ts` on top |
+| `core/renderer/lib/termPrefs.test.ts` | (M7) | flare-settings, T3 | the getter only: `saved_shell_id_is_none_until_chosen` |
+| `src/main/argv.test.ts` | 12 | flare-win, T14 | all 12 (+ the cap test) |
+| `src/main/windowState.test.ts` | 5 | flare-win, T14 | all 5 (+ DPI, scale, normal-bounds tests) |
+| `src/main/edgeWatch.test.ts` | 8 | flare-win, T17 (+ T11) | 4 + 3 + the shared-zone test in T11 |
+| `src/renderer/src/lib/devicePixels.test.ts` | 2 | flare-render, T6 | both (+ 1 new) |
+| `src/main/e2eOnly.test.ts` | 1 | flare, T29 | `e2e_env_reads_none_unless_the_flag_is_on`, `no_source_file_reads_an_e2e_variable_directly` (the registration scan is re-expressed: there are no `ipcMain` handlers) |
+| `src/renderer/src/components/termMenu.test.ts` | | M5 | terminal menu (not tab menus) |
+| `core/renderer/components/TabMark.test.ts`, `core/renderer/lib/tabMark.test.ts`, `styles/marks.test.ts` | | M6 | marks; the mark slot exists (`mark-kind`, `mark-color`) |
+| `src/renderer/src/components/tabParts.test.ts` | dropped | | reads TSX text; Slint has one component set per layout; the rule (one close X and ring for both layouts) is kept by Task 20 and 21 sharing the specs |
+| `src/renderer/src/components/modals.test.ts` | dropped | | React source scan; replaced by `only_dialog_slint_declares_a_scrim` |
+
+Total M3 PT test files: 33 touched (31 ported in whole or part, 2 dropped), plus 3 deferred by group to M5, M6, M7.

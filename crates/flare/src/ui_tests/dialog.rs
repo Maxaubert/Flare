@@ -283,12 +283,12 @@ fn only_dialog_slint_declares_a_scrim() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
     let mut declaring = Vec::new();
     for entry in std::fs::read_dir(dir).expect("ui folder") {
-        // sync-ok: test
-        let path = entry.expect("entry").path(); // sync-ok: test
+        // sync-ok: test code only, never the app
+        let path = entry.expect("entry").path(); // sync-ok: test code only, never the app
         if path.extension().and_then(|e| e.to_str()) != Some("slint") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("slint file"); // sync-ok: test
+        let text = std::fs::read_to_string(&path).expect("slint file"); // sync-ok: test code only, never the app
         if text.contains("modal-scrim") {
             declaring.push(path.file_name().unwrap().to_string_lossy().into_owned());
         }

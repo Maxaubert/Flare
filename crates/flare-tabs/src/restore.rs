@@ -194,7 +194,7 @@ pub fn resolve_restore(
                 })
             })
             .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).collect() // sync-ok: restore worker threads, never the UI thread
     });
     plan_restore(saved, &|p| present.get(p).copied().unwrap_or(false), &|p| {
         lookup.sessions(p)

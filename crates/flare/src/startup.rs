@@ -498,7 +498,7 @@ mod tests {
         .unwrap();
         // Let the worker reach its connect call: a client that writes and closes before then is
         // dropped by single_instance (reported to the orchestrator).
-        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only, never the app
         let second = launch(&profile, &argv, Duration::from_secs(3)).unwrap();
         assert!(matches!(second, Launch::HandedOver));
         let got = rx.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -526,7 +526,7 @@ mod tests {
             panic!("the test should win the lock");
         };
         let dropper = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300)); // sync-ok: test
+            std::thread::sleep(Duration::from_millis(300)); // sync-ok: test code only, never the app
             drop(guard);
         });
         let started = Instant::now();
@@ -677,7 +677,7 @@ mod tests {
             }
         };
         glue(&model);
-        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only, never the app
         tabs.flush();
         assert!(!profile.tabs_file().exists());
         model.settle(&Restored {

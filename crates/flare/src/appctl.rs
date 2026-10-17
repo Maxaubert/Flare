@@ -1655,7 +1655,7 @@ mod tests {
                     .collect(),
                 active: opts.active,
             };
-            std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test
+            std::fs::write(dir.path().join("tabs.json"), tabs_json(&saved)).unwrap(); // sync-ok: test code only, never the app
         }
         let prefs = PrefStore::memory();
         prep(&prefs);
@@ -1874,7 +1874,7 @@ mod tests {
     }
 
     fn file_tabs(f: &Fx) -> Option<usize> {
-        let raw = std::fs::read_to_string(f.dir.path().join("tabs.json")).ok()?; // sync-ok: test
+        let raw = std::fs::read_to_string(f.dir.path().join("tabs.json")).ok()?; // sync-ok: test code only, never the app
         Some(flare_tabs::restore::parse_tabs(&raw).tabs.len())
     }
 
@@ -1935,9 +1935,9 @@ mod tests {
             ..Opts::default()
         });
         let folder = f.dir.path().join("proj");
-        std::fs::create_dir(&folder).unwrap(); // sync-ok: test
+        std::fs::create_dir(&folder).unwrap(); // sync-ok: test code only, never the app
         let file = folder.join("a.txt");
-        std::fs::write(&file, "x").unwrap(); // sync-ok: test
+        std::fs::write(&file, "x").unwrap(); // sync-ok: test code only, never the app
         f.ctl
             .borrow_mut()
             .on_dropped_path(folder.clone(), (100.0, 10.0));
@@ -2123,7 +2123,7 @@ mod tests {
             ..Opts::default()
         });
         let sub = f.dir.path().join("sub");
-        std::fs::create_dir(&sub).unwrap(); // sync-ok: test
+        std::fs::create_dir(&sub).unwrap(); // sync-ok: test code only, never the app
         let h = || Handoff {
             cwd: f.dir.path().to_string_lossy().into_owned(),
             args: vec!["flare.exe".to_string(), "sub".to_string()],
@@ -2166,7 +2166,7 @@ mod tests {
             ..Opts::default()
         });
         let sub = f.dir.path().join("sub");
-        std::fs::create_dir(&sub).unwrap(); // sync-ok: test
+        std::fs::create_dir(&sub).unwrap(); // sync-ok: test code only, never the app
         f.ctl.borrow_mut().handoff(Handoff {
             cwd: f.dir.path().to_string_lossy().into_owned(),
             args: vec!["flare.exe".to_string(), "sub".to_string()],
@@ -2194,7 +2194,7 @@ mod tests {
     }
 
     fn window_file(f: &Fx) -> Option<flare_win::window_state::WindowState> {
-        let raw = std::fs::read_to_string(f.dir.path().join("window.json")).ok()?; // sync-ok: test
+        let raw = std::fs::read_to_string(f.dir.path().join("window.json")).ok()?; // sync-ok: test code only, never the app
         Some(parse_window_state(
             &raw,
             &[Area {

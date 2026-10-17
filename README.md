@@ -37,7 +37,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `bytemuck`: casts glyph and vertex data to bytes for GPU upload.
 - `log`: the logging facade used across the crates.
 - `env_logger`: prints the log to the console when run from a terminal (`RUST_LOG`).
-- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box).
+- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box; M3 adds the named pipe and its DACL for the single-instance hand-off, the security identity checks, the clipboard, the shell open verb, DPI and the monitors for the window position).
 - `alacritty_terminal`: terminal state, the escape-sequence parser, the grid, scrollback and reflow (owner decision, parity with Prism Terminal's xterm.js).
 - `portable-pty`: the ConPTY child process and its pipes, one pty per shell tab.
 - `regex`: the ported link and path finders (`find_links`, `find_paths`).
@@ -45,6 +45,10 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `base64`: decodes and encodes OSC 52 clipboard payloads.
 - `url`: compares the host of an OSC 8 link, so only web links open.
 - `uuid`: the per-shell random tab token (`FLARE_TAB_ID`).
+- `serde`: derives the (de)serialisation of the state files (`tabs.json`, `window.json`, the settings file).
+- `serde_json`: reads and writes those JSON state files, and encodes the single-instance hand-off message.
+- `rfd`: the native folder picker for "Ask" new tabs (MIT; default features off, so on Windows it pulls only `log`, `raw-window-handle` and `windows-sys`).
+- `raw-window-handle`: hands the window's handle to `rfd`, so the picker is parented to Flare's window (an unparented picker can open behind a fullscreen window).
 - `sha2`: checks the bundled ConPTY files against their pinned hashes at start.
 - `tempfile` (dev only): temporary folders for the tests; never shipped.
 - Bundled ConPTY 1.25.260303002 (`conpty.dll`, `OpenConsole.exe`): MIT licence, (c) Microsoft Corporation, https://github.com/microsoft/terminal. Loaded by absolute path before the first pty opens.

@@ -203,7 +203,7 @@ fn drive_live(
                 ECHO_WAIT.as_secs()
             ));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50)); // sync-ok: headless scene tooling, not the live window
     }
 }
 
@@ -235,7 +235,7 @@ fn straight_rgba(p: &PremultipliedRgbaColor) -> [u8; 4] {
 }
 
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
-    let file = std::fs::File::create(path)
+    let file = std::fs::File::create(path) // sync-ok: headless scene tooling, not the live window
         .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);

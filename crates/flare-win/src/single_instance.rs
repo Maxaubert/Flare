@@ -306,6 +306,7 @@ impl PipeServer {
         let started = Instant::now();
         let unblocked = loop {
             match std::fs::OpenOptions::new().write(true).open(&self.pipe) {
+                // sync-ok: quit, a bounded connect that unblocks the pipe thread
                 Ok(_) => break true,
                 // The server already closed its pipe: the thread is on its way out.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => break true,
@@ -466,7 +467,7 @@ pub fn send_handoff_with(
     let bytes = encode_handoff(h);
     loop {
         // SECURITY_IDENTIFICATION: a server can learn who we are but never act as us.
-        match std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new() // sync-ok: hand-off to the first instance, bounded by its deadline
             .write(true)
             .security_qos_flags(SECURITY_IDENTIFICATION)
             .open(&names.pipe)

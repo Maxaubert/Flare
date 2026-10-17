@@ -487,8 +487,8 @@ pub fn run_window(
             waker,
         );
         let argv: Vec<String> = std::env::args().collect();
-        let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup
-        let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup
+        let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
+        let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
         let e2e_on = args.e2e;
         let deps = Deps {
             prefs: prefs.clone(),

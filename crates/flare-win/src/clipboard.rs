@@ -1,7 +1,7 @@
 //! set_text: the clipboard write for Copy folder path (Task 17).
 
 use std::ptr;
-use std::thread::sleep;
+use std::thread::sleep; // sync-ok: the clipboard retry below, at most 80 ms
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::GlobalFree;
@@ -32,7 +32,7 @@ pub fn set_text(text: &str) -> Result<(), String> {
             break;
         }
         if attempt < 4 {
-            sleep(Duration::from_millis(20));
+            sleep(Duration::from_millis(20)); // sync-ok: clipboard retry, at most 80 ms on a busy clipboard
         }
     }
     if !opened {
