@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::activity::Activity;
+use crate::activity::ECHO_MS;
 use crate::background::looks_like_background_work;
 use crate::clock::AgentClock;
 use crate::hook_state::{
@@ -16,7 +17,7 @@ use crate::hook_state::{
     STOP_SETTLE_MS, hook_step, raised_while_seen, screen_decides,
 };
 use crate::kinds::DetectedAgent;
-use crate::question::{looks_like_question, question_answered};
+use crate::question::{answers_question, looks_like_question, question_answered};
 use crate::signal::{AgentSignal, HookState};
 use crate::title::{AgentTitleState, TitleReader};
 
@@ -106,8 +107,6 @@ enum HookEventKind {
     BgCheck,
 }
 
-// Task 18 constructs `AnswerCheck` and `FallbackClear`.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
     ReadQuestion,
@@ -245,8 +244,8 @@ impl Indicator {
             Event::Signal { tab, signal } => {
                 self.on_signal(now, &tab, signal, screen, &mut effects);
             }
-            // Task 18 fills these two.
-            Event::Output { .. } | Event::Key { .. } => {}
+            Event::Output { tab } => self.on_output(now, &tab),
+            Event::Key { tab, key } => self.on_key(now, &tab, &key),
         }
         self.reconcile(now);
         effects
@@ -557,6 +556,61 @@ impl Indicator {
             .or_insert(DetectedAgent::Claude);
         self.agent_ids.insert(tab.to_string());
         self.apply_hook(now, tab, HookEvent::Signal(signal), screen);
+    }
+
+    /// PT `onTermData`: a hooked session says everything itself; a titled one only has its idle
+    /// question box read; the rest is scored by a sustained run of output.
+    fn on_output(&mut self, now: u64, tab: &str) {
+        if self.hooked.contains_key(tab) {
+            return;
+        }
+        if self.titled.contains(tab) {
+            if self.title_state.get(tab) == Some(&AgentTitleState::Idle) {
+                self.check_question(now, tab);
+            }
+            return;
+        }
+        let startup = self.activity.startup_output(tab, now);
+        if startup
+            || self.activity.suppressed(tab, now)
+            || self.activity.input_echo(tab, now, ECHO_MS)
+        {
+            return;
+        }
+        if !self.agent_kinds.contains_key(tab) {
+            return;
+        }
+        let run = match self.output_runs.get(tab) {
+            Some((start, last)) if now.saturating_sub(*last) <= RUN_GAP_MS => (*start, now),
+            _ => (now, now),
+        };
+        self.output_runs.insert(tab.to_string(), run);
+        if run.1 - run.0 > RUN_SUSTAIN_MS {
+            self.why(tab, "output scored working");
+            self.working.insert(tab.to_string());
+            self.timers.arm(
+                tab,
+                Slot::Fallback,
+                now + FALLBACK_QUIET_MS,
+                Action::FallbackClear,
+            );
+        }
+    }
+
+    /// PT `onTermKey`: a key that settles a box reads the screen again, four times, until it is gone.
+    fn on_key(&mut self, now: u64, tab: &str, key: &str) {
+        if !answers_question(key) || !self.question.contains(tab) {
+            return;
+        }
+        self.cancel_answer_reads(tab);
+        for (i, ms) in ANSWER_READS_MS.iter().enumerate() {
+            self.timers.arm(
+                tab,
+                Slot::AnswerRead(i as u8),
+                now + ms,
+                Action::AnswerCheck(key.to_string()),
+            );
+        }
     }
 
     /// Arms the screen read of an idle title's question box.
@@ -1359,5 +1413,511 @@ mod tests {
         h.hook(0, "t1", HookState::Working);
         assert!(h.ind.take_changed());
         assert!(!h.ind.take_changed());
+    }
+
+    // ---- Task 18: scoring, question reads, answer keys, the replay ----
+
+    impl H {
+        fn output(&mut self, now: u64, tab: &str) {
+            self.ev(now, Event::Output { tab: tab.into() });
+        }
+
+        fn key(&mut self, now: u64, tab: &str, key: &str) {
+            self.ev(
+                now,
+                Event::Key {
+                    tab: tab.into(),
+                    key: key.into(),
+                },
+            );
+        }
+
+        /// A Claude found by the poll whose startup paint is over.
+        fn known_agent() -> Self {
+            let mut h = Self::fronted();
+            h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+            h.output(3000, "t1");
+            h
+        }
+    }
+
+    #[test]
+    fn output_scores_working_after_a_sustained_run_and_clears_after_two_seconds_of_quiet() {
+        let mut h = H::known_agent();
+        for t in (5000..=6500).step_by(300) {
+            h.output(t, "t1");
+            if t <= 6000 {
+                assert!(!has(h.ind.working_ids(), "t1"), "at {t}");
+            }
+        }
+        h.output(6500, "t1");
+        assert!(has(h.ind.working_ids(), "t1"));
+        h.tick(8499);
+        assert!(has(h.ind.working_ids(), "t1"));
+        h.tick(8500);
+        assert!(!has(h.ind.working_ids(), "t1"));
+        assert!(h.ind.drain_log().contains(&LogItem::Why {
+            tab: "t1".into(),
+            why: "output went quiet".into()
+        }));
+    }
+
+    #[test]
+    fn a_gap_over_1500_restarts_the_run() {
+        let mut h = H::known_agent();
+        for t in [5000, 5300, 7000, 7300] {
+            h.output(t, "t1");
+        }
+        assert!(!has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn the_startup_paint_after_the_agent_appears_is_not_scored() {
+        let mut h = H::fronted();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        for t in (300..=9000).step_by(300) {
+            h.output(t, "t1");
+            assert!(!has(h.ind.working_ids(), "t1"), "at {t}");
+        }
+        // After a 2000 ms silence the next run scores normally.
+        for t in (11_000..=12_600).step_by(300) {
+            h.output(t, "t1");
+        }
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn output_right_behind_a_keystroke_is_an_echo() {
+        let mut h = H::known_agent();
+        for t in (5000..8000).step_by(100) {
+            h.ind.activity.mark_touched("t1", t);
+            h.output(t + 50, "t1");
+            assert!(!has(h.ind.working_ids(), "t1"), "at {t}");
+        }
+    }
+
+    #[test]
+    fn output_after_a_refit_is_suppressed_for_800_ms() {
+        let mut h = H::known_agent();
+        h.ind.activity.suppress("t1", 5000, 800);
+        for t in (5000..5800).step_by(100) {
+            h.output(t, "t1");
+        }
+        h.output(5800, "t1");
+        assert!(!has(h.ind.working_ids(), "t1"));
+        // The window is the only thing that blocked it: the run starts after it.
+        for t in (5900..=7300).step_by(200) {
+            h.output(t, "t1");
+        }
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn only_a_known_agent_is_scored() {
+        let mut h = H::fronted();
+        for t in (0..6000).step_by(300) {
+            h.output(t, "t1");
+        }
+        assert!(h.ind.working_ids().is_empty());
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn a_titled_session_is_never_scored_from_its_output() {
+        let mut h = H::fronted();
+        h.title(0, "t1", "✳ Claude Code");
+        for t in (5000..9000).step_by(300) {
+            h.output(t, "t1");
+        }
+        assert!(!has(h.ind.working_ids(), "t1"));
+        // Idle title: an output chunk arms the 200 ms question read.
+        assert!(h.ind.next_due().is_some());
+    }
+
+    #[test]
+    fn a_hooked_session_is_never_scored_and_its_screen_is_not_read_for_output() {
+        let mut h = H::fronted();
+        h.scr.set("t1", question_box());
+        h.hook(0, "t1", HookState::Working);
+        let before = h.scr.reads.get();
+        for i in 0..100 {
+            h.output(1000 + i * 50, "t1");
+        }
+        h.tick(10_000);
+        assert_eq!(h.scr.reads.get(), before);
+        assert!(has(h.ind.working_ids(), "t1"));
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn an_idle_titled_session_reads_the_screen_for_a_question_200_ms_after_output() {
+        let mut h = H::fronted();
+        h.title(0, "t1", "✳ Claude Code");
+        h.tick(500);
+        h.scr.set("t1", question_box());
+        h.output(1000, "t1");
+        h.tick(1199);
+        assert!(!has(h.ind.question_ids(), "t1"));
+        h.tick(1200);
+        assert!(has(h.ind.question_ids(), "t1"));
+        assert!(h.ind.drain_log().contains(&LogItem::Why {
+            tab: "t1".into(),
+            why: "screen read: question box".into()
+        }));
+        h.scr.set("t1", finished());
+        h.output(2000, "t1");
+        h.tick(2200);
+        assert!(!has(h.ind.question_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_second_output_inside_the_read_does_not_arm_another() {
+        let mut h = H::fronted();
+        h.title(0, "t1", "✳ Claude Code");
+        // The title itself armed a read; settle it first.
+        h.tick(500);
+        h.output(1000, "t1");
+        h.output(1010, "t1");
+        assert_eq!(h.ind.next_due(), Some(1200));
+        h.tick(1200);
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    /// A harness with a pending hooked question on t1 (the box up).
+    fn asking() -> H {
+        let mut h = H::fronted();
+        h.scr.set("t1", question_box());
+        h.hook(0, "t1", HookState::Working);
+        h.hook(10, "t1", HookState::Question);
+        assert!(has(h.ind.question_ids(), "t1"));
+        h
+    }
+
+    #[test]
+    fn walking_the_choices_is_not_an_answer() {
+        let mut h = asking();
+        for k in ["\x1b[B", "a", "0"] {
+            h.key(100, "t1", k);
+        }
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn an_answer_key_reads_the_box_at_250_1000_2500_and_5000_and_clears_only_when_it_is_gone() {
+        let mut h = asking();
+        h.key(1000, "t1", "\r");
+        assert_eq!(h.ind.next_due(), Some(1250));
+        h.tick(1250);
+        h.tick(2000);
+        assert!(has(h.ind.question_ids(), "t1"));
+        h.scr.set("t1", finished());
+        h.tick(3499);
+        assert!(has(h.ind.question_ids(), "t1"));
+        h.tick(3500);
+        assert!(!has(h.ind.question_ids(), "t1"));
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn an_answer_key_with_the_next_question_still_up_keeps_the_question() {
+        let mut h = asking();
+        h.key(1000, "t1", "1");
+        h.tick(6000);
+        assert!(has(h.ind.question_ids(), "t1"));
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn a_key_is_ignored_without_a_pending_question() {
+        let mut h = H::fronted();
+        h.key(0, "t1", "\r");
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn a_new_question_cancels_pending_answer_reads() {
+        let mut h = asking();
+        h.key(1000, "t1", "\r");
+        assert!(h.ind.next_due().is_some());
+        h.hook(1100, "t1", HookState::Working);
+        h.scr.set("t1", question_box());
+        h.hook(1200, "t1", HookState::Question);
+        assert_eq!(h.ind.next_due(), None);
+
+        // A Codex Action Required title does the same.
+        let mut h = H::fronted();
+        h.poll(0, "t2", true, Some(DetectedAgent::Codex));
+        h.title(10, "t2", "[ ! ] Action Required | proj");
+        h.key(100, "t2", "\r");
+        assert!(h.ind.next_due().is_some());
+        h.title(200, "t2", "⠙ proj");
+        h.title(300, "t2", "[ ! ] Action Required | proj");
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    #[test]
+    fn next_due_is_the_earliest_deadline_and_none_when_idle() {
+        let mut h = H::fronted();
+        assert_eq!(h.ind.next_due(), None);
+        h.title(0, "t2", "✳ Claude Code");
+        h.title(10, "t2", "◐ Claude Code");
+        h.tick(300);
+        assert_eq!(h.ind.next_due(), None);
+        h.hook(400, "t2", HookState::Working);
+        h.title(1450, "t1", "✳ Claude Code"); // a question read is armed
+        h.hook(1500, "t2", HookState::Done); // spinner up: a settle is armed
+        let read = 1450 + QUESTION_READ_MS;
+        let settle = 1500 + STOP_SETTLE_MS;
+        assert_eq!(h.ind.next_due(), Some(read.min(settle)));
+        h.tick(read.min(settle));
+        assert_eq!(h.ind.next_due(), Some(read.max(settle)));
+        h.tick(read.max(settle));
+        assert_eq!(h.ind.next_due(), None);
+    }
+
+    // ---- the measured timelines through the whole indicator ----
+
+    struct Step {
+        t: u64,
+        event: String,
+        box_on: bool,
+        later: bool,
+    }
+
+    fn timeline(name: &str) -> Vec<Step> {
+        let all: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/hook_timelines.json"))
+                .expect("fixture parses");
+        all[name]
+            .as_array()
+            .expect("a timeline")
+            .iter()
+            .map(|row| {
+                let row = row.as_array().expect("a step");
+                Step {
+                    t: row[0].as_u64().expect("ms"),
+                    event: row[1].as_str().expect("event").to_owned(),
+                    box_on: row[2].as_u64() == Some(1),
+                    later: row[3].as_u64() == Some(1),
+                }
+            })
+            .collect()
+    }
+
+    /// The box is a function of time: the step's `box` for 250 ms after it, its `later` after that.
+    struct TimelineScreen {
+        now: Cell<u64>,
+        stamps: Vec<(u64, bool, bool)>,
+        reads: Cell<usize>,
+    }
+
+    impl Screen for TimelineScreen {
+        fn tail(&self, _tab: &str, _rows: usize) -> Vec<String> {
+            self.reads.set(self.reads.get() + 1);
+            let t = self.now.get();
+            let up = self
+                .stamps
+                .iter()
+                .rev()
+                .find(|(at, _, _)| *at <= t)
+                .is_some_and(|(at, b, later)| if t - at < 250 { *b } else { *later });
+            if up { question_box() } else { finished() }
+        }
+    }
+
+    type Shown = Vec<(u64, Option<&'static str>)>;
+
+    fn shown_now(ind: &Indicator) -> Option<&'static str> {
+        if ind.working_ids().contains("t1") {
+            Some("working")
+        } else if ind.question_ids().contains("t1") {
+            Some("question")
+        } else if ind.failed_ids().contains("t1") {
+            Some("failed")
+        } else if ind.done_ids().contains("t1") {
+            Some("finished")
+        } else {
+            None
+        }
+    }
+
+    /// Drives a timeline; `outputs` feeds an Output every 50 ms to a hooked session. Returns what
+    /// the tab shows after each step and each deadline, and the screen reads made.
+    fn replay(name: &str, outputs: bool) -> (Shown, usize) {
+        let steps = timeline(name);
+        assert_eq!(steps[0].event, "idle-title");
+        let scr = TimelineScreen {
+            now: Cell::new(0),
+            stamps: steps.iter().map(|s| (s.t, s.box_on, s.later)).collect(),
+            reads: Cell::new(0),
+        };
+        let mut ind = Indicator::new();
+        ind.set_looking(0, Some("other"), true);
+        let mut shown: Shown = Vec::new();
+        let mut cur = 0u64;
+        let advance = |ind: &mut Indicator, shown: &mut Shown, cur: &mut u64, to: u64| {
+            // Deadlines and (when asked) the 50 ms output grid, in time order.
+            loop {
+                let due = ind.next_due().filter(|d| *d <= to);
+                let grid = if outputs {
+                    let g = (*cur / 50 + 1) * 50;
+                    (g <= to && ind.is_hooked("t1")).then_some(g)
+                } else {
+                    None
+                };
+                let next = match (due, grid) {
+                    (Some(d), Some(g)) => d.min(g),
+                    (Some(d), None) => d,
+                    (None, Some(g)) => g,
+                    (None, None) => break,
+                };
+                *cur = next.max(*cur);
+                scr.now.set(*cur);
+                if due == Some(next) {
+                    ind.tick(next, &scr);
+                    shown.push((next, shown_now(ind)));
+                }
+                if grid == Some(next) {
+                    ind.handle(next, Event::Output { tab: "t1".into() }, &scr);
+                }
+            }
+            *cur = to;
+        };
+        for step in &steps {
+            advance(&mut ind, &mut shown, &mut cur, step.t);
+            scr.now.set(step.t);
+            let ev = match step.event.as_str() {
+                "idle-title" => Some(Event::Title {
+                    tab: "t1".into(),
+                    text: "✳ Claude Code".into(),
+                }),
+                "working-title" => Some(Event::Title {
+                    tab: "t1".into(),
+                    text: "◐ Claude Code".into(),
+                }),
+                "working" | "question" | "done" | "failed" => Some(Event::Signal {
+                    tab: "t1".into(),
+                    signal: AgentSignal {
+                        state: match step.event.as_str() {
+                            "working" => HookState::Working,
+                            "question" => HookState::Question,
+                            "done" => HookState::Done,
+                            _ => HookState::Failed,
+                        },
+                        kind: None,
+                    },
+                }),
+                "key:submit" => None,
+                e if e.starts_with("key:enter") => Some(Event::Key {
+                    tab: "t1".into(),
+                    key: "\r".into(),
+                }),
+                e if e.starts_with("key:esc") => Some(Event::Key {
+                    tab: "t1".into(),
+                    key: "\x1b".into(),
+                }),
+                e if e.starts_with("key:key-1") => Some(Event::Key {
+                    tab: "t1".into(),
+                    key: "1".into(),
+                }),
+                other => panic!("unknown timeline event {other}"),
+            };
+            if let Some(ev) = ev {
+                ind.handle(step.t, ev, &scr);
+            }
+            shown.push((step.t, shown_now(&ind)));
+        }
+        let end = cur + 8000;
+        advance(&mut ind, &mut shown, &mut cur, end);
+        (shown, scr.reads.get())
+    }
+
+    fn at(shown: &Shown, t: u64) -> Option<&'static str> {
+        let mut v = None;
+        for (when, s) in shown {
+            if *when <= t {
+                v = *s;
+            }
+        }
+        v
+    }
+
+    fn holds(shown: &Shown, from: u64, to: u64, want: Option<&'static str>) {
+        for t in (from..to).step_by(100) {
+            assert_eq!(at(shown, t), want, "at {t} ms");
+        }
+    }
+
+    #[test]
+    fn timeline_a_replayed_through_the_indicator() {
+        let (shown, _) = replay("A", false);
+        holds(&shown, 13805, 22861, Some("question"));
+        holds(&shown, 23111, 49815, Some("working"));
+        holds(&shown, 49815, 49857, Some("working"));
+        holds(&shown, 49857, 52000, Some("finished"));
+    }
+
+    #[test]
+    fn timeline_b_replayed_through_the_indicator() {
+        let (shown, _) = replay("B", false);
+        holds(&shown, 10848, 19939, Some("question"));
+        holds(&shown, 20189, 43000, None);
+    }
+
+    #[test]
+    fn timeline_c_replayed_through_the_indicator() {
+        let (shown, _) = replay("C", false);
+        holds(&shown, 13120, 22174, Some("question"));
+        holds(&shown, 22424, 49244, Some("working"));
+        holds(&shown, 49244, 52000, Some("finished"));
+    }
+
+    #[test]
+    fn timeline_d_replayed_through_the_indicator() {
+        let (shown, _) = replay("D", false);
+        holds(&shown, 12212, 15344, Some("question"));
+        holds(&shown, 15594, 30212, Some("working"));
+        holds(&shown, 30227, 33348, Some("question"));
+        holds(&shown, 33598, 45465, Some("working"));
+        holds(&shown, 45465, 48000, Some("finished"));
+    }
+
+    #[test]
+    fn timeline_e_replayed_through_the_indicator() {
+        let (shown, _) = replay("E", false);
+        holds(&shown, 10913, 22664, Some("question"));
+        holds(&shown, 22914, 49715, Some("working"));
+        holds(&shown, 49715, 52000, Some("finished"));
+    }
+
+    #[test]
+    fn timeline_g2_replayed_through_the_indicator() {
+        let (shown, _) = replay("G2", false);
+        holds(&shown, 22267, 36409, Some("question"));
+        holds(&shown, 36659, 63980, Some("working"));
+        holds(&shown, 63980, 66000, Some("finished"));
+    }
+
+    #[test]
+    fn timeline_c3_replayed_through_the_indicator() {
+        let (shown, _) = replay("C3", false);
+        holds(&shown, 10640, 19133, Some("working"));
+        holds(&shown, 19133, 20000, Some("finished"));
+        for t in (0..54000).step_by(100) {
+            assert_ne!(at(&shown, t), Some("question"), "question at {t} ms");
+        }
+    }
+
+    #[test]
+    fn a_hooked_session_in_every_timeline_never_reads_the_screen_for_output() {
+        for name in ["A", "B", "C", "D", "E", "G2", "C3"] {
+            let (plain, plain_reads) = replay(name, false);
+            let (with_output, output_reads) = replay(name, true);
+            assert_eq!(plain_reads, output_reads, "timeline {name}");
+            // Output changes nothing a hooked session shows.
+            for (t, s) in &plain {
+                assert_eq!(at(&with_output, *t), *s, "timeline {name} at {t}");
+            }
+        }
     }
 }
