@@ -9,19 +9,30 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52 as AlacrittyOsc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+use flare_render::decor::RowSpan;
 use flare_render::grid::Grid;
 use flare_shells::cwd::{has_control, parse_osc9};
 
+use crate::cells::{
+    BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
+};
 use crate::click_caret::MouseTracking;
 use crate::grid_map::snapshot_grid;
+use crate::links::find_links;
+use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
 use crate::replies::{Ground, colour_query_replies, xtversion_reply};
 use crate::scan::{ScanEvent, Scanner};
+use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
+use crate::sel_text::selection_text;
+use crate::term_buf::{TermBuf, abs_to_line, line_to_abs, total_rows, viewport_top};
 use crate::version::{ALACRITTY_TERMINAL_VERSION, FLARE_TERM_VERSION};
+use crate::word_at::word_range;
 
 /// The size handed to `Term::new` and `Term::resize`.
 pub struct Dims {
@@ -318,6 +329,275 @@ impl Emulator {
     }
 }
 
+/// The ordered boundaries `(row, b)` of a selection and whether it is a block.
+pub type SelBounds = ((usize, usize), (usize, usize), bool);
+
+/// The cells of one logical line, with its first row.
+struct LineCells {
+    first: usize,
+    cells: Vec<CellInfo>,
+}
+
+/// A `SelEnv` over the current buffer. Built per call; clicks only.
+pub struct TermSelEnv<'a> {
+    emu: &'a Emulator,
+    buf: TermBuf<'a>,
+}
+
+impl TermSelEnv<'_> {
+    fn line_cells(&self, row: usize) -> LineCells {
+        let cols = self.emu.cols();
+        let ll = logical_line(&self.buf, cols, row);
+        let mut scratch = ScratchCell::default();
+        let mut cells = Vec::new();
+        for y in ll.first..=ll.last {
+            cells
+                .extend(buffer_row_cells(self.buf.line(y), cols, &mut scratch).unwrap_or_default());
+        }
+        LineCells {
+            first: ll.first,
+            cells,
+        }
+    }
+
+    /// The hyperlink on the cell at line index `i` (a spacer shares its character's).
+    fn hyperlink_at(&self, lc: &LineCells, i: usize) -> Option<(String, String)> {
+        let cols = self.emu.cols();
+        let mut i = i;
+        if lc.cells[i].width == 0 && i > 0 {
+            i -= 1;
+        }
+        let line = abs_to_line(self.emu.history_size(), lc.first + i / cols);
+        let cell = &self.emu.term.grid()[Point::new(line, Column(i % cols))];
+        cell.hyperlink()
+            .map(|h| (h.id().to_string(), h.uri().to_string()))
+    }
+
+    /// Cells `s..e` of the line as a span of boundaries.
+    fn span_of(&self, first: usize, s: usize, e: usize) -> Span {
+        let cols = self.emu.cols();
+        let last = e.max(s + 1) - 1;
+        Span {
+            start: Anchor {
+                row: first + s / cols,
+                b: s % cols,
+            },
+            end: Anchor {
+                row: first + last / cols,
+                b: last + 1 - (last / cols) * cols,
+            },
+        }
+    }
+}
+
+impl SelEnv for TermSelEnv<'_> {
+    fn cols(&self) -> usize {
+        self.emu.cols()
+    }
+
+    fn total_rows(&self) -> usize {
+        total_rows(&self.emu.term)
+    }
+
+    fn cell_width(&self, row: usize, col: usize) -> u8 {
+        let mut s = ScratchCell::default();
+        match self.buf.line(row) {
+            Some(l) if l.load_cell(col, &mut s) => s.width,
+            _ => 1,
+        }
+    }
+
+    fn word_at(&self, row: usize, col: usize, allow_whitespace_only: bool) -> Option<Span> {
+        let lc = self.line_cells(row);
+        let at = (row - lc.first) * self.cols() + col;
+        let (s, e) = word_range(&lc.cells, at, allow_whitespace_only)?;
+        Some(self.span_of(lc.first, s, e))
+    }
+
+    fn line_at(&self, row: usize) -> (usize, usize) {
+        let ll = logical_line(&self.buf, self.cols(), row);
+        (ll.first, ll.last)
+    }
+
+    fn link_at(&self, row: usize, col: usize) -> Option<Span> {
+        let cols = self.cols();
+        let ll = logical_line(&self.buf, cols, row);
+        let lc = self.line_cells(row);
+        let at = (row - lc.first) * cols + col;
+        if at >= lc.cells.len() {
+            return None;
+        }
+        if let Some(link) = self.hyperlink_at(&lc, at)
+            && is_web_link(&link.1)
+        {
+            let same = |i: usize| self.hyperlink_at(&lc, i).as_ref() == Some(&link);
+            let mut s = at;
+            while s > 0 && same(s - 1) {
+                s -= 1;
+            }
+            let mut e = at + 1;
+            while e < lc.cells.len() && same(e) {
+                e += 1;
+            }
+            return Some(self.span_of(lc.first, s, e));
+        }
+        let c = char_at_cell(&ll, cols, row as i32, col as i32);
+        let m = find_links(&ll.text)
+            .into_iter()
+            .find(|m| m.start <= c && c < m.end)?;
+        let n = ll.widths.len();
+        let s = (0..n).find(|&i| ll.index[i] >= m.start && ll.widths[i] > 0)?;
+        let e = (0..n).find(|&i| ll.index[i] >= m.end).unwrap_or(n);
+        Some(self.span_of(ll.first, s, e.max(s + 1)))
+    }
+}
+
+impl Emulator {
+    pub fn total_rows(&self) -> usize {
+        total_rows(&self.term)
+    }
+
+    pub fn viewport_top(&self) -> usize {
+        viewport_top(&self.term)
+    }
+
+    pub fn view_rows(&self) -> usize {
+        self.term.screen_lines()
+    }
+
+    pub fn is_scrolled_back(&self) -> bool {
+        self.display_offset() > 0
+    }
+
+    /// A `SelEnv` over the current buffer.
+    pub fn sel_env(&self) -> TermSelEnv<'_> {
+        TermSelEnv {
+            emu: self,
+            buf: TermBuf::all(&self.term),
+        }
+    }
+
+    fn sel_point(&self, a: Anchor) -> (Point, Side) {
+        let cols = self.cols();
+        let line = abs_to_line(self.history_size(), a.row);
+        let side = if a.b < cols { Side::Left } else { Side::Right };
+        (
+            Point::new(line, Column(a.b.min(cols.saturating_sub(1)))),
+            side,
+        )
+    }
+
+    /// Applies a machine output. Marks nothing dirty by itself (the handle does).
+    pub fn sel_apply(&mut self, out: SelOut) {
+        match out {
+            SelOut::Nothing => {}
+            SelOut::Clear => self.term.selection = None,
+            SelOut::Set(spec) => {
+                if spec.is_empty() {
+                    self.term.selection = None;
+                    return;
+                }
+                let ty = if spec.block {
+                    SelectionType::Block
+                } else {
+                    SelectionType::Simple
+                };
+                let (p, side) = self.sel_point(spec.start);
+                let mut sel = Selection::new(ty, p, side);
+                let (p, side) = self.sel_point(spec.end);
+                sel.update(p, side);
+                self.term.selection = Some(sel);
+            }
+            SelOut::Extend(a) => {
+                let Some((s, e, block)) = self.sel_bounds() else {
+                    return;
+                };
+                let cols = self.cols();
+                let lin = |p: (usize, usize)| (p.0 * (cols + 1) + p.1) as i64;
+                let at = lin((a.row, a.b));
+                let fixed = if at < lin(s) {
+                    e
+                } else if at > lin(e) || at - lin(s) >= lin(e) - at {
+                    s
+                } else {
+                    e
+                };
+                self.sel_apply(SelOut::Set(SelSpec {
+                    block,
+                    start: Anchor {
+                        row: fixed.0,
+                        b: fixed.1,
+                    },
+                    end: a,
+                }));
+            }
+        }
+    }
+
+    /// A non-empty Simple or Block selection stands.
+    pub fn has_selection(&self) -> bool {
+        self.sel_bounds().is_some()
+    }
+
+    /// The ordered boundaries of the selection and whether it is a block.
+    pub fn sel_bounds(&self) -> Option<SelBounds> {
+        let sel = self.term.selection.as_ref()?;
+        if !matches!(sel.ty, SelectionType::Simple | SelectionType::Block) {
+            return None;
+        }
+        let r = sel.to_range(&self.term)?;
+        let hist = self.history_size();
+        Some((
+            (line_to_abs(hist, r.start.line), r.start.column.0),
+            (line_to_abs(hist, r.end.line), r.end.column.0 + 1),
+            r.is_block,
+        ))
+    }
+
+    pub fn sel_text(&self) -> String {
+        let Some((s, e, block)) = self.sel_bounds() else {
+            return String::new();
+        };
+        selection_text(&TermBuf::all(&self.term), self.cols(), s, e, block)
+    }
+
+    /// The selection's pieces on viewport rows.
+    pub fn sel_spans(&self) -> Vec<RowSpan> {
+        let Some((s, e, block)) = self.sel_bounds() else {
+            return Vec::new();
+        };
+        let cols = self.cols();
+        let top = self.viewport_top();
+        let mut out = Vec::new();
+        for r in 0..self.view_rows() {
+            let abs = top + r;
+            if abs < s.0 || abs > e.0 {
+                continue;
+            }
+            let (from, to) = if block {
+                (s.1.min(e.1), s.1.max(e.1))
+            } else {
+                (
+                    if abs == s.0 { s.1 } else { 0 },
+                    if abs == e.0 { e.1 } else { cols },
+                )
+            };
+            if to > from {
+                out.push(RowSpan {
+                    row: r,
+                    col: from,
+                    width: to - from,
+                });
+            }
+        }
+        out
+    }
+
+    pub fn sel_clear(&mut self) {
+        self.term.selection = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +851,174 @@ mod tests {
             e.release_sync_if_due(d),
             vec![TermEvent::Reply(b"\x1b[0n".to_vec())]
         );
+    }
+
+    fn sel(block: bool, r0: usize, b0: usize, r1: usize, b1: usize) -> SelOut {
+        SelOut::Set(SelSpec {
+            block,
+            start: Anchor { row: r0, b: b0 },
+            end: Anchor { row: r1, b: b1 },
+        })
+    }
+
+    #[test]
+    fn a_set_selection_reads_back_as_text() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        assert_eq!(e.sel_text(), "hello");
+        assert!(e.has_selection());
+    }
+
+    #[test]
+    fn an_empty_spec_clears() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.sel_apply(sel(false, 0, 2, 0, 2));
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn clear_removes_it() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.sel_apply(SelOut::Clear);
+        assert!(!e.has_selection());
+        assert_eq!(e.sel_text(), "");
+    }
+
+    #[test]
+    fn a_selection_survives_new_output_below() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        for _ in 0..5 {
+            e.feed(b"\r\nnext");
+        }
+        assert_eq!(e.sel_text(), "hello");
+    }
+
+    #[test]
+    fn a_selection_in_the_scrollback_survives_a_screen_clear_below() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..10 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 1, 0, 1, 5));
+        assert_eq!(e.sel_text(), "line1");
+        // ED 0 clears only over screen lines; alacritty clears the whole selection on ED 2.
+        e.feed(b"\x1b[J");
+        assert_eq!(e.sel_text(), "line1");
+    }
+
+    #[test]
+    fn an_erase_over_the_selection_clears_it() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1b[2K");
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn a_block_selection_is_rectangular() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"abcdef\r\nghijkl");
+        e.sel_apply(sel(true, 0, 2, 1, 4));
+        assert_eq!(e.sel_text(), "cd\r\nij");
+    }
+
+    #[test]
+    fn extend_keeps_the_far_end() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"0123456789abcdef");
+        e.sel_apply(sel(false, 0, 2, 0, 5));
+        e.sel_apply(SelOut::Extend(Anchor { row: 0, b: 9 }));
+        assert_eq!(e.sel_text(), "2345678");
+        e.sel_apply(sel(false, 0, 2, 0, 5));
+        e.sel_apply(SelOut::Extend(Anchor { row: 0, b: 0 }));
+        assert_eq!(e.sel_text(), "01234");
+    }
+
+    #[test]
+    fn a_wide_character_selects_whole() {
+        let mut e = Emulator::new(20, 3);
+        e.feed("日本x".as_bytes());
+        e.sel_apply(sel(false, 0, 1, 0, 3));
+        assert_eq!(e.sel_text(), "日本");
+    }
+
+    #[test]
+    fn the_end_boundary_cols_selects_to_the_row_end() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"abcdefg");
+        e.sel_apply(sel(false, 0, 3, 0, 10));
+        assert_eq!(e.sel_text(), "defg");
+    }
+
+    #[test]
+    fn sel_spans_follow_the_viewport() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..9 {
+            e.feed(format!("l{i}\r\n").as_bytes());
+        }
+        e.feed(b"l9");
+        e.scroll_view(2);
+        let top = e.viewport_top();
+        e.sel_apply(sel(false, top + 1, 0, top + 1, 2));
+        assert_eq!(
+            e.sel_spans(),
+            vec![RowSpan {
+                row: 1,
+                col: 0,
+                width: 2
+            }]
+        );
+        e.sel_apply(sel(false, top - 2, 0, top - 2, 2));
+        assert!(e.sel_spans().is_empty());
+    }
+
+    #[test]
+    fn the_env_finds_words_lines_and_links() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"git status\r\nsee https://example.com/x now");
+        let env = e.sel_env();
+        let w = env.word_at(0, 1, true).unwrap();
+        assert_eq!(
+            (w.start, w.end),
+            (Anchor { row: 0, b: 0 }, Anchor { row: 0, b: 3 })
+        );
+        let l = env.link_at(1, 10).unwrap();
+        assert_eq!(
+            (l.start, l.end),
+            (Anchor { row: 1, b: 4 }, Anchor { row: 1, b: 25 })
+        );
+        assert!(env.link_at(1, 1).is_none());
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"aaaaaaaaaabbbbb");
+        assert_eq!(e.sel_env().line_at(1), (0, 1));
+    }
+
+    #[test]
+    fn an_osc8_link_is_found_from_the_cell() {
+        let mut e = Emulator::new(40, 3);
+        e.feed(b"x \x1b]8;;https://a.example/p\x1b\\click\x1b]8;;\x1b\\ y");
+        let l = e.sel_env().link_at(0, 4).unwrap();
+        assert_eq!(
+            (l.start, l.end),
+            (Anchor { row: 0, b: 2 }, Anchor { row: 0, b: 7 })
+        );
+    }
+
+    #[test]
+    fn the_env_reports_widths() {
+        let mut e = Emulator::new(10, 3);
+        e.feed("日a".as_bytes());
+        let env = e.sel_env();
+        assert_eq!(env.cell_width(0, 0), 2);
+        assert_eq!(env.cell_width(0, 1), 0);
+        assert_eq!(env.cell_width(0, 2), 1);
     }
 }

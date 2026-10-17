@@ -314,6 +314,18 @@ impl TermHandle {
         self.emu.lock().mode()
     }
 
+    /// Runs `f` on the emulator, then marks the view dirty and wakes the UI.
+    pub fn with_emu<R>(&self, f: impl FnOnce(&mut Emulator) -> R) -> R {
+        let r = f(&mut self.emu.lock());
+        self.sh.wake();
+        r
+    }
+
+    /// Read only: no dirty flag, no wake.
+    pub fn with_emu_quiet<R>(&self, f: impl FnOnce(&Emulator) -> R) -> R {
+        f(&self.emu.lock())
+    }
+
     pub fn kill(&self) {
         self.sh.mgr.kill(&self.sh.id);
     }
@@ -527,6 +539,23 @@ mod tests {
         assert!(t.h.is_dirty());
         let _ = t.h.snapshot();
         assert!(!t.h.is_dirty());
+    }
+
+    #[test]
+    fn with_emu_marks_dirty_and_wakes() {
+        let t = T::started();
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = Arc::clone(&n);
+        t.h.set_waker(Arc::new(move || {
+            n2.fetch_add(1, Ordering::SeqCst);
+        }));
+        let _ = t.h.snapshot();
+        let before = n.load(Ordering::SeqCst);
+        assert!(!t.h.with_emu_quiet(|e| e.has_selection()));
+        assert!(!t.h.is_dirty());
+        t.h.with_emu(|e| e.sel_clear());
+        assert!(t.h.is_dirty());
+        assert_eq!(n.load(Ordering::SeqCst), before + 1);
     }
 
     #[test]
