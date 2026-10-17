@@ -114,6 +114,7 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
                 RenderingState::RenderingSetup => {
                     if let GraphicsAPI::WGPU30 { device, queue, .. } = api {
                         host.borrow_mut().attach_gpu(device, queue);
+                        *note.borrow_mut() = None;
                     } else {
                         host.borrow_mut().detach_gpu();
                         *note.borrow_mut() = Some("Slint renderer has no wgpu device".to_string());

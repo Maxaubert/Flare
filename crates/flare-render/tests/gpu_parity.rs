@@ -4,7 +4,7 @@ use flare_render::color::Palette;
 use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::glyph::{FakeGlyphs, GlyphKey, GlyphSource};
 use flare_render::gpu::{GpuPainter, headless_device, read_texture};
-use flare_render::metrics::cell_metrics;
+use flare_render::metrics::{cell_metrics, grid_dims};
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GlyphDraw, RectFill, Scene, build_scene};
@@ -29,8 +29,9 @@ fn max_diff(a: &[u8], b: &[u8]) -> u8 {
         .unwrap_or(0)
 }
 
-fn sample_scene(glyphs: &dyn GlyphSource, w: u32, h: u32, cols: usize, rows: usize) -> Scene {
-    let m = cell_metrics(&glyphs.font_units(), 1.0);
+fn sample_scene(glyphs: &dyn GlyphSource, scale: f32, w: u32, h: u32) -> Scene {
+    let m = cell_metrics(&glyphs.font_units(), scale);
+    let (cols, rows) = grid_dims(w, h, &m);
     build_scene(&sample_grid(cols, rows), &Palette::pt_default(), &m, w, h)
 }
 
@@ -45,9 +46,12 @@ fn empty_scene(w: u32, h: u32) -> Scene {
     }
 }
 
-fn parity(glyphs: &mut dyn GlyphSource) {
+fn parity(glyphs: &mut dyn GlyphSource, scale: f32) {
     let (device, queue) = device_or_skip!();
-    let scene = sample_scene(glyphs, 648, 264, 80, 16);
+    glyphs.set_scale(scale);
+    let w = (648.0 * scale).round() as u32;
+    let h = (264.0 * scale).round() as u32;
+    let scene = sample_scene(glyphs, scale, w, h);
     let mut gpu = GpuPainter::new(&device, &queue);
     let tex = gpu.paint(&scene, glyphs);
     let got = read_texture(&device, &queue, &tex);
@@ -106,12 +110,17 @@ fn rects_match_cpu_exactly() {
 
 #[test]
 fn fake_glyphs_match_cpu_within_2() {
-    parity(&mut FakeGlyphs::new(6, 12));
+    parity(&mut FakeGlyphs::new(6, 12), 1.0);
 }
 
 #[test]
 fn real_glyphs_match_cpu_within_2() {
-    parity(&mut Rasterizer::new(DEFAULT_FAMILIES, 1.0));
+    parity(&mut Rasterizer::new(DEFAULT_FAMILIES, 1.0), 1.0);
+}
+
+#[test]
+fn real_glyphs_match_cpu_within_2_at_225_percent() {
+    parity(&mut Rasterizer::new(DEFAULT_FAMILIES, 1.0), 2.25);
 }
 
 #[test]

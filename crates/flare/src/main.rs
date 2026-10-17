@@ -17,6 +17,8 @@ fn main() {
     let args = match config::parse_args(&argv, env_renderer.as_deref()) {
         Ok(args) => args,
         Err(message) => {
+            // A release build has no console of its own: attach first or a bad flag fails silently.
+            attach_parent_console();
             eprintln!("flare: {message}");
             std::process::exit(1);
         }
@@ -62,6 +64,7 @@ fn main() {
     let outcome = match backend::select_backend(args.renderer) {
         Ok(outcome) => outcome,
         Err(e) => {
+            attach_parent_console();
             eprintln!("flare: backend selection failed: {e}");
             std::process::exit(1);
         }
@@ -72,6 +75,7 @@ fn main() {
         outcome.fallback_reason
     );
     if let Err(e) = window::run_window(outcome, start) {
+        attach_parent_console();
         eprintln!("flare: {e}");
         std::process::exit(1);
     }

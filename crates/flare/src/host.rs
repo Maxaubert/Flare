@@ -24,6 +24,8 @@ pub struct GridHost {
     palette: Palette,
     glyphs: Box<dyn GlyphSource>,
     painter: GridPainter,
+    /// The painter asked for (at start or by the overlay switch), restored when a GPU attaches.
+    wanted: GridPainter,
     gpu: Option<GpuPainter>,
     /// The device and queue behind `gpu`, kept so `render_rgba` can read the texture back.
     readback: Option<(wgpu::Device, wgpu::Queue)>,
@@ -41,6 +43,7 @@ impl GridHost {
             palette: Palette::pt_default(),
             glyphs,
             painter,
+            wanted: painter,
             gpu: None,
             readback: None,
             cpu_image: RgbaImage::new(0, 0),
@@ -54,10 +57,12 @@ impl GridHost {
     pub fn attach_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.gpu = Some(GpuPainter::new(device, queue));
         self.readback = Some((device.clone(), queue.clone()));
+        // After a teardown and a new setup the grid goes back on the GPU if that was asked for.
+        self.painter = self.wanted;
         self.dirty = true;
     }
 
-    /// Drops the GPU painter; the host paints on the CPU from now on.
+    /// Drops the GPU painter; the host paints on the CPU until a GPU attaches again.
     pub fn detach_gpu(&mut self) {
         if self.gpu.take().is_some() {
             self.dirty = true;
@@ -89,6 +94,7 @@ impl GridHost {
             GridPainter::Cpu if self.gpu.is_some() => GridPainter::Gpu,
             GridPainter::Cpu => GridPainter::Cpu,
         };
+        self.wanted = self.painter;
         self.dirty = true;
         self.painter
     }
@@ -282,6 +288,25 @@ mod tests {
         assert_eq!((img.width, img.height), (200, 100));
         assert_eq!(img.data.len(), 200 * 100 * 4);
         assert_eq!(h.painter(), GridPainter::Gpu);
+    }
+
+    #[test]
+    fn reattach_after_teardown_restores_the_gpu() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        h.detach_gpu();
+        assert_eq!(h.painter(), GridPainter::Cpu);
+        h.attach_gpu(&device, &queue);
+        assert_eq!(h.painter(), GridPainter::Gpu);
+        // A grid switched to the CPU by hand stays there across a new setup.
+        h.toggle_painter();
+        h.detach_gpu();
+        h.attach_gpu(&device, &queue);
+        assert_eq!(h.painter(), GridPainter::Cpu);
     }
 
     #[test]
