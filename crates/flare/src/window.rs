@@ -17,6 +17,7 @@ use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
 use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
+use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
 use flare_term::path_open::FsStat;
 use flare_term::pty::PortableSpawner;
@@ -31,6 +32,7 @@ use flare_win::session_end::SessionEndWatch;
 use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServer, serve};
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
 use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
@@ -48,6 +50,7 @@ use crate::config::{Args, RendererChoice};
 use crate::e2e;
 use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
+use crate::ime::{CaretFollower, ime_area};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
 use crate::look_ctl::LookCtl;
@@ -390,6 +393,12 @@ pub fn run_window(
         }
     };
 
+    // The tab in front. Declared here so every rendered frame can place the IME area (Task 24b).
+    let front: FrontCell = Rc::new(RefCell::new(None));
+    // The IME caret hold, and the grid size the last frame had (a resize releases the hold).
+    let caret: Rc<RefCell<CaretFollower>> = Rc::new(RefCell::new(CaretFollower::new()));
+    let ime_dims: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+
     // Renders into the window's image now.
     let no_notifier = Rc::new(Cell::new(false));
     let first_software_frame = Rc::new(RefCell::new(Once::default()));
@@ -398,11 +407,15 @@ pub fn run_window(
         let weak = app.as_weak();
         let no_notifier = no_notifier.clone();
         let first_software_frame = first_software_frame.clone();
+        let front = front.clone();
+        let caret = caret.clone();
+        let ime_dims = ime_dims.clone();
         move || {
             let Some(app) = weak.upgrade() else { return };
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 app.set_grid_image(image);
+                place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                 // No notifier means no AfterRendering: log the first frame from here.
                 if no_notifier.get() && first_software_frame.borrow_mut().fire() {
                     log::info!("first frame after {} ms", start.elapsed().as_millis());
@@ -415,6 +428,9 @@ pub fn run_window(
         let host = host.clone();
         let note = note.clone();
         let weak = app.as_weak();
+        let front = front.clone();
+        let caret = caret.clone();
+        let ime_dims = ime_dims.clone();
         let mut first_frame = true;
         app.window()
             .set_rendering_notifier(move |state, api| match state {
@@ -434,6 +450,7 @@ pub fn run_window(
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
                             app.set_grid_image(image);
+                            place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                             app.window().request_redraw();
                         }
                     }
@@ -466,7 +483,6 @@ pub fn run_window(
     }
 
     // ---- the controller -----------------------------------------------------------------------
-    let front: FrontCell = Rc::new(RefCell::new(None));
     let mut ctl: Option<CtlRc> = None;
     let mut session_end = None;
     // A font setting changed: the grid takes the new face and size (Task 27).
@@ -743,6 +759,7 @@ pub fn run_window(
                 host: host.clone(),
                 initial: initial.clone(),
                 material: material.clone(),
+                caret: caret.clone(),
             },
         );
     }
@@ -941,6 +958,56 @@ struct FilterState {
     initial: Option<InitialWindow>,
     /// Filled after the show, when the window has its handle.
     material: Rc<RefCell<Option<WindowMaterial>>>,
+    /// The IME caret hold (Task 24b): a typed key opens its window.
+    caret: Rc<RefCell<CaretFollower>>,
+}
+
+/// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
+/// released on the alternate screen, after a resize and on a scrolled-back view. Nothing to place
+/// without a tab in front.
+fn place_ime(
+    app: &AppWindow,
+    front: &FrontCell,
+    caret: &RefCell<CaretFollower>,
+    host: &GridHost,
+    last_dims: &Cell<(usize, usize)>,
+) {
+    let Some(handle) = front.borrow().clone() else {
+        return;
+    };
+    let dims = host.dims();
+    let resized = last_dims.replace(dims) != dims;
+    let (cursor, scrolled, alt) = handle.with_emu_quiet(|e| {
+        let (line, col) = e.cursor();
+        (
+            CaretPos {
+                line: i64::from(line),
+                x: col as i64,
+            },
+            e.display_offset() > 0,
+            e.mode().alt_screen,
+        )
+    });
+    let held = caret
+        .borrow_mut()
+        .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
+    let scale = app.get_scale();
+    let origin = (
+        (app.get_grid_left() * scale).round() as i32,
+        (app.get_grid_top() * scale).round() as i32,
+    );
+    let area = ime_area(
+        held.line.max(0) as usize,
+        held.x.max(0) as usize,
+        &host.metrics(),
+        origin,
+    );
+    let _ = app.window().with_winit_window(|w| {
+        w.set_ime_cursor_area(
+            PhysicalPosition::new(area.x, area.y),
+            PhysicalSize::new(area.w, area.h),
+        );
+    });
 }
 
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
@@ -953,6 +1020,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         host,
         initial,
         material,
+        caret,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
@@ -1134,6 +1202,10 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 );
                 if reserved_for_slint(&ev.code) {
                     return EventResult::Propagate;
+                }
+                if ev.pressed {
+                    // A typed key opens the IME caret hold (Task 24b).
+                    caret.borrow_mut().on_key(epoch_ms() as i64);
                 }
                 let chrome_focus = weak
                     .upgrade()
