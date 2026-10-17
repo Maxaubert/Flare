@@ -1,10 +1,14 @@
 mod backend;
 mod config;
+mod host;
+mod memory;
+mod window;
 
 slint::include_modules!();
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let start = std::time::Instant::now();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
     let args = match config::parse_args(&argv, env_renderer.as_deref()) {
@@ -35,13 +39,27 @@ fn main() {
         }
     }
 
-    // Task 16 wires the window here.
-    log::debug!(
-        "options: renderer={:?} screenshot={:?} scale={} size={:?} bench={:?}",
-        args.renderer,
-        args.screenshot,
-        args.scale,
-        args.size,
-        args.bench_frames
+    if args.screenshot.is_some() || args.bench_frames.is_some() {
+        // Task 17 adds `headless::run(args, start)` here: it exits 2 when its error starts
+        // with "GPU unavailable", else 1.
+        eprintln!("flare: --screenshot and --bench-frames are not available yet");
+        std::process::exit(1);
+    }
+
+    let outcome = match backend::select_backend(args.renderer) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("flare: backend selection failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    log::info!(
+        "renderer: {:?} (fallback: {:?})",
+        outcome.effective,
+        outcome.fallback_reason
     );
+    if let Err(e) = window::run_window(outcome, start) {
+        eprintln!("flare: {e}");
+        std::process::exit(1);
+    }
 }
