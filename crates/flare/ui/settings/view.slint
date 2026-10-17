@@ -291,6 +291,13 @@ export component SettingsView inherits Rectangle {
     public function focus-find() {
         fr.focus-field();
     }
+    public function focus-list() {
+        fr.focus-list();
+    }
+    // Asks rail item i for the focus; -1 clears the request so the next one fires again.
+    public function focus-rail(i: int) {
+        fr.focus-rail-index = i;
+    }
 
     changed width => { root.report(); }
     changed height => { root.report(); }

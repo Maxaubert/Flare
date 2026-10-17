@@ -345,6 +345,90 @@ fn observe(window: &slint::Window) -> Observed {
     }
 }
 
+/// The Settings controller's ports (Task 41): the real picker, clipboard and shell detection, and
+/// stand-ins where a later task owns the real thing (Task 44: the diagnostics control).
+fn settings_deps(
+    app: &AppWindow,
+    prefs: &PrefStore,
+    post: Post,
+    logs: PathBuf,
+    open_url: Rc<dyn Fn(&str)>,
+    e2e_on: bool,
+) -> crate::settings_ctl::SettingsDeps {
+    use flare_settings::page::{GlassSupport, PlaceholderDictation};
+    use flare_settings::verb::{FakeDiag, PendingVerb};
+    let look = LookStore::new(prefs.clone());
+    let weak = app.as_weak();
+    crate::settings_ctl::SettingsDeps {
+        prefs: prefs.clone(),
+        look: LookStore::new(prefs.clone()),
+        diag: Rc::new(FakeDiag::new(logs, false)),
+        verb: Arc::new(PendingVerb),
+        dictation: Rc::new(PlaceholderDictation),
+        pick_folder: Rc::new(move |default_dir, answer| {
+            let parent = weak
+                .upgrade()
+                .and_then(|a| hwnd_of(&a))
+                .map(|hwnd| ParentWindow { hwnd });
+            let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+            pick_folder(
+                PickOptions {
+                    parent,
+                    default_dir,
+                    seam,
+                },
+                move |p| answer(p),
+            );
+        }),
+        open_path: Rc::new(move |p: &Path| {
+            let text = p.to_string_lossy();
+            if flare_term::web_url::is_web_url(&text) {
+                open_url(&text);
+            } else if !e2e_on
+                // sync-ok: spawn returns at once; Task 44 swaps in the shell-open call
+                && let Err(e) = std::process::Command::new("explorer.exe").arg(p).spawn()
+            {
+                log::warn!("open {text} failed: {e}");
+            }
+        }),
+        clipboard: Rc::new(|_: &str| {}),
+        shell_list: Arc::new(|| {
+            flare_shells::detect::cached_shells()
+                .iter()
+                .map(|d| (d.id.clone(), d.name.clone()))
+                .collect()
+        }),
+        glass: Rc::new(|| GlassSupport::Ok),
+        face_of: Rc::new(|id: &str| {
+            flare_theme::fonts::font_families(id)
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        }),
+        theme_colours: {
+            let prefs = prefs.clone();
+            Rc::new(move || flare_settings::page::appearance::theme_colours(&look, &prefs, false))
+        },
+        agent_colours: {
+            let prefs = prefs.clone();
+            Rc::new(move || crate::settings_ctl::agent_colours_in_force(&prefs))
+        },
+        agent_key_labels: Rc::new(|| {
+            flare_tabs::keymap::agent_chords()
+                .into_iter()
+                .map(|id| flare_tabs::keymap::key_label(id, true))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }),
+        post,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        copyright: String::new(),
+        e2e: e2e_on,
+        clock: Rc::new(epoch_ms),
+        still: Rc::new(|| !flare_win::motion::animations_enabled()),
+    }
+}
+
 fn epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -641,6 +725,20 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The Settings controller (Task 41). Task 44 swaps the stand-ins (the diagnostics control,
+        // the shell list) for the real ones.
+        {
+            let sdeps = settings_deps(
+                &app,
+                &prefs,
+                Arc::clone(&post),
+                inst.profile.dir.join("logs"),
+                backends.open_url(),
+                e2e_on,
+            );
+            let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
+            rc.borrow_mut().set_settings(settings);
+        }
         *inputs_cell.borrow_mut() = Some(rc.borrow().decor_inputs());
         APP_CTL.with(|cell| *cell.borrow_mut() = Some((rc.clone(), app.as_weak())));
         // The second launch's folders arrive on the pipe thread (running since main took the

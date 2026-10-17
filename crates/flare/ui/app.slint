@@ -12,8 +12,12 @@ import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
+import { SettingsView, SettingsBridge } from "settings/view.slint";
+import { SelectMenu } from "settings/select.slint";
+import { ColourPopover } from "settings/colour.slint";
+import { ThemeEditor, AskThree } from "settings/wall.slint";
 
-export { Theme, Px } from "theme.slint";
+export { Theme, Px, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview } from "tabmark.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
@@ -142,6 +146,11 @@ export component AppWindow inherits Window {
     out property <float> scale: 1px / 1phx;
 
     callback grid-resized(int, int, float);
+
+    // The Settings view's focus requests (M7 Task 41): the Find field, the result list, a rail item.
+    public function settings-focus-find() { settings-view.focus-find(); }
+    public function settings-focus-list() { settings-view.focus-list(); }
+    public function settings-focus-rail(i: int) { settings-view.focus-rail(i); }
     callback minimize-clicked();
     callback maximize-clicked();
     callback close-clicked();
@@ -463,15 +472,12 @@ export component AppWindow inherits Window {
                             close => { root.find-close(); }
                         }
                     }
-                    if root.front-kind == 1: Rectangle {
-                        Text {
-                            text: "Settings";
-                            color: Theme.dim;
-                            font-size: 13px;
-                            font-family: Theme.font-ui;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                    settings-view := SettingsView {
+                        visible: root.front-kind == 1;
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
                     }
                     StartScreen {
                         x: 0px;
@@ -622,6 +628,86 @@ export component AppWindow inherits Window {
             dismissed => { root.overflow-dismissed(); }
             accepted => { root.overflow-accepted(); }
             query-edited(q) => { root.overflow-query-edited(q); }
+        }
+        // The Settings overlays (M7 Task 41), above the page and below the dialog. Each is
+        // pointer-transparent while closed. The Command help panel joins them in Task 43.
+        ThemeEditor {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.editor-open;
+            wells: SettingsBridge.editor-wells;
+            preview: SettingsBridge.editor-preview;
+            well-edited(k, t) => { SettingsBridge.editor-well-edited(k, t); }
+            well-committed(k) => { SettingsBridge.editor-well-committed(k); }
+            well-swatch(k, x, y, w, h) => { SettingsBridge.editor-well-swatch(k, x, y, w, h); }
+            save => { SettingsBridge.editor-save(); }
+            cancel => { SettingsBridge.editor-cancel(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+        AskThree {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.ask-open;
+            answered(n) => { SettingsBridge.ask-answered(n); }
+        }
+        SelectMenu {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.select-open;
+            options: SettingsBridge.select-options;
+            value: SettingsBridge.select-value;
+            menu-x: SettingsBridge.select-x;
+            menu-y: SettingsBridge.select-y;
+            menu-w: SettingsBridge.select-w;
+            menu-h: SettingsBridge.select-h;
+            highlight <=> SettingsBridge.select-highlight;
+            chosen(id) => { SettingsBridge.select-chosen(id); }
+            dismissed => { SettingsBridge.select-dismissed(); }
+            key(k) => { SettingsBridge.select-key(k); }
+        }
+        ColourPopover {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.picker-open;
+            pop-x: SettingsBridge.picker-x;
+            pop-y: SettingsBridge.picker-y;
+            label: SettingsBridge.picker-label;
+            hue: SettingsBridge.picker-hue;
+            sat: SettingsBridge.picker-sat;
+            val: SettingsBridge.picker-val;
+            alpha: SettingsBridge.picker-alpha;
+            solid-colour: SettingsBridge.picker-solid;
+            start-colour: SettingsBridge.picker-start;
+            now-colour: SettingsBridge.picker-now;
+            hue-colour: SettingsBridge.picker-hue-colour;
+            alpha-on: SettingsBridge.picker-alpha-on;
+            alpha-disabled: SettingsBridge.picker-alpha-disabled;
+            dropper-on: SettingsBridge.picker-dropper-on;
+            format-name: SettingsBridge.picker-format;
+            sv-text: SettingsBridge.picker-sv-text;
+            hue-text: SettingsBridge.picker-hue-text;
+            alpha-text: SettingsBridge.picker-alpha-text;
+            sv-now: SettingsBridge.picker-sv-now;
+            hue-now: SettingsBridge.picker-hue-now;
+            alpha-now: SettingsBridge.picker-alpha-now;
+            sv-moved(x, y, k) => { SettingsBridge.picker-sv(x, y, k); }
+            hue-moved(x, k) => { SettingsBridge.picker-hue-moved(x, k); }
+            alpha-moved(x, k) => { SettingsBridge.picker-alpha-moved(x, k); }
+            slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
+            format-clicked => { SettingsBridge.picker-format-clicked(); }
+            dropper-clicked => { SettingsBridge.picker-dropper(); }
+            escape-pressed => { SettingsBridge.picker-escape(); }
+            outside-pressed => { SettingsBridge.picker-outside(); }
+            focus-left => { SettingsBridge.picker-focus-left(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
         Dialog {
             x: 0px;

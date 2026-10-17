@@ -80,6 +80,7 @@ use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
 };
+use crate::settings_ctl::{SettingsCtl, SettingsMsg};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
@@ -91,7 +92,9 @@ use crate::term_menu::to_menu_row;
 use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
-use crate::{AppWindow, MarkMotion, MenuRow, OverflowRow, Place, StripGeom, TabRow};
+use crate::{
+    AppWindow, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom, TabRow,
+};
 use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
@@ -113,6 +116,8 @@ pub enum UiMsg {
     Term(TermMsgBox),
     /// The theme, the indicator, a colour pick or an attention switch changed.
     LookChanged,
+    /// A worker's answer or a setting change for the Settings controller (Task 41).
+    Settings(SettingsMsg),
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -377,6 +382,12 @@ pub struct AppCtl {
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
+    /// The Settings controller (Task 41); the window hands it over after the controller exists.
+    settings: Option<Rc<RefCell<SettingsCtl>>>,
+    /// The Settings page is in front now.
+    settings_shown: bool,
+    /// A Settings tab exists.
+    settings_present: bool,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -665,6 +676,9 @@ impl AppCtl {
             looked: None,
             badge: None,
             restoring: HashMap::new(),
+            settings: None,
+            settings_shown: false,
+            settings_present: false,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -747,6 +761,19 @@ impl AppCtl {
             on_tip_request,
             |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| c.tip_request(&t, x, y, w, h)
         );
+        // The Settings view's tooltips go the same way as every other surface's.
+        {
+            let weak = Rc::downgrade(rc);
+            app.global::<SettingsBridge>().on_tip(
+                move |t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                    if let Some(rc) = weak.upgrade()
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                    {
+                        c.tip_request(&t, x, y, w, h);
+                    }
+                },
+            );
+        }
         bind!(app, rc, on_bar_double_clicked, |c| c.toggle_maximise());
         bind!(app, rc, on_title_pressed, |c| c.title_pressed());
         bind!(
@@ -1033,6 +1060,7 @@ impl AppCtl {
         if self.overflow.is_some() {
             self.push_overflow();
         }
+        self.sync_settings();
 
         // The grid draws whichever shell is in front; Settings, a placeholder and no tab draw none.
         let want = self
@@ -2444,6 +2472,43 @@ impl AppCtl {
         self.deps.host.set_dims(cols, rows, front.as_deref());
     }
 
+    /// The window hands over the Settings controller (Task 41).
+    pub fn set_settings(&mut self, s: Rc<RefCell<SettingsCtl>>) {
+        self.settings = Some(s);
+        self.settings_shown = false;
+        self.settings_present = false;
+        self.sync_settings();
+    }
+
+    /// Tells the Settings controller when its page comes to the front, goes behind another tab,
+    /// or its tab is closed (the page then resets to Appearance).
+    fn sync_settings(&mut self) {
+        let Some(s) = self.settings.clone() else {
+            return;
+        };
+        let shown = self.view.front_kind == 1;
+        let present = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .any(|t| t.kind == TabKind::Settings);
+        let (was_shown, was_present) = (self.settings_shown, self.settings_present);
+        self.settings_shown = shown;
+        self.settings_present = present;
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        if was_present && !present {
+            s.on_settings_tab(false);
+        }
+        if shown && !was_shown {
+            s.show();
+        } else if !shown && was_shown {
+            s.hide();
+        }
+    }
+
     /// The window hands over the font controller; the face and size in force apply at once.
     pub fn set_font_ctl(&mut self, f: FontCtl) {
         self.font = Some(f);
@@ -2660,6 +2725,13 @@ impl AppCtl {
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
             UiMsg::LookChanged => self.on_look_changed(),
+            UiMsg::Settings(m) => {
+                if let Some(s) = self.settings.clone()
+                    && let Ok(mut s) = s.try_borrow_mut()
+                {
+                    s.on_msg(m);
+                }
+            }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
