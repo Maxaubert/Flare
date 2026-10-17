@@ -64,6 +64,21 @@ fn main() {
         }
     }
 
+    // Hidden test modes of the process tests (Task 34); neither opens a window.
+    if args.instance_probe {
+        std::process::exit(startup::run_instance_probe(
+            args.user_data_dir.as_deref(),
+            &argv_with_exe(),
+        ));
+    }
+    if let (Some(n), None) = (args.live_tabs, args.scene.as_ref()) {
+        if let Err(e) = flare_term::conpty::verify_bundled() {
+            show_fatal("Flare cannot start", &e.to_string(), false);
+            std::process::exit(3);
+        }
+        std::process::exit(startup::run_live_tabs(args.user_data_dir.as_deref(), n));
+    }
+
     if args.probe_backend {
         match backend::select_backend(args.renderer, false) {
             Ok(outcome) => {

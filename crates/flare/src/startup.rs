@@ -13,7 +13,8 @@ use flare_agent::kinds::DetectedAgent;
 use flare_tabs::close_flow::{NAME_INK, close_question_body};
 use flare_tabs::tabs_store::TabsStore;
 use flare_win::single_instance::{
-    Acquired, Handoff, InstanceGuard, InstanceNames, acquire, instance_names, send_handoff,
+    Acquired, Handoff, InstanceGuard, InstanceNames, acquire, encode_handoff, instance_names,
+    send_handoff, serve,
 };
 use flare_win::window_state::WindowStateStore;
 use std::path::{Path, PathBuf};
@@ -260,6 +261,162 @@ pub fn end_of_life(tabs: &TabsStore, window: &WindowStateStore, host: &mut dyn S
     window.flush();
     tabs.flush();
     host.shutdown()
+}
+
+/// `--instance-probe` (Task 34): the real startup (profile, `launch`, `serve`) with NO window.
+/// Prints `names <mutex> <pipe>`, then `first`, then one `handoff <json>` line per hand-off, and
+/// exits 0 when stdin closes. A process that is not the first prints `second` and returns 1.
+pub fn run_instance_probe(user_data_dir: Option<&Path>, argv: &[String]) -> i32 {
+    use std::io::{Read, Write};
+    let Some(dir) = user_data_dir else {
+        eprintln!("flare: --instance-probe needs --user-data-dir=<path>");
+        return 1;
+    };
+    let profile = Profile {
+        dir: dir.to_path_buf(),
+    };
+    if let Err(e) = std::fs::create_dir_all(&profile.dir) {
+        // sync-ok: a hidden test mode, before anything else
+        eprintln!("flare: cannot create the profile folder: {e}");
+        return 1;
+    }
+    let launched = match launch(&profile, argv, Duration::from_secs(3)) {
+        Ok(l) => l,
+        Err(message) => {
+            eprintln!("flare: {message}");
+            return 1;
+        }
+    };
+    let (guard, names) = match launched {
+        Launch::First {
+            guard,
+            server_names,
+        } => (guard, server_names),
+        Launch::HandedOver => {
+            println!("second");
+            return 1;
+        }
+    };
+    let server = match serve(&names, |h| {
+        let json = String::from_utf8_lossy(&encode_handoff(&h)).into_owned();
+        println!("handoff {json}");
+        let _ = std::io::stdout().flush();
+    }) {
+        Ok(s) => s,
+        Err(message) => {
+            eprintln!("flare: {message}");
+            return 1;
+        }
+    };
+    // The worker must reach its connect call before a second launch writes (a client that writes
+    // and closes before then is dropped), so `first` is printed after a short settle.
+    std::thread::sleep(Duration::from_millis(200)); // sync-ok: a hidden test mode
+    println!("names {} {}", names.mutex, names.pipe);
+    println!("first");
+    let _ = std::io::stdout().flush();
+    let mut sink = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut sink); // sync-ok: the probe lives until stdin closes
+    server.stop();
+    drop(guard);
+    0
+}
+
+/// How long `--live-tabs` waits for every shell to show a prompt.
+const PROMPT_WAIT: Duration = Duration::from_secs(30);
+
+/// Whether a shell tab has drawn anything: its grid holds a non-blank cell.
+fn shows_prompt(h: &flare_term::handle::TermHandle) -> bool {
+    let g = h.snapshot();
+    (0..g.rows()).any(|row| (0..g.cols()).any(|col| !g.cell(col, row).ch.is_whitespace()))
+}
+
+/// `--live-tabs <n>` (Task 34): restore the profile's `tabs.json`, open `n` more real shell tabs,
+/// wait (30 s) until each shows a prompt, save, then take the close path (`end_of_life`: flush both
+/// files, kill every shell, wait 3 s). Prints `spawn <cwd>` per shell, then `quit-ok <ms>`. No window.
+pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
+    use flare_tabs::restore::{NoSessions, SavedTab, SavedTabs, resolve_restore};
+    use flare_term::pty::PortableSpawner;
+    use flare_term::session::RealShells;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    let Some(dir) = user_data_dir else {
+        eprintln!("flare: --live-tabs needs --user-data-dir=<path>");
+        return 1;
+    };
+    let profile = Profile {
+        dir: dir.to_path_buf(),
+    };
+    let _ = std::fs::create_dir_all(&profile.dir); // sync-ok: a hidden test mode
+    let tabs = TabsStore::new(profile.tabs_file(), Duration::from_millis(400));
+    let window = WindowStateStore::new(profile.window_file(), Duration::from_millis(400));
+    let prefs = flare_settings::kv::PrefStore::memory();
+    let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+    let mut host = TabHost::new(
+        Arc::new(PortableSpawner),
+        Arc::new(RealShells),
+        prefs,
+        waker,
+    );
+
+    let saved = tabs.load();
+    // sync-ok: a hidden test mode, no UI thread
+    let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(|p| Path::new(p).is_dir());
+    let plan = resolve_restore(&saved, is_dir, Arc::new(NoSessions));
+    let mut now: Vec<SavedTab> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let mut open = |host: &mut TabHost, cwd: String| {
+        let id = format!("t{}", ids.len());
+        println!("spawn {cwd}");
+        host.spawn(&id, &cwd, None);
+        ids.push(id);
+        now.push(SavedTab { cwd, agent: None });
+    };
+    for t in &plan.tabs {
+        open(&mut host, t.cwd.clone());
+    }
+    let active = plan.active;
+    let fresh = std::env::temp_dir().to_string_lossy().into_owned();
+    for _ in 0..n {
+        open(&mut host, fresh.clone());
+    }
+    let _ = std::io::stdout().flush();
+
+    let deadline = std::time::Instant::now() + PROMPT_WAIT;
+    let mut ready = vec![false; ids.len()];
+    while ready.iter().any(|r| !r) {
+        if std::time::Instant::now() > deadline {
+            eprintln!("flare: a shell showed no prompt within 30 s");
+            host.shutdown();
+            return 1;
+        }
+        for (i, id) in ids.iter().enumerate() {
+            if !ready[i]
+                && let Some(h) = host.handle(id)
+            {
+                let _ = h.drain_events();
+                ready[i] = shows_prompt(&h);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50)); // sync-ok: a hidden test mode
+    }
+
+    let count = now.len();
+    tabs.save(&SavedTabs {
+        tabs: now,
+        active: active.min(count.saturating_sub(1)),
+    });
+    let started = std::time::Instant::now();
+    let ok = end_of_life(&tabs, &window, &mut host);
+    let ms = started.elapsed().as_millis();
+    if ok {
+        println!("quit-ok {ms}");
+        let _ = std::io::stdout().flush();
+        0
+    } else {
+        eprintln!("flare: the quit gave up waiting for the shells");
+        1
+    }
 }
 
 #[cfg(test)]
