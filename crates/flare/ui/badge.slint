@@ -1,3 +1,55 @@
-// The Copied badge (Milestone 5, Task 18 fills it). Empty until then; the preview is for the screenshots.
-export component CopiedBadge inherits Rectangle { }
-export component BadgePreview inherits Window { }
+// The Copied badge (Milestone 5, Task 18): a neutral pill at the bottom centre of the window,
+// in the page only while it shows (Prism Terminal CopiedBadge.tsx, two-apps.md). No accent, no
+// shadow, pointer-transparent (no touch area here). Positions snap to device pixels.
+import { Theme, Px } from "theme.slint";
+
+export component CopiedBadge inherits Rectangle {
+    // 0 gone (nothing in the tree), 1 shown, 2 leaving (fades to nothing over 200 ms).
+    in property <int> phase;
+    in property <string> text: "Copied";
+
+    if root.phase != 0 : pill := Rectangle {
+        // The width comes from the measured word, which sits at a constant x, so there is no loop.
+        width: Px.snap(measure.preferred-width + 28px + 2 * Px.hair());
+        height: Px.snap(18px + 12px + 2 * Px.hair());
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap(root.height - 24px - self.height);
+        border-radius: self.height / 2;
+        background: Theme.control;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        opacity: root.phase == 1 ? 1 : 0;
+        animate opacity { duration: 200ms; easing: ease-out; }
+
+        measure := Text {
+            x: Px.hair() + 14px;
+            y: Px.hair() + 6px;
+            height: 18px;
+            vertical-alignment: center;
+            text: root.text;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-label: root.text;
+        }
+    }
+}
+
+// The badge alone in a 400 x 300 window, for the component tests and the screenshots.
+export component BadgePreview inherits Window {
+    preferred-width: 400px;
+    preferred-height: 300px;
+    background: Theme.ground;
+
+    in-out property <int> phase;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    CopiedBadge {
+        width: root.width;
+        height: root.height;
+        phase: root.phase;
+    }
+}
