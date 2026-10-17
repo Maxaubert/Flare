@@ -261,9 +261,10 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding: 0px;
                     spacing: 0px;
-                    // TitleMark: pl-3.5 pr-3 around a 17px mark, a full-height line after it.
+                    // TitleMark: pl-3.5 pr-3 around a 17px mark (43px), its full-height line INSIDE
+                    // the box (PT's `after:right-0 after:w-px`): the line starts where css px 42 ends.
                     Rectangle {
-                        width: Px.snap(43px) + Px.hair();
+                        width: Px.snap(42px) + Px.hair();
                         WindowMoveArea { }
                         AppMark {
                             x: Px.snap(14px);

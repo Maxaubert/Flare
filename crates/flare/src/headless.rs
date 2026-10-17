@@ -276,7 +276,7 @@ pub const SCENES: [&str; 13] = [
 const GITHUB: &str = r"C:\Users\Admin\Documents\Claude\Github";
 const HOME: &str = r"C:\Users\Admin";
 /// Where the strip's first tab starts in css pixels: after the mark's column and its hairline.
-const STRIP_X: f32 = 43.0;
+const STRIP_X: f32 = 42.0;
 /// The middle of the top row in css pixels.
 const BAR_MID_Y: f32 = 17.0;
 /// The debounce of the scene's state files (the window's own delay).

@@ -375,7 +375,7 @@ impl Fx {
     }
 
     fn strip_left_phys(&self) -> u32 {
-        (43.0 * self.scale).round() as u32 + self.hair_phys()
+        (42.0 * self.scale).round() as u32 + self.hair_phys()
     }
 
     fn park_pointer(&self) {

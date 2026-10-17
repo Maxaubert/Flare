@@ -141,3 +141,50 @@ fn the_sample_file_is_the_stream_the_capture_tool_types() {
     assert_eq!(text.matches("\r\n").count(), 9);
     assert!(text.contains("Flare theme sample"));
 }
+
+/// Prism Terminal's TitleMark is `pl-3.5 pr-3` around a 17px mark (a 43px box) with its line drawn
+/// INSIDE the box (`after:absolute after:right-0 after:w-px`), so the line's first device pixel is
+/// where the 42nd css pixel ends. Measured on PT 0.58.0's own captures (Task 31): 42 at 100, 63 at
+/// 150 and 95 at 225. Flare drew the line one hairline later (43, 65, 97).
+#[test]
+fn the_mark_line_sits_where_prism_terminal_draws_it() {
+    let dir = TempDir::new("mark-line");
+    for (scale, want) in [("1.0", 42usize), ("1.5", 63), ("2.25", 95)] {
+        let png = dir.0.join(format!("mark-{scale}.png"));
+        let out = run(&[
+            "--scene",
+            "theme-sample",
+            "--theme",
+            "pt-default",
+            "--renderer",
+            "software",
+            "--scale",
+            scale,
+            "--size",
+            "1000x640",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let (w, _, px) = decode(&png);
+        let s: f32 = scale.parse().expect("scale");
+        let y = (6.0 * s) as usize;
+        let at = |x: usize| {
+            let i = (y * w as usize + x) * 4;
+            [px[i], px[i + 1], px[i + 2]]
+        };
+        let ground = at((600.0 * s) as usize);
+        let first = ((35.0 * s) as usize..w as usize)
+            .find(|&x| at(x) != ground)
+            .expect("a line after the mark");
+        assert_eq!(
+            (first, at(first)),
+            (want, [0x27, 0x27, 0x27]),
+            "the mark line at scale {scale}"
+        );
+    }
+}
