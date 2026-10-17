@@ -1,0 +1,1522 @@
+// COPY of PT/core/shared/help/cmd.ts, import specifiers rewritten, nothing else
+/**
+ * THE HELP CATALOGUE, Command Prompt (#12).
+ *
+ * The everyday only: moving around, files and folders, finding text, what is
+ * running and on which port, the network basics, environment variables and the
+ * prompt's own grammar (redirection, pipes, chaining). Command Prompt is the
+ * shell a beginner meets in old tutorials, so the keywords lean on what the
+ * same thing is called in bash and PowerShell ("ls", "grep", "which").
+ *
+ * HOW THESE WERE CHECKED (2026-09-20, stock cmd.exe on Windows 11 26200): every
+ * read-only command, and every file command inside a scratch folder made for
+ * the purpose, was RUN and its output read. taskkill was run against a ping
+ * this check had started itself. Three things were found that way and shaped
+ * the entries: 'fsutil volume diskfree' answers "Access is denied" without
+ * elevation, so free space is read off 'dir'; 'type nul > NAME' EMPTIES a file
+ * that already exists, so the entry appends instead; and robocopy's exit code 1
+ * means "copied", not "failed". Not run, on purpose: setx (it writes the
+ * registry), the elevation prompt, the Environment Variables dialog, 'start'
+ * and 'clip' (they open windows or replace the clipboard).
+ */
+
+import type { HelpEntry } from './types.ts'
+
+export const CMD_HELP: readonly HelpEntry[] = [
+  // ---------------------------------------------------------------- folders
+  {
+    id: 'cmd-where-am-i',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'See which folder I am in',
+    summary:
+      'cd on its own prints the current folder rather than changing it, which is the same thing the prompt shows before the >.',
+    command: 'cd',
+    variants: [
+      {
+        label: 'Print the current folder path',
+        command: 'echo %cd%',
+        keywords: ['%cd%', 'cd variable', 'echo path', 'pwd', 'working directory variable']
+      }
+    ],
+    keywords: [
+      'where am i',
+      'current folder',
+      'current directory',
+      'working directory',
+      'pwd',
+      'get-location',
+      'path of this folder',
+      'which folder'
+    ]
+  },
+  {
+    id: 'cmd-change-folder',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Go to another folder',
+    summary:
+      'Moves the prompt into a folder. Add /d whenever the folder may be on another drive: without it cd will not leave the drive you are on, and appears to do nothing.',
+    command: 'cd /d FOLDER',
+    variants: [
+      {
+        label: 'Go into a subfolder',
+        command: 'cd NAME',
+        keywords: ['cd name', 'child folder', 'relative path', 'enter directory', 'open subdirectory']
+      },
+      {
+        label: 'Go to your user profile folder',
+        command: 'cd /d "%USERPROFILE%"',
+        keywords: ['home directory', 'cd ~', 'userprofile', 'c:\\users', 'my documents', 'desktop folder']
+      },
+      {
+        label: 'Switch to another drive letter',
+        command: 'D:',
+        keywords: ['change drive', 'd drive', 'e drive', 'usb drive', 'cd will not change drive']
+      }
+    ],
+    placeholders: {
+      FOLDER: 'The full path, in quotes if it has spaces: "D:\\My Projects\\site"',
+      NAME: 'The name of a folder inside the current one'
+    },
+    keywords: [
+      'cd',
+      'change directory',
+      'change folder',
+      'open folder',
+      'go to folder',
+      'navigate',
+      'set-location',
+      'switch drive',
+      'cd does nothing',
+      'home folder'
+    ]
+  },
+  {
+    id: 'cmd-go-up',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Go back up a folder',
+    summary: 'Two dots mean "the folder that holds this one", so this steps out one level.',
+    command: 'cd ..',
+    variants: [
+      {
+        label: 'Go up two folder levels',
+        command: 'cd ..\\..',
+        keywords: ['grandparent folder', 'back twice', 'two directories up', 'cd dot dot']
+      },
+      {
+        label: 'Go to the root of the drive',
+        command: 'cd \\',
+        keywords: ['top of drive', 'c:\\', 'drive root', 'cd backslash', 'all the way back']
+      }
+    ],
+    keywords: [
+      'go back',
+      'back a folder',
+      'parent folder',
+      'up one level',
+      'previous folder',
+      'cd ..',
+      'dot dot',
+      'leave folder',
+      'root of drive'
+    ]
+  },
+  {
+    id: 'cmd-make-folder',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Make a new folder',
+    summary:
+      'Creates a folder, and any folders missing on the way to it, in one go. md is the same command.',
+    command: 'mkdir NAME',
+    placeholders: {
+      NAME: 'The new folder, in quotes if it has spaces; a path like one\\two\\three makes every level'
+    },
+    keywords: [
+      'mkdir -p',
+      'create whole path',
+      'subfolders at once',
+      'mkdir',
+      'md',
+      'create folder',
+      'new folder',
+      'make directory',
+      'new directory',
+      'new-item',
+      'nested folders'
+    ]
+  },
+  {
+    id: 'cmd-delete-folder',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Delete a folder and everything in it',
+    summary:
+      '/s takes the contents too and /q skips the "are you sure". Without /s, rmdir only removes a folder that is already empty and otherwise says "The directory is not empty".',
+    command: 'rmdir /s /q FOLDER',
+    variants: [
+      {
+        label: 'Remove a folder only when empty',
+        command: 'rmdir FOLDER',
+        keywords: ['rmdir', 'rd', 'safe delete', 'empty directory', 'refuses if not empty']
+      }
+    ],
+    placeholders: { FOLDER: 'The folder to remove' },
+    keywords: [
+      'rmdir',
+      'rd',
+      'remove folder',
+      'delete directory',
+      'rm -rf',
+      'remove-item',
+      'the directory is not empty',
+      'delete node_modules',
+      'wipe folder'
+    ],
+    danger:
+      'The folder and everything inside it is deleted at once and does NOT go to the Recycle Bin. There is no undo.'
+  },
+  {
+    id: 'cmd-tree',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Show the folder structure as a tree',
+    summary: 'Draws the folders under this one as a tree. /f lists the files as well.',
+    command: 'tree /f',
+    variants: [
+      {
+        label: 'Show folders without the files',
+        command: 'tree',
+        keywords: ['directory tree', 'structure only', 'skip files', 'folders map']
+      },
+      {
+        label: 'Save the tree to a text file',
+        command: 'tree /f /a > tree.txt',
+        keywords: ['tree.txt', 'export structure', 'plain ascii', 'paste layout', 'share project structure']
+      }
+    ],
+    danger:
+      'The variant that saves to tree.txt replaces a file of that name if one is already there.',
+    keywords: [
+      'tree',
+      'folder structure',
+      'directory structure',
+      'project layout',
+      'show hierarchy',
+      'list subfolders',
+      'outline of folders'
+    ]
+  },
+  {
+    id: 'cmd-folder-size',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'See how big a folder is',
+    summary:
+      'Lists everything under the folder, hidden files included. The answer is at the very END of the output: "Total Files Listed", with the file count and the bytes.',
+    command: 'dir /s /a FOLDER',
+    placeholders: { FOLDER: 'The folder to measure, or . for the current one' },
+    keywords: [
+      'folder size',
+      'directory size',
+      'how big',
+      'disk usage',
+      'du -sh',
+      'space used',
+      'total size',
+      'how much space'
+    ]
+  },
+  {
+    id: 'cmd-biggest-files',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Find the biggest files in a folder',
+    summary:
+      'Walks this folder and everything under it and prints each file over 100 MB (104857600 bytes) with its full path; change the number for another size. It reads every file entry, so a big drive takes a while.',
+    command: 'forfiles /s /c "cmd /c if @isdir==FALSE if @fsize GEQ 104857600 echo @fsize @path"',
+    variants: [
+      {
+        label: 'Sort by size, files only, biggest first',
+        command: 'dir /o-s /a-d',
+        keywords: ['dir /o-s', 'largest first', 'order by size', 'ls -s', 'no subfolders']
+      },
+      {
+        label: 'Find every file over 1 GB',
+        command: 'forfiles /s /c "cmd /c if @isdir==FALSE if @fsize GEQ 1073741824 echo @fsize @path"',
+        keywords: ['huge files', 'gigabyte', '1073741824', 'space hogs', 'forfiles']
+      }
+    ],
+    keywords: [
+      'big files',
+      'largest files',
+      'large files',
+      'what is taking up space',
+      'disk full',
+      'free up space',
+      'huge files',
+      'du',
+      'sort by size',
+      'file size'
+    ]
+  },
+  {
+    id: 'cmd-unzip',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Unzip a file, or make a zip',
+    summary:
+      'Windows 10 and 11 ship tar, which reads and writes zip files as well as tar ones. Extracting puts the contents in the current folder and writes over files of the same name.',
+    command: 'tar -xf ZIP',
+    variants: [
+      {
+        label: 'Extract into another folder that must exist',
+        command: 'tar -xf ZIP -C FOLDER',
+        keywords: [
+          'unzip to path',
+          'tar -c flag',
+          'destination directory',
+          'extract elsewhere',
+          'could not chdir'
+        ]
+      },
+      {
+        label: 'See what is inside without extracting',
+        command: 'tar -tf ZIP',
+        keywords: ['list zip contents', 'peek in archive', 'tar -tf', 'preview files', 'unzip -l']
+      },
+      {
+        label: 'Make a zip of a folder',
+        command: 'tar -a -c -f ARCHIVE.zip FOLDER',
+        keywords: ['create archive', 'compress', 'compress-archive', 'pack files', 'zip up']
+      }
+    ],
+    placeholders: {
+      ZIP: 'The zip file, for example photos.zip',
+      ARCHIVE: 'The name for the new zip, without its .zip ending',
+      FOLDER: 'The folder to extract into, or to pack'
+    },
+    keywords: [
+      'unzip',
+      'zip',
+      'extract',
+      'extract archive',
+      'expand-archive',
+      'compress',
+      'compressed folder',
+      'tar',
+      'open zip',
+      'unpack'
+    ],
+    danger: 'Extracting replaces files of the same name in the folder it extracts into, without asking.'
+  },
+  {
+    id: 'cmd-open-explorer',
+    shell: 'cmd',
+    category: 'folders',
+    task: 'Open this folder in File Explorer',
+    summary:
+      'The dot means "here", so this opens an Explorer window on the folder the prompt is in.',
+    command: 'start .',
+    variants: [
+      {
+        label: 'Open this folder with the explorer command',
+        command: 'explorer .',
+        keywords: ['explorer .', 'ii .', 'invoke-item', 'file browser', 'show current directory']
+      },
+      {
+        label: 'Open another folder in File Explorer',
+        command: 'explorer "FOLDER"',
+        keywords: ['browse a path', 'open directory window', 'show folder', 'gui', 'reveal in explorer']
+      }
+    ],
+    placeholders: { FOLDER: 'The folder to open' },
+    keywords: [
+      'explorer',
+      'file explorer',
+      'open folder',
+      'open in explorer',
+      'show in explorer',
+      'windows explorer',
+      'invoke-item',
+      'ii .',
+      'open here'
+    ]
+  },
+
+  // ------------------------------------------------------------------ files
+  {
+    id: 'cmd-list-files',
+    shell: 'cmd',
+    category: 'files',
+    task: 'List the files in this folder',
+    summary:
+      'Shows what is in the current folder, with sizes and dates. Give it a folder to list that one instead.',
+    command: 'dir',
+    variants: [
+      {
+        label: 'List file names only, one per line',
+        command: 'dir /b',
+        keywords: ['dir /b', 'bare listing', 'ls -1', 'no details', 'just the names', 'plain list']
+      },
+      {
+        label: 'Sort files by date, newest first',
+        command: 'dir /o-d',
+        keywords: ['dir /o-d', 'recently modified', 'latest files', 'ls -t', 'most recent', 'last changed']
+      },
+      {
+        label: 'Sort files by size, biggest first',
+        command: 'dir /o-s',
+        keywords: ['dir /o-s', 'largest first', 'ls -s', 'order by size', 'show file sizes']
+      },
+      {
+        label: 'List only one type of file',
+        command: 'dir *.EXT',
+        keywords: ['dir *.txt', 'by extension', 'wildcard listing', 'filter by type', '*.log']
+      }
+    ],
+    placeholders: { EXT: 'The file extension, for example txt' },
+    keywords: [
+      'dir',
+      'ls',
+      'list files',
+      'show files',
+      'see files',
+      'files here',
+      'what files are here',
+      'whats in this folder',
+      'what is in this folder',
+      'list everything',
+      'directory listing',
+      'sort by date',
+      'sort by size',
+      'newest files'
+    ]
+  },
+  {
+    id: 'cmd-hidden-files',
+    shell: 'cmd',
+    category: 'files',
+    task: 'See hidden and system files',
+    summary:
+      'Plain dir leaves hidden and system files out. /a lists everything, which is how you find .git, .env and the like when Windows has marked them hidden.',
+    command: 'dir /a',
+    variants: [
+      {
+        label: 'List only the hidden files',
+        command: 'dir /ah',
+        keywords: ['dir /ah', 'hidden attribute', 'dotfiles', 'what is being hidden']
+      },
+      {
+        label: 'Show file attributes (hidden, read-only)',
+        command: 'attrib',
+        keywords: ['attrib', 'h r a s flags', 'is it read only', 'file marks', 'permissions']
+      }
+    ],
+    keywords: [
+      'hidden files',
+      'show hidden',
+      'ls -a',
+      'dotfiles',
+      'system files',
+      'file missing from dir',
+      'get-childitem -force',
+      'attrib',
+      'invisible files'
+    ]
+  },
+  {
+    id: 'cmd-find-file-by-name',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Find a file by name in subfolders',
+    summary:
+      '/s searches every subfolder and /b prints just the full path of each match. The stars mean "anything", so part of the name is enough.',
+    command: 'dir /s /b *NAME*',
+    variants: [
+      {
+        label: 'Find hidden files by name too',
+        command: 'dir /s /b /a *NAME*',
+        keywords: ['dir /s /b /a', 'search hidden', 'include system files', 'dotfiles', 'nothing found']
+      }
+    ],
+    placeholders: { NAME: 'Any part of the file name' },
+    keywords: [
+      'find file',
+      'search for file',
+      'locate file',
+      'where is my file',
+      'find by name',
+      'recursive search',
+      'find .',
+      'get-childitem -recurse',
+      'wildcard'
+    ]
+  },
+  {
+    id: 'cmd-read-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Read a text file in the terminal',
+    summary:
+      'Prints the whole file. For a long one use more, which shows a screen at a time: Space for the next, Q to stop.',
+    command: 'type FILE',
+    variants: [
+      {
+        label: 'Read a long file page by page',
+        command: 'more FILE',
+        keywords: ['more', 'pager', 'less', 'scroll through output', 'space for next screen']
+      }
+    ],
+    placeholders: { FILE: 'The file to read' },
+    keywords: [
+      'type',
+      'cat',
+      'read file',
+      'show file',
+      'print file',
+      'view contents',
+      'get-content',
+      'open text file',
+      'more',
+      'less'
+    ]
+  },
+  {
+    id: 'cmd-make-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Make a new empty file',
+    summary:
+      'Creates the file if it is missing and leaves it untouched if it is already there (the double >> appends nothing, where a single > would empty it).',
+    command: 'type nul >> NAME',
+    variants: [
+      {
+        label: 'Make a file with one line of text',
+        command: 'echo TEXT> NAME',
+        keywords: ['echo to file', 'write text', 'create with content', 'redirect into file', 'overwrites']
+      }
+    ],
+    placeholders: {
+      NAME: 'The file to create, for example notes.txt',
+      TEXT: 'The first line of the file'
+    },
+    danger:
+      'The echo variant replaces everything in the file if it already exists. The main command never does.',
+    keywords: [
+      'touch',
+      'create file',
+      'new file',
+      'make file',
+      'empty file',
+      'new-item',
+      'blank file',
+      'create .env'
+    ]
+  },
+  {
+    id: 'cmd-copy-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Copy a file',
+    summary:
+      'Copies one file to a new name or into a folder. Typed at the prompt it asks before replacing a file of the same name; add /y to stop it asking.',
+    command: 'copy SOURCE DESTINATION',
+    placeholders: {
+      SOURCE: 'The file to copy',
+      DESTINATION: 'A folder to copy it into, or the new file name'
+    },
+    keywords: [
+      'copy',
+      'cp',
+      'duplicate file',
+      'copy-item',
+      'make a copy',
+      'back up a file',
+      'copy to folder'
+    ]
+  },
+  {
+    id: 'cmd-copy-folder',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Copy a whole folder',
+    summary:
+      'copy does not do folders; robocopy does. /e brings every subfolder, empty ones included. It prints a summary table, and an exit code of 1 means "files were copied", not an error.',
+    command: 'robocopy SOURCE DESTINATION /e',
+    variants: [
+      {
+        label: 'Copy a folder with xcopy',
+        command: 'xcopy SOURCE DESTINATION /e /i',
+        keywords: ['xcopy /e /i', 'older copy tool', 'copy tree', 'recursive copy', 'legacy']
+      }
+    ],
+    placeholders: {
+      SOURCE: 'The folder to copy',
+      DESTINATION: 'Where the copy goes (it is created if missing)'
+    },
+    keywords: [
+      'robocopy',
+      'xcopy',
+      'copy folder',
+      'copy directory',
+      'cp -r',
+      'copy recursive',
+      'back up folder',
+      'copy-item -recurse',
+      'duplicate folder'
+    ],
+    danger:
+      'Files already in the destination with the same name are replaced by the source version without asking.'
+  },
+  {
+    id: 'cmd-move-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Move a file or folder somewhere else',
+    summary:
+      'Moves it rather than copying. Typed at the prompt it asks before replacing a file of the same name.',
+    command: 'move SOURCE DESTINATION',
+    placeholders: {
+      SOURCE: 'The file or folder to move',
+      DESTINATION: 'The folder it should end up in'
+    },
+    keywords: [
+      'move',
+      'mv',
+      'move-item',
+      'relocate',
+      'put file in folder',
+      'cut and paste',
+      'move folder'
+    ]
+  },
+  {
+    id: 'cmd-rename',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Rename a file or folder',
+    summary: 'The new name is a name only, not a path: ren renames in place and never moves.',
+    command: 'ren OLDNAME NEWNAME',
+    variants: [
+      {
+        label: 'Change the extension of many files at once',
+        command: 'ren *.OLDEXT *.NEWEXT',
+        keywords: ['bulk rename', 'mass rename', 'wildcard rename', 'txt to md', 'rename every file']
+      }
+    ],
+    placeholders: {
+      OLDNAME: 'The file or folder as it is now',
+      NEWNAME: 'The new name, without a folder in front',
+      OLDEXT: 'The extension they have, for example txt',
+      NEWEXT: 'The extension they should get, for example md'
+    },
+    keywords: [
+      'ren',
+      'rename',
+      'rename-item',
+      'mv',
+      'change file name',
+      'change extension',
+      'bulk rename'
+    ]
+  },
+  {
+    id: 'cmd-delete-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Delete a file',
+    summary:
+      'Removes the file. A wildcard removes every match, so list them with dir first when you use one.',
+    command: 'del FILE',
+    variants: [
+      {
+        label: 'Delete every file of one type',
+        command: 'del /q *.EXT',
+        keywords: ['del /q', 'wildcard delete', 'remove all tmp', 'no confirmation', 'clear logs']
+      },
+      {
+        label: 'Delete one file type in every subfolder',
+        command: 'del /s /q *.EXT',
+        keywords: ['del /s', 'recursive delete', 'rm -r', 'clean whole tree', 'remove everywhere']
+      }
+    ],
+    placeholders: { FILE: 'The file to delete', EXT: 'The file extension, for example tmp' },
+    keywords: [
+      'del',
+      'erase',
+      'rm',
+      'delete file',
+      'remove file',
+      'remove-item',
+      'get rid of file',
+      'delete all tmp'
+    ],
+    danger: 'Deleted files do NOT go to the Recycle Bin. They are gone.'
+  },
+  {
+    id: 'cmd-open-file',
+    shell: 'cmd',
+    category: 'files',
+    task: 'Open a file in its usual program',
+    summary:
+      'Does what a double-click does. The empty "" is not a mistake: start takes its first quoted word as a window title, so without it a quoted path opens nothing.',
+    command: 'start "" "FILE"',
+    variants: [
+      {
+        label: 'Open a web page in the browser',
+        command: 'start "" "https://URL"',
+        keywords: ['open url', 'launch site', 'https', 'default browser', 'xdg-open']
+      }
+    ],
+    placeholders: { FILE: 'The file to open', URL: 'The address, without the https:// in front' },
+    keywords: [
+      'open file',
+      'start',
+      'double click',
+      'default program',
+      'launch',
+      'invoke-item',
+      'open in browser',
+      'open url',
+      'xdg-open'
+    ]
+  },
+
+  // ------------------------------------------------------------------- text
+  {
+    id: 'cmd-find-text-in-files',
+    shell: 'cmd',
+    category: 'text',
+    task: 'Find text inside files',
+    summary:
+      'Searches every file here and in every subfolder. /i ignores upper and lower case, /n shows the line number, and /c: keeps a phrase with spaces together.',
+    command: 'findstr /s /i /n /c:"TEXT" *.*',
+    variants: [
+      {
+        label: 'List only the file names that match',
+        command: 'findstr /s /i /m /c:"TEXT" *.*',
+        keywords: ['findstr /m', 'grep -l', 'which file contains', 'names not lines', 'paths only']
+      },
+      {
+        label: 'Search only one type of file',
+        command: 'findstr /s /i /n /c:"TEXT" *.EXT',
+        keywords: ['findstr *.js', 'by extension', 'grep --include', 'limit to file type', 'code search']
+      },
+      {
+        label: 'Search inside one file',
+        command: 'findstr /i /n /c:"TEXT" FILE',
+        keywords: ['findstr', 'grep a file', 'look in a log', 'line numbers', 'select-string']
+      }
+    ],
+    placeholders: {
+      TEXT: 'The words to look for',
+      EXT: 'The file extension, for example js',
+      FILE: 'The file to search'
+    },
+    keywords: [
+      'findstr',
+      'grep',
+      'grep -r',
+      'search in files',
+      'find text',
+      'find string',
+      'select-string',
+      'search code',
+      'which file contains',
+      'find word'
+    ]
+  },
+  {
+    id: 'cmd-filter-output',
+    shell: 'cmd',
+    category: 'text',
+    task: 'Keep only the output lines that match',
+    summary:
+      'Pipes a command into findstr so a long list is cut down to the lines you care about. Put any command in place of ipconfig /all.',
+    command: 'ipconfig /all | findstr /i "TEXT"',
+    variants: [
+      {
+        label: 'Hide the output lines that match',
+        command: 'ipconfig /all | findstr /i /v "TEXT"',
+        keywords: ['findstr /v', 'grep -v', 'exclude', 'invert', 'leave out noise']
+      }
+    ],
+    placeholders: { TEXT: 'The word to match, for example DNS' },
+    keywords: [
+      'filter output',
+      'grep',
+      'pipe to findstr',
+      'search output',
+      'where-object',
+      'narrow down',
+      'only matching lines',
+      'too much output'
+    ]
+  },
+  {
+    id: 'cmd-compare-files',
+    shell: 'cmd',
+    category: 'text',
+    task: 'Compare two files',
+    summary:
+      'Prints the lines that differ, or "no differences encountered" when the two are the same.',
+    command: 'fc FILE1 FILE2',
+    variants: [
+      {
+        label: 'Compare two files byte by byte',
+        command: 'fc /b FILE1 FILE2',
+        keywords: ['fc /b', 'binary diff', 'not text', 'are they identical', 'exe compare']
+      }
+    ],
+    placeholders: { FILE1: 'The first file', FILE2: 'The second file' },
+    keywords: [
+      'fc',
+      'diff',
+      'compare files',
+      'compare-object',
+      'what changed',
+      'are these files the same',
+      'differences'
+    ]
+  },
+
+  // -------------------------------------------------------------- processes
+  {
+    id: 'cmd-list-processes',
+    shell: 'cmd',
+    category: 'processes',
+    task: 'See which programs are running',
+    summary:
+      'Lists every running program with its PID (the number you need to stop it) and its memory use.',
+    command: 'tasklist',
+    variants: [
+      {
+        label: 'Check whether one program is running',
+        command: 'tasklist /fi "imagename eq NAME.exe"',
+        keywords: ['tasklist /fi', 'is node running', 'imagename', 'filter by exe', 'process exists']
+      },
+      {
+        label: 'Find a process by part of its name',
+        command: 'tasklist | findstr /i "NAME"',
+        keywords: ['tasklist findstr', 'search processes', 'ps aux grep', 'partial match', 'which pid']
+      }
+    ],
+    placeholders: { NAME: 'The program, for example node' },
+    keywords: [
+      'tasklist',
+      'ps',
+      'ps aux',
+      'running programs',
+      'processes',
+      'get-process',
+      'task manager',
+      'is node running',
+      'pid'
+    ]
+  },
+  {
+    id: 'cmd-kill-process',
+    shell: 'cmd',
+    category: 'processes',
+    task: 'Force a program to stop',
+    summary:
+      '/f forces it and /im picks it by name, which stops EVERY copy of that program. Use the PID form to stop just one.',
+    command: 'taskkill /im NAME.exe /f',
+    variants: [
+      {
+        label: 'Stop one process by its PID',
+        command: 'taskkill /pid PID /f',
+        keywords: ['taskkill /pid', 'kill by id', 'process id', 'one copy only', 'single instance']
+      },
+      {
+        label: 'Stop a process and its child processes',
+        command: 'taskkill /pid PID /t /f',
+        keywords: ['taskkill /t', 'kill tree', 'children', 'whole tree', 'node and npm']
+      }
+    ],
+    placeholders: {
+      NAME: 'The program, for example node',
+      PID: 'The number from tasklist or netstat'
+    },
+    keywords: [
+      'taskkill',
+      'kill',
+      'kill process',
+      'stop program',
+      'end task',
+      'stop-process',
+      'frozen',
+      'not responding',
+      'kill node',
+      'pkill',
+      'force quit',
+      'stuck process',
+      'wont stop'
+    ],
+    danger:
+      'The program is stopped at once, without the chance to save. Unsaved work in it is lost.'
+  },
+  {
+    id: 'cmd-port-in-use',
+    shell: 'cmd',
+    category: 'processes',
+    task: 'Find what is using a port',
+    summary:
+      'The LAST column of the matching line is the PID of the program holding the port. It also matches longer numbers that start the same (3000 finds 30001), so read the line.',
+    command: 'netstat -ano | findstr :PORT',
+    variants: [
+      {
+        label: 'Name the program behind a PID',
+        command: 'tasklist /fi "pid eq PID"',
+        keywords: ['pid to name', 'which process is this', 'tasklist /fi', 'lookup process id']
+      },
+      {
+        label: 'List every port something is listening on',
+        command: 'netstat -ano | findstr LISTENING',
+        keywords: ['netstat -ano', 'open ports', 'servers running', 'lsof -i', 'what ports are used']
+      }
+    ],
+    placeholders: {
+      PORT: 'The port number, for example 3000',
+      PID: 'The number from the last column'
+    },
+    keywords: [
+      'port in use',
+      'port already in use',
+      'eaddrinuse',
+      'address already in use',
+      'what is using port 3000',
+      'netstat',
+      'lsof -i',
+      'listening ports',
+      'get-nettcpconnection',
+      'free a port'
+    ]
+  },
+  {
+    id: 'cmd-cancel-command',
+    shell: 'cmd',
+    category: 'processes',
+    task: 'Stop a command that is still running',
+    summary:
+      'Not a command but a key: hold Ctrl and press C in the terminal. A batch file then asks "Terminate batch job (Y/N)?", to which the answer is Y. With text selected, Ctrl+C copies instead, so click once to clear the selection first. If it ignores Ctrl+C, see Force a program to stop.',
+    command: 'Ctrl+C',
+    keywords: [
+      'cancel',
+      'stop',
+      'abort',
+      'interrupt',
+      'ctrl c',
+      'how do i stop this',
+      'stuck',
+      'hung',
+      'wont stop',
+      'terminate batch job',
+      'exit running command'
+    ]
+  },
+
+  // ---------------------------------------------------------------- network
+  {
+    id: 'cmd-ip-address',
+    shell: 'cmd',
+    category: 'network',
+    task: 'Find my IP address',
+    summary:
+      "Shows this computer's address on your own network (the IPv4 line), not the one the internet sees.",
+    command: 'ipconfig',
+    variants: [
+      {
+        label: 'Show only the IPv4 address lines',
+        command: 'ipconfig | findstr IPv4',
+        keywords: ['my local ip', 'ipconfig findstr', 'lan address', '192.168', 'short answer']
+      },
+      {
+        label: 'Show DNS, MAC address and DHCP details',
+        command: 'ipconfig /all',
+        keywords: ['ipconfig /all', 'physical address', 'adapter details', 'lease', 'full network info']
+      }
+    ],
+    keywords: [
+      'ipconfig',
+      'ip address',
+      'my ip',
+      'local ip',
+      'ifconfig',
+      'ip addr',
+      'network settings',
+      'mac address',
+      'gateway',
+      'dns server'
+    ]
+  },
+  {
+    id: 'cmd-ping',
+    shell: 'cmd',
+    category: 'network',
+    task: 'Check whether a site can be reached',
+    summary:
+      'Sends four small packets and reports whether they came back and how fast. "Request timed out" means no answer.',
+    command: 'ping HOST',
+    variants: [
+      {
+        label: 'Look up a DNS name or address',
+        command: 'nslookup HOST',
+        keywords: ['nslookup', 'dig', 'resolve hostname', 'ip of a domain', 'reverse lookup']
+      },
+      {
+        label: 'Trace the route to a host',
+        command: 'tracert HOST',
+        keywords: ['tracert', 'traceroute', 'network hops', 'where it is slow', 'latency']
+      }
+    ],
+    placeholders: { HOST: 'A name or an address, for example github.com' },
+    keywords: [
+      'ping',
+      'is the internet working',
+      'connection test',
+      'test-connection',
+      'nslookup',
+      'dns lookup',
+      'tracert',
+      'traceroute',
+      'site down',
+      'no internet'
+    ]
+  },
+  {
+    id: 'cmd-download',
+    shell: 'cmd',
+    category: 'network',
+    task: 'Download a file from a URL',
+    summary:
+      'curl ships with Windows. -L follows redirects (most download links have one) and -o names the file to save.',
+    command: 'curl -L -o FILE URL',
+    variants: [
+      {
+        label: 'Check that a site answers, headers only',
+        command: 'curl -I URL',
+        keywords: ['curl -i', 'http status code', 'head request', 'is the site up', 'no body']
+      }
+    ],
+    placeholders: {
+      FILE: 'What to call the saved file',
+      URL: 'The full address, starting https://'
+    },
+    danger: 'A file of the same name is replaced without a question.',
+    keywords: [
+      'curl',
+      'download',
+      'wget',
+      'fetch url',
+      'invoke-webrequest',
+      'save file from internet',
+      'http request',
+      'check website'
+    ]
+  },
+
+  // ----------------------------------------------------------------- system
+  {
+    id: 'cmd-env-show',
+    shell: 'cmd',
+    category: 'system',
+    task: 'See my environment variables',
+    summary:
+      'set on its own lists them all. Followed by a few letters it lists the ones whose names start that way.',
+    command: 'set',
+    variants: [
+      {
+        label: 'Print the value of one variable',
+        command: 'echo %NAME%',
+        keywords: ['echo %path%', 'percent signs', '$env:', 'read a variable', 'is my api key set']
+      }
+    ],
+    placeholders: { NAME: 'The variable, for example PATH or ANTHROPIC' },
+    keywords: [
+      'environment variables',
+      'env',
+      'printenv',
+      'show variable',
+      'set',
+      '$env:',
+      'is my api key set',
+      'echo variable',
+      'get-childitem env:',
+      'set path',
+      'find a variable',
+      'variables starting with'
+    ]
+  },
+  {
+    id: 'cmd-env-set',
+    shell: 'cmd',
+    category: 'system',
+    task: 'Set an environment variable',
+    summary:
+      'set lasts for this window only and works at once. setx saves it for good, but only windows opened AFTERWARDS see it: this window does not.',
+    command: 'set NAME=VALUE',
+    variants: [
+      {
+        label: 'Set a variable permanently with setx',
+        command: 'setx NAME "VALUE"',
+        keywords: ['persist a variable', 'survives a restart', 'new windows only', 'api key', 'export']
+      }
+    ],
+    placeholders: {
+      NAME: 'The variable name',
+      VALUE: 'Its value; no spaces around the = and no quotes with set'
+    },
+    keywords: [
+      'set environment variable',
+      'export',
+      'setx',
+      'api key',
+      'env var',
+      '$env:',
+      'permanent variable',
+      'variable not found after setx',
+      'setenvironmentvariable'
+    ],
+    danger:
+      'setx replaces whatever value the variable already had, and cuts a value longer than 1024 characters short.'
+  },
+  {
+    id: 'cmd-add-to-path',
+    shell: 'cmd',
+    category: 'system',
+    task: 'Add a folder to PATH',
+    summary:
+      'This adds it for the current window only, which is safe. To add it for good, use the Windows dialog in the variant: doing it with setx is a known trap that can cut PATH short.',
+    command: 'set PATH=%PATH%;FOLDER',
+    variants: [
+      {
+        label: 'Open the Environment Variables dialog',
+        command: 'rundll32 sysdm.cpl,EditEnvironmentVariables',
+        keywords: ['sysdm.cpl', 'edit path for good', 'system properties', 'gui', 'permanent']
+      },
+      {
+        label: 'See what is on PATH now',
+        command: 'path',
+        keywords: ['echo %path%', 'list path entries', 'current search path', '$env:path']
+      }
+    ],
+    placeholders: { FOLDER: 'The folder that holds the program, without quotes' },
+    keywords: [
+      'path',
+      'add to path',
+      'is not recognized as an internal or external command',
+      'command not found',
+      'export path',
+      'environment variables dialog',
+      'edit path',
+      '$env:path'
+    ]
+  },
+  {
+    id: 'cmd-where',
+    shell: 'cmd',
+    category: 'system',
+    task: 'Find where a program is installed',
+    summary:
+      'Prints the full path of what would run if you typed that name, every match on PATH in order. "Could not find files" means it is not on PATH.',
+    command: 'where NAME',
+    placeholders: { NAME: 'The command, for example node or git' },
+    keywords: [
+      'where',
+      'which',
+      'get-command',
+      'find program',
+      'is it installed',
+      'which version runs',
+      'path of executable',
+      'command location',
+      'not recognized'
+    ]
+  },
+  {
+    id: 'cmd-system-info',
+    shell: 'cmd',
+    category: 'system',
+    task: 'See my Windows version and machine details',
+    summary:
+      'A full page on the machine: Windows edition and build, memory, uptime. It takes a few seconds.',
+    command: 'systeminfo',
+    variants: [
+      {
+        label: 'Show the Windows version only',
+        command: 'ver',
+        keywords: ['ver', 'build number', 'winver', 'which windows is this', 'os release']
+      },
+      {
+        label: "Show this computer's name",
+        command: 'hostname',
+        keywords: ['hostname', 'machine name', 'pc name', 'device name', 'network name']
+      },
+      {
+        label: 'Which user I am signed in as',
+        command: 'whoami',
+        keywords: ['whoami', 'current account', 'username', 'domain user', 'logged in as']
+      }
+    ],
+    keywords: [
+      'systeminfo',
+      'windows version',
+      'ver',
+      'uname',
+      'how much ram',
+      'memory',
+      'computer name',
+      'hostname',
+      'whoami',
+      'get-computerinfo',
+      'uptime'
+    ]
+  },
+  {
+    id: 'cmd-disk-space',
+    shell: 'cmd',
+    category: 'system',
+    task: 'See how much disk space is free',
+    summary:
+      'The LAST line of a dir says how many bytes are free on that drive. Change the letter for another drive.',
+    command: 'dir C:\\',
+    keywords: [
+      'disk space',
+      'free space',
+      'df -h',
+      'drive full',
+      'how much space left',
+      'get-psdrive',
+      'get-volume',
+      'storage'
+    ]
+  },
+  {
+    id: 'cmd-run-as-admin',
+    shell: 'cmd',
+    category: 'system',
+    task: 'Open a Command Prompt as administrator',
+    summary:
+      'For when a command answers "Access is denied" or "requires elevation". Windows asks for permission, then opens a NEW window with full rights; this one stays as it was.',
+    command: 'powershell -Command "Start-Process cmd -Verb RunAs"',
+    variants: [
+      {
+        label: 'Check whether this window is elevated',
+        command:
+          'whoami /groups | findstr /c:"S-1-16-12288" >nul && echo elevated || echo not elevated',
+        keywords: ['am i admin', 'whoami /groups', 'uac status', 'administrator rights', 'integrity level']
+      }
+    ],
+    keywords: [
+      'run as admin',
+      'administrator',
+      'elevated',
+      'access is denied',
+      'access denied',
+      'sudo',
+      'requires elevation',
+      'permission denied',
+      'uac',
+      'runas'
+    ]
+  },
+
+  // ------------------------------------------------------------------ shell
+  {
+    id: 'cmd-clear',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Clear the screen',
+    summary: 'Wipes what is on screen. It does not touch your files or your command history.',
+    command: 'cls',
+    keywords: [
+      'cls',
+      'clear',
+      'clear screen',
+      'clear-host',
+      'ctrl l',
+      'wipe terminal',
+      'clean up screen',
+      'too much text'
+    ]
+  },
+  {
+    id: 'cmd-history',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'See the commands I have typed',
+    summary:
+      'Lists what was typed in THIS window. Command Prompt keeps no history between windows. The Up arrow walks back through the same list, and F7 shows it as a menu.',
+    command: 'doskey /history',
+    variants: [
+      {
+        label: 'Save the command history to a file',
+        command: 'doskey /history > history.txt',
+        keywords: ['history.txt', 'export what i typed', 'keep a log', 'before closing the window']
+      }
+    ],
+    danger:
+      'The variant that saves to history.txt replaces a file of that name if one is already there.',
+    keywords: [
+      'history',
+      'doskey',
+      'previous commands',
+      'what did i type',
+      'get-history',
+      'command log',
+      'f7',
+      'up arrow',
+      'recall command'
+    ]
+  },
+  {
+    id: 'cmd-help',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Get help on a command',
+    summary:
+      'Nearly every Command Prompt command explains itself when given /?: put yours in place of dir. help on its own lists the built-in ones.',
+    command: 'dir /?',
+    variants: [
+      {
+        label: 'List every built-in command',
+        command: 'help',
+        keywords: ['help', 'what commands exist', 'cmd reference', 'available commands']
+      },
+      {
+        label: 'Page through a long help page',
+        command: 'robocopy /? | more',
+        keywords: ['/? | more', 'pager', 'scrolled past', 'too much output', 'read the switches']
+      }
+    ],
+    keywords: [
+      'help',
+      'man',
+      '--help',
+      'get-help',
+      'what does this command do',
+      'options',
+      'switches',
+      'flags',
+      'usage',
+      'manual'
+    ]
+  },
+  {
+    id: 'cmd-echo',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Print text or a variable value',
+    summary:
+      'echo repeats what follows it, with any %VARIABLE% filled in. Handy for checking a value before using it.',
+    command: 'echo TEXT',
+    variants: [
+      {
+        label: 'Print an empty line',
+        command: 'echo.',
+        keywords: ['echo.', 'blank line', 'spacing', 'newline', 'separator']
+      },
+      {
+        label: "Print today's date and the time",
+        command: 'echo %DATE% %TIME%',
+        keywords: ['%date%', '%time%', 'what time is it', 'clock', 'timestamp']
+      }
+    ],
+    placeholders: { TEXT: 'What to print' },
+    keywords: [
+      'echo',
+      'print',
+      'write-output',
+      'write-host',
+      'show text',
+      'print variable',
+      'date',
+      'time',
+      'blank line'
+    ]
+  },
+  {
+    id: 'cmd-redirect',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Save command output to a file',
+    summary:
+      'Works after any command, dir is only the example. A single > writes a fresh file each time; a double >> adds to the end of what is there.',
+    command: 'dir > FILE',
+    variants: [
+      {
+        label: 'Append to the end of a file',
+        command: 'dir >> FILE',
+        keywords: ['>>', 'append output', 'add to a log', 'do not overwrite', 'keep what is there']
+      },
+      {
+        label: 'Save error messages to the file too',
+        command: 'npm run build > FILE 2>&1',
+        keywords: ['2>&1', 'stderr', 'capture errors', 'both streams', 'full log']
+      },
+      {
+        label: 'Throw the error messages away',
+        command: 'where node 2>nul',
+        keywords: ['2>nul', '/dev/null', 'hide errors', 'silence stderr', 'suppress warnings']
+      }
+    ],
+    placeholders: { FILE: 'The file to write, for example output.txt' },
+    keywords: [
+      'redirect',
+      'redirection',
+      'save output',
+      'write to file',
+      'log to file',
+      'out-file',
+      'append',
+      'stderr',
+      '2>&1',
+      'hide errors',
+      '/dev/null'
+    ],
+    danger: 'A single > replaces everything the file held before. Use >> to keep it.'
+  },
+  {
+    id: 'cmd-pipe',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Send the output of one command into another',
+    summary:
+      'The bar hands what the first command prints to the second. more pages it, sort orders it, clip puts it on the clipboard.',
+    command: 'tree /f | more',
+    variants: [
+      {
+        label: 'Copy the output to the clipboard',
+        command: 'dir /b | clip',
+        keywords: ['clip', 'pbcopy', 'set-clipboard', 'paste it elsewhere', 'ctrl v']
+      },
+      {
+        label: 'Sort the output lines',
+        command: 'tasklist | sort',
+        keywords: ['sort', 'alphabetical', 'a to z', 'order results']
+      }
+    ],
+    keywords: [
+      'pipe',
+      'pipeline',
+      'vertical bar',
+      'more',
+      'less',
+      'page output',
+      'clip',
+      'copy output to clipboard',
+      'set-clipboard',
+      'pbcopy',
+      'sort output'
+    ]
+  },
+  {
+    id: 'cmd-several-commands',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Run several commands on one line',
+    summary:
+      '&& runs the second command only if the first one worked, which is nearly always what you want.',
+    command: 'where node && node --version',
+    variants: [
+      {
+        label: 'Run the second command whatever happens',
+        command: 'echo one & echo two',
+        keywords: ['single ampersand', '&', 'always runs', 'semicolon in bash', 'ignore failure']
+      },
+      {
+        label: 'Run the second only if the first failed',
+        command: 'where node || echo node is not installed',
+        keywords: ['||', 'or operator', 'on failure', 'fallback', 'error handling']
+      }
+    ],
+    keywords: [
+      'chain commands',
+      'multiple commands',
+      'one line',
+      'and and',
+      'ampersand',
+      'semicolon',
+      'run after',
+      'if it fails',
+      'then run'
+    ]
+  },
+  {
+    id: 'cmd-alias',
+    shell: 'cmd',
+    category: 'shell',
+    task: 'Make a short name for a long command',
+    summary:
+      'A doskey macro: here ll runs dir /a. $* passes along whatever you type after the short name. It lasts until this window closes.',
+    command: 'doskey ll=dir /a $*',
+    variants: [
+      {
+        label: 'List the macros I have made',
+        command: 'doskey /macros',
+        keywords: ['doskey /macros', 'show aliases', 'get-alias', 'my shortcuts', 'what did i define']
+      }
+    ],
+    keywords: [
+      'alias',
+      'doskey',
+      'macro',
+      'shortcut command',
+      'set-alias',
+      'abbreviation',
+      'custom command',
+      'nickname'
+    ]
+  },
+  // INSTALLING THE AGENTS, this shell's way (2026-10-13), from the vendors'
+  // own pages: code.claude.com/docs/en/setup and github.com/openai/codex.
+  {
+    id: 'cmd-install-claude',
+    shell: 'cmd',
+    category: 'agents',
+    task: 'Install Claude Code',
+    summary:
+      'The native installer, the recommended way: it keeps Claude Code up to date by itself. No need to run it as administrator. When it finishes, open a new tab and check claude --version.',
+    command: 'curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd',
+    variants: [
+      {
+        label: 'Install Claude Code with npm',
+        command: 'npm install -g @anthropic-ai/claude-code',
+        keywords: ['node', 'npm global', 'node 22', 'anthropic-ai/claude-code']
+      },
+      {
+        label: 'Check Claude Code is installed',
+        command: 'claude --version',
+        keywords: ['did it work', 'which version', 'claude not found', 'verify install']
+      }
+    ],
+    keywords: ['install claude', 'get claude code', 'set up claude', 'claude code installer', 'download claude', 'anthropic cli', 'command prompt', 'windows'],
+    danger: 'Writes install.cmd into this folder, over one of yours if it is there, and deletes it once it has run.'
+  },
+  {
+    id: 'cmd-install-codex',
+    shell: 'cmd',
+    category: 'agents',
+    task: 'Install Codex',
+    summary:
+      "OpenAI's standalone installer for the Codex CLI. No need to run it as administrator. When it finishes, open a new tab and check codex --version.",
+    command: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"',
+    variants: [
+      {
+        label: 'Install Codex with npm',
+        command: 'npm install -g @openai/codex',
+        keywords: ['node', 'npm global', 'openai/codex', 'npm i -g']
+      },
+      {
+        label: 'Check Codex is installed',
+        command: 'codex --version',
+        keywords: ['did it work', 'which version', 'codex not found', 'verify install']
+      }
+    ],
+    keywords: ['install codex', 'get codex', 'set up codex', 'codex installer', 'openai cli', 'download codex', 'command prompt', 'windows']
+  }
+]

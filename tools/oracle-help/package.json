@@ -1,0 +1,13 @@
+{
+  "name": "flare-oracle-help",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only oracle: generates Flare's command-help data and golden vectors from Prism Terminal's own help code. Not shipped.",
+  "scripts": {
+    "copy": "node copy-sources.mjs",
+    "copy:check": "node copy-sources.mjs --check",
+    "dump": "node dump.mjs",
+    "golden": "node golden.mjs",
+    "test": "node --test oracle.test.mjs"
+  }
+}

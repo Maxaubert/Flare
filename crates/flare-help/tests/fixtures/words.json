@@ -1,0 +1,5002 @@
+{
+ "tokenise": [
+  [
+   "",
+   []
+  ],
+  [
+   " ",
+   []
+  ],
+  [
+   "Dirèctory",
+   [
+    "directory"
+   ]
+  ],
+  [
+   "DIRECTORY",
+   [
+    "directory"
+   ]
+  ],
+  [
+   "what's",
+   [
+    "whats"
+   ]
+  ],
+  [
+   "don’t",
+   [
+    "dont"
+   ]
+  ],
+  [
+   "don't",
+   [
+    "dont"
+   ]
+  ],
+  [
+   "ʼtick",
+   [
+    "tick"
+   ]
+  ],
+  [
+   "it's a `tick`",
+   [
+    "its",
+    "a",
+    "tick"
+   ]
+  ],
+  [
+   "Get-ChildItem",
+   [
+    "get",
+    "childitem"
+   ]
+  ],
+  [
+   "get-childitem -Recurse",
+   [
+    "get",
+    "childitem",
+    "recurse"
+   ]
+  ],
+  [
+   "ls -la",
+   [
+    "ls",
+    "la"
+   ]
+  ],
+  [
+   "dir /a",
+   [
+    "dir",
+    "a"
+   ]
+  ],
+  [
+   "rd /s /q",
+   [
+    "rd",
+    "s",
+    "q"
+   ]
+  ],
+  [
+   "C:\\Users\\Admin",
+   [
+    "c",
+    "users",
+    "admin"
+   ]
+  ],
+  [
+   "/compact",
+   [
+    "compact"
+   ]
+  ],
+  [
+   "--force",
+   [
+    "force"
+   ]
+  ],
+  [
+   "-m \"MESSAGE\"",
+   [
+    "m",
+    "message"
+   ]
+  ],
+  [
+   "a.b.c",
+   [
+    "a",
+    "b",
+    "c"
+   ]
+  ],
+  [
+   "tar.gz",
+   [
+    "tar",
+    "gz"
+   ]
+  ],
+  [
+   "ctrl+c",
+   [
+    "ctrl",
+    "c"
+   ]
+  ],
+  [
+   "Ctrl+Shift+V",
+   [
+    "ctrl",
+    "shift",
+    "v"
+   ]
+  ],
+  [
+   "F5",
+   [
+    "f5"
+   ]
+  ],
+  [
+   "10 MB",
+   [
+    "10",
+    "mb"
+   ]
+  ],
+  [
+   "3000",
+   [
+    "3000"
+   ]
+  ],
+  [
+   "port 3000",
+   [
+    "port",
+    "3000"
+   ]
+  ],
+  [
+   "user@example.com",
+   [
+    "user",
+    "example",
+    "com"
+   ]
+  ],
+  [
+   "naïve café",
+   [
+    "naive",
+    "cafe"
+   ]
+  ],
+  [
+   "Ångström",
+   [
+    "angstrom"
+   ]
+  ],
+  [
+   "Zürich",
+   [
+    "zurich"
+   ]
+  ],
+  [
+   "Ελληνικά",
+   [
+    "ελληνικα"
+   ]
+  ],
+  [
+   "Привет",
+   [
+    "привет"
+   ]
+  ],
+  [
+   "こんにちは",
+   [
+    "こんにちは"
+   ]
+  ],
+  [
+   "emoji 🙂 here",
+   [
+    "emoji",
+    "here"
+   ]
+  ],
+  [
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   [
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ]
+  ],
+  [
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   [
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ]
+  ],
+  [
+   "running processes",
+   [
+    "running",
+    "processes"
+   ]
+  ],
+  [
+   "running",
+   [
+    "running"
+   ]
+  ],
+  [
+   "primitive",
+   [
+    "primitive"
+   ]
+  ],
+  [
+   "xyzzy",
+   [
+    "xyzzy"
+   ]
+  ],
+  [
+   "delete",
+   [
+    "delete"
+   ]
+  ],
+  [
+   "delete files",
+   [
+    "delete",
+    "files"
+   ]
+  ],
+  [
+   "delete  files",
+   [
+    "delete",
+    "files"
+   ]
+  ],
+  [
+   "tab\tseparated",
+   [
+    "tab",
+    "separated"
+   ]
+  ],
+  [
+   "new\nline",
+   [
+    "new",
+    "line"
+   ]
+  ],
+  [
+   "   leading and trailing   ",
+   [
+    "leading",
+    "and",
+    "trailing"
+   ]
+  ],
+  [
+   "((brackets))",
+   [
+    "brackets"
+   ]
+  ],
+  [
+   "[square]{curly}",
+   [
+    "square",
+    "curly"
+   ]
+  ],
+  [
+   "semi;colon:colon",
+   [
+    "semi",
+    "colon",
+    "colon"
+   ]
+  ],
+  [
+   "pipe|and&amp",
+   [
+    "pipe",
+    "and",
+    "amp"
+   ]
+  ],
+  [
+   "$env:PATH",
+   [
+    "env",
+    "path"
+   ]
+  ],
+  [
+   "%USERPROFILE%",
+   [
+    "userprofile"
+   ]
+  ],
+  [
+   "proccess",
+   [
+    "proccess"
+   ]
+  ],
+  [
+   "direcotry",
+   [
+    "direcotry"
+   ]
+  ],
+  [
+   "biggest files",
+   [
+    "biggest",
+    "files"
+   ]
+  ],
+  [
+   "big file",
+   [
+    "big",
+    "file"
+   ]
+  ],
+  [
+   "folders",
+   [
+    "folders"
+   ]
+  ],
+  [
+   "folder",
+   [
+    "folder"
+   ]
+  ],
+  [
+   "directories",
+   [
+    "directories"
+   ]
+  ],
+  [
+   "directory",
+   [
+    "directory"
+   ]
+  ],
+  [
+   "undoing commits",
+   [
+    "undoing",
+    "commits"
+   ]
+  ],
+  [
+   "undo",
+   [
+    "undo"
+   ]
+  ],
+  [
+   "where am I?",
+   [
+    "where",
+    "am",
+    "i"
+   ]
+  ],
+  [
+   "how do I find big files",
+   [
+    "how",
+    "do",
+    "i",
+    "find",
+    "big",
+    "files"
+   ]
+  ],
+  [
+   "the a an",
+   [
+    "the",
+    "a",
+    "an"
+   ]
+  ],
+  [
+   "RUN AS ADMIN",
+   [
+    "run",
+    "as",
+    "admin"
+   ]
+  ],
+  [
+   "git-status",
+   [
+    "git",
+    "status"
+   ]
+  ],
+  [
+   "/comp",
+   [
+    "comp"
+   ]
+  ],
+  [
+   "cd -",
+   [
+    "cd"
+   ]
+  ],
+  [
+   "ps-biggest-files",
+   [
+    "ps",
+    "biggest",
+    "files"
+   ]
+  ]
+ ],
+ "meaningful": [
+  [
+   "ls",
+   [
+    "ls"
+   ]
+  ],
+  [
+   "dir",
+   [
+    "dir"
+   ]
+  ],
+  [
+   "show files",
+   [
+    "show",
+    "files"
+   ]
+  ],
+  [
+   "directory listing",
+   [
+    "directory",
+    "listing"
+   ]
+  ],
+  [
+   "contents",
+   [
+    "contents"
+   ]
+  ],
+  [
+   "what is in here",
+   [
+    "what",
+    "is",
+    "in",
+    "here"
+   ]
+  ],
+  [
+   "gci",
+   [
+    "gci"
+   ]
+  ],
+  [
+   "ls -a",
+   [
+    "ls"
+   ]
+  ],
+  [
+   "dir /a",
+   [
+    "dir"
+   ]
+  ],
+  [
+   "dotfiles",
+   [
+    "dotfiles"
+   ]
+  ],
+  [
+   "invisible",
+   [
+    "invisible"
+   ]
+  ],
+  [
+   "hidden folders",
+   [
+    "hidden",
+    "folders"
+   ]
+  ],
+  [
+   "show all",
+   [
+    "show",
+    "all"
+   ]
+  ],
+  [
+   "system files",
+   [
+    "system",
+    "files"
+   ]
+  ],
+  [
+   "remove",
+   [
+    "remove"
+   ]
+  ],
+  [
+   "rm",
+   [
+    "rm"
+   ]
+  ],
+  [
+   "del",
+   [
+    "del"
+   ]
+  ],
+  [
+   "erase",
+   [
+    "erase"
+   ]
+  ],
+  [
+   "trash",
+   [
+    "trash"
+   ]
+  ],
+  [
+   "get rid of",
+   [
+    "rid"
+   ]
+  ],
+  [
+   "remove directory",
+   [
+    "remove",
+    "directory"
+   ]
+  ],
+  [
+   "rmdir",
+   [
+    "rmdir"
+   ]
+  ],
+  [
+   "rm -rf",
+   [
+    "rm",
+    "rf"
+   ]
+  ],
+  [
+   "rd /s",
+   [
+    "rd"
+   ]
+  ],
+  [
+   "erase folder",
+   [
+    "erase",
+    "folder"
+   ]
+  ],
+  [
+   "delete directory",
+   [
+    "delete",
+    "directory"
+   ]
+  ],
+  [
+   "wipe",
+   [
+    "wipe"
+   ]
+  ],
+  [
+   "mkdir",
+   [
+    "mkdir"
+   ]
+  ],
+  [
+   "md",
+   [
+    "md"
+   ]
+  ],
+  [
+   "create directory",
+   [
+    "create",
+    "directory"
+   ]
+  ],
+  [
+   "new directory",
+   [
+    "new",
+    "directory"
+   ]
+  ],
+  [
+   "add folder",
+   [
+    "add",
+    "folder"
+   ]
+  ],
+  [
+   "previous folder",
+   [
+    "previous",
+    "folder"
+   ]
+  ],
+  [
+   "last folder",
+   [
+    "last",
+    "folder"
+   ]
+  ],
+  [
+   "cd -",
+   [
+    "cd"
+   ]
+  ],
+  [
+   "popd",
+   [
+    "popd"
+   ]
+  ],
+  [
+   "where i was",
+   [
+    "where"
+   ]
+  ],
+  [
+   "toggle",
+   [
+    "toggle"
+   ]
+  ],
+  [
+   "tasklist",
+   [
+    "tasklist"
+   ]
+  ],
+  [
+   "task manager",
+   [
+    "task",
+    "manager"
+   ]
+  ],
+  [
+   "processes",
+   [
+    "processes"
+   ]
+  ],
+  [
+   "running programs",
+   [
+    "running",
+    "programs"
+   ]
+  ],
+  [
+   "apps",
+   [
+    "apps"
+   ]
+  ],
+  [
+   "top",
+   [
+    "top"
+   ]
+  ],
+  [
+   "telnet",
+   [
+    "telnet"
+   ]
+  ],
+  [
+   "nc",
+   [
+    "nc"
+   ]
+  ],
+  [
+   "reachable",
+   [
+    "reachable"
+   ]
+  ],
+  [
+   "firewall",
+   [
+    "firewall"
+   ]
+  ],
+  [
+   "connect",
+   [
+    "connect"
+   ]
+  ],
+  [
+   "can i reach",
+   [
+    "reach"
+   ]
+  ],
+  [
+   "ipconfig",
+   [
+    "ipconfig"
+   ]
+  ],
+  [
+   "ifconfig",
+   [
+    "ifconfig"
+   ]
+  ],
+  [
+   "ip a",
+   [
+    "ip"
+   ]
+  ],
+  [
+   "local ip",
+   [
+    "local",
+    "ip"
+   ]
+  ],
+  [
+   "network address",
+   [
+    "network",
+    "address"
+   ]
+  ],
+  [
+   "what is my ip",
+   [
+    "ip"
+   ]
+  ],
+  [
+   "lan",
+   [
+    "lan"
+   ]
+  ],
+  [
+   "unzip",
+   [
+    "unzip"
+   ]
+  ],
+  [
+   "extract",
+   [
+    "extract"
+   ]
+  ],
+  [
+   "decompress",
+   [
+    "decompress"
+   ]
+  ],
+  [
+   "open zip",
+   [
+    "open",
+    "zip"
+   ]
+  ],
+  [
+   "unpack",
+   [
+    "unpack"
+   ]
+  ],
+  [
+   "tar -x",
+   [
+    "tar",
+    "x"
+   ]
+  ],
+  [
+   "zip",
+   [
+    "zip"
+   ]
+  ],
+  [
+   "compress",
+   [
+    "compress"
+   ]
+  ],
+  [
+   "archive",
+   [
+    "archive"
+   ]
+  ],
+  [
+   "pack",
+   [
+    "pack"
+   ]
+  ],
+  [
+   "make a zip",
+   [
+    "make",
+    "zip"
+   ]
+  ],
+  [
+   "env",
+   [
+    "env"
+   ]
+  ],
+  [
+   "printenv",
+   [
+    "printenv"
+   ]
+  ],
+  [
+   "echo %path%",
+   [
+    "echo",
+    "path"
+   ]
+  ],
+  [
+   "path variable",
+   [
+    "path",
+    "variable"
+   ]
+  ],
+  [
+   "environment",
+   [
+    "environment"
+   ]
+  ],
+  [
+   "variables",
+   [
+    "variables"
+   ]
+  ],
+  [
+   "history",
+   [
+    "history"
+   ]
+  ],
+  [
+   "previous commands",
+   [
+    "previous",
+    "commands"
+   ]
+  ],
+  [
+   "last command",
+   [
+    "last",
+    "command"
+   ]
+  ],
+  [
+   "recall",
+   [
+    "recall"
+   ]
+  ],
+  [
+   "what did i run",
+   [
+    "run"
+   ]
+  ],
+  [
+   "cls",
+   [
+    "cls"
+   ]
+  ]
+ ],
+ "stem": {
+  "0": "0",
+  "1": "1",
+  "2": "2",
+  "3": "3",
+  "4": "4",
+  "5": "5",
+  "7": "7",
+  "8": "8",
+  "9": "9",
+  "10": "10",
+  "11": "11",
+  "12": "12",
+  "15": "15",
+  "16": "16",
+  "20": "20",
+  "22": "22",
+  "23": "23",
+  "24": "24",
+  "30": "30",
+  "50": "50",
+  "60": "60",
+  "64": "64",
+  "100": "100",
+  "168": "168",
+  "169": "169",
+  "192": "192",
+  "200": "200",
+  "254": "254",
+  "256": "256",
+  "401": "401",
+  "404": "404",
+  "600": "600",
+  "2222": "2222",
+  "3000": "3000",
+  "8601": "8601",
+  "12288": "12288",
+  "30001": "30001",
+  "20260920": "20260920",
+  "104857600": "104857600",
+  "1073741824": "1073741824",
+  "04": "04",
+  "100m": "100m",
+  "100mb": "100mb",
+  "10mb": "10mb",
+  "1mb": "1mb",
+  "24h2": "24h2",
+  "a": "a",
+  "abbreviation": "abbreviation",
+  "abbreviations": "abbreviation",
+  "abort": "abort",
+  "about": "about",
+  "above": "above",
+  "absolute": "absolute",
+  "accept": "accept",
+  "access": "access",
+  "accident": "accident",
+  "accidentally": "accidentally",
+  "account": "account",
+  "across": "across",
+  "actions": "action",
+  "activate": "activate",
+  "active": "active",
+  "acts": "act",
+  "actually": "actually",
+  "adapter": "adapter",
+  "adapters": "adapter",
+  "add": "add",
+  "adddays": "addday",
+  "added": "add",
+  "addhours": "addhour",
+  "additions": "addition",
+  "addr": "addr",
+  "address": "address",
+  "addresses": "address",
+  "addressfamily": "addressfamily",
+  "adds": "add",
+  "admin": "admin",
+  "administrator": "administrator",
+  "affects": "affect",
+  "afraid": "afraid",
+  "afresh": "afresh",
+  "after": "after",
+  "afterwards": "afterward",
+  "again": "again",
+  "against": "against",
+  "agent": "agent",
+  "agents": "agent",
+  "ah": "ah",
+  "ahead": "ahead",
+  "ai": "ai",
+  "algorithm": "algorithm",
+  "alias": "alias",
+  "aliases": "aliase",
+  "all": "all",
+  "allow": "allow",
+  "allowed": "allow",
+  "allowing": "allow",
+  "allows": "allow",
+  "alone": "alone",
+  "along": "along",
+  "alphabetical": "alphabetical",
+  "already": "already",
+  "also": "also",
+  "alt": "alt",
+  "always": "alway",
+  "am": "am",
+  "amend": "amend",
+  "amended": "amend",
+  "among": "among",
+  "ampersand": "ampersand",
+  "an": "an",
+  "and": "and",
+  "annotate": "annotate",
+  "annotated": "annotate",
+  "ano": "ano",
+  "another": "another",
+  "answer": "answer",
+  "answering": "answer",
+  "answers": "answer",
+  "anthropic": "anthropic",
+  "any": "any",
+  "anything": "anyth",
+  "anyway": "anyway",
+  "anywhere": "anywhere",
+  "apart": "apart",
+  "api": "api",
+  "app": "app",
+  "appdata": "appdata",
+  "appear": "appear",
+  "appearing": "appear",
+  "appears": "appear",
+  "append": "append",
+  "appends": "append",
+  "application": "application",
+  "applies": "apply",
+  "apply": "apply",
+  "applying": "apply",
+  "appropriate": "appropriate",
+  "approvals": "approval",
+  "approve": "approve",
+  "apps": "app",
+  "apropos": "apropo",
+  "apt": "apt",
+  "architecture": "architecture",
+  "archive": "archive",
+  "are": "are",
+  "args": "arg",
+  "argument": "argument",
+  "argumentlist": "argumentlist",
+  "arguments": "argument",
+  "around": "around",
+  "arrow": "arrow",
+  "arrows": "arrow",
+  "as": "as",
+  "ascii": "ascii",
+  "aside": "aside",
+  "ask": "ask",
+  "asked": "ask",
+  "asking": "ask",
+  "asks": "ask",
+  "assemblyname": "assemblyname",
+  "assignment": "assignment",
+  "assistant": "assistant",
+  "at": "at",
+  "attach": "attach",
+  "attaches": "attach",
+  "attrib": "attrib",
+  "attribute": "attribute",
+  "attributes": "attribute",
+  "audit": "audit",
+  "authentication": "authentication",
+  "author": "author",
+  "authorization": "authorization",
+  "authors": "author",
+  "auto": "auto",
+  "autocomplete": "autocomplete",
+  "autocrlf": "autocrlf",
+  "autoexec": "autoexec",
+  "automatic": "automatic",
+  "automation": "automation",
+  "autoremove": "autoremove",
+  "autosize": "autosize",
+  "aux": "aux",
+  "available": "available",
+  "avoid": "avoid",
+  "away": "away",
+  "awk": "awk",
+  "b": "b",
+  "back": "back",
+  "background": "background",
+  "backport": "backport",
+  "backslash": "backslash",
+  "backup": "backup",
+  "bad": "bad",
+  "bandwidth": "bandwidth",
+  "bang": "bang",
+  "bar": "bar",
+  "bare": "bare",
+  "base": "base",
+  "bash": "bash",
+  "bashrc": "bashrc",
+  "bat": "bat",
+  "batch": "batch",
+  "be": "be",
+  "bearer": "bearer",
+  "because": "because",
+  "becomes": "become",
+  "been": "been",
+  "before": "before",
+  "beginning": "begin",
+  "begins": "begin",
+  "behind": "behind",
+  "being": "being",
+  "belongs": "belong",
+  "below": "below",
+  "benchmark": "benchmark",
+  "beside": "beside",
+  "better": "better",
+  "between": "between",
+  "bg": "bg",
+  "big": "big",
+  "bigger": "big",
+  "biggest": "big",
+  "billing": "bill",
+  "bin": "bin",
+  "binary": "binary",
+  "bit": "bit",
+  "blame": "blame",
+  "blank": "blank",
+  "blocked": "block",
+  "blocking": "block",
+  "blocks": "block",
+  "body": "body",
+  "boolean": "boolean",
+  "boot": "boot",
+  "both": "both",
+  "bottom": "bottom",
+  "bounce": "bounce",
+  "box": "box",
+  "braces": "brace",
+  "brackets": "bracket",
+  "branch": "branch",
+  "branches": "branch",
+  "brand": "brand",
+  "break": "break",
+  "breakdown": "breakdown",
+  "breaking": "break",
+  "brew": "brew",
+  "bring": "bring",
+  "brings": "bring",
+  "broke": "broke",
+  "broken": "broken",
+  "browse": "browse",
+  "browser": "browser",
+  "bugs": "bug",
+  "build": "build",
+  "building": "build",
+  "built": "built",
+  "builtin": "builtin",
+  "bulk": "bulk",
+  "bump": "bump",
+  "bundle": "bundle",
+  "bundlers": "bundler",
+  "busiest": "busiest",
+  "but": "but",
+  "by": "by",
+  "bypass": "bypass",
+  "byte": "byte",
+  "bytes": "byte",
+  "bz2": "bz2",
+  "c": "c",
+  "cache": "cache",
+  "cached": "cach",
+  "caches": "cach",
+  "call": "call",
+  "called": "call",
+  "calls": "call",
+  "came": "came",
+  "can": "can",
+  "cancel": "cancel",
+  "cannot": "cannot",
+  "capacity": "capacity",
+  "capital": "capital",
+  "capitals": "capital",
+  "caption": "caption",
+  "capture": "capture",
+  "card": "card",
+  "care": "care",
+  "carriage": "carriage",
+  "carries": "carry",
+  "carry": "carry",
+  "case": "case",
+  "casesensitive": "casesensitive",
+  "cat": "cat",
+  "catalogue": "catalogue",
+  "catch": "catch",
+  "catches": "catch",
+  "cd": "cd",
+  "certain": "certain",
+  "certutil": "certutil",
+  "chain": "chain",
+  "change": "change",
+  "changed": "change",
+  "changelog": "changelog",
+  "changes": "change",
+  "changing": "change",
+  "character": "character",
+  "characters": "character",
+  "chat": "chat",
+  "chatgpt": "chatgpt",
+  "chats": "chat",
+  "chdir": "chdir",
+  "cheaper": "cheaper",
+  "cheat": "cheat",
+  "check": "check",
+  "checked": "check",
+  "checking": "check",
+  "checkout": "checkout",
+  "checkpoint": "checkpoint",
+  "checks": "check",
+  "checksum": "checksum",
+  "checksums": "checksum",
+  "cherry": "cherry",
+  "child": "child",
+  "childitem": "childitem",
+  "children": "children",
+  "chip": "chip",
+  "chmod": "chmod",
+  "choco": "choco",
+  "choice": "choice",
+  "choose": "choose",
+  "chooses": "choose",
+  "choosing": "choos",
+  "chosen": "chosen",
+  "chown": "chown",
+  "ci": "ci",
+  "ciminstance": "ciminstance",
+  "classic": "classic",
+  "claude": "claude",
+  "claudes": "claude",
+  "clean": "clean",
+  "cleanup": "cleanup",
+  "clear": "clear",
+  "cli": "cli",
+  "click": "click",
+  "clip": "clip",
+  "clipboard": "clipboard",
+  "clobber": "clobber",
+  "clock": "clock",
+  "clone": "clone",
+  "cloning": "clon",
+  "close": "close",
+  "closed": "close",
+  "closes": "close",
+  "closing": "close",
+  "cloudflare": "cloudflare",
+  "cls": "cls",
+  "cluttered": "clutter",
+  "cmd": "cmd",
+  "cmdlet": "cmdlet",
+  "cmdlets": "cmdlet",
+  "cname": "cname",
+  "code": "code",
+  "codebase": "codebase",
+  "codex": "codex",
+  "coding": "code",
+  "collect": "collect",
+  "colons": "colon",
+  "coloured": "coloure",
+  "column": "column",
+  "columns": "column",
+  "com": "com",
+  "combine": "combine",
+  "come": "come",
+  "comes": "come",
+  "comma": "comma",
+  "command": "command",
+  "commandline": "commandline",
+  "commands": "command",
+  "commit": "commit",
+  "commits": "commit",
+  "committed": "commit",
+  "committing": "commit",
+  "common": "common",
+  "compact": "compact",
+  "compare": "compare",
+  "comparison": "comparison",
+  "compgen": "compgen",
+  "compile": "compile",
+  "compiler": "compiler",
+  "complain": "complain",
+  "complete": "complete",
+  "completely": "completely",
+  "compound": "compound",
+  "compress": "compress",
+  "compressed": "compress",
+  "compresses": "compress",
+  "compression": "compression",
+  "computer": "computer",
+  "computerinfo": "computerinfo",
+  "computername": "computername",
+  "computers": "computer",
+  "conda": "conda",
+  "condition": "condition",
+  "conditions": "condition",
+  "config": "config",
+  "configure": "configure",
+  "configured": "configure",
+  "confirm": "confirm",
+  "confirmation": "confirmation",
+  "conflict": "conflict",
+  "conflicted": "conflict",
+  "conflicts": "conflict",
+  "confused": "confuse",
+  "connect": "connect",
+  "connected": "connect",
+  "connection": "connection",
+  "connections": "connection",
+  "consider": "consider",
+  "contain": "contain",
+  "containing": "contain",
+  "contains": "contain",
+  "content": "content",
+  "contents": "content",
+  "contenttype": "contenttype",
+  "context": "context",
+  "continuation": "continuation",
+  "continue": "continue",
+  "continuous": "continuous",
+  "control": "control",
+  "conventions": "convention",
+  "conversation": "conversation",
+  "conversations": "conversation",
+  "conversion": "conversion",
+  "convert": "convert",
+  "convertfrom": "convertfrom",
+  "converting": "convert",
+  "convertto": "convertto",
+  "copied": "copy",
+  "copies": "copy",
+  "copy": "copy",
+  "copyable": "copyable",
+  "copying": "copy",
+  "core": "core",
+  "cores": "core",
+  "correct": "correct",
+  "corrupted": "corrupt",
+  "cost": "cost",
+  "could": "could",
+  "count": "count",
+  "counts": "count",
+  "cp": "cp",
+  "cpi": "cpi",
+  "cpl": "cpl",
+  "cpu": "cpu",
+  "cr": "cr",
+  "create": "create",
+  "created": "create",
+  "creates": "create",
+  "creating": "create",
+  "creation": "creation",
+  "creationtime": "creationtime",
+  "credentials": "credential",
+  "crlf": "crlf",
+  "cross": "cross",
+  "csv": "csv",
+  "ctrl": "ctrl",
+  "culprit": "culprit",
+  "curl": "curl",
+  "current": "current",
+  "currently": "currently",
+  "currentuser": "currentuser",
+  "custom": "custom",
+  "cut": "cut",
+  "cutting": "cut",
+  "cycle": "cycle",
+  "cycles": "cycle",
+  "czf": "czf",
+  "d": "d",
+  "daemon": "daemon",
+  "damaged": "damage",
+  "dangerously": "dangerously",
+  "dash": "dash",
+  "data": "data",
+  "database": "database",
+  "date": "date",
+  "dated": "date",
+  "dates": "date",
+  "day": "day",
+  "days": "day",
+  "dd": "dd",
+  "deactivate": "deactivate",
+  "debian": "debian",
+  "decompress": "decompress",
+  "decorate": "decorate",
+  "dedupe": "dedupe",
+  "deep": "deep",
+  "default": "default",
+  "define": "define",
+  "defined": "define",
+  "definition": "definition",
+  "del": "del",
+  "delay": "delay",
+  "delegate": "delegate",
+  "delete": "delete",
+  "deleted": "delete",
+  "deletefile": "deletefile",
+  "deletes": "delete",
+  "deleting": "delete",
+  "deletions": "deletion",
+  "delimiter": "delimiter",
+  "denied": "deny",
+  "deny": "deny",
+  "dependencies": "dependency",
+  "dependency": "dependency",
+  "deploy": "deploy",
+  "deps": "dep",
+  "depth": "depth",
+  "descending": "descend",
+  "description": "description",
+  "descriptions": "description",
+  "desktop": "desktop",
+  "destination": "destination",
+  "destinationpath": "destinationpath",
+  "detach": "detach",
+  "detached": "detach",
+  "detail": "detail",
+  "detailed": "detail",
+  "details": "detail",
+  "detect": "detect",
+  "dev": "dev",
+  "devdependencies": "devdependency",
+  "developers": "developer",
+  "developing": "develope",
+  "development": "development",
+  "device": "device",
+  "df": "df",
+  "dhcp": "dhcp",
+  "diagnose": "diagnose",
+  "dialog": "dialog",
+  "did": "did",
+  "die": "die",
+  "diff": "diff",
+  "differ": "differ",
+  "difference": "difference",
+  "differences": "difference",
+  "different": "different",
+  "differs": "differ",
+  "diffstat": "diffstat",
+  "dig": "dig",
+  "digitally": "digitally",
+  "dir": "dir",
+  "directly": "directly",
+  "directories": "directory",
+  "directory": "directory",
+  "dirs": "dir",
+  "disabled": "disable",
+  "disappears": "disappear",
+  "discard": "discard",
+  "disconnect": "disconnect",
+  "discover": "discover",
+  "disk": "disk",
+  "disown": "disown",
+  "display": "display",
+  "displayname": "displayname",
+  "dist": "dist",
+  "distinct": "distinct",
+  "distribution": "distribution",
+  "distro": "distro",
+  "distros": "distro",
+  "diverged": "diverge",
+  "dlx": "dlx",
+  "dns": "dns",
+  "dnsclientcache": "dnsclientcache",
+  "dnsname": "dnsname",
+  "do": "do",
+  "docker": "docker",
+  "docs": "doc",
+  "doctor": "doctor",
+  "document": "document",
+  "documentation": "documentation",
+  "documents": "document",
+  "does": "doe",
+  "doing": "doing",
+  "dollar": "dollar",
+  "dollars": "dollar",
+  "domain": "domain",
+  "done": "done",
+  "dos": "dos",
+  "dos2unix": "dos2unix",
+  "doskey": "doskey",
+  "dot": "dot",
+  "dotfiles": "dotfile",
+  "dots": "dot",
+  "double": "double",
+  "down": "down",
+  "downgrade": "downgrade",
+  "download": "download",
+  "downloaded": "download",
+  "downloader": "downloader",
+  "downloads": "download",
+  "dpkg": "dpkg",
+  "dragging": "drag",
+  "draw": "draw",
+  "drawing": "draw",
+  "drawn": "drawn",
+  "draws": "draw",
+  "drive": "drive",
+  "driver": "driver",
+  "driverversion": "driverversion",
+  "drives": "drive",
+  "drop": "drop",
+  "dropped": "drop",
+  "dry": "dry",
+  "dscacheutil": "dscacheutil",
+  "du": "du",
+  "dump": "dump",
+  "duplicate": "duplicate",
+  "duplicates": "duplicate",
+  "duration": "duration",
+  "e": "e",
+  "eacces": "eacce",
+  "each": "each",
+  "eaddrinuse": "eaddrinuse",
+  "earlier": "early",
+  "early": "early",
+  "easier": "easier",
+  "eating": "eate",
+  "echo": "echo",
+  "econnrefused": "econnrefuse",
+  "ed25519": "ed25519",
+  "edit": "edit",
+  "edited": "edit",
+  "editenvironmentvariables": "editenvironmentvariable",
+  "editing": "edit",
+  "edition": "edition",
+  "editor": "editor",
+  "edits": "edit",
+  "ef": "ef",
+  "effect": "effect",
+  "effort": "effort",
+  "eintegrity": "eintegrity",
+  "either": "either",
+  "elapsed": "elaps",
+  "elevated": "elevate",
+  "elevation": "elevation",
+  "ellipsis": "ellipsis",
+  "else": "else",
+  "elsewhere": "elsewhere",
+  "email": "email",
+  "emit": "emit",
+  "empties": "empty",
+  "empty": "empty",
+  "enable": "enable",
+  "encoding": "encode",
+  "encountered": "encounter",
+  "end": "end",
+  "ending": "end",
+  "endings": "end",
+  "endpoint": "endpoint",
+  "ends": "end",
+  "enospc": "enospc",
+  "enotfound": "enotfound",
+  "enough": "enough",
+  "ensurepip": "ensurepip",
+  "enter": "enter",
+  "entirely": "entirely",
+  "entries": "entry",
+  "entry": "entry",
+  "env": "env",
+  "environment": "environment",
+  "eof": "eof",
+  "eperm": "eperm",
+  "eq": "eq",
+  "equals": "equal",
+  "equivalent": "equivalent",
+  "erase": "erase",
+  "error": "error",
+  "erroraction": "erroraction",
+  "errorlevel": "errorlevel",
+  "errors": "error",
+  "esc": "esc",
+  "escape": "escape",
+  "eslint": "eslint",
+  "essay": "essay",
+  "established": "establish",
+  "etc": "etc",
+  "eth0": "eth0",
+  "ever": "ever",
+  "every": "every",
+  "everyone": "everyone",
+  "everything": "everyth",
+  "everywhere": "everywhere",
+  "evolved": "evolv",
+  "exact": "exact",
+  "exactly": "exactly",
+  "example": "example",
+  "examples": "example",
+  "excel": "excel",
+  "except": "except",
+  "exclamation": "exclamation",
+  "exclude": "exclude",
+  "exe": "exe",
+  "exec": "exec",
+  "executable": "executable",
+  "execute": "execute",
+  "execution": "execution",
+  "executionpolicy": "executionpolicy",
+  "exist": "exist",
+  "existing": "exist",
+  "exists": "exist",
+  "exit": "exit",
+  "exits": "exit",
+  "expand": "expand",
+  "expandproperty": "expandproperty",
+  "expands": "expand",
+  "explain": "explain",
+  "explains": "explain",
+  "explicit": "explicit",
+  "exploit": "exploit",
+  "explorer": "explorer",
+  "export": "export",
+  "exports": "export",
+  "expression": "expression",
+  "ext": "ext",
+  "extension": "extension",
+  "extensions": "extension",
+  "external": "external",
+  "externally": "externally",
+  "extra": "extra",
+  "extract": "extract",
+  "extracting": "extract",
+  "extracts": "extract",
+  "f": "f",
+  "f2": "f2",
+  "f7": "f7",
+  "fail": "fail",
+  "failed": "fail",
+  "failing": "fail",
+  "fails": "fail",
+  "failure": "failure",
+  "fallback": "fallback",
+  "false": "false",
+  "fans": "fan",
+  "far": "far",
+  "fast": "fast",
+  "faster": "fast",
+  "fatal": "fatal",
+  "fc": "fc",
+  "fd": "fd",
+  "fdx": "fdx",
+  "feature": "feature",
+  "feed": "feed",
+  "fetch": "fetch",
+  "fetched": "fetch",
+  "fetches": "fetch",
+  "few": "few",
+  "fewer": "few",
+  "fg": "fg",
+  "fi": "fi",
+  "field": "field",
+  "fields": "field",
+  "file": "file",
+  "file1": "file1",
+  "file2": "file2",
+  "filehash": "filehash",
+  "fileio": "fileio",
+  "files": "file",
+  "filesystem": "filesystem",
+  "filled": "fill",
+  "filter": "filter",
+  "filtered": "filter",
+  "filters": "filter",
+  "final": "final",
+  "find": "find",
+  "finder": "finder",
+  "finds": "find",
+  "findstr": "findstr",
+  "fine": "fine",
+  "fingerprint": "fingerprint",
+  "finish": "finish",
+  "finished": "finish",
+  "finishes": "finish",
+  "firewall": "firewall",
+  "first": "first",
+  "fit": "fit",
+  "five": "five",
+  "fix": "fix",
+  "fixed": "fix",
+  "fl": "fl",
+  "flag": "flag",
+  "flags": "flag",
+  "flush": "flush",
+  "flushdns": "flushdn",
+  "focus": "focus",
+  "fold": "fold",
+  "folder": "folder",
+  "folder1": "folder1",
+  "folder2": "folder2",
+  "folders": "folder",
+  "folds": "fold",
+  "follow": "follow",
+  "followed": "follow",
+  "following": "follow",
+  "follows": "follow",
+  "for": "for",
+  "force": "force",
+  "forces": "force",
+  "foreach": "foreach",
+  "foreground": "foreground",
+  "forever": "forever",
+  "forfiles": "forfile",
+  "forget": "forget",
+  "forgetting": "forget",
+  "forgot": "forgot",
+  "forgotten": "forgotten",
+  "form": "form",
+  "format": "format",
+  "formats": "format",
+  "formula": "formula",
+  "forward": "forward",
+  "found": "find",
+  "four": "four",
+  "framework": "framework",
+  "free": "free",
+  "freegb": "freegb",
+  "freeing": "free",
+  "freephysicalmemory": "freephysicalmemory",
+  "freeze": "freeze",
+  "frequency": "frequency",
+  "frequent": "frequent",
+  "fresh": "fresh",
+  "friendly": "friendly",
+  "from": "from",
+  "front": "front",
+  "frozen": "frozen",
+  "fsize": "fsize",
+  "fssl": "fssl",
+  "ft": "ft",
+  "full": "full",
+  "fullname": "fullname",
+  "fully": "fully",
+  "function": "function",
+  "functions": "function",
+  "further": "further",
+  "fuser": "fuser",
+  "g": "g",
+  "gained": "gain",
+  "garbage": "garbage",
+  "garbled": "garble",
+  "gateway": "gateway",
+  "gb": "gb",
+  "gc": "gc",
+  "gcb": "gcb",
+  "gci": "gci",
+  "gcm": "gcm",
+  "generate": "generate",
+  "generating": "generate",
+  "geq": "geq",
+  "get": "get",
+  "getcurrent": "getcurrent",
+  "getent": "getent",
+  "getenvironmentvariable": "getenvironmentvariable",
+  "gets": "get",
+  "gigabyte": "gigabyte",
+  "gigabytes": "gigabyte",
+  "git": "git",
+  "gitconfig": "gitconfig",
+  "github": "github",
+  "gitignore": "gitignore",
+  "gitignored": "gitignor",
+  "give": "give",
+  "given": "given",
+  "gives": "give",
+  "gl": "gl",
+  "glob": "glob",
+  "global": "global",
+  "globally": "globally",
+  "go": "go",
+  "goes": "go",
+  "going": "go",
+  "gone": "go",
+  "good": "good",
+  "got": "got",
+  "gps": "gps",
+  "gpt": "gpt",
+  "gpu": "gpu",
+  "grandchild": "grandchild",
+  "grandparent": "grandparent",
+  "graph": "graph",
+  "graphics": "graphic",
+  "greater": "greater",
+  "green": "green",
+  "grep": "grep",
+  "group": "group",
+  "groups": "group",
+  "grows": "grow",
+  "gs": "gs",
+  "gsv": "gsv",
+  "gt": "gt",
+  "gui": "gui",
+  "guide": "guide",
+  "guided": "guid",
+  "gunzip": "gunzip",
+  "gz": "gz",
+  "gzip": "gzip",
+  "h": "h",
+  "habit": "habit",
+  "had": "had",
+  "haiku": "haiku",
+  "half": "half",
+  "halt": "halt",
+  "handling": "handl",
+  "hands": "hand",
+  "handy": "handy",
+  "happened": "happen",
+  "happens": "happen",
+  "hard": "hard",
+  "harder": "harder",
+  "hardware": "hardware",
+  "harmless": "harmless",
+  "has": "has",
+  "hash": "hash",
+  "hashfile": "hashfile",
+  "have": "have",
+  "head": "head",
+  "header": "header",
+  "headers": "header",
+  "headless": "headless",
+  "health": "health",
+  "heap": "heap",
+  "held": "held",
+  "help": "help",
+  "helper": "helper",
+  "helpers": "helper",
+  "here": "here",
+  "hh": "hh",
+  "hhmmss": "hhmmss",
+  "hidden": "hidden",
+  "hide": "hide",
+  "hides": "hide",
+  "hiding": "hide",
+  "hierarchy": "hierarchy",
+  "high": "high",
+  "highest": "high",
+  "highlight": "highlight",
+  "history": "history",
+  "historysavepath": "historysavepath",
+  "hit": "hit",
+  "hits": "hit",
+  "hogging": "hog",
+  "hogs": "hog",
+  "hold": "hold",
+  "holding": "hold",
+  "holds": "hold",
+  "home": "home",
+  "hops": "hop",
+  "host": "host",
+  "hostname": "hostname",
+  "hosts": "host",
+  "hot": "hot",
+  "hour": "hour",
+  "hours": "hour",
+  "how": "how",
+  "htop": "htop",
+  "http": "http",
+  "httpie": "httpie",
+  "https": "http",
+  "huge": "huge",
+  "hung": "hung",
+  "hunk": "hunk",
+  "i": "i",
+  "icacls": "icacl",
+  "icmp": "icmp",
+  "id": "id",
+  "ide": "ide",
+  "identical": "identical",
+  "identifier": "identifier",
+  "identity": "identity",
+  "iex": "iex",
+  "if": "if",
+  "ifconfig": "ifconfig",
+  "ignore": "ignore",
+  "ignored": "ignor",
+  "ignores": "ignore",
+  "ignoring": "ignor",
+  "ii": "ii",
+  "im": "im",
+  "image": "image",
+  "imagename": "imagename",
+  "import": "import",
+  "importerror": "importerror",
+  "in": "in",
+  "iname": "iname",
+  "include": "include",
+  "included": "include",
+  "includes": "include",
+  "including": "include",
+  "incoming": "income",
+  "indented": "indent",
+  "index": "index",
+  "info": "info",
+  "init": "init",
+  "initial": "initial",
+  "injection": "injection",
+  "inline": "inline",
+  "input": "input",
+  "ins": "ins",
+  "insertions": "insertion",
+  "inside": "inside",
+  "inspect": "inspect",
+  "install": "install",
+  "installation": "installation",
+  "installed": "install",
+  "installer": "installer",
+  "installing": "install",
+  "installs": "install",
+  "instance": "instance",
+  "instances": "instance",
+  "instead": "instead",
+  "instruction": "instruction",
+  "instructions": "instruction",
+  "integrate": "integrate",
+  "integration": "integration",
+  "integrations": "integration",
+  "integrity": "integrity",
+  "interactive": "interactive",
+  "interactively": "interactively",
+  "interface": "interface",
+  "interfacealias": "interfacealias",
+  "internal": "internal",
+  "internet": "internet",
+  "interop": "interop",
+  "interpreter": "interpreter",
+  "interrupt": "interrupt",
+  "interrupts": "interrupt",
+  "into": "into",
+  "invalid": "invalid",
+  "invert": "invert",
+  "investigates": "investigate",
+  "invisible": "invisible",
+  "invoke": "invoke",
+  "ip": "ip",
+  "ipaddress": "ipaddress",
+  "ipconfig": "ipconfig",
+  "ipify": "ipify",
+  "ipv4": "ipv4",
+  "ipv4address": "ipv4address",
+  "ipv4defaultgateway": "ipv4defaultgateway",
+  "irm": "irm",
+  "is": "is",
+  "isdir": "isdir",
+  "isinrole": "isinrole",
+  "iso": "iso",
+  "isolated": "isolate",
+  "issue": "issue",
+  "it": "it",
+  "item": "item",
+  "items": "item",
+  "itemtype": "itemtype",
+  "iterate": "iterate",
+  "its": "its",
+  "itself": "itself",
+  "iv": "iv",
+  "iwr": "iwr",
+  "j": "j",
+  "javascript": "javascript",
+  "jest": "jest",
+  "job": "job",
+  "jobs": "job",
+  "join": "join",
+  "joins": "join",
+  "jpgs": "jpg",
+  "jq": "jq",
+  "js": "js",
+  "json": "json",
+  "jump": "jump",
+  "junction": "junction",
+  "junk": "junk",
+  "just": "just",
+  "k": "k",
+  "keep": "keep",
+  "keeping": "keep",
+  "keeps": "keep",
+  "kept": "kept",
+  "kernel": "kernel",
+  "key": "key",
+  "keyboard": "keyboard",
+  "keyfile": "keyfile",
+  "keygen": "keygen",
+  "keystrokes": "keystroke",
+  "kill": "kill",
+  "killall": "killall",
+  "killed": "kill",
+  "killing": "kill",
+  "kind": "kind",
+  "know": "know",
+  "known": "known",
+  "knows": "know",
+  "l": "l",
+  "la": "la",
+  "label": "label",
+  "lack": "lack",
+  "lag": "lag",
+  "lah": "lah",
+  "lan": "lan",
+  "lands": "land",
+  "large": "large",
+  "largest": "large",
+  "last": "last",
+  "lastbootuptime": "lastbootuptime",
+  "lastexitcode": "lastexitcode",
+  "lasts": "last",
+  "lastwritetime": "lastwritetime",
+  "lately": "lately",
+  "latency": "latency",
+  "later": "later",
+  "latest": "latest",
+  "launch": "launch",
+  "layout": "layout",
+  "lean": "lean",
+  "learn": "learn",
+  "lease": "lease",
+  "leave": "leave",
+  "leaves": "leave",
+  "leaving": "leav",
+  "left": "left",
+  "leftovers": "leftover",
+  "legacy": "legacy",
+  "lends": "lend",
+  "length": "length",
+  "less": "less",
+  "let": "let",
+  "lets": "let",
+  "letter": "letter",
+  "letters": "letter",
+  "level": "level",
+  "levels": "level",
+  "lf": "lf",
+  "lhs": "lhs",
+  "libraries": "library",
+  "library": "library",
+  "license": "license",
+  "like": "like",
+  "limit": "limit",
+  "limited": "limit",
+  "limits": "limit",
+  "line": "line",
+  "linear": "linear",
+  "linefeed": "linefeed",
+  "lines": "line",
+  "link": "link",
+  "links": "link",
+  "linter": "linter",
+  "linters": "linter",
+  "linux": "linux",
+  "list": "list",
+  "listed": "list",
+  "listen": "listen",
+  "listening": "listen",
+  "listing": "list",
+  "lists": "list",
+  "literal": "literal",
+  "live": "live",
+  "lives": "live",
+  "ll": "ll",
+  "ln": "ln",
+  "load": "load",
+  "loaded": "load",
+  "loading": "load",
+  "local": "local",
+  "localhost": "localhost",
+  "localport": "localport",
+  "locate": "locate",
+  "location": "location",
+  "lock": "lock",
+  "locked": "lock",
+  "lockfile": "lockfile",
+  "log": "log",
+  "logged": "log",
+  "login": "login",
+  "logout": "logout",
+  "logs": "log",
+  "lone": "lone",
+  "long": "long",
+  "longer": "long",
+  "look": "look",
+  "looked": "look",
+  "looking": "look",
+  "looks": "look",
+  "lookup": "lookup",
+  "loop": "loop",
+  "lose": "lose",
+  "lost": "lost",
+  "lower": "low",
+  "lowest": "low",
+  "ls": "ls",
+  "lsb": "lsb",
+  "lscpu": "lscpu",
+  "lsof": "lsof",
+  "lspci": "lspci",
+  "lt": "lt",
+  "ltnp": "ltnp",
+  "lts": "lts",
+  "m": "m",
+  "mac": "mac",
+  "machine": "machine",
+  "machines": "machine",
+  "macro": "macro",
+  "macros": "macro",
+  "made": "make",
+  "mail": "mail",
+  "main": "main",
+  "major": "major",
+  "make": "make",
+  "makes": "make",
+  "making": "make",
+  "man": "man",
+  "manage": "manage",
+  "managed": "manage",
+  "manager": "manager",
+  "manual": "manual",
+  "manuals": "manual",
+  "many": "many",
+  "map": "map",
+  "mark": "mark",
+  "marked": "mark",
+  "marker": "marker",
+  "markers": "marker",
+  "marking": "mark",
+  "marks": "mark",
+  "mask": "mask",
+  "mass": "mass",
+  "master": "master",
+  "match": "match",
+  "matched": "match",
+  "matches": "match",
+  "matching": "match",
+  "math": "math",
+  "matter": "matter",
+  "matters": "matter",
+  "max": "max",
+  "maxdepth": "maxdepth",
+  "may": "may",
+  "mb": "mb",
+  "mcp": "mcp",
+  "md": "md",
+  "md5": "md5",
+  "md5sum": "md5sum",
+  "me": "me",
+  "mean": "mean",
+  "means": "mean",
+  "meant": "meant",
+  "meanwhile": "meanwhile",
+  "measure": "measure",
+  "measures": "measure",
+  "meet": "meet",
+  "megabytes": "megabyte",
+  "member": "member",
+  "membertype": "membertype",
+  "memory": "memory",
+  "mention": "mention",
+  "mentions": "mention",
+  "menu": "menu",
+  "merge": "merge",
+  "merged": "merge",
+  "merges": "merge",
+  "merging": "merge",
+  "message": "message",
+  "messages": "message",
+  "metadata": "metadata",
+  "method": "method",
+  "mi": "mi",
+  "microsoft": "microsoft",
+  "mid": "mid",
+  "middle": "middle",
+  "might": "might",
+  "migrations": "migration",
+  "minutes": "minute",
+  "missed": "miss",
+  "missing": "miss",
+  "mistake": "mistake",
+  "mixed": "mix",
+  "mkdir": "mkdir",
+  "mklink": "mklink",
+  "mm": "mm",
+  "mmin": "mmin",
+  "mnt": "mnt",
+  "mockup": "mockup",
+  "mode": "mode",
+  "model": "model",
+  "models": "model",
+  "modern": "modern",
+  "modes": "mode",
+  "modified": "modify",
+  "module": "module",
+  "modulenotfounderror": "modulenotfounderror",
+  "modules": "module",
+  "moment": "moment",
+  "monitor": "monitor",
+  "more": "more",
+  "most": "most",
+  "mount": "mount",
+  "mounted": "mount",
+  "mounts": "mount",
+  "move": "move",
+  "moved": "move",
+  "moves": "move",
+  "moving": "move",
+  "mp4s": "mp4s",
+  "msc": "msc",
+  "mtime": "mtime",
+  "mtr": "mtr",
+  "much": "much",
+  "multi": "multi",
+  "multiline": "multiline",
+  "multiple": "multiple",
+  "must": "must",
+  "mv": "mv",
+  "mx": "mx",
+  "my": "my",
+  "n": "n",
+  "n1": "n1",
+  "name": "name",
+  "named": "name",
+  "names": "name",
+  "naming": "name",
+  "nano": "nano",
+  "narrow": "narrow",
+  "native": "native",
+  "navigate": "navigate",
+  "nc": "nc",
+  "ncdu": "ncdu",
+  "nearly": "nearly",
+  "need": "need",
+  "needed": "need",
+  "needs": "need",
+  "neither": "neither",
+  "nested": "nest",
+  "net": "net",
+  "netcat": "netcat",
+  "netconnection": "netconnection",
+  "netipaddress": "netipaddress",
+  "netipconfiguration": "netipconfiguration",
+  "netstat": "netstat",
+  "nettcpconnection": "nettcpconnection",
+  "network": "network",
+  "never": "never",
+  "new": "new",
+  "newer": "newer",
+  "newest": "newest",
+  "newext": "newext",
+  "newfolder": "newfolder",
+  "newline": "newline",
+  "newname": "newname",
+  "next": "next",
+  "nexthop": "nexthop",
+  "nfd": "nfd",
+  "ni": "ni",
+  "nickname": "nickname",
+  "no": "no",
+  "nobody": "nobody",
+  "node": "node",
+  "nodejs": "nodej",
+  "noemit": "noemit",
+  "noexit": "noexit",
+  "nohup": "nohup",
+  "noise": "noise",
+  "non": "non",
+  "none": "none",
+  "nonewline": "nonewline",
+  "nor": "nor",
+  "normal": "normal",
+  "normally": "normally",
+  "not": "not",
+  "note": "note",
+  "notepad": "notepad",
+  "notes": "note",
+  "nothing": "noth",
+  "notlike": "notlike",
+  "notmatch": "notmatch",
+  "noun": "noun",
+  "now": "now",
+  "nowhere": "nowhere",
+  "npm": "npm",
+  "npmjs": "npmj",
+  "npx": "npx",
+  "nr": "nr",
+  "nslookup": "nslookup",
+  "nuke": "nuke",
+  "nul": "nul",
+  "null": "null",
+  "number": "number",
+  "numbered": "number",
+  "numberofcores": "numberofcore",
+  "numberoflogicalprocessors": "numberoflogicalprocessor",
+  "numbers": "number",
+  "numeric": "numeric",
+  "nvidia": "nvidia",
+  "nvm": "nvm",
+  "o": "o",
+  "oauth": "oauth",
+  "object": "object",
+  "objects": "object",
+  "occurrences": "occurrence",
+  "of": "of",
+  "off": "off",
+  "offenders": "offender",
+  "offline": "offline",
+  "often": "often",
+  "ok": "ok",
+  "old": "old",
+  "older": "old",
+  "oldext": "oldext",
+  "oldname": "oldname",
+  "omitting": "omit",
+  "on": "on",
+  "onboard": "onboard",
+  "once": "once",
+  "one": "one",
+  "oneline": "oneline",
+  "ones": "one",
+  "online": "online",
+  "only": "only",
+  "onlyerrordialogs": "onlyerrordialog",
+  "onto": "onto",
+  "open": "open",
+  "openai": "openai",
+  "openais": "openais",
+  "opened": "open",
+  "opening": "open",
+  "openjs": "openj",
+  "opens": "open",
+  "operatingsystem": "operatingsystem",
+  "operator": "operator",
+  "opinion": "opinion",
+  "opposite": "opposite",
+  "optional": "optional",
+  "options": "option",
+  "opus": "opus",
+  "or": "or",
+  "order": "order",
+  "orders": "order",
+  "ordinary": "ordinary",
+  "org": "org",
+  "origin": "origin",
+  "orphaned": "orphane",
+  "os": "os",
+  "osarchitecture": "osarchitecture",
+  "other": "other",
+  "otherwise": "otherwise",
+  "ours": "our",
+  "out": "out",
+  "outdated": "outdate",
+  "outfile": "outfile",
+  "outgoing": "outgo",
+  "outline": "outline",
+  "output": "output",
+  "outside": "outside",
+  "over": "over",
+  "overriding": "override",
+  "overview": "overview",
+  "overwrite": "overwrite",
+  "overwrites": "overwrite",
+  "overwriting": "overwrit",
+  "overwritten": "overwritten",
+  "own": "own",
+  "owned": "own",
+  "owner": "owner",
+  "ownership": "ownership",
+  "owningprocess": "owningprocess",
+  "owns": "own",
+  "p": "p",
+  "pack": "pack",
+  "package": "package",
+  "packages": "package",
+  "packets": "packet",
+  "packs": "pack",
+  "page": "page",
+  "pager": "pager",
+  "pages": "page",
+  "paging": "page",
+  "pair": "pair",
+  "paragraph": "paragraph",
+  "parallel": "parallel",
+  "parameter": "parameter",
+  "parent": "parent",
+  "parentprocessid": "parentprocessid",
+  "parked": "park",
+  "parks": "park",
+  "parse": "parse",
+  "parsing": "pars",
+  "part": "part",
+  "partial": "partial",
+  "particular": "particular",
+  "partitions": "partition",
+  "parts": "part",
+  "passes": "pass",
+  "passphrase": "passphrase",
+  "password": "password",
+  "past": "past",
+  "paste": "paste",
+  "patch": "patch",
+  "path": "path",
+  "paths": "path",
+  "pattern": "pattern",
+  "pause": "pause",
+  "pauses": "pause",
+  "pbcopy": "pbcopy",
+  "pbpaste": "pbpaste",
+  "pc": "pc",
+  "pdf": "pdf",
+  "pdfs": "pdf",
+  "peek": "peek",
+  "pem": "pem",
+  "people": "people",
+  "per": "per",
+  "percent": "percent",
+  "percentage": "percentage",
+  "permanent": "permanent",
+  "permanently": "permanently",
+  "permission": "permission",
+  "permissions": "permission",
+  "persist": "persist",
+  "persisted": "persist",
+  "person": "person",
+  "personal": "personal",
+  "pgrep": "pgrep",
+  "photo": "photo",
+  "phrase": "phrase",
+  "physical": "physical",
+  "pick": "pick",
+  "pickaxe": "pickaxe",
+  "picker": "picker",
+  "picks": "pick",
+  "picture": "picture",
+  "pid": "pid",
+  "pidof": "pidof",
+  "pids": "pid",
+  "piece": "piece",
+  "pin": "pin",
+  "ping": "ping",
+  "pings": "ping",
+  "pinning": "pin",
+  "pip": "pip",
+  "pip3": "pip3",
+  "pipe": "pipe",
+  "piped": "pipe",
+  "pipeline": "pipeline",
+  "pipes": "pipe",
+  "pkill": "pkill",
+  "place": "place",
+  "plain": "plain",
+  "plan": "plan",
+  "platform": "platform",
+  "please": "please",
+  "plug": "plug",
+  "plugins": "plugin",
+  "plus": "plus",
+  "png": "png",
+  "pnpm": "pnpm",
+  "point": "point",
+  "points": "point",
+  "policy": "policy",
+  "poll": "poll",
+  "pop": "pop",
+  "porcelain": "porcelain",
+  "port": "port",
+  "ports": "port",
+  "post": "post",
+  "powershell": "powershell",
+  "ppid": "ppid",
+  "pr": "pr",
+  "praise": "praise",
+  "pre": "pre",
+  "prefer": "prefer",
+  "preferences": "preference",
+  "prefix": "prefix",
+  "press": "press",
+  "pressed": "press",
+  "pressing": "press",
+  "prettier": "prettier",
+  "pretty": "pretty",
+  "preview": "preview",
+  "previous": "previous",
+  "primary": "primary",
+  "principal": "principal",
+  "print": "print",
+  "printed": "print",
+  "printenv": "printenv",
+  "printing": "print",
+  "prints": "print",
+  "private": "private",
+  "privilege": "privilege",
+  "problems": "problem",
+  "proceed": "proceed",
+  "process": "process",
+  "processes": "process",
+  "processid": "processid",
+  "processname": "processname",
+  "processor": "processor",
+  "production": "production",
+  "profile": "profile",
+  "program": "program",
+  "programs": "program",
+  "progress": "progress",
+  "progresspreference": "progresspreference",
+  "project": "project",
+  "projects": "project",
+  "prompt": "prompt",
+  "prompts": "prompt",
+  "propagation": "propagation",
+  "proper": "proper",
+  "properties": "property",
+  "property": "property",
+  "propose": "propose",
+  "proposes": "propose",
+  "protected": "protect",
+  "protocol": "protocol",
+  "prune": "prune",
+  "ps": "ps",
+  "ps1": "ps1",
+  "pscustomobject": "pscustomobject",
+  "psdrive": "psdrive",
+  "psprovider": "psprovider",
+  "psreadline": "psreadline",
+  "psreadlineoption": "psreadlineoption",
+  "pssecurityexception": "pssecurityexception",
+  "psversion": "psversion",
+  "psversiontable": "psversiontable",
+  "pub": "pub",
+  "public": "public",
+  "publickey": "publickey",
+  "publish": "publish",
+  "published": "publish",
+  "publisher": "publisher",
+  "publishes": "publish",
+  "pull": "pull",
+  "purge": "purge",
+  "push": "push",
+  "pushed": "push",
+  "pushes": "push",
+  "pushing": "push",
+  "put": "put",
+  "puts": "put",
+  "putting": "put",
+  "putty": "putty",
+  "pwd": "pwd",
+  "pwsh": "pwsh",
+  "pypi": "pypi",
+  "pyproject": "pyproject",
+  "python": "python",
+  "python3": "python3",
+  "q": "q",
+  "query": "query",
+  "question": "question",
+  "questions": "question",
+  "quick": "quick",
+  "quickest": "quickest",
+  "quiet": "quiet",
+  "quietly": "quietly",
+  "quit": "quit",
+  "quits": "quit",
+  "quota": "quota",
+  "quoted": "quot",
+  "quotes": "quote",
+  "quoting": "quot",
+  "r": "r",
+  "ram": "ram",
+  "ran": "ran",
+  "range": "range",
+  "ranges": "range",
+  "rank": "rank",
+  "ranking": "rank",
+  "rate": "rate",
+  "rather": "rather",
+  "raw": "raw",
+  "rd": "rd",
+  "reach": "reach",
+  "reachable": "reachable",
+  "reached": "reach",
+  "read": "read",
+  "readable": "readable",
+  "reader": "reader",
+  "readlink": "readlink",
+  "reads": "read",
+  "ready": "ready",
+  "real": "real",
+  "really": "really",
+  "realpath": "realpath",
+  "reasoning": "reason",
+  "rebase": "rebase",
+  "rebasing": "rebase",
+  "reboot": "reboot",
+  "recall": "recall",
+  "receive": "receive",
+  "recent": "recent",
+  "recently": "recently",
+  "reclaim": "reclaim",
+  "recognised": "recognise",
+  "recognized": "recognize",
+  "recommended": "recommend",
+  "record": "record",
+  "recorded": "record",
+  "records": "record",
+  "recover": "recover",
+  "recoverable": "recoverable",
+  "recreate": "recreate",
+  "recurse": "recurse",
+  "recursion": "recursion",
+  "recursive": "recursive",
+  "recycle": "recycle",
+  "red": "red",
+  "redirect": "redirect",
+  "redirection": "redirection",
+  "redirects": "redirect",
+  "reference": "reference",
+  "refills": "refill",
+  "reflex": "reflex",
+  "reflog": "reflog",
+  "refresh": "refresh",
+  "refreshenv": "refreshenv",
+  "refreshes": "refresh",
+  "refs": "ref",
+  "refused": "refuse",
+  "refuses": "refuse",
+  "refusing": "refuse",
+  "regardless": "regardless",
+  "regex": "regex",
+  "registry": "registry",
+  "regular": "regular",
+  "reinstall": "reinstall",
+  "rejected": "reject",
+  "related": "relate",
+  "relative": "relative",
+  "release": "release",
+  "released": "releas",
+  "releases": "release",
+  "reload": "reload",
+  "relocate": "relocate",
+  "remember": "remember",
+  "remembered": "remember",
+  "remembers": "remember",
+  "remote": "remote",
+  "remotes": "remote",
+  "remotesigned": "remotesign",
+  "removal": "removal",
+  "remove": "remove",
+  "removed": "remove",
+  "removes": "remove",
+  "ren": "ren",
+  "rename": "rename",
+  "renamed": "rename",
+  "renames": "rename",
+  "renaming": "rename",
+  "reopen": "reopen",
+  "reopening": "reopen",
+  "reopens": "reopen",
+  "repair": "repair",
+  "repeat": "repeat",
+  "repeats": "repeat",
+  "replace": "replace",
+  "replacement": "replacement",
+  "replaces": "replace",
+  "replacing": "replace",
+  "replay": "replay",
+  "replays": "replay",
+  "replies": "reply",
+  "reply": "reply",
+  "repo": "repo",
+  "report": "report",
+  "reports": "report",
+  "repository": "repository",
+  "reproducible": "reproducible",
+  "request": "request",
+  "required": "requir",
+  "requirements": "requirement",
+  "requires": "require",
+  "rerun": "rerun",
+  "rescue": "rescue",
+  "reset": "reset",
+  "resets": "reset",
+  "resolution": "resolution",
+  "resolutions": "resolution",
+  "resolve": "resolve",
+  "resolvectl": "resolvectl",
+  "resolved": "resolv",
+  "resolver": "resolver",
+  "resolving": "resolv",
+  "resort": "resort",
+  "responding": "respond",
+  "response": "response",
+  "rest": "rest",
+  "restart": "restart",
+  "restarting": "restart",
+  "restmethod": "restmethod",
+  "restore": "restore",
+  "result": "result",
+  "results": "result",
+  "resume": "resume",
+  "resumed": "resume",
+  "retag": "retag",
+  "retries": "retry",
+  "retry": "retry",
+  "return": "return",
+  "returns": "return",
+  "reuse": "reuse",
+  "reveal": "reveal",
+  "reverse": "reverse",
+  "revert": "revert",
+  "reverting": "revert",
+  "review": "review",
+  "reviewer": "reviewer",
+  "reviews": "review",
+  "rewind": "rewind",
+  "reword": "reword",
+  "rewriting": "rewrit",
+  "rewritten": "rewritten",
+  "rf": "rf",
+  "rg": "rg",
+  "rh": "rh",
+  "ri": "ri",
+  "rid": "rid",
+  "right": "right",
+  "rights": "right",
+  "ripgrep": "ripgrep",
+  "rli": "rli",
+  "rm": "rm",
+  "rmdir": "rmdir",
+  "rn": "rn",
+  "rni": "rni",
+  "robocopy": "robocopy",
+  "roll": "roll",
+  "rollback": "rollback",
+  "room": "room",
+  "root": "root",
+  "round": "round",
+  "route": "route",
+  "router": "router",
+  "row": "row",
+  "rows": "row",
+  "rq": "rq",
+  "rsa": "rsa",
+  "rsync": "rsync",
+  "rule": "rule",
+  "rules": "rule",
+  "run": "run",
+  "runas": "runas",
+  "rundll32": "rundll32",
+  "runner": "runner",
+  "runners": "runner",
+  "running": "run",
+  "runs": "run",
+  "runtime": "runtime",
+  "rwx": "rwx",
+  "s": "s",
+  "safe": "safe",
+  "safely": "safely",
+  "safety": "safety",
+  "same": "same",
+  "sandbox": "sandbox",
+  "sane": "sane",
+  "save": "save",
+  "saved": "save",
+  "saves": "save",
+  "saving": "save",
+  "say": "say",
+  "saying": "say",
+  "says": "say",
+  "sb": "sb",
+  "sc": "sc",
+  "scaffold": "scaffold",
+  "scb": "scb",
+  "scope": "scope",
+  "scopes": "scope",
+  "scp": "scp",
+  "scratch": "scratch",
+  "screen": "screen",
+  "screenful": "screenful",
+  "screenshot": "screenshot",
+  "script": "script",
+  "scripts": "script",
+  "scroll": "scroll",
+  "scrolled": "scroll",
+  "scrolls": "scroll",
+  "search": "search",
+  "searched": "search",
+  "searches": "search",
+  "searching": "search",
+  "second": "second",
+  "seconds": "second",
+  "secrets": "secret",
+  "section": "section",
+  "security": "security",
+  "sed": "sed",
+  "see": "see",
+  "seeing": "see",
+  "sees": "see",
+  "select": "select",
+  "selected": "select",
+  "selection": "selection",
+  "semicolon": "semicolon",
+  "semver": "semver",
+  "send": "send",
+  "sending": "send",
+  "sends": "send",
+  "sendtorecyclebin": "sendtorecyclebin",
+  "sensitive": "sensitive",
+  "sent": "sent",
+  "separate": "separate",
+  "separated": "separate",
+  "separator": "separator",
+  "seq": "seq",
+  "sequence": "sequence",
+  "serialise": "serialise",
+  "serve": "serve",
+  "server": "server",
+  "servers": "server",
+  "service": "service",
+  "services": "service",
+  "session": "session",
+  "sessions": "session",
+  "set": "set",
+  "setenvironmentvariable": "setenvironmentvariable",
+  "sets": "set",
+  "setting": "set",
+  "settings": "set",
+  "setup": "setup",
+  "setx": "setx",
+  "several": "several",
+  "sftp": "sftp",
+  "sh": "sh",
+  "sha": "sha",
+  "sha1": "sha1",
+  "sha1sum": "sha1sum",
+  "sha256sum": "sha256sum",
+  "sha512": "sha512",
+  "shadowed": "shadow",
+  "shallow": "shallow",
+  "shape": "shape",
+  "share": "share",
+  "shared": "share",
+  "shasum": "shasum",
+  "sheet": "sheet",
+  "shelf": "shelf",
+  "shell": "shell",
+  "shells": "shell",
+  "shelve": "shelve",
+  "shelves": "shelve",
+  "shift": "shift",
+  "ship": "ship",
+  "ships": "ship",
+  "short": "short",
+  "shortcut": "shortcut",
+  "shortcuts": "shortcut",
+  "shorten": "shorten",
+  "shortened": "shorten",
+  "shorthand": "shorthand",
+  "shot": "shot",
+  "should": "should",
+  "show": "show",
+  "showing": "show",
+  "shows": "show",
+  "shrink": "shrink",
+  "shut": "shut",
+  "shutdown": "shutdown",
+  "si": "si",
+  "side": "side",
+  "sides": "side",
+  "sigint": "sigint",
+  "sigkill": "sigkill",
+  "sign": "sign",
+  "signature": "signature",
+  "signed": "sign",
+  "signs": "sign",
+  "silence": "silence",
+  "silentlycontinue": "silentlycontinue",
+  "simplematch": "simplematch",
+  "simply": "simply",
+  "simulate": "simulate",
+  "since": "since",
+  "single": "single",
+  "site": "site",
+  "sits": "sit",
+  "size": "size",
+  "sizes": "size",
+  "skip": "skip",
+  "skipped": "skip",
+  "skips": "skip",
+  "sl": "sl",
+  "slash": "slash",
+  "slashes": "slash",
+  "sleep": "sleep",
+  "slow": "slow",
+  "slowly": "slowly",
+  "sls": "sls",
+  "small": "small",
+  "smallest": "small",
+  "smarter": "smarter",
+  "snapshot": "snapshot",
+  "snipping": "snip",
+  "so": "so",
+  "sockets": "socket",
+  "soft": "soft",
+  "software": "software",
+  "some": "some",
+  "someone": "someone",
+  "something": "someth",
+  "somewhere": "somewhere",
+  "sonnet": "sonnet",
+  "sort": "sort",
+  "sortable": "sortable",
+  "sorts": "sort",
+  "source": "source",
+  "sourcing": "sourc",
+  "space": "space",
+  "spaces": "space",
+  "spacing": "space",
+  "specialised": "specialise",
+  "specific": "specific",
+  "specs": "spec",
+  "speed": "speed",
+  "spelling": "spell",
+  "spellings": "spell",
+  "spend": "spend",
+  "spent": "spent",
+  "spf": "spf",
+  "spinning": "spin",
+  "split": "split",
+  "splits": "split",
+  "spps": "spp",
+  "spreadsheet": "spreadsheet",
+  "sql": "sql",
+  "squeezed": "squeez",
+  "ss": "ss",
+  "ssh": "ssh",
+  "stage": "stage",
+  "staged": "stage",
+  "staging": "stage",
+  "stale": "stale",
+  "stamps": "stamp",
+  "standalone": "standalone",
+  "standard": "standard",
+  "standing": "stand",
+  "star": "star",
+  "stars": "star",
+  "start": "start",
+  "started": "start",
+  "starting": "start",
+  "starts": "start",
+  "starttime": "starttime",
+  "startup": "startup",
+  "stash": "stash",
+  "stashes": "stash",
+  "stat": "stat",
+  "state": "state",
+  "statement": "statement",
+  "stats": "stat",
+  "status": "status",
+  "stay": "stay",
+  "stays": "stay",
+  "stderr": "stderr",
+  "stdin": "stdin",
+  "stdout": "stdout",
+  "step": "step",
+  "steps": "step",
+  "stick": "stick",
+  "still": "still",
+  "stock": "stock",
+  "stop": "stop",
+  "stopped": "stop",
+  "stopping": "stop",
+  "stops": "stop",
+  "stopwatch": "stopwatch",
+  "storage": "storage",
+  "store": "store",
+  "stored": "stor",
+  "stores": "store",
+  "straight": "straight",
+  "stream": "stream",
+  "streams": "stream",
+  "string": "string",
+  "strings": "string",
+  "strip": "strip",
+  "strips": "strip",
+  "structure": "structure",
+  "structured": "structure",
+  "stty": "stty",
+  "stubborn": "stubborn",
+  "stuck": "stuck",
+  "studio": "studio",
+  "style": "style",
+  "su": "su",
+  "sub": "sub",
+  "subagents": "subagent",
+  "subdirectories": "subdirectory",
+  "subdirectory": "subdirectory",
+  "subfolder": "subfolder",
+  "subfolders": "subfolder",
+  "subject": "subject",
+  "subnet": "subnet",
+  "subscription": "subscription",
+  "substitute": "substitute",
+  "subsystem": "subsystem",
+  "succeed": "succeed",
+  "success": "success",
+  "such": "such",
+  "sudo": "sudo",
+  "suffix": "suffix",
+  "suggestions": "suggestion",
+  "suite": "suite",
+  "suits": "suit",
+  "sum": "sum",
+  "summarise": "summarise",
+  "summarize": "summarize",
+  "summary": "summary",
+  "support": "support",
+  "suppress": "suppress",
+  "sure": "sure",
+  "survive": "survive",
+  "survives": "survive",
+  "suspended": "suspend",
+  "svc": "svc",
+  "swallows": "swallow",
+  "swap": "swap",
+  "swaps": "swap",
+  "switch": "switch",
+  "switches": "switch",
+  "symbolic": "symbolic",
+  "symboliclink": "symboliclink",
+  "symlink": "symlink",
+  "sync": "sync",
+  "syntax": "syntax",
+  "sysdm": "sysdm",
+  "system": "system",
+  "system32": "system32",
+  "systemctl": "systemctl",
+  "systeminfo": "systeminfo",
+  "t": "t",
+  "tab": "tab",
+  "table": "table",
+  "tag": "tag",
+  "tags": "tag",
+  "tail": "tail",
+  "take": "take",
+  "taken": "take",
+  "takes": "take",
+  "taking": "take",
+  "tally": "tally",
+  "tar": "tar",
+  "tarball": "tarball",
+  "target": "target",
+  "targeted": "targete",
+  "task": "task",
+  "taskkill": "taskkill",
+  "tasklist": "tasklist",
+  "tasks": "task",
+  "tcp": "tcp",
+  "tcptestsucceeded": "tcptestsucceed",
+  "teach": "teach",
+  "tee": "tee",
+  "tell": "tell",
+  "tells": "tell",
+  "telnet": "telnet",
+  "temporarily": "temporarily",
+  "temporary": "temporary",
+  "ten": "ten",
+  "term": "term",
+  "terminal": "terminal",
+  "terminals": "terminal",
+  "terminate": "terminate",
+  "terminators": "terminator",
+  "terse": "terse",
+  "test": "test",
+  "tests": "test",
+  "text": "text",
+  "tf": "tf",
+  "tgz": "tgz",
+  "than": "than",
+  "that": "that",
+  "the": "the",
+  "their": "their",
+  "theirs": "their",
+  "them": "them",
+  "then": "then",
+  "there": "there",
+  "these": "these",
+  "they": "they",
+  "thin": "thin",
+  "thing": "thing",
+  "things": "thing",
+  "think": "think",
+  "this": "this",
+  "those": "those",
+  "thought": "thought",
+  "threads": "thread",
+  "three": "three",
+  "threshold": "threshold",
+  "through": "through",
+  "throughout": "throughout",
+  "throw": "throw",
+  "throwaway": "throwaway",
+  "throws": "throw",
+  "ticket": "ticket",
+  "tidy": "tidy",
+  "tilde": "tilde",
+  "time": "time",
+  "timed": "time",
+  "timeline": "timeline",
+  "times": "time",
+  "timestamp": "timestamp",
+  "timestamped": "timestamp",
+  "timestamps": "timestamp",
+  "title": "title",
+  "tldr": "tldr",
+  "tmp": "tmp",
+  "tnc": "tnc",
+  "to": "to",
+  "today": "today",
+  "todays": "today",
+  "together": "together",
+  "toggle": "toggle",
+  "token": "token",
+  "tokens": "token",
+  "told": "told",
+  "too": "too",
+  "took": "take",
+  "tool": "tool",
+  "tooling": "tool",
+  "tools": "tool",
+  "top": "top",
+  "topic": "topic",
+  "tostring": "tostr",
+  "total": "total",
+  "totalcount": "totalcount",
+  "totalgb": "totalgb",
+  "totalseconds": "totalsecond",
+  "totalvisiblememorysize": "totalvisiblememorysize",
+  "touch": "touch",
+  "touched": "touch",
+  "touches": "touch",
+  "touniversaltime": "touniversaltime",
+  "tr": "tr",
+  "trace": "trace",
+  "traceroute": "traceroute",
+  "tracert": "tracert",
+  "track": "track",
+  "tracked": "track",
+  "tracking": "track",
+  "trailing": "trail",
+  "transfer": "transfer",
+  "translate": "translate",
+  "trap": "trap",
+  "trash": "trash",
+  "tree": "tree",
+  "tries": "try",
+  "trigger": "trigger",
+  "trim": "trim",
+  "trip": "trip",
+  "trouble": "trouble",
+  "troubleshoot": "troubleshoot",
+  "true": "true",
+  "truncated": "truncate",
+  "trunk": "trunk",
+  "trust": "trust",
+  "try": "try",
+  "ts": "ts",
+  "tsc": "tsc",
+  "tulpn": "tulpn",
+  "turn": "turn",
+  "turns": "turn",
+  "tutorials": "tutorial",
+  "twenty": "twenty",
+  "twice": "twice",
+  "two": "two",
+  "txt": "txt",
+  "type": "type",
+  "typecheck": "typecheck",
+  "typed": "type",
+  "types": "type",
+  "typescript": "typescript",
+  "typically": "typically",
+  "typing": "type",
+  "typo": "typo",
+  "u": "u",
+  "uac": "uac",
+  "ubuntu": "ubuntu",
+  "ubuntus": "ubuntus",
+  "ui": "ui",
+  "un": "un",
+  "unable": "unable",
+  "unalias": "unalias",
+  "uname": "uname",
+  "unattended": "unattend",
+  "unauthorized": "unauthorize",
+  "unauthorizedaccess": "unauthorizedaccess",
+  "unblock": "unblock",
+  "unc": "unc",
+  "uncommit": "uncommit",
+  "uncommitted": "uncommit",
+  "undelete": "undelete",
+  "under": "under",
+  "undo": "undo",
+  "undone": "undone",
+  "unexpected": "unexpect",
+  "uninstall": "uninstall",
+  "uninstaller": "uninstaller",
+  "uniq": "uniq",
+  "unique": "unique",
+  "unit": "unit",
+  "universal": "universal",
+  "unix2dos": "unix2dos",
+  "unknown": "unknown",
+  "unless": "unless",
+  "unlike": "unlike",
+  "unlink": "unlink",
+  "unmerged": "unmerge",
+  "unneeded": "unneed",
+  "unpack": "unpack",
+  "unpacks": "unpack",
+  "unpause": "unpause",
+  "unprotected": "unprotect",
+  "unpushed": "unpush",
+  "unreachable": "unreachable",
+  "unregister": "unregister",
+  "unrelated": "unrelate",
+  "unresponsive": "unresponsive",
+  "unset": "unset",
+  "unsigned": "unsign",
+  "unstage": "unstage",
+  "unstaged": "unstage",
+  "unstash": "unstash",
+  "unsure": "unsure",
+  "untar": "untar",
+  "until": "until",
+  "untouched": "untouch",
+  "untrack": "untrack",
+  "untracked": "untrack",
+  "unused": "unuse",
+  "unzip": "unzip",
+  "up": "up",
+  "update": "update",
+  "updated": "update",
+  "updates": "update",
+  "updating": "update",
+  "upgradable": "upgradable",
+  "upgrade": "upgrade",
+  "upgrades": "upgrade",
+  "upload": "upload",
+  "uploaded": "upload",
+  "uploads": "upload",
+  "upper": "upper",
+  "upstream": "upstream",
+  "uptime": "uptime",
+  "url": "url",
+  "usage": "usage",
+  "usb": "usb",
+  "use": "use",
+  "usebasicparsing": "usebasicpars",
+  "used": "use",
+  "user": "user",
+  "username": "username",
+  "userprofile": "userprofile",
+  "users": "user",
+  "uses": "use",
+  "using": "use",
+  "usual": "usual",
+  "usually": "usually",
+  "utc": "utc",
+  "utf": "utf",
+  "utf8": "utf8",
+  "uuid": "uuid",
+  "v": "v",
+  "v1": "v1",
+  "valid": "valid",
+  "value": "value",
+  "values": "value",
+  "var": "var",
+  "variable": "variable",
+  "variables": "variable",
+  "variant": "variant",
+  "variants": "variant",
+  "vendor": "vendor",
+  "venv": "venv",
+  "ver": "ver",
+  "verb": "verb",
+  "verbose": "verbose",
+  "verdict": "verdict",
+  "verification": "verification",
+  "verify": "verify",
+  "version": "version",
+  "versions": "version",
+  "vertical": "vertical",
+  "very": "very",
+  "vi": "vi",
+  "video": "video",
+  "videocontroller": "videocontroller",
+  "view": "view",
+  "viewer": "viewer",
+  "vim": "vim",
+  "virtual": "virtual",
+  "virtualenv": "virtualenv",
+  "vision": "vision",
+  "visual": "visual",
+  "visualbasic": "visualbasic",
+  "vite": "vite",
+  "vitest": "vitest",
+  "vmmem": "vmmem",
+  "vmstat": "vmstat",
+  "volume": "volume",
+  "vps": "vps",
+  "vs": "vs",
+  "vscode": "vscode",
+  "vulnerabilities": "vulnerability",
+  "w": "w",
+  "wait": "wait",
+  "waiting": "wait",
+  "walk": "walk",
+  "walks": "walk",
+  "wan": "wan",
+  "want": "want",
+  "wanted": "want",
+  "warnings": "warn",
+  "was": "was",
+  "watch": "watch",
+  "watching": "watch",
+  "way": "way",
+  "wc": "wc",
+  "web": "web",
+  "webhook": "webhook",
+  "webpack": "webpack",
+  "webrequest": "webrequest",
+  "website": "website",
+  "week": "week",
+  "weird": "weird",
+  "well": "well",
+  "went": "go",
+  "were": "were",
+  "wget": "wget",
+  "what": "what",
+  "whatever": "whatever",
+  "whatif": "whatif",
+  "whats": "what",
+  "when": "when",
+  "whenever": "whenever",
+  "where": "where",
+  "whereis": "whereis",
+  "whether": "whether",
+  "which": "which",
+  "while": "while",
+  "who": "who",
+  "whoami": "whoami",
+  "whole": "whole",
+  "whose": "whose",
+  "why": "why",
+  "wide": "wide",
+  "wider": "wide",
+  "width": "width",
+  "wifi": "wifi",
+  "wildcard": "wildcard",
+  "will": "will",
+  "win": "win",
+  "win32": "win32",
+  "window": "window",
+  "windows": "window",
+  "windowsbuiltinrole": "windowsbuiltinrole",
+  "windowsidentity": "windowsidentity",
+  "windowsprincipal": "windowsprincipal",
+  "winget": "winget",
+  "wins": "win",
+  "winver": "winver",
+  "wipe": "wipe",
+  "wipes": "wipe",
+  "wiping": "wipe",
+  "wired": "wire",
+  "with": "with",
+  "within": "within",
+  "without": "without",
+  "wl": "wl",
+  "wmic": "wmic",
+  "wont": "wont",
+  "word": "word",
+  "words": "word",
+  "work": "work",
+  "workaround": "workaround",
+  "worked": "work",
+  "working": "work",
+  "workingset64": "workingset64",
+  "works": "work",
+  "would": "would",
+  "wrap": "wrap",
+  "wrapper": "wrapper",
+  "write": "write",
+  "writes": "write",
+  "writing": "writ",
+  "written": "write",
+  "wrong": "wrong",
+  "wrote": "write",
+  "wsl": "wsl",
+  "wsl2": "wsl2",
+  "wslg": "wslg",
+  "wslpath": "wslpath",
+  "x": "x",
+  "xargs": "xarg",
+  "xclip": "xclip",
+  "xcopy": "xcopy",
+  "xdg": "xdg",
+  "xf": "xf",
+  "xz": "xz",
+  "xzf": "xzf",
+  "y": "y",
+  "yarn": "yarn",
+  "yes": "yes",
+  "yesterday": "yesterday",
+  "yet": "yet",
+  "yolo": "yolo",
+  "you": "you",
+  "your": "your",
+  "yours": "your",
+  "yourself": "yourself",
+  "yyyy": "yyyy",
+  "yyyymmdd": "yyyymmdd",
+  "z": "z",
+  "zero": "zero",
+  "zip": "zip",
+  "zone": "zone",
+  "zshrc": "zshrc",
+  "zulu": "zulu",
+  "zv": "zv"
+ },
+ "expand": {
+  "address": [
+   "ip"
+  ],
+  "admin": [
+   "elevated",
+   "sudo"
+  ],
+  "administrator": [
+   "elevated",
+   "sudo"
+  ],
+  "app": [
+   "process",
+   "task",
+   "program"
+  ],
+  "application": [
+   "process",
+   "task",
+   "program"
+  ],
+  "archive": [
+   "zip",
+   "compress"
+  ],
+  "big": [
+   "large",
+   "huge",
+   "size",
+   "heavy"
+  ],
+  "cd": [
+   "go",
+   "change",
+   "navigate"
+  ],
+  "change": [
+   "go",
+   "navigate",
+   "cd"
+  ],
+  "clean": [
+   "clear",
+   "cls",
+   "wipe"
+  ],
+  "clear": [
+   "cls",
+   "clean",
+   "wipe"
+  ],
+  "cls": [
+   "clear",
+   "clean",
+   "wipe"
+  ],
+  "compress": [
+   "zip",
+   "archive"
+  ],
+  "copy": [
+   "duplicate",
+   "cp"
+  ],
+  "cp": [
+   "copy",
+   "duplicate"
+  ],
+  "create": [
+   "make",
+   "new"
+  ],
+  "decompress": [
+   "unzip",
+   "extract",
+   "unpack"
+  ],
+  "del": [
+   "delete",
+   "remove",
+   "erase",
+   "rm",
+   "trash"
+  ],
+  "delete": [
+   "remove",
+   "erase",
+   "rm",
+   "del",
+   "trash"
+  ],
+  "dir": [
+   "folder",
+   "directory"
+  ],
+  "directory": [
+   "folder",
+   "dir"
+  ],
+  "discard": [
+   "undo",
+   "revert",
+   "restore"
+  ],
+  "display": [
+   "show",
+   "list",
+   "see",
+   "view",
+   "print"
+  ],
+  "document": [
+   "file"
+  ],
+  "dotfile": [
+   "hidden",
+   "invisible"
+  ],
+  "download": [
+   "fetch"
+  ],
+  "duplicate": [
+   "copy",
+   "cp"
+  ],
+  "elevated": [
+   "admin",
+   "administrator",
+   "sudo"
+  ],
+  "end": [
+   "stop",
+   "kill",
+   "terminate",
+   "quit"
+  ],
+  "env": [
+   "path",
+   "variable"
+  ],
+  "environment": [
+   "path",
+   "variable"
+  ],
+  "erase": [
+   "delete",
+   "remove",
+   "rm",
+   "del",
+   "trash"
+  ],
+  "extract": [
+   "unzip",
+   "decompress",
+   "unpack"
+  ],
+  "fetch": [
+   "download"
+  ],
+  "file": [
+   "document"
+  ],
+  "find": [
+   "search",
+   "locate",
+   "look"
+  ],
+  "folder": [
+   "directory",
+   "dir"
+  ],
+  "frozen": [
+   "hung",
+   "stuck",
+   "unresponsive"
+  ],
+  "go": [
+   "change",
+   "navigate",
+   "cd"
+  ],
+  "heavy": [
+   "big",
+   "large",
+   "huge",
+   "size"
+  ],
+  "hidden": [
+   "invisible",
+   "dotfile"
+  ],
+  "history": [
+   "previous",
+   "last",
+   "recent"
+  ],
+  "huge": [
+   "big",
+   "large",
+   "size",
+   "heavy"
+  ],
+  "hung": [
+   "frozen",
+   "stuck",
+   "unresponsive"
+  ],
+  "install": [
+   "setup"
+  ],
+  "invisible": [
+   "hidden",
+   "dotfile"
+  ],
+  "ip": [
+   "address"
+  ],
+  "kill": [
+   "stop",
+   "end",
+   "terminate",
+   "quit"
+  ],
+  "large": [
+   "big",
+   "huge",
+   "size",
+   "heavy"
+  ],
+  "last": [
+   "history",
+   "previous",
+   "recent"
+  ],
+  "latest": [
+   "newest",
+   "newer"
+  ],
+  "list": [
+   "show",
+   "see",
+   "display",
+   "view",
+   "print"
+  ],
+  "listening": [
+   "port"
+  ],
+  "locate": [
+   "find",
+   "search",
+   "look"
+  ],
+  "look": [
+   "find",
+   "search",
+   "locate"
+  ],
+  "make": [
+   "create",
+   "new"
+  ],
+  "move": [
+   "rename",
+   "mv"
+  ],
+  "mv": [
+   "rename",
+   "move"
+  ],
+  "navigate": [
+   "go",
+   "change",
+   "cd"
+  ],
+  "new": [
+   "make",
+   "create"
+  ],
+  "newer": [
+   "newest",
+   "latest"
+  ],
+  "newest": [
+   "newer",
+   "latest"
+  ],
+  "path": [
+   "environment",
+   "env",
+   "variable"
+  ],
+  "port": [
+   "listening"
+  ],
+  "previous": [
+   "history",
+   "last",
+   "recent"
+  ],
+  "primitive": [],
+  "print": [
+   "show",
+   "list",
+   "see",
+   "display",
+   "view"
+  ],
+  "process": [
+   "task",
+   "program",
+   "app",
+   "application"
+  ],
+  "program": [
+   "process",
+   "task",
+   "app",
+   "application"
+  ],
+  "quit": [
+   "stop",
+   "kill",
+   "end",
+   "terminate"
+  ],
+  "recent": [
+   "history",
+   "previous",
+   "last"
+  ],
+  "remove": [
+   "delete",
+   "erase",
+   "rm",
+   "del",
+   "trash"
+  ],
+  "rename": [
+   "move",
+   "mv"
+  ],
+  "restore": [
+   "undo",
+   "revert",
+   "discard"
+  ],
+  "revert": [
+   "undo",
+   "discard",
+   "restore"
+  ],
+  "rm": [
+   "delete",
+   "remove",
+   "erase",
+   "del",
+   "trash"
+  ],
+  "running": [
+   "process",
+   "task",
+   "program",
+   "app",
+   "application"
+  ],
+  "search": [
+   "find",
+   "locate",
+   "look"
+  ],
+  "see": [
+   "show",
+   "list",
+   "display",
+   "view",
+   "print"
+  ],
+  "setup": [
+   "install"
+  ],
+  "show": [
+   "list",
+   "see",
+   "display",
+   "view",
+   "print"
+  ],
+  "size": [
+   "big",
+   "large",
+   "huge",
+   "heavy"
+  ],
+  "stop": [
+   "kill",
+   "end",
+   "terminate",
+   "quit"
+  ],
+  "string": [
+   "text",
+   "word"
+  ],
+  "stuck": [
+   "frozen",
+   "hung",
+   "unresponsive"
+  ],
+  "sudo": [
+   "admin",
+   "administrator",
+   "elevated"
+  ],
+  "task": [
+   "process",
+   "program",
+   "app",
+   "application"
+  ],
+  "terminate": [
+   "stop",
+   "kill",
+   "end",
+   "quit"
+  ],
+  "text": [
+   "string",
+   "word"
+  ],
+  "trash": [
+   "delete",
+   "remove",
+   "erase",
+   "rm",
+   "del"
+  ],
+  "undo": [
+   "revert",
+   "discard",
+   "restore"
+  ],
+  "unpack": [
+   "unzip",
+   "extract",
+   "decompress"
+  ],
+  "unresponsive": [
+   "frozen",
+   "hung",
+   "stuck"
+  ],
+  "unzip": [
+   "extract",
+   "decompress",
+   "unpack"
+  ],
+  "variable": [
+   "path",
+   "environment",
+   "env"
+  ],
+  "view": [
+   "show",
+   "list",
+   "see",
+   "display",
+   "print"
+  ],
+  "wipe": [
+   "clear",
+   "cls",
+   "clean"
+  ],
+  "word": [
+   "text",
+   "string"
+  ],
+  "xyzzy": [],
+  "zip": [
+   "compress",
+   "archive"
+  ]
+ },
+ "edit": [
+  [
+   "100m",
+   "100m",
+   true
+  ],
+  [
+   "reboot",
+   "rebxot",
+   true
+  ],
+  [
+   "four",
+   "foru",
+   true
+  ],
+  [
+   "wont",
+   "wnt",
+   true
+  ],
+  [
+   "python",
+   "qpython",
+   true
+  ],
+  [
+   "finishes",
+   "fznishex",
+   false
+  ],
+  [
+   "whatever",
+   "whateverzz",
+   false
+  ],
+  [
+   "prompts",
+   "prompts",
+   true
+  ],
+  [
+   "fails",
+   "failx",
+   true
+  ],
+  [
+   "video",
+   "viedo",
+   true
+  ],
+  [
+   "praise",
+   "raise",
+   true
+  ],
+  [
+   "excel",
+   "excqel",
+   true
+  ],
+  [
+   "uploaded",
+   "uploxdzd",
+   false
+  ],
+  [
+   "pick",
+   "pickzz",
+   false
+  ],
+  [
+   "ending",
+   "ending",
+   true
+  ],
+  [
+   "unknown",
+   "unkxown",
+   true
+  ],
+  [
+   "parsing",
+   "parsign",
+   true
+  ],
+  [
+   "duplicates",
+   "dplicates",
+   true
+  ],
+  [
+   "turn",
+   "tuqrn",
+   true
+  ],
+  [
+   "outdated",
+   "oxtzated",
+   false
+  ],
+  [
+   "doctor",
+   "doctorzz",
+   false
+  ],
+  [
+   "tooling",
+   "tooling",
+   true
+  ],
+  [
+   "often",
+   "oxten",
+   true
+  ],
+  [
+   "development",
+   "devleopment",
+   true
+  ],
+  [
+   "thin",
+   "hin",
+   true
+  ],
+  [
+   "nobody",
+   "nobqody",
+   true
+  ],
+  [
+   "deep",
+   "zexp",
+   false
+  ],
+  [
+   "taken",
+   "takenzz",
+   false
+  ],
+  [
+   "multi",
+   "multi",
+   true
+  ],
+  [
+   "count",
+   "coxnt",
+   true
+  ],
+  [
+   "succeed",
+   "succede",
+   true
+  ],
+  [
+   "microsoft",
+   "micosoft",
+   true
+  ],
+  [
+   "confused",
+   "qconfused",
+   true
+  ],
+  [
+   "stick",
+   "szicx",
+   false
+  ],
+  [
+   "marking",
+   "markingzz",
+   false
+  ],
+  [
+   "commandline",
+   "commandline",
+   true
+  ],
+  [
+   "spinning",
+   "spinxing",
+   true
+  ],
+  [
+   "longer",
+   "lonegr",
+   true
+  ],
+  [
+   "classic",
+   "clssic",
+   true
+  ],
+  [
+   "skipped",
+   "skippqed",
+   true
+  ],
+  [
+   "limits",
+   "xizits",
+   false
+  ],
+  [
+   "chain",
+   "chainzz",
+   false
+  ],
+  [
+   "ship",
+   "ship",
+   true
+  ],
+  [
+   "large",
+   "largx",
+   true
+  ],
+  [
+   "built",
+   "bulit",
+   true
+  ],
+  [
+   "separated",
+   "eparated",
+   true
+  ],
+  [
+   "item",
+   "itqem",
+   true
+  ],
+  [
+   "beside",
+   "besxdz",
+   false
+  ],
+  [
+   "says",
+   "sayszz",
+   false
+  ],
+  [
+   "installs",
+   "installs",
+   true
+  ],
+  [
+   "authors",
+   "autxors",
+   true
+  ],
+  [
+   "rewriting",
+   "erwriting",
+   true
+  ],
+  [
+   "icacls",
+   "cacls",
+   true
+  ],
+  [
+   "appends",
+   "appenqds",
+   true
+  ],
+  [
+   "reset",
+   "rexez",
+   false
+  ],
+  [
+   "held",
+   "heldzz",
+   false
+  ],
+  [
+   "agent",
+   "agent",
+   true
+  ],
+  [
+   "remote",
+   "remxte",
+   true
+  ],
+  [
+   "grandchild",
+   "grancdhild",
+   true
+  ],
+  [
+   "abbreviations",
+   "abbreviaions",
+   true
+  ],
+  [
+   "recoverable",
+   "recoqverable",
+   true
+  ],
+  [
+   "frozen",
+   "froxez",
+   false
+  ],
+  [
+   "writes",
+   "writeszz",
+   false
+  ],
+  [
+   "quotes",
+   "quotes",
+   true
+  ],
+  [
+   "folder2",
+   "folxer2",
+   true
+  ],
+  [
+   "wide",
+   "wied",
+   true
+  ],
+  [
+   "psreadline",
+   "psreadlie",
+   true
+  ],
+  [
+   "fewer",
+   "fqewer",
+   true
+  ],
+  [
+   "volume",
+   "xozume",
+   false
+  ],
+  [
+   "print",
+   "printzz",
+   false
+  ],
+  [
+   "exits",
+   "exits",
+   true
+  ],
+  [
+   "using",
+   "usixg",
+   true
+  ],
+  [
+   "piped",
+   "ppied",
+   true
+  ],
+  [
+   "eperm",
+   "eper",
+   true
+  ],
+  [
+   "unrelated",
+   "unrelaqted",
+   true
+  ],
+  [
+   "paths",
+   "xazhs",
+   false
+  ],
+  [
+   "edited",
+   "editedzz",
+   false
+  ],
+  [
+   "ubuntu",
+   "ubuntu",
+   true
+  ],
+  [
+   "owned",
+   "ownex",
+   true
+  ],
+  [
+   "dots",
+   "dtos",
+   true
+  ],
+  [
+   "trace",
+   "race",
+   true
+  ],
+  [
+   "open",
+   "opeqn",
+   true
+  ],
+  [
+   "directly",
+   "zirectxy",
+   false
+  ],
+  [
+   "throwaway",
+   "throwawayzz",
+   false
+  ],
+  [
+   "notes",
+   "notes",
+   true
+  ],
+  [
+   "delimiter",
+   "delxmiter",
+   true
+  ],
+  [
+   "tell",
+   "tell",
+   true
+  ],
+  [
+   "nearly",
+   "nealy",
+   true
+  ],
+  [
+   "curl",
+   "qcurl",
+   true
+  ],
+  [
+   "sure",
+   "szrx",
+   false
+  ],
+  [
+   "mode",
+   "modezz",
+   false
+  ],
+  [
+   "continuation",
+   "continuation",
+   true
+  ],
+  [
+   "stream",
+   "xtream",
+   true
+  ],
+  [
+   "md5sum",
+   "md5usm",
+   true
+  ],
+  [
+   "complain",
+   "coplain",
+   true
+  ],
+  [
+   "standing",
+   "standqing",
+   true
+  ],
+  [
+   "lspci",
+   "zspxi",
+   false
+  ],
+  [
+   "close",
+   "closezz",
+   false
+  ],
+  [
+   "soft",
+   "soft",
+   true
+  ],
+  [
+   "listening",
+   "xistening",
+   true
+  ],
+  [
+   "cheat",
+   "hceat",
+   true
+  ],
+  [
+   "shrink",
+   "shrnk",
+   true
+  ],
+  [
+   "lean",
+   "leqan",
+   true
+  ],
+  [
+   "call",
+   "cxlz",
+   false
+  ],
+  [
+   "setting",
+   "settingzz",
+   false
+  ],
+  [
+   "junction",
+   "junction",
+   true
+  ],
+  [
+   "boolean",
+   "booxean",
+   true
+  ],
+  [
+   "search",
+   "seacrh",
+   true
+  ],
+  [
+   "interfacealias",
+   "inerfacealias",
+   true
+  ],
+  [
+   "background",
+   "backgroqund",
+   true
+  ],
+  [
+   "router",
+   "xozter",
+   false
+  ],
+  [
+   "importerror",
+   "importerrorzz",
+   false
+  ],
+  [
+   "argument",
+   "argument",
+   true
+  ],
+  [
+   "restart",
+   "resxart",
+   true
+  ],
+  [
+   "highlight",
+   "ihghlight",
+   true
+  ],
+  [
+   "already",
+   "aleady",
+   true
+  ],
+  [
+   "reopens",
+   "reopeqns",
+   true
+  ],
+  [
+   "gzip",
+   "gzix",
+   true
+  ],
+  [
+   "active",
+   "activezz",
+   false
+  ],
+  [
+   "refresh",
+   "refresh",
+   true
+  ],
+  [
+   "gateway",
+   "gatxway",
+   true
+  ],
+  [
+   "yolo",
+   "yool",
+   true
+  ],
+  [
+   "reader",
+   "eader",
+   true
+  ],
+  [
+   "forget",
+   "forqget",
+   true
+  ],
+  [
+   "wins",
+   "xizs",
+   false
+  ],
+  [
+   "push",
+   "pushzz",
+   false
+  ],
+  [
+   "filters",
+   "filters",
+   true
+  ],
+  [
+   "webpack",
+   "webxack",
+   true
+  ],
+  [
+   "processor",
+   "procesosr",
+   true
+  ],
+  [
+   "extensions",
+   "extensins",
+   true
+  ],
+  [
+   "venv",
+   "veqnv",
+   true
+  ],
+  [
+   "point",
+   "zoixt",
+   false
+  ],
+  [
+   "ever",
+   "everzz",
+   false
+  ],
+  [
+   "unused",
+   "unused",
+   true
+  ],
+  [
+   "permission",
+   "pexmission",
+   true
+  ],
+  [
+   "ellipsis",
+   "ellipiss",
+   true
+  ],
+  [
+   "undo",
+   "ndo",
+   true
+  ],
+  [
+   "paging",
+   "pagqing",
+   true
+  ],
+  [
+   "draws",
+   "dzawx",
+   false
+  ],
+  [
+   "trigger",
+   "triggerzz",
+   false
+  ],
+  [
+   "opus",
+   "opus",
+   true
+  ],
+  [
+   "dist",
+   "disx",
+   true
+  ],
+  [
+   "tldr",
+   "tlrd",
+   true
+  ],
+  [
+   "numberoflogicalprocessors",
+   "numbroflogicalprocessors",
+   true
+  ],
+  [
+   "destinationpath",
+   "destinationpqath",
+   true
+  ],
+  [
+   "text",
+   "tzxx",
+   false
+  ],
+  [
+   "never",
+   "neverzz",
+   false
+  ],
+  [
+   "database",
+   "database",
+   true
+  ],
+  [
+   "syntax",
+   "xyntax",
+   true
+  ],
+  [
+   "mount",
+   "monut",
+   true
+  ],
+  [
+   "copies",
+   "opies",
+   true
+  ],
+  [
+   "subagents",
+   "subqagents",
+   true
+  ],
+  [
+   "mentions",
+   "xeztions",
+   false
+  ],
+  [
+   "condition",
+   "conditionzz",
+   false
+  ],
+  [
+   "statement",
+   "statement",
+   true
+  ],
+  [
+   "manage",
+   "manxge",
+   true
+  ],
+  [
+   "collect",
+   "colletc",
+   true
+  ],
+  [
+   "spaces",
+   "spaes",
+   true
+  ],
+  [
+   "location",
+   "loqcation",
+   true
+  ],
+  [
+   "chip",
+   "cxiz",
+   false
+  ],
+  [
+   "simplematch",
+   "simplematchzz",
+   false
+  ],
+  [
+   "letter",
+   "letter",
+   true
+  ],
+  [
+   "carriage",
+   "carriaxe",
+   true
+  ],
+  [
+   "share",
+   "shaer",
+   true
+  ],
+  [
+   "killall",
+   "kilall",
+   true
+  ],
+  [
+   "brew",
+   "breqw",
+   true
+  ],
+  [
+   "selection",
+   "selxczion",
+   false
+  ],
+  [
+   "ipaddress",
+   "ipaddresszz",
+   false
+  ],
+  [
+   "becomes",
+   "becomes",
+   true
+  ],
+  [
+   "safely",
+   "safxly",
+   true
+  ],
+  [
+   "inline",
+   "niline",
+   true
+  ],
+  [
+   "assistant",
+   "ssistant",
+   true
+  ],
+  [
+   "reuse",
+   "rqeuse",
+   true
+  ],
+  [
+   "hosts",
+   "hzstx",
+   false
+  ],
+  [
+   "anthropic",
+   "anthropiczz",
+   false
+  ],
+  [
+   "report",
+   "report",
+   true
+  ],
+  [
+   "harmless",
+   "xarmless",
+   true
+  ],
+  [
+   "adds",
+   "adsd",
+   true
+  ],
+  [
+   "related",
+   "reated",
+   true
+  ],
+  [
+   "give",
+   "gqive",
+   true
+  ],
+  [
+   "1073741824",
+   "x0z3741824",
+   false
+  ],
+  [
+   "recent",
+   "recentzz",
+   false
+  ],
+  [
+   "freegb",
+   "freegb",
+   true
+  ],
+  [
+   "work",
+   "wxrk",
+   true
+  ],
+  [
+   "question",
+   "uqestion",
+   true
+  ],
+  [
+   "five",
+   "fiv",
+   true
+  ],
+  [
+   "when",
+   "whqen",
+   true
+  ],
+  [
+   "properties",
+   "pxozerties",
+   false
+  ],
+  [
+   "false",
+   "falsezz",
+   false
+  ],
+  [
+   "viewer",
+   "viewer",
+   true
+  ],
+  [
+   "prefix",
+   "xrefix",
+   true
+  ],
+  [
+   "exclude",
+   "exclued",
+   true
+  ],
+  [
+   "upstream",
+   "pstream",
+   true
+  ],
+  [
+   "picks",
+   "pickqs",
+   true
+  ],
+  [
+   "ends",
+   "znxs",
+   false
+  ],
+  [
+   "unlink",
+   "unlinkzz",
+   false
+  ],
+  [
+   "particular",
+   "particular",
+   true
+  ],
+  [
+   "each",
+   "eacx",
+   true
+  ],
+  [
+   "twenty",
+   "wtenty",
+   true
+  ],
+  [
+   "outline",
+   "ouline",
+   true
+  ]
+ ]
+}
