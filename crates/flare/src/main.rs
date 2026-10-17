@@ -5,6 +5,7 @@ mod config;
 mod headless;
 mod host;
 mod keymap;
+mod live;
 mod memory;
 mod window;
 
@@ -75,7 +76,7 @@ fn main() {
         outcome.effective,
         outcome.fallback_reason
     );
-    if let Err(e) = window::run_window(outcome, start) {
+    if let Err(e) = window::run_window(outcome, start, false) {
         attach_parent_console();
         eprintln!("flare: {e}");
         std::process::exit(1);
