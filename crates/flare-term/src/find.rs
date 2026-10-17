@@ -2,6 +2,8 @@
 //! Prism Terminal's `TermFind`). Pure: it reads a `BufferLike` and owns no terminal state.
 //! Text comes from `cells::logical_line`, so wraps and wide characters are right.
 
+use std::collections::VecDeque;
+
 use crate::cells::{BufferLike, LineLike, LogicalLine, logical_line};
 use crate::scan_plan::SLICE_MS;
 
@@ -139,12 +141,20 @@ impl Finder {
     }
 
     /// The first match whose start key is `>= from` (linear cell key), scanning down.
-    fn first_from(&self, b: &dyn BufferLike, cols: usize, from: usize) -> Option<FindMatch> {
+    /// The first match whose start key is `>= from`, scanning down logical lines that start at or
+    /// before row `last_row` (a wrap-around pass stops at the line it began on).
+    fn first_from(
+        &self,
+        b: &dyn BufferLike,
+        cols: usize,
+        from: usize,
+        last_row: usize,
+    ) -> Option<FindMatch> {
         if b.is_empty() || cols == 0 {
             return None;
         }
         let mut y = from / cols;
-        while y < b.len() {
+        while y < b.len() && y <= last_row {
             let ll = logical_line(b, cols, y);
             if let Some(m) = self
                 .line_matches(&ll, cols)
@@ -158,8 +168,15 @@ impl Finder {
         None
     }
 
-    /// The last match whose start key is `< limit`, scanning up.
-    fn last_before(&self, b: &dyn BufferLike, cols: usize, limit: usize) -> Option<FindMatch> {
+    /// The last match whose start key is `< limit`, scanning up logical lines down to the one
+    /// that holds row `stop_row` (a wrap-around pass stops at the line it began on).
+    fn last_before(
+        &self,
+        b: &dyn BufferLike,
+        cols: usize,
+        limit: usize,
+        stop_row: usize,
+    ) -> Option<FindMatch> {
         if b.is_empty() || cols == 0 {
             return None;
         }
@@ -174,7 +191,7 @@ impl Finder {
             {
                 return Some(m);
             }
-            if ll.first == 0 {
+            if ll.first == 0 || ll.first <= stop_row {
                 return None;
             }
             y = ll.first - 1;
@@ -195,8 +212,10 @@ impl Finder {
             Some(p) if same_term => p.key(cols) + p.size.max(1),
             Some(p) => p.key(cols),
         };
-        self.first_from(b, cols, start)
-            .or_else(|| self.first_from(b, cols, 0))
+        // The wrap pass ends at the line the first pass began on: nothing below it can match
+        // that the first pass did not already see.
+        self.first_from(b, cols, start, usize::MAX)
+            .or_else(|| self.first_from(b, cols, 0, start / cols))
     }
 
     /// xterm `findPreviousWithSelection`. Without `prev` the last match in the buffer; with a
@@ -210,7 +229,7 @@ impl Finder {
         same_term: bool,
     ) -> Option<FindMatch> {
         let Some(p) = prev else {
-            return self.last_before(b, cols, usize::MAX);
+            return self.last_before(b, cols, usize::MAX, 0);
         };
         if !same_term && !b.is_empty() && p.row < b.len() {
             let ll = logical_line(b, cols, p.row);
@@ -223,8 +242,8 @@ impl Finder {
                 return Some(m);
             }
         }
-        self.last_before(b, cols, p.key(cols))
-            .or_else(|| self.last_before(b, cols, usize::MAX))
+        self.last_before(b, cols, p.key(cols), 0)
+            .or_else(|| self.last_before(b, cols, usize::MAX, p.row))
     }
 }
 
@@ -263,7 +282,10 @@ pub struct CountJob {
     finder: Finder,
     /// Next row to visit, or -1 when finished.
     at: i64,
-    found: Vec<FindMatch>,
+    /// The first `HIGHLIGHT_LIMIT` matches in reading order found so far. The walk goes up, so
+    /// every logical line's matches go in FRONT and the ones past the limit fall off the back:
+    /// a slice never sorts or copies more than the limit.
+    found: VecDeque<FindMatch>,
 }
 
 impl CountJob {
@@ -271,7 +293,7 @@ impl CountJob {
         Self {
             finder,
             at: total_rows as i64 - 1,
-            found: Vec::new(),
+            found: VecDeque::new(),
         }
     }
 
@@ -288,7 +310,10 @@ impl CountJob {
             let continuation = b.line(row).is_some_and(LineLike::is_wrapped);
             if !continuation {
                 let ll = logical_line(b, cols, row);
-                self.found.extend(self.finder.line_matches(&ll, cols));
+                for m in self.finder.line_matches(&ll, cols).into_iter().rev() {
+                    self.found.push_front(m);
+                }
+                self.found.truncate(HIGHLIGHT_LIMIT);
             }
             if now() - start >= SLICE_MS {
                 break;
@@ -299,10 +324,7 @@ impl CountJob {
 
     /// The first `HIGHLIGHT_LIMIT` matches in reading order so far; `done` says if it is final.
     pub fn results(&self) -> Vec<FindMatch> {
-        let mut v = self.found.clone();
-        v.sort_by_key(|m| (m.row, m.col));
-        v.truncate(HIGHLIGHT_LIMIT);
-        v
+        self.found.iter().copied().collect()
     }
 
     pub fn done(&self) -> bool {

@@ -1428,6 +1428,23 @@ mod flow {
         assert!(w.handle.last_typed().is_some());
     }
 
+    /// xterm `altClickMovesCursor`, left on by Prism Terminal (owner question 5, answered "include").
+    #[test]
+    fn an_alt_click_moves_the_cursor_with_arrows_and_selects_nothing() {
+        let w = Wx::new(1.0);
+        w.feed("old output\r\nPS> echo abc");
+        // The cursor is at column 12 of row 1; an Alt+click on column 3 is nine lefts.
+        let at = w.cell_at(3, 1, 0.25);
+        w.raw(0, 0, at, false, false, true);
+        w.raw(1, 0, at, false, false, true);
+        w.wait_written(&b"\x1b[D".repeat(9));
+        assert!(!w.has_sel());
+        assert!(
+            w.handle.last_typed().is_some(),
+            "an Alt+click is the user's act"
+        );
+    }
+
     /// PT scenario mouseReport.
     #[test]
     fn a_mouse_program_gets_reports_and_shift_selects() {

@@ -20,6 +20,7 @@ use flare_render::decor::{Decor, DecorInk};
 use flare_render::hit::{Hit, hit_cell, past_edge_px};
 use flare_render::metrics::CellMetrics;
 use flare_shells::paste::{ClipboardState, path_shell_of};
+use flare_term::alt_click::ALT_CLICK_MS;
 use flare_term::app_copy::AppCopyWatch;
 use flare_term::click_caret::MouseTracking;
 use flare_term::emulator::{DecorReq, TermEvent};
@@ -189,6 +190,8 @@ struct PressInfo {
     b: usize,
     clicks: u32,
     mark: Option<LinkMark>,
+    /// When the button went down (ms), for the Alt+click hold limit.
+    at: u64,
 }
 
 struct FindUi {
@@ -497,6 +500,7 @@ impl TermUi {
                     b: col + usize::from(hit.right),
                     clicks,
                     mark,
+                    at: now,
                 });
                 self.redraw();
             }
@@ -629,6 +633,22 @@ impl TermUi {
                     tab.handle.with_emu(|em| em.sel_apply(SelOut::Clear));
                 }
                 let p = self.press.take()?;
+                // Alt+click moves the cursor (xterm `altClickMovesCursor`, on in Prism Terminal):
+                // a quick Alt press and release that selected at most one character sends the
+                // arrows from the cursor to the cell under the release. A link under it still opens.
+                if e.alt && now.saturating_sub(p.at) < ALT_CLICK_MS {
+                    let c = col.min(g.cols.saturating_sub(1));
+                    let keys = tab.handle.with_emu_quiet(|em| {
+                        if em.sel_text().chars().count() <= 1 {
+                            em.alt_click_plan(row_c, c)
+                        } else {
+                            String::new()
+                        }
+                    });
+                    if !keys.is_empty() {
+                        tab.handle.send_text(&keys);
+                    }
+                }
                 let dragged = (dev.0 - p.x_dev).hypot(dev.1 - p.y_dev)
                     > f64::from(g.metrics.cell_w) / 2.0
                     || has;
@@ -863,11 +883,18 @@ impl TermUi {
             .handle
             .as_ref()
             .map(|h| h.with_emu_quiet(|em| em.find_view()));
-        let (count, index) = view.map_or((0, None), |v| (v.count, v.index));
+        let (count, index, done) = view.map_or((0, None, true), |v| (v.count, v.index, v.done));
+        // While a new query is still being counted and nothing is found yet, the readout stays
+        // empty rather than saying "none" (Prism Terminal's search answers in one pass).
+        let counting = count == 0 && !done;
         FindBarState {
             open: self.find.open,
             query: self.find.query.clone(),
-            readout: find::readout(self.find.query.is_empty(), count, index),
+            readout: if counting {
+                String::new()
+            } else {
+                find::readout(self.find.query.is_empty(), count, index)
+            },
             can_step: count > 0,
         }
     }
@@ -2174,6 +2201,9 @@ mod tests {
         let s = r.ui.find_state();
         assert_eq!((s.readout.as_str(), s.can_step), ("", false));
         r.find_edited("zzz");
+        // Still counting with nothing found: no "none" yet.
+        let s = r.ui.find_state();
+        assert_eq!((s.readout.as_str(), s.can_step), ("", false));
         r.settle_find();
         let s = r.ui.find_state();
         assert_eq!((s.readout.as_str(), s.can_step), ("none", false));

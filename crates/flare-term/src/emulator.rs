@@ -18,6 +18,7 @@ use flare_render::decor::{Decor, DecorInk, RowSpan};
 use flare_render::grid::Grid;
 use flare_shells::cwd::{has_control, parse_osc9};
 
+use crate::alt_click::{MoveRow, MoveScreen, move_to_cell_sequence};
 use crate::cells::{
     BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
@@ -108,6 +109,9 @@ pub struct Emulator {
     bg: String,
     find_query: String,
     find_job: Option<CountJob>,
+    /// A recount after output: the previous count stays on show until the new one is done, so
+    /// the bar never flashes "none" or a partial number while the same query is counted again.
+    find_recount: bool,
     find_hits: Vec<FindMatch>,
     find_active: Option<FindMatch>,
     links: LinkScanner,
@@ -157,6 +161,7 @@ impl Emulator {
             bg: "#171717".to_string(),
             find_query: String::new(),
             find_job: None,
+            find_recount: false,
             find_hits: Vec::new(),
             find_active: None,
             links: LinkScanner::new(),
@@ -699,11 +704,12 @@ impl Emulator {
             return;
         }
         self.find_query = query.to_string();
+        self.find_hits.clear();
+        self.find_recount = false;
         self.find_restart();
     }
 
     fn find_restart(&mut self) {
-        self.find_hits.clear();
         let total = self.total_rows();
         self.find_job =
             Finder::new(&self.find_query, FindOpts::default()).map(|f| CountJob::new(f, total));
@@ -750,13 +756,19 @@ impl Emulator {
             let b = TermBuf::all(&self.term);
             job.step(&b, cols, now)
         };
-        self.find_hits = job.results();
+        if done || !self.find_recount {
+            self.find_hits = job.results();
+        }
+        if done {
+            self.find_recount = false;
+        }
         self.find_hits != before_hits || done != before_done
     }
 
     /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match.
     pub fn find_refresh(&mut self) {
         if !self.find_query.is_empty() {
+            self.find_recount = true;
             self.find_restart();
         }
     }
@@ -765,6 +777,7 @@ impl Emulator {
     pub fn find_clear(&mut self) {
         self.find_query.clear();
         self.find_job = None;
+        self.find_recount = false;
         self.find_hits.clear();
         self.find_active = None;
     }
@@ -1127,6 +1140,42 @@ impl Emulator {
         arrow_keys(
             caret_delta(&line.widths, cursor_cell, target, line.text_end),
             mode.app_cursor,
+        )
+    }
+
+    /// The arrow keys an Alt+click at viewport (`row`, `col`) sends (xterm `altClickMovesCursor`,
+    /// `moveToCellSequence`), or "" while the view is scrolled back (xterm: `ybase === ydisp`).
+    pub fn alt_click_plan(&self, row: usize, col: usize) -> String {
+        let cols = self.cols();
+        let rows = self.view_rows();
+        if cols == 0 || rows == 0 || self.is_scrolled_back() {
+            return String::new();
+        }
+        let mode = self.mode();
+        let hist = self.history_size();
+        let buf = TermBuf::window(&self.term, hist, hist + rows - 1);
+        let mut scratch = ScratchCell::default();
+        let screen: Vec<MoveRow> = (0..rows)
+            .map(|r| {
+                let line = buf.line(hist + r);
+                MoveRow {
+                    wrapped: line.is_some_and(|l| l.is_wrapped()),
+                    cells: buffer_row_cells(line, cols, &mut scratch).unwrap_or_default(),
+                }
+            })
+            .collect();
+        let (line, cur_col) = self.cursor();
+        let cur_row = usize::try_from(line).unwrap_or(0).min(rows - 1);
+        let s = MoveScreen {
+            cols,
+            rows: &screen,
+            has_scrollback: !mode.alt_screen,
+            app_cursor: mode.app_cursor,
+        };
+        move_to_cell_sequence(
+            &s,
+            (cur_col.min(cols - 1), cur_row),
+            (col.min(cols - 1), row.min(rows - 1)),
         )
     }
 
@@ -1727,6 +1776,26 @@ mod tests {
     }
 
     #[test]
+    fn a_recount_after_output_keeps_the_old_count_until_it_is_done() {
+        let mut e = Emulator::new(20, 10);
+        e.feed(b"foo\r\nfoo");
+        e.find_set("foo");
+        count_all(&mut e);
+        assert_eq!(e.find_view().count, 2);
+        e.feed(b"\r\nfoo");
+        e.find_refresh();
+        // Counting again: the bar keeps showing the last full count, never 0 or a partial one.
+        let v = e.find_view();
+        assert!(!v.done);
+        assert_eq!(v.count, 2);
+        count_all(&mut e);
+        assert_eq!(e.find_view().count, 3);
+        // A new query starts from nothing.
+        e.find_set("fo");
+        assert_eq!(e.find_view().count, 0);
+    }
+
+    #[test]
     fn clear_drops_highlights_but_not_the_selection() {
         let mut e = Emulator::new(20, 3);
         e.feed(b"foo bar");
@@ -2030,6 +2099,36 @@ mod tests {
         prompt(&mut e, "日本");
         assert_eq!(e.cursor().1, 8);
         assert_eq!(e.click_caret_plan(0, 6, 0, 1, false, false), L);
+    }
+
+    #[test]
+    fn an_alt_click_moves_the_cursor_by_arrows_as_xterm() {
+        let mut e = Emulator::new(40, 5);
+        prompt(&mut e, "abc");
+        // Same row: five cells left.
+        assert_eq!(e.alt_click_plan(0, 2), L.repeat(5));
+        // The row below on the normal screen: rights counted across the wrap, (40 - 7) + 1 - 1.
+        assert_eq!(e.alt_click_plan(1, 0), "\x1b[C".repeat(33));
+        // Unlike the plain click, it is not limited to the typed line or to printed text.
+        assert_eq!(e.alt_click_plan(0, 30), "\x1b[C".repeat(23));
+    }
+
+    #[test]
+    fn an_alt_click_on_the_alternate_screen_goes_down_then_across() {
+        let mut e = Emulator::new(40, 5);
+        e.feed(b"\x1b[?1049h\x1b[?1h\x1b[H");
+        assert_eq!(e.alt_click_plan(2, 3), "\x1bOB\x1bOB\x1bOC\x1bOC\x1bOC");
+    }
+
+    #[test]
+    fn an_alt_click_while_scrolled_back_sends_nothing() {
+        let mut e = Emulator::new(20, 3);
+        for i in 0..10 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        e.scroll_view(2);
+        assert!(e.is_scrolled_back());
+        assert_eq!(e.alt_click_plan(0, 0), "");
     }
 
     #[test]

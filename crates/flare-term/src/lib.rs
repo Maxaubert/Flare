@@ -1,3 +1,4 @@
+pub mod alt_click;
 pub mod app_copy;
 pub mod batcher;
 pub mod caret_hold;
