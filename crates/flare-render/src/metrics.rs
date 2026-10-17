@@ -27,14 +27,24 @@ pub struct CellMetrics {
     pub padding: u32,
 }
 
-/// Font size in physical pixels at `scale`.
-pub fn font_px(scale: f32) -> f32 {
-    BASE_FONT_PX * scale
+/// Font size in physical pixels for a base size in logical pixels at `scale`.
+pub fn font_px_for(base_px: f32, scale: f32) -> f32 {
+    base_px * scale
 }
 
-/// Derives the cell geometry from font units at `scale` (1.0 = 100%, 2.25 = 225%).
+/// Font size in physical pixels at `scale`, at the default base size.
+pub fn font_px(scale: f32) -> f32 {
+    font_px_for(BASE_FONT_PX, scale)
+}
+
+/// Derives the cell geometry from font units at `scale` (1.0 = 100%, 2.25 = 225%), default base.
 pub fn cell_metrics(u: &FontUnits, scale: f32) -> CellMetrics {
-    let px = font_px(scale);
+    cell_metrics_at(u, BASE_FONT_PX, scale)
+}
+
+/// Derives the cell geometry from font units for a base size (logical px) at `scale`.
+pub fn cell_metrics_at(u: &FontUnits, base_px: f32, scale: f32) -> CellMetrics {
+    let px = font_px_for(base_px, scale);
     let k = px / u.units_per_em;
     let cell_w = (u.advance * k).round().max(1.0) as u32;
     let asc = u.ascent * k;
@@ -136,5 +146,6 @@ mod tests {
     fn font_px_scales_base() {
         assert_eq!(font_px(1.0), 13.0);
         assert_eq!(font_px(2.0), 26.0);
+        assert_eq!(font_px_for(16.0, 1.5), 24.0);
     }
 }

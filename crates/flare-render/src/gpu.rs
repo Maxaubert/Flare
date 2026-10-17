@@ -380,6 +380,11 @@ impl GpuPainter {
         self.atlas.clear();
     }
 
+    /// The face or base size changed, so every cached bitmap is wrong.
+    pub fn on_font_change(&mut self) {
+        self.atlas.clear();
+    }
+
     /// One instance per drawable glyph. A full atlas is cleared once and the list rebuilt; if it is
     /// full again the remaining glyphs are skipped for this frame.
     fn build_glyph_instances(

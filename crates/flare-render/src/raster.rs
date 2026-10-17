@@ -3,7 +3,7 @@
 
 use crate::blend::blend_premul;
 use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphSource};
-use crate::metrics::{FontUnits, font_px};
+use crate::metrics::{BASE_FONT_PX, FontUnits, font_px_for};
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     SwashImage, Weight,
@@ -18,6 +18,8 @@ pub struct Rasterizer {
     swash: SwashCache,
     family: String,
     scale: f32,
+    base_px: f32,
+    generation: u64,
     units: FontUnits,
     cache: HashMap<GlyphKey, Option<GlyphBitmap>>,
 }
@@ -27,24 +29,15 @@ impl Rasterizer {
     /// (else the first monospace face), measures FontUnits from it.
     pub fn new(families: &[&str], scale: f32) -> Self {
         let mut fs = FontSystem::new();
-        let family = families
-            .iter()
-            .find(|name| has_family(&fs, name))
-            .map(|name| name.to_string())
-            .or_else(|| {
-                fs.db()
-                    .faces()
-                    .find(|f| f.monospaced)
-                    .and_then(|f| f.families.first())
-                    .map(|(name, _)| name.clone())
-            })
-            .unwrap_or_else(|| "monospace".to_string());
-        let units = measure(&mut fs, &family);
+        let family = pick_family(&fs, families);
+        let units = measure(&mut fs, &family, BASE_FONT_PX);
         Self {
             fs,
             swash: SwashCache::new(),
             family,
             scale,
+            base_px: BASE_FONT_PX,
+            generation: 0,
             units,
             cache: HashMap::new(),
         }
@@ -54,11 +47,34 @@ impl Rasterizer {
         &self.family
     }
 
+    /// The base font size in logical pixels.
+    pub fn base_px(&self) -> f32 {
+        self.base_px
+    }
+
+    /// Counts font changes; a repeat of the same face and size leaves it alone.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    fn cached(&self) -> usize {
+        self.cache.len()
+    }
+
+    #[cfg(test)]
+    fn is_monospaced(&self, name: &str) -> bool {
+        self.fs
+            .db()
+            .faces()
+            .any(|f| f.monospaced && f.families.iter().any(|(n, _)| n == name))
+    }
+
     fn rasterize(&mut self, key: &GlyphKey) -> Option<GlyphBitmap> {
         if key.text.chars().all(|c| c == ' ') {
             return None;
         }
-        let px = font_px(self.scale);
+        let px = font_px_for(self.base_px, self.scale);
         let mut attrs = Attrs::new().family(Family::Name(&self.family));
         if key.bold {
             attrs = attrs.weight(Weight::BOLD);
@@ -104,6 +120,34 @@ impl GlyphSource for Rasterizer {
         self.scale = scale;
         self.cache.clear();
     }
+
+    fn set_font(&mut self, families: &[&str], base_px: f32) {
+        let family = pick_family(&self.fs, families);
+        if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
+            return;
+        }
+        self.units = measure(&mut self.fs, &family, base_px);
+        self.family = family;
+        self.base_px = base_px;
+        self.cache.clear();
+        self.generation += 1;
+    }
+}
+
+/// The first installed family of `families`, else the first monospace face, else "monospace".
+fn pick_family(fs: &FontSystem, families: &[&str]) -> String {
+    families
+        .iter()
+        .find(|name| has_family(fs, name))
+        .map(|name| name.to_string())
+        .or_else(|| {
+            fs.db()
+                .faces()
+                .find(|f| f.monospaced)
+                .and_then(|f| f.families.first())
+                .map(|(name, _)| name.clone())
+        })
+        .unwrap_or_else(|| "monospace".to_string())
 }
 
 /// Whether the font database has a face with this family name.
@@ -114,8 +158,8 @@ fn has_family(fs: &FontSystem, name: &str) -> bool {
 }
 
 /// Shapes "M" at the base size and reads the font's metrics, in font units.
-fn measure(fs: &mut FontSystem, family: &str) -> FontUnits {
-    let px = font_px(1.0);
+fn measure(fs: &mut FontSystem, family: &str, base_px: f32) -> FontUnits {
+    let px = font_px_for(base_px, 1.0);
     let attrs = Attrs::new().family(Family::Name(family));
     let mut buffer = Buffer::new_empty(Metrics::new(px, px));
     buffer.set_text("M", &attrs, Shaping::Advanced, None);
@@ -314,6 +358,62 @@ mod tests {
         let regular = r.glyph(&key("M")).expect("regular M").clone();
         let bold = r.glyph(&bold_key("M")).expect("bold M").clone();
         assert_ne!(regular.data, bold.data);
+    }
+
+    #[test]
+    fn a_new_stack_changes_the_family_name() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.set_font(&["Consolas"], 13.0);
+        if installed("Consolas") {
+            assert_eq!(r.family(), "Consolas");
+        } else {
+            assert!(!r.family().is_empty());
+        }
+    }
+
+    #[test]
+    fn an_unknown_stack_falls_to_a_monospace_face() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.set_font(&["No Such Face"], 13.0);
+        assert!(
+            r.is_monospaced(r.family()),
+            "{} is not monospaced",
+            r.family()
+        );
+    }
+
+    #[test]
+    // Measured at 400 percent so whole-pixel rounding cannot hide the ratio.
+    fn a_bigger_base_gives_bigger_cells() {
+        use crate::metrics::cell_metrics_at;
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        let w13 = cell_metrics_at(&r.font_units(), r.base_px(), 4.0).cell_w as f32;
+        r.set_font(DEFAULT_FAMILIES, 16.0);
+        assert_eq!(r.base_px(), 16.0);
+        let w16 = cell_metrics_at(&r.font_units(), r.base_px(), 4.0).cell_w as f32;
+        assert!(w16 > w13);
+        assert!((w16 / w13 - 16.0 / 13.0).abs() < 0.1, "{w13} -> {w16}");
+    }
+
+    #[test]
+    fn the_same_look_twice_changes_nothing() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.glyph(&key("M"));
+        let g = r.generation();
+        r.set_font(DEFAULT_FAMILIES, 13.0);
+        assert_eq!(r.generation(), g);
+        assert_eq!(r.cached(), 1, "an unchanged look keeps the cache");
+        r.set_font(DEFAULT_FAMILIES, 14.0);
+        assert_eq!(r.generation(), g + 1);
+    }
+
+    #[test]
+    fn a_font_change_clears_the_cache() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.glyph(&key("M"));
+        assert_eq!(r.cached(), 1);
+        r.set_font(DEFAULT_FAMILIES, 20.0);
+        assert_eq!(r.cached(), 0);
     }
 
     #[test]

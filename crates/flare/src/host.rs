@@ -7,7 +7,7 @@ use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::glyph::GlyphSource;
 use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::Grid;
-use flare_render::metrics::{CellMetrics, cell_metrics, grid_dims};
+use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GroundPaint, Scene, build_scene_ground};
 use flare_render::stats::FrameStats;
@@ -76,6 +76,9 @@ pub struct GridHost {
     cpu_image: RgbaImage,
     size: (u32, u32),
     scale: f32,
+    /// The face stack and base size (logical px) last given to the glyph source.
+    families: Vec<String>,
+    base_px: f32,
     dirty: bool,
     pub stats: FrameStats,
 }
@@ -95,6 +98,8 @@ impl GridHost {
             cpu_image: RgbaImage::new(0, 0),
             size: (0, 0),
             scale: 1.0,
+            families: Vec::new(),
+            base_px: BASE_FONT_PX,
             dirty: true,
             stats: FrameStats::new(120),
         }
@@ -144,6 +149,33 @@ impl GridHost {
         self.dirty = true;
     }
 
+    /// Changes the face and base size. None when unchanged; else the glyph source and the GPU atlas
+    /// are told, and the new `(cols, rows)` is returned when they differ (the caller refits).
+    #[allow(dead_code)] // used by the live tab (Task 27)
+    pub fn set_font(&mut self, families: &[&str], base_px: f32) -> Option<(usize, usize)> {
+        let same = self.families.len() == families.len()
+            && self.families.iter().zip(families).all(|(a, b)| a == b)
+            && (base_px - self.base_px).abs() < f32::EPSILON;
+        if same {
+            return None;
+        }
+        let before = self.dims;
+        self.families = families.iter().map(|f| f.to_string()).collect();
+        self.base_px = base_px;
+        self.glyphs.set_font(families, base_px);
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.on_font_change();
+        }
+        self.dirty = true;
+        let (w, h) = self.size;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
+        let now = grid_dims(w, h, &metrics);
+        (before != Some(now)).then_some(now)
+    }
+
     /// Switches the grid painter; Gpu only when a GpuPainter is attached.
     pub fn toggle_painter(&mut self) -> GridPainter {
         self.painter = match self.painter {
@@ -175,7 +207,7 @@ impl GridHost {
     /// Cell metrics for the current scale.
     #[allow(dead_code)] // used by the live tab (Task 27)
     pub fn metrics(&self) -> CellMetrics {
-        cell_metrics(&self.glyphs.font_units(), self.scale)
+        cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale)
     }
 
     /// Cols and rows of the last render ((0, 0) before any).
@@ -195,7 +227,7 @@ impl GridHost {
         if w == 0 || h == 0 {
             return None;
         }
-        let metrics = cell_metrics(&self.glyphs.font_units(), self.scale);
+        let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
         let (cols, rows) = grid_dims(w, h, &metrics);
         if self.dims != Some((cols, rows)) {
             self.source.resize(cols, rows);
@@ -534,6 +566,47 @@ mod tests {
             img.data.chunks(4).any(|px| px[3] == 255),
             "a coloured block cell is opaque"
         );
+    }
+
+    #[test]
+    fn host_set_font_returns_the_new_grid_size() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(648, 264, 1.0);
+        h.render();
+        let (c13, r13) = h.dims();
+        let (cols, rows) = h.set_font(&["Consolas"], 26.0).expect("the grid changes");
+        // The fake face is 8 px wide at 13 and 15 at 26 (rounding), so columns halve within 2.
+        assert!(
+            (cols as i64 - (c13 / 2) as i64).abs() <= 2,
+            "{c13} -> {cols}"
+        );
+        assert!(
+            (rows as i64 - (r13 / 2) as i64).abs() <= 1,
+            "{r13} -> {rows}"
+        );
+        assert!(h.is_dirty());
+    }
+
+    #[test]
+    fn host_set_font_twice_is_none() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(648, 264, 1.0);
+        assert!(h.set_font(&["Consolas"], 26.0).is_some());
+        assert!(h.set_font(&["Consolas"], 26.0).is_none());
+    }
+
+    #[test]
+    fn a_font_change_reaches_the_atlas() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        h.resize(200, 100, 1.0);
+        assert!(h.render().is_some());
+        h.set_font(&["Consolas"], 20.0);
+        assert!(h.render().is_some());
     }
 
     #[test]

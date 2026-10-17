@@ -38,6 +38,9 @@ pub trait GlyphSource {
     fn font_units(&self) -> FontUnits;
     /// Drops cached bitmaps.
     fn set_scale(&mut self, scale: f32);
+    /// Changes the face (first installed of `families`, else a monospace face) and the base size
+    /// in logical pixels. Default: nothing to change.
+    fn set_font(&mut self, _families: &[&str], _base_px: f32) {}
 }
 
 /// Deterministic test source: every cluster that is not empty and not all spaces is a solid `w x h`
