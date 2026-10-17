@@ -583,3 +583,159 @@ fn every_terminal_menu_row_has_its_glyph() {
         }
     }
 }
+
+/// The M6 scenes (Task 33): the marks on the strip, the sidebar, the +N list, the tooltip, the
+/// resume skeleton and the close question. `badge` is the taskbar disc sheet, not a window.
+const MARK_SCENES: [&str; 10] = [
+    "marks-ring",
+    "marks-bar",
+    "marks-bar-flow",
+    "marks-sidebar",
+    "marks-sidebar-bar",
+    "marks-icons",
+    "marks-overflow",
+    "marks-tip",
+    "marks-skeleton",
+    "marks-close",
+];
+
+/// The eight display scalings every mark scene renders at (100 to 300 percent).
+const EIGHT_SCALES: [&str; 8] = ["1", "1.25", "1.5", "1.75", "2", "2.25", "2.5", "3"];
+
+/// The badge sheet's geometry: one row per scaling, ten columns (1 to 9 and 9+), 200 px cells
+/// holding the disc (at most 48 px) magnified 4x.
+const BADGE_CELL: u32 = 200;
+const BADGE_COLUMNS: u32 = 10;
+const BADGE_ROWS: u32 = 8;
+const BADGE_FILL: [u8; 3] = [0x25, 0x24, 0x2c];
+
+#[test]
+fn every_mark_scene_renders_at_the_eight_scales() {
+    for name in MARK_SCENES {
+        for scale in EIGHT_SCALES {
+            let (_dir, img) = scene_png(name, scale);
+            let s: f32 = scale.parse().expect("scale");
+            let width = if name == "marks-overflow" {
+                700.0
+            } else {
+                1000.0
+            };
+            let want = ((width * s).round() as u32, (640.0 * s).round() as u32);
+            assert_eq!((img.0, img.1), want, "{name} at {scale}");
+            let corner = pixel(&img, 0, 0);
+            let differ = differing_from(&img, corner);
+            assert!(
+                differ > 500,
+                "{name} at {scale}: only {differ} pixels differ from the corner"
+            );
+        }
+    }
+}
+
+/// How many pixels of an image differ from `colour`.
+fn differing_from(img: &Decoded, colour: [u8; 3]) -> usize {
+    (0..img.1)
+        .flat_map(|y| (0..img.0).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(img, x, y) != colour)
+        .count()
+}
+
+/// The pixels that differ between two same-sized images, as (x, y).
+fn differing(a: &Decoded, b: &Decoded) -> Vec<(u32, u32)> {
+    assert_eq!((a.0, a.1), (b.0, b.1), "the same size");
+    (0..a.1)
+        .flat_map(|y| (0..a.0).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(a, x, y) != pixel(b, x, y))
+        .collect()
+}
+
+#[test]
+fn the_marks_scenes_differ_from_each_other() {
+    let (_a, ring) = scene_png("marks-ring", "1");
+    let (_b, bar) = scene_png("marks-bar", "1");
+    let (_c, flow) = scene_png("marks-bar-flow", "1");
+    // Measured 2380 pixels on the seven-tab strip (four marked tabs and the rainbow): the plan's
+    // 3000 was a guess, so the bar is the measured count with margin.
+    let marks = differing(&ring, &bar).len();
+    assert!(
+        marks > 2000,
+        "Ring and Bar draw different marks: {marks} pixels"
+    );
+    // Only the finished tab's rainbow line moves between flow 0 and flow 57: its foot band.
+    let moved = differing(&bar, &flow);
+    assert!(!moved.is_empty(), "the rainbow line moved");
+    let rows: std::collections::BTreeSet<u32> = moved.iter().map(|&(_, y)| y).collect();
+    assert!(
+        rows.len() <= 4 && rows.iter().all(|&y| y < 40),
+        "only the finished tab's foot band differs: rows {rows:?}"
+    );
+}
+
+#[test]
+fn the_badge_sheet_has_ten_tiles_per_scale() {
+    let dir = TempDir::new("scene-badge");
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            "badge",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "exit {:?}, stderr {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let img = decode(&png);
+    assert_eq!(
+        (img.0, img.1),
+        (BADGE_CELL * BADGE_COLUMNS, BADGE_CELL * BADGE_ROWS),
+        "a sheet of 10 by 8 cells"
+    );
+    let mut tiles = 0;
+    // The disc sizes of the eight scalings: 16, 20, 24, 28, 32, 36, 40, 48 px.
+    for (row, size) in [16u32, 20, 24, 28, 32, 36, 40, 48].iter().enumerate() {
+        for col in 0..BADGE_COLUMNS {
+            let shown = size * 4;
+            let x = col * BADGE_CELL + (BADGE_CELL - shown) / 2 + shown / 2;
+            let y = row as u32 * BADGE_CELL + (BADGE_CELL - shown) / 2 + shown / 2;
+            let p = pixel(&img, x, y);
+            let ink = p.iter().any(|&c| c > 0x80);
+            assert!(
+                p == BADGE_FILL || ink,
+                "tile {row}/{col} centre is {p:?}, not the disc"
+            );
+            tiles += 1;
+        }
+    }
+    assert_eq!(tiles, 80, "ten tiles for each of the eight scales");
+}
+
+#[test]
+fn an_unknown_scene_names_the_m6_scenes() {
+    let dir = TempDir::new("scene-unknown-m6");
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            "no-such-scene",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for name in MARK_SCENES.iter().chain(std::iter::once(&"badge")) {
+        assert!(stderr.contains(name), "stderr names {name}: {stderr:?}");
+    }
+    assert!(!png.exists(), "no screenshot for an unknown scene");
+}
