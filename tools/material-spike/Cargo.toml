@@ -6,3 +6,15 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+slint.workspace = true
+flare-win = { path = "../../crates/flare-win" }
+flare-theme = { path = "../../crates/flare-theme" }
+wgpu.workspace = true
+raw-window-handle.workspace = true
+png.workspace = true
+windows-sys.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

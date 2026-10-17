@@ -2981,6 +2981,16 @@ dependencies = [
 [[package]]
 name = "material-spike"
 version = "0.1.0"
+dependencies = [
+ "flare-theme",
+ "flare-win",
+ "png",
+ "raw-window-handle",
+ "slint",
+ "slint-build",
+ "wgpu",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "memchr"
