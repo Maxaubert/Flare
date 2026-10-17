@@ -15,6 +15,7 @@ flare-tabs = { path = "../flare-tabs" }
 flare-settings = { path = "../flare-settings" }
 flare-win = { path = "../flare-win" }
 flare-agent = { path = "../flare-agent" }
+flare-diag = { path = "../flare-diag" }
 slint.workspace = true
 wgpu.workspace = true
 png.workspace = true

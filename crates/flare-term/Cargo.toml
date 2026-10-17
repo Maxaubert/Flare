@@ -9,6 +9,7 @@ publish = false
 flare-theme = { path = "../flare-theme" }
 flare-render = { path = "../flare-render" }
 flare-shells = { path = "../flare-shells" }
+flare-agent = { path = "../flare-agent" }
 alacritty_terminal.workspace = true
 portable-pty.workspace = true
 windows-sys.workspace = true

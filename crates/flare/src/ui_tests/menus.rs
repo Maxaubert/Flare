@@ -32,6 +32,9 @@ fn orow(id: &str, needs: bool) -> OverflowRow {
         needs,
         loading: false,
         settings: false,
+        mark_state: 0,
+        mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
+        agent: 0,
     }
 }
 

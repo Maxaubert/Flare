@@ -191,6 +191,10 @@ pub fn to_slint_row(
         kept: row.kept,
         mark_kind: 0,
         mark_color: mark_colour(row.need),
+        mark_state: 0,
+        mark_rainbow: false,
+        agent: 0,
+        failed_tip: "".into(),
     }
 }
 

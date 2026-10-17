@@ -1446,6 +1446,7 @@ version = "0.1.0"
 dependencies = [
  "env_logger",
  "flare-agent",
+ "flare-diag",
  "flare-render",
  "flare-settings",
  "flare-shells",
@@ -1467,10 +1468,20 @@ dependencies = [
 [[package]]
 name = "flare-agent"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "flare-diag"
 version = "0.1.0"
+dependencies = [
+ "flare-agent",
+]
 
 [[package]]
 name = "flare-dictation"
@@ -1531,6 +1542,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
+ "flare-agent",
  "flare-render",
  "flare-shells",
  "flare-theme",
@@ -1569,6 +1581,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

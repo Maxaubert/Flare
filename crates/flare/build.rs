@@ -7,6 +7,57 @@ const BUNDLED: [&str; 2] = ["conpty.dll", "OpenConsole.exe"];
 fn main() {
     slint_build::compile("ui/app.slint").expect("Slint UI failed to compile");
     copy_bundled_conpty();
+    copy_claude_plugin();
+}
+
+/// Copies the bundled Claude Code plugin (`flare-agent/claude-plugin`) to `<profile>/claude-plugin`,
+/// the folder a shell is handed as CLAUDE_CODE_PLUGIN_DIRS. Best effort, like the ConPTY copy: a
+/// failure is a build warning. The source folder does not exist until M6 Task 3; then nothing is done.
+fn copy_claude_plugin() {
+    let src_root = Path::new("../flare-agent/claude-plugin");
+    if !src_root.is_dir() {
+        return;
+    }
+    let mut files = Vec::new();
+    collect_files(src_root, &mut files);
+    for file in &files {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+    let Some(profile) = profile_dir() else {
+        println!("cargo:warning=cannot find the profile folder; the Claude plugin is not copied");
+        return;
+    };
+    for file in &files {
+        let Ok(rel) = file.strip_prefix(src_root) else {
+            continue;
+        };
+        let to = profile.join("claude-plugin").join(rel);
+        let result = to
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::copy(file, &to).map(|_| ()));
+        if let Err(e) = result {
+            println!(
+                "cargo:warning=cannot copy {} next to the exe: {e}",
+                file.display()
+            );
+        }
+    }
+}
+
+/// Every file under `dir`, folders first walked depth-first.
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
 }
 
 /// Copies the bundled ConPTY files next to the built exe (the profile folder), so a debug or

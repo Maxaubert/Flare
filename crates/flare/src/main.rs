@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_hub;
 mod appctl;
 mod backend;
 mod badge;
@@ -16,10 +17,12 @@ mod ime;
 mod keymap;
 mod live;
 mod look_ctl;
+mod mark_colours;
 mod material_ctl;
 mod memory;
 mod menus_ui;
 mod openers;
+mod sessions;
 mod sidebar_ui;
 mod startup;
 mod tab_host;

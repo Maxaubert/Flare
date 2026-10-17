@@ -1,0 +1,16 @@
+// The tab marks (M6). Task 1 holds the motion values only; Task 24 draws the marks.
+
+export global MarkMotion {
+    in property <bool> still: false;
+    in property <angle> spin: 0deg;
+    in property <float> breathe: 1.0;
+    in property <float> run: 0.0;
+    in property <float> flow: 0.0;
+    in property <float> pulse: 1.0;
+    in property <[color]> rainbow: [];
+}
+
+export component MarkPreview inherits Window {
+    width: 200px;
+    height: 36px;
+}

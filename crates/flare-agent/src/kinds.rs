@@ -38,16 +38,51 @@ pub fn is_resumable(s: &str) -> bool {
 }
 
 /// An agent found in a tab's process tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DetectedAgent {
     Claude,
     Codex,
     Other,
 }
 
+impl From<AgentKind> for DetectedAgent {
+    fn from(k: AgentKind) -> Self {
+        match k {
+            AgentKind::Claude => DetectedAgent::Claude,
+            AgentKind::Codex => DetectedAgent::Codex,
+        }
+    }
+}
+
+impl DetectedAgent {
+    /// Claude and Codex are resumable; Other is not.
+    pub fn resumable(self) -> Option<AgentKind> {
+        match self {
+            DetectedAgent::Claude => Some(AgentKind::Claude),
+            DetectedAgent::Codex => Some(AgentKind::Codex),
+            DetectedAgent::Other => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detected_from_kind_and_back() {
+        assert_eq!(
+            DetectedAgent::from(AgentKind::Claude),
+            DetectedAgent::Claude
+        );
+        assert_eq!(DetectedAgent::from(AgentKind::Codex), DetectedAgent::Codex);
+        assert_eq!(DetectedAgent::Claude.resumable(), Some(AgentKind::Claude));
+        assert_eq!(DetectedAgent::Codex.resumable(), Some(AgentKind::Codex));
+        assert_eq!(DetectedAgent::Other.resumable(), None);
+        for k in RESUMABLE_AGENTS {
+            assert_eq!(DetectedAgent::from(k).resumable(), Some(k));
+        }
+    }
 
     #[test]
     fn is_resumable_says_yes_to_the_list_and_no_to_the_rest() {

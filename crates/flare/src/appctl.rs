@@ -385,6 +385,9 @@ fn overflow_row(r: &OverflowRowData) -> OverflowRow {
         needs: r.needs,
         loading: r.loading,
         settings: r.settings,
+        mark_state: 0,
+        mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
+        agent: 0,
     }
 }
 
