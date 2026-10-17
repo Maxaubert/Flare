@@ -1,2 +1,8 @@
 // Task 24: fixed colours the app keeps, each with its reason. Format: path | literal | reason (path from the repo root, forward slashes).
 crates/flare-tabs/src/close_flow.rs | #dedacf | M3's default close-question ink, the test value; at run time the dialogs pass the theme's --p-text (chrome_apply::text_ink)
+// M6: the agent marks' fixed colours.
+crates/flare/src/ui_tests/skeleton.rs | #dedacf | a comment naming the theme text ink that the skeleton test's expected pixels are worked out from
+crates/flare-agent/src/badge.rs | #25242c | the taskbar disc's fill: a fixed dark disc, as Prism Terminal draws it, so it reads on any taskbar; never a theme value
+crates/flare-agent/src/badge.rs | #ffffff | the taskbar disc's count ink, white on the fixed dark disc
+crates/flare-agent/src/icon.rs | #d77757 | Clawd's orange as Claude Code draws it in the terminal: the agent's own colour, never a theme value
+crates/flare-win/src/taskbar.rs | #25242c | the taskbar disc's fill named in doc comments, the same fixed value as badge.rs
