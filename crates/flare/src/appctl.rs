@@ -1377,7 +1377,7 @@ impl AppCtl {
 
     /// Runs the clock's body once at the controller's clock (the timer's own tick, for tests).
     #[cfg(test)]
-    fn mark_frame_now(&self) {
+    pub(crate) fn mark_frame_now(&self) {
         let Some(app) = self.app() else { return };
         if let Some(start) = self.clock.start {
             Self::mark_frame(
@@ -1391,8 +1391,29 @@ impl AppCtl {
     }
 
     #[cfg(test)]
-    fn hub_mut(&mut self) -> &mut AgentHub {
+    pub(crate) fn hub_mut(&mut self) -> &mut AgentHub {
         &mut self.hub
+    }
+
+    /// The live terminal of a tab (window flow tests send keys through it, as the window does).
+    #[cfg(test)]
+    pub(crate) fn handle_of(&self, id: &str) -> Option<Arc<TermHandle>> {
+        self.deps.host.handle(id)
+    }
+
+    /// The close question as the dialog shows it: title, body text and primary button.
+    #[cfg(test)]
+    pub(crate) fn ask_text(&self) -> Option<(String, String, String)> {
+        self.ask.as_ref().map(|a| {
+            let v = crate::startup::ask_view(a, "#ffffff");
+            (v.title.to_string(), v.body.to_string(), v.primary.to_string())
+        })
+    }
+
+    /// Which agent the keyboard path believes is armed in the tab.
+    #[cfg(test)]
+    pub(crate) fn armed_agent(&self, id: &str) -> Option<AgentKind> {
+        self.agent_view.armed(id)
     }
 
     // ---- the restore ----------------------------------------------------------------------------
@@ -1456,7 +1477,7 @@ impl AppCtl {
     // ---- opening and closing tabs -----------------------------------------------------------------
 
     /// A new tab in `dir`, shell started. Never blocks.
-    fn open_folder(&mut self, dir: &str) -> String {
+    pub(crate) fn open_folder(&mut self, dir: &str) -> String {
         let id = self.model.open_tab(dir);
         self.deps.host.spawn(&id, dir, None);
         self.hub.on_spawned(&id, dir, None);

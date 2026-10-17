@@ -229,12 +229,24 @@ impl AgentHub {
 
     /// A poll answer as the worker would queue it.
     #[cfg(test)]
-    fn queue_poll_answer(&self, id: &str, present: bool, kind: Option<DetectedAgent>) {
+    pub(crate) fn queue_poll_answer(&self, id: &str, present: bool, kind: Option<DetectedAgent>) {
         let _ = self.tx.send(PollMsg {
             id: id.to_string(),
             present,
             kind,
         });
+    }
+
+    /// Window flow tests record what Sonara would be sent and what the diagnostics would write.
+    #[cfg(test)]
+    pub(crate) fn set_sinks(
+        &mut self,
+        post_question: Arc<dyn Fn(String, ShownQuestion) + Send + Sync>,
+        diag: Arc<dyn DiagSink>,
+    ) {
+        self.deps.post_question = post_question;
+        self.deps.diag = Arc::clone(&diag);
+        self.diag = AgentDiag::new(diag);
     }
 
     fn arm_of(&self, tab: &str) -> AgentArm {
