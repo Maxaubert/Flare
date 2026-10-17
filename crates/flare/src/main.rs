@@ -2,23 +2,30 @@
 
 mod appctl;
 mod backend;
+mod badge;
 mod chords;
 mod chrome_apply;
+mod clip_flow;
 mod config;
+mod drop_flow;
 mod e2e;
 mod font_ctl;
 mod headless;
 mod host;
+mod ime;
 mod keymap;
 mod live;
 mod look_ctl;
 mod material_ctl;
 mod memory;
 mod menus_ui;
+mod openers;
 mod sidebar_ui;
 mod startup;
 mod tab_host;
 mod tabs_ui;
+mod term_menu;
+mod term_ui;
 mod theme_scene;
 mod window;
 

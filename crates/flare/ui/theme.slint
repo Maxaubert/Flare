@@ -52,6 +52,12 @@ export global Theme {
     out property <color> danger-fill: #b4353f; // Dialog danger
     out property <color> scrim: #00000080;     // Modal bg-black/50
     out property <string> font-ui: "Segoe UI"; // --p-font-ui
+
+    // Milestone 5: the find bar's corner radius (--p-radius-sm) and the find inks (Prism Terminal's
+    // findOptions; not theme-derived there either).
+    out property <length> radius-sm: 3px;
+    out property <color> find-match: #4a5160;
+    out property <color> find-match-border: #6b7482;
 }
 
 // Device-pixel helpers (Task 19). A global cannot use phx, so the window sets Px.scale from

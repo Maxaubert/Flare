@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 flare-theme = { path = "../flare-theme" }
 flare-settings = { path = "../flare-settings" }
+flare-shells = { path = "../flare-shells" }
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true

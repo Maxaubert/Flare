@@ -1,13 +1,17 @@
 //! flare-win: the Windows glue of the window: command-line folders, window state, monitors, the
 //! single-instance lock and hand-off, the session-end watcher, the cursor at the edge, the
-//! clipboard write, the folder picker and the shell open.
+//! clipboard write and read, the folder picker, the shell open, the path openers and the
+//! double-click metrics.
 
 pub mod argv;
 pub mod clipboard;
+pub mod clipboard_port;
+pub mod dblclick;
 pub mod dwm;
 pub mod edge_watch;
 pub mod material;
 pub mod monitors;
+pub mod openers;
 pub mod os_build;
 pub mod pick;
 pub mod session_end;

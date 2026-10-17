@@ -1561,6 +1561,7 @@ name = "flare-win"
 version = "0.1.0"
 dependencies = [
  "flare-settings",
+ "flare-shells",
  "flare-theme",
  "log",
  "raw-window-handle",
