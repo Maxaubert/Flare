@@ -8,11 +8,12 @@ use std::thread::sleep; // sync-ok: the clipboard retry below, at most 80 ms
 use std::time::Duration;
 
 use flare_shells::paste::ClipboardState;
+use windows_sys::Win32::Foundation::HGLOBAL;
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
     OpenClipboard, RegisterClipboardFormatW,
 };
-use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows_sys::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 use windows_sys::Win32::UI::Shell::DragQueryFileW;
 
@@ -62,29 +63,60 @@ fn open() -> bool {
     false
 }
 
+/// Closes the clipboard on every path out of a read.
+struct ClipboardGuard;
+
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        // SAFETY: only built after `open()` succeeded on this thread; dropped exactly once.
+        unsafe {
+            CloseClipboard();
+        }
+    }
+}
+
+/// Unlocks a locked global block on every path out of a read.
+struct LockGuard(HGLOBAL);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        // SAFETY: only built after a successful GlobalLock of this handle; dropped exactly once.
+        unsafe {
+            GlobalUnlock(self.0);
+        }
+    }
+}
+
+/// The UTF-16 text in a global block, up to the first zero unit but never past the block's own
+/// size (another program may have left no terminator). None for a null handle or a failed lock.
+///
+/// # Safety
+/// `handle` must be null or a live movable global memory handle for the whole call.
+pub(crate) unsafe fn read_utf16_block(handle: HGLOBAL) -> Option<String> {
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: the caller guarantees a live handle; the pointer is null-checked below.
+    let (locked, size) = unsafe { (GlobalLock(handle).cast::<u16>(), GlobalSize(handle)) };
+    if locked.is_null() {
+        return None;
+    }
+    let _unlock = LockGuard(handle);
+    let units = size / 2;
+    // SAFETY: the lock holds `size` bytes readable at `locked`; `units` u16s fit in them.
+    let all = unsafe { std::slice::from_raw_parts(locked, units) };
+    let end = all.iter().position(|&u| u == 0).unwrap_or(units);
+    Some(String::from_utf16_lossy(&all[..end]))
+}
+
 /// Text from CF_UNICODETEXT; the clipboard must be open on this thread.
 fn unicode_text_open() -> Option<String> {
-    // SAFETY: the caller has the clipboard open; the handle is locked only while non-null and
-    // read up to its terminating zero, within the block the owner allocated.
+    // SAFETY: the caller has the clipboard open, so the handle stays valid for the read.
     unsafe {
         if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT)) == 0 {
             return None;
         }
-        let handle = GetClipboardData(u32::from(CF_UNICODETEXT));
-        if handle.is_null() {
-            return None;
-        }
-        let locked = GlobalLock(handle).cast::<u16>();
-        if locked.is_null() {
-            return None;
-        }
-        let mut len = 0;
-        while *locked.add(len) != 0 {
-            len += 1;
-        }
-        let s = String::from_utf16_lossy(std::slice::from_raw_parts(locked, len));
-        GlobalUnlock(handle);
-        Some(s)
+        read_utf16_block(GetClipboardData(u32::from(CF_UNICODETEXT)))
     }
 }
 
@@ -139,28 +171,20 @@ impl ClipboardPort for WinClipboard {
         if !open() {
             return None;
         }
-        let t = unicode_text_open();
-        // SAFETY: opened above on this thread, closed exactly once.
-        unsafe {
-            CloseClipboard();
-        }
-        t
+        let _close = ClipboardGuard;
+        unicode_text_open()
     }
 
     fn read_state(&self) -> ClipboardState {
         if !open() {
             return ClipboardState::default();
         }
-        let state = ClipboardState {
+        let _close = ClipboardGuard;
+        ClipboardState {
             files: files_open(),
             text: unicode_text_open().unwrap_or_default(),
             image: image_open(),
-        };
-        // SAFETY: opened above on this thread, closed exactly once.
-        unsafe {
-            CloseClipboard();
         }
-        state
     }
 
     fn sequence(&self) -> u32 {
@@ -289,6 +313,63 @@ mod tests {
         assert_eq!(s.text, "hello");
         assert_eq!(s.files, vec!["C:\\a.txt".to_string()]);
         assert!(s.image);
+    }
+
+    /// A moveable block filled with `fill` over its whole reported size.
+    fn full_block(bytes: usize, fill: u16) -> (HGLOBAL, usize) {
+        use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc};
+        // SAFETY: allocates and fills a block this test owns; the caller frees it.
+        unsafe {
+            let h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            assert!(!h.is_null());
+            let size = GlobalSize(h);
+            let p = GlobalLock(h).cast::<u16>();
+            assert!(!p.is_null());
+            for i in 0..size / 2 {
+                *p.add(i) = fill;
+            }
+            GlobalUnlock(h);
+            (h, size)
+        }
+    }
+
+    #[test]
+    fn an_unterminated_block_is_read_exactly_to_its_end() {
+        use windows_sys::Win32::Foundation::GlobalFree;
+        let (h, size) = full_block(40, u16::from(b'a'));
+        // SAFETY: `h` is a live global handle owned by this test.
+        let got = unsafe { read_utf16_block(h) };
+        // SAFETY: freeing the block this test allocated.
+        unsafe {
+            GlobalFree(h);
+        }
+        assert_eq!(got.unwrap(), "a".repeat(size / 2));
+    }
+
+    #[test]
+    fn a_terminated_block_stops_at_its_zero() {
+        use windows_sys::Win32::Foundation::GlobalFree;
+        let (h, _) = full_block(40, u16::from(b'x'));
+        // SAFETY: the block is live and owned by this test; two units are overwritten.
+        unsafe {
+            let p = GlobalLock(h).cast::<u16>();
+            *p = u16::from(b'h');
+            *p.add(1) = 0;
+            GlobalUnlock(h);
+        }
+        // SAFETY: `h` is a live global handle owned by this test.
+        let got = unsafe { read_utf16_block(h) };
+        // SAFETY: freeing the block this test allocated.
+        unsafe {
+            GlobalFree(h);
+        }
+        assert_eq!(got.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn a_null_handle_reads_nothing() {
+        // SAFETY: null is allowed.
+        assert_eq!(unsafe { read_utf16_block(std::ptr::null_mut()) }, None);
     }
 
     #[test]

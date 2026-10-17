@@ -11,7 +11,7 @@ pub struct WinOpeners;
 
 impl PathOpeners for WinOpeners {
     fn open_path(&self, abs: &str) {
-        if let Err(e) = flare_win::openers::shell_open_file(abs) {
+        if let Err(e) = flare_win::openers::shell_open_file(abs, &flare_term::path_open::may_open) {
             log::warn!("open failed: {e}");
         }
     }
