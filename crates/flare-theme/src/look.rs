@@ -3,13 +3,13 @@
 //! (`groundedTheme`, `currentLinkColor`) and `core/renderer/settings/theme/palette.ts` (`cardAnsi`).
 //! Pure: no runtime dependencies.
 
-use crate::chrome::{ChromeTokens, chrome_tokens};
+use crate::chrome::{chrome_tokens, ChromeTokens};
 use crate::edges::WindowEdges;
 use crate::links::link_colour;
 use crate::marks::Mode;
-use crate::resolve::{CustomPalette, TermTheme, on_ground, preset_accent, resolve_theme};
+use crate::resolve::{on_ground, preset_accent, resolve_theme, CustomPalette, TermTheme};
 use crate::retired::live_theme_id;
-use crate::see_through::{SEE_THROUGH_TOP, ground_alpha};
+use crate::see_through::{ground_alpha, SEE_THROUGH_TOP};
 
 /// Everything the settings say about the look.
 pub struct LookInput<'a> {
@@ -126,8 +126,8 @@ pub fn card_ansi(theme: &TermTheme) -> CardAnsi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::{PartialAnsi, contrast_ratio, idx};
-    use crate::preset::{Preset, presets};
+    use crate::ansi::{contrast_ratio, idx, PartialAnsi};
+    use crate::preset::{presets, Preset};
     use crate::resolve::resolve_preset;
     use crate::testutil::fixture;
     use std::collections::BTreeMap;
