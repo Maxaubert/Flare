@@ -15,7 +15,11 @@ pub fn switch_knob(track: &str, dark_ground: bool) -> &'static str {
     if contrast_ratio(ink, track) >= NAME_FLIP {
         return ink;
     }
-    if dark_ground { KNOB_LIGHT } else { KNOB_DARK }
+    if dark_ground {
+        KNOB_LIGHT
+    } else {
+        KNOB_DARK
+    }
 }
 
 #[cfg(test)]

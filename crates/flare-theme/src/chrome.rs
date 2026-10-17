@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use crate::ansi::{contrast_ratio, ensure_contrast, luminance, mix_hex, normalize_color};
 use crate::colour::{alpha_hex, alpha_of};
 use crate::colour_contrast::{composite, selection_for};
-use crate::edges::{WindowEdges, edge_alpha};
+use crate::edges::{edge_alpha, WindowEdges};
 use crate::ground::{DEFAULT_GROUND, LIGHT_GROUND, ON_DARK_INK};
 use crate::knob::switch_knob;
 use crate::marks::Mode;
@@ -333,7 +333,7 @@ mod tests {
     use crate::edges::WINDOW_EDGES;
     use crate::marks::ground_mode;
     use crate::num::js_round;
-    use crate::preset::{Preset, find_preset, presets};
+    use crate::preset::{find_preset, presets, Preset};
     use crate::resolve::resolve_preset;
     use crate::see_through::see_through_alpha;
     use crate::testutil::fixture;
@@ -722,11 +722,9 @@ mod tests {
 
     #[test]
     fn there_are_no_segment_tokens() {
-        assert!(
-            CHROME_COLOUR_TOKENS
-                .iter()
-                .all(|n| !n.starts_with("--p-seg"))
-        );
+        assert!(CHROME_COLOUR_TOKENS
+            .iter()
+            .all(|n| !n.starts_with("--p-seg")));
         let c = of(preset("prism"));
         assert!(c.vars.keys().all(|n| !n.starts_with("--p-seg")));
     }

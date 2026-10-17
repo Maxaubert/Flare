@@ -37,7 +37,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `bytemuck`: casts glyph and vertex data to bytes for GPU upload.
 - `log`: the logging facade used across the crates.
 - `env_logger`: prints the log to the console when run from a terminal (`RUST_LOG`).
-- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box; M3 adds the named pipe and its DACL for the single-instance hand-off, the security identity checks, the clipboard, the shell open verb, DPI and the monitors for the window position).
+- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box; M3 adds the named pipe and its DACL for the single-instance hand-off, the security identity checks, the clipboard, the shell open verb, DPI and the monitors for the window position; M4 adds the DWM backdrop and border calls and the Windows build number).
 - `alacritty_terminal`: terminal state, the escape-sequence parser, the grid, scrollback and reflow (owner decision, parity with Prism Terminal's xterm.js).
 - `portable-pty`: the ConPTY child process and its pipes, one pty per shell tab.
 - `regex`: the ported link and path finders (`find_links`, `find_paths`).
@@ -52,6 +52,25 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `sha2`: checks the bundled ConPTY files against their pinned hashes at start.
 - `tempfile` (dev only): temporary folders for the tests; never shipped.
 - Bundled ConPTY 1.25.260303002 (`conpty.dll`, `OpenConsole.exe`): MIT licence, (c) Microsoft Corporation, https://github.com/microsoft/terminal. Loaded by absolute path before the first pty opens.
+
+M4 adds no new crate: the theme, fonts and material need only what M1 to M3 already ship. The
+Win32 features `Win32_Graphics_Dwm`, `Win32_UI_Controls`, `Wdk_System_SystemServices` and
+`Win32_System_SystemInformation` are added to the existing `windows-sys` entry (the DWM backdrop,
+the window border and the Windows build number).
+
+## Tools
+
+Development tools in `tools/`, never shipped in the installer:
+
+- `tools/oracle`: Node (v24, runs the TypeScript of Prism Terminal's theme modules through its
+  built-in type stripping, no install step). It writes the fixtures in `crates/flare-theme/tests/fixtures`
+  and the generated `presets_data.rs` and `fonts_data.rs`. Its README says how to regenerate them.
+- `tools/pt-shot`: Playwright (from Prism's `node_modules`) drives the installed Prism Terminal to
+  take the reference screenshots.
+- `tools/theme-matrix`: PowerShell scripts that take the theme screenshots of every theme at 100,
+  150 and 225 percent, compose the contact sheets and compare the two renderers.
+- `tools/material-spike`: the Windows 11 material spike (acrylic, the z-order and the sampling); its
+  results are in `docs/material.md`.
 
 ## Licence
 

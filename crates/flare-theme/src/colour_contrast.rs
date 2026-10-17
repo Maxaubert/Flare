@@ -2,7 +2,7 @@
 //! lines 196 to 425 and the rest of `colour.test.ts`.
 
 use crate::ansi::{contrast_ratio, mix_hex, toward_room};
-use crate::colour::{ColourFormat, Rgba, format, opaque, parse_colour, to_stored, with_alpha};
+use crate::colour::{format, opaque, parse_colour, to_stored, with_alpha, ColourFormat, Rgba};
 use crate::num::{clamp, js_round};
 
 /// The opaque `#rrggbb` the eye gets when `c`, with its alpha, lies on the opaque `ground`.
@@ -285,11 +285,15 @@ pub fn snap_alpha_step(a: f64, held: f64, key: bool, opts: &SnapOpts) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::colour::{Hsla, hsl_to_rgb};
+    use crate::colour::{hsl_to_rgb, Hsla};
     use crate::testutil::fixture;
 
     fn steps95(a: f64) -> f64 {
-        if a >= 1.0 { 1.0 } else { a.min(0.95) }
+        if a >= 1.0 {
+            1.0
+        } else {
+            a.min(0.95)
+        }
     }
 
     fn snap_opts() -> SnapOpts<'static> {

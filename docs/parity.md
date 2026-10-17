@@ -325,166 +325,166 @@ How to read it:
 Each line: id, name, background, foreground, cursor, accent, palette (curated = the sixteen are copied
 verbatim from termTheme.ts; derived = from deriveAnsi(bg, fg)).
 
-- [ ] pt-default, PT Default, #171717 #dedacf #bbbbbb accent #fe8f34, curated.
-- [ ] prism, Prism, #0b0b0f #e7e7ee #7c7cf0 accent #5b5bd6, derived.
-- [ ] pitch, Pitch, #000000 #efe7da #ec9448 accent #ec9448, derived.
-- [ ] cinder, Cinder, #383c44 #f3eadc #ec9448 accent #ec9448, derived.
-- [ ] graphite, Graphite, #1f1f1f #d6d6d6 #d6d6d6 accent #9a9a9a, derived.
-- [ ] volt, Volt, #050706 #eef2e6 #d8ff26 accent #d8ff26, curated.
-- [ ] paper, Paper, #f6f4ee #2a2620 #3a63c2 no accent (chrome takes palette blue), derived.
-- [ ] mist, Mist, #e4e4e2 #26262a #4a4a52 accent #5c5c66, derived.
-- [ ] umber, Umber, #2b211b #e8d8c0 #d9b38c accent #c4966a, derived.
-- [ ] fawn, Fawn, #e6d8c0 #3d2a1f #7a4e35 accent #8a5a3c, derived.
-- [ ] rosewood, Rosewood, #24161d #f2dce5 #ee85aa accent #e4719a, derived.
-- [ ] blossom, Blossom, #fbeef2 #3b2230 #c64a78 accent #c64a78, derived.
-- [ ] moss, Moss, #141c16 #d8e4d2 #8cc07a accent #78ad66, derived.
-- [ ] sage, Sage, #e9efe5 #223024 #4c7d47 accent #4c7d47, derived.
-- [ ] phosphor, Phosphor, #050d06 #7ef08a #7ef08a accent #3fcf5a, derived.
-- [ ] amber, Amber, #110b02 #ffbf5a #ffbf5a accent #f0a030, derived.
-- [ ] marine, Marine, #012456 #eeedf0 #ffd866 accent #ffd866, derived.
-- [ ] retro, Retro, #352879 #b3adf0 #b3adf0 accent #9d93ea, derived.
-- [ ] campbell, Campbell, #0c0c0c #cccccc #ffffff accent #3b78ff, curated.
-- [ ] ocean, Ocean, #0a2630 #d3eef2 #5fd4e0 accent #3fb8c8, derived.
-- [ ] garnet, Garnet, #1f0d10 #f3dadd #ff6b7d accent #e2475c, derived.
-- [ ] plum, Plum, #1c1226 #e9ddf5 #c792ea accent #b07ce0, derived.
-- [ ] lavender, Lavender, #f1edfa #2e2540 #7c5cc4 accent #7c5cc4, derived.
-- [ ] sky, Sky, #eaf4fd #1c2b3a #2f7bd6 accent #2f7bd6, derived.
-- [ ] peach, Peach, #fdeee3 #3e2a20 #c9632f accent #c05e2c, derived.
-- [ ] butter, Butter, #fbf5d8 #3a3320 #9a7300 accent #8f6b00, derived.
-- [ ] mint, Mint, #e5f6ef #1d3129 #1a8a64 accent #17805c, derived.
-- [ ] solarized-dark, Solarized Dark, #002b36 #93a1a1 #93a1a1 accent #268bd2, curated.
-- [ ] gruvbox-dark, Gruvbox Dark, #282828 #ebdbb2 #ebdbb2 accent #fe8019, curated.
-- [ ] tokyonight, Tokyo Night, #1a1b26 #c0caf5 #c0caf5 accent #7aa2f7, curated.
-- [ ] catppuccin-mocha, Catppuccin Mocha, #1e1e2e #cdd6f4 #f5e0dc accent #cba6f7, curated.
-- [ ] catppuccin-latte, Catppuccin Latte, #eff1f5 #4c4f69 #8839ef accent #8839ef, curated (cursor is mauve on purpose).
-- [ ] monokai, Monokai, #272822 #f8f8f2 #f8f8f0 accent #a6e22e, curated.
-- [ ] kanagawa, Kanagawa, #1f1f28 #dcd7ba #c8c093 accent #7e9cd8, curated.
-- [ ] cobalt, Cobalt, #193549 #ffffff #ffc600 accent #ffc600, curated.
-- [ ] synthwave, Synthwave, #262335 #f0eff1 #ff7edb accent #ff7edb, curated.
-- [ ] horizon, Horizon, #1c1e26 #d5d8da #e95678 accent #e95678, curated.
-- [ ] nord, Nord, #2e3440 #d8dee9 #d8dee9 no accent, curated.
-- [ ] dracula, Dracula, #1e1f29 #f8f8f2 #bbbbbb no accent, curated.
-- [ ] Exactly 39 presets, ids and names unique (termThemeRetired.test "is thirty-nine").
-- [ ] Wall order: Custom first when saved, then PT Default, then orderTermThemes: neutral grounds (OKLab chroma below 0.0125) first, then coloured, each black to white by OKLab L, ties keep input order (core/renderer/lib/themeOrder.ts; themeOrder.test snapshot; two-apps.md THE WALL'S ORDER IS MEASURED).
-- [ ] Wall cards are one height, selected or not, in rows of two or more (e2e themeCards).
-- [ ] Fresh profile wears PT Default (src/renderer/src/termHost.ts defaults; e2e).
-- [ ] Core fallback id is 'prism'; unknown ids and legacy 'style' resolve to host default, then 'prism', then first preset (termTheme.ts resolveSavedTheme; termTheme.test).
-- [ ] Retired ids map to a kept id at read time (bright-lights, high-contrast to pitch; molokai to monokai; jellybeans, hybrid, afterglow, materialdark to graphite; wombat to pt-default; onehalfdark, ayu, denim, argonaut, adventuretime, ink to prism; espresso to umber; zenburn to moss; full map core/renderer/lib/termThemeRetired.ts; termThemeRetired.test).
+- [x] pt-default, PT Default, #171717 #dedacf #bbbbbb accent #fe8f34, curated. (M4: presets_data_equals_the_oracle)
+- [x] prism, Prism, #0b0b0f #e7e7ee #7c7cf0 accent #5b5bd6, derived. (M4: presets_data_equals_the_oracle)
+- [x] pitch, Pitch, #000000 #efe7da #ec9448 accent #ec9448, derived. (M4: presets_data_equals_the_oracle)
+- [x] cinder, Cinder, #383c44 #f3eadc #ec9448 accent #ec9448, derived. (M4: presets_data_equals_the_oracle)
+- [x] graphite, Graphite, #1f1f1f #d6d6d6 #d6d6d6 accent #9a9a9a, derived. (M4: presets_data_equals_the_oracle)
+- [x] volt, Volt, #050706 #eef2e6 #d8ff26 accent #d8ff26, curated. (M4: presets_data_equals_the_oracle)
+- [x] paper, Paper, #f6f4ee #2a2620 #3a63c2 no accent (chrome takes palette blue), derived. (M4: presets_data_equals_the_oracle)
+- [x] mist, Mist, #e4e4e2 #26262a #4a4a52 accent #5c5c66, derived. (M4: presets_data_equals_the_oracle)
+- [x] umber, Umber, #2b211b #e8d8c0 #d9b38c accent #c4966a, derived. (M4: presets_data_equals_the_oracle)
+- [x] fawn, Fawn, #e6d8c0 #3d2a1f #7a4e35 accent #8a5a3c, derived. (M4: presets_data_equals_the_oracle)
+- [x] rosewood, Rosewood, #24161d #f2dce5 #ee85aa accent #e4719a, derived. (M4: presets_data_equals_the_oracle)
+- [x] blossom, Blossom, #fbeef2 #3b2230 #c64a78 accent #c64a78, derived. (M4: presets_data_equals_the_oracle)
+- [x] moss, Moss, #141c16 #d8e4d2 #8cc07a accent #78ad66, derived. (M4: presets_data_equals_the_oracle)
+- [x] sage, Sage, #e9efe5 #223024 #4c7d47 accent #4c7d47, derived. (M4: presets_data_equals_the_oracle)
+- [x] phosphor, Phosphor, #050d06 #7ef08a #7ef08a accent #3fcf5a, derived. (M4: presets_data_equals_the_oracle)
+- [x] amber, Amber, #110b02 #ffbf5a #ffbf5a accent #f0a030, derived. (M4: presets_data_equals_the_oracle)
+- [x] marine, Marine, #012456 #eeedf0 #ffd866 accent #ffd866, derived. (M4: presets_data_equals_the_oracle)
+- [x] retro, Retro, #352879 #b3adf0 #b3adf0 accent #9d93ea, derived. (M4: presets_data_equals_the_oracle)
+- [x] campbell, Campbell, #0c0c0c #cccccc #ffffff accent #3b78ff, curated. (M4: presets_data_equals_the_oracle)
+- [x] ocean, Ocean, #0a2630 #d3eef2 #5fd4e0 accent #3fb8c8, derived. (M4: presets_data_equals_the_oracle)
+- [x] garnet, Garnet, #1f0d10 #f3dadd #ff6b7d accent #e2475c, derived. (M4: presets_data_equals_the_oracle)
+- [x] plum, Plum, #1c1226 #e9ddf5 #c792ea accent #b07ce0, derived. (M4: presets_data_equals_the_oracle)
+- [x] lavender, Lavender, #f1edfa #2e2540 #7c5cc4 accent #7c5cc4, derived. (M4: presets_data_equals_the_oracle)
+- [x] sky, Sky, #eaf4fd #1c2b3a #2f7bd6 accent #2f7bd6, derived. (M4: presets_data_equals_the_oracle)
+- [x] peach, Peach, #fdeee3 #3e2a20 #c9632f accent #c05e2c, derived. (M4: presets_data_equals_the_oracle)
+- [x] butter, Butter, #fbf5d8 #3a3320 #9a7300 accent #8f6b00, derived. (M4: presets_data_equals_the_oracle)
+- [x] mint, Mint, #e5f6ef #1d3129 #1a8a64 accent #17805c, derived. (M4: presets_data_equals_the_oracle)
+- [x] solarized-dark, Solarized Dark, #002b36 #93a1a1 #93a1a1 accent #268bd2, curated. (M4: presets_data_equals_the_oracle)
+- [x] gruvbox-dark, Gruvbox Dark, #282828 #ebdbb2 #ebdbb2 accent #fe8019, curated. (M4: presets_data_equals_the_oracle)
+- [x] tokyonight, Tokyo Night, #1a1b26 #c0caf5 #c0caf5 accent #7aa2f7, curated. (M4: presets_data_equals_the_oracle)
+- [x] catppuccin-mocha, Catppuccin Mocha, #1e1e2e #cdd6f4 #f5e0dc accent #cba6f7, curated. (M4: presets_data_equals_the_oracle)
+- [x] catppuccin-latte, Catppuccin Latte, #eff1f5 #4c4f69 #8839ef accent #8839ef, curated (cursor is mauve on purpose). (M4: presets_data_equals_the_oracle)
+- [x] monokai, Monokai, #272822 #f8f8f2 #f8f8f0 accent #a6e22e, curated. (M4: presets_data_equals_the_oracle)
+- [x] kanagawa, Kanagawa, #1f1f28 #dcd7ba #c8c093 accent #7e9cd8, curated. (M4: presets_data_equals_the_oracle)
+- [x] cobalt, Cobalt, #193549 #ffffff #ffc600 accent #ffc600, curated. (M4: presets_data_equals_the_oracle)
+- [x] synthwave, Synthwave, #262335 #f0eff1 #ff7edb accent #ff7edb, curated. (M4: presets_data_equals_the_oracle)
+- [x] horizon, Horizon, #1c1e26 #d5d8da #e95678 accent #e95678, curated. (M4: presets_data_equals_the_oracle)
+- [x] nord, Nord, #2e3440 #d8dee9 #d8dee9 no accent, curated. (M4: presets_data_equals_the_oracle)
+- [x] dracula, Dracula, #1e1f29 #f8f8f2 #bbbbbb no accent, curated. (M4: presets_data_equals_the_oracle)
+- [x] Exactly 39 presets, ids and names unique (termThemeRetired.test "is thirty-nine"). (M4: there_are_thirty_nine_presets_with_unique_ids_and_names)
+- [x] Wall order: Custom first when saved, then PT Default, then orderTermThemes: neutral grounds (OKLab chroma below 0.0125) first, then coloured, each black to white by OKLab L, ties keep input order (core/renderer/lib/themeOrder.ts; themeOrder.test snapshot; two-apps.md THE WALL'S ORDER IS MEASURED). (M4: the_wall_is_custom_then_the_default_then_the_rest, holds_the_whole_order)
+- [ ] Wall cards are one height, selected or not, in rows of two or more (e2e themeCards). (open: M7: the theme wall is the settings UI (cards and rows of two))
+- [x] Fresh profile wears PT Default (src/renderer/src/termHost.ts defaults; e2e). (M4: a_fresh_store_wears_pt_default_at_100_percent)
+- [x] Core fallback id is 'prism'; unknown ids and legacy 'style' resolve to host default, then 'prism', then first preset (termTheme.ts resolveSavedTheme; termTheme.test). (M4: pt_default_leads_the_list_and_prism_is_the_core_fallback, an_unknown_id_and_legacy_style_resolve_to_the_host_default)
+- [x] Retired ids map to a kept id at read time (bright-lights, high-contrast to pitch; molokai to monokai; jellybeans, hybrid, afterglow, materialdark to graphite; wombat to pt-default; onehalfdark, ayu, denim, argonaut, adventuretime, ink to prism; espresso to umber; zenburn to moss; full map core/renderer/lib/termThemeRetired.ts; termThemeRetired.test). (M4: each_retired_goes_to_a_listed_theme_and_none_is_listed, retired_map_equals_the_oracle)
 
 ### Resolution, Custom, contrast
 
-- [ ] Preset resolution: fg and cursor as written; ansi = curated or deriveAnsi(bg, fg); then legiblePalette(ansi, bg); selection = `${cursor}55` (termTheme.ts resolveSavedTheme).
-- [ ] Custom resolution: bg opaque; fg legibleOn 4.5; cursor legibleOn 3; selection as set else floored cursor + 55; ansi composited then legiblePalette (termTheme.ts resolveCustomTheme).
-- [ ] Alpha 1 changes nothing: opaque Custom is byte-identical to before (termTheme.snapshot.test, golden fixtures).
-- [ ] Alpha never reduces legibility: every preset saved as Custom at alpha 0.1 to 0.9 keeps text at min(4.5, opaque) - 0.02, cursor min(3, ...), all sixteen 3:1 - 0.01 (termTheme.legible.test).
-- [ ] Every value handed to the renderer is #rrggbb or #rrggbbaa, never rgba() (termTheme.test).
-- [ ] Custom with nothing saved resolves like 'prism'; a hex8 cursor derives a 9-char selection from the opaque floored cursor; a chosen selection is kept (termTheme.test).
-- [ ] Custom storage: one slot; corrupt JSON reads as none; bg or fg not a colour means none; bad cursor falls back to fg; bad selection absent; bad ANSI entries dropped; hex6 and hex8 accepted, stored lowercase (core/renderer/lib/termLook.ts customTermTheme; termLook.test).
-- [ ] Custom keeps the accent of the theme it was made from; an older Custom without accent asks for none (themeDraft.test; termTheme.ts presetAccent).
-- [ ] Custom Save also carries indicator, done and question colour choices, see-through level, accent, selection; never font or size (termLook.ts CustomTermTheme; e2e themeSwitch).
-- [ ] Text floor 4.5:1; mark floor 3:1 (cursor, sixteen, accent line, icons, quiet ink); sidebar tab names 7:1; name flip under 2:1 (termTheme.ts; chromeTheme.ts TEXT_FLOOR, QUIET_FLOOR, SIDE_TEXT_FLOOR; termAnsi.ts ANSI_CONTRAST_FLOOR).
-- [ ] WCAG luminance and contrast ratio exactly as termAnsi.ts luminance and contrastRatio.
-- [ ] ensureContrast mixes toward white or black (whichever contrasts more) in 0.08 steps, up to 24, else the endpoint (termAnsi.ts; termAnsi.test).
-- [ ] deriveAnsi: dark when luminance(bg) <= 0.35; black = mix(bg, fg, 0.18 dark / 0.25 light); brightBlack = ensure(mix(bg, fg, 0.55)); white = ensure(mix(fg, bg, 0.18)); brightWhite = ensure(fg); twelve hue seeds adapted at 3:1 (termAnsi.ts).
-- [ ] Hue seeds: red #e05561, green #8cc265, yellow #d1a54b, blue #4aa5f0, magenta #c162de, cyan #42b3c2; bright #ff616e, #a5e075, #f0c366, #4dc4ff, #de73ff, #4cd1e0 (termAnsi.ts SEEDS).
-- [ ] legiblePalette moves only failing colours, only as far as the floor (termTheme.legible.test; Dracula bright blue stays).
-- [ ] Every preset: sixteen clear 3:1, text 4.5:1, cursor and accent 3:1 (termTheme.legible.test).
-- [ ] normalizeColor accepts #rgb, #rrggbb, #rrggbbaa (alpha dropped), rgb(), rgba(); else falls back, never NaN (termAnsi.ts; termAnsi.test).
-- [ ] nameInk and switchKnob flip only under NAME_FLIP = 2:1 (nameInk.ts, switchKnob.ts; their tests).
-- [ ] Picked ground: text ensured 4.5, cursor and sixteen 3, derived selection follows the floored cursor, a chosen selection is kept; a ground equal to the theme's own returns the theme untouched (core/renderer/lib/termGround.ts; termGround.test; e2e pickedGround).
-- [ ] Mode is measured: light when WCAG luminance of the ground is above 0.4; constants DEFAULT_GROUND #0b0b0f, ON_DARK_INK #0b0b0f, LIGHT_GROUND 0.4 (core/shared/ground.ts; ground.test; chromeTheme.test).
-- [ ] DWM frost light/dark uses Rec.709 luma above 0.5, a different measure, kept as is (src/main/material.ts isLightBg; material.test).
-- [ ] Colour maths: parseColour, format, composite, legibleOn, inkOn, selectionFor, colourCommit, alphaPct, snapAlphaStep, alphaHex (core/renderer/lib/colour.ts; colour.test).
-- [ ] OKLab conversions toLab, fromLab with channel clipping (core/renderer/lib/oklab.ts).
-- [ ] Theme card palette is cached once per preset; cards read five colours with fallbacks (core/renderer/settings/theme/palette.ts cardAnsi).
+- [x] Preset resolution: fg and cursor as written; ansi = curated or deriveAnsi(bg, fg); then legiblePalette(ansi, bg); selection = `${cursor}55` (termTheme.ts resolveSavedTheme). (M4: oracle_every_preset_resolves_as_it_did, resolves_a_preset_with_a_full_sixteen)
+- [x] Custom resolution: bg opaque; fg legibleOn 4.5; cursor legibleOn 3; selection as set else floored cursor + 55; ansi composited then legiblePalette (termTheme.ts resolveCustomTheme). (M4: resolve_custom_equals_what_the_terminal_resolves)
+- [x] Alpha 1 changes nothing: opaque Custom is byte-identical to before (termTheme.snapshot.test, golden fixtures). (M4: oracle_opaque_custom_with_a_failing_cursor)
+- [x] Alpha never reduces legibility: every preset saved as Custom at alpha 0.1 to 0.9 keeps text at min(4.5, opaque) - 0.02, cursor min(3, ...), all sixteen 3:1 - 0.01 (termTheme.legible.test). (M4: a_custom_at_every_alpha_reads, legible_on_is_never_less_legible_than_the_opaque_pick)
+- [x] Every value handed to the renderer is #rrggbb or #rrggbbaa, never rgba() (termTheme.test). (M4: every_resolved_value_is_hex6_or_hex8)
+- [x] Custom with nothing saved resolves like 'prism'; a hex8 cursor derives a 9-char selection from the opaque floored cursor; a chosen selection is kept (termTheme.test). (M4: custom_with_nothing_saved_falls_back_the_same_way, a_hex8_cursor_derives_a_nine_char_selection_from_the_opaque_cursor, a_chosen_selection_is_honoured_and_survives_a_picked_ground)
+- [x] Custom storage: one slot; corrupt JSON reads as none; bg or fg not a colour means none; bad cursor falls back to fg; bad selection absent; bad ANSI entries dropped; hex6 and hex8 accepted, stored lowercase (core/renderer/lib/termLook.ts customTermTheme; termLook.test). (M4: a_corrupt_save_reads_as_no_custom_theme, a_bad_background_or_foreground_is_no_custom_theme, a_bad_cursor_or_selection_reads_as_absent, the_custom_theme_drops_a_bad_ansi_value_and_keeps_the_rest, a_bad_accent_reads_as_absent_and_a_good_one_is_kept)
+- [x] Custom keeps the accent of the theme it was made from; an older Custom without accent asks for none (themeDraft.test; termTheme.ts presetAccent). (M4: a_custom_keeps_the_accent_of_the_theme_it_was_made_from, an_older_custom_with_no_accent_asks_for_none)
+- [x] Custom Save also carries indicator, done and question colour choices, see-through level, accent, selection; never font or size (termLook.ts CustomTermTheme; e2e themeSwitch). (M4: custom_saves_the_ground_opaque, no_extra_carries_an_opacity)
+- [x] Text floor 4.5:1; mark floor 3:1 (cursor, sixteen, accent line, icons, quiet ink); sidebar tab names 7:1; name flip under 2:1 (termTheme.ts; chromeTheme.ts TEXT_FLOOR, QUIET_FLOOR, SIDE_TEXT_FLOOR; termAnsi.ts ANSI_CONTRAST_FLOOR). (M4: every_preset_has_readable_inks_and_a_visible_accent_on_its_own_ground, all_sixteen_of_every_preset_clear_the_floor_against_its_background, the_rule_is_under_2_to_1, the_rule_is_under_2_to_1_for_the_knob)
+- [x] WCAG luminance and contrast ratio exactly as termAnsi.ts luminance and contrastRatio. (M4: luminance_and_ratio_are_wcag)
+- [x] ensureContrast mixes toward white or black (whichever contrasts more) in 0.08 steps, up to 24, else the endpoint (termAnsi.ts; termAnsi.test). (M4: ensure_contrast_returns_the_input_when_it_reads_and_steps_toward_room_otherwise)
+- [x] deriveAnsi: dark when luminance(bg) <= 0.35; black = mix(bg, fg, 0.18 dark / 0.25 light); brightBlack = ensure(mix(bg, fg, 0.55)); white = ensure(mix(fg, bg, 0.18)); brightWhite = ensure(fg); twelve hue seeds adapted at 3:1 (termAnsi.ts). (M4: on_plain_dark_the_seeds_pass_through, on_a_light_background_the_hues_darken_rather_than_invert, holds_over_a_sweep_of_arbitrary_backgrounds)
+- [x] Hue seeds: red #e05561, green #8cc265, yellow #d1a54b, blue #4aa5f0, magenta #c162de, cyan #42b3c2; bright #ff616e, #a5e075, #f0c366, #4dc4ff, #de73ff, #4cd1e0 (termAnsi.ts SEEDS). (M4: on_plain_dark_the_seeds_pass_through, oracle_ansi_vectors)
+- [x] legiblePalette moves only failing colours, only as far as the floor (termTheme.legible.test; Dracula bright blue stays). (M4: legible_palette_keeps_case_and_moves_only_the_failing, legible_palette_leaves_dracula_bright_blue_and_nudges_bright_black)
+- [x] Every preset: sixteen clear 3:1, text 4.5:1, cursor and accent 3:1 (termTheme.legible.test). (M4: all_sixteen_of_every_preset_clear_the_floor_against_its_background, every_presets_cursor_and_accent_can_be_seen_on_its_ground)
+- [x] normalizeColor accepts #rgb, #rrggbb, #rrggbbaa (alpha dropped), rgb(), rgba(); else falls back, never NaN (termAnsi.ts; termAnsi.test). (M4: normalize_passes_hex_expands_short_and_drops_alpha, normalize_flattens_rgb_and_rgba, normalize_unparseable_takes_the_fallback)
+- [x] nameInk and switchKnob flip only under NAME_FLIP = 2:1 (nameInk.ts, switchKnob.ts; their tests). (M4: the_rule_is_under_2_to_1, the_rule_is_under_2_to_1_for_the_knob)
+- [x] Picked ground: text ensured 4.5, cursor and sixteen 3, derived selection follows the floored cursor, a chosen selection is kept; a ground equal to the theme's own returns the theme untouched (core/renderer/lib/termGround.ts; termGround.test; e2e pickedGround). (M4: on_ground_moves_only_what_fails, every_preset_reads_on_a_picked_ground, oracle_picked_grounds, a_derived_selection_follows_the_floored_cursor_on_a_picked_ground, on_ground_leaves_the_theme_alone_with_no_ground_or_its_own)
+- [x] Mode is measured: light when WCAG luminance of the ground is above 0.4; constants DEFAULT_GROUND #0b0b0f, ON_DARK_INK #0b0b0f, LIGHT_GROUND 0.4 (core/shared/ground.ts; ground.test; chromeTheme.test). (M4: ground_mode_is_measured_never_named, light_is_measured_above_luminance_0_4, measures_the_mode_instead_of_trusting_a_name)
+- [x] DWM frost light/dark uses Rec.709 luma above 0.5, a different measure, kept as is (src/main/material.ts isLightBg; material.test). (M4: a_pale_ground_is_light_for_the_frost)
+- [x] Colour maths: parseColour, format, composite, legibleOn, inkOn, selectionFor, colourCommit, alphaPct, snapAlphaStep, alphaHex (core/renderer/lib/colour.ts; colour.test). (M4: parse_reads_every_hex_form_with_or_without_the_hash, to_stored_is_six_digits_when_opaque_and_eight_otherwise, commit_nothing_typed, snap_shows_the_stored_step, oracle_parse_vectors)
+- [x] OKLab conversions toLab, fromLab with channel clipping (core/renderer/lib/oklab.ts). (M4: oracle_oklab_vectors, a_pale_pick_on_a_light_ground_is_darkened)
+- [ ] Theme card palette is cached once per preset; cards read five colours with fallbacks (core/renderer/settings/theme/palette.ts cardAnsi). (open: the once-per-preset cache is the M7 wall's; the fallback per colour is card_ansi_falls_back_per_colour (M4))
 
 ### Chrome tokens
 
-- [ ] Window chrome derives only from the terminal theme (bg, fg, accent or blue or cursor, else INDIGO #5b5bd6) with every ink at a floor (src/renderer/src/lib/chromeTheme.ts; regression-rules theme-drives-chrome).
-- [ ] Token set: the 32 CHROME_COLOUR_TOKENS (--p-bg, --p-bg-solid, --p-side, --p-side-flat, --p-secondary, --p-title, --p-tabs, --p-tab-active, --p-text, --p-text-soft, --p-dim, --p-dim2, --p-accent, --p-accent-solid, --p-accent-hi, --p-on-accent, --p-icon, --p-hover, --p-hover-hi, --p-divider, --p-line, --p-track, --p-control, --p-preview, --p-sel-bg, --p-tree-folder, --p-switch-knob, --p-pressed, --p-pressed-ink, --p-side-text, --p-side-dim), all #rrggbb or #rrggbbaa (chromeTheme.test).
-- [ ] flat = mix(bg, ensure(fg,bg,4.5), 0.04); secondary = sidebarGround(bg); control = mix(bg, fg, light 0.09 / dark 0.035); fg floored against flat, secondary, control, bg (chromeTheme.ts).
-- [ ] Accent order: chosen, theme.blue, theme.cursor, INDIGO; first visible (3:1 on bg and flat) wins else the first lifted to 3:1; a chosen accent that is not visible is only moved (liftToFloor, accentLift.test).
-- [ ] accent-hi = floorOn(mix(solid, fg, 0.25), 3); accent-solid is the line; on-accent ink is the better of #ffffff and #0b0b0f (chromeTheme.ts).
-- [ ] White on a strong mid colour: if white clears 3:1 and 1.5x white beats dark ink, deepen the accent by OKLab L steps of 0.005 (max 40) until white reaches 4.5:1 (chromeTheme.ts; e2e accentAsk).
-- [ ] Selected-row fill (--p-sel-bg) = accent moved 4% toward ink's far end up to 15 steps until on-accent reaches 4.5:1 (chromeTheme.ts).
-- [ ] dim, icon, text-soft, dim2, stage, track, hover, hover-hi, pressed segment and pressed-ink formulas as chromeTheme.ts (light/dark values per source).
-- [ ] --p-switch-knob #0b0b0f on dark, #ffffff on light, flipped only under 2:1 on the ON track (switchKnob.ts; switchAccent.test).
-- [ ] An ON switch track wears --p-sel-bg (regression-rules AN ON SWITCH WEARS THE THEME'S ACCENT).
-- [ ] Sidebar inks: side-text held to 7:1 on sidebar ground and on the 18% accent pill; side-dim to 4.5:1 (chromeTheme.ts sideInks).
-- [ ] Glass (see-through below 100%): --p-bg carries ground alpha, --p-bg-solid stays flat, --p-side and --p-tab-active are transparent, --p-secondary keeps the alpha, --p-title and --p-tabs are the sheet (chromeTheme.test; chromeTheme.opacity.test).
-- [ ] A see-through accent is a fill with its alpha; text chosen by selectionFor over each ground; under glass the fill is flattened; --p-accent-solid stays opaque for lines (chromeTheme.test; e2e accent).
-- [ ] Chosen rail page is a grey hover-hi fill, never the accent; row buttons, pressed segment, dictation buttons are neutral greys; only Save changes and on switches wear the accent (regression-rules SETTINGS CONTROLS ARE NEUTRAL; neutralControls.test).
-- [ ] paintChrome applies once: background pick replaces the theme bg before measuring; sends main the solid ground, edges value and acrylic flag each paint (src/renderer/src/lib/paintChrome.ts).
-- [ ] A theme change reaches running programs as a one-column resize nudge, never a key (regression-rules redraw-nudge; e2e termReplies).
-- [ ] Mark colour floors live here: working = accent; finished = theme green floored 3:1 (fallback #22c55e if under 1.15 from working); question #3b82f6 floored; failed from [theme red, #ef4444, theme magenta, #d946ef] apart from both (src/renderer/src/lib/agentColors.ts; agentColors.test; consumed in M6).
+- [x] Window chrome derives only from the terminal theme (bg, fg, accent or blue or cursor, else INDIGO #5b5bd6) with every ink at a floor (src/renderer/src/lib/chromeTheme.ts; regression-rules theme-drives-chrome). (M4: every_preset_has_readable_inks_and_a_visible_accent_on_its_own_ground, measures_against_a_flat_ground_when_the_theme_publishes_anything_else, follows_the_theme_when_nothing_is_chosen)
+- [x] Token set: the 31 CHROME_COLOUR_TOKENS (--p-bg, --p-bg-solid, --p-side, --p-side-flat, --p-secondary, --p-title, --p-tabs, --p-tab-active, --p-text, --p-text-soft, --p-dim, --p-dim2, --p-accent, --p-accent-solid, --p-accent-hi, --p-on-accent, --p-icon, --p-hover, --p-hover-hi, --p-divider, --p-line, --p-track, --p-control, --p-preview, --p-sel-bg, --p-tree-folder, --p-switch-knob, --p-pressed, --p-pressed-ink, --p-side-text, --p-side-dim), all #rrggbb or #rrggbbaa (chromeTheme.test). (M4: publishes_every_colour_token_the_components_read, every_chrome_token_is_an_in_property_with_its_pt_default)
+- [x] flat = mix(bg, ensure(fg,bg,4.5), 0.04); secondary = sidebarGround(bg); control = mix(bg, fg, light 0.09 / dark 0.035); fg floored against flat, secondary, control, bg (chromeTheme.ts). (M4: oracle_every_preset_four_variants, oracle_alpha_sweep)
+- [x] Accent order: chosen, theme.blue, theme.cursor, INDIGO; first visible (3:1 on bg and flat) wins else the first lifted to 3:1; a chosen accent that is not visible is only moved (liftToFloor, accentLift.test). (M4: wears_a_chosen_accent_exactly_when_the_ground_can_show_it, a_chosen_accent_the_ground_cannot_show_is_moved_to_the_floor_not_swapped, an_accent_too_dark_to_see_is_lifted_to_a_red_not_a_grey, a_pick_that_already_reads_is_left_alone)
+- [x] accent-hi = floorOn(mix(solid, fg, 0.25), 3); accent-solid is the line; on-accent ink is the better of #ffffff and #0b0b0f (chromeTheme.ts). (M4: an_opaque_accent_publishes_its_solid_as_itself, publishes_every_colour_token_the_components_read)
+- [x] White on a strong mid colour: if white clears 3:1 and 1.5x white beats dark ink, deepen the accent by OKLab L steps of 0.005 (max 40) until white reaches 4.5:1 (chromeTheme.ts; e2e accentAsk). (M4: the_ink_on_the_accent_is_white_on_strong_red_or_blue_dark_on_pale)
+- [x] Selected-row fill (--p-sel-bg) = accent moved 4% toward ink's far end up to 15 steps until on-accent reaches 4.5:1 (chromeTheme.ts). (M4: a_pick_is_worn_and_the_inks_are_held_to_it)
+- [x] dim, icon, text-soft, dim2, stage, track, hover, hover-hi, pressed segment and pressed-ink formulas as chromeTheme.ts (light/dark values per source). (M4: oracle_every_preset_four_variants, publishes_every_colour_token_the_components_read)
+- [x] --p-switch-knob #0b0b0f on dark, #ffffff on light, flipped only under 2:1 on the ON track (switchKnob.ts; switchAccent.test). (M4: the_knob_is_black_on_dark_white_on_light, the_knob_flips_only_under_2_to_1_on_the_on_track)
+- [x] An ON switch track wears --p-sel-bg (regression-rules AN ON SWITCH WEARS THE THEME'S ACCENT). (M4: publishes_every_colour_token_the_components_read)
+- [x] Sidebar inks: side-text held to 7:1 on sidebar ground and on the 18% accent pill; side-dim to 4.5:1 (chromeTheme.ts sideInks). (M4: every_preset_is_legible_at_its_default_see_through, every_preset_has_readable_inks_and_a_visible_accent_on_its_own_ground)
+- [x] Glass (see-through below 100%): --p-bg carries ground alpha, --p-bg-solid stays flat, --p-side and --p-tab-active are transparent, --p-secondary keeps the alpha, --p-title and --p-tabs are the sheet (chromeTheme.test; chromeTheme.opacity.test). (M4: paints_a_translucent_ground_only_when_asked, on_glass_it_is_see_through_at_the_grounds_alpha, bg_solid_is_always_flat)
+- [x] A see-through accent is a fill with its alpha; text chosen by selectionFor over each ground; under glass the fill is flattened; --p-accent-solid stays opaque for lines (chromeTheme.test; e2e accent). (M4: see_through_accent_fills_see_through_lines_solid_text_4_5_on_the_composite, under_a_see_through_ground_the_text_fills_are_flattened)
+- [ ] Chosen rail page is a grey hover-hi fill, never the accent; row buttons, pressed segment, dictation buttons are neutral greys; only Save changes and on switches wear the accent (regression-rules SETTINGS CONTROLS ARE NEUTRAL; neutralControls.test). (open: M7: the settings rail and the neutral controls are M7's UI)
+- [x] paintChrome applies once: background pick replaces the theme bg before measuring; sends main the solid ground, edges value and acrylic flag each paint (src/renderer/src/lib/paintChrome.ts). (M4: the_window_clear_is_solid_or_transparent, ground_paint_is_by_ui_only_under_glass, glass_paints_the_ground_once)
+- [x] A theme change reaches running programs as a one-column resize nudge, never a key (regression-rules redraw-nudge; e2e termReplies). (M4: the_nudge_is_one_column_narrower_and_back, push_sends_a_change_once_and_nothing_for_the_same_mode, a_mode_change_pushes_once_then_nudges_one_column_and_back)
+- [x] Mark colour floors live here: working = accent; finished = theme green floored 3:1 (fallback #22c55e if under 1.15 from working); question #3b82f6 floored; failed from [theme red, #ef4444, theme magenta, #d946ef] apart from both (src/renderer/src/lib/agentColors.ts; agentColors.test; consumed in M6). (M4: working_is_the_chrome_accent_of_the_theme, failed_is_the_themes_own_red_where_it_reads_apart_from_the_accent, oracle_agent_colours, oracle_marks_apart)
 
 ### Window colours: Background, Accent, Secondary
 
-- [ ] Three optional overrides, unset means the theme's own; stored #rrggbb or #rrggbbaa lowercase (src/renderer/src/lib/colourPref.ts, accentPrefs.ts, backgroundPrefs.ts, secondaryPrefs.ts and their tests).
-- [ ] Each shows the theme's own colour until picked; then a plain "Reset" forgets it (e2e accent).
-- [ ] Background is opaque in the store, no alpha; Accent has alpha; Secondary styles the sidebar and title bar beside it and sits above Accent (e2e opacityAlpha, windowColoursSave).
-- [ ] Picking a theme forgets Background, Accent, Secondary (unless Custom, which restores what it kept) (regression-rules theme-switch-colours; e2e themeSwitch, windowColoursSave).
-- [ ] Save changes keeps picked window colours with Custom; stored as prism.window.customColours, validated per colour, junk reads none (lib/customWindowColours.ts; customWindowColours.test).
-- [ ] An unpicked working indicator wears the accent; a near-black red accent is lifted to a red, not grey (e2e accent, accentAsk).
+- [x] Three optional overrides, unset means the theme's own; stored #rrggbb or #rrggbbaa lowercase (src/renderer/src/lib/colourPref.ts, accentPrefs.ts, backgroundPrefs.ts, secondaryPrefs.ts and their tests). (M4: accent_follows_the_theme_until_chosen, background_follows_the_theme_and_forgets_on_none, secondary_is_its_own_key_and_reads_like_the_others, accent_remembers_a_colour_in_lower_case)
+- [x] Each shows the theme's own colour until picked; then a plain "Reset" forgets it (e2e accent). (M4: accent_forgets_when_handed_none_and_tells_the_painter_both_times)
+- [x] Background is opaque in the store, no alpha; Accent has alpha; Secondary styles the sidebar and title bar beside it and sits above Accent (e2e opacityAlpha, windowColoursSave). (M4: background_keeps_an_alpha_in_lower_case_and_an_opaque_one_as_six_digits, accent_remembers_an_alpha_and_stores_an_opaque_pick_as_six_digits)
+- [x] Picking a theme forgets Background, Accent, Secondary (unless Custom, which restores what it kept) (regression-rules theme-switch-colours; e2e themeSwitch, windowColoursSave). (M4: custom_keeps_no_window_colours_until_save_keeps_some, unset_colours_follow_the_theme_exactly)
+- [x] Save changes keeps picked window colours with Custom; stored as prism.window.customColours, validated per colour, junk reads none (lib/customWindowColours.ts; customWindowColours.test). (M4: custom_window_colours_read_junk_as_none, custom_keeps_no_window_colours_until_save_keeps_some)
+- [x] An unpicked working indicator wears the accent; a near-black red accent is lifted to a red, not grey (e2e accent, accentAsk). (M4: the_working_colour_follows_the_theme_until_picked_and_can_be_given_back, working_is_the_chrome_accent_of_the_theme)
 
 ### Theme switch, Save changes, editor draft
 
-- [ ] Save changes lights only when settings deviate from the selected theme's stock; comparison by JSON of the extras in field order; a moved see-through slider lights it; a picked Background never does (core/renderer/settings/theme/useTermSetup.ts; useTermSetup.test).
-- [ ] Save changes saves the whole setup as Custom (opaque ground, level in extras) then selects Custom (useTermSetup.ts saveAsCustom).
-- [ ] A theme pick while dirty shows Save as Custom, Discard, Cancel; Escape and outside press cancel; a clean pick lands at once (regression-rules theme-switch-colours; e2e themeSwitch, accentAsk).
-- [ ] A pick resets the extras: indicator to host default, agent colours to '', acrylic removed, see-through 0; rainbow, done, question, failed, hooks are not reset; font and size never (termLook.ts resetTermExtras; termLook.test).
-- [ ] Applying a Custom writes the indicator only where drawn, valid colours only, see-through level or acrylic (termLook.ts applyCustomExtras; termLook.test).
-- [ ] The editor draft: while open the theme in force is the draft for terminal and chrome; in memory only; Save makes it Custom; Cancel drops it; other cards and the preset cache never see it; it survives a tab switch with picker and focus (termLook.ts themeDraft; themeDraft.test; e2e themeEditorLive).
-- [ ] Escape closes the picker and restores the opened colour; open and close with no change stores nothing (e2e colourPicker, themeEditorLive).
-- [ ] Saving the editor keeps the origin theme's accent (e2e themeEditorLive).
-- [ ] Appearance order: Window section (tab position, tab switching, edges), then Theme section (theme row with Save, wall, See-through row, Background, Accent, Secondary) (e2e themeEditorLive; two-apps.md WHAT NO THEME OWNS SITS ABOVE THE THEME WALL).
+- [ ] Save changes lights only when settings deviate from the selected theme's stock; comparison by JSON of the extras in field order; a moved see-through slider lights it; a picked Background never does (core/renderer/settings/theme/useTermSetup.ts; useTermSetup.test). (open: M7: the Save changes light and its dirty rule are the M7 Appearance page (the store half is ported))
+- [x] Save changes saves the whole setup as Custom (opaque ground, level in extras) then selects Custom (useTermSetup.ts saveAsCustom). (M4: custom_saves_the_ground_opaque)
+- [ ] A theme pick while dirty shows Save as Custom, Discard, Cancel; Escape and outside press cancel; a clean pick lands at once (regression-rules theme-switch-colours; e2e themeSwitch, accentAsk). (open: M7: the ask dialog (Save as Custom, Discard, Cancel) is M7; pick_needs_ask is the store half)
+- [x] A pick resets the extras: indicator to host default, agent colours to '', acrylic removed, see-through 0; rainbow, done, question, failed, hooks are not reset; font and size never (termLook.ts resetTermExtras; termLook.test). (M4: a_theme_pick_puts_its_own_level_back_and_a_custom_brings_its_saved_one, no_extra_carries_an_opacity)
+- [x] Applying a Custom writes the indicator only where drawn, valid colours only, see-through level or acrylic (termLook.ts applyCustomExtras; termLook.test). (M4: apply_custom_extras_writes_only_valid_colours)
+- [x] The editor draft: while open the theme in force is the draft for terminal and chrome; in memory only; Save makes it Custom; Cancel drops it; other cards and the preset cache never see it; it survives a tab switch with picker and focus (termLook.ts themeDraft; themeDraft.test; e2e themeEditorLive). (M4: a_draft_is_worn_while_it_is_open, the_draft_is_worn_for_the_theme_in_force_only, preset_accent_follows_the_draft_while_it_is_open)
+- [ ] Escape closes the picker and restores the opened colour; open and close with no change stores nothing (e2e colourPicker, themeEditorLive). (open: M7: the colour picker and the Appearance page are M7)
+- [x] Saving the editor keeps the origin theme's accent (e2e themeEditorLive). (M4: a_custom_keeps_the_accent_of_the_theme_it_was_made_from)
+- [ ] Appearance order: Window section (tab position, tab switching, edges), then Theme section (theme row with Save, wall, See-through row, Background, Accent, Secondary) (e2e themeEditorLive; two-apps.md WHAT NO THEME OWNS SITS ABOVE THE THEME WALL). (open: M7: the Appearance page layout is M7)
 
 ### Colour picker
 
-- [ ] One picker everywhere with alpha on every colour; sliders named "Saturation and brightness", "Hue", "Alpha"; no native colour input (two-apps.md; core/renderer/settings/ColourPicker.tsx; e2e colourPicker).
-- [ ] Formats cycle HEX, RGBA, HSLA then HEX; opens in HEX; junk reads HEX; choice remembered (core/renderer/lib/colourFormat.ts; colourFormat.test).
-- [ ] RGBA shows `rgba(r, g, b, a)`, HSLA `hsla(h, s%, l%, a)`; a typed hsla stores the same hex8 (e2e colourPicker).
-- [ ] Stored form is six lowercase digits when opaque, eight otherwise; alpha is round(a * 255) and every typed byte reads back (colour.test).
-- [ ] Shift+Left walks alpha in steps; one press down from solid lands on 95; below the steps a press moves 1% (colour.test snapAlphaStep).
-- [ ] colourCommit: nothing typed, same colour in another form, or junk commits nothing; no alpha in the code keeps the alpha in force (colour.test).
-- [ ] Settings ask nothing nobody changed: tabbing through a following row never pins it (regression-rules settings-ask-nothing; fields.test).
-- [ ] Eyedropper depends on Chromium EyeDropper; DECISION: open decision O7.
+- [ ] One picker everywhere with alpha on every colour; sliders named "Saturation and brightness", "Hue", "Alpha"; no native colour input (two-apps.md; core/renderer/settings/ColourPicker.tsx; e2e colourPicker). (open: M7: the colour picker widget is M7)
+- [ ] Formats cycle HEX, RGBA, HSLA then HEX; opens in HEX; junk reads HEX; choice remembered (core/renderer/lib/colourFormat.ts; colourFormat.test). (open: M7: colourFormat (the picker's format cycle) is M7)
+- [ ] RGBA shows `rgba(r, g, b, a)`, HSLA `hsla(h, s%, l%, a)`; a typed hsla stores the same hex8 (e2e colourPicker). (open: M7: the picker's text fields are M7)
+- [x] Stored form is six lowercase digits when opaque, eight otherwise; alpha is round(a * 255) and every typed byte reads back (colour.test). (M4: to_stored_is_six_digits_when_opaque_and_eight_otherwise, every_typed_alpha_byte_reads_back_as_itself)
+- [x] Shift+Left walks alpha in steps; one press down from solid lands on 95; below the steps a press moves 1% (colour.test snapAlphaStep). (M4: one_key_press_down_from_solid_lands_on_95, below_the_steps_a_key_press_moves_one_percent)
+- [x] colourCommit: nothing typed, same colour in another form, or junk commits nothing; no alpha in the code keeps the alpha in force (colour.test). (M4: commit_nothing_typed, commit_nothing_for_junk, a_code_with_no_alpha_keeps_the_alpha_in_force)
+- [ ] Settings ask nothing nobody changed: tabbing through a following row never pins it (regression-rules settings-ask-nothing; fields.test). (open: M7: the settings fields (fields.test) are M7)
+- [ ] Eyedropper depends on Chromium EyeDropper; DECISION: open decision O7. (open: open decision O7: the eyedropper is ported in M7 with a Win32 screen pick)
 
 ### Fonts and size
 
-- [ ] 15 faces with fallback stacks, default Cascadia Mono: cascadia, cascadia-code, consolas, jetbrains, jetbrains-nf, fira, source, lucida, courier, ibm-plex, roboto-mono, ubuntu-mono, hack, iosevka, dejavu (termLook.ts TERM_FONTS; the inventory counts 14 or 15, the source has 15 ids). Unknown id reads cascadia (termFontId).
-- [ ] Each font option is drawn in its own face (e2e term-font-family).
-- [ ] Font and size belong to no theme (termLook.test).
-- [ ] Base 13 px at 100%, px = round(13 * pct / 100); sizes 50 to 200 in tens, label "N%"; an off-list value reads the nearest step, out of range or junk reads 100 (termLook.ts FONT_PCTS, termFontPct; termLook.test).
-- [ ] Ctrl+scroll zooms this session only, 7 to 64 px, one per notch, never saved, never sent to the program; a plain wheel stays with the program or scrollback (TerminalPanel wheel listener, zoomSession).
-- [ ] Changing size or family refits every open session (TerminalPanel).
-- [ ] A missing face falls through its stack quietly; theme-wall previews use installed monospace faces (two-apps.md).
+- [x] 15 faces with fallback stacks, default Cascadia Mono: cascadia, cascadia-code, consolas, jetbrains, jetbrains-nf, fira, source, lucida, courier, ibm-plex, roboto-mono, ubuntu-mono, hack, iosevka, dejavu (termLook.ts TERM_FONTS; the inventory counts 14 or 15, the source has 15 ids). Unknown id reads cascadia (termFontId). (M4: fifteen_faces_cascadia_first, every_stack_names_its_face_first_and_falls_through, an_unknown_id_reads_cascadia, oracle_fonts_equal)
+- [ ] Each font option is drawn in its own face (e2e term-font-family). (open: M7: the font option list is M7's Appearance UI)
+- [x] Font and size belong to no theme (termLook.test). (M4: a_theme_leaves_the_font_and_its_size_alone)
+- [x] Base 13 px at 100%, px = round(13 * pct / 100); sizes 50 to 200 in tens, label "N%"; an off-list value reads the nearest step, out of range or junk reads 100 (termLook.ts FONT_PCTS, termFontPct; termLook.test). (M4: defaults_are_cascadia_100_percent_of_13_px, a_size_maps_to_pixels, sizes_run_50_to_200_in_tens_and_an_old_step_lands_on_the_nearest, an_off_menu_percentage_falls_back_to_100)
+- [x] Ctrl+scroll zooms this session only, 7 to 64 px, one per notch, never saved, never sent to the program; a plain wheel stays with the program or scrollback (TerminalPanel wheel listener, zoomSession). (M4: ctrl_wheel_up_zooms_in_one_notch_down_zooms_out, zoom_stops_at_7_and_64, zoom_is_never_saved, the_override_is_per_tab, a_plain_wheel_stays_with_the_program_or_the_scrollback, zoom_clamps_7_to_64_one_per_notch)
+- [x] Changing size or family refits every open session (TerminalPanel). (M4: a_size_change_refits_every_open_tab, changing_the_family_changes_the_grid_face_and_refits)
+- [x] A missing face falls through its stack quietly; theme-wall previews use installed monospace faces (two-apps.md). (M4: a_missing_face_falls_through_quietly)
 
 ### Acrylic, see-through, material
 
-- [ ] Material exists only on Windows 11 build 22000+ (src/main/material.ts acrylicOk; material.test); on Windows 10 the row reads "Needs Windows 11." and is disabled.
-- [ ] Acrylic is on only when wanted, supported, not full screen, and no full-screen change pending (material.ts apply).
-- [ ] Material before colour: set the backdrop first, then the ground colour ('#00000000' for acrylic) (regression-rules material-before-colour).
-- [ ] The material is set only on change per window (material.ts worn).
-- [ ] Full screen: the window goes opaque before the OS is asked, back on settle (material.ts beforeFullscreen).
-- [ ] See-through slider 0 to 70, 0 is solid, label "Off" at 0 else "N%", step 1; ground alpha = 1 - level/100; stored clamped, never stored reads 0 (termLook.ts SEE_THROUGH_TOP, seeThroughLevel; e2e seeThrough). Row "See-through window", sub "How much of the desktop shows behind every surface."
-- [ ] Strip, top row, rail and page each show the desktop through one coat at the slider value; a picked colour wears the level (e2e seeThrough).
-- [ ] Each theme's own see-through is 0; Custom keeps its own (termLook.ts termExtraDefaults).
-- [ ] Legacy import from PT, once before first paint: switch + alpha becomes level round((1-alpha)*100) clamped 1-70; Opacity N becomes alpha byte, clamped 30-100; Custom folds its bg alpha into seeThrough; old keys removed (seeThroughMigration.ts, opacityMigration.ts; their tests; e2e opacityAlpha).
-- [ ] Opaque ground under see-through: default dark 0xb9, light 0xd1 by luminance above 0.4; unparseable reads dark (core/renderer/lib/seeThrough.ts; seeThrough.test). Keep for import only.
-- [ ] Glass fills are flattened onto the solid ground where text sits (chromeTheme.ts).
-- [ ] Not ported: the Prism-style switch and style-owned glass (host specific).
+- [x] Material exists only on Windows 11 build 22000+ (src/main/material.ts acrylicOk; material.test); on Windows 10 the row reads "Needs Windows 11." and is disabled. (M4: acrylic_ok_is_windows_11_and_later_by_build, acrylic_ok_is_not_windows_10)
+- [x] Acrylic is on only when wanted, supported, not full screen, and no full-screen change pending (material.ts apply). (M4: glass_is_on_only_when_wanted_supported_not_fullscreen_and_no_change_pending, glass_plan_needs_the_gpu_and_the_22h2_backdrop)
+- [x] Material before colour: set the backdrop first, then the ground colour ('#00000000' for acrylic) (regression-rules material-before-colour). (M4: order_only_material_first_when_glass_turns_on, going_glass_sets_the_frost_then_the_backdrop)
+- [x] The material is set only on change per window (material.ts worn). (M4: the_backdrop_is_set_only_on_a_change)
+- [x] Full screen: the window goes opaque before the OS is asked, back on settle (material.ts beforeFullscreen). (M4: full_screen_goes_opaque_before_the_os_is_asked_and_back_on_settle, fullscreen_holds_the_material_off_until_settled)
+- [x] See-through slider 0 to 70, 0 is solid, label "Off" at 0 else "N%", step 1; ground alpha = 1 - level/100; stored clamped, never stored reads 0 (termLook.ts SEE_THROUGH_TOP, seeThroughLevel; e2e seeThrough). Row "See-through window", sub "How much of the desktop shows behind every surface." (M4: see_through_reads_clamped_and_nonsense_as_zero, the_slider_level_is_clamped_and_junk_reads_zero, the_cap_sits_below_opaque_and_above_both_defaults, ground_alpha_is_one_minus_the_level)
+- [x] Strip, top row, rail and page each show the desktop through one coat at the slider value; a picked colour wears the level (e2e seeThrough). (M4: glass_paints_the_ground_once, a_level_paints_the_ground_at_one_minus_level_and_turns_glass_on)
+- [x] Each theme's own see-through is 0; Custom keeps its own (termLook.ts termExtraDefaults). (M4: see_through_is_zero_by_default_and_the_window_solid, no_extra_carries_an_opacity)
+- [ ] Legacy import from PT, once before first paint: switch + alpha becomes level round((1-alpha)*100) clamped 1-70; Opacity N becomes alpha byte, clamped 30-100; Custom folds its bg alpha into seeThrough; old keys removed (seeThroughMigration.ts, opacityMigration.ts; their tests; e2e opacityAlpha). (open: M7: the PT import (seeThroughMigration, opacityMigration) is M7 with the import; the pure paints_alpha rule is ported)
+- [x] Opaque ground under see-through: default dark 0xb9, light 0xd1 by luminance above 0.4; unparseable reads dark (core/renderer/lib/seeThrough.ts; seeThrough.test). Keep for import only. (M4: the_default_levels_are_prisms_two_as_they_paint, light_is_measured_above_luminance_0_4, an_unparseable_ground_reads_as_dark)
+- [x] Glass fills are flattened onto the solid ground where text sits (chromeTheme.ts). (M4: under_a_see_through_ground_the_text_fills_are_flattened)
+- [ ] Not ported: the Prism-style switch and style-owned glass (host specific). (open: dropped by design, host specific: Flare has no Prism-style switch and no style-owned glass)
 
 ### Window edges and DWM border
 
-- [ ] Edges choice weakest to strongest: None, Faint, Hairline (default), Solid; unknown reads Hairline; nothing stored until chosen (src/shared/windowEdges.ts; windowEdges.test; edgesPrefs.test; e2e edges).
-- [ ] Line alphas (ink percent): hairline divider 7 dark / 15 light, line 9 / 17; faint 2.2 / 5 and 3 / 6.5; solid 16 / 26 and 18 / 28; none 0 (windowEdges.ts EDGE_ALPHA; e2e edges).
-- [ ] None keeps tokens as transparent colours so layout does not move; only the two line tokens change (windowEdges.test; chromeTheme.test).
-- [ ] DWM border step off the ground: hairline 0.13 dark / 0.22 light; faint 0.045 / 0.075; solid 0.30 / 0.44; none no border; maximised or full screen no border (windowEdges.ts EDGE_BORDER_STEP; src/main/windowEdge.ts edgeFor; windowEdge.test).
-- [ ] Border re-applied 250 ms after every material or ground change (windowEdge.ts).
-- [ ] COLORREF is 0x00BBGGRR; DWMWA_BORDER_COLOR 34, none -2; failures are silent (src/main/dwmHelper.ts; dwmHelper.test).
-- [ ] Edges are off under the test flag (windowEdge.ts header).
-- [ ] The DWM helper is a direct in-process call in Flare, not a PowerShell helper (dropped launch test).
+- [x] Edges choice weakest to strongest: None, Faint, Hairline (default), Solid; unknown reads Hairline; nothing stored until chosen (src/shared/windowEdges.ts; windowEdges.test; edgesPrefs.test; e2e edges). (M4: edges_are_offered_weakest_to_strongest_by_every_number, default_to_hairline_and_read_anything_else_as_it, edges_read_an_unknown_word_as_the_default_and_never_store_one, edges_are_a_hairline_until_chosen)
+- [x] Line alphas (ink percent): hairline divider 7 dark / 15 light, line 9 / 17; faint 2.2 / 5 and 3 / 6.5; solid 16 / 26 and 18 / 28; none 0 (windowEdges.ts EDGE_ALPHA; e2e edges). (M4: numbers_match_the_prism_terminal_tables, edges_move_the_two_line_tokens_and_nothing_else)
+- [x] None keeps tokens as transparent colours so layout does not move; only the two line tokens change (windowEdges.test; chromeTheme.test). (M4: no_edges_is_a_transparent_colour_never_a_missing_one, none_faint_hairline_solid_order_on_both_line_tokens)
+- [x] DWM border step off the ground: hairline 0.13 dark / 0.22 light; faint 0.045 / 0.075; solid 0.30 / 0.44; none no border; maximised or full screen no border (windowEdges.ts EDGE_BORDER_STEP; src/main/windowEdge.ts edgeFor; windowEdge.test). (M4: a_dark_ground_gets_a_lighter_edge, a_light_ground_gets_a_darker_edge, faint_stands_off_less_than_a_hairline_and_solid_more, no_edges_is_no_border_whatever_the_ground, maximised_or_full_screen_has_no_border)
+- [x] Border re-applied 250 ms after every material or ground change (windowEdge.ts). (M4: apply_is_debounced_250_ms, a_new_apply_restarts_the_wait)
+- [x] COLORREF is 0x00BBGGRR; DWMWA_BORDER_COLOR 34, none -2; failures are silent (src/main/dwmHelper.ts; dwmHelper.test). (M4: colorref_has_red_in_the_low_byte, the_dwm_wrappers_do_not_panic_on_a_bad_handle)
+- [x] Edges are off under the test flag (windowEdge.ts header). (M4: e2e_disables_the_border, disabled_makes_no_call)
+- [x] The DWM helper is a direct in-process call in Flare, not a PowerShell helper (dropped launch test). (M4: the_dwm_wrappers_do_not_panic_on_a_bad_handle)
 
 ## M5: Selection, paste, drop, find, links, keyboard
 
@@ -1197,3 +1197,27 @@ only O17's artwork waits for the owner.
   behind the scrim (Slint has none), and the names keep the brighter ink; Q2 the +N button is a fixed
   72 px box (D6), say if it should be content-sized; Q3 the Ctrl+W label reads "Ctrl+W" (the
   Prism Terminal menu said Ctrl+Shift+W); both keys close the tab, and Ctrl+W is assumed.
+
+M4 owner questions (none blocks M4; recorded by the M4 planner, 2026-10-17):
+- Q1 See-through on the software renderer (D5): it stays solid and says so. A second presenter (a layered window with per-pixel alpha) would give it glass but replaces Slint's presenter; say if you want that in M10.
+- Q2 Windows 11 21H2 (D6): the material needs 22H2, so 21H2 reads "Needs Windows 11 22H2." Say if 21H2 matters.
+- Q3 The reference app is Prism Terminal 0.58.0, not 0.55.6 (D14). Differences between them are recorded as version drift, not as defects.
+- Q4 The transparent DirectComposition swapchain (D8) is used from start on Windows 11 with the GPU renderer so the slider works without a restart. Say if you would rather have glass only after a restart.
+
+M4 planner decisions D1 to D16 (taken by the builder, for the owner to overrule; the M4 plan's "Decisions taken by the planner" section holds the full text):
+- D1 fixtures come from Prism Terminal's code, not typed numbers: `tools/oracle` writes the fixtures and the generated `presets_data.rs` and `fonts_data.rs`.
+- D2 `flare-theme` is pure and depends on nothing; the `TermTheme` to `Palette` conversion lives in the binary (`chrome_apply::palette_of`).
+- D3 all of Prism Terminal's `colour.test.ts` ports into `flare-theme` (colourCommit, alphaPct and snapAlphaStep too); `seeThrough.test` ports there. The import migrations, `colourFormat` and `termPrefs` stay in M7.
+- D4 the ground is painted by the UI when the window is see-through (`paintsGround`); at 100 percent the grid paints its own opaque ground.
+- D5 see-through needs the GPU renderer; the software presenter has no alpha, so the window stays solid there (Q1).
+- D6 two Windows gates: `acrylic_ok` (build 22000) decides the "Windows 11" text; `system_backdrop_ok` (build 22621) lets Flare make the DWM call (Q2).
+- D7 material before colour, natively: going glass calls the backdrop first, then lowers the UI ground alpha; leaving glass raises the UI first, then removes the backdrop.
+- D8 the window is created transparent whenever glass could ever be used (GPU and the 22H2 gate); the ground stays opaque until the slider moves (Q4).
+- D9 theme state lives in `flare-settings::look::LookStore` over M3's `PrefStore`, under `flare.*` keys (O10); the editor draft is memory only.
+- D10 a Custom with a sixteen-colour entry missing draws that slot in `pt-default`'s colour.
+- D11 a terminal face is the first installed face of its stack; a stack with no installed face falls to the first monospace face quietly.
+- D12 chrome tokens stay Prism Terminal's strings (`--p-...`) inside `flare-theme`; `chrome_apply` parses them once. The Slint property is the token name without `--p-` (`ground` and `ground-solid` are the two exceptions).
+- D13 a developer way to wear a theme until M7: `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`; F9 and Shift+F9 walk the wall, F8 steps the see-through by 10 (both with the F12 overlay open). They write the store.
+- D14 reference screenshots come from the installed Prism Terminal 0.58.0, driven by Playwright in a throwaway profile (Q3).
+- D15 no `regex` crate in `flare-theme`; the parsers are hand-written and tested against the 28 parse vectors.
+- D16 `edge_for` (the DWM border colour) lives in `flare-win::window_edge`, reading the step table from `flare-theme::edges`.

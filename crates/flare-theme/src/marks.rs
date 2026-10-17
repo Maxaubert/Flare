@@ -334,9 +334,7 @@ mod tests {
     fn the_rainbow_is_the_icons_seven_in_order() {
         assert_eq!(
             ICON_RAINBOW,
-            [
-                "#12cee5", "#2179fa", "#945af5", "#e84fd2", "#fb7f6c", "#f0a934", "#e8d021"
-            ]
+            ["#12cee5", "#2179fa", "#945af5", "#e84fd2", "#fb7f6c", "#f0a934", "#e8d021"]
         );
     }
 
@@ -397,10 +395,8 @@ mod tests {
             rainbow_gradient(&["#111111", "#222222"], Axis::X),
             "linear-gradient(90deg, #111111, #222222, #111111)"
         );
-        assert!(
-            rainbow_gradient(&["#111111", "#222222"], Axis::Y)
-                .starts_with("linear-gradient(180deg, ")
-        );
+        assert!(rainbow_gradient(&["#111111", "#222222"], Axis::Y)
+            .starts_with("linear-gradient(180deg, "));
     }
 
     #[test]

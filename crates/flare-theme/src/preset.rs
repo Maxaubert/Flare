@@ -33,7 +33,7 @@ pub fn find_preset(id: &str) -> Option<&'static Preset> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::{ANSI_KEYS, contrast_ratio};
+    use crate::ansi::{contrast_ratio, ANSI_KEYS};
     use crate::ground::DEFAULT_GROUND;
     use crate::testutil::fixture;
     use std::collections::HashSet;

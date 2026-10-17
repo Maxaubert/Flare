@@ -77,14 +77,14 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-render | `core/renderer/lib/termLinkPaint.test.ts` | port | painter rules; DOM decorations become grid colour overlays |
 | flare-render | `src/renderer/src/lib/devicePixels.test.ts` | port | edges end on a whole device pixel at any scale |
 | flare-settings | `core/main/atomicWrite.test.ts` | port | no temp file left, create new, save off-thread, newest of a burst wins, saveNow on disk at return |
-| flare-settings | `core/renderer/host.test.ts` | port (split) | see-through slider cases go to flare-settings and flare-theme; the host-seam and Prism-style cases are dropped |
+| flare-settings | `core/renderer/host.test.ts` | port (split) | see-through slider cases go to flare-settings (T16); the `paintsAlpha` case is flare-theme (M4 T11b); the host-seam and Prism-style cases are dropped |
 | flare-settings | `core/renderer/lib/colourFormat.test.ts` | port | HEX/RGBA/HSLA cycle, junk reads HEX, remembered choice |
 | flare-settings | `core/renderer/lib/helpPrefs.test.ts` | port | help on by default, shell choice, width default and clamp, listeners |
 | flare-settings | `core/renderer/lib/prefStore.test.ts` | port | enum and bool prefs, defaults, byte-for-byte keys, listeners, blocked store |
 | flare-settings | `core/renderer/lib/recentRoots.pins.test.ts` | port | pin toggle, order, pins outlive history |
 | flare-settings | `core/renderer/lib/recentRoots.test.ts` | port | cap 12, dedupe, parent labels, storage nonsense |
-| flare-settings | `core/renderer/lib/seeThrough.test.ts` | port | default levels 0xb9 dark and 0xd1 light, light by luminance; used by the PT import |
-| flare-settings | `core/renderer/lib/termLook.test.ts` | port (split) | prefs, font steps, custom parse, indicator, colours with alpha, applyCustomExtras, rainbow here; ground-alpha cases in flare-theme; Prism host-config branches dropped; duplicate "colours with alpha" block merged |
+| flare-theme | `core/renderer/lib/seeThrough.test.ts` | port | default levels 0xb9 dark and 0xd1 light, light by luminance (M4 D3: moved from flare-settings to flare-theme, where the default levels feed `ground_alpha`); used by the PT import |
+| flare-settings | `core/renderer/lib/termLook.test.ts` | port (split) | prefs, custom parse, indicator, ground alpha and applyCustomExtras in flare-settings (T16); font steps and faces in flare-theme (T8); Prism host-config branches dropped; duplicate "colours with alpha" block merged; rainbow and the switches are M6 (D9); the split is reworded in M4 (M4 ledger) |
 | flare-settings | `core/renderer/lib/termPrefs.test.ts` | port | saved shell id, undefined until chosen, in the Flare settings file |
 | flare-settings | `core/renderer/settings/fields.test.ts` | port | colour commit rules: nothing typed, same colour, typed alpha |
 | flare-settings | `core/renderer/settings/layout/search.test.ts` | port | word-prefix match, folding, label-first ranking, hidden keywords |
@@ -131,7 +131,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-term | `core/shared/termVersion.test.ts` | port | version constants match the crate and renderer versions |
 | flare-term | `core/shared/webUrl.test.ts` | port | isWebUrl for OSC 8 and link opening |
 | flare-term | `src/main/nodePtyPin.test.ts` | dropped | node-pty pin; Flare pins portable-pty and the bundled conpty.dll in Cargo.lock and adds a test for the bundled DLL instead |
-| flare-theme | `core/renderer/lib/colour.test.ts` | port (split) | colour maths, legibility, alpha steps here; colourCommit, alphaPct, snapAlphaStep in flare-settings |
+| flare-theme | `core/renderer/lib/colour.test.ts` | port | all 39 in flare-theme (M4 D3): colour maths, legibility, alpha steps, colourCommit, alphaPct and snapAlphaStep (the ledger's flare-settings part moved here) |
 | flare-theme | `core/renderer/lib/ground.test.ts` | port | DEFAULT_GROUND, prism preset equality, ground constants |
 | flare-theme | `core/renderer/lib/markColours.test.ts` | port | rainbow seven, floorMark on light and dark grounds, unreachable floor, gradients, opaqueOver |
 | flare-theme | `core/renderer/lib/markPalette.test.ts` | port | palette lines, ink, fills, rainbow fill, loops |
@@ -148,7 +148,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-theme | `src/renderer/src/lib/accentLift.test.ts` | port | near-black accent lifted to a visible red |
 | flare-theme | `src/renderer/src/lib/agentColors.test.ts` | port | working = accent, finished, question and failed colours per theme preset; marksApart |
 | flare-theme | `src/renderer/src/lib/chromeTheme.opacity.test.ts` | port | ground alpha as a byte, opacity migration snapshot values (case list not enumerated; read the file) |
-| flare-theme | `src/renderer/src/lib/chromeTheme.test.ts` | port | 21 cases: chromeTokens, edges, see-through accent, custom floors, secondary, light controls, switch knob |
+| flare-theme | `src/renderer/src/lib/chromeTheme.test.ts` | port | 30 cases (M4 T12; was 21): chromeTokens, edges, see-through accent, custom floors, secondary, light controls, switch knob |
 | flare-theme | `src/renderer/src/lib/sidebarGround.test.ts` | port | sidebar ground one OKLab step darker, black kept (case list not enumerated; read the file) |
 | flare-theme | `src/renderer/src/lib/switchAccent.test.ts` | port | on switch fill is the accent, knob rule (case list not enumerated; read the file) |
 | flare-theme | `src/shared/windowEdges.test.ts` | port | four words weakest to strongest, none has no border, default hairline, unknown reads hairline |
@@ -162,7 +162,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-win | `core/main/ipc.clipboard.test.ts` | port | exact text, refuse non-string, empty or over cap, bell calls host attention once; IPC wrapper dropped |
 | flare-win | `src/main/argv.test.ts` | port | argv parsing, relative paths, drive-root quote, ARGV_MAX, own-entry skip by identity, switches skipped |
 | flare-win | `src/main/bellFlash.test.ts` | port | flash only when unfocused, stop on focus, handler registered once, no window is a no-op |
-| flare-win | `src/main/dwmHelper.test.ts` | port (partial) | COLORREF arithmetic and handle read ported; the "-Command not -EncodedCommand" launch test dropped (Flare calls DWM in process) |
+| flare-win | `src/main/dwmHelper.test.ts` | port (partial) | COLORREF arithmetic ported; the native-buffer handle read is dropped (an `isize` is handed over, no helper process); the "-Command not -EncodedCommand" launch test dropped (Flare calls DWM in process) |
 | flare-win | `src/main/e2eClipboard.test.ts` | port | in-memory clipboard stand-in under the test flag, re-expressed as a trait |
 | flare-win | `src/main/edgeWatch.test.ts` | port | cursor reading at the window edge, far-cursor watch for reveal zones |
 | flare-win | `src/main/material.test.ts` | port | Windows 11 build check, validBg, isLightBg for frost; the Electron mock is dropped |
@@ -260,3 +260,55 @@ Tests for `tabMark.test.ts` and `TabMark.test.ts` in flare cover the mark spec; 
 | `src/renderer/src/components/modals.test.ts` | dropped | | React source scan; replaced by `only_dialog_slint_declares_a_scrim` |
 
 Total M3 PT test files: 33 touched (31 ported in whole or part, 2 dropped), plus 3 deferred by group to M5, M6, M7.
+
+## M4 ledger
+
+Prism Terminal v0.55.6 test files that the M4 areas map to (Appendix A of the M4 plan, copied verbatim). The rows above that M4 changed carry "M4" in their text.
+
+`n` = Prism Terminal `it(...)` cases (an `it.each` over the presets counts once). "Flare" = the test names in the task's table (the
+task is the authority). Dropped = not ported, with the reason. The last column names the `docs/test-port.md` row Task 32 changes.
+
+| PT test file | n | Flare crate and task | Flare tests / note | Ledger row change |
+|---|---|---|---|---|
+| `core/renderer/lib/termAnsi.test.ts` | 9 | flare-theme, T3 | all 9 + 3 new + the oracle vectors | none |
+| `core/renderer/lib/colour.test.ts` | 39 | flare-theme, T4 (13) and T9 (26) | all 39; D3 | `flare-settings` part moves to `flare-theme` |
+| `core/renderer/lib/ground.test.ts` | 3 | flare-theme, T5 | the source scans re-expressed over `crates/*/src` | none |
+| `core/renderer/lib/termThemeRetired.test.ts` | 5 | flare-theme, T5 (4) and T10 (1) | all 5 + the oracle's 31 pairs | none |
+| `core/renderer/lib/termTheme.legible.test.ts` | 7 | flare-theme, T5 (4) and T10 (3) | all 7 | none |
+| `core/renderer/lib/termTheme.test.ts` | 12 | flare-theme, T10 | 11 ported; "what xterm is handed" becomes `every_resolved_value_is_hex6_or_hex8` (no xterm) | none |
+| `core/renderer/lib/termTheme.snapshot.test.ts` | 3 | flare-theme, T10 | the three snapshots become `oracle_*` tests against PT's own answers (verified equal to its `.snap`) | none |
+| `core/renderer/lib/termGround.test.ts` | 3 | flare-theme, T10 | all 3 + the oracle vectors | none |
+| `core/renderer/lib/themeDraft.test.ts` | 6 | flare-theme, T10 (4 pure) and flare-settings, T16 (the store half) | all 6 | none |
+| `core/renderer/lib/themeOrder.test.ts` | 8 | flare-theme, T7 | all 8 (the snapshot is the explicit list) | none |
+| `core/renderer/lib/nameInk.test.ts` | 6 | flare-theme, T11 | all 6 | none |
+| `core/renderer/lib/switchKnob.test.ts` | 4 | flare-theme, T11 | all 4 | none |
+| `core/renderer/lib/markColours.test.ts` | 8 | flare-theme, T11 | all 8 | none |
+| `core/renderer/lib/markPalette.test.ts` | 7 | flare-theme, T11 | all 7 | none |
+| `core/renderer/lib/seeThrough.test.ts` | 5 | flare-theme, T11b | all 5; D3 | `flare-settings` -> `flare-theme` |
+| `core/renderer/lib/termLinks.test.ts` (linkColor group) | 5 | flare-theme, T11b | all 5 (findLinks is M5) | none |
+| `core/renderer/lib/termReplies.test.ts` (themePush, nudgeWidths; groundMode on the real presets) | 6 (+3) | flare-theme, T11b (themePush 4, nudgeWidths 2) and T11 (`ground_mode` 1 test over the real presets); flare-term, T11c (the cross-crate agreement) | M2 already ported the colour-query, DSR/DECRQM/params, XTVERSION, bell and (with fixed values) `ground_mode` groups into `flare-term/src/replies.rs`; T11c makes that one use flare-theme's measure | the `termReplies` rows say "(flare-theme, M4)" for the two deferred groups: unchanged |
+| `core/renderer/host.test.ts` (the see-through slider group) | 9 | flare-settings, T16 (7); T11b (`paintsAlpha` 1) | the host seam and Prism-style cases and the channel table are dropped (one host, no IPC table) | the row says the `paintsAlpha` case is flare-theme (T11b) |
+| `core/renderer/lib/termLook.test.ts` | 34 | flare-theme T8 (sizes, faces), T11b (levels), flare-settings T16 (stores, ground alpha) | dropped: "acrylic is off until asked for" (no switch in Flare) and the duplicate "colours with alpha" block (6 cases + the second `termGroundAlpha`; the block is ported once); the Prism host-config branches of the indicator cases are re-expressed for Flare's one host (T16 `readIndicator choices`); "the legacy opacity reads never-set as opaque" goes to M7 with the import; "keeps the rainbow on by default" goes to M6 with the switches (D9); "nothing writes an opacity" is T16 `no_extra_carries_an_opacity` | the row's split is reworded: font steps and faces in flare-theme (T8), ground alpha in flare-settings (T16), not the other way round |
+| `core/renderer/lib/colourFormat.test.ts` | 4 | flare-settings, M7 | with the picker | none |
+| `core/renderer/settings/theme/useTermSetup.test.ts` | 4 | flare-settings, T16 | all 4 | none |
+| `src/renderer/src/lib/chromeTheme.test.ts` | 30 | flare-theme, T12 | all (the `index.css` fallbacks test becomes T22's `every_chrome_token_is_an_in_property_with_its_pt_default`; "reads anything it does not know as the default" is T6's `default_to_hairline_and_read_anything_else_as_it`) | the row's "21 cases" becomes "30 cases" |
+| `src/renderer/src/lib/chromeTheme.opacity.test.ts` | 2 | flare-theme, T12 | `oracle_alpha_sweep`, `oracle_every_preset_four_variants` (verified equal to PT's `.snap`, 0 differences) | none |
+| `src/renderer/src/lib/sidebarGround.test.ts` | 2 | flare-theme, T7 and T12 | both | none |
+| `src/renderer/src/lib/accentLift.test.ts` | 4 | flare-theme, T7 (2, as 3 tests) and T12 (2) | all 4 | none |
+| `src/renderer/src/lib/switchAccent.test.ts` | 2 | flare-theme, T12 | both | none |
+| `src/renderer/src/lib/agentColors.test.ts` | 7 | flare-theme, T13 | all 7 | none |
+| `src/shared/windowEdges.test.ts` | 3 | flare-theme, T6 | all 3 | none |
+| `src/renderer/src/lib/accentPrefs.test.ts` | 5 | flare-settings, T15 | all 5 | none |
+| `src/renderer/src/lib/backgroundPrefs.test.ts` | 4 | flare-settings, T15 | all 4 | none |
+| `src/renderer/src/lib/customWindowColours.test.ts` | 3 | flare-settings, T15 | all 3 | none |
+| `src/renderer/src/lib/edgesPrefs.test.ts` | 4 | flare-settings, T15 | all 4 | none |
+| `src/renderer/src/lib/opacityMigration.test.ts` | 15 | flare-settings, M7 | with the import | none |
+| `src/renderer/src/lib/seeThroughMigration.test.ts` | 9 | flare-settings, M7 | with the import | none |
+| `src/main/material.test.ts` | 5 | flare-win, T17 | all 5 + 10 new | none |
+| `src/main/dwmHelper.test.ts` | 4 | flare-win, T18 | 1 ported (COLORREF); the native-buffer handle read and the two PowerShell launch tests are dropped (an `isize` is handed over; no helper process) | the "port (partial)" note is reworded |
+| `src/main/windowEdge.test.ts` | 7 | flare-win, T18 | all 7 (the unknown-word case is the enum) + applier tests | none |
+| (no PT test: `secondaryPrefs.ts`, `paintChrome.ts`, `sidebarGround` first group, `lookApply.ts`) | 0 | T15 (secondary), T14 and T26 (paint, once per turn), T7 | new tests named in the tasks | none |
+
+Counts: the files above hold about 290 PT cases. 28 are deferred to M7 (`colourFormat`, `opacityMigration`, `seeThroughMigration`), about 12 are dropped
+as named (the acrylic-switch cases, the duplicate "colours with alpha" block, three `dwmHelper` tests), and the rest, about 250, are ported. The new
+Flare-only tests (oracle vectors, state machines, wiring) are listed per task; Task 32 reports the exact numbers from `cargo nextest`.
