@@ -34,24 +34,44 @@ pub fn shell_by_id<'a>(id: Option<&str>, list: &'a [ShellDef]) -> Option<&'a She
 }
 
 /// PowerShell 7's full path out of `where pwsh.exe` output: the first non-empty trimmed line that is an
-/// absolute Windows path (drive form `X:\` or `X:/`, or starting with `\\`, `//`, `\` or `/`) and whose
-/// parent folder is NOT `cwd` (compare lower-cased, trailing backslashes removed; the parent is the text before the last
-/// '\' or '/'). None when there is no such line.
-pub fn pwsh_path(where_out: &str, cwd: &str) -> Option<String> {
-    let norm = |s: &str| s.to_lowercase().trim_end_matches('\\').to_string();
-    let cwd = norm(cwd);
+/// absolute Windows path (drive form `X:\` or `X:/`, or starting with `\\`, `//`, `\` or `/`) whose
+/// CANONICAL form (via `canon`: 8.3 names, trailing dots and `..` resolved) is not inside the canonical
+/// `cwd` or any subfolder of it. A line that cannot be canonicalised is rejected. Returns the canonical
+/// path. None when there is no such line.
+pub fn pwsh_path(
+    where_out: &str,
+    cwd: &str,
+    canon: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let cwd_c = canon(cwd).unwrap_or_else(|| cwd.to_string());
     where_out
         .lines()
         .map(str::trim)
         .filter(|line| is_absolute_windows_path(line))
-        .find(|line| {
-            let parent = match line.rfind(['\\', '/']) {
-                Some(i) => &line[..i],
-                None => "",
-            };
-            norm(parent) != cwd
-        })
-        .map(str::to_string)
+        .filter_map(canon)
+        .find(|cand| !is_inside(cand, &cwd_c))
+}
+
+/// True when `path` is `dir` or lies under it (case-insensitive, either slash, trailing slashes ignored).
+fn is_inside(path: &str, dir: &str) -> bool {
+    let norm = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let (p, d) = (norm(path), norm(dir));
+    if d.is_empty() {
+        return false;
+    }
+    p == d || p.starts_with(&format!("{d}\\"))
+}
+
+/// The real canonical path: `std::fs::canonicalize` with the `\\?\` verbatim prefix removed.
+pub fn canonical_path(p: &str) -> Option<String> {
+    let c = std::fs::canonicalize(p) // sync-ok: detect worker only
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    Some(match c.strip_prefix("\\\\?\\UNC\\") {
+        Some(rest) => format!("\\\\{rest}"),
+        None => c.strip_prefix("\\\\?\\").unwrap_or(&c).to_string(),
+    })
 }
 
 fn is_absolute_windows_path(line: &str) -> bool {
@@ -143,31 +163,113 @@ mod tests {
         assert!(shell_by_id(None, &[]).is_none());
     }
 
+    /// A fake canonicaliser: strips trailing dots and spaces per segment, maps 8.3 names.
+    fn canon(p: &str) -> Option<String> {
+        let p = p.replace('/', "\\").replace("DOWNLO~1", "Downloads");
+        let segs: Vec<&str> = p
+            .split('\\')
+            .map(|s| {
+                if s.chars().all(|c| c == '.') {
+                    s
+                } else {
+                    s.trim_end_matches(['.', ' '])
+                }
+            })
+            .collect();
+        Some(segs.join("\\"))
+    }
+
+    const GOOD: &str = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
+
     #[test]
     fn pwsh_path_skips_the_current_directory() {
-        let out = "C:\\Downloads\\evil\\pwsh.exe\r\nC:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n";
+        let out = format!("C:\\Downloads\\evil\\pwsh.exe\r\n{GOOD}\r\n");
         assert_eq!(
-            pwsh_path(out, "C:\\Downloads\\evil"),
-            Some("C:\\Program Files\\PowerShell\\7\\pwsh.exe".to_string())
+            pwsh_path(&out, "C:\\Downloads\\evil", &canon),
+            Some(GOOD.to_string())
         );
         assert_eq!(
-            pwsh_path(
-                "C:\\Program Files\\PowerShell\\7\\pwsh.exe\n",
-                "C:\\Users\\me"
-            ),
-            Some("C:\\Program Files\\PowerShell\\7\\pwsh.exe".to_string())
+            pwsh_path(&format!("{GOOD}\n"), "C:\\Users\\me", &canon),
+            Some(GOOD.to_string())
         );
     }
 
     #[test]
-    fn pwsh_path_is_none_when_where_finds_nothing() {
-        assert!(pwsh_path("", "C:\\x").is_none());
+    fn pwsh_path_rejects_a_cwd_subfolder() {
+        let out = format!("C:\\Downloads\\evil\\bin\\deep\\pwsh.exe\n{GOOD}\n");
+        assert_eq!(
+            pwsh_path(&out, "C:\\Downloads\\evil", &canon),
+            Some(GOOD.to_string())
+        );
         assert!(
             pwsh_path(
-                "INFO: Could not find files for the given pattern(s).",
-                "C:\\x"
+                "C:\\Downloads\\evil\\bin\\pwsh.exe\n",
+                "C:\\Downloads\\evil",
+                &canon
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn pwsh_path_rejects_8dot3_and_trailing_dot_variants_of_cwd() {
+        for cand in [
+            "C:\\DOWNLO~1\\evil\\pwsh.exe",
+            "C:\\Downloads.\\evil\\pwsh.exe",
+            "C:\\Downloads\\evil.\\pwsh.exe",
+            "C:/Downloads/EVIL/pwsh.exe",
+        ] {
+            assert!(
+                pwsh_path(cand, "C:\\Downloads\\evil", &canon).is_none(),
+                "{cand}"
+            );
+        }
+        // the cwd given in 8.3 form is canonicalised too
+        assert!(
+            pwsh_path(
+                "C:\\Downloads\\evil\\pwsh.exe",
+                "C:\\DOWNLO~1\\evil",
+                &canon
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn pwsh_path_rejects_what_cannot_be_canonicalised() {
+        assert!(pwsh_path(GOOD, "C:\\x", &|_| None).is_none());
+    }
+
+    #[test]
+    fn a_sibling_folder_sharing_a_name_prefix_is_not_inside() {
+        assert!(!is_inside(
+            "C:\\Downloads\\evil2\\pwsh.exe",
+            "C:\\Downloads\\evil"
+        ));
+        assert!(is_inside(
+            "c:\\downloads\\EVIL\\a\\pwsh.exe",
+            "C:\\Downloads\\evil\\"
+        ));
+    }
+
+    #[test]
+    fn pwsh_path_is_none_when_where_finds_nothing() {
+        assert!(pwsh_path("", "C:\\x", &canon).is_none());
+        assert!(
+            pwsh_path(
+                "INFO: Could not find files for the given pattern(s).",
+                "C:\\x",
+                &canon
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn canonical_path_strips_the_verbatim_prefix() {
+        let c =
+            canonical_path(&std::env::var("SystemRoot").unwrap_or("C:\\Windows".into())).unwrap();
+        assert!(!c.starts_with("\\\\?\\"), "{c}");
+        assert!(canonical_path("C:\\definitely\\not\\here").is_none());
     }
 }

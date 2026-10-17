@@ -11,6 +11,8 @@ pub struct SysTools {
     pub where_exe: String,
     pub wsl: String,
     pub reg: String,
+    /// `%ProgramFiles%\PowerShell\7\pwsh.exe`, the preferred PowerShell 7.
+    pub pwsh7: String,
 }
 
 /// root = the SystemRoot folder, e.g. "C:\\Windows" (a trailing backslash is ignored).
@@ -23,6 +25,7 @@ pub fn sys_tools_for(system_root: &str) -> SysTools {
         where_exe: format!("{system32}\\where.exe"),
         wsl: format!("{system32}\\wsl.exe"),
         reg: format!("{system32}\\reg.exe"),
+        pwsh7: "C:\\Program Files\\PowerShell\\7\\pwsh.exe".to_string(),
     }
 }
 
@@ -35,7 +38,14 @@ pub fn sys_tools() -> &'static SysTools {
             .filter_map(|name| std::env::var(name).ok())
             .find(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "C:\\Windows".to_string());
-        sys_tools_for(&root)
+        let mut t = sys_tools_for(&root);
+        if let Ok(pf) = std::env::var("ProgramFiles")
+            && !pf.trim().is_empty()
+        {
+            let pf = pf.trim_end_matches(['\\', '/']);
+            t.pwsh7 = format!("{pf}\\PowerShell\\7\\pwsh.exe");
+        }
+        t
     })
 }
 

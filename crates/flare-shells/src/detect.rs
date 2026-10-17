@@ -1,7 +1,7 @@
 //! Shell detection: a Probe trait (fakeable), the real child-process probe with a timeout,
 //! `detect_shells_with` and the once-per-run cache.
 
-use crate::list::{ShellDef, parse_wsl_list, pwsh_path};
+use crate::list::{ShellDef, canonical_path, parse_wsl_list, pwsh_path};
 use crate::prompt::{PS_FILE_STYLE, PS_PROMPT_HOOK};
 use crate::sys::{SysTools, sys_tools};
 use std::io::Read;
@@ -21,6 +21,22 @@ pub struct ProbeResult {
 
 pub trait Probe: Send + Sync {
     fn run(&self, exe: &str, args: &[&str]) -> ProbeResult;
+    /// Whether a file exists (the preferred PowerShell 7 path).
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).is_file() // sync-ok: runs on the detect worker
+    }
+    /// The canonical form of a path, None when it does not exist.
+    fn canonical(&self, path: &str) -> Option<String> {
+        canonical_path(path) // sync-ok: runs on the detect worker
+    }
+}
+
+/// The folder a probe runs in: the folder of its executable (System32), never Flare's own current
+/// folder, because `where.exe` and CreateProcess search the current folder first.
+pub fn probe_dir(exe: &str) -> Option<&str> {
+    exe.rfind(['\\', '/'])
+        .map(|i| &exe[..i])
+        .filter(|d| !d.is_empty())
 }
 
 /// Real child process: no window, stdin and stderr null, stdout piped and read on a thread.
@@ -42,7 +58,11 @@ impl Probe for RealProbe {
             ok: false,
             stdout: Vec::new(),
         };
-        let Ok(mut child) = Command::new(exe)
+        let mut cmd = Command::new(exe);
+        if let Some(dir) = probe_dir(exe) {
+            cmd.current_dir(dir);
+        }
+        let Ok(mut child) = cmd
             .args(args)
             .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
@@ -114,11 +134,18 @@ fn decode_utf16le(bytes: &[u8]) -> String {
 pub fn detect_shells_with(probe: &dyn Probe, sys: &SysTools, cwd: &str) -> Vec<ShellDef> {
     let mut list = Vec::new();
 
-    let where_result = probe.run(&sys.where_exe, &["pwsh.exe"]);
-    let pwsh = if where_result.ok {
-        pwsh_path(&String::from_utf8_lossy(&where_result.stdout), cwd)
+    // The standard install wins; only then ask where.exe (run in System32, results kept out of cwd).
+    let pwsh = if probe.exists(&sys.pwsh7) {
+        Some(sys.pwsh7.clone())
     } else {
-        None
+        let where_result = probe.run(&sys.where_exe, &["pwsh.exe"]);
+        if where_result.ok {
+            pwsh_path(&String::from_utf8_lossy(&where_result.stdout), cwd, &|p| {
+                probe.canonical(p)
+            })
+        } else {
+            None
+        }
     };
     if let Some(exe) = pwsh {
         list.push(ShellDef {
@@ -198,6 +225,7 @@ mod tests {
         wsl_out: ProbeResult,
         calls: Mutex<Vec<(String, Vec<String>)>>,
         sys: SysTools,
+        pwsh7_exists: bool,
     }
 
     impl Fake {
@@ -213,11 +241,18 @@ mod tests {
                 },
                 calls: Mutex::new(Vec::new()),
                 sys: sys_tools_for("C:\\Windows"),
+                pwsh7_exists: false,
             }
         }
     }
 
     impl Probe for Fake {
+        fn exists(&self, path: &str) -> bool {
+            self.pwsh7_exists && path == self.sys.pwsh7
+        }
+        fn canonical(&self, path: &str) -> Option<String> {
+            Some(path.replace('/', "\\").replace("DOWNLO~1", "Downloads"))
+        }
         fn run(&self, exe: &str, args: &[&str]) -> ProbeResult {
             self.calls.lock().unwrap().push((
                 exe.to_string(),
@@ -253,6 +288,37 @@ mod tests {
         assert_eq!(l[0].exe, PWSH);
         assert_eq!(l[1].exe, f.sys.powershell);
         assert_eq!(l[2].exe, f.sys.cmd);
+    }
+
+    #[test]
+    fn the_program_files_pwsh_wins_and_where_is_not_asked() {
+        let mut f = Fake::new(true, "C:\\Downloads\\evil\\pwsh.exe\n", false, vec![]);
+        f.pwsh7_exists = true;
+        let l = detect_shells_with(&f, &f.sys, "C:\\Downloads\\evil");
+        assert_eq!(l[0].exe, f.sys.pwsh7);
+        assert!(
+            f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(e, _)| *e != f.sys.where_exe)
+        );
+    }
+
+    #[test]
+    fn a_pwsh_planted_in_the_current_folder_is_never_listed() {
+        let f = Fake::new(true, "C:\\DOWNLO~1\\evil\\pwsh.exe\n", false, vec![]);
+        let l = detect_shells_with(&f, &f.sys, "C:\\Downloads\\evil");
+        assert_eq!(ids(&l), ["powershell", "cmd"]);
+    }
+
+    #[test]
+    fn probes_run_in_the_tool_folder_never_the_current_one() {
+        assert_eq!(
+            probe_dir("C:\\Windows\\System32\\where.exe"),
+            Some("C:\\Windows\\System32")
+        );
+        assert_eq!(probe_dir("where.exe"), None);
     }
 
     #[test]
