@@ -390,6 +390,7 @@ impl GpuPainter {
         for attempt in 0..2 {
             let mut out = Vec::with_capacity(scene.glyphs.len());
             let mut full = false;
+            let mut skipped = 0usize;
             for draw in &scene.glyphs {
                 match self.atlas.get(&draw.key, glyphs) {
                     Ok(Some(s)) => out.push(GlyphInstance {
@@ -421,11 +422,16 @@ impl GpuPainter {
                             full = true;
                             break;
                         }
-                        log::warn!("glyph atlas full after a clear, glyph skipped");
+                        skipped += 1;
                     }
                 }
             }
             if !full {
+                if skipped > 0 {
+                    log::warn!(
+                        "glyph atlas full after a clear, {skipped} glyphs skipped this frame"
+                    );
+                }
                 return out;
             }
             self.atlas.clear();

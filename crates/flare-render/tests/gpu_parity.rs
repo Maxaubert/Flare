@@ -157,5 +157,8 @@ fn atlas_full_recovers() {
         .collect();
     let mut gpu = GpuPainter::new(&device, &queue);
     let tex = gpu.paint(&scene, &mut FakeGlyphs::new(40, 40));
-    assert_eq!(read_texture(&device, &queue, &tex).len(), 2048 * 2048 * 4);
+    let px = read_texture(&device, &queue, &tex);
+    assert_eq!(px.len(), 2048 * 2048 * 4);
+    // Glyph 0 alone covers (0,0); it has a valid slot only if the rebuild after the clear worked.
+    assert_eq!(px[..4], [p.fg.r, p.fg.g, p.fg.b, 255]);
 }
