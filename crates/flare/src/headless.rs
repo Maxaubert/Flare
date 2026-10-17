@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use flare_agent::kinds::AgentKind;
+use flare_agent::kinds::{AgentKind, DetectedAgent};
 use flare_render::gpu::headless_device;
 use flare_render::grid::Grid;
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
@@ -508,10 +508,13 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             (SavedTabs { tabs, active: 0 }, prep)
         }
         "marks-icons" => {
+            // Clawd, the OpenAI mark (Flare, a Codex tab), the prompt (docs, a plain shell) and,
+            // staged, the cog of Settings.
             let tabs = vec![
                 mark_tab("Prism", claude),
                 mark_tab("Flare", codex),
                 mark_tab("Sonara", None),
+                mark_tab("docs", None),
             ];
             (SavedTabs { tabs, active: 0 }, no_prefs)
         }
@@ -536,10 +539,11 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             let tabs = vec![mark_tab("Prism", claude), mark_tab("Flare", claude)];
             (SavedTabs { tabs, active: 1 }, no_prefs)
         }
-        // marks-close: one working Claude tab.
+        // marks-close: one working Claude tab. Saved as a plain shell, so it is not coming back to
+        // a session: the question stands over the shell, not over a resume skeleton.
         _ => (
             SavedTabs {
-                tabs: vec![mark_tab("Prism", claude)],
+                tabs: vec![mark_tab("Prism", None)],
                 active: 0,
             },
             no_prefs,
@@ -571,11 +575,22 @@ fn mark_plan(name: &str) -> Vec<(String, &'static str)> {
         "marks-icons" => vec![("Prism", working), ("Flare", question), ("Sonara", done)],
         // The hidden tabs carry the states: the +N list shows them and the +N control shows a dot
         // of each mark colour.
+        // More tabs need you than the strip has room for: the hidden ones are rows of the list and
+        // dots on the +N control, one per mark colour.
         "marks-overflow" => vec![
+            ("Tab04", question),
+            ("Tab05", done),
+            ("Tab06", failed),
+            ("Tab07", question),
+            ("Tab08", done),
+            ("Tab09", failed),
             ("Tab10", working),
+            ("Tab11", question),
+            ("Tab12", failed),
             ("Tab13", question),
             ("Tab14", done),
-            ("Tab16", failed),
+            ("Tab15", failed),
+            ("Tab16", question),
         ],
         "marks-tip" => vec![("Prism", working), ("Flare", question), ("api", failed)],
         "marks-close" => vec![("Prism", working)],
@@ -1195,6 +1210,21 @@ impl Scene {
     /// motion pinned to the named phase (spinner at 0 degrees, the run bar at half, the rainbow at
     /// flow 0 or 57 px). Nothing advances the clock after that, so the phase holds.
     fn stage_marks(&self, name: &str) -> Result<(), String> {
+        // The Codex tab is told by the process poll before its signal arrives, as a real one is.
+        if matches!(name, "marks-icons" | "marks-sidebar" | "marks-sidebar-bar") {
+            let codex = github("Flare");
+            let rows = self.app.get_tab_rows();
+            let id = (0..rows.row_count())
+                .filter_map(|i| rows.row_data(i))
+                .find(|r| r.tip.as_str() == codex)
+                .map(|r| r.id.to_string())
+                .ok_or("the scene has no Codex tab")?;
+            let mut ctl = self.ctl.borrow_mut();
+            ctl.hub_mut()
+                .queue_poll_answer(&id, true, Some(DetectedAgent::Codex));
+            ctl.hub_mut().drain_poll();
+            ctl.refresh();
+        }
         for (cwd, osc) in mark_plan(name) {
             self.feed(&cwd, osc)?;
         }
@@ -1240,6 +1270,9 @@ impl Scene {
             }
             _ => {}
         }
+        // The close X slides out of a tab that just got a ring (150 ms): let it finish, as it would
+        // on screen, before the motion is pinned.
+        self.advance(200);
         self.pump();
         let g = self.app.global::<MarkMotion>();
         g.set_still(false);
@@ -1416,7 +1449,12 @@ mod tests {
             "--scale",
             &scale.to_string(),
             "--size",
-            "1000x640",
+            // As `run_scene`: sixteen tabs overflow a 700 px strip.
+            if name == "marks-overflow" {
+                "700x640"
+            } else {
+                "1000x640"
+            },
             "--renderer",
             "software",
         ]
@@ -1472,6 +1510,229 @@ mod tests {
                 checked += 1;
             }
             assert!(checked >= 3, "at scale {scale} only {checked} marked tabs");
+        }
+    }
+
+    /// The straight RGB of device pixel (x, y).
+    fn rgb(scene: &Scene, pixels: &[u8], x: usize, y: usize) -> [u8; 3] {
+        let p = (y * scene.phys.0 as usize + x) * 4;
+        [pixels[p], pixels[p + 1], pixels[p + 2]]
+    }
+
+    fn saturation(c: [u8; 3]) -> u8 {
+        c.iter().max().unwrap() - c.iter().min().unwrap()
+    }
+
+    /// The columns (device px, counted back from the tab's right edge) in the last 28 css px of strip
+    /// tab `i` (its end box and padding, never its name) that hold any ink between the strip's
+    /// rows 8 and 28 css.
+    fn end_ink(scene: &Scene, pixels: &[u8], i: usize) -> Vec<usize> {
+        let s = scene.scale;
+        let rows = scene.app.get_tab_rows();
+        let row = rows.row_data(i).expect("a row");
+        let right = (scene.strip_css(row.x + row.w) * s).round() as usize - 2;
+        let ground = rgb(scene, pixels, right - 1, (4.0 * s) as usize);
+        let mut cols = Vec::new();
+        for back in 0..(28.0 * s) as usize {
+            let x = right - back;
+            let inked = ((8.0 * s) as usize..(28.0 * s) as usize).any(|y| {
+                let c = rgb(scene, pixels, x, y);
+                c.iter().zip(ground).any(|(a, b)| a.abs_diff(b) > 24)
+            });
+            if inked {
+                cols.push(back);
+            }
+        }
+        cols
+    }
+
+    /// Task 34 (the screenshots showed the front `tools` tab with both its spinner and the close X):
+    /// a ringed tab hides its X until hovered, so the front working tab's end draws exactly what a
+    /// working tab behind it draws, at every scaling.
+    #[test]
+    fn a_ringed_front_tab_shows_its_ring_and_no_close_at_every_scale() {
+        for scale in MARK_BAR_SCALES {
+            let (scene, pixels) = staged_marks("marks-ring", scale);
+            let rows = scene.app.get_tab_rows();
+            let front = (0..rows.row_count())
+                .find(|&i| rows.row_data(i).is_some_and(|r| r.active))
+                .expect("a front tab");
+            assert_eq!(
+                rows.row_data(front).unwrap().mark_state,
+                1,
+                "the front tab works"
+            );
+            // The same shape; a tab one device pixel wider may place it one pixel further in.
+            let shape = |cols: Vec<usize>| {
+                let first = cols.first().copied().unwrap_or(0);
+                (
+                    first,
+                    cols.into_iter().map(|c| c - first).collect::<Vec<_>>(),
+                )
+            };
+            let (at_front, front_shape) = shape(end_ink(&scene, &pixels, front));
+            let (at_back, back_shape) = shape(end_ink(&scene, &pixels, 0));
+            assert!(
+                front_shape == back_shape && at_front.abs_diff(at_back) <= 1,
+                "at scale {scale} the front tab's end is not the spinner alone: {at_front} {front_shape:?} vs {at_back} {back_shape:?}"
+            );
+        }
+    }
+
+    /// Task 34 (the Codex tab wore Clawd and no shell tab was in the strip): `marks-icons` shows the
+    /// OpenAI mark in the ink on the Codex tab and the prompt on a shell tab, neither in Clawd's orange.
+    #[test]
+    fn the_icons_scene_shows_clawd_openai_and_the_prompt() {
+        for scale in [1.0, 1.5, 2.25] {
+            let (scene, pixels) = staged_marks("marks-icons", scale);
+            let s = scene.scale;
+            let rows = scene.app.get_tab_rows();
+            let mut kinds = Vec::new();
+            for i in 0..rows.row_count() {
+                let row = rows.row_data(i).unwrap();
+                if row.settings {
+                    continue;
+                }
+                // The icon: 18 css px from the tab's 10 px padding, centred on the strip.
+                let x0 = ((scene.strip_css(row.x) + 9.0) * s) as usize;
+                let (mut orange, mut ink) = (0, 0);
+                for y in (8.0 * s) as usize..(28.0 * s) as usize {
+                    for x in x0..x0 + (20.0 * s) as usize {
+                        let c = rgb(&scene, &pixels, x, y);
+                        if c[0].abs_diff(0xd7) < 12
+                            && c[1].abs_diff(0x77) < 12
+                            && c[2].abs_diff(0x57) < 12
+                        {
+                            orange += 1;
+                        } else if saturation(c) < 16 && c[0] > 0x80 {
+                            ink += 1;
+                        }
+                    }
+                }
+                kinds.push((row.label.to_string(), orange > 10, ink > 10));
+            }
+            let claude = kinds.iter().filter(|k| k.1).count();
+            let inked = kinds.iter().filter(|k| !k.1 && k.2).count();
+            assert!(claude >= 1, "at {scale} no Clawd: {kinds:?}");
+            assert!(
+                inked >= 2,
+                "at {scale} no OpenAI mark and prompt in the ink: {kinds:?}"
+            );
+        }
+    }
+
+    /// Task 34 (the +N button had no dots: every tab that needed you fitted in the strip): the
+    /// overflow scene hides tabs that need you, so the button shows the question's and the failed
+    /// tab's colours.
+    #[test]
+    fn the_overflow_button_shows_the_mark_colours_of_hidden_tabs() {
+        for scale in [1.0, 1.75, 3.0] {
+            let (scene, pixels) = staged_marks("marks-overflow", scale);
+            let s = scene.scale;
+            let g = scene.app.get_strip_geom();
+            let x0 = (scene.strip_css(g.more_x) * s) as usize;
+            let x1 = (scene.strip_css(g.more_x + g.more_w) * s) as usize;
+            let mut seen = Vec::new();
+            for y in (8.0 * s) as usize..(28.0 * s) as usize {
+                for x in x0..x1 {
+                    let c = rgb(&scene, &pixels, x, y);
+                    if saturation(c) > 120 {
+                        seen.push(c);
+                    }
+                }
+            }
+            let blue = seen.iter().any(|c| c[2] > 0xe0 && c[0] < 0x60);
+            let red = seen
+                .iter()
+                .any(|c| c[0] > 0xf0 && c[1] < 0x70 && c[2] < 0x70);
+            assert!(
+                blue && red,
+                "at {scale} the +N dots: blue {blue}, red {red}"
+            );
+        }
+    }
+
+    /// Task 34 (with four dots the +N button's count touched its left edge: the button kept the
+    /// plan's 72 px while Prism Terminal's grows to its content, `px-2`): the count and the chevron
+    /// keep at least 6 css px from the button's edges, at every scaling.
+    #[test]
+    fn the_overflow_button_keeps_its_padding_with_four_dots() {
+        for scale in MARK_BAR_SCALES {
+            let (scene, pixels) = staged_marks("marks-overflow", scale);
+            let s = scene.scale;
+            let g = scene.app.get_strip_geom();
+            assert_eq!(g.dots.row_count(), 4, "four dots");
+            let x0 = (scene.strip_css(g.more_x) * s).round() as usize;
+            let x1 = (scene.strip_css(g.more_x + g.more_w) * s).round() as usize;
+            let ground = rgb(&scene, &pixels, (x0 + x1) / 2, (6.0 * s) as usize);
+            let inked: Vec<usize> = (x0..x1)
+                .filter(|&x| {
+                    ((10.0 * s) as usize..(26.0 * s) as usize).any(|y| {
+                        let c = rgb(&scene, &pixels, x, y);
+                        c.iter().zip(ground).any(|(a, b)| a.abs_diff(b) > 40)
+                    })
+                })
+                .collect();
+            let (first, last) = (inked[0], inked[inked.len() - 1]);
+            let pad = (6.0 * s).floor() as usize;
+            assert!(
+                first - x0 >= pad && x1 - 1 - last >= pad,
+                "at {scale}: ink {first}..{last} in the button {x0}..{x1}"
+            );
+        }
+    }
+
+    /// Task 34 (the close question stood over a resume skeleton while its tab already worked): the
+    /// grid behind the dialog is the shell's, so the skeleton's first line is not drawn.
+    #[test]
+    fn the_close_scene_has_no_skeleton_behind_the_question() {
+        let (scene, pixels) = staged_marks("marks-close", 1.5);
+        let s = scene.scale;
+        // The skeleton's first line: x 16..80 css, 11 px tall from y 52; its gap below at y 66.
+        let line = rgb(&scene, &pixels, (60.0 * s) as usize, (57.0 * s) as usize);
+        let gap = rgb(&scene, &pixels, (60.0 * s) as usize, (66.0 * s) as usize);
+        let ground = rgb(&scene, &pixels, (900.0 * s) as usize, (600.0 * s) as usize);
+        assert!(
+            !(line != gap && gap == ground),
+            "a skeleton line at the top of the grid: {line:?} over {gap:?}"
+        );
+    }
+
+    /// Task 34 (the sidebar's rainbow had a ground-coloured column at 175%): no device pixel
+    /// inside a Bar line is the ground, in the strip or the sidebar, at every scaling.
+    #[test]
+    fn the_rainbow_line_has_no_gap_at_any_scale() {
+        for name in ["marks-bar", "marks-bar-flow", "marks-sidebar-bar"] {
+            for scale in MARK_BAR_SCALES {
+                let (scene, pixels) = staged_marks(name, scale);
+                let (w, h) = (scene.phys.0 as usize, scene.phys.1 as usize);
+                let s = scene.scale as f64;
+                // The strip's rows, or the sidebar's column (the terminal's coloured text is not a mark).
+                let (xs, ys) = if name == "marks-sidebar-bar" {
+                    ((220.0 * s) as usize, (420.0 * s) as usize)
+                } else {
+                    (w, (40.0 * s) as usize)
+                };
+                for y in 0..h.min(ys) {
+                    let sat: Vec<u8> = (0..xs)
+                        .map(|x| saturation(rgb(&scene, &pixels, x, y)))
+                        .collect();
+                    // Only a row a line runs along (an icon's few coloured pixels are not one).
+                    if sat.iter().filter(|&&v| v > 90).count() < (100.0 * s) as usize {
+                        continue;
+                    }
+                    // A seam: one or two ground columns with the line's colour on both sides.
+                    let seams: Vec<usize> = (1..xs - 2)
+                        .filter(|&x| {
+                            sat[x] < 40 && sat[x - 1] > 90 && (sat[x + 1] > 90 || sat[x + 2] > 90)
+                        })
+                        .collect();
+                    assert!(
+                        seams.is_empty(),
+                        "{name} at {scale}, row {y}: ground at {seams:?}"
+                    );
+                }
+            }
         }
     }
 

@@ -227,8 +227,7 @@ impl AgentHub {
         self.poll = Some(ctl);
     }
 
-    /// A poll answer as the worker would queue it.
-    #[cfg(test)]
+    /// A poll answer as the worker would queue it (the tests and the headless scenes).
     pub(crate) fn queue_poll_answer(&self, id: &str, present: bool, kind: Option<DetectedAgent>) {
         let _ = self.tx.send(PollMsg {
             id: id.to_string(),

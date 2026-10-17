@@ -148,16 +148,18 @@ export component MarkBar inherits Rectangle {
         opacity: (root.state == 2 && !MarkMotion.still) ? MarkMotion.breathe : 1.0;
     }
     // The finished rainbow: six tiles of one tab (114 px) each sliding right one tile per lap.
+    // Every edge of the ribbon and its 42 pieces is a whole device pixel (Task 34: at 175% a piece
+    // ending mid-pixel left a column of the ground between two pieces in the software renderer).
     if root.ribbon-on : Rectangle {
-        x: (MarkMotion.still || !root.have) ? -114px : -114px + MarkMotion.flow * 1px;
+        x: Px.snap((MarkMotion.still || !root.have) ? -114px : -114px + MarkMotion.flow * 1px);
         y: 0px;
         width: 6 * 114px;
         height: root.height;
         // One two-stop gradient per seventh of a tile: the software renderer drops the spans of a
         // gradient with eight stops, a two-stop one is exact in both renderers.
         for i in 42 : Rectangle {
-            x: i * (114px / 7);
-            width: 114px / 7;
+            x: Px.snap(i * (114px / 7));
+            width: Px.snap((i + 1) * (114px / 7)) - Px.snap(i * (114px / 7));
             height: root.height;
             background: @linear-gradient(90deg, root.stop(mod(i, 7)), root.stop(mod(i, 7) + 1));
         }

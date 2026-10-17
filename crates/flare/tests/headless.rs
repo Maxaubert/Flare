@@ -654,11 +654,13 @@ fn the_marks_scenes_differ_from_each_other() {
     let (_a, ring) = scene_png("marks-ring", "1");
     let (_b, bar) = scene_png("marks-bar", "1");
     let (_c, flow) = scene_png("marks-bar-flow", "1");
-    // Measured 2380 pixels on the seven-tab strip (four marked tabs and the rainbow): the plan's
-    // 3000 was a guess, so the bar is the measured count with margin.
+    // Measured 1614 pixels on the seven-tab strip (four 3 px lines, the run bars, the four rings)
+    // since Task 34 lets the marks settle 200 ms before the shot (the 2380 of Task 33 counted
+    // frames still mid-animation): the plan's 3000 was a guess, so the bar is the measured count
+    // with margin.
     let marks = differing(&ring, &bar).len();
     assert!(
-        marks > 2000,
+        marks > 1200,
         "Ring and Bar draw different marks: {marks} pixels"
     );
     // Only the finished tab's rainbow line moves between flow 0 and flow 57: its foot band.

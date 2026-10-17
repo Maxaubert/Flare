@@ -15,6 +15,21 @@ pub const ICON_TAB: f64 = 40.0;
 /// The +N button, with its count, dots and chevron.
 pub const MORE_BUTTON: f64 = 72.0;
 
+/// The +N button's own width in css px, never under `MORE_BUTTON`: Prism Terminal's button is
+/// sized by its content (`px-2`, the 12 px semibold count, `gap-1.5`, up to four 6 px dots 3 px
+/// apart, the 11 px chevron), so four dots widen it past the plan's 72 (M6 Task 34: at 72 the
+/// count touched the button's left edge). A count character is taken as 7 px.
+pub fn more_button_css(hidden: usize, dots: usize) -> f64 {
+    let count = 7.0 * (1 + hidden.max(1).to_string().len()) as f64;
+    let dots = dots.min(4);
+    let dots_w = if dots == 0 {
+        0.0
+    } else {
+        (dots * 9 - 3) as f64 + 6.0
+    };
+    (8.0 + count + 6.0 + dots_w + 11.0 + 8.0).max(MORE_BUTTON)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripSlot {
     Full,
@@ -158,5 +173,14 @@ mod tests {
     #[test]
     fn no_tabs_no_plan() {
         assert!(plan_strip(&[], None, &set(&[]), 500.0).is_empty());
+    }
+
+    #[test]
+    fn the_more_button_grows_with_its_dots_and_never_under_72() {
+        assert_eq!(more_button_css(8, 0), MORE_BUTTON);
+        assert_eq!(more_button_css(8, 1), MORE_BUTTON);
+        // 8 + "+8" 14 + 6 + four dots 33 + 6 + chevron 11 + 8.
+        assert_eq!(more_button_css(8, 4), 86.0);
+        assert_eq!(more_button_css(12, 9), 93.0);
     }
 }

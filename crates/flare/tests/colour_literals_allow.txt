@@ -5,4 +5,5 @@ crates/flare/src/ui_tests/skeleton.rs | #dedacf | a comment naming the theme tex
 crates/flare-agent/src/badge.rs | #25242c | the taskbar disc's fill: a fixed dark disc, as Prism Terminal draws it, so it reads on any taskbar; never a theme value
 crates/flare-agent/src/badge.rs | #ffffff | the taskbar disc's count ink, white on the fixed dark disc
 crates/flare-agent/src/icon.rs | #d77757 | Clawd's orange as Claude Code draws it in the terminal: the agent's own colour, never a theme value
+crates/flare/src/appctl.rs | #ffffff | the ink `ask_text` passes to `ask_view` inside a #[cfg(test)] fn (the scan stops only at a top-level cfg(test)); the tests read the dialog's words, not its colour
 crates/flare-win/src/taskbar.rs | #25242c | the taskbar disc's fill named in doc comments, the same fixed value as badge.rs

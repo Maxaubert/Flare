@@ -60,9 +60,29 @@ pub fn font_px(size: u32, text_len: usize) -> u32 {
     (size as f64 * k).round() as u32
 }
 
-/// The text sits a little low: 4% of the size.
-pub fn text_nudge_px(size: u32) -> i32 {
-    (size as f64 * 0.04).round() as i32
+/// Moves a `size * size` coverage mask up or down so its ink (the rows with a pixel past half
+/// coverage) is centred on the disc's middle, within half a pixel. Prism Terminal draws on the
+/// canvas's em-middle line nudged 4% down, which centres Segoe's figures; GDI's `DT_VCENTER`
+/// centres the whole cell, ascent and descent, so the figures came out 2 to 5 px low (M6 Task 34).
+pub fn centre_ink_vertically(mask: &[u8], size: u32) -> Vec<u8> {
+    let n = size as usize;
+    let inked = |y: usize| mask[y * n..(y + 1) * n].iter().any(|&v| v > 128);
+    let Some(top) = (0..n).find(|&y| inked(y)) else {
+        return mask.to_vec();
+    };
+    let bottom = (0..n).rev().find(|&y| inked(y)).unwrap_or(top);
+    // Centre (top + bottom + 1) / 2 onto n / 2: the shift is half their doubled distance, floored
+    // (an odd distance leaves the half pixel no whole shift can remove).
+    let shift = (n as i64 - (top + bottom + 1) as i64).div_euclid(2);
+    let mut out = vec![0; n * n];
+    for y in 0..n {
+        let from = y as i64 - shift;
+        if (0..n as i64).contains(&from) {
+            let from = from as usize;
+            out[y * n..(y + 1) * n].copy_from_slice(&mask[from * n..(from + 1) * n]);
+        }
+    }
+    out
 }
 
 /// Disc size in device pixels: round(16 * s), s = scale if finite and > 0 (capped 4) else 1.
@@ -228,13 +248,12 @@ mod win {
         // SAFETY: `bits` points at size*size*4 writable bytes owned by the DIB section.
         unsafe { std::ptr::write_bytes(bits as *mut u8, 0, n * 4) };
         let (font, _) = pick_font(hdc, font_px(size, text.chars().count()).max(1));
-        let nudge = text_nudge_px(size);
         let mut w: Vec<u16> = text.encode_utf16().collect();
         let mut rc = RECT {
             left: 0,
-            top: nudge,
+            top: 0,
             right: size as i32,
-            bottom: size as i32 + nudge,
+            bottom: size as i32,
         };
         // SAFETY: font and DC are ours; `w` and `rc` live across the call.
         unsafe {
@@ -260,7 +279,7 @@ mod win {
             let _ = DeleteObject(bmp.into());
             let _ = DeleteDC(hdc);
         }
-        out
+        super::centre_ink_vertically(&out, size)
     }
 
     /// The Windows shell.
@@ -515,9 +534,6 @@ mod tests {
         assert_eq!(font_px(36, 1), 29);
         assert_eq!(font_px(36, 2), 20);
         assert_eq!(font_px(16, 2), 9);
-        assert_eq!(text_nudge_px(36), 1);
-        assert_eq!(text_nudge_px(16), 1);
-        assert_eq!(text_nudge_px(64), 3);
     }
 
     #[test]
@@ -549,6 +565,26 @@ mod tests {
             }
         }
         b
+    }
+
+    /// M6 Task 34 (the badge sheet showed every digit 2 to 5 px below the disc's middle): at the
+    /// eight scalings' sizes the ink of each count sits centred up and down, within half a pixel
+    /// (an ink box of the other parity cannot do better), as Prism Terminal's nudged middle line
+    /// centres it.
+    #[cfg(windows)]
+    #[test]
+    fn the_digits_sit_centred_on_the_disc_at_every_size() {
+        for size in [16usize, 20, 24, 28, 32, 36, 40, 48] {
+            for text in ["1", "3", "5", "8", "9", "9+"] {
+                let m = text_mask(size as u32, text);
+                let (_, y0, _, y1) = ink_box(&m, size).expect("ink");
+                let off = (y0 + y1 + 1) as f64 / 2.0 - size as f64 / 2.0;
+                assert!(
+                    off.abs() <= 0.5,
+                    "{text} at {size}: ink centre {off:+} px off the middle"
+                );
+            }
+        }
     }
 
     #[cfg(windows)]

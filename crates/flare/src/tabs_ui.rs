@@ -12,8 +12,8 @@ use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
 use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
 use flare_tabs::model::TabModel;
 use flare_tabs::sidebar_rows::{find_keeps, folder_line};
-use flare_tabs::strip_layout::{layout_strip, room_for_plan};
-use flare_tabs::strip_plan::{StripSlot, plan_strip};
+use flare_tabs::strip_layout::{layout_strip_with, room_for_plan};
+use flare_tabs::strip_plan::{MORE_BUTTON, StripSlot, more_button_css, plan_strip};
 use flare_tabs::tab_drag::{Axis, Release, TabDrag};
 use flare_tabs::tab_drop::Lane;
 use flare_tabs::tabs::{Pending, TabKind};
@@ -170,8 +170,23 @@ pub fn build_view(inp: &ViewInput) -> View {
     let ids: Vec<String> = tabs.iter().map(|t| t.id.clone()).collect();
     let needy: HashSet<String> = inp.needs.keys().cloned().collect();
     let room = room_for_plan(f64::from(inp.strip_phys) / scale);
-    let plan = plan_strip(&ids, active_id, &needy, room);
-    let layout = layout_strip(&plan, inp.strip_phys, scale);
+    // The +N button grows with its dots (Prism Terminal sizes it by its content): the plan is made
+    // again with that much less room, once, so the strip still fits.
+    let more_of = |plan: &[StripSlot]| {
+        let hidden = ids
+            .iter()
+            .zip(plan)
+            .filter(|(_, s)| **s == StripSlot::Hidden);
+        let dots = hidden.clone().filter(|(id, _)| needy.contains(*id)).count();
+        more_button_css(hidden.count(), dots)
+    };
+    let mut plan = plan_strip(&ids, active_id, &needy, room);
+    let mut more_css = more_of(&plan);
+    if more_css > MORE_BUTTON {
+        plan = plan_strip(&ids, active_id, &needy, room - (more_css - MORE_BUTTON));
+        more_css = more_of(&plan);
+    }
+    let layout = layout_strip_with(&plan, inp.strip_phys, scale, more_css);
 
     let mut rows = Vec::with_capacity(tabs.len());
     for (i, tab) in tabs.iter().enumerate() {

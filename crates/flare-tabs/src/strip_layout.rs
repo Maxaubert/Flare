@@ -30,6 +30,16 @@ pub fn room_for_plan(strip_css: f64) -> f64 {
 /// `round(edge_css * scale)`, and a slot is `[edge_i, edge_i+1)`: edges are whole device
 /// pixels, slots touch, and widths differ by at most one pixel.
 pub fn layout_strip(plan: &[StripSlot], strip_phys: i32, scale: f64) -> StripLayout {
+    layout_strip_with(plan, strip_phys, scale, MORE_BUTTON)
+}
+
+/// `layout_strip` with the +N button `more_css` wide (`strip_plan::more_button_css`).
+pub fn layout_strip_with(
+    plan: &[StripSlot],
+    strip_phys: i32,
+    scale: f64,
+    more_css: f64,
+) -> StripLayout {
     let scale = if scale.is_nan() || scale <= 0.0 {
         1.0
     } else {
@@ -40,7 +50,7 @@ pub fn layout_strip(plan: &[StripSlot], strip_phys: i32, scale: f64) -> StripLay
     let n_full = plan.iter().filter(|s| **s == StripSlot::Full).count();
     let n_icon = plan.iter().filter(|s| **s == StripSlot::Icon).count();
     let any_hidden = plan.contains(&StripSlot::Hidden);
-    let fixed = ICON_TAB * n_icon as f64 + if any_hidden { MORE_BUTTON } else { 0.0 } + PLUS_W;
+    let fixed = ICON_TAB * n_icon as f64 + if any_hidden { more_css } else { 0.0 } + PLUS_W;
     let full_w = if n_full == 0 {
         TAB_FLOOR
     } else {
@@ -65,8 +75,8 @@ pub fn layout_strip(plan: &[StripSlot], strip_phys: i32, scale: f64) -> StripLay
     }
     let mut cursor = pos(fulls, icons);
     let more = if any_hidden {
-        let (a, b) = (edge(cursor), edge(cursor + MORE_BUTTON));
-        cursor += MORE_BUTTON;
+        let (a, b) = (edge(cursor), edge(cursor + more_css));
+        cursor += more_css;
         Some(Slot { x: a, w: b - a })
     } else {
         None

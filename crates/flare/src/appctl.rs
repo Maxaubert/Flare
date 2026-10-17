@@ -1390,7 +1390,7 @@ impl AppCtl {
         }
     }
 
-    #[cfg(test)]
+    /// The hub, for the tests and the headless scenes (a scene answers the process poll itself).
     pub(crate) fn hub_mut(&mut self) -> &mut AgentHub {
         &mut self.hub
     }
@@ -1406,7 +1406,11 @@ impl AppCtl {
     pub(crate) fn ask_text(&self) -> Option<(String, String, String)> {
         self.ask.as_ref().map(|a| {
             let v = crate::startup::ask_view(a, "#ffffff");
-            (v.title.to_string(), v.body.to_string(), v.primary.to_string())
+            (
+                v.title.to_string(),
+                v.body.to_string(),
+                v.primary.to_string(),
+            )
         })
     }
 
