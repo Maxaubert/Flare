@@ -211,7 +211,7 @@ impl Emulator {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.term.resize(Dims { cols, rows });
+        crate::resize::resize_conpty(&mut self.term, cols, rows);
     }
 
     pub fn cols(&self) -> usize {
