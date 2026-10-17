@@ -1,13 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appctl;
 mod backend;
+mod chords;
 mod config;
+mod e2e;
 mod headless;
 mod host;
 mod keymap;
 mod live;
 mod memory;
+mod menus_ui;
+mod sidebar_ui;
+mod startup;
+mod tab_host;
+mod tabs_ui;
 mod window;
+
+#[cfg(test)]
+mod ui_harness;
+#[cfg(test)]
+mod ui_tests;
 
 slint::include_modules!();
 

@@ -1,0 +1,28 @@
+// Shared structs of the M3 components (final: change them only through the orchestrator).
+
+export struct TabRow {
+    id: string,
+    label: string,
+    tip: string,        // the whole folder path: the strip's tooltip; "" for Settings
+    folder: string,     // the sidebar's second line (folder_line); "" for Settings
+    settings: bool,
+    active: bool,
+    loading: bool,      // coming back to an agent: the ring at the tab's end
+    mode: int,          // 0 named, 1 icon, 2 hidden (drawn nowhere)
+    x: int,             // device pixels from the strip's left edge (strip only)
+    w: int,             // device pixels wide (strip only)
+    offset: length,     // the carry offset along the axis; 0 at rest
+    carried: bool,      // this is the tab being carried
+    kept: bool,         // sidebar find: false hides the row
+    mark-kind: int,     // 0 none; M6 fills 1 ring, 2 line, 3 run
+    mark-color: color,
+}
+
+export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, more-count: int, dots: [color] }
+
+export struct Place { path: string, name: string, near: string, label: string, pinned: bool }
+
+export struct MenuRow { label: string, hint: string, icon: string, filled-icon: bool, disabled: bool,
+                        trailing-icon: string, trailing-filled: bool, trailing-tip: string }
+
+export struct OverflowRow { id: string, label: string, folder: string, needs: bool, loading: bool, settings: bool }
