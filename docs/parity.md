@@ -61,83 +61,83 @@ How to read it:
 
 ### Shells and command lines
 
-- [ ] Shells are detected once per run and cached; a new shell is picked up on restart (core/main/shells.ts detectShells).
-- [ ] Each probe (where, wsl) has an 8 s timeout, is hidden and async, never blocking the UI (shells.ts run()).
-- [ ] PowerShell 7 is the first absolute path from `where pwsh.exe` not in the current directory; none means no pwsh entry (shells.ts pwshPath; shells.test).
-- [ ] Shell list order and ids: pwsh "PowerShell 7", powershell "Windows PowerShell" (full System32 path), cmd "Command Prompt", then one `wsl-<name>` "WSL: <name>" per distro with args `-d <name> --cd .` (shells.ts).
-- [ ] WSL list: `wsl -l -q` decoded UTF-16LE, NULs stripped, only lines matching `^[\w.-]+$` kept (shells.ts parseWslList; shells.test).
-- [ ] Prism Terminal v0.55.6 does NOT detect Git Bash: shells.ts lists only pwsh, powershell, cmd and WSL distros (no `bash.exe` probe anywhere in core/main). The design spec's "Git Bash, as Prism Terminal detects them" is therefore not parity. DECISION: open decision O21.
-- [ ] Windows tools (where, powershell, cmd, wsl) start by full System32 path, never a bare name (core/main/sysTools.ts SYS; shells.test).
-- [ ] Saved shell id resolves via shellById: saved, else pwsh, else powershell, else first; the UI names a shell only by id (shells.ts shellById; shells.test).
-- [ ] PowerShell 7 startup: `-NoLogo -NoExit -Command` with PredictionSource History, `EnableScreenReaderMode:$false` in try/catch, then file style and prompt hook (shells.ts).
-- [ ] Windows PowerShell startup: `-NoLogo -NoExit -Command` with file style and prompt hook only (shells.ts).
-- [ ] cmd has no arguments; its folder report rides the PROMPT environment variable (shells.ts; terminal.ts ptyEnv).
-- [ ] PS prompt hook wraps the existing prompt once (captured in a global), falls back to `PS> `, prints OSC 9;9 only for the FileSystem provider (core/main/termPrompt.ts; termPrompt.test).
-- [ ] cmd PROMPT is `ESC]9;9;$P ESC\` followed by the user's PROMPT or `$P$G` (termPrompt.ts cmdPrompt; termPrompt.test).
-- [ ] PS file style (where `$PSStyle` exists): directories bold blue text, no background; executables, symlinks, extension colours, table header, custom header label and FormatAccent cleared (termPrompt.ts; termPrompt.test).
-- [ ] parseOsc9 reads only payloads starting `9;`, strips one pair of quotes, accepts only absolute drive or UNC paths; ConEmu progress is not a report (core/shared/termCwd.ts; termCwd.test).
-- [ ] decideFollow classifies a cwd against a root as same, inside or outside, case-insensitive, slash-normalised (termCwd.ts; termCwd.test).
-- [ ] cdCommand: `Set-Location -LiteralPath '<path>'` plus CR for pwsh and powershell; `cd /d "<path>"` plus CR for cmd, refused if the path holds `%` or `"`; nothing for WSL or bash (termCwd.ts; termCwd.test).
-- [ ] PowerShell path quoting doubles the single quote and the curly quotes U+2018, U+2019, U+201A, U+201B (termCwd.ts; termCwd.test #7).
-- [ ] The cd line is written only at an idle prompt with nothing typed and no agent running (core/renderer/lib/termActivity.ts idleAtPrompt; TerminalPanel OSC 9 handler). DECISION: open decision O1.
-- [ ] Environment for every pty: `TERM=xterm-256color`, `COLORTERM=truecolor`; NO_COLOR removed; FORCE_COLOR removed only when 0, false or none (core/main/terminal.ts ptyEnv; terminal.test).
-- [ ] Session identity markers are removed: CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_EXECPATH, CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_MESSAGING_TOKEN, CLAUDE_PID, CLAUDE_PLUGIN_DATA, CLAUDE_EFFORT, CODEX_COMPANION_SESSION_ID, CODEX_COMPANION_TRANSCRIPT_PATH; other CLAUDE_CODE_* config is kept (terminal.ts SESSION_MARKERS; terminal.test).
-- [ ] Everything else in the inherited environment passes through untouched (terminal.test).
-- [ ] FORCE_HYPERLINK is never set; a user's own value passes through, 0 included (terminal.ts ptyEnv; terminal.test).
-- [ ] Each shell gets its own random tab token `FLARE_TAB_ID`; an inherited value is never kept (terminal.ts ptyEnv; terminal.test #323).
-- [ ] Spawn cwd is the tab's root; default size 80 x 24; a size asked for before the shell existed is applied at birth (terminal.ts spawnPending, desiredSize).
-- [ ] A spawn for an id that is live or pending is refused, the first wins (terminal.ts spawnTerm; terminal.sessions.test).
-- [ ] A tab closed while its shell starts: no shell starts, or the started one is killed and nothing registered (terminal.ts killedWhilePending; terminal.sessions.test).
-- [ ] Warm shells: at most two, one per tab root (case-insensitive), started ahead for the active tab; adopted only when shell kind and plugin answer match; banner replay capped at 65536 chars; never adopted for a resume; removed by identity, every eviction kills (terminal.ts prewarmShell, spawnPending; terminal.sessions.test).
-- [ ] Shell output is coalesced into batches every 8 ms per tab; a batch is flushed before the exit message (terminal.ts OutputBatcher; terminal.test).
-- [ ] Exit: session removed, exit crumb logged, the renderer told (terminal.ts; TerminalPanel SessionRoute).
-- [ ] A failed spawn writes red "Could not start the shell." into the tab and stops any resume skeleton (TerminalPanel.tsx createSession).
-- [ ] After a spawn resolves the real cols and rows are sent once more (TerminalPanel createSession).
-- [ ] Resume launch passes the id in the environment, never the command line: PowerShell appends `& { $r = $env:FLARE_RESUME_ID; Remove-Item Env:FLARE_RESUME_ID; claude --resume $r }`; cmd runs `/K set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%`; codex runs `codex resume --last`; WSL and other shells are left alone (terminal.ts withResume; terminal.test).
-- [ ] Every shell of a kind starts with the same command line (regression-rules same-command-line, #180).
-- [ ] Pty options: xterm-256color, ConPTY on, bundled `conpty.dll` and `OpenConsole.exe` loaded first; a startup check fails loudly if missing (terminal.ts PTY_OPTS; regression-rules bundled-conpty).
+- [x] Shells are detected once per run and cached; a new shell is picked up on restart (core/main/shells.ts detectShells). (M2: the_cache_asks_the_probes_once)
+- [x] Each probe (where, wsl) has an 8 s timeout, is hidden and async, never blocking the UI (shells.ts run()). (M2: real_probe_times_out_and_kills_the_child, no_unmarked_blocking_calls_in_src)
+- [x] PowerShell 7 is the first absolute path from `where pwsh.exe` not in the current directory; none means no pwsh entry (shells.ts pwshPath; shells.test). (M2: pwsh_path_*)
+- [x] Shell list order and ids: pwsh "PowerShell 7", powershell "Windows PowerShell" (full System32 path), cmd "Command Prompt", then one `wsl-<name>` "WSL: <name>" per distro with args `-d <name> --cd .` (shells.ts). (M2: lists_pwsh_powershell_cmd_in_that_order, wsl_distros_are_decoded_from_utf16le)
+- [x] WSL list: `wsl -l -q` decoded UTF-16LE, NULs stripped, only lines matching `^[\w.-]+$` kept (shells.ts parseWslList; shells.test). (M2: parse_wsl_list_*, wsl_distros_are_decoded_from_utf16le)
+- [x] Prism Terminal v0.55.6 does NOT detect Git Bash: shells.ts lists only pwsh, powershell, cmd and WSL distros (no `bash.exe` probe anywhere in core/main). The design spec's "Git Bash, as Prism Terminal detects them" is therefore not parity. DECISION: open decision O21. (M2: probes_exactly_where_pwsh_and_wsl_list_and_never_git_bash (O21))
+- [x] Windows tools (where, powershell, cmd, wsl) start by full System32 path, never a bare name (core/main/sysTools.ts SYS; shells.test). (M2: every_windows_tool_lives_under_system32_never_a_bare_name, the_probe_commands_are_full_system32_paths)
+- [x] Saved shell id resolves via shellById: saved, else pwsh, else powershell, else first; the UI names a shell only by id (shells.ts shellById; shells.test). (M2: shell_by_id_*)
+- [x] PowerShell 7 startup: `-NoLogo -NoExit -Command` with PredictionSource History, `EnableScreenReaderMode:$false` in try/catch, then file style and prompt hook (shells.ts). (M2: bootstrap_args_are_exact)
+- [x] Windows PowerShell startup: `-NoLogo -NoExit -Command` with file style and prompt hook only (shells.ts). (M2: bootstrap_args_are_exact)
+- [x] cmd has no arguments; its folder report rides the PROMPT environment variable (shells.ts; terminal.ts ptyEnv). (M2: bootstrap_args_are_exact, cmd_prompt_*)
+- [x] PS prompt hook wraps the existing prompt once (captured in a global), falls back to `PS> `, prints OSC 9;9 only for the FileSystem provider (core/main/termPrompt.ts; termPrompt.test). (M2: ps_prompt_hook_*, powershell_reports_its_folder_with_osc_9_9)
+- [x] cmd PROMPT is `ESC]9;9;$P ESC\` followed by the user's PROMPT or `$P$G` (termPrompt.ts cmdPrompt; termPrompt.test). (M2: cmd_prompt_*, prompt_reaches_cmd_*)
+- [x] PS file style (where `$PSStyle` exists): directories bold blue text, no background; executables, symlinks, extension colours, table header, custom header label and FormatAccent cleared (termPrompt.ts; termPrompt.test). (M2: ps_file_style_*)
+- [x] parseOsc9 reads only payloads starting `9;`, strips one pair of quotes, accepts only absolute drive or UNC paths; ConEmu progress is not a report (core/shared/termCwd.ts; termCwd.test). (M2: parse_osc9_*)
+- [x] decideFollow classifies a cwd against a root as same, inside or outside, case-insensitive, slash-normalised (termCwd.ts; termCwd.test). (M2: decide_follow_*)
+- [x] cdCommand: `Set-Location -LiteralPath '<path>'` plus CR for pwsh and powershell; `cd /d "<path>"` plus CR for cmd, refused if the path holds `%` or `"`; nothing for WSL or bash (termCwd.ts; termCwd.test). (M2: cd_command_*)
+- [x] PowerShell path quoting doubles the single quote and the curly quotes U+2018, U+2019, U+201A, U+201B (termCwd.ts; termCwd.test #7). (M2: ps_quote_*)
+- [x] The cd line is written only at an idle prompt with nothing typed and no agent running (core/renderer/lib/termActivity.ts idleAtPrompt; TerminalPanel OSC 9 handler). DECISION: open decision O1. (M2: cd_writes_the_line_for_powershell_and_nothing_for_wsl, cd_is_not_typing, the_cd_line_moves_a_powershell; the idle-prompt guard is flare-agent (deferred to M6))
+- [x] Environment for every pty: `TERM=xterm-256color`, `COLORTERM=truecolor`; NO_COLOR removed; FORCE_COLOR removed only when 0, false or none (core/main/terminal.ts ptyEnv; terminal.test). (M2: answers_for_what_the_panel_can_display, drops_the_variables_that_would_silence_colour, keeps_force_color_that_asks_for_more, the_environment_reaches_the_shell)
+- [x] Session identity markers are removed: CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_EXECPATH, CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_MESSAGING_TOKEN, CLAUDE_PID, CLAUDE_PLUGIN_DATA, CLAUDE_EFFORT, CODEX_COMPANION_SESSION_ID, CODEX_COMPANION_TRANSCRIPT_PATH; other CLAUDE_CODE_* config is kept (terminal.ts SESSION_MARKERS; terminal.test). (M2: never_passes_on_another_sessions_identity, keeps_claude_code_configuration)
+- [x] Everything else in the inherited environment passes through untouched (terminal.test). (M2: passes_everything_else_through)
+- [x] FORCE_HYPERLINK is never set; a user's own value passes through, 0 included (terminal.ts ptyEnv; terminal.test). (M2: never_forces_hyperlinks, keeps_the_users_force_hyperlink, force_hyperlink_has_one_spelling)
+- [x] Each shell gets its own random tab token `FLARE_TAB_ID`; an inherited value is never kept (terminal.ts ptyEnv; terminal.test #323). (M2: names_the_tab_and_never_keeps_an_inherited_one, every_shell_gets_its_own_tab_token)
+- [x] Spawn cwd is the tab's root; default size 80 x 24; a size asked for before the shell existed is applied at birth (terminal.ts spawnPending, desiredSize). (M2: a_size_asked_for_before_the_shell_existed_is_applied_at_birth, resize_before_the_shell_exists_is_applied_at_birth, a_missing_folder_is_an_error_not_home)
+- [x] A spawn for an id that is live or pending is refused, the first wins (terminal.ts spawnTerm; terminal.sessions.test). (M2: a_spawn_for_a_live_id_is_refused, a_second_spawn_for_a_pending_id_is_refused)
+- [x] A tab closed while its shell starts: no shell starts, or the started one is killed and nothing registered (terminal.ts killedWhilePending; terminal.sessions.test). (M2: a_tab_closed_while_its_shell_starts_starts_no_shell)
+- [x] Warm shells: at most two, one per tab root (case-insensitive), started ahead for the active tab; adopted only when shell kind and plugin answer match; banner replay capped at 65536 chars; never adopted for a resume; removed by identity, every eviction kills (terminal.ts prewarmShell, spawnPending; terminal.sessions.test). (M2: closing_an_adopted_tab_keeps_the_next_warm_shell, a_warm_shell_with_the_other_plugin_answer_makes_way, at_most_two_warm_shells_one_per_root, kill_warm_kills_every_spare, a_warm_shell_is_adopted_and_the_banner_is_there)
+- [x] Shell output is coalesced into batches every 8 ms per tab; a batch is flushed before the exit message (terminal.ts OutputBatcher; terminal.test). (M2: coalesces_chunks_and_flushes_once_per_window, output_is_batched_and_flushed_before_the_exit_message)
+- [x] Exit: session removed, exit crumb logged, the renderer told (terminal.ts; TerminalPanel SessionRoute). (M2: an_exit_without_end_of_file_still_reports, the_exit_comes_after_the_last_output, a_shell_that_exits_by_itself_is_reported_and_removed (the crumb is a log line; the diag file is deferred to M9))
+- [x] A failed spawn writes red "Could not start the shell." into the tab and stops any resume skeleton (TerminalPanel.tsx createSession). (M2: a_failed_spawn_writes_the_red_line (the resume skeleton is deferred to M6))
+- [x] After a spawn resolves the real cols and rows are sent once more (TerminalPanel createSession). (M2: start_sends_the_real_size_once_more)
+- [x] Resume launch passes the id in the environment, never the command line: PowerShell appends `& { $r = $env:FLARE_RESUME_ID; Remove-Item Env:FLARE_RESUME_ID; claude --resume $r }`; cmd runs `/K set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%`; codex runs `codex resume --last`; WSL and other shells are left alone (terminal.ts withResume; terminal.test). (M2: two_resumes_share_one_command_line, powershell_resume_clears_the_variable, cmd_resume_has_no_quote, codex_resume_has_no_id, other_shells_are_left_alone)
+- [x] Every shell of a kind starts with the same command line (regression-rules same-command-line, #180). (M2: two_resumes_share_one_command_line)
+- [x] Pty options: xterm-256color, ConPTY on, bundled `conpty.dll` and `OpenConsole.exe` loaded first; a startup check fails loudly if missing (terminal.ts PTY_OPTS; regression-rules bundled-conpty). (M2: verify_loads_the_bundled_dll_by_absolute_path, the_conpty_dll_in_the_process_is_the_bundled_one, the_open_console_serving_a_pty_is_the_bundled_exe, a_missing_bundle_fails_loudly_and_exits_three)
 
 ### Pty, resize, lifetime
 
-- [ ] ConPTY sends nothing on a resize, so the cursor's logical line is carried across it: only on the normal screen and only with no printed text below the cursor line; the line is rewritten at the new width and the cursor put back on the same character by cell count (TerminalPanel.tsx fitKeepingCursorLine; termCells.ts cellFrom; e2e promptLayout). DECISION: open decision O3, confirm still needed with alacritty_terminal reflow.
-- [ ] Wrapped lines reflow the way ConPTY does (windowsPty conpty build 22621 in xterm); the prompt line returns without holes (TerminalPanel createSession).
-- [ ] A refit skips hidden or zero-size panels; while the room animates the terminal keeps its columns, is clipped, and fits once at the end (TerminalPanel refit; core/renderer/lib/fitHold.ts; fitHold.test).
-- [ ] A refit suppresses output scoring for 800 ms (termActivity.ts suppressActivity).
-- [ ] pty resize rejects cols under 2, rows under 1, non-integers; a refused resize retries up to five times at 300 ms while still wanted (terminal.ts resizeTerm).
-- [ ] A tab shown again gets one more fit and a full row repaint a frame later (TerminalPanel refit; e2e hiddenResize).
-- [ ] Scrollback is 10000 lines per tab (TerminalPanel new Terminal options).
-- [ ] A tab switch keeps each terminal alive (scrollback, selection, alternate screen); detached, never disposed; the shell runs on unseen and output keeps being parsed (TerminalPanel detach comment).
-- [ ] Kill order: remove the session, dispose subscriptions, then kill the pty (terminal.ts killTerm).
-- [ ] A kill is remembered until native exit lands: exit code polled every 20 ms for 5 s then once a second; a stuck kill is logged once; a late exit is still heard (terminal.ts killPty, pollExitCode; terminal.test).
-- [ ] Quit waits for every killed shell to be gone with a 3 s cap, spares included (terminal.ts shellsGone, killAll; terminal.sessions.test; regression-rules quit-waits-for-shells).
-- [ ] Closing a tab kills only that tab's shell; late output for a closed tab leaves nothing behind (termActivity.ts forgetSession; termActivity.test).
-- [ ] Throughput: a runaway `cat` of 100 MB keeps the UI responsive and Ctrl+C reaches the shell (roadmap Review Focus).
-- [ ] No blocking call on a live path: probes, stats and spawns run on workers; blocking calls are marked `sync-ok` and checked by a test (docs/build-and-conventions.md; CLAUDE.md "Main never waits on the disk").
+- [x] ConPTY sends nothing on a resize, so the cursor's logical line is carried across it: only on the normal screen and only with no printed text below the cursor line; the line is rewritten at the new width and the cursor put back on the same character by cell count (TerminalPanel.tsx fitKeepingCursorLine; termCells.ts cellFrom; e2e promptLayout). DECISION: open decision O3, confirm still needed with alacritty_terminal reflow. (M2: RESOLVED (O3): o3_* and the resize.rs unit tests; a vertical re-anchor, not a carry)
+- [x] Wrapped lines reflow the way ConPTY does (windowsPty conpty build 22621 in xterm); the prompt line returns without holes (TerminalPanel createSession). (M2: o3_cmd_typed_text_survives_narrow_and_wide, o3_powershell_typed_text_survives, o3_pwsh_typed_text_survives)
+- [x] A refit skips hidden or zero-size panels; while the room animates the terminal keeps its columns, is clipped, and fits once at the end (TerminalPanel refit; core/renderer/lib/fitHold.ts; fitHold.test). (M2: zero_size_renders_none (M1); fitHold is deferred to M3)
+- [x] A refit suppresses output scoring for 800 ms (termActivity.ts suppressActivity). (M2: deferred to M6)
+- [x] pty resize rejects cols under 2, rows under 1, non-integers; a refused resize retries up to five times at 300 ms while still wanted (terminal.ts resizeTerm). (M2: resize_rejects_bad_sizes, resize_retries_five_times_while_still_wanted)
+- [x] A tab shown again gets one more fit and a full row repaint a frame later (TerminalPanel refit; e2e hiddenResize). (M2: deferred to M3)
+- [x] Scrollback is 10000 lines per tab (TerminalPanel new Terminal options). (M2: scrollback_is_ten_thousand_lines)
+- [x] A tab switch keeps each terminal alive (scrollback, selection, alternate screen); detached, never disposed; the shell runs on unseen and output keeps being parsed (TerminalPanel detach comment). (M2: output_keeps_being_parsed_while_nothing_looks)
+- [x] Kill order: remove the session, dispose subscriptions, then kill the pty (terminal.ts killTerm). (M2: kill_is_remembered_until_the_exit_lands, killing_one_tab_leaves_the_others)
+- [x] A kill is remembered until native exit lands: exit code polled every 20 ms for 5 s then once a second; a stuck kill is logged once; a late exit is still heard (terminal.ts killPty, pollExitCode; terminal.test). (M2: kill_is_remembered_until_the_exit_lands, polls_fast_then_slow_says_stuck_once_and_hears_a_late_exit)
+- [x] Quit waits for every killed shell to be gone with a 3 s cap, spares included (terminal.ts shellsGone, killAll; terminal.sessions.test; regression-rules quit-waits-for-shells). (M2: shells_gone_*, ten_real_shells_killed_none_remain, kill_while_output_flows_50_times, a_warm_spare_is_killed_at_quit)
+- [x] Closing a tab kills only that tab's shell; late output for a closed tab leaves nothing behind (termActivity.ts forgetSession; termActivity.test). (M2: killing_one_tab_leaves_the_others, late_output_for_a_closed_tab_goes_nowhere)
+- [x] Throughput: a runaway `cat` of 100 MB keeps the UI responsive and Ctrl+C reaches the shell (roadmap Review Focus). (M2: a_100_mb_flood_keeps_snapshots_fast_and_arrives_complete, ctrl_c_reaches_a_flooding_program)
+- [x] No blocking call on a live path: probes, stats and spawns run on workers; blocking calls are marked `sync-ok` and checked by a test (docs/build-and-conventions.md; CLAUDE.md "Main never waits on the disk"). (M2: no_unmarked_blocking_calls_in_src, every_sync_ok_has_a_reason)
 
 ### Cells and the grid model
 
-- [ ] A row's text is built cell by cell: empty cells are spaces, wide-char spacers are nothing, an index maps cell to text position (core/renderer/lib/termCells.ts cellText; termCells.test).
-- [ ] textEnd is the cell just past the last printed cell (termCells.ts).
-- [ ] An emoji is two UTF-16 units in one cell pair and a link after it keeps its edges (termCells.test).
-- [ ] cellFrom walks back over wrapped rows, a cursor past the text moves right with wrapping, never above row 0 (termCells.test).
-- [ ] logicalLine joins a wrapped line from any of its rows; charAtCell clamps to the line (termCells.test).
-- [ ] Reading a row into cells reuses one scratch cell and copies each value out (termCells.test).
+- [x] A row's text is built cell by cell: empty cells are spaces, wide-char spacers are nothing, an index maps cell to text position (core/renderer/lib/termCells.ts cellText; termCells.test). (M2: cell_text_*)
+- [x] textEnd is the cell just past the last printed cell (termCells.ts). (M2: cell_text_*)
+- [x] An emoji is two UTF-16 units in one cell pair and a link after it keeps its edges (termCells.test). (M2: cell_text_emoji_keeps_link_edges)
+- [x] cellFrom walks back over wrapped rows, a cursor past the text moves right with wrapping, never above row 0 (termCells.test). (M2: cell_from_*)
+- [x] logicalLine joins a wrapped line from any of its rows; charAtCell clamps to the line (termCells.test). (M2: logical_line_joins_from_any_row, char_at_cell_clamps)
+- [x] Reading a row into cells reuses one scratch cell and copies each value out (termCells.test). (M2: buffer_row_cells_reuses_one_scratch)
 
 ### Activity, bell, bus
 
-- [ ] Typing is heard from keys, never from the terminal's own replies; plain-text payloads (no leading ESC) such as an IME commit count as typing (TerminalPanel onKey/onData; termActivity.ts looksTyped; regression-rules typing-on-onkey).
-- [ ] Input echo: output within 350 ms of a keystroke is echo, not agent work; typing keeps renewing; a session never typed into has no window (termActivity.ts inputEcho; termActivity.test).
-- [ ] Suppression windows expire on schedule, default 800 ms (termActivity.test).
-- [ ] Typing ends an agent's birth (termActivity.ts markTouched; termActivity.born.test).
-- [ ] An agent's startup paint ends at the first silence over 1500 ms (QUIET_GAP); late detection costs nothing; a session with no agent is never suppressed (termActivity.born.test).
-- [ ] idleAtPrompt is true only when a prompt report arrived after the last keystroke (termActivity.test).
-- [ ] forgetSession clears touched, last input, suppression, resume, prompt, birth and output clocks (termActivity.test).
-- [ ] Bell: at most one per 1000 ms per tab reaches the host; never a sound; the taskbar flashes only while unfocused (core/renderer/lib/termReplies.ts BELL_GAP_MS, bellGate; src/main/bellFlash.test; e2e bell).
-- [ ] The bus publishes only: keys pressed (for the question indicator, nothing kept), the shell's folder, its title, the agent's hook signal, which tabs are resuming, and the visible bottom text rows (core/renderer/lib/termBus.ts; regression-rules replies-only-when-asked). Flare uses typed channels.
-- [ ] The app answers a program only what it asked: OSC 52 reads are never answered; colour and version replies only on request (core/renderer/components/termReplyHandlers.ts; termReplies.ts; regression-rules replies-only-when-asked).
-- [ ] XTVERSION: CSI > q answers the terminal's name, version and renderer, and the colours, only to the asker (PRIVACY.md; e2e XTVERSION; core/shared/termVersion.ts; termVersion.test). DECISION: confirm the Flare name string and format.
-- [ ] Program-selection copy notice: a drag that changes the clipboard shows "Copied" once, a late copy is heard, a plain click or unchanged clipboard is silent, a double click counts, a mouse-owning terminal is not watched (core/renderer/lib/appCopyNotice.ts; appCopyNotice.test).
-- [ ] Diagnostics never hold typed text, clipboard or audio (design spec Constraints).
+- [x] Typing is heard from keys, never from the terminal's own replies; plain-text payloads (no leading ESC) such as an IME commit count as typing (TerminalPanel onKey/onData; termActivity.ts looksTyped; regression-rules typing-on-onkey). (M2: typing_marks_last_typed_and_replies_do_not, send_text (activity scoring is deferred to M6))
+- [x] Input echo: output within 350 ms of a keystroke is echo, not agent work; typing keeps renewing; a session never typed into has no window (termActivity.ts inputEcho; termActivity.test). (M2: deferred to M6 (flare-agent))
+- [x] Suppression windows expire on schedule, default 800 ms (termActivity.test). (M2: deferred to M6)
+- [x] Typing ends an agent's birth (termActivity.ts markTouched; termActivity.born.test). (M2: deferred to M6)
+- [x] An agent's startup paint ends at the first silence over 1500 ms (QUIET_GAP); late detection costs nothing; a session with no agent is never suppressed (termActivity.born.test). (M2: deferred to M6)
+- [x] idleAtPrompt is true only when a prompt report arrived after the last keystroke (termActivity.test). (M2: deferred to M6)
+- [x] forgetSession clears touched, last input, suppression, resume, prompt, birth and output clocks (termActivity.test). (M2: deferred to M6)
+- [x] Bell: at most one per 1000 ms per tab reaches the host; never a sound; the taskbar flashes only while unfocused (core/renderer/lib/termReplies.ts BELL_GAP_MS, bellGate; src/main/bellFlash.test; e2e bell). (M2: bell_gate_*, bells_are_gated_to_one_a_second; the taskbar flash is deferred to M9)
+- [x] The bus publishes only: keys pressed (for the question indicator, nothing kept), the shell's folder, its title, the agent's hook signal, which tabs are resuming, and the visible bottom text rows (core/renderer/lib/termBus.ts; regression-rules replies-only-when-asked). Flare uses typed channels. (M2: typed TermEvent: drain_events carries only the listed kinds)
+- [x] The app answers a program only what it asked: OSC 52 reads are never answered; colour and version replies only on request (core/renderer/components/termReplyHandlers.ts; termReplies.ts; regression-rules replies-only-when-asked). (M2: osc52_*, osc_colour_*, colour_query_*, dsr_theme_reply_values, decrqm_reply_values)
+- [x] XTVERSION: CSI > q answers the terminal's name, version and renderer, and the colours, only to the asker (PRIVACY.md; e2e XTVERSION; core/shared/termVersion.ts; termVersion.test). DECISION: confirm the Flare name string and format. (M2: xtversion_*; the Flare name string is still an owner question)
+- [x] Program-selection copy notice: a drag that changes the clipboard shows "Copied" once, a late copy is heard, a plain click or unchanged clipboard is silent, a double click counts, a mouse-owning terminal is not watched (core/renderer/lib/appCopyNotice.ts; appCopyNotice.test). (M2: the 9 app_copy tests (app_copy.rs, Task 12))
+- [x] Diagnostics never hold typed text, clipboard or audio (design spec Constraints). (M2: deferred to M9 (flare-diag))
 
 ## M3: Tabs, restore, single instance, window state
 
@@ -1151,8 +1151,7 @@ only O17's artwork waits for the owner.
 - O2 physical keys: the builder of M2 reads physical keys (scan codes) through the window's native
   key events (winit `KeyCode` or Win32), never a limitation; Ctrl+C/V and the dictation key match
   the physical key.
-- O3 cursor-line carry: M2 tests whether `alacritty_terminal`'s reflow keeps the prompt line under
-  ConPTY; the carry is ported only if a test shows it is needed.
+- O3 cursor-line carry: RESOLVED in M2: no cursor-line carry; vertical re-anchor, see features.md.
 - O4 Explorer verb: "Open in Flare" (both apps can be installed, so the label must say which).
 - O5 resume shells: parity, no new shells.
 - O6 tab id: `FLARE_TAB_ID` only; Sonara learns it in its own repo later (raised with the owner then).
