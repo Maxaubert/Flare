@@ -363,6 +363,102 @@ fn an_unknown_scene_is_an_error() {
     assert!(!png.exists(), "no screenshot for an unknown scene");
 }
 
+/// The M5 scenes (Task 26): the terminal's selection, find, links, menus and the Copied badge.
+const M5_SCENES: [&str; 12] = [
+    "term-selection",
+    "term-selection-wide",
+    "term-find",
+    "term-find-none",
+    "term-find-many",
+    "term-find-empty",
+    "term-links",
+    "term-menu-plain",
+    "term-menu-selection",
+    "term-menu-link",
+    "term-menu-path",
+    "term-copied",
+];
+
+/// Every display scaling from 100% to 300% (roadmap Global Constraint).
+const MATRIX: [f32; 8] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0];
+
+#[test]
+fn every_m5_scene_renders_at_every_scale() {
+    for name in M5_SCENES {
+        for s in MATRIX {
+            let scale = format!("{s}");
+            let (_dir, img) = scene_png(name, &scale);
+            let want = ((1000.0 * s).round() as u32, (640.0 * s).round() as u32);
+            assert_eq!((img.0, img.1), want, "{name} at {scale}");
+            let corner = pixel(&img, 0, 0);
+            let mut differ = 0;
+            for y in 0..img.1 {
+                for x in 0..img.0 {
+                    if pixel(&img, x, y) != corner {
+                        differ += 1;
+                    }
+                }
+            }
+            assert!(
+                differ > 500,
+                "{name} at {scale}: only {differ} pixels differ from the corner"
+            );
+        }
+    }
+}
+
+/// Counts the pixels of an image equal to `colour`.
+fn count_colour(img: &Decoded, colour: [u8; 3]) -> usize {
+    let mut n = 0;
+    for y in 0..img.1 {
+        for x in 0..img.0 {
+            if pixel(img, x, y) == colour {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn the_find_scene_shows_the_match_fill() {
+    let (_dir, img) = scene_png("term-find", "1");
+    let matches = count_colour(&img, [0x4a, 0x51, 0x60]);
+    assert!(matches > 100, "only {matches} match-fill pixels");
+    let active = count_colour(&img, [0xf6, 0xa2, 0x5b]);
+    assert!(active > 50, "only {active} active-fill pixels");
+}
+
+#[test]
+fn the_selection_scene_shows_the_selection_blend() {
+    let (_dir, img) = scene_png("term-selection", "1");
+    let blend = count_colour(&img, [78, 78, 78]);
+    assert!(blend > 200, "only {blend} selection-blend pixels");
+}
+
+#[test]
+fn an_unknown_scene_names_the_m5_scenes() {
+    let dir = TempDir::new("scene-unknown-m5");
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            "no-such-scene",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for name in M5_SCENES {
+        assert!(stderr.contains(name), "stderr names {name}: {stderr:?}");
+    }
+    assert!(!png.exists(), "no screenshot for an unknown scene");
+}
+
 #[test]
 fn scenes_differ_from_each_other() {
     let (_a, strip) = scene_png("strip-3", "1");
