@@ -1,3 +1,48 @@
-// The tooltip overlay (filled by Task 23).
+// The tooltip overlay (Task 23). PT core/renderer/components/Tooltips.tsx: a bubble, max width 320,
+// padding 4 8, radius 6, a hairline border, 12 px ink, a 120 ms entrance leaning 2 px from its side.
+import { Theme, Px } from "theme.slint";
 
-export component Tip inherits Rectangle { }
+export component Tip inherits Rectangle {
+    in property <string> text;
+    in property <length> at-x;
+    in property <length> at-y;
+    in property <bool> visible-tip;
+    // The placed side: 0 below, 1 above, 2 right, 3 left. The entrance leans from it by 2 px.
+    in property <int> side;
+    out property <length> tip-w: bubble.width;
+    out property <length> tip-h: bubble.height;
+
+    // Pointer-transparent: no touch handler anywhere in here.
+    property <bool> shown: root.visible-tip && root.text != "";
+    property <length> lean-x: root.side == 2 ? 2px : (root.side == 3 ? -2px : 0px);
+    property <length> lean-y: root.side == 0 ? 2px : (root.side == 1 ? -2px : 0px);
+
+    bubble := Rectangle {
+        x: root.at-x + (root.shown ? 0px : root.lean-x);
+        y: root.at-y + (root.shown ? 0px : root.lean-y);
+        width: min(measure.preferred-width, 312px) + 16px;
+        height: measure.preferred-height + 8px;
+        opacity: root.shown ? 1 : 0;
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #0000008c;
+        animate x { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate y { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate opacity { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+
+        measure := Text {
+            x: 8px;
+            y: 4px;
+            width: min(self.preferred-width, 312px);
+            text: root.text;
+            wrap: word-wrap;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            color: Theme.text;
+        }
+    }
+}
