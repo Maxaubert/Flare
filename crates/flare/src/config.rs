@@ -19,6 +19,18 @@ pub struct Args {
     pub sample: bool,
     pub live_screenshot: Option<PathBuf>,
     pub live_shell: Option<String>,
+    /// `--user-data-dir=<path>` (the equals form only).
+    pub user_data_dir: Option<PathBuf>,
+    /// `--e2e`: the window shows inactive, never raises, stays off the taskbar.
+    pub e2e: bool,
+    /// `--scene <name>`: a headless scene for the screenshots.
+    pub scene: Option<String>,
+    /// `--live-tabs <n>`: how many live tabs a scene shows.
+    pub live_tabs: Option<u32>,
+    /// `--instance-probe`: answers whether this process was the first instance.
+    pub instance_probe: bool,
+    /// Bare arguments (folders or files), in order.
+    pub positional: Vec<String>,
 }
 
 /// Flags: --renderer gpu|software, --screenshot <path>, --scale <f32> (default 1.0, allowed
@@ -37,6 +49,12 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         sample: false,
         live_screenshot: None,
         live_shell: None,
+        user_data_dir: None,
+        e2e: false,
+        scene: None,
+        live_tabs: None,
+        instance_probe: false,
+        positional: Vec::new(),
     };
     let mut i = 0;
     while i < args.len() {
@@ -66,6 +84,23 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                 out.live_screenshot = Some(PathBuf::from(value(args, &mut i, flag)?));
             }
             "--live-shell" => out.live_shell = Some(value(args, &mut i, flag)?.to_string()),
+            "--e2e" => out.e2e = true,
+            "--instance-probe" => out.instance_probe = true,
+            "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
+            "--live-tabs" => {
+                let n: u32 = value(args, &mut i, flag)?
+                    .parse()
+                    .map_err(|_| "--live-tabs needs a whole number".to_string())?;
+                out.live_tabs = Some(n);
+            }
+            other if other.starts_with("--user-data-dir=") => {
+                let path = &other["--user-data-dir=".len()..];
+                if path.is_empty() {
+                    return Err("--user-data-dir= needs a path".to_string());
+                }
+                out.user_data_dir = Some(PathBuf::from(path));
+            }
+            other if !other.starts_with("--") => out.positional.push(other.to_string()),
             other => return Err(format!("unknown argument: {other}")),
         }
         i += 1;
@@ -209,6 +244,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(args.live_shell.as_deref(), Some("cmd"));
+    }
+
+    #[test]
+    fn user_data_dir_equals_form_and_e2e_are_parsed() {
+        let args = parse_args(&a(&["--user-data-dir=C:\\p", "--e2e"]), None).unwrap();
+        assert_eq!(args.user_data_dir, Some(PathBuf::from("C:\\p")));
+        assert!(args.e2e);
+        assert!(parse_args(&a(&["--user-data-dir", "C:\\p"]), None).is_err());
+        let args = parse_args(&a(&["C:\\x"]), None).unwrap();
+        assert_eq!(args.positional, vec!["C:\\x".to_string()]);
+        assert!(parse_args(&a(&["--bogus"]), None).is_err());
+    }
+
+    #[test]
+    fn scene_live_tabs_and_probe_flags() {
+        let args = parse_args(
+            &a(&["--scene", "strip-3", "--live-tabs", "3", "--instance-probe"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(args.scene.as_deref(), Some("strip-3"));
+        assert_eq!(args.live_tabs, Some(3));
+        assert!(args.instance_probe);
+        assert!(parse_args(&a(&["--live-tabs"]), None).is_err());
+        assert!(parse_args(&a(&["--live-tabs", "x"]), None).is_err());
     }
 
     #[test]
