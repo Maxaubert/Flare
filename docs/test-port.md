@@ -72,9 +72,9 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-dictation | `core/renderer/lib/wav.test.ts` | port | WAV encode, tail window, downsample, rms (22 tests) |
 | flare-dictation | `core/shared/dictationCatalog.test.ts` | port | catalogue entries, pins, languages; the fetch-whisper.mjs text reads become tests against Flare's pin file |
 | flare-render | `core/renderer/lib/linkInkRows.test.ts` | dropped | xterm DOM decoration loss on redraw; Flare draws the grid every frame so no row can lose its link ink |
-| flare-render | `core/renderer/lib/linkScanPlan.test.ts` | port | sliceRows 8 ms budget, liveRange, resume after trim, cancel |
+| flare-term | `core/renderer/lib/linkScanPlan.test.ts` | port (M5: was flare-render) | sliceRows 8 ms budget, liveRange, resume after trim, cancel; in `scan_plan.rs` |
 | flare-render | `core/renderer/lib/lookApply.test.ts` | port | changed-only look apply, once per frame |
-| flare-render | `core/renderer/lib/termLinkPaint.test.ts` | port | painter rules; DOM decorations become grid colour overlays |
+| flare-term | `core/renderer/lib/termLinkPaint.test.ts` | port (M5: was flare-render; DOM part dropped, D5) | painter rules as scanner-cache tests in `link_scan.rs`; DOM decorations become grid colour overlays |
 | flare-render | `src/renderer/src/lib/devicePixels.test.ts` | port | edges end on a whole device pixel at any scale |
 | flare-settings | `core/main/atomicWrite.test.ts` | port | no temp file left, create new, save off-thread, newest of a burst wins, saveNow on disk at return |
 | flare-settings | `core/renderer/host.test.ts` | port (split) | see-through slider cases go to flare-settings (T16); the `paintsAlpha` case is flare-theme (M4 T11b); the host-seam and Prism-style cases are dropped |
@@ -92,7 +92,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `core/renderer/settings/options.test.ts` | port | list parity, section order, storage keys, copy rules, flat entries as tests over the row tables |
 | flare-settings | `core/renderer/settings/sections/opts.test.ts` | port | see-through row name, Find words the row as the page does, Save title |
 | flare-settings | `core/renderer/settings/theme/useTermSetup.test.ts` | port | dirty state, see-through level in Save, picked background never lights Save, editor opens on opaque ground |
-| flare-settings | `core/shared/help/catalogue.test.ts` | port | ids, categories, task and summary shape, one-line ASCII commands, placeholders, keywords, danger lines, key-press detection, shell filtering, blankless, row names, real questions, speed |
+| flare-settings | `core/shared/help/catalogue.test.ts` | port (M5: the shellOfShellId group is flare-shells `path_shell_of`) | ids, categories, task and summary shape, one-line ASCII commands, placeholders, keywords, danger lines, key-press detection, shell filtering, blankless, row names, real questions, speed |
 | flare-settings | `core/shared/help/search.test.ts` | port | tokenise, stop words, stems, synonyms, one-slip typos, ranking, ties, empty query, cost bound |
 | flare-settings | `core/shared/settingsCopy.test.ts` | port | symbol rule, key-name rule, ternary and template descriptions, eight-word limit |
 | flare-settings | `src/renderer/src/components/settings/appOptions.test.ts` | port | unique ids, known icon/page/section, literal row ids, order, GPU gating, no Tab style row |
@@ -111,7 +111,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-shells | `core/main/shells.test.ts` | port | parseWslList, shellById, pwsh path discovery, System32 tool paths |
 | flare-shells | `core/main/termPrompt.test.ts` | port | OSC 9;9 prompt hook, cmd PROMPT, PS file style (test the emitted strings) |
 | flare-shells | `core/main/terminal.test.ts` | port (split) | ptyEnv and withResume groups in flare-shells; OutputBatcher and pollExitCode groups in flare-term; plugin-dir group in flare-shells (`pty_env` takes it); isOurPlugin in flare-agent |
-| flare-shells | `core/renderer/lib/termPaste.test.ts` | port (split) | decidePaste, sanitizePaste, quotePath here; imagePasteKey and newlineKey groups in flare-agent |
+| flare-shells | `core/renderer/lib/termPaste.test.ts` | port (split) | decidePaste, sanitizePaste, quotePath here; imagePasteKey and newlineKey groups in flare-agent (M5, D13) |
 | flare-shells | `core/shared/psQuote.test.ts` | port | PowerShell single-quote helper |
 | flare-shells | `core/shared/termCwd.test.ts` | port | parseOsc9, decideFollow, cdCommand quoting |
 | flare-term | `core/main/termPathOpen.test.ts` | port (split) | resolveTermPath, pathKinds, the stat meter and openTermPath here; openFolderDefault in flare-win |
@@ -312,3 +312,35 @@ task is the authority). Dropped = not ported, with the reason. The last column n
 Counts: the files above hold about 290 PT cases. 28 are deferred to M7 (`colourFormat`, `opacityMigration`, `seeThroughMigration`), about 12 are dropped
 as named (the acrylic-switch cases, the duplicate "colours with alpha" block, three `dwmHelper` tests), and the rest, about 250, are ported. The new
 Flare-only tests (oracle vectors, state machines, wiring) are listed per task; Task 32 reports the exact numbers from `cargo nextest`.
+
+## M5 ledger
+
+Prism Terminal v0.55.6 test files that the M5 areas map to (Appendix A of the M5 plan, copied). The rows above that M5 changed carry "M5" in their text.
+
+`n` = Prism Terminal `it(...)` cases. "Done (M2)" = ported by M2, kept. Flare names are in the task tables of the M5 plan.
+
+| PT test file | n | Flare crate and task | Note |
+|---|---|---|---|
+| `core/renderer/lib/termKeys.test.ts` | 6 | flare-term `keys.rs` (M2) | done; M5 adds the window-level key tests (Task 24, 25) |
+| `core/renderer/lib/termPaste.test.ts` (decide 8, sanitize 3, quotePath 4, quotePaths 1) | 16 | flare-shells `paste.rs` (M2) | done (+ the security cases of rule 135) |
+| `core/renderer/lib/termPaste.test.ts` (`imagePasteKey` 3, `newlineKey` 2) | 5 | flare-agent `keys.rs`, Task 9 | moved from M6 (D13); + 1 new |
+| `core/shared/help/catalogue.test.ts` (`the shells`, first test) | 1 | flare-shells `paste.rs`, Task 8 | `shell_ids_read_as_the_language_they_speak`; the help catalogue itself is M7 |
+| `core/renderer/lib/termClickCaret.test.ts` | 17 | flare-term `click_caret.rs` (M2) | done; wired and re-tested in Task 16e |
+| `core/renderer/lib/termSelectionEdit.test.ts` | 11 | flare-term `selection_edit.rs` (M2) | done; wired in Task 16e |
+| `core/renderer/lib/termLinks.test.ts` (`findLinks`) | 5 | flare-term `links.rs` (M2) | done; the `linkColor` group is M4 (flare-theme) |
+| `core/renderer/lib/termOsc8.test.ts` | 25 | flare-term `osc8.rs` (M2) | done; D18: `osc8_target`, `is_web_link` used, the span tracker is library code only |
+| `core/renderer/lib/termPaths.test.ts`, `termPathLinks.test.ts` | 6 + 17 | flare-term (M2) | done; wired in Tasks 13, 16c, and the ask/answer pump in Task 23 (rule 13) |
+| `core/renderer/lib/termOsc52.test.ts`, `core/shared/webUrl.test.ts` | 11 + 2 | flare-term (M2) | done; wired in Task 23 |
+| `core/renderer/lib/appCopyNotice.test.ts` | 9 | flare-term `app_copy.rs` (M2) | done; wired in Tasks 21, 23 |
+| `core/renderer/lib/termCaretHold.test.ts` | 5 | flare-term `caret_hold.rs` (M2) | done; wired in Task 24b |
+| `core/main/termPathOpen.test.ts` | 10 of 12 | flare-term `path_open.rs` (M2) | done; real openers in Task 11; `openFolderDefault` x2 stay M9 |
+| `core/renderer/lib/linkScanPlan.test.ts` | 8 | flare-term `scan_plan.rs`, Task 12a | all 8; used by find's count job |
+| `core/renderer/lib/termLinkPaint.test.ts` | 6 | flare-term `link_scan.rs`, Task 13 | the 6 re-expressed as scanner-cache tests (`an_unchanged_line_is_not_scanned_again` ...); the DOM decoration counting is dropped (D5) |
+| `src/renderer/src/components/termMenu.test.ts` | 4 | flare `term_menu.rs`, Task 20 | all 4 + 4 new |
+| `core/main/ipc.clipboard.test.ts` (clipboard:write 2, clipboard:term-write 2) | 4 of 6 | flare-win `clipboard_port.rs`, Task 10 | the 2 `term:bell` tests are not M5 (the taskbar flash is M9) |
+| `src/main/e2eClipboard.test.ts` | 1 | flare-win `MemoryClipboard`, Task 10; flare Task 24 `under_e2e_the_clipboard_is_in_memory_and_openers_record` | re-expressed as the port's in-memory stand-in |
+| `core/renderer/components/TermFind.tsx`, `CopiedBadge.tsx`, `TerminalPanel.tsx` | no unit tests | flare, Tasks 12b, 17, 18, 23 | new tests from the e2e scenarios `findKey`, `selectionEdit`, `paste`, `imagePaste`, `links`, `osc8Links`, `pathLinks`, `linkPaintStall`, `termClipboard`, `dropAndMenu`, `mouseReport`, `clickCaret`, `reviewKeys` (Task 25) |
+| xterm.js behaviour (no PT test) | - | flare-term Tasks 4 to 7, 12b | tests written from the xterm sources named in Verified facts |
+| xterm.js `src/browser/input/MoveToCell.test.ts` (Alt+click, `altClickMovesCursor`) | 4 | flare-term `alt_click.rs`, M5 final review | all 4 (the 24-target normal table, application cursor, alt buffer) + 10 new; wired in `term_ui.rs` (O25) |
+
+Rows changed by M5 (the M5 plan's Task 28 list): `imagePasteKey` and `newlineKey` (termPaste.test) now belong to flare-agent, M5 (D13); `termMenu.test` to flare, M5; `termLinkPaint.test` and `linkScanPlan.test` to flare-term (`link_scan.rs`, `scan_plan.rs`) instead of flare-render (their DOM-decoration part does not exist in Flare, D5); the `shellOfShellId` group of `catalogue.test` to flare-shells (`path_shell_of`).

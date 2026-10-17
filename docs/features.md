@@ -199,3 +199,92 @@ are added as milestones land.
   translucent ground without a backdrop, no DWM call on Windows 10, no theme colour typed outside the
   theme, glass only when it can be used). Rules 67, 68, 69, 73, 74, 75, 126 and 127 are amended with
   their test names. The plan's numbers 143 to 147 were taken by M3, so these moved to 148 to 152.
+
+## Input (M5), 2026-10-17
+
+- **Selection.** Character, word (double click), line (triple click) and block (Alt drag) on the
+  grid, with drag scroll past the edge and Shift to extend. A selection is stored in alacritty's
+  `Term::selection` and written from cell boundaries (planner D1, D3). Held by
+  `double_and_triple_click_select_word_and_line`, `shift_click_extends_and_alt_drag_is_a_block`,
+  `a_wide_character_is_taken_whole` and `selection_lands_on_the_right_cells_at_every_scale`.
+- **Known limit (D2, open as O23).** A program that erases the lines a selection covers (Claude Code
+  redrawing its inline screen) can clear that selection on the live screen. A selection in the
+  scrollback is unaffected. The owner's answer is to fix it in M10. Held by `an_erase_over_the_selection_clears_it`.
+- **Copy.** Ctrl+C copies and clears a selection and is the interrupt without one. It matches the
+  physical key, so Russian and Greek layouts still copy (O2). The "Copied" badge sits at the bottom
+  centre and leaves by itself. A program's own selection is announced when the clipboard changes after
+  a selecting release. Held by `ctrl_c_over_a_selection_is_not_the_interrupt_and_without_one_it_is`,
+  `ctrl_c_by_physical_key_copies`, `a_drag_then_ctrl_c_copies_and_says_copied`,
+  `a_program_selection_copy_is_announced` and `the_copy_watch_announces_when_the_clipboard_changes_after_a_selecting_release`.
+- **Backspace over a selection** deletes the selected text on the edited line (Left, then one DEL per
+  character) and is swallowed; with nothing deletable the selection clears and the key is still
+  swallowed. Held by `backspace_deletes_the_selection_on_the_edited_line` and `nothing_deletable_is_allowed_and_empty`.
+- **Click to caret.** A plain left click on the typed line moves the caret with arrow keys; every
+  refusal (a drag, a modifier, a mouse program, the alternate screen, scrollback, a hidden cursor,
+  printed text below, a link) sends nothing. Held by `a_click_on_the_typed_line_moves_the_caret` and
+  `every_refusal_sends_nothing`.
+- **Difference (D10, O26).** An empty cell and a typed space read as the same character, so a prompt's
+  trailing space is not printed text for the caret end or the selection trim.
+- **Alt+click moves the cursor (D8 reversed, O25).** xterm's `altClickMovesCursor` is on in Prism
+  Terminal, so a quick Alt press and release (under 500 ms, at most one character selected) sends
+  the arrows from the cursor to the clicked cell, counted as xterm's `moveToCellSequence` does:
+  left and right across rows on the normal screen, up or down then across on the alternate screen,
+  nothing while scrolled back. The plain click-to-caret above is unchanged. Held by
+  `an_alt_click_moves_the_cursor_with_arrows_and_selects_nothing`, `xterm_normal_buffer_table` and
+  `an_alt_click_moves_the_cursor_by_arrows_as_xterm`.
+- **Paste.** Ctrl+V, Ctrl+Shift+V (plain, even with an image) and right-click Paste share one path
+  and deliver exactly once. Text is one bracketed paste when the shell asked for it, sanitised (no
+  ESC, no early bracket end) and has its newlines turned into carriage returns. Copied files paste as
+  quoted paths for the shell that runs in the tab. An image sends the agent's image key only. Held by
+  `ctrl_v_ctrl_shift_v_and_the_menu_paste_each_deliver_exactly_once`, `plain_pastes_only_the_text`,
+  `copied_files_paste_quoted_paths_for_each_shell`, `an_image_pastes_the_agent_key_and_shift_enter_is_a_newline_only_for_agents`
+  and `a_hostile_paste_is_inert`.
+- **Drop.** Dropping a file on a tab types its quoted path into a live shell, never Enter and never a
+  trailing space. Held by `a_dropped_file_types_its_quoted_path_and_nothing_runs` and
+  `several_files_are_joined_by_one_space_and_never_end_in_enter`.
+- **Multi-line paste (D15, O27).** No confirmation and no "paste is large" notice, as in Prism
+  Terminal. Bracketed paste is the safety for shells that asked for it. Held by `a_multi_line_paste_is_one_bracketed_block`.
+- **Find (Ctrl+F).** Ctrl+F opens the bar except in a full-screen program (alternate screen or mouse
+  reporting); Ctrl+Shift+F always finds. The bar is 332 by 28 px plus hairlines at the top right, 12 px
+  from the edges, with no shadow and no case button. Incremental search keeps the current match,
+  Enter goes next, Shift+Enter previous, Escape closes. Readout words: empty, "none", "N+" past the
+  threshold, "i of n". The search covers the whole scrollback, wrapped lines and the alternate screen,
+  and runs in slices so no pass holds the window. Closing clears the highlights and leaves the
+  selection. The accepted cost: at a readline prompt Ctrl+F no longer means cursor right. Held by
+  `ctrl_f_opens_the_bar_escape_closes_it_and_a_full_screen_program_keeps_ctrl_f`,
+  `typing_highlights_every_match_and_enter_steps`, `previous_and_next_do_nothing_without_hits`,
+  `the_bar_is_332_by_28_plus_two_hairlines` and `find_and_a_big_scrollback_never_hold_the_window`.
+- **No ruler.** Prism Terminal sets no overview ruler, so none is painted. The highlight colours are
+  the Prism Terminal ones (match, border, accent for the active match) through `DecorInk`.
+- **Links.** Left click opens; right click opens nothing (D6: a plain click, path links too;
+  `link_click_needs_ctrl` returns false). Links are painted in the link ink with a faint underline that
+  never blocks a click. Scans cover the viewport only, from a per-line cache, sliced under 8 ms; the
+  scrollback needs no stored decoration. OSC 8 links come from alacritty's cell hyperlinks (D18) and
+  open on a plain left click when http or https; a label showing another host opens the address it shows.
+  Held by `a_printed_link_wears_the_link_ink_and_its_full_stop_does_not`, `an_unchanged_line_is_not_scanned_again`,
+  `a_new_ink_scans_everything_again`, `a_burst_of_scrollback_is_not_scanned`, `an_osc8_label_wears_the_ink_and_opens_once_on_a_left_click`,
+  `an_osc8_label_showing_another_host_opens_what_it_shows` and `any_other_button_opens_nothing`.
+- **Paths.** A path is a link only when it exists; the backend resolves and checks it again; a click
+  opens only allowlisted types and reveals everything else in Explorer (O22, rule 134). A folder opens
+  in Explorer. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
+  and `a_path_menu_open_and_show_go_through_the_allowlist`.
+- **Terminal menu.** Right click opens the menu for what was clicked: path rows, link rows, Copy with a
+  selection, Paste, Find in scrollback, and Command help last while it is on (M7). No Close tab. It is
+  bound to the tab it opened on. Held by `the_menu_fits_what_was_clicked_and_copies_exactly` and the
+  flare `term_menu.rs` tests.
+- **Mouse reporting.** A program that owns the mouse gets press, release, motion and wheel as bytes;
+  a right click still opens the menu, and a report never marks the tab as typed. Shift gives the
+  selection back. Held by `a_mouse_program_gets_reports_and_shift_selects` and `write_report_is_not_typing`.
+- **IME caret hold.** A key opens a 250 ms window that holds the caret on the input line for IME and
+  screen readers; it is released on the alternate screen, a resize, a buffer change or scrollback.
+  Held by `the_hold_is_released_on_the_alternate_screen_a_resize_and_scrollback` and the flare-term `caret_hold.rs` tests.
+- **Clipboard.** Reads and writes run on a worker. A copy is refused, never trimmed, when it is empty or
+  too large. The test flag uses an in-memory clipboard and records openers. Held by
+  `copy_async_refuses_empty_and_oversize_without_touching_the_clipboard` and
+  `under_e2e_the_clipboard_is_in_memory_and_openers_record`.
+- **OSC 52.** Write-only; a read query is swallowed and never answered; the accepted write shows the
+  badge. Held by `osc_52_lands_with_utf8_intact_says_copied_and_a_read_gets_no_reply`.
+- **Regression rules.** `docs/regression-rules.md` rules 154 to 159 (cell boundaries, the typed drop,
+  mouse reports, link opening and no held UI, the off-thread clipboard, opaque decorations in whole
+  pixels). Rules 8 and 19 are amended with their native meaning. The plan's numbers 142 to 147 were
+  taken by M2 and M3, and M4 used 148 to 153, so these moved to 154 to 159.
