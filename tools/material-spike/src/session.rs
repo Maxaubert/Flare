@@ -11,7 +11,7 @@ use flare_win::material::{support, Material, Support};
 use flare_win::os_build::os_version;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::WinitWindowAccessor;
-use slint::{Brush, Color, ComponentHandle, GraphicsAPI, RenderingState, Timer};
+use slint::{Brush, Color, ComponentHandle, GraphicsAPI, RenderingState, Timer, TimerMode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -87,6 +87,80 @@ fn no_activate(hwnd: isize) {
     }
 }
 
+/// A white rectangle (the predefined STATIC class with SS_WHITERECT) right under the test window, so
+/// there is something bright for the glass to show. Not topmost, so the test window stays above it.
+struct WhiteBackdrop(isize);
+
+/// SS_WHITERECT, the STATIC style that paints a white rectangle.
+const SS_WHITERECT: u32 = 0x6;
+
+impl WhiteBackdrop {
+    fn new(r: Rect) -> Option<Self> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, ShowWindow, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_POPUP,
+        };
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: the STATIC class is predefined; the window is destroyed in Drop.
+        let h = unsafe {
+            let h = CreateWindowExW(
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_POPUP | SS_WHITERECT,
+                r.left,
+                r.top,
+                r.width(),
+                r.height(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            if !h.is_null() {
+                ShowWindow(h, SW_SHOWNOACTIVATE);
+            }
+            h
+        };
+        (!h.is_null()).then_some(Self(h as isize))
+    }
+}
+
+impl Drop for WhiteBackdrop {
+    fn drop(&mut self) {
+        // SAFETY: the handle was made by CreateWindowExW above and is destroyed once.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.0 as _);
+        }
+    }
+}
+
+/// Puts the backdrop (when there is one) and then the test window at the top of the topmost band, so
+/// no other always-on-top window of the owner sits over the corner being captured.
+fn raise(ctx: &Ctx) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let top = |h: isize| {
+        // SAFETY: a z-order change on a window of this process; a bad handle makes it return 0.
+        unsafe {
+            SetWindowPos(
+                h as _,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    };
+    if let Some(b) = ctx.backdrop.borrow().as_ref() {
+        top(b.0);
+    }
+    top(ctx.hwnd.get());
+}
+
 struct Ctx {
     a: Args,
     ui: slint::Weak<Spike>,
@@ -95,6 +169,8 @@ struct Ctx {
     rect: Cell<Option<Rect>>,
     open: RefCell<Option<Shot>>,
     fields: RefCell<Vec<(&'static str, String)>>,
+    backdrop: RefCell<Option<WhiteBackdrop>>,
+    series: std::sync::Arc<std::sync::Mutex<Vec<[u8; 3]>>>,
 }
 
 impl Ctx {
@@ -157,14 +233,47 @@ fn apply(ctx: &Ctx) -> Result<(), String> {
         (400, 300)
     };
     let (sw, sh) = capture::screen_size();
-    ui.window()
-        .set_position(slint::PhysicalPosition::new(sw - w - 24, sh - h - 64));
+    let (x, y) = (sw - w - 24, sh - h - 64);
+    ui.window().set_position(slint::PhysicalPosition::new(x, y));
+    let glass = matches!(
+        ctx.a.mode,
+        Mode::GlassGpu | Mode::GlassSoftware | Mode::CostOnce
+    );
+    if glass && ctx.a.backdrop {
+        let r = Rect {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        };
+        *ctx.backdrop.borrow_mut() = WhiteBackdrop::new(r);
+        ctx.put("backdrop", ctx.backdrop.borrow().is_some().to_string());
+    }
+    raise(ctx);
+    {
+        // A thread samples the centre every 250 ms, to show whether the window comes and goes.
+        let rect = Rect {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        };
+        let series = ctx.series.clone();
+        std::thread::spawn(move || {
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(250));
+                if let Some(s) = capture::capture(rect) {
+                    series.lock().unwrap().push(s.centre());
+                }
+            }
+        });
+    }
     match ctx.a.mode {
         Mode::GlassGpu | Mode::GlassSoftware | Mode::CostOnce => {
             let supported = support(os_version()) == Support::Ok;
             let mut m = Material::new(DwmSurface::new(hwnd), supported);
             m.set_bg("#171717");
-            let supported_now = m.set_acrylic(true);
+            let supported_now = m.set_acrylic(ctx.a.acrylic);
             ctx.put("material_supported", supported_now.to_string());
             ctx.put("glass_on", m.glass_on().to_string());
         }
@@ -195,6 +304,11 @@ fn apply(ctx: &Ctx) -> Result<(), String> {
                 "e6_equal",
                 (r38 == Some(3) && r34 == Some(want_border) && r20 == Some(1)).to_string(),
             );
+            ctx.put(
+                "e6_equal_where_readable",
+                (r38 == Some(3) && r34.is_none_or(|v| v == want_border) && r20 == Some(1))
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -213,6 +327,7 @@ fn save(ctx: &Ctx, shot: &Shot) {
 /// Step two: capture the window rectangle and decide this mode's verdict (glass waits for the
 /// closed capture before it can).
 fn measure(ctx: &Rc<Ctx>) -> Result<(), String> {
+    raise(ctx);
     let hwnd = ctx.hwnd.get();
     let rect = capture::window_rect(hwnd).ok_or("no window rectangle")?;
     ctx.rect.set(Some(rect));
@@ -228,6 +343,82 @@ fn measure(ctx: &Rc<Ctx>) -> Result<(), String> {
         ),
     );
     save(ctx, &shot);
+    let series: Vec<String> = ctx
+        .series
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|p| p[0].to_string())
+        .collect();
+    ctx.put("centre_series_r", format!("[{}]", series.join(",")));
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetWindowTextW, IsWindowVisible, WindowFromPoint, GA_ROOT,
+        };
+        // SAFETY: read-only queries.
+        unsafe {
+            let p = POINT {
+                x: rect.left + rect.width() / 2,
+                y: rect.top + rect.height() / 2,
+            };
+            let at = GetAncestor(WindowFromPoint(p), GA_ROOT);
+            let mut t = [0u16; 80];
+            let n = GetWindowTextW(at, t.as_mut_ptr(), 80) as usize;
+            // Every visible window above ours in z-order that overlaps the rectangle.
+            {
+                use windows_sys::Win32::Foundation::RECT;
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetClassNameW, GetWindow, GetWindowLongPtrW, GetWindowRect, IsIconic,
+                    GWL_EXSTYLE, GW_HWNDPREV,
+                };
+                let mut above = Vec::new();
+                let mut w = GetWindow(hwnd as _, GW_HWNDPREV);
+                while !w.is_null() && above.len() < 12 {
+                    let mut r = RECT {
+                        left: 0,
+                        top: 0,
+                        right: 0,
+                        bottom: 0,
+                    };
+                    GetWindowRect(w, &mut r);
+                    let overlaps = r.left < rect.right
+                        && r.right > rect.left
+                        && r.top < rect.bottom
+                        && r.bottom > rect.top;
+                    if IsWindowVisible(w) != 0 && IsIconic(w) == 0 && overlaps {
+                        let mut c = [0u16; 64];
+                        let n = GetClassNameW(w, c.as_mut_ptr(), 64) as usize;
+                        let mut t = [0u16; 48];
+                        let m = GetWindowTextW(w, t.as_mut_ptr(), 48) as usize;
+                        let ex = GetWindowLongPtrW(w, GWL_EXSTYLE);
+                        above.push(json_str(&format!(
+                            "{}|{}|ex={:#x}|{},{},{},{}",
+                            String::from_utf16_lossy(&c[..n]),
+                            String::from_utf16_lossy(&t[..m]),
+                            ex,
+                            r.left,
+                            r.top,
+                            r.right - r.left,
+                            r.bottom - r.top
+                        )));
+                    }
+                    w = GetWindow(w, GW_HWNDPREV);
+                }
+                ctx.put("above_us", format!("[{}]", above.join(",")));
+            }
+            ctx.put(
+                "cloaked",
+                dwm::read_back_i32(hwnd, 14).map_or("null".into(), |v| v.to_string()),
+            );
+            ctx.put("visible", (IsWindowVisible(hwnd as _) != 0).to_string());
+            ctx.put("at_centre_is_us", (at as isize == hwnd).to_string());
+            ctx.put(
+                "at_centre_title",
+                json_str(&String::from_utf16_lossy(&t[..n])),
+            );
+        }
+    }
     match ctx.a.mode {
         Mode::Premul => {
             let c = shot.centre();
@@ -278,7 +469,15 @@ fn closed(ctx: &Ctx) -> Result<(), String> {
     ctx.put("centre_open", rgb(co));
     ctx.put("centre_closed", rgb(cc));
     ctx.put("diff_stddev", format!("{sd:.3}"));
+    ctx.put("acrylic", ctx.a.acrylic.to_string());
     ctx.put("e1_glass_works", e1_glass_works(co, cc, sd).to_string());
+    let from_ground = co
+        .iter()
+        .zip(GROUND)
+        .map(|(a, b)| a.abs_diff(b))
+        .max()
+        .unwrap_or(0);
+    ctx.put("centre_vs_ground_max_diff", from_ground.to_string());
     ctx.put(
         "e2_centre_is_ground",
         e2_alpha_one_is_opaque(co, GROUND).to_string(),
@@ -374,6 +573,7 @@ pub fn run(a: &Args, t0: Instant) -> Result<String, String> {
     let ui = Spike::new().map_err(|e| e.to_string())?;
     let (g, alpha) = match a.mode {
         Mode::Premul => ([255, 255, 255], 255),
+        Mode::Border => ([0x2a, 0x3b, 0x4c], 255),
         _ => (GROUND, ground_alpha(a)),
     };
     ui.set_ground(Brush::SolidColor(Color::from_argb_u8(
@@ -387,11 +587,24 @@ pub fn run(a: &Args, t0: Instant) -> Result<String, String> {
         rect: Cell::new(None),
         open: RefCell::new(None),
         fields: RefCell::new(Vec::new()),
+        backdrop: RefCell::new(None),
+        series: Default::default(),
     });
     if a.renderer == Renderer::Gpu && matches!(a.mode, Mode::Premul | Mode::CostOnce) {
         notifier(&ui, &ctx, t0)?;
     }
     ui.show().map_err(|e| e.to_string())?;
+    // Keep presenting: a flip-model swapchain keeps what was last drawn per buffer, and the capture
+    // must not land on a frame that was only partly redrawn.
+    let redraw = Timer::default();
+    {
+        let weak = ui.as_weak();
+        redraw.start(TimerMode::Repeated, Duration::from_millis(33), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().request_redraw();
+            }
+        });
+    }
     if a.mode != Mode::CostOnce {
         let c = ctx.clone();
         after(SETTLE_MS, move || {

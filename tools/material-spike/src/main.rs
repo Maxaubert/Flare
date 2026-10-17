@@ -42,6 +42,10 @@ pub struct Args {
     pub renderer: Renderer,
     pub seconds: f64,
     pub out: Option<String>,
+    /// `--acrylic off` skips the backdrop call (isolates what the swapchain alone does).
+    pub acrylic: bool,
+    /// `--backdrop none` shows no white helper window under the test window.
+    pub backdrop: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -67,6 +71,14 @@ fn mode_of(s: &str) -> Option<Mode> {
     })
 }
 
+fn on_off(v: &str, key: &str) -> Result<bool, ArgError> {
+    match v {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(ArgError(format!("{key} takes on or off, not {v}"))),
+    }
+}
+
 /// Parses `--mode <name> [--level N] [--swapchain visual|hwnd] [--renderer gpu|software] [--seconds S]
 /// [--out file.png]` (the program name is not in `argv`).
 pub fn parse_args(argv: &[String]) -> Result<Args, ArgError> {
@@ -78,6 +90,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, ArgError> {
         renderer: Renderer::Gpu,
         seconds: 6.0,
         out: None,
+        acrylic: true,
+        backdrop: true,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -119,6 +133,14 @@ pub fn parse_args(argv: &[String]) -> Result<Args, ArgError> {
                 }
             }
             "--out" => a.out = Some(v.to_string()),
+            "--acrylic" => a.acrylic = on_off(v, key)?,
+            "--backdrop" => {
+                a.backdrop = match v {
+                    "white" => true,
+                    "none" => false,
+                    _ => return Err(ArgError(format!("bad backdrop {v}"))),
+                }
+            }
             _ => return Err(ArgError(format!("unknown option {key}"))),
         }
         i += 2;
@@ -324,6 +346,18 @@ mod tests {
             (a.level, a.seconds, a.swapchain),
             (40, 6.0, Swapchain::Visual)
         );
+        assert!(a.acrylic && a.backdrop);
+        let b = parse_args(&s(&[
+            "--mode",
+            "probe",
+            "--acrylic",
+            "off",
+            "--backdrop",
+            "none",
+        ]))
+        .unwrap();
+        assert!(!b.acrylic && !b.backdrop);
+        assert!(parse_args(&s(&["--mode", "probe", "--acrylic", "maybe"])).is_err());
         assert!(parse_args(&s(&[])).is_err());
         assert!(parse_args(&s(&["--mode", "nope"])).is_err());
         assert!(parse_args(&s(&["--mode", "probe", "--level", "101"])).is_err());
