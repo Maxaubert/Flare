@@ -1,2 +1,131 @@
-// The About card and the Slint badge (M7 Task 38).
-export component AboutPreview inherits Window {}
+// The About card and the Slint badge (M7 Task 38). Source: PT AboutPage.tsx; decisions D18 and O9.
+import { AboutSlint, Palette } from "std-widgets.slint";
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { AppMark } from "../mark.slint";
+
+// 96 high: padding 20 by 18, the icon 56, a gap of 18.
+export component AboutCard inherits Rectangle {
+    in property <string> name;
+    in property <string> line-one;
+    in property <string> line-two;
+    out property <length> icon-w: mark.width;
+
+    height: 96px;
+    background: transparent;
+
+    mark := AppMark {
+        size: 56px;
+        x: 18px;
+        y: 20px;
+    }
+
+    VerticalLayout {
+        x: 92px;
+        y: 20px;
+        width: root.width - 92px - 18px;
+        height: 56px;
+        alignment: center;
+
+        Text {
+            text: root.name;
+            color: Theme.text;
+            font-family: SettingsFixed.font-display;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.18px;
+        }
+        Rectangle { height: 4px; }
+        Text {
+            text: root.line-one;
+            color: Theme.dim;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 2px; }
+        Text {
+            text: root.line-two;
+            color: Theme.dim;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// The Slint attribution: AboutSlint's logo and version line, on the About panel. The scheme is
+// the theme's, so the logo and its 10 px line read on a dark and a light ground (D18). A press
+// goes to `open-url` (the link is https://slint.dev), never straight to the platform, so a test
+// can record it.
+export component SlintBadge inherits Rectangle {
+    callback open-url(string);
+    out property <length> badge-h: logo.min-height;
+
+    height: badge-h;
+    background: transparent;
+
+    init => {
+        Palette.color-scheme = Theme.light ? ColorScheme.light : ColorScheme.dark;
+    }
+
+    logo := AboutSlint {
+        width: 280px;
+        height: root.height;
+        x: Px.snap((root.width - self.width) / 2);
+        y: 0;
+    }
+
+    // Declared after the logo, so it is the top item under the pointer and takes the press.
+    ta := TouchArea {
+        width: root.width;
+        height: root.height;
+        clicked => { root.open-url("https://slint.dev"); }
+    }
+}
+
+// The one-card preview the Rust tests drive: the card, then the badge, on the panel fill.
+// The out geometry is in logical px.
+export component AboutPreview inherits Window {
+    preferred-width: 480px;
+    preferred-height: 260px;
+    background: Theme.ground;
+
+    in-out property <string> app-name: "Flare";
+    in-out property <string> line-one: "Flare 0.1.0. Made with Slint.";
+    in-out property <string> line-two: "Copyright (c) 2026 Max Aubert. All rights reserved.";
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    callback open-url(string);
+
+    out property <length> card-h: card.height;
+    out property <length> icon-w: card.icon-w;
+    out property <length> badge-x: badge.absolute-position.x;
+    out property <length> badge-y: badge.absolute-position.y;
+    out property <length> badge-w: badge.width;
+    out property <length> badge-h: badge.height;
+
+    panel := Rectangle {
+        x: Px.snap(16px);
+        y: Px.snap(16px);
+        width: root.width - 32px;
+        height: root.height - 32px;
+        border-radius: SettingsShape.panel-radius;
+        background: SettingsInk.panel-fill;
+
+        card := AboutCard {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            name: root.app-name;
+            line-one: root.line-one;
+            line-two: root.line-two;
+        }
+
+        badge := SlintBadge {
+            x: 0;
+            y: card.height + 12px;
+            width: parent.width;
+            open-url(u) => { root.open-url(u); }
+        }
+    }
+}
