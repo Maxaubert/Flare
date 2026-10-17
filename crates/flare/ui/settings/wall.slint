@@ -1,4 +1,1185 @@
 // The theme wall, the editor and the switch question (M7 Task 37).
-export component WallPreview inherits Window {}
-export component ThemeEditor inherits Rectangle {}
-export component AskThree inherits Rectangle {}
+// Source: Prism Terminal's ThemeWall.tsx (TermThemeCard, TermThemeEditor, the wall and its toggle),
+// ThemeSwitchAsk.tsx and Modal.tsx.
+//
+// Rust owns every rule (the wall order, the card positions, the clip heights, what a pick does);
+// this file draws what it is given and reports events back. Every edge snaps to a whole device pixel.
+// The wall's card is the same height at every scale: 124 px plus its two 1 device pixel borders.
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { WallCard, EditorWell } from "types.slint";
+import { ColourField } from "colour.slint";
+
+// One coloured run of the card's miniature terminal (10.5 px mono on a 15.75 px line).
+component Run inherits Text {
+    font-family: SettingsFixed.font-mono;
+    font-size: 10.5px;
+    wrap: no-wrap;
+    vertical-alignment: center;
+    height: 15.75px;
+}
+
+// A theme as a miniature terminal: prompt, coloured ls output, cursor. It paints with its OWN
+// palette, never the chrome's tokens (the chrome is whichever theme is chosen).
+export component ThemeCard inherits Rectangle {
+    in property <WallCard> card;
+    // false for the editor's preview: a card nobody picks is no tab stop
+    in property <bool> focusable: true;
+    callback picked(string);
+    callback edit(string);
+    callback tip(string, length, length, length, length);
+
+    property <length> hair: Px.hair();
+    property <bool> by-key;
+    out property <length> label-h: 32px;
+    out property <length> label-y: root.hair + 92px;
+    out property <bool> key-focus: fs.has-focus && root.by-key;
+    out property <length> pencil-x: pencil.absolute-position.x;
+    out property <length> pencil-y: pencil.absolute-position.y;
+    out property <length> pencil-w: pencil.width;
+    out property <length> pencil-h: pencil.height;
+
+    width: SettingsShape.card-w;
+    height: 124px + 2 * root.hair;
+
+    accessible-role: button;
+    accessible-label: root.card.name;
+    accessible-checkable: true;
+    accessible-checked: root.card.on;
+    accessible-action-default => {
+        root.picked(root.card.id);
+    }
+
+    box := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 6px;
+        clip: true;
+
+        // the preview: the card's own ground and ink
+        Rectangle {
+            x: root.hair;
+            y: root.hair;
+            width: parent.width - 2 * root.hair;
+            height: 92px;
+            background: root.card.bg;
+
+            // line 1: you@pc:~/app$ ls and the cursor block
+            HorizontalLayout {
+                x: 10px;
+                y: 8px;
+                height: 15.75px;
+                spacing: 0px;
+                alignment: start;
+                Run { text: "you@pc"; color: root.card.green; }
+                Run { text: ":"; color: root.card.fg; }
+                Run { text: "~/app"; color: root.card.blue; }
+                Run { text: "$"; color: root.card.red; }
+                Run { text: " ls"; color: root.card.fg; }
+                // margin 1, block 6 by 11, lowered 2
+                Rectangle {
+                    width: 7px;
+                    height: 15.75px;
+                    Rectangle {
+                        x: 1px;
+                        y: 2px;
+                        width: 6px;
+                        height: 11px;
+                        background: root.card.cursor;
+                    }
+                }
+            }
+            // line 2: src docs run.sh (HTML collapses the two spaces to one)
+            HorizontalLayout {
+                x: 10px;
+                y: 8px + 15.75px;
+                height: 15.75px;
+                spacing: 0px;
+                alignment: start;
+                Run { text: "src"; color: root.card.blue; }
+                Run { text: " docs"; color: root.card.blue; }
+                Run { text: " run.sh"; color: root.card.green; }
+            }
+            // line 3: notes.md a.link
+            HorizontalLayout {
+                x: 10px;
+                y: 8px + 2 * 15.75px;
+                height: 15.75px;
+                spacing: 0px;
+                alignment: start;
+                Run { text: "notes.md"; color: root.card.yellow; }
+                Run { text: " a.link"; color: root.card.cyan; }
+            }
+            // line 4: 12 files
+            HorizontalLayout {
+                x: 10px;
+                y: 8px + 3 * 15.75px;
+                height: 15.75px;
+                spacing: 0px;
+                alignment: start;
+                Run { text: "12 files"; color: root.card.fg; }
+            }
+        }
+
+        // the label row: a top rule, then the name
+        Rectangle {
+            x: root.hair;
+            y: root.label-y;
+            width: parent.width - 2 * root.hair;
+            height: root.label-h;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: root.hair;
+                background: root.card.on ? Theme.accent-hi.with-alpha(0.4) : Theme.line;
+            }
+            Text {
+                x: 10px;
+                y: root.hair;
+                width: parent.width - 20px;
+                height: parent.height - root.hair;
+                text: root.card.name;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                color: root.card.on ? Theme.accent-hi : Theme.text;
+            }
+        }
+    }
+
+    // the one pixel ring outside the chosen card
+    Rectangle {
+        x: -root.hair;
+        y: -root.hair;
+        width: parent.width + 2 * root.hair;
+        height: parent.height + 2 * root.hair;
+        visible: root.card.on;
+        border-radius: 7px;
+        border-width: root.hair;
+        border-color: Theme.accent-solid.with-alpha(0.45);
+    }
+
+    // the edge, drawn over the content
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: 6px;
+        border-width: root.hair;
+        border-color: root.card.on ? Theme.accent-hi : (root.key-focus ? SettingsInk.focus-edge : (ta.has-hover ? Theme.divider : Theme.line));
+        animate border-color { duration: 120ms; }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.focusable;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-key = true;
+                root.picked(root.card.id);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.focusable;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.by-key = false;
+                fs.focus();
+            }
+        }
+        clicked => {
+            root.picked(root.card.id);
+        }
+    }
+
+    // Only the chosen card wears the pencil; a button of its own, laid over the label row
+    // (bottom 6, right 10, 20 by 20).
+    pencil := Rectangle {
+        x: Px.snap(root.width - 30px);
+        y: Px.snap(root.height - 26px);
+        width: 20px;
+        height: 20px;
+        visible: root.card.on && root.card.edit;
+        border-radius: 4px;
+        background: pta.has-hover ? Theme.hover : transparent;
+        accessible-role: button;
+        accessible-label: root.card.edit-name != "" ? root.card.edit-name : "Edit " + root.card.name;
+        accessible-action-default => {
+            root.edit(root.card.id);
+        }
+
+        Path {
+            x: 4.5px;
+            y: 4.5px;
+            width: 11px;
+            height: 11px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M15 5l4 4L8 20H4v-4z";
+            fill: transparent;
+            stroke: Theme.accent-hi;
+            stroke-width: 1.9 * 11px / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+
+        pta := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: parent.visible;
+            clicked => {
+                root.edit(root.card.id);
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip("Edit colours, saved as Custom", pencil.absolute-position.x, pencil.absolute-position.y, pencil.width, pencil.height);
+                }
+            }
+        }
+    }
+}
+
+// The wall: the cards where Rust put them, inside a clip that eases open over 240 ms and snaps shut,
+// and the toggle 8 px under it. The clip reaches 8 px past the cards on three sides so the chosen
+// card's outer ring is never cut; the host places the wall inside its block padding.
+export component ThemeWallView inherits Rectangle {
+    in property <[WallCard]> cards;
+    // the collapsed clip (two rows, 268) and the height of every card
+    in property <length> clip-h: 268px;
+    in property <length> full-h: 268px;
+    in property <bool> expanded;
+    in property <string> toggle-aria;
+    in property <string> toggle-title;
+    // Windows' reduced animation: the clip jumps
+    in property <bool> still;
+    callback picked(string);
+    callback edit(string);
+    callback toggled();
+    callback tip(string, length, length, length, length);
+
+    property <length> shown-h: root.expanded ? root.full-h : root.clip-h;
+    // Ease OPEN only: the duration is 240 ms exactly while the wall is (being) expanded.
+    animate shown-h {
+        duration: root.expanded && !root.still ? 240ms : 0ms;
+        easing: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    out property <length> clip-now: root.shown-h;
+    out property <length> toggle-x: toggle.absolute-position.x;
+    out property <length> toggle-y: toggle.absolute-position.y;
+    out property <length> toggle-w: toggle.width;
+    out property <length> toggle-h: toggle.height;
+    out property <bool> toggle-key-focus: toggle-fs.has-focus && !root.toggle-by-pointer;
+    property <bool> toggle-by-pointer;
+
+    height: root.shown-h + 8px + 28px;
+
+    clipper := Rectangle {
+        x: -8px;
+        y: -8px;
+        width: root.width + 16px;
+        height: root.shown-h + 8px;
+        clip: true;
+
+        for c in root.cards: ThemeCard {
+            x: c.x + 8px;
+            y: c.y + 8px;
+            card: c;
+            picked(id) => {
+                root.picked(id);
+            }
+            edit(id) => {
+                root.edit(id);
+            }
+            tip(t, tx, ty, tw, th) => {
+                root.tip(t, tx, ty, tw, th);
+            }
+        }
+    }
+
+    toggle := Rectangle {
+        x: Px.snap((root.width - 40px) / 2);
+        y: Px.snap(root.shown-h + 8px);
+        width: 40px;
+        height: 28px;
+        border-radius: 4px;
+        background: toggle-ta.has-hover ? Theme.hover : (root.toggle-key-focus ? Theme.hover-hi : transparent);
+        accessible-role: button;
+        accessible-label: root.toggle-aria;
+        accessible-expanded: root.expanded;
+        accessible-action-default => {
+            root.toggled();
+        }
+
+        // M6 9l6 6 6-6 (down) turned half a turn is M6 15l6-6 6 6 (up)
+        Path {
+            x: Px.snap((parent.width - 15px) / 2);
+            y: Px.snap((parent.height - 15px) / 2);
+            width: 15px;
+            height: 15px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: root.expanded ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6";
+            fill: transparent;
+            stroke: toggle-ta.has-hover ? Theme.text : Theme.icon;
+            stroke-width: 2.2 * 15px / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+
+        toggle-fs := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            key-pressed(e) => {
+                if e.text == Key.Space || e.text == Key.Return {
+                    root.toggle-by-pointer = false;
+                    root.toggled();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        toggle-ta := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    root.toggle-by-pointer = true;
+                    toggle-fs.focus();
+                }
+            }
+            clicked => {
+                root.toggled();
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip(root.toggle-title, toggle.absolute-position.x, toggle.absolute-position.y, toggle.width, toggle.height);
+                }
+            }
+        }
+    }
+}
+
+// Save as Custom (accent) and Cancel (a line), 32 high, radius 8, padding 0 16, 12 px weight 600.
+component EditorButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    out property <bool> focused: fs.has-focus;
+    out property <bool> key-focus: fs.has-focus && !root.by-pointer;
+    callback clicked();
+    property <bool> by-pointer;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    height: 32px;
+    border-radius: 8px;
+    background: root.primary ? (ta.has-hover ? Theme.accent.brighter(0.1) : Theme.accent) : transparent;
+    border-width: root.primary ? 0px : Px.hair();
+    border-color: ta.has-hover ? Theme.divider : Theme.line;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.primary ? Theme.on-accent : Theme.text;
+    }
+
+    // the keyboard focus ring, 2 px outside
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: root.key-focus ? Theme.accent-hi : transparent;
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-pointer = false;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.by-pointer = true;
+                fs.focus();
+            }
+        }
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// One colour well: the label (86 wide, 11 px dim, cut with an ellipsis) and the colour field flush
+// right in the column.
+component WellRow inherits Rectangle {
+    in property <EditorWell> well;
+    in property <length> col-w;
+    out property <bool> code-focused: cf.code-focused;
+    callback edited(string);
+    callback committed();
+    callback swatch(length, length, length, length);
+    callback reveal();
+    callback tip(string, length, length, length, length);
+
+    width: root.col-w;
+    height: 24px;
+
+    public function focus-first() {
+        cf.focus-code();
+    }
+
+    changed code-focused => {
+        if root.code-focused {
+            root.reveal();
+        }
+    }
+
+    Text {
+        x: 0;
+        y: 0;
+        width: 86px;
+        height: parent.height;
+        text: root.well.label;
+        font-family: Theme.font-ui;
+        font-size: 11px;
+        color: Theme.dim;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+
+    cf := ColourField {
+        x: Px.snap(root.col-w - self.width);
+        y: 0;
+        label: root.well.label;
+        text: root.well.text;
+        colour: root.well.colour;
+        wide: root.well.wide;
+        uppercase: !root.well.wide;
+        open: root.well.open;
+        edited(t) => {
+            root.edited(t);
+        }
+        committed => {
+            root.committed();
+        }
+        swatch-clicked(sx, sy, sw, sh) => {
+            root.swatch(sx, sy, sw, sh);
+        }
+        tip(t, tx, ty, tw, th) => {
+            root.tip(t, tx, ty, tw, th);
+        }
+    }
+}
+
+// The colour editor: a window-sized modal. Escape (not one aimed at an open colour popover) and a
+// press on the scrim cancel; Tab stays inside; the first well takes the focus on open; the host
+// puts the focus back where it was when `focus-restore` fires.
+export component ThemeEditor inherits Rectangle {
+    in property <bool> open;
+    in property <[EditorWell]> wells;
+    in property <WallCard> preview;
+    callback well-edited(string, string);
+    callback well-committed(string);
+    callback well-swatch(string, length, length, length, length);
+    callback save();
+    callback cancel();
+    callback focus-restore();
+    callback tip(string, length, length, length, length);
+
+    // layout, in logical px; the box is the modal's p-6 grid cell, padding 20
+    property <bool> any-wide: root.wells[0].wide || root.wells[1].wide || root.wells[2].wide || root.wells[3].wide || root.wells[4].wide || root.wells[5].wide || root.wells[6].wide || root.wells[7].wide || root.wells[8].wide || root.wells[9].wide || root.wells[10].wide || root.wells[11].wide || root.wells[12].wide || root.wells[13].wide || root.wells[14].wide || root.wells[15].wide || root.wells[16].wide || root.wells[17].wide || root.wells[18].wide || root.wells[19].wide;
+    // a colour popover is open over one of the wells: Escape is the popover's
+    property <bool> picker-open: root.wells[0].open || root.wells[1].open || root.wells[2].open || root.wells[3].open || root.wells[4].open || root.wells[5].open || root.wells[6].open || root.wells[7].open || root.wells[8].open || root.wells[9].open || root.wells[10].open || root.wells[11].open || root.wells[12].open || root.wells[13].open || root.wells[14].open || root.wells[15].open || root.wells[16].open || root.wells[17].open || root.wells[18].open || root.wells[19].open;
+    property <length> field-w: root.any-wide ? 214px : 118px;
+    out property <length> col-w: 86px + 8px + root.field-w;
+    out property <length> grid-w: 2 * root.col-w + 24px;
+    property <int> rows: root.wells.length > 0 ? ceil(root.wells.length / 2) : 0;
+    out property <length> grid-h: root.rows > 0 ? root.rows * 24px + (root.rows - 1) * 6px : 0px;
+    out property <length> card-w: 196px;
+    out property <length> card-h: 124px + 2 * Px.hair();
+    property <length> avail: root.width - 48px;
+    // the card sits beside the grid when it fits (flex-wrap, gap 24), else under it
+    out property <bool> beside: root.avail - 40px >= root.grid-w + 24px + root.card-w;
+    property <length> title-h: 20px;
+    property <length> inner-h: root.grid-h + (root.beside ? 0px : 24px + root.card-h);
+    property <length> content-w: root.beside ? root.grid-w + 24px + root.card-w : max(root.grid-w, root.card-w);
+    property <length> content-h: 20px + root.title-h + 12px + root.inner-h + 16px + 32px + 20px;
+    property <length> save-w: Px.snap(save-m.preferred-width + 32px);
+    property <length> cancel-w: Px.snap(cancel-m.preferred-width + 32px);
+
+    out property <length> box-w: Px.snap(min(root.avail, root.content-w + 40px));
+    out property <length> box-h: Px.snap(min(root.content-h, root.height * 0.85));
+    out property <length> box-x: Px.snap((root.width - root.box-w) / 2);
+    out property <length> box-y: Px.snap((root.height - root.box-h) / 2);
+    // absolute positions of the parts, as drawn (the content scrolls with `flick`)
+    out property <length> grid-x: root.box-x + 20px;
+    out property <length> grid-y: root.box-y + 20px + root.title-h + 12px + flick.content-y;
+    out property <length> card-x: root.grid-x + (root.beside ? root.grid-w + 24px : 0px);
+    out property <length> card-y: root.grid-y + (root.beside ? 0px : root.grid-h + 24px);
+    out property <length> button-y: root.grid-y + root.inner-h + 16px;
+    out property <length> save-x: root.grid-x;
+    out property <length> save-width: root.save-w;
+    out property <length> save-height: 32px;
+    out property <length> cancel-x: root.grid-x + root.save-w + 8px;
+    out property <length> cancel-width: root.cancel-w;
+    out property <bool> first-focused: first-row.code-focused;
+    out property <bool> cancel-focused: cancel-btn.focused;
+    out property <bool> save-focused: save-btn.focused;
+
+    // Scrolls a row into view when the focus lands on it.
+    function reveal(row-y: length) {
+        if row-y + flick.content-y < 0px {
+            flick.content-y = -row-y;
+        } else if row-y + 24px + flick.content-y > flick.height {
+            flick.content-y = flick.height - row-y - 24px;
+        }
+    }
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        flick.content-y = 0px;
+        if root.open {
+            first-row.focus-first();
+        } else {
+            root.focus-restore();
+        }
+    }
+
+    // the two labels, measured, invisible, so the buttons are as wide as their words
+    save-m := Text {
+        opacity: 0;
+        text: "Save as Custom";
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    cancel-m := Text {
+        opacity: 0;
+        text: "Cancel";
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if root.picker-open {
+                    return reject;
+                }
+                root.cancel();
+                return accept;
+            }
+            if e.modifiers.control || e.modifiers.alt || e.modifiers.meta {
+                return reject;
+            }
+            // Tab stays inside: past Cancel it wraps to the first well, back from the first well
+            // it wraps to Cancel.
+            if e.text == Key.Tab && !e.modifiers.shift && cancel-btn.focused {
+                first-row.focus-first();
+                return accept;
+            }
+            if (e.text == Key.Backtab || (e.text == Key.Tab && e.modifiers.shift)) && first-row.code-focused {
+                cancel-btn.focus-me();
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        // a press outside the box cancels
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.cancel();
+                }
+            }
+        }
+
+        box := Rectangle {
+            x: root.box-x;
+            y: root.box-y;
+            width: root.box-w;
+            height: root.box-h;
+            background: Theme.side-flat;
+            border-radius: SettingsShape.radius;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-blur: 70px;
+            drop-shadow-color: #00000099;
+            accessible-role: none;
+            accessible-label: "Edit terminal colours";
+
+            // swallows presses inside the box, so they never reach the scrim
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+
+            flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: parent.width;
+                content-height: root.content-h;
+
+                Rectangle {
+                    width: root.box-w;
+                    height: root.content-h;
+
+                    Text {
+                        x: 20px;
+                        y: 20px;
+                        width: parent.width - 40px;
+                        height: root.title-h;
+                        text: "Edit colours";
+                        font-family: Theme.font-ui;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+
+                    // the first well is a row of its own, so the Tab wrap can name it
+                    first-row := WellRow {
+                        x: Px.snap(20px);
+                        y: Px.snap(20px + root.title-h + 12px);
+                        col-w: root.col-w;
+                        well: root.wells[0];
+                        edited(t) => {
+                            root.well-edited(root.wells[0].key, t);
+                        }
+                        committed => {
+                            root.well-committed(root.wells[0].key);
+                        }
+                        swatch(sx, sy, sw, sh) => {
+                            root.well-swatch(root.wells[0].key, sx, sy, sw, sh);
+                        }
+                        reveal => {
+                            root.reveal(self.y);
+                        }
+                        tip(t, tx, ty, tw, th) => {
+                            root.tip(t, tx, ty, tw, th);
+                        }
+                    }
+
+                    // the other nineteen, in the order the grid reads (two to a row)
+                    for k in root.wells.length > 1 ? root.wells.length - 1 : 0: WellRow {
+                        x: Px.snap(20px + mod(k + 1, 2) * (root.col-w + 24px));
+                        y: Px.snap(20px + root.title-h + 12px + floor((k + 1) / 2) * 30px);
+                        col-w: root.col-w;
+                        well: root.wells[k + 1];
+                        edited(t) => {
+                            root.well-edited(root.wells[k + 1].key, t);
+                        }
+                        committed => {
+                            root.well-committed(root.wells[k + 1].key);
+                        }
+                        swatch(sx, sy, sw, sh) => {
+                            root.well-swatch(root.wells[k + 1].key, sx, sy, sw, sh);
+                        }
+                        reveal => {
+                            root.reveal(self.y);
+                        }
+                        tip(t, tx, ty, tw, th) => {
+                            root.tip(t, tx, ty, tw, th);
+                        }
+                    }
+
+                    // the preview: the Custom card, chosen, a card nobody picks
+                    ThemeCard {
+                        x: Px.snap(20px + (root.beside ? root.grid-w + 24px : 0px));
+                        y: Px.snap(20px + root.title-h + 12px + (root.beside ? 0px : root.grid-h + 24px));
+                        card: root.preview;
+                        focusable: false;
+                    }
+
+                    save-btn := EditorButton {
+                        x: 20px;
+                        y: Px.snap(20px + root.title-h + 12px + root.inner-h + 16px);
+                        width: root.save-w;
+                        label: "Save as Custom";
+                        primary: true;
+                        clicked => {
+                            root.save();
+                        }
+                    }
+                    cancel-btn := EditorButton {
+                        x: 20px + root.save-w + 8px;
+                        y: save-btn.y;
+                        width: root.cancel-w;
+                        label: "Cancel";
+                        clicked => {
+                            root.cancel();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One of the three answers of the switch question. Cancel and Discard are row buttons (32 high,
+// radius-sm, a line); Save as Custom wears the accent. The focus is a lighter edge on the first two
+// and a 2 px ring outside the third.
+component AskButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> ringed;
+    callback clicked();
+
+    width: Px.snap(m.preferred-width + 24px);
+    height: 32px;
+    border-radius: SettingsShape.radius-sm;
+    background: root.primary ? (ta.has-hover ? Theme.accent.brighter(0.1) : Theme.accent) : (ta.has-hover ? Theme.hover : Theme.control);
+    border-width: root.primary ? 0px : Px.hair();
+    border-color: root.ringed ? Theme.accent-hi : (ta.has-hover ? Theme.line : Theme.divider);
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    m := Text {
+        opacity: 0;
+        text: root.label;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.primary ? Theme.on-accent : Theme.text;
+    }
+    // focus-visible:ring-2 ring-accent-hi, outside the button
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: SettingsShape.radius-sm + 2px;
+        border-width: 2px;
+        border-color: root.primary && root.ringed ? Theme.accent-hi : transparent;
+    }
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The switch question (PT ThemeSwitchAsk on Modal): a window-sized modal, no shadow (a popup casts
+// none). Answers: 0 Cancel, 1 Discard, 2 Save as Custom. The focus starts on Save as Custom; Tab
+// cycles the three; Escape and a press outside answer 0.
+export component AskThree inherits Rectangle {
+    in property <bool> open;
+    callback answered(int);
+
+    // 0 Cancel, 1 Discard, 2 Save as Custom
+    out property <int> focus-idx: 2;
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> cancel-x: cancel-btn.absolute-position.x;
+    out property <length> cancel-y: cancel-btn.absolute-position.y;
+    out property <length> cancel-w: cancel-btn.width;
+    out property <length> cancel-h: cancel-btn.height;
+    out property <length> discard-x: discard-btn.absolute-position.x;
+    out property <length> discard-y: discard-btn.absolute-position.y;
+    out property <length> discard-w: discard-btn.width;
+    out property <length> discard-h: discard-btn.height;
+    out property <length> save-x: save-btn.absolute-position.x;
+    out property <length> save-y: save-btn.absolute-position.y;
+    out property <length> save-w: save-btn.width;
+    out property <length> save-h: save-btn.height;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            root.focus-idx = 2;
+            fs.focus();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    // a press outside the box answers Cancel
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.answered(0);
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.answered(0);
+                return accept;
+            }
+            if e.text == Key.Return || e.text == Key.Space {
+                root.answered(root.focus-idx);
+                return accept;
+            }
+            if !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                if e.text == Key.Tab && !e.modifiers.shift {
+                    root.focus-idx = mod(root.focus-idx + 1, 3);
+                    return accept;
+                }
+                if e.text == Key.Backtab || (e.text == Key.Tab && e.modifiers.shift) {
+                    root.focus-idx = mod(root.focus-idx + 2, 3);
+                    return accept;
+                }
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: min(420px, root.width - 48px);
+        height: col.preferred-height;
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        background: Theme.side-flat;
+        border-radius: SettingsShape.radius;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        accessible-role: none;
+        accessible-label: "Save your changes first?";
+
+        // swallows presses inside the box, so they never reach the scrim
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+
+        col := VerticalLayout {
+            padding: 20px;
+            Text {
+                text: "Save your changes first?";
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 14.5px;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Rectangle {
+                height: 6px;
+            }
+            Text {
+                text: "Switching theme puts the agent colours and see-through window back to the new theme's own. Your changes are not saved yet.";
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                color: Theme.dim;
+            }
+            Rectangle {
+                height: 20px;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                cancel-btn := AskButton {
+                    label: "Cancel";
+                    ringed: root.focus-idx == 0;
+                    clicked => {
+                        root.answered(0);
+                    }
+                }
+                discard-btn := AskButton {
+                    label: "Discard";
+                    ringed: root.focus-idx == 1;
+                    clicked => {
+                        root.answered(1);
+                    }
+                }
+                save-btn := AskButton {
+                    label: "Save as Custom";
+                    primary: true;
+                    ringed: root.focus-idx == 2;
+                    clicked => {
+                        root.answered(2);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The preview the Rust tests drive: a page stand-in (a click counter and a focus holder), the wall,
+// a lone card, the editor, the question and, last of all, a stand-in for the colour popover.
+export component WallPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Theme.ground;
+
+    in-out property <[WallCard]> cards;
+    in-out property <WallCard> solo;
+    in-out property <length> clip-h: 268px;
+    in-out property <length> full-h: 600px;
+    in-out property <bool> expanded;
+    in-out property <bool> still;
+    in-out property <string> toggle-aria: "Show all themes";
+    in-out property <string> toggle-title: "Show all themes";
+    in-out property <bool> editor-open;
+    in-out property <[EditorWell]> wells;
+    in-out property <WallCard> preview;
+    in-out property <bool> ask-open;
+    in-out property <bool> popover-shown;
+    // what the components reported
+    in-out property <string> picked-id;
+    in-out property <string> edited-id;
+    in-out property <int> toggles;
+    in-out property <int> behind-clicks;
+    in-out property <int> saves;
+    in-out property <int> cancels;
+    in-out property <int> answers;
+    in-out property <int> answer: -1;
+    in-out property <string> swatch-key;
+    in-out property <string> edit-key;
+    in-out property <string> edit-text;
+    in-out property <string> committed-key;
+    in-out property <int> restores;
+    in-out property <int> popover-clicks;
+    in-out property <string> tip-text;
+    out property <bool> page-has-focus: page-fs.has-focus;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => {
+        Px.scale = self.win-scale;
+    }
+    init => {
+        Px.scale = self.win-scale;
+        page-fs.focus();
+    }
+
+    public function focus-page() {
+        page-fs.focus();
+    }
+
+    // wall geometry
+    out property <length> wall-x: wall.absolute-position.x;
+    out property <length> wall-y: wall.absolute-position.y;
+    out property <length> wall-w: wall.width;
+    out property <length> wall-h: wall.height;
+    out property <length> clip-now: wall.clip-now;
+    out property <length> toggle-x: wall.toggle-x;
+    out property <length> toggle-y: wall.toggle-y;
+    out property <length> toggle-w: wall.toggle-w;
+    out property <length> toggle-h: wall.toggle-h;
+    // the lone card
+    out property <length> solo-x: solo-card.absolute-position.x;
+    out property <length> solo-y: solo-card.absolute-position.y;
+    out property <length> solo-w: solo-card.width;
+    out property <length> solo-h: solo-card.height;
+    out property <length> solo-label-h: solo-card.label-h;
+    out property <length> solo-label-y: solo-card.label-y;
+    out property <length> solo-pencil-x: solo-card.pencil-x;
+    out property <length> solo-pencil-y: solo-card.pencil-y;
+    out property <length> solo-pencil-w: solo-card.pencil-w;
+    out property <length> solo-pencil-h: solo-card.pencil-h;
+    // the editor
+    out property <length> ed-box-x: editor.box-x;
+    out property <length> ed-box-y: editor.box-y;
+    out property <length> ed-box-w: editor.box-w;
+    out property <length> ed-box-h: editor.box-h;
+    out property <length> ed-grid-x: editor.grid-x;
+    out property <length> ed-grid-y: editor.grid-y;
+    out property <length> ed-col-w: editor.col-w;
+    out property <length> ed-grid-w: editor.grid-w;
+    out property <length> ed-card-x: editor.card-x;
+    out property <length> ed-card-y: editor.card-y;
+    out property <length> ed-card-w: editor.card-w;
+    out property <length> ed-card-h: editor.card-h;
+    out property <length> ed-save-x: editor.save-x;
+    out property <length> ed-save-y: editor.button-y;
+    out property <length> ed-save-w: editor.save-width;
+    out property <length> ed-save-h: editor.save-height;
+    out property <length> ed-cancel-x: editor.cancel-x;
+    out property <length> ed-cancel-w: editor.cancel-width;
+    out property <bool> ed-first-focused: editor.first-focused;
+    out property <bool> ed-cancel-focused: editor.cancel-focused;
+    out property <bool> ed-save-focused: editor.save-focused;
+    // the question
+    out property <int> ask-idx: ask.focus-idx;
+    out property <length> ask-box-x: ask.box-x;
+    out property <length> ask-box-y: ask.box-y;
+    out property <length> ask-box-w: ask.box-w;
+    out property <length> ask-box-h: ask.box-h;
+    out property <length> ask-cancel-x: ask.cancel-x;
+    out property <length> ask-cancel-y: ask.cancel-y;
+    out property <length> ask-cancel-w: ask.cancel-w;
+    out property <length> ask-cancel-h: ask.cancel-h;
+    out property <length> ask-discard-x: ask.discard-x;
+    out property <length> ask-discard-y: ask.discard-y;
+    out property <length> ask-discard-w: ask.discard-w;
+    out property <length> ask-discard-h: ask.discard-h;
+    out property <length> ask-save-x: ask.save-x;
+    out property <length> ask-save-y: ask.save-y;
+    out property <length> ask-save-w: ask.save-w;
+    out property <length> ask-save-h: ask.save-h;
+
+    // the page under every layer: it must never be reached while a modal is up
+    behind := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.behind-clicks += 1;
+        }
+    }
+    page-fs := FocusScope {
+        width: 0px;
+        height: 0px;
+    }
+
+    wall := ThemeWallView {
+        x: Px.snap(40px);
+        y: Px.snap(40px);
+        width: 700px;
+        cards: root.cards;
+        clip-h: root.clip-h;
+        full-h: root.full-h;
+        expanded: root.expanded;
+        still: root.still;
+        toggle-aria: root.toggle-aria;
+        toggle-title: root.toggle-title;
+        picked(id) => {
+            root.picked-id = id;
+        }
+        edit(id) => {
+            root.edited-id = id;
+        }
+        toggled => {
+            root.toggles += 1;
+            root.expanded = !root.expanded;
+        }
+        tip(t, tx, ty, tw, th) => {
+            root.tip-text = t;
+        }
+    }
+
+    solo-card := ThemeCard {
+        x: Px.snap(760px);
+        y: Px.snap(40px);
+        card: root.solo;
+        picked(id) => {
+            root.picked-id = id;
+        }
+        edit(id) => {
+            root.edited-id = id;
+        }
+    }
+
+    editor := ThemeEditor {
+        open: root.editor-open;
+        wells: root.wells;
+        preview: root.preview;
+        well-edited(k, t) => {
+            root.edit-key = k;
+            root.edit-text = t;
+        }
+        well-committed(k) => {
+            root.committed-key = k;
+        }
+        well-swatch(k, sx, sy, sw, sh) => {
+            root.swatch-key = k;
+        }
+        save => {
+            root.saves += 1;
+        }
+        cancel => {
+            root.cancels += 1;
+        }
+        focus-restore => {
+            root.restores += 1;
+            page-fs.focus();
+        }
+    }
+
+    ask := AskThree {
+        open: root.ask-open;
+        answered(n) => {
+            root.answers += 1;
+            root.answer = n;
+        }
+    }
+
+    // a colour popover is an overlay above every modal
+    popover := Rectangle {
+        x: Px.snap(300px);
+        y: Px.snap(200px);
+        width: 120px;
+        height: 80px;
+        visible: root.popover-shown;
+        background: #ff00ff;
+        TouchArea {
+            clicked => {
+                root.popover-clicks += 1;
+            }
+        }
+    }
+}
