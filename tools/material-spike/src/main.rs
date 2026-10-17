@@ -1,7 +1,11 @@
 //! material-spike: shows a small test window and measures how the see-through material behaves on this
 //! PC (plan Task 19). This file holds the pure parts (argument parsing, DIB conversion, verdicts, the
-//! JSON line); the window, the capture and the PNG writer arrive when the orchestrator adds the
-//! dependencies the plan lists.
+//! JSON line); the window modes are in `session`, the GDI capture and the PNG writer in `capture`,
+//! the no-window `probe` in `probe`.
+
+mod capture;
+mod probe;
+mod session;
 
 use std::fmt;
 
@@ -14,6 +18,8 @@ pub enum Mode {
     GlassSoftware,
     Readback,
     Cost,
+    /// One measured run, spawned ten times by `cost`.
+    CostOnce,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +62,7 @@ fn mode_of(s: &str) -> Option<Mode> {
         "glass-software" => Mode::GlassSoftware,
         "readback" => Mode::Readback,
         "cost" => Mode::Cost,
+        "cost-once" => Mode::CostOnce,
         _ => return None,
     })
 }
@@ -242,21 +249,37 @@ pub fn json_line(fields: &[(&str, String)]) -> String {
     format!("{{{}}}", body.join(","))
 }
 
+/// The number after `"key":` in a one-line JSON object.
+pub fn num_field(line: &str, key: &str) -> Option<f64> {
+    let pat = format!("\"{key}\":");
+    let rest = &line[line.find(&pat)? + pat.len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 fn main() {
+    let t0 = std::time::Instant::now();
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    match parse_args(&argv) {
-        Ok(a) => {
-            println!(
-                "{}",
-                json_line(&[
-                    ("mode", json_str(&format!("{:?}", a.mode))),
-                    ("status", json_str("window part pending dependencies")),
-                ])
-            );
-        }
+    let a = match parse_args(&argv) {
+        Ok(a) => a,
         Err(e) => {
             eprintln!("material-spike: {e}");
             std::process::exit(2);
+        }
+    };
+    let out = match a.mode {
+        Mode::Probe => probe::run(),
+        Mode::Cost => session::cost(&a),
+        _ => session::run(&a, t0),
+    };
+    match out {
+        Ok(line) => println!("{line}"),
+        Err(e) => {
+            println!("{}", json_line(&[("error", json_str(&e))]));
+            eprintln!("material-spike: {e}");
+            std::process::exit(1);
         }
     }
 }
@@ -353,6 +376,18 @@ mod tests {
         assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
         assert_eq!(median(&[4.0, 1.0, 2.0, 3.0]), Some(2.5));
         assert_eq!(median(&[]), None);
+    }
+
+    #[test]
+    fn num_field_reads_a_number_and_misses_cleanly() {
+        let l = "{\"mode\":\"cost-once\",\"start_ms\":212.50,\"frame_ms\":16.7}";
+        assert_eq!(num_field(l, "start_ms"), Some(212.5));
+        assert_eq!(num_field(l, "frame_ms"), Some(16.7));
+        assert_eq!(num_field(l, "nope"), None);
+        assert_eq!(
+            parse_args(&s(&["--mode", "cost-once"])).unwrap().mode,
+            Mode::CostOnce
+        );
     }
 
     #[test]
