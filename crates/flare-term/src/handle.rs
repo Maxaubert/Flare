@@ -288,14 +288,24 @@ impl TermHandle {
         if text.is_empty() {
             return;
         }
-        let bytes = if self.mode().bracketed_paste {
-            format!("\x1b[200~{text}\x1b[201~").into_bytes()
-        } else {
-            text.as_bytes().to_vec()
-        };
+        let bytes = flare_shells::paste::paste_bytes(text, self.mode().bracketed_paste);
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
         self.sh.mark_typed();
+    }
+
+    /// A report the program asked for (a mouse report): written as is. Not typing, no snap (D11).
+    pub fn write_report(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.sh.mgr.write(&self.sh.id, bytes);
+    }
+
+    /// The id the RUNNING shell was spawned with, resolved by the session even when the tab asked
+    /// for none; None before the spawn finished or after it failed.
+    pub fn shell_id(&self) -> Option<String> {
+        self.sh.mgr.shell_of(&self.sh.id)
     }
 
     /// Moves the shell to a folder. Not typing.
@@ -521,13 +531,13 @@ mod tests {
     fn a_paste_is_bracketed_only_when_asked() {
         let t = T::started();
         t.h.paste("a\nb");
-        wait_until("plain", || t.fake().written() == b"a\nb");
+        wait_until("plain", || t.fake().written() == b"a\rb");
         assert!(t.h.last_typed().is_some());
         t.fake().feed(b"\x1b[?2004h");
         wait_until("mode", || t.h.mode().bracketed_paste);
         t.h.paste("a\nb");
         wait_until("bracketed", || {
-            t.fake().written().ends_with(b"\x1b[200~a\nb\x1b[201~")
+            t.fake().written().ends_with(b"\x1b[200~a\rb\x1b[201~")
         });
     }
 
@@ -635,5 +645,63 @@ mod tests {
         assert!(evs.contains(&TermEvent::Title("t".into())));
         assert!(evs.contains(&TermEvent::Cwd("C:\\w".into())));
         assert!(evs.contains(&TermEvent::ClipboardWrite("hi".into())));
+    }
+
+    #[test]
+    fn write_report_is_not_typing() {
+        let t = T::started();
+        feed_lines(&t, 60);
+        t.h.scroll_view(5);
+        let off = t.h.with_emu_quiet(|e| e.display_offset());
+        assert!(off > 0);
+        t.h.write_report(b"\x1b[M !!");
+        wait_until("the report", || t.fake().written() == b"\x1b[M !!");
+        assert!(t.h.last_typed().is_none());
+        assert_eq!(t.h.with_emu_quiet(|e| e.display_offset()), off);
+    }
+
+    #[test]
+    fn paste_uses_the_xterm_newline_rule_and_the_frame() {
+        let t = T::started();
+        t.fake().feed(b"\x1b[?2004h");
+        wait_until("mode", || t.h.mode().bracketed_paste);
+        t.h.paste("a\nb");
+        wait_until("framed", || t.fake().written() == b"\x1b[200~a\rb\x1b[201~");
+        let u = T::started();
+        u.h.paste("a\nb");
+        wait_until("plain", || u.fake().written() == b"a\rb");
+    }
+
+    #[test]
+    fn paste_still_marks_typing_and_snaps() {
+        let t = T::started();
+        feed_lines(&t, 60);
+        t.h.scroll_view(5);
+        assert!(t.h.with_emu_quiet(|e| e.display_offset()) > 0);
+        t.h.paste("x");
+        wait_until("the paste", || t.fake().written() == b"x");
+        assert!(t.h.last_typed().is_some());
+        assert_eq!(t.h.with_emu_quiet(|e| e.display_offset()), 0);
+    }
+
+    #[test]
+    fn shell_id_is_the_resolved_one() {
+        let cmd = flare_shells::list::ShellDef {
+            id: "cmd".into(),
+            name: "Command Prompt".into(),
+            exe: "cmd.exe".into(),
+            args: Vec::new(),
+        };
+        let sp = FakeSpawner::new();
+        let mgr = SessionManager::new(
+            sp.clone(),
+            FakeShells::with(vec![cmd]),
+            SessionOptions::default(),
+        );
+        let h = TermHandle::new("a", mgr, 80, 24);
+        assert_eq!(h.shell_id(), None);
+        h.start(start_opts());
+        wait_until("Started", || lk(&h.sh.events).contains(&TermEvent::Started));
+        assert_eq!(h.shell_id(), Some("cmd".to_string()));
     }
 }

@@ -21,7 +21,7 @@ use flare_shells::cwd::{has_control, parse_osc9};
 use crate::cells::{
     BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
-use crate::click_caret::MouseTracking;
+use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
 use crate::find::{CountJob, FindMatch, FindOpts, Finder, index_of, scroll_to_show};
 use crate::grid_map::snapshot_grid;
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
@@ -34,6 +34,7 @@ use crate::replies::{Ground, colour_query_replies, xtversion_reply};
 use crate::scan::{ScanEvent, Scanner};
 use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
 use crate::sel_text::selection_text;
+use crate::selection_edit::{SelectionGate, selection_delete_allowed, selection_delete_keys};
 use crate::term_buf::{TermBuf, abs_to_line, line_to_abs, total_rows, viewport_top};
 use crate::version::{ALACRITTY_TERMINAL_VERSION, FLARE_TERM_VERSION};
 use crate::word_at::word_range;
@@ -1052,6 +1053,121 @@ impl Emulator {
 }
 
 /// A match's pieces that fall on the viewport `top..top + rows`, as viewport rows.
+impl Emulator {
+    /// The absolute row and column of the cursor.
+    fn cursor_abs(&self) -> (usize, usize) {
+        let (line, col) = self.cursor();
+        (line_to_abs(self.history_size(), Line(line)), col)
+    }
+
+    /// True when any row after the logical line ending at `last` holds a printed cell.
+    fn text_below(&self, buf: &TermBuf, last: usize) -> bool {
+        let cols = self.cols();
+        let mut scratch = ScratchCell::default();
+        (last + 1..total_rows(&self.term)).any(|y| {
+            buffer_row_cells(buf.line(y), cols, &mut scratch)
+                .is_some_and(|cells| cells.iter().any(|c| !c.chars.is_empty()))
+        })
+    }
+
+    /// The keys a plain click at viewport (`row`, boundary `b`) sends, or "" (the caret click).
+    pub fn click_caret_plan(
+        &self,
+        row: usize,
+        b: usize,
+        button: u8,
+        clicks: u32,
+        modifiers: bool,
+        dragged: bool,
+    ) -> String {
+        let cols = self.cols();
+        if cols == 0 || row >= self.view_rows() {
+            return String::new();
+        }
+        let mode = self.mode();
+        let buf = TermBuf::all(&self.term);
+        let (cur_row, cur_col) = self.cursor_abs();
+        let line = logical_line(&buf, cols, cur_row);
+        let abs = self.viewport_top() + row;
+        let off_line = abs < line.first || abs > line.last;
+        let on_link = !off_line && {
+            let env = TermSelEnv {
+                emu: self,
+                buf: TermBuf::all(&self.term),
+            };
+            let lc = env.line_cells(abs);
+            let col = b.min(cols - 1);
+            let at = (abs - lc.first) * cols + col;
+            let hyper =
+                at < lc.cells.len() && env.hyperlink_at(&lc, at).is_some_and(|h| is_web_link(&h.1));
+            let c = char_at_cell(&line, cols, abs as i32, col as i32);
+            hyper
+                || find_links(&line.text)
+                    .iter()
+                    .any(|m| m.start <= c && c < m.end)
+        };
+        let gate = ClickGate {
+            button,
+            detail: clicks,
+            modifiers,
+            dragged,
+            mouse_tracking: mode.mouse,
+            alternate: mode.alt_screen,
+            scrolled_back: self.is_scrolled_back(),
+            cursor_hidden: !mode.cursor_visible,
+            text_below: self.text_below(&buf, line.last),
+            off_line,
+            on_link,
+        };
+        if !caret_click_allowed(&gate) {
+            return String::new();
+        }
+        let target = (abs - line.first) * cols + b;
+        let cursor_cell = (cur_row - line.first) * cols + cur_col;
+        arrow_keys(
+            caret_delta(&line.widths, cursor_cell, target, line.text_end),
+            mode.app_cursor,
+        )
+    }
+
+    /// The keys Backspace or Delete sends over the selection. None: not allowed (the key is the
+    /// shell's). Some(""): allowed but nothing deletable. Some(keys): send them.
+    pub fn selection_delete_plan(&self) -> Option<String> {
+        let (s, e, _block) = self.sel_bounds()?;
+        let cols = self.cols();
+        if cols == 0 {
+            return None;
+        }
+        let mode = self.mode();
+        let buf = TermBuf::all(&self.term);
+        let (cur_row, cur_col) = self.cursor_abs();
+        let line = logical_line(&buf, cols, cur_row);
+        let on_line = s.0 >= line.first && e.0 <= line.last && s.0 <= e.0;
+        let gate = SelectionGate {
+            mouse_tracking: mode.mouse,
+            alternate: mode.alt_screen,
+            scrolled_back: self.is_scrolled_back(),
+            cursor_hidden: !mode.cursor_visible,
+            text_below: self.text_below(&buf, line.last),
+            on_line,
+        };
+        if !selection_delete_allowed(&gate) {
+            return None;
+        }
+        let a = (s.0 - line.first) * cols + s.1;
+        let z = (e.0 - line.first) * cols + e.1;
+        let cursor_cell = (cur_row - line.first) * cols + cur_col;
+        Some(selection_delete_keys(
+            &line.widths,
+            cursor_cell,
+            a,
+            z,
+            line.text_end,
+            mode.app_cursor,
+        ))
+    }
+}
+
 fn visible_pieces(m: FindMatch, cols: usize, top: usize, rows: usize) -> Vec<RowSpan> {
     m.pieces(cols)
         .into_iter()
@@ -1886,5 +2002,157 @@ mod tests {
             decor_of(&mut e, &mut pl, None, false);
         }
         assert_eq!(e.lines_scanned(), first);
+    }
+
+    // ---- Task 16e: click and delete plans ----
+
+    const L: &str = "\x1b[D";
+
+    fn prompt(e: &mut Emulator, text: &str) {
+        e.feed(format!("PS> {text}").as_bytes());
+    }
+
+    #[test]
+    fn a_click_right_of_the_text_moves_the_caret_to_the_end() {
+        let mut e = Emulator::new(40, 5);
+        prompt(&mut e, "abc");
+        assert_eq!(e.cursor().1, 7);
+        assert_eq!(e.click_caret_plan(0, 20, 0, 1, false, false), "");
+        assert_eq!(
+            e.click_caret_plan(0, 5, 0, 1, false, false),
+            format!("{L}{L}")
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_wide_character_counts_it_once() {
+        let mut e = Emulator::new(40, 5);
+        prompt(&mut e, "日本");
+        assert_eq!(e.cursor().1, 8);
+        assert_eq!(e.click_caret_plan(0, 6, 0, 1, false, false), L);
+    }
+
+    #[test]
+    fn every_refusal_sends_nothing() {
+        let plain = |e: &Emulator| e.click_caret_plan(0, 5, 0, 1, false, false);
+        let mut e = Emulator::new(40, 5);
+        prompt(&mut e, "abc");
+        assert!(!plain(&e).is_empty());
+        assert_eq!(e.click_caret_plan(0, 5, 1, 1, false, false), "");
+        assert_eq!(e.click_caret_plan(0, 5, 0, 2, false, false), "");
+        assert_eq!(e.click_caret_plan(0, 5, 0, 1, true, false), "");
+        assert_eq!(e.click_caret_plan(0, 5, 0, 1, false, true), "");
+        let mut m = Emulator::new(40, 5);
+        prompt(&mut m, "abc");
+        m.feed(b"\x1b[?1000h");
+        assert_eq!(plain(&m), "");
+        let mut a = Emulator::new(40, 5);
+        prompt(&mut a, "abc");
+        a.feed(b"\x1b[?1049h");
+        a.feed(b"PS> abc");
+        assert_eq!(plain(&a), "");
+        let mut h = Emulator::new(40, 5);
+        prompt(&mut h, "abc");
+        h.feed(b"\x1b[?25l");
+        assert_eq!(plain(&h), "");
+        let mut b = Emulator::new(40, 5);
+        for _ in 0..8 {
+            b.feed(b"x\r\n");
+        }
+        prompt(&mut b, "abc");
+        b.scroll_view(2);
+        assert_eq!(b.click_caret_plan(4, 5, 0, 1, false, false), "");
+        let mut t = Emulator::new(40, 5);
+        prompt(&mut t, "abc");
+        t.feed(b"\x1b[3;1Hbelow\x1b[1;8H");
+        assert_eq!(plain(&t), "");
+        let mut o = Emulator::new(40, 5);
+        o.feed(b"older\r\n");
+        prompt(&mut o, "abc");
+        assert_eq!(o.click_caret_plan(0, 2, 0, 1, false, false), "");
+        let mut l = Emulator::new(60, 5);
+        l.feed(b"PS> see https://example.com/a ok");
+        assert_eq!(l.click_caret_plan(0, 12, 0, 1, false, false), "");
+        assert!(!l.click_caret_plan(0, 5, 0, 1, false, false).is_empty());
+    }
+
+    #[test]
+    fn the_application_cursor_form_is_used_when_asked() {
+        let mut e = Emulator::new(40, 5);
+        e.feed(b"\x1b[?1h");
+        prompt(&mut e, "abc");
+        assert_eq!(e.click_caret_plan(0, 6, 0, 1, false, false), "\x1bOD");
+    }
+
+    #[test]
+    fn a_click_across_a_wrapped_prompt_line_is_one_line() {
+        let mut e = Emulator::new(10, 5);
+        prompt(&mut e, "abcdefghij");
+        assert_eq!(e.cursor(), (1, 4));
+        let keys = e.click_caret_plan(0, 6, 0, 1, false, false);
+        assert_eq!(keys, L.repeat(8));
+    }
+
+    #[test]
+    fn selection_delete_walks_to_the_end_then_deletes() {
+        let mut e = Emulator::new(40, 5);
+        e.feed(b"echo hello");
+        e.sel_apply(sel(false, 0, 7, 0, 10));
+        assert_eq!(e.selection_delete_plan(), Some("\x7f\x7f\x7f".to_string()));
+        let mut m = Emulator::new(40, 5);
+        m.feed(b"echo hello\x1b[4D");
+        m.sel_apply(sel(false, 0, 7, 0, 10));
+        assert_eq!(
+            m.selection_delete_plan(),
+            Some(format!("{}{}", "\x1b[C".repeat(4), "\x7f".repeat(3)))
+        );
+    }
+
+    #[test]
+    fn selection_delete_is_refused_off_the_edited_line() {
+        let mut e = Emulator::new(40, 5);
+        e.feed(b"older line\r\nPS> abc");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        assert_eq!(e.selection_delete_plan(), None);
+    }
+
+    #[test]
+    fn selection_delete_is_refused_in_the_cases_of_the_gate() {
+        let setup = |extra: &[u8]| {
+            let mut e = Emulator::new(40, 5);
+            e.feed(b"echo hello");
+            e.feed(extra);
+            e.sel_apply(sel(false, 0, 7, 0, 10));
+            e
+        };
+        assert!(setup(b"").selection_delete_plan().is_some());
+        assert_eq!(setup(b"\x1b[?1000h").selection_delete_plan(), None);
+        assert_eq!(setup(b"\x1b[?25l").selection_delete_plan(), None);
+        assert_eq!(
+            setup(b"\x1b[3;1Hbelow\x1b[1;11H").selection_delete_plan(),
+            None
+        );
+        let mut a = Emulator::new(40, 5);
+        a.feed(b"\x1b[?1049hecho hello");
+        a.sel_apply(sel(false, 0, 7, 0, 10));
+        assert_eq!(a.selection_delete_plan(), None);
+        let mut s = Emulator::new(40, 5);
+        for _ in 0..8 {
+            s.feed(b"x\r\n");
+        }
+        s.feed(b"echo hello");
+        let top = s.viewport_top();
+        s.sel_apply(sel(false, top + 4, 7, top + 4, 10));
+        assert!(s.selection_delete_plan().is_some());
+        s.scroll_view(2);
+        assert_eq!(s.selection_delete_plan(), None);
+    }
+
+    #[test]
+    fn nothing_deletable_is_allowed_and_empty() {
+        let mut e = Emulator::new(40, 5);
+        e.feed(b"echo hello");
+        e.sel_apply(sel(false, 0, 20, 0, 25));
+        assert_eq!(e.selection_delete_plan(), Some(String::new()));
     }
 }
