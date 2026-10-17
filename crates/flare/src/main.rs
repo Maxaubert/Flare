@@ -4,6 +4,7 @@ mod backend;
 mod config;
 mod headless;
 mod host;
+mod keymap;
 mod memory;
 mod window;
 
