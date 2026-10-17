@@ -13,6 +13,7 @@ members = [
     "crates/flare-win",
     "crates/flare-diag",
     "crates/flare-tabs",
+    "crates/flare-help",
     "tools/e2e",
     "tools/material-spike",
 ]
@@ -55,5 +56,8 @@ sha2 = "=0.10.9"
 tempfile = "=3.27.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+rusty-leveldb = "=4.0.1"
+unicode-normalization = "=0.1.25"
+fancy-regex = "=0.19.2"
 rfd = { version = "=0.17.2", default-features = false }
 raw-window-handle = "=0.6.2"

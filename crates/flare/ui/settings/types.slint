@@ -1,0 +1,44 @@
+// The shared structs of the Settings tab (M7 Task 1). Change them only through the orchestrator.
+
+export enum SetKind { none, pill, switch, segmented, select, slider, colour, save }
+export enum BlockKind { row, wall, about, slint, note }
+
+// face: the font-family for the font select ("" = the UI font)
+export struct SetOption { id: string, name: string, face: string }
+// alt: show label-alt instead (Mark, then Marked); both words are laid out in one cell
+export struct SetButton { id: string, label: string, label-alt: string, off: bool, alt: bool }
+export struct SetRow {
+    id: string, icon: string, label: string, sub: string, sub-tip: string, row-tip: string,
+    warn: bool, off: bool, tap: bool,
+    block: BlockKind, kind: SetKind,
+    on: bool,                                   // a switch
+    value: string, options: [SetOption],        // segmented and select: the chosen id; pill: the text
+    num: int, num-max: int, num-text: string,   // slider
+    reset: bool,                                // a Reset link before the control
+    colour: color, code: string, code-wide: bool,   // colour field: swatch colour, code text, 172 px field
+    save-dirty: bool, save-title: string,
+    buttons: [SetButton],
+    note: string,                               // BlockKind.note and about text
+    y: length, h: length,                       // inside the panel, snapped
+    flash: float,                               // 0..1, the flash fill alpha scale
+}
+export struct SetSection {
+    id: string, title: string, tag: string,
+    action-save: bool, action-dirty: bool, action-title: string,
+    title-y: length, panel-y: length, panel-h: length,
+    rows: [SetRow],
+}
+export struct RailItem { id: string, label: string, icon: string, end: bool, chosen: bool, y: length }
+export struct SetHit { id: string, icon: string, label: string, sub: string, where: string, selected: bool, y: length }
+export struct WallCard {
+    id: string, name: string, on: bool, edit: bool, edit-name: string,
+    bg: color, fg: color, cursor: color, green: color, yellow: color, blue: color, cyan: color, red: color,
+    x: length, y: length,
+}
+export struct HelpRowData {
+    key: string, name: string, command: string, header: string,
+    keys: bool, danger: bool, active: bool, striped: bool, copied: bool, failed: bool,
+}
+export struct HelpChip { id: string, name: string, on: bool }
+// one colour well of the theme editor
+export struct EditorWell { key: string, label: string, text: string, colour: color, wide: bool, open: bool }
