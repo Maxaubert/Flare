@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+flare-theme = { path = "../flare-theme" }
 flare-render = { path = "../flare-render" }
 flare-shells = { path = "../flare-shells" }
 alacritty_terminal.workspace = true

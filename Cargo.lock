@@ -1451,6 +1451,7 @@ dependencies = [
  "flare-shells",
  "flare-tabs",
  "flare-term",
+ "flare-theme",
  "flare-win",
  "log",
  "png",
@@ -1495,6 +1496,7 @@ dependencies = [
 name = "flare-settings"
 version = "0.1.0"
 dependencies = [
+ "flare-theme",
  "log",
  "serde",
  "serde_json",
@@ -1531,6 +1533,7 @@ dependencies = [
  "base64 0.22.1",
  "flare-render",
  "flare-shells",
+ "flare-theme",
  "log",
  "memchr",
  "portable-pty",
@@ -1545,6 +1548,9 @@ dependencies = [
 [[package]]
 name = "flare-theme"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "flare-update"
@@ -1555,6 +1561,7 @@ name = "flare-win"
 version = "0.1.0"
 dependencies = [
  "flare-settings",
+ "flare-theme",
  "log",
  "raw-window-handle",
  "rfd",
@@ -2970,6 +2977,10 @@ dependencies = [
  "lyon_geom",
  "num-traits",
 ]
+
+[[package]]
+name = "material-spike"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"

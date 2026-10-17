@@ -7,6 +7,7 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+flare-theme = { path = "../flare-theme" }
 flare-render = { path = "../flare-render" }
 flare-term = { path = "../flare-term" }
 flare-shells = { path = "../flare-shells" }

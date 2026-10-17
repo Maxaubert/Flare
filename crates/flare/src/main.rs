@@ -3,20 +3,27 @@
 mod appctl;
 mod backend;
 mod chords;
+mod chrome_apply;
 mod config;
 mod e2e;
+mod font_ctl;
 mod headless;
 mod host;
 mod keymap;
 mod live;
+mod look_ctl;
+mod material_ctl;
 mod memory;
 mod menus_ui;
 mod sidebar_ui;
 mod startup;
 mod tab_host;
 mod tabs_ui;
+mod theme_scene;
 mod window;
 
+#[cfg(test)]
+mod theme_tests;
 #[cfg(test)]
 mod ui_harness;
 #[cfg(test)]
