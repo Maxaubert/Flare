@@ -184,8 +184,28 @@ export component AppWindow inherits Window {
     // The overflow list focuses its field when it opens, so "open" stands for "its field has the keys".
     out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open;
     public function focus-terminal() { keys.focus(); }
+    public function focus-find() { find.focus-input(); }
     public function focus-sidebar-find() { sb.focus-find(); }
     public function focus-overflow-field() { ov.focus-field(); }
+
+    // ---- the grid pointer area, the find bar and the badge (Milestone 5) ----
+    in property <MouseCursor> grid-cursor: MouseCursor.text;
+    // kind: 0 down, 1 up, 2 move, 3 cancel; button: 0 left, 1 middle, 2 right, 3 other.
+    // x and y are relative to the grid area, in logical pixels.
+    callback grid-pointer(kind: int, button: int, x: length, y: length, ctrl: bool, shift: bool, alt: bool);
+    in property <bool> find-open;
+    in-out property <string> find-query;
+    in property <string> find-readout;
+    in property <bool> find-can-step;
+    out property <bool> find-input-focused: find.input-has-focus;
+    callback find-edited(string);
+    callback find-next();
+    callback find-prev();
+    callback find-close();
+    in property <int> copied-phase;
+    // The grid area's origin in the window.
+    out property <length> grid-left: grid-box.absolute-position.x;
+    out property <length> grid-top: grid-box.absolute-position.y;
 
     // ---- callbacks (UI -> Rust) ----
     callback strip-press(string, int, length, length);
@@ -388,6 +408,30 @@ export component AppWindow inherits Window {
                             image-fit: fill;
                             image-rendering: pixelated;
                         }
+                        grid-touch := TouchArea {
+                            mouse-cursor: root.grid-cursor;
+                            pointer-event(e) => {
+                                root.grid-pointer(
+                                    e.kind == PointerEventKind.down ? 0 : (e.kind == PointerEventKind.up ? 1 : (e.kind == PointerEventKind.move ? 2 : 3)),
+                                    e.button == PointerEventButton.left ? 0 : (e.button == PointerEventButton.middle ? 1 : (e.button == PointerEventButton.right ? 2 : 3)),
+                                    self.mouse-x, self.mouse-y,
+                                    e.modifiers.control, e.modifiers.shift, e.modifiers.alt);
+                            }
+                        }
+                        find := FindBar {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            open: root.find-open;
+                            query <=> root.find-query;
+                            readout: root.find-readout;
+                            can-step: root.find-can-step;
+                            query-edited(q) => { root.find-edited(q); }
+                            next => { root.find-next(); }
+                            previous => { root.find-prev(); }
+                            close => { root.find-close(); }
+                        }
                     }
                     if root.front-kind == 1: Rectangle {
                         Text {
@@ -549,17 +593,6 @@ export component AppWindow inherits Window {
             accepted => { root.overflow-accepted(); }
             query-edited(q) => { root.overflow-query-edited(q); }
         }
-        tipbox := Tip {
-            x: 0px;
-            y: 0px;
-            width: root.width;
-            height: root.height;
-            text: root.tip-text;
-            at-x: root.tip-x;
-            at-y: root.tip-y;
-            visible-tip: root.tip-visible;
-            side: root.tip-side;
-        }
         Dialog {
             x: 0px;
             y: 0px;
@@ -572,6 +605,25 @@ export component AppWindow inherits Window {
             danger: root.dialog-danger;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
+        }
+        // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
+        CopiedBadge {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            phase: root.copied-phase;
+        }
+        tipbox := Tip {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            text: root.tip-text;
+            at-x: root.tip-x;
+            at-y: root.tip-y;
+            visible-tip: root.tip-visible;
+            side: root.tip-side;
         }
         // The window edge (the DWM border does not show on a frameless window, docs/material.md E4):
         // one device pixel in the colour edge_for answers; transparent when none, maximised or full screen.

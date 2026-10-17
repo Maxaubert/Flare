@@ -72,6 +72,10 @@ export component FindBar inherits Rectangle {
         border-width: Px.hair();
         border-color: Theme.divider;
 
+        // Swallows a press on the bar itself so it never reaches the grid beneath
+        // (declared first, so the input and the buttons stay above it).
+        TouchArea { }
+
         // The input, its placeholder and the keys that belong to the bar.
         FocusScope {
             x: Px.hair() + Px.snap(8px);

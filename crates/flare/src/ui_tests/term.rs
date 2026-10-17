@@ -358,3 +358,182 @@ fn no_hex_colour_literal_in_find_slint() {
         );
     }
 }
+
+// grid area
+// The grid pointer area, the find bar and the badge in the assembled window (Task 19).
+
+mod grid_area {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use slint::platform::PointerEventButton;
+
+    use crate::AppWindow;
+    use crate::ui_harness::{Frame, Harness, SCALES};
+
+    type Call = (i32, i32, f32, f32, bool, bool, bool);
+
+    fn window(scale: f32) -> (Harness<AppWindow>, Rc<RefCell<Vec<Call>>>) {
+        let h = Harness::new(scale, 1000, 640, || {
+            AppWindow::new().expect("the window builds")
+        });
+        let calls: Rc<RefCell<Vec<Call>>> = Rc::default();
+        let sink = calls.clone();
+        h.comp.on_grid_pointer(move |k, b, x, y, c, s, a| {
+            sink.borrow_mut().push((k, b, x, y, c, s, a));
+        });
+        h.advance(0);
+        (h, calls)
+    }
+
+    #[test]
+    fn down_up_and_move_are_reported_with_button_and_modifiers() {
+        let (h, calls) = window(1.0);
+        h.move_to(300.0, 200.0);
+        h.press(300.0, 200.0, PointerEventButton::Left);
+        h.move_to(320.0, 210.0);
+        h.release(320.0, 210.0, PointerEventButton::Left);
+        let c = calls.borrow().clone();
+        assert!(c.iter().any(|x| x.0 == 0 && x.1 == 0), "{c:?}");
+        assert!(c.iter().any(|x| x.0 == 2), "{c:?}");
+        assert!(c.iter().any(|x| x.0 == 1 && x.1 == 0), "{c:?}");
+        calls.borrow_mut().clear();
+        h.press(300.0, 200.0, PointerEventButton::Right);
+        h.release(300.0, 200.0, PointerEventButton::Right);
+        assert!(calls.borrow().iter().any(|x| x.0 == 0 && x.1 == 2));
+        calls.borrow_mut().clear();
+        h.press(300.0, 200.0, PointerEventButton::Middle);
+        h.release(300.0, 200.0, PointerEventButton::Middle);
+        assert!(calls.borrow().iter().any(|x| x.0 == 0 && x.1 == 1));
+    }
+
+    #[test]
+    fn positions_are_relative_to_the_grid_area() {
+        for s in [1.0_f32, 1.5, 2.25] {
+            let (h, calls) = window(s);
+            h.press(100.0, 36.0 + 50.0, PointerEventButton::Left);
+            let c = calls.borrow().clone();
+            let d = c.iter().find(|x| x.0 == 0).expect("a press");
+            assert!(
+                (d.2 - (100.0 - h.comp.get_grid_left())).abs() <= 0.5,
+                "scale {s}: {d:?}"
+            );
+            assert!((d.3 - 50.0).abs() <= 0.5, "scale {s}: {d:?}");
+        }
+    }
+
+    #[test]
+    fn a_drag_keeps_reporting_outside_the_area() {
+        let (h, calls) = window(1.0);
+        h.press(300.0, 200.0, PointerEventButton::Left);
+        h.move_to(300.0, 6.0);
+        h.release(300.0, 6.0, PointerEventButton::Left);
+        let c = calls.borrow().clone();
+        assert!(c.iter().any(|x| x.0 == 2 && x.3 < 0.0), "{c:?}");
+        assert!(c.iter().any(|x| x.0 == 1), "{c:?}");
+    }
+
+    #[test]
+    fn the_find_bar_is_inside_the_grid_area() {
+        for s in SCALES {
+            let (h, _) = window(s);
+            h.comp.set_find_open(true);
+            h.advance(0);
+            let f = h.render();
+            let red = [255, 0, 0, 255];
+            let top = h.phys(h.comp.get_grid_top());
+            let ink = |p: [u8; 4]| !Frame::near(p, [23, 23, 23, 255], 2) && !Frame::near(p, red, 2);
+            let (_, y0, x1, _) = f
+                .bbox_where(h.phys(500.0), top + 1, f.w, top + h.phys(60.0), ink)
+                .unwrap_or_else(|| panic!("scale {s}: no bar"));
+            let want = h.phys(12.0);
+            assert!((f.w - (x1 + 1)).abs_diff(want) <= 1, "scale {s}: right gap");
+            assert!((y0 - top).abs_diff(want) <= 1, "scale {s}: top gap");
+        }
+    }
+
+    #[test]
+    fn a_click_on_the_bar_does_not_reach_the_grid() {
+        let (h, calls) = window(1.0);
+        h.comp.set_find_open(true);
+        h.advance(0);
+        // Inside the bar (334 wide, 12 px from the right and from the grid top), off the controls.
+        let x = 988.0 - 334.0 + 1.0;
+        let y = 36.0 + 12.0 + 14.0;
+        h.press(x, y, PointerEventButton::Left);
+        h.release(x, y, PointerEventButton::Left);
+        assert!(
+            calls.borrow().iter().all(|c| c.0 != 0),
+            "{:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn a_closed_bar_takes_no_pointer() {
+        let (h, calls) = window(1.0);
+        h.press(900.0, 36.0 + 26.0, PointerEventButton::Left);
+        assert!(calls.borrow().iter().any(|c| c.0 == 0));
+    }
+
+    #[test]
+    fn typing_in_the_bar_reaches_find_edited() {
+        let (h, _) = window(1.0);
+        let got: Rc<RefCell<String>> = Rc::default();
+        let sink = got.clone();
+        h.comp
+            .on_find_edited(move |q| *sink.borrow_mut() = q.to_string());
+        h.comp.set_find_open(true);
+        h.advance(0);
+        h.comp.invoke_focus_find();
+        h.key_text("ab");
+        assert_eq!(got.borrow().as_str(), "ab");
+        assert!(h.comp.get_find_input_focused());
+    }
+
+    #[test]
+    fn focus_terminal_takes_the_keys_back() {
+        let (h, _) = window(1.0);
+        h.comp.set_find_open(true);
+        h.advance(0);
+        h.comp.invoke_focus_find();
+        h.comp.invoke_focus_terminal();
+        h.key_text(&String::from(char::from(slint::platform::Key::F12)));
+        assert!(h.comp.get_overlay_visible());
+        assert!(!h.comp.get_find_input_focused());
+    }
+
+    #[test]
+    fn the_badge_draws_over_the_grid() {
+        let (h, _) = window(1.0);
+        let before = h.render();
+        h.comp.set_copied_phase(1);
+        h.advance(500);
+        let with = h.render();
+        let (w, hh) = (with.w, with.h);
+        let diff = |a: &Frame, b: &Frame| {
+            let mut n = 0;
+            for y in hh - 80..hh {
+                for x in w / 2 - 100..w / 2 + 100 {
+                    if a.px(x, y) != b.px(x, y) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert!(diff(&before, &with) > 50);
+        h.comp.set_copied_phase(0);
+        h.advance(500);
+        assert_eq!(diff(&before, &h.render()), 0);
+    }
+
+    #[test]
+    fn grid_origin_is_the_title_row_height() {
+        for s in SCALES {
+            let (h, _) = window(s);
+            assert_eq!(h.comp.get_grid_top(), 36.0, "scale {s}");
+            assert_eq!(h.comp.get_grid_left(), 0.0, "scale {s}");
+        }
+    }
+}
