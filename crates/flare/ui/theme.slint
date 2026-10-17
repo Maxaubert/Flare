@@ -1,0 +1,18 @@
+// Prism Terminal's chrome tokens for its default theme 'pt-default', copied from
+// PT v0.55.6 src/renderer/src/lib/__snapshots__/chromeTheme.opacity.test.ts.snap
+// ("an opaque accent ... > pt-default", the glass entry at full alpha) and
+// src/renderer/src/index.css. M4 derives these from the theme instead.
+export global Theme {
+    out property <color> ground: #171717;      // --p-bg, --p-tabs, --p-title
+    out property <color> text: #dedacf;        // --p-text
+    out property <color> icon: #929089;        // --p-icon
+    out property <color> dim: #929089;         // --p-dim
+    out property <color> hover-hi: #ffffff1c;  // --p-hover-hi
+    out property <color> divider: #ffffff12;   // --p-divider
+    out property <color> accent: #fe8f34;      // --p-accent
+    out property <color> accent-hi: #f6a25b;   // --p-accent-hi
+    out property <color> close-hover: #fb2c36cc; // Tailwind v4 red-500 at 80%
+    out property <length> bar-height: 36px;    // chromeLayout.ts BAR_H
+    out property <length> radius-button: 4px;  // Tailwind `rounded`
+    out property <length> term-padding: 4px;   // TerminalPanel `p-1`
+}
