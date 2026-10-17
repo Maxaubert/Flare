@@ -5,6 +5,7 @@
 
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 /// The state of the Explorer menu row. `Busy` is Prism Terminal's "Checking with Windows." (disabled).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +77,53 @@ impl DiagControlApi for FakeDiag {
     }
 }
 
+/// The Explorer verb seam: the menu row reads `status` and asks for a change with `set`.
+pub trait ExplorerVerb: Send + Sync {
+    fn status(&self) -> VerbState;
+    fn set(&self, on: bool) -> VerbState;
+}
+
+/// M7's production backend. Until M9 it answers `Busy`, so the row reads "Checking with Windows."
+/// and stays disabled.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PendingVerb;
+
+impl ExplorerVerb for PendingVerb {
+    fn status(&self) -> VerbState {
+        VerbState::Busy
+    }
+
+    fn set(&self, _on: bool) -> VerbState {
+        VerbState::Busy
+    }
+}
+
+/// A test double that keeps its state in a mutex and answers the state it just set.
+#[derive(Debug)]
+pub struct FakeVerb {
+    state: Mutex<VerbState>,
+}
+
+impl FakeVerb {
+    pub fn new(state: VerbState) -> Self {
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+}
+
+impl ExplorerVerb for FakeVerb {
+    fn status(&self) -> VerbState {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set(&self, on: bool) -> VerbState {
+        let next = if on { VerbState::On } else { VerbState::Off };
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = next;
+        next
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +146,25 @@ mod tests {
         d.refusing();
         assert!(!d.set_verbose(true));
         assert!(!d.verbose());
+    }
+
+    #[test]
+    fn the_pending_verb_is_busy_and_stays_busy() {
+        let v = PendingVerb;
+        assert_eq!(v.status(), VerbState::Busy);
+        assert_eq!(v.set(true), VerbState::Busy);
+        assert_eq!(v.status(), VerbState::Busy);
+        assert_eq!(v.set(false), VerbState::Busy);
+        assert_eq!(v.status(), VerbState::Busy);
+    }
+
+    #[test]
+    fn the_fake_verb_flips_and_answers_the_new_state() {
+        let v = FakeVerb::new(VerbState::Off);
+        assert_eq!(v.status(), VerbState::Off);
+        assert_eq!(v.set(true), VerbState::On);
+        assert_eq!(v.status(), VerbState::On);
+        assert_eq!(v.set(false), VerbState::Off);
+        assert_eq!(v.status(), VerbState::Off);
     }
 }
