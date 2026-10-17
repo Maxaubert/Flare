@@ -47,8 +47,8 @@ const OPENABLE: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "wma", "mp4", "mkv", "webm", "mov", "avi",
     "m4v", "wmv",
     // source code (never one whose default verb runs it: no py, js, sh, rb, pl, ps1, and no lua
-    // or php, whose installers may register a run verb)
-    "rs", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift",
+    // or php, whose installers may register a run verb, and no jsx, which Adobe apps run)
+    "rs", "ts", "tsx", "c", "h", "cpp", "hpp", "cc", "cs", "go", "java", "kt", "swift",
     "css", "scss", "sql", "slint", "vue", "svelte",
 ];
 
@@ -327,7 +327,7 @@ pub fn path_kinds(
 pub trait PathOpeners {
     /// The app Windows gives it.
     fn open_path(&self, abs: &str);
-    /// A folder through Windows' default verb for folders; false = not handled.
+    /// A folder, by absolute path; false = not opened (nothing else is tried).
     fn open_folder(&self, _abs: &str) -> bool {
         false
     }
@@ -367,8 +367,10 @@ pub fn open_term_path(
         openers.reveal_path(&hit.abs);
         return Some(Opened::Revealed);
     }
-    if hit.kind == PathKind::Dir && openers.open_folder(&hit.abs) {
-        return Some(Opened::Opened);
+    if hit.kind == PathKind::Dir {
+        // A folder is never handed to the default verb: by the time it runs the name may be a
+        // runnable file.
+        return openers.open_folder(&hit.abs).then_some(Opened::Opened);
     }
     openers.open_path(&hit.abs);
     Some(Opened::Opened)
@@ -475,11 +477,15 @@ mod tests {
     #[test]
     fn open_a_file_and_a_folder() {
         let (_d, root) = tree();
-        let r = Rec::default();
+        let r = Rec {
+            handles_folders: true,
+            ..Rec::default()
+        };
         let o = |t: &str| open_term_path(&root, t, OpenMode::Open, &r, "");
         assert_eq!(o("docs/sign-off/rapport.pdf"), Some(Opened::Opened));
         assert_eq!(o("docs"), Some(Opened::Opened));
-        assert_eq!(lock(&r.opened).len(), 2);
+        assert_eq!(lock(&r.opened).len(), 1);
+        assert_eq!(lock(&r.folders).len(), 1);
         assert_eq!(lock(&r.revealed).len(), 0);
     }
 
@@ -640,6 +646,23 @@ mod tests {
         assert_eq!(o("run.bat", OpenMode::Open), Some(Opened::Revealed));
         assert_eq!(o("docs", OpenMode::Reveal), Some(Opened::Revealed));
         assert_eq!(lock(&r.folders).len(), 1);
+    }
+
+    #[test]
+    fn a_folder_explorer_did_not_take_is_never_handed_to_the_default_verb() {
+        // The stat said Dir; when the folder opener fails nothing opens (the name may have become
+        // a runnable file since the stat).
+        let (_d, root) = tree();
+        let r = Rec::default();
+        assert_eq!(open_term_path(&root, "docs", OpenMode::Open, &r, ""), None);
+        assert_eq!(*lock(&r.folders), vec![format!("{root}\\docs")]);
+        assert!(lock(&r.opened).is_empty());
+    }
+
+    #[test]
+    fn an_adobe_script_is_revealed_never_opened() {
+        // Photoshop and Illustrator RUN a double-clicked .jsx (ExtendScript).
+        assert!(!may_open(r"C:\x\a.jsx"));
     }
 
     struct Blocking {

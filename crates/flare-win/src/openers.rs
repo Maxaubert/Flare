@@ -81,7 +81,7 @@ pub fn shell_open_file(abs: &str) -> Result<(), String> {
 /// Starts `explorer.exe` with `args` as its one raw command line (not waited on).
 fn spawn_explorer(args: &str) -> Result<(), String> {
     let sys_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
-    Command::new(explorer_path(&sys_root))
+    Command::new(explorer_path(&sys_root)) // sync-ok: called from the open worker only (TermUi::open_path_async)
         .raw_arg(args)
         .spawn()
         .map(|_| ())
