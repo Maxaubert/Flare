@@ -116,6 +116,7 @@ fn stat_all(dir: &Path, names: &[String]) -> Vec<(String, SystemTime)> {
             .collect();
         handles
             .into_iter()
+            // sync-ok: BLOCKING worker threads; the walk runs off the UI thread
             .flat_map(|h| h.join().unwrap_or_default())
             .collect()
     })
@@ -152,6 +153,7 @@ pub fn claude_sessions(cwd: &str, home: &Path) -> Vec<String> {
                 .collect();
             handles
                 .into_iter()
+                // sync-ok: BLOCKING worker threads; the walk runs off the UI thread
                 .map(|h| h.join().unwrap_or_default())
                 .collect()
         });
@@ -178,7 +180,7 @@ mod tests {
     use std::fs::{self, File};
     use std::time::{Duration, UNIX_EPOCH};
 
-    const CLI_HEAD: &str = "{\"type\":\"last-prompt\",\"lastPrompt\":\"prism stable was closed\"}\n{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"entrypoint\":\"cli\",\"type\":\"user\"}\n";
+    const CLI_HEAD: &str = "{\"type\":\"last-prompt\",\"lastPrompt\":\"the stable build was closed\"}\n{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"entrypoint\":\"cli\",\"type\":\"user\"}\n";
     const SDK_HEAD: &str = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-09-28T18:02:10.114Z\",\"content\":\"Review this change for security vulnerabilities.\"}\n{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"entrypoint\":\"sdk-py\",\"type\":\"user\"}\n";
 
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";

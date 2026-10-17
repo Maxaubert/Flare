@@ -582,115 +582,115 @@ verbatim from termTheme.ts; derived = from deriveAnsi(bg, fg)).
 
 ### Indicator model
 
-- [ ] One state per tab: working, question, failed, done or none; priority working > question > failed > done (src/renderer/src/components/tabLooks.ts).
-- [ ] Working shows on every tab, front included; question on any tab even the front, only when not working; failed only with its switch on and not working or question; done only with its switch on and none higher (tabLooks.ts; useAgentIndicator.ts).
-- [ ] A tab is "present" (agent in it) when the poll reports one, a Claude/Codex title claims one, or a hook arrives (useAgentIndicator.ts).
-- [ ] Only Ring and Bar are offered; stored `minimal` is Bar; `off`, `full` or anything else reads Ring (core/renderer/lib/termLook.ts readIndicator; termHost.ts). Flare has no Off and no Full.
-- [ ] Ring (default): one mono mark at the tab's end in the close button's place, in the name's ink; spinner while working (1 s), breathing dot for question (2 s), check for finished, cross for failed (core/renderer/lib/tabMark.ts; components/TabMark.tsx; styles/marks.css).
-- [ ] Ring stays on hover and close slides in after it; idle tab shows neither (e2e tabLooks).
-- [ ] Bar: working is a running bar along the tab foot (1.25 s) in the accent; question, done, failed are a static 3 px line in their colour (tabMark.ts resolveTabMark; e2e indicator, attention).
-- [ ] The front tab never gets a finished or failed mark while looked at; marks are news (done, failed) or state (question) (agentHookState.ts raisedWhileSeen).
-- [ ] Motion: question breathes 2 s; finished-with-rainbow flows (line x 8 s, y 7 s; fill 14 s); working run 1.25 s (marks.css; regression-rules finished-and-question).
-- [ ] Reduced motion stills every mark; a minimised window pauses every mark (marks.css; marks.test; src/renderer/src/lib/marksPause.ts; marksPause.test).
-- [ ] 18 px tab icon: Claude tab = Clawd (#d77757, 18x6 quadrant grid), codex = OpenAI mark, plain shell or other agent = prompt icon, Settings = cog (core/renderer/lib/agentIcon.ts; agentIcon.test; e2e tabLooks).
-- [ ] Failed tooltip: path newline "Failed: <kind words>" with the 12 kind words (rate limit, servers overloaded, sign-in failed, organisation not allowed, account on hold, billing, invalid request, model not found, server error, reply too long, cloud credentials, unknown error); unknown kind shows underscores as spaces; none shows "Failed" (tabList.ts tabTitle; agentHookSignal.ts failedLabel).
+- [x] One state per tab: working, question, failed, done or none; priority working > question > failed > done (src/renderer/src/components/tabLooks.ts). (M6: working_outranks_question_outranks_failed_outranks_done)
+- [x] Working shows on every tab, front included; question on any tab even the front, only when not working; failed only with its switch on and not working or question; done only with its switch on and none higher (tabLooks.ts; useAgentIndicator.ts). (M6: each_attention_mark_is_behind_its_own_switch, finished_is_not_raised_on_the_tab_in_front_but_a_question_is)
+- [x] A tab is "present" (agent in it) when the poll reports one, a Claude/Codex title claims one, or a hook arrives (useAgentIndicator.ts). (M6: a_claude_title_is_the_agent_present_ahead_of_the_poll_and_asks_a_look, a_poll_report_makes_the_agent_present_and_births_it)
+- [x] Only Ring and Bar are offered; stored `minimal` is Bar; `off`, `full` or anything else reads Ring (core/renderer/lib/termLook.ts readIndicator; termHost.ts). Flare has no Off and no Full. (M6: the_stored_word_minimal_is_bar_everything_else_ring, picks_and_the_indicator_come_from_the_look_store)
+- [x] Ring (default): one mono mark at the tab's end in the close button's place, in the name's ink; spinner while working (1 s), breathing dot for question (2 s), check for finished, cross for failed (core/renderer/lib/tabMark.ts; components/TabMark.tsx; styles/marks.css). (M6: spin_is_one_second_per_turn, breathe_follows_the_cosine_keyframes; pixel tests T24, T25)
+- [x] Ring stays on hover and close slides in after it; idle tab shows neither (e2e tabLooks). (M6: pixel tests T25, T31)
+- [x] Bar: working is a running bar along the tab foot (1.25 s) in the accent; question, done, failed are a static 3 px line in their colour (tabMark.ts resolveTabMark; e2e indicator, attention). (M6: run_is_ease_in_out_over_1250_ms, the_line_is_three_css_pixels_snapped_at_every_scale)
+- [x] The front tab never gets a finished or failed mark while looked at; marks are news (done, failed) or state (question) (agentHookState.ts raisedWhileSeen). (M6: finished_is_not_raised_on_the_tab_in_front_but_a_question_is, raised_while_seen)
+- [x] Motion: question breathes 2 s; finished-with-rainbow flows (line x 8 s, y 7 s; fill 14 s); working run 1.25 s (marks.css; regression-rules finished-and-question). (M6: the_rainbow_line_flows_one_tab_in_eight_seconds, breathe_follows_the_cosine_keyframes, run_is_ease_in_out_over_1250_ms; the y 7 s and fill 14 s are Full-only and dropped with D6)
+- [x] Reduced motion stills every mark; a minimised window pauses every mark (marks.css; marks.test; src/renderer/src/lib/marksPause.ts; marksPause.test). (M6: animation_effects_off_stills_every_mark, the_clock_runs_only_while_something_moves)
+- [x] 18 px tab icon: Claude tab = Clawd (#d77757, 18x6 quadrant grid), codex = OpenAI mark, plain shell or other agent = prompt icon, Settings = cog (core/renderer/lib/agentIcon.ts; agentIcon.test; e2e tabLooks). (M6: agent_icons_are_eighteen_pixels, the_glyph_data_is_the_ported_artwork)
+- [x] Failed tooltip: path newline "Failed: <kind words>" with the 12 kind words (rate limit, servers overloaded, sign-in failed, organisation not allowed, account on hold, billing, invalid request, model not found, server error, reply too long, cloud credentials, unknown error); unknown kind shows underscores as spaces; none shows "Failed" (tabList.ts tabTitle; agentHookSignal.ts failedLabel). (M6: failed_label_names_each_kind, the_tooltip_is_the_path_and_the_failure_under_it)
 
 ### Mark colours
 
-- [ ] Working = accent unless picked; finished = theme green floored 3:1, fallback #22c55e if under 1.15 from working; question = #3b82f6 floored; failed = first of [theme red, #ef4444, theme magenta, #d946ef] floored and apart from working and finished (src/renderer/src/lib/agentColors.ts; agentColors.test).
-- [ ] marksApart: saturation above 0.25 and hue 20 degrees or more apart, or RGB distance 80 or more (agentColors.ts).
-- [ ] floorMark mixes toward black (light ground) or white (dark) in 2% steps up to 50, first step reaching 3:1 on every ground, else nearest (core/renderer/lib/markColours.ts; markColours.test).
-- [ ] Rainbow finished mark (default on): #12cee5 #2179fa #945af5 #e84fd2 #fb7f6c #f0a934 #e8d021 flowing; off is plain finished colour, still (markColours.ts ICON_RAINBOW; rainbowGradient).
-- [ ] Fill colours are opaque over the ground; name ink on a fill keeps text colour if contrast >= 2 else flips; rainbow ink uses the worst of seven at 25/50/75% (markColours.ts opaqueOver; nameInk.ts; markPalette.ts; their tests).
-- [ ] Bar's run uses the name's ink on a working fill (markPalette.ts).
-- [ ] Settings colour rows "Agent working colour" (sub "Follows the accent."), "Agent finished colour" ("Follows the theme green."), "Agent question colour" ("Follows the theme."); a picked colour shows "Your own colour." and a Reset link; Save changes in the section heading lights with the theme's (settings/MarkColoursSection.tsx; options.ts).
-- [ ] Stored colour is canonical 6 or 8 hex, anything else removes the choice (termLook.ts writeChoice, agentColourChoice).
+- [x] Working = accent unless picked; finished = theme green floored 3:1, fallback #22c55e if under 1.15 from working; question = #3b82f6 floored; failed = first of [theme red, #ef4444, theme magenta, #d946ef] floored and apart from working and finished (src/renderer/src/lib/agentColors.ts; agentColors.test). (M6: working_is_the_chrome_accent_until_picked, finished_and_question_follow_picks_failed_never_does; M4 agent_colours.rs)
+- [x] marksApart: saturation above 0.25 and hue 20 degrees or more apart, or RGB distance 80 or more (agentColors.ts). (M6: M4 oracle_marks_apart)
+- [x] floorMark mixes toward black (light ground) or white (dark) in 2% steps up to 50, first step reaching 3:1 on every ground, else nearest (core/renderer/lib/markColours.ts; markColours.test). (M6: M4 oracle_agent_colours)
+- [x] Rainbow finished mark (default on): #12cee5 #2179fa #945af5 #e84fd2 #fb7f6c #f0a934 #e8d021 flowing; off is plain finished colour, still (markColours.ts ICON_RAINBOW; rainbowGradient). (M6: M4 mark palette tests; the flow is the_rainbow_line_flows_one_tab_in_eight_seconds)
+- [x] Fill colours are opaque over the ground; name ink on a fill keeps text colour if contrast >= 2 else flips; rainbow ink uses the worst of seven at 25/50/75% (markColours.ts opaqueOver; nameInk.ts; markPalette.ts; their tests). (M6: M4 marks.rs tests)
+- [x] Bar's run uses the name's ink on a working fill (markPalette.ts). (M6: M4 marks.rs tests)
+- [ ] Settings colour rows "Agent working colour" (sub "Follows the accent."), "Agent finished colour" ("Follows the theme green."), "Agent question colour" ("Follows the theme."); a picked colour shows "Your own colour." and a Reset link; Save changes in the section heading lights with the theme's (settings/MarkColoursSection.tsx; options.ts). (M6: deferred to M7: the rows are M7's, D13)
+- [x] Stored colour is canonical 6 or 8 hex, anything else removes the choice (termLook.ts writeChoice, agentColourChoice). (M6: M4 canonical_stored_accepts_only_six_or_eight_digits, D13)
 
 ### Claude Code plugin and hook signal (core/claude-plugin; Flare name flare-status)
 
-- [ ] Manifest `.claude-plugin/plugin.json` name flare-status, version 1.0.0, a description (agentHookSignal.test "has a manifest Claude Code accepts"; claudePlugin.ts PLUGIN_NAME).
-- [ ] hooks.json has 25 command entries, each `cmd.exe /d /c call "${CLAUDE_PLUGIN_ROOT}/hook.cmd" <args>`, timeout 5 s, exec form: working (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SubagentStart, PreCompact), question (PermissionRequest, Elicitation, Notification with matchers permission_prompt, elicitation_dialog, elicitation_url_dialog), done (Stop), failed with kind (StopFailure per rate_limit, overloaded, authentication_failed, oauth_org_not_allowed, account_on_hold, billing_error, invalid_request, model_not_found, server_error, max_output_tokens, cloud_credential_error, unknown), failed without kind (StopFailure *, kind "failed"); SessionStart and SessionEnd are not hooked (agentHookSignal.ts header; agentHookSignal.test).
-- [ ] hook.cmd is a static echo printing JSON `{"terminalSequence":"ESC]777;flare-agent;state=<state>[;kind=<kind>]BEL"}`, no node, no stdin; kind only on failure hooks.
-- [ ] Only Claude's UI writes the sequence; `claude -p` and SDK runs never do (agentHookSignal.ts).
-- [ ] The plugin is handed to a shell as `CLAUDE_CODE_PLUGIN_DIRS`: user folders kept in order, ours appended, an inherited copy of ours dropped (identified by plugin.json name), variable removed if empty, key spelling kept (terminal.ts withPluginDir, ptyEnv; terminal.test).
-- [ ] Plugin dir shipped only if hooks/hooks.json exists in it (index.ts claudePluginDir); packaged under resources, dev under the repo.
-- [ ] A warm shell is adopted only with the same plugin key (terminal.ts pluginKey).
-- [ ] OSC 777 parser: payload max 200 chars, split on `;`, first part equals the prefix `flare-agent`, every later part contains `=` at index > 0; state in working|question|done|failed; unknown keys ignored; kind kept only with failed and matching `^[a-z][a-z0-9_]{0,39}$`; Flare must not accept `prism-agent`; non-Flare payloads leave other OSC 777 users alone (core/renderer/lib/agentHookSignal.ts; agentHookSignal.test).
-- [ ] Per-tab channel: parser output to the tab's signal channel; the indicator subscribes (termBus.ts onAgentSignal).
+- [x] Manifest `.claude-plugin/plugin.json` name flare-status, version 1.0.0, a description (agentHookSignal.test "has a manifest Claude Code accepts"; claudePlugin.ts PLUGIN_NAME). (M6: has_a_manifest_claude_code_accepts, knows_our_plugin_by_its_manifest_name_and_nothing_else)
+- [x] hooks.json has 25 command entries, each `cmd.exe /d /c call "${CLAUDE_PLUGIN_ROOT}/hook.cmd" <args>`, timeout 5 s, exec form: working (UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SubagentStart, PreCompact), question (PermissionRequest, Elicitation, Notification with matchers permission_prompt, elicitation_dialog, elicitation_url_dialog), done (Stop), failed with kind (StopFailure per rate_limit, overloaded, authentication_failed, oauth_org_not_allowed, account_on_hold, billing_error, invalid_request, model_not_found, server_error, max_output_tokens, cloud_credential_error, unknown), failed without kind (StopFailure *, kind "failed"); SessionStart and SessionEnd are not hooked (agentHookSignal.ts header; agentHookSignal.test). (M6: hooks_json_matches_the_table, hooks_json_has_25_entries)
+- [x] hook.cmd is a static echo printing JSON `{"terminalSequence":"ESC]777;flare-agent;state=<state>[;kind=<kind>]BEL"}`, no node, no stdin; kind only on failure hooks. (M6: hook_cmd_is_crlf_and_static, every_hook_prints_what_the_parser_reads)
+- [x] Only Claude's UI writes the sequence; `claude -p` and SDK runs never do (agentHookSignal.ts). (M6: T3 header and T2 parser tests)
+- [x] The plugin is handed to a shell as `CLAUDE_CODE_PLUGIN_DIRS`: user folders kept in order, ours appended, an inherited copy of ours dropped (identified by plugin.json name), variable removed if empty, key spelling kept (terminal.ts withPluginDir, ptyEnv; terminal.test). (M6: the_plugin_folder_reaches_a_new_shell_once_after_the_users_own, an_inherited_copy_of_our_plugin_is_dropped)
+- [x] Plugin dir shipped only if hooks/hooks.json exists in it (index.ts claudePluginDir); packaged under resources, dev under the repo. (M6: a_plugin_dir_needs_its_hooks_file)
+- [x] A warm shell is adopted only with the same plugin key (terminal.ts pluginKey). (M6: a_warm_shell_with_the_other_plugin_answer_makes_way)
+- [x] OSC 777 parser: payload max 200 chars, split on `;`, first part equals the prefix `flare-agent`, every later part contains `=` at index > 0; state in working|question|done|failed; unknown keys ignored; kind kept only with failed and matching `^[a-z][a-z0-9_]{0,39}$`; Flare must not accept `prism-agent`; non-Flare payloads leave other OSC 777 users alone (core/renderer/lib/agentHookSignal.ts; agentHookSignal.test). (M6: prism_agent_is_not_accepted, leaves_other_osc_777_users_alone)
+- [x] Per-tab channel: parser output to the tab's signal channel; the indicator subscribes (termBus.ts onAgentSignal). (M6: T22 events, T28 hub tests)
 
 ### Hook state rules (core/renderer/lib/agentHookState.ts hookStep)
 
-- [ ] Hook working: phase working, clears question, failed, finished (hookStep).
-- [ ] Hook question: phase question, raises question, clears failed.
-- [ ] Hook done: title still spinning means phase ending (still Working); background work on screen means phase background; else finish (phase done, raises finished, clears question and failed).
-- [ ] Hook failed: phase failed keeping a prior kind if none, raises failed AND finished, clears question.
-- [ ] Title spinner: while ending becomes background; while question or stopped becomes working; otherwise no change.
-- [ ] Idle star: ending or background resolves to finish or background; working becomes stopped (an Esc, no Finished); otherwise no change.
-- [ ] Settle: no title within STOP_SETTLE_MS = 1500 ms after a spinning Stop resolves to background or finish.
-- [ ] bg-check every BACKGROUND_CHECK_MS = 3000 ms while background; finishes once neither screen nor spinner shows background work.
-- [ ] While the question box is on screen the question stands; done raises finished under the question (screenDecides).
-- [ ] After a permission Yes the spinner title returns Working; a spinner held by the box is re-read once after 250 ms (useAgentIndicator.ts titleRecheck).
-- [ ] A hooked session's idle title after working with no Stop is Esc: idle, stopped, no Finished; a Stop landing after still finishes (agentHookState.timelines.test; e2e agentHooks).
-- [ ] A hooked session is never scored from output; the screen is read only to hold a question the hooks raised (useAgentIndicator.ts onTermData).
-- [ ] Background work on screen: `· N shell(s)|task(s)|command(s) still running`, or below the last box rule `· N shell(s)|task(s)` or a workflow row `N/M · [Xh][Ym]SSs`; only live marks count (core/renderer/lib/agentBackground.ts; agentBackground.test, screens.json; e2e backgroundWork).
-- [ ] A new prompt or working signal clears failed and finished.
-- [ ] A question raised on the front tab; looking never takes it down (raisedWhileSeen).
+- [x] Hook working: phase working, clears question, failed, finished (hookStep). (M6: T5 hook_state tests)
+- [x] Hook question: phase question, raises question, clears failed. (M6: T5 hook_state tests)
+- [x] Hook done: title still spinning means phase ending (still Working); background work on screen means phase background; else finish (phase done, raises finished, clears question and failed). (M6: T5 hook_state tests, timeline_*)
+- [x] Hook failed: phase failed keeping a prior kind if none, raises failed AND finished, clears question. (M6: a_new_prompt_clears_a_failure_and_the_next_has_no_old_kind)
+- [x] Title spinner: while ending becomes background; while question or stopped becomes working; otherwise no change. (M6: T5 hook_state tests)
+- [x] Idle star: ending or background resolves to finish or background; working becomes stopped (an Esc, no Finished); otherwise no change. (M6: timeline_b_an_esc)
+- [x] Settle: no title within STOP_SETTLE_MS = 1500 ms after a spinning Stop resolves to background or finish. (M6: T5 hook_state tests)
+- [x] bg-check every BACKGROUND_CHECK_MS = 3000 ms while background; finishes once neither screen nor spinner shows background work. (M6: T5 hook_state tests)
+- [x] While the question box is on screen the question stands; done raises finished under the question (screenDecides). (M6: timeline_c3_the_classifier_denies, T5 hook_state tests)
+- [x] After a permission Yes the spinner title returns Working; a spinner held by the box is re-read once after 250 ms (useAgentIndicator.ts titleRecheck). (M6: timeline_a_a_yes)
+- [x] A hooked session's idle title after working with no Stop is Esc: idle, stopped, no Finished; a Stop landing after still finishes (agentHookState.timelines.test; e2e agentHooks). (M6: timeline_b_an_esc, timeline_d_two_prompts_in_a_row)
+- [x] A hooked session is never scored from output; the screen is read only to hold a question the hooks raised (useAgentIndicator.ts onTermData). (M6: a_hooked_session_is_never_scored_and_its_screen_is_not_read_for_output)
+- [x] Background work on screen: `· N shell(s)|task(s)|command(s) still running`, or below the last box rule `· N shell(s)|task(s)` or a workflow row `N/M · [Xh][Ym]SSs`; only live marks count (core/renderer/lib/agentBackground.ts; agentBackground.test, screens.json; e2e backgroundWork). (M6: T6 background tests, timeline_g2_a_subagent_asks_while_its_sibling_works)
+- [x] A new prompt or working signal clears failed and finished. (M6: a_new_prompt_clears_failed_finished_and_the_kind)
+- [x] A question raised on the front tab; looking never takes it down (raisedWhileSeen). (M6: finished_is_not_raised_on_the_tab_in_front_but_a_question_is)
 
 ### Question detection and scoring fallback
 
-- [ ] Unhooked sessions read the bottom 16 rows: both "Enter to select" and "Esc to cancel", or "Do you want to ...?" with a "1. Yes" line (core/renderer/lib/agentQuestion.ts looksLikeQuestion; agentQuestion.test).
-- [ ] Read 200 ms after the title goes idle and as output arrives while idle; only titled unhooked sessions; a new question cancels pending answer reads (useAgentIndicator.ts checkQuestion).
-- [ ] Walking choices is not an answer; answer keys Enter, Esc, Ctrl+C, digits 1 to 9, then the box is read at 250, 1000, 2500, 5000 ms and the question clears only when the box is gone (agentQuestion.ts questionAnswered; useAgentIndicator.ts onTermKey).
-- [ ] A question clears on work again, an answer key with the box gone, agent gone, tab closed; looking does not clear it; it keeps its place when focus leaves (e2e attention, agentHooks).
-- [ ] Output scoring only for a known agent that is neither titled nor hooked; ignores startup paint, resize suppression, input echo; a run with gaps <= 1500 ms longer than 1200 ms sets working; 2000 ms of silence clears it; event-driven (useAgentIndicator.ts; termActivity.ts).
-- [ ] A poll report that finds an agent clears the output run, marks birth, clears working.
-- [ ] Title dialects: Claude glyphs and Codex Action Required, titleAgent, titleArmsAgent (core/renderer/lib/agentTitle.ts; agentTitle.test).
+- [x] Unhooked sessions read the bottom 16 rows: both "Enter to select" and "Esc to cancel", or "Do you want to ...?" with a "1. Yes" line (core/renderer/lib/agentQuestion.ts looksLikeQuestion; agentQuestion.test). (M6: T6 question tests)
+- [x] Read 200 ms after the title goes idle and as output arrives while idle; only titled unhooked sessions; a new question cancels pending answer reads (useAgentIndicator.ts checkQuestion). (M6: T18 indicator tests)
+- [x] Walking choices is not an answer; answer keys Enter, Esc, Ctrl+C, digits 1 to 9, then the box is read at 250, 1000, 2500, 5000 ms and the question clears only when the box is gone (agentQuestion.ts questionAnswered; useAgentIndicator.ts onTermKey). (M6: an_answer_key_reads_the_box_at_250_1000_2500_and_5000_and_clears_only_when_it_is_gone)
+- [x] A question clears on work again, an answer key with the box gone, agent gone, tab closed, never on a look (e2e attention, agentHooks). (M6: an_answer_key_clears_a_question_when_the_box_is_gone, forget_drops_every_mark_record_and_timer)
+- [x] Output scoring only for a known agent that is neither titled nor hooked; ignores startup paint, resize suppression and echo; a run with gaps <= 1500 ms longer than 1200 ms sets working; 2000 ms of silence clears it; event-driven (useAgentIndicator.ts; termActivity.ts). (M6: output_scores_working_after_a_sustained_run_and_clears_after_two_seconds_of_quiet)
+- [x] A poll report that finds an agent clears the output run, marks birth, clears working. (M6: a_poll_report_makes_the_agent_present_and_births_it)
+- [x] Title dialects: Claude glyphs and Codex Action Required, titleAgent, titleArmsAgent (core/renderer/lib/agentTitle.ts; agentTitle.test). (M6: T4 title tests)
 
 ### Process poll and detection
 
-- [ ] Polls only if a pty printed since the last look or a session has no answer yet; timer 2500 ms (AGENT_POLL_MIN), wait doubles to 20000 ms while unchanged, resets on change (core/main/agentPoll.ts; agentPoll.test).
-- [ ] Only changes are sent; an unchanged answer is re-sent only when asked (agentPoll.ts pollAgentAgain).
-- [ ] Forced look (title or hook claims an agent the poll has not reported): at most once per 15 s per tab from the UI, main waits AGENT_FORCE_GAP = 5000 ms (useAgentIndicator.ts askLook; agentPoll.ts).
-- [ ] A query with no answer doubles to AGENT_FAIL_MAX = 60000 ms; the third failure in a row is logged once; a failed query spends no tick (agentPoll.ts).
-- [ ] Query: native process snapshot (pid, ppid, command line) with prefilter `claude|codex|aider|gemini` then strict match; 30 s timeout; 8 MB cap; off the UI thread (agentPoll.ts).
-- [ ] Forget a shell's answer when it ends; warm poll 300 ms after a spawn that really started (agentPoll.ts; ipc.ts pollAgentsSoon).
-- [ ] Signatures (agentDetect.ts AGENT_RE): `claude-code` anywhere; `claude`/`claude.exe|.cmd|.ps1` as a path segment followed by separator, quote, space or end; `codex`, `aider`, `gemini` likewise; `@openai/codex`; `gemini-cli`; case-insensitive; first token counts; a folder named Claude is not an agent; `git commit -m claude` is not (core/main/agentDetect.ts; agentDetect.test).
-- [ ] Kind: claude wins anywhere under the shell, else codex, else other; BFS under the shell pid, cycles handled (agentDetect.ts treeAgentKind).
-- [ ] Resumable kinds are claude and codex; others light the indicator but have nothing to resume (core/main/agentKinds.ts; agentKinds.test).
+- [x] Polls only if a pty printed since the last look or a session has no answer yet; timer 2500 ms (AGENT_POLL_MIN), wait doubles to 20000 ms while unchanged, resets on change (core/main/agentPoll.ts; agentPoll.test). (M6: T9 poll tests)
+- [x] Only changes are sent; an unchanged answer is re-sent only when asked (agentPoll.ts pollAgentAgain). (M6: T9 poll tests)
+- [x] Forced look (title or hook claims an agent the poll has not reported): at most once per 15 s per tab from the UI, main waits AGENT_FORCE_GAP = 5000 ms (useAgentIndicator.ts askLook; agentPoll.ts). (M6: a_claude_title_is_the_agent_present_ahead_of_the_poll_and_asks_a_look, T9 poll tests)
+- [x] A query with no answer doubles to AGENT_FAIL_MAX = 60000 ms; the third failure in a row is logged once; a failed query spends no tick (agentPoll.ts). (M6: T9 poll tests)
+- [x] Query: native process snapshot (pid, ppid, command line) with prefilter `claude|codex|aider|gemini` then strict match; 30 s timeout; 8 MB cap; off the UI thread (agentPoll.ts). (M6: T19 procs tests; the 30 s and 8 MB limits have no meaning for the native call, D4: each command line is capped at 32 KiB)
+- [ ] Forget a shell's answer when it ends; warm poll 300 ms after a spawn that really started (agentPoll.ts; ipc.ts pollAgentsSoon). (M6: the forget half is T9 tests; the warm-poll test `the_poll_is_warmed_after_a_spawn` named in Appendix B is not written yet, so this line stays open)
+- [x] Signatures (agentDetect.ts AGENT_RE): `claude-code` anywhere; `claude`/`claude.exe|.cmd|.ps1` as a path segment followed by separator, quote, space or end; `codex`, `aider`, `gemini` likewise; `@openai/codex`; `gemini-cli`; case-insensitive; first token counts; a folder named Claude is not an agent; `git commit -m claude` is not (core/main/agentDetect.ts; agentDetect.test). (M6: T8 detect tests, a_title_names_the_agent_only_when_it_is_the_program)
+- [x] Kind: claude wins anywhere under the shell, else codex, else other; BFS under the shell pid, cycles handled (agentDetect.ts treeAgentKind). (M6: T8 detect tests, the four-deep tree test)
+- [x] Resumable kinds are claude and codex; others light the indicator but have nothing to resume (core/main/agentKinds.ts; agentKinds.test). (M6: the_resumable_agents_pass_the_prefilter)
 
 ### Arm, resume, skeleton
 
-- [ ] Armed at tab start if resumed, by the title before the poll, or by the poll; a prompt report disarms at once and asks the poll if it had seen an agent; a resumed agent's first poll "no" is doubted; a title-armed (WSL) agent stays until its title stops naming it; gone drops its theme reports (agentArm.ts; agentArm.test).
-- [ ] Shift+Enter newline key and image-paste key per agent (see M5).
-- [ ] Resume command only as the shell's startup command, only for a restored tab that had an agent, never for a warm shell; bash/WSL/Git Bash get no resume (terminal.ts withResume). DECISION: keep parity or add (open decision O5).
-- [ ] Resume id shape: `codex:last` or `^[0-9a-f][0-9a-f-]{6,62}[0-9a-f]$` (agentResume.ts validResume; agentResume.test).
-- [ ] Claude sessions: newest first in `~/.claude/projects/<cwd with non-alphanumerics replaced by '-'>`, up to 32, interactive only (first 4096 bytes) (agentResume.ts claudeSessions; agentResume.test).
-- [ ] Saved tabs.json entry has agent claude|codex only when present at the last report; 'other' not saved.
-- [ ] Skeleton over a restoring agent tab from the first frame (logo block, name lines, 12 paragraphs of 11 px lines, text colour 7%, pulse; still under reduced motion; 180 ms fade out) (components/ResumeSkeleton.tsx).
-- [ ] Clear `ESC[2J ESC[3J ESC[H` written to the grid only, never the shell, just before the title naming the agent (core/renderer/lib/resumeReveal.ts; resumeReveal.test).
-- [ ] Agent named by bare `claude` or `codex` or `claude.exe`; a folder called Claude is not the program (resumeReveal.ts namesAgent).
-- [ ] Reveal 150 ms (SETTLE_MS) after the agent's own title or alternate screen, or at once on a key, exit or failed spawn, or at 12000 ms (CEILING_MS).
-- [ ] A resume is not new work: no Finished, Question or Failed until a turn of its own ends; every restoring tab shows the ring (e2e launchSkeleton; regression-rules #151).
-- [ ] Hooked and title-armed Claude question widget extraction: last tab row `←...✔ Submit→` is live; question text from lines after it until the first `\d+.` option, leading `│` stripped, joined with spaces; "Review your answers" gives review; no "Enter to select" gives none (core/renderer/questionWidget.ts; questionWidget.test).
-- [ ] Question watch: 150 ms after output settles, rows from baseY minus rows to baseY plus rows, reports only a change, resets when the widget goes, stops on dispose (core/renderer/questionWatch.ts; questionWatch.test).
-- [ ] Question payload check: `{text}` trimmed non-blank at most 2000 chars, or `{review: true}` (core/shared/questionShown.ts asShownQuestion).
-- [ ] Sonara link: location `SONARA_HOME` else `%LOCALAPPDATA%\Sonara`; runtime.json `http_port` 1 to 65535 and non-empty `token`; POST `http://127.0.0.1:<port>/v1/question_shown` with bearer token and body `{"host_tab":<FLARE_TAB_ID>,"text":...}` or `{"host_tab":...,"review":true}`; 1500 ms timeout; success only on 200; failures quiet; nothing sent without Sonara (core/main/sonaraLink.ts; sonaraLink.test).
-- [ ] DECISION: Sonara reads PRISM_TAB_ID today; bridge or wait (open decision O6).
+- [x] Armed at tab start if resumed, by the title before the poll, or by the poll; a prompt report disarms at once and asks the poll if it had seen an agent; a resumed agent's first poll "no" is doubted; a title-armed (WSL) agent stays until its title stops naming it; gone drops its theme reports (agentArm.ts; agentArm.test). (M6: T4 arm tests, agent_view_is_the_arm_state_not_the_indicator)
+- [x] Shift+Enter newline key and image-paste key per agent (see M5). (M6: the_image_key_and_shift_enter_follow_the_armed_agent)
+- [x] Resume command only as the shell's startup command, only for a restored tab that had an agent, never for a warm shell; bash/WSL/Git Bash get no resume (terminal.ts withResume). DECISION: keep parity or add (open decision O5). (M6: a_warm_shell_is_never_adopted_for_a_resume, restored_tabs_carry_no_done_question_or_failed; O5 decided as parity, see Decisions)
+- [x] Resume id shape: `codex:last` or `^[0-9a-f][0-9a-f-]{6,62}[0-9a-f]$` (agentResume.ts validResume; agentResume.test). (M6: accepts_a_session_id_and_the_codex_marker_refuses_a_command, an_invalid_resume_id_is_no_resume, a_bad_resume_id_never_reaches_a_command_line, a_cmd_resume_carries_only_hex_into_the_environment)
+- [x] Claude sessions: newest first in `~/.claude/projects/<cwd with non-alphanumerics replaced by '-'>`, up to 32, interactive only (first 4096 bytes) (agentResume.ts claudeSessions; agentResume.test). (M6: T10 resume tests, the_claude_lookup_skips_ids_that_are_not_session_ids)
+- [x] Saved tabs.json entry has agent claude|codex only when present at the last report; 'other' not saved. (M6: the_saved_strip_records_an_agent_only_for_claude_and_codex)
+- [x] Skeleton over a restoring agent tab from the first frame (logo block, name lines, 12 paragraphs of 11 px lines, text colour 7%, pulse; still under reduced motion; 180 ms fade out) (components/ResumeSkeleton.tsx). (M6: the_first_frame_has_the_tabs_the_skeleton_and_the_ring, the_front_agent_tab_wears_the_skeleton_until_the_agent_paints)
+- [x] Clear `ESC[2J ESC[3J ESC[H` written to the grid only, never the shell, just before the title naming the agent (core/renderer/lib/resumeReveal.ts; resumeReveal.test). (M6: a_resume_clears_the_grid_just_before_the_agents_title, a_shell_title_or_a_folder_called_claude_clears_nothing)
+- [x] Agent named by bare `claude` or `codex` or `claude.exe`; a folder called Claude is not the program (resumeReveal.ts namesAgent). (M6: a_title_names_the_agent_only_when_it_is_the_program, never_clears_on_a_shell_title_nor_on_a_folder_called_claude)
+- [x] Reveal 150 ms (SETTLE_MS) after the agent's own title or alternate screen, or at once on a key, exit or failed spawn, or at 12000 ms (CEILING_MS). (M6: T11 reveal tests, T23 reveal wiring)
+- [x] A resume is not new work: no Finished, Question or Failed until a turn of its own ends; every restoring tab shows the ring (e2e launchSkeleton; regression-rules #151). (M6: a_resume_is_not_new_work, restored_tabs_carry_no_done_question_or_failed)
+- [x] Hooked and title-armed Claude question widget extraction: last tab row `←...✔ Submit→` is live; question text from lines after it until the first `\d+.` option, leading `│` stripped, joined with spaces; "Review your answers" gives review; no "Enter to select" gives none (core/renderer/questionWidget.ts; questionWidget.test). (M6: T6 question_widget tests)
+- [x] Question watch: 150 ms after output settles, rows from baseY minus rows to baseY plus rows, reports only a change, resets when the widget goes, stops on dispose (core/renderer/questionWatch.ts; questionWatch.test). (M6: T6 question_watch tests)
+- [x] Question payload check: `{text}` trimmed non-blank at most 2000 chars, or `{review: true}` (core/shared/questionShown.ts asShownQuestion). (M6: T6 payload tests)
+- [x] Sonara link: location `SONARA_HOME` else `%LOCALAPPDATA%\Sonara`; runtime.json `http_port` 1 to 65535 and non-empty `token`; POST `http://127.0.0.1:<port>/v1/question_shown` with bearer token and body `{"host_tab":<FLARE_TAB_ID>,"text":...}` or `{"host_tab":...,"review":true}`; 1500 ms timeout; success only on 200; failures quiet; nothing sent without Sonara (core/main/sonaraLink.ts; sonaraLink.test). (M6: only_loopback_is_ever_contacted, sonara_is_never_called_on_the_ui_thread, sonara_hears_the_shown_question_with_the_tab_token)
+- [x] DECISION: Sonara reads PRISM_TAB_ID today; bridge or wait (open decision O6). (M6: O6 handled as FLARE_TAB_ID only, see Decisions; Sonara's own change is owner question 3)
 
 ### Close, clock, badge, keys, lifecycle
 
-- [ ] Close question rule and wording: see M3 Close flow (core/renderer/lib/agentClose.ts).
-- [ ] Agent clock starts the first tick a session is seen working, forgotten when it stops, exits, closes or the agent leaves; humanFor rounds down: under 10 s "a few seconds", under 60 s "N seconds", under 60 min "N minutes", hours "N hour(s)" or "N hour(s) M minute(s)"; negative clamps 0; never-working is null (core/renderer/lib/agentClock.ts; agentClock.test).
-- [ ] Taskbar count: unique tabs carrying a question, failed or done (each if its switch is on and not working); "1 tab needs a look" / "N tabs need a look"; above 9 shows "9+"; zero or setting off clears (src/renderer/src/lib/taskbarBadge.ts attentionCount, badgeText; taskbarBadge.test).
-- [ ] Badge drawn at physical size 16 logical px x scale (capped 4, nonsense reads 1), fill #25242c, white number, font 0.8x for one digit and 0.56x for two, nudged down 4%; an overlay only, never a window icon (taskbarBadge.ts badgePixels, drawBadge).
-- [ ] Keep agent sessions open (default on): with an agent in the front tab Ctrl+D never reaches it; Ctrl+C is taken unless the agent works or holds a selection; never in a plain shell (keymap.ts 'agent-guard'; agentGuardPrefs.ts).
-- [ ] Agent hotkeys (default on): Ctrl+PgUp/PgDn switch tabs; Ctrl+S toggles the sidebar only when vertical; off gives them to the shell (keymap.ts; agentKeysPrefs.ts; e2e agentKeys).
-- [ ] Looking = active tab and window focused; a pointer move over an unfocused window counts as the owner back for 1000 ms (MOVE_LOOK_MS) and takes down the front tab's finished or failed mark at most every 500 ms; coming back is a look (useAgentIndicator.ts; e2e agentHooks).
-- [ ] Finished-while-away for non-hooked sessions: working stops with nobody looking gives done; hooked sessions get done only from hooks.
-- [ ] Done and failed clear on working again, looking, agent leaving; question clears on answer, agent leaving; tab closed drops every mark, timer and record; agent left drops working, question, failed, hooked and title records (useAgentIndicator.ts forget).
-- [ ] Per-tab state in one owner struct, forgotten on close; indicator rules live in flare-agent with no UI types (useAgentIndicator.ts; design rules).
-- [ ] Diagnostics kinds agent-hook, agent-title, agent-mark, agent-restore: first of a run at once, repeats counted and written on change, close or every 30 s (HOOK_FLUSH_MS), 60 s gap (HOOK_GAP_MS) starts a new line; title none only after 2000 ms; 40 lines per tab per 10 s then `dropped`; rule note within 1 s (WHY_MS); never typed, screen, title text or conversation (core/renderer/lib/agentDiag.ts; agentDiag.test; e2e agentDiag).
-- [ ] Settings rows for this area: see M7 Agents page.
+- [x] Close question rule and wording: see M3 Close flow (core/renderer/lib/agentClose.ts). (M6: a_tab_hosting_an_agent_asks_naming_it_and_working_for)
+- [x] Agent clock starts the first tick a session is seen working, forgotten when it stops, exits, closes or the agent leaves; humanFor rounds down: under 10 s "a few seconds", under 60 s "N seconds", under 60 min "N minutes", hours "N hour(s)" or "N hour(s) M minute(s)"; negative clamps 0; never-working is null (core/renderer/lib/agentClock.ts; agentClock.test). (M6: T7 clock tests, M3 human_for tests)
+- [x] Taskbar count: unique tabs carrying a question, failed or done (each if its switch is on and not working); "1 tab needs a look" / "N tabs need a look"; above 9 shows "9+"; zero or setting off clears (src/renderer/src/lib/taskbarBadge.ts attentionCount, badgeText; taskbarBadge.test). (M6: the_badge_counts_marked_tabs_and_clears, T14 badge tests)
+- [x] Badge drawn at physical size 16 logical px x scale (capped 4, nonsense reads 1), fill #25242c, white number, font 0.8x for one digit and 0.56x for two, nudged down 4%; an overlay only, never a window icon (taskbarBadge.ts badgePixels, drawBadge). (M6: T20 flare-win taskbar tests)
+- [x] Keep agent sessions open (default on): with an agent in the front tab Ctrl+D never reaches it; Ctrl+C is taken unless the agent works or holds a selection; never in a plain shell (keymap.ts 'agent-guard'; agentGuardPrefs.ts). (M6: keep_agent_sessions_open)
+- [x] Agent hotkeys (default on): Ctrl+PgUp/PgDn switch tabs; Ctrl+S toggles the sidebar only when vertical; off gives them to the shell (keymap.ts; agentKeysPrefs.ts; e2e agentKeys). (M6: agent_hotkeys)
+- [x] Looking = active tab and window focused; a pointer move over an unfocused window counts as the owner back for 1000 ms (MOVE_LOOK_MS) and takes down the front tab's finished or failed mark at most every 500 ms; coming back is a look (useAgentIndicator.ts; e2e agentHooks). (M6: a_pointer_move_over_an_unfocused_window_is_a_look)
+- [x] Finished-while-away for non-hooked sessions: working stops with nobody looking gives done; hooked sessions get done only from hooks. (M6: T17 indicator tests)
+- [x] Done and failed clear on working again, looking, agent leaving; question clears on answer, agent leaving; tab closed drops every mark, timer and record; agent left drops working, question, failed, hooked and title records (useAgentIndicator.ts forget). (M6: working_again_clears_done_and_failed, forget_drops_every_mark_record_and_timer)
+- [x] Per-tab state in one owner struct, forgotten on close; indicator rules live in flare-agent with no UI types (useAgentIndicator.ts; design rules). (M6: T17 Indicator tests; D1)
+- [x] Diagnostics kinds agent-hook, agent-title, agent-mark, agent-restore: first of a run at once, repeats counted and written on change, close or every 30 s (HOOK_FLUSH_MS), 60 s gap (HOOK_GAP_MS) starts a new line; title none only after 2000 ms; 40 lines per tab per 10 s then `dropped`; rule note within 1 s (WHY_MS); never typed, screen, title text or conversation (core/renderer/lib/agentDiag.ts; agentDiag.test; e2e agentDiag). (M6: T15 flare-diag agent_diag tests, the_log_has_the_marks_the_rules_and_no_text)
+- [ ] Settings rows for this area: see M7 Agents page. (M6: deferred to M7: the rows are M7's; M6 owns the keys and getters, D13)
 
 ## M7: Settings pages
 
@@ -1153,8 +1153,8 @@ only O17's artwork waits for the owner.
   the physical key.
 - O3 cursor-line carry: RESOLVED in M2: no cursor-line carry; vertical re-anchor, see features.md.
 - O4 Explorer verb: "Open in Flare" (both apps can be installed, so the label must say which).
-- O5 resume shells: parity, no new shells.
-- O6 tab id: `FLARE_TAB_ID` only; Sonara learns it in its own repo later (raised with the owner then).
+- O5 resume shells: parity, no new shells. M6: handled here; a warm shell is never adopted for a resume (`a_warm_shell_is_never_adopted_for_a_resume`), and the resume is only the startup command of a restored agent tab.
+- O6 tab id: `FLARE_TAB_ID` only; Sonara learns it in its own repo later (raised with the owner then). M6: handled here; Flare sets `FLARE_TAB_ID` and posts `host_tab` with it; Sonara reads `PRISM_TAB_ID` until it learns the new name (owner question 3 below).
 - O7 eyedropper: ported in M7 with a Win32 screen pick (parity); if it proves hard, it moves to M10.
 - O8 See-through sub: keep Prism Terminal's text verbatim (parity beats the copy rule here).
 - O9 About line: "Flare <version>. Made with Slint." plus the copyright line from LICENSE.
@@ -1244,3 +1244,9 @@ M4 planner decisions D1 to D16 (taken by the builder, for the owner to overrule;
 - D14 reference screenshots come from the installed Prism Terminal 0.58.0, driven by Playwright in a throwaway profile (Q3).
 - D15 no `regex` crate in `flare-theme`; the parsers are hand-written and tested against the 28 parse vectors.
 - D16 `edge_for` (the DWM border colour) lives in `flare-win::window_edge`, reading the step table from `flare-theme::edges`.
+
+M6 owner questions (none blocks M6; recorded by the M6 builder, 2026-10-17):
+- Q1 Tab-icon artwork: the OpenAI mark (Simple Icons 15, CC0) for Codex and the Clawd pixel art in `#d77757` for Claude ship in this private repo, named in `THIRD-PARTY-NOTICES.md` under Bundled artwork. Say if either must go.
+- Q2 The taskbar disc counts Finished, Question and Failed tabs exactly as Prism Terminal does, and is on by default. Confirm it stays on. No answer is recorded yet.
+- Q3 Sonara still reads `PRISM_TAB_ID` (O6). Until Sonara learns `FLARE_TAB_ID`, a Flare tab's question is not read aloud. Raise it in Sonara's repo when M6 ships.
+- The planner decisions D1 to D16 for the owner to overrule are in the M6 entry of `docs/features.md`.

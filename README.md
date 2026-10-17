@@ -48,7 +48,8 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `bytemuck`: casts glyph and vertex data to bytes for GPU upload.
 - `log`: the logging facade used across the crates.
 - `env_logger`: prints the log to the console when run from a terminal (`RUST_LOG`).
-- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box; M3 adds the named pipe and its DACL for the single-instance hand-off, the security identity checks, the clipboard, the shell open verb, DPI and the monitors for the window position; M4 adds the DWM backdrop and border calls and the Windows build number).
+- `windows-sys`: the Win32 calls Flare makes directly (console, process memory, threads, the startup error box; M3 adds the named pipe and its DACL for the single-instance hand-off, the security identity checks, the clipboard, the shell open verb, DPI and the monitors for the window position; M4 adds the DWM backdrop and border calls and the Windows build number; M6 adds `Wdk_System_Threading`, the native process snapshot with command lines that the agent poll reads, off the UI thread).
+- `windows` 0.62.2: the taskbar overlay badge (`ITaskbarList3`); already in the build graph through Slint's accessibility stack; M8 reuses it for GSMTC.
 - `alacritty_terminal`: terminal state, the escape-sequence parser, the grid, scrollback and reflow (owner decision, parity with Prism Terminal's xterm.js).
 - `portable-pty`: the ConPTY child process and its pipes, one pty per shell tab.
 - `regex`: the ported link and path finders (`find_links`, `find_paths`).

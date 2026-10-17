@@ -288,3 +288,92 @@ are added as milestones land.
   mouse reports, link opening and no held UI, the off-thread clipboard, opaque decorations in whole
   pixels). Rules 8 and 19 are amended with their native meaning. The plan's numbers 142 to 147 were
   taken by M2 and M3, and M4 used 148 to 153, so these moved to 154 to 159.
+
+## The agent indicator, hooks, marks and resume (M6), 2026-10-17
+
+- **Title first, hooks above it, scoring last.** An agent is recognised by the title it sets first, by
+  Claude Code's own hook signal above that, and only for an unhooked session by scoring its output.
+  Held by `a_claude_title_is_the_agent_present_ahead_of_the_poll_and_asks_a_look`,
+  `a_hooked_session_is_never_scored_and_its_screen_is_not_read_for_output` and
+  `a_poll_report_makes_the_agent_present_and_births_it`. (The plan records this order without a date.)
+- **Ring or Bar only (2026-10-12).** A tab's mark is a ring by default, or a bar along the tab foot.
+  `off`, `full` and the Powerline `prompt` style do not exist here, and a stored word `minimal` is
+  Bar, anything else Ring. Held by `the_stored_word_minimal_is_bar_everything_else_ring` and
+  `the_indicator_pick_turns_a_ring_row_into_a_run_bar`.
+- **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
+  cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
+  The front tab never gets a finished or failed mark while it is being looked at, but a question is
+  raised there. Held by `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
+  `each_attention_mark_is_behind_its_own_switch` and `working_outranks_question_outranks_failed_outranks_done`.
+- **Keep agent sessions open (2026-10-16).** With an agent in the front tab Ctrl+D never reaches it, and
+  Ctrl+C is taken unless the agent works or a selection is held. Never in a plain shell. Held by
+  `keep_agent_sessions_open`.
+- **The rainbow finish (2026-10-10).** A finished mark may flow through the seven rainbow stops, one tab
+  in eight seconds; reduced motion and a minimised window stop it. Held by
+  `the_rainbow_line_flows_one_tab_in_eight_seconds` and `animation_effects_off_stills_every_mark`.
+- **"Exact status from Claude Code" is on by default (2026-10-05).** The hooks that Claude Code runs
+  report working, question, finished and failed; `flare.term.agentHooks` turns them off, and only a
+  new shell sees the change. Held by `hooks_json_matches_the_table`, `hooks_json_has_25_entries` and
+  `hook_cmd_is_crlf_and_static`.
+- **The launch skeleton (2026-09-30).** A restoring agent tab shows the resume skeleton from the first
+  frame and the clear reaches the grid only, never the shell. The reveal waits for the agent's own title
+  (150 ms after it), or a key, an exit, a failed spawn, or 12 s. A resume is not new work. Held by
+  `the_first_frame_has_the_tabs_the_skeleton_and_the_ring`, `a_resume_is_not_new_work` and
+  `restored_tabs_carry_no_done_question_or_failed`.
+### Planner decisions D1 to D16
+
+These are the planner's decisions for the owner to overrule. Each is held by the tests named in the
+M6 plan's Tasks 2 to 35.
+
+- **D1** `flare-agent` holds no Win32 or UI types; the process snapshot, the overlay and the animation
+  switch are `flare-win`'s, passed in through traits and closures.
+- **D2** The indicator is one struct with injected time, replayable without a clock or a window
+  (`timeline_*`).
+- **D3** The poll runs on its own worker thread; an ask that arrives during a look waits in a shared set.
+- **D4** The process query is native (ToolHelp32 and the command lines of the live shells' descendants),
+  not PowerShell or WMI. The compact text listing and its five tests are dropped.
+- **D5** Mark motion is one clock, owned by Rust. It runs only while a mark moves, the window is not
+  minimised and Windows' animation effects are on (`the_clock_runs_only_while_something_moves`).
+- **D6** Ring and Bar only (see the owner's decision above); the other PT cells are dropped in the ledger.
+- **D7** The resume reveal splice lives in the terminal handle, the one place that sees the raw chunks.
+- **D8** The plugin ships in `crates/flare-agent/claude-plugin/` and is copied beside the exe. It is
+  handed to a shell as `CLAUDE_CODE_PLUGIN_DIRS` (`an_inherited_copy_of_our_plugin_is_dropped`).
+- **D9** The question widget is watched for every tab and posted to Sonara on a worker, to 127.0.0.1
+  only, with the token refused if it holds a control character (`only_loopback_is_ever_contacted`).
+- **D10** Diagnostics go through `DiagSink`; M9 implements it over `diag.jsonl`
+  (`diagnostics_get_the_four_kinds_and_no_text`).
+- **D11** The agent colours are M4's; the picks replace the theme's working, finished and question
+  colours, and failed is always the theme's.
+- **D12** The taskbar badge is a disc drawn by Flare as an overlay (`ITaskbarList3`), never a window
+  icon, at 16 logical px times the scale.
+- **D13** Settings rows are M7's; M6 owns the switch keys and getters only.
+- **D14** Codex has no hooks. It is found by the poll and its title dialect, and is resumable with
+  `codex resume --last`. Gemini, aider and other agents light the indicator and have nothing to resume.
+- **D15** The cd guard is kept uncalled, so a later decision can wire it with one call.
+- **D16** `hooks.json` is generated once and guarded forever (`hooks_json_matches_the_table`).
+
+### What the probe in Task 24 found
+
+The probe asked whether Slint's `@linear-gradient` takes dynamic stops, and whether the software
+renderer draws a gradient with eight stops. The code records the outcome in `ui/tabmark.slint`: the
+finished rainbow is 42 two-stop gradients (one per seventh of a 114 px tile), with the colours read
+through `root.stop(...)`. The eight-stop form drops spans in the software renderer; the two-stop form
+is exact in both renderers. So the image fallback was not needed. The scenes that draw the ribbon are
+in `ui_tests/marks.rs`.
+
+### The owner's questions (open)
+
+1. Tab-icon artwork: the OpenAI mark (Simple Icons 15, CC0) for Codex and the Clawd pixel art in
+   `#d77757` for Claude, both named in `THIRD-PARTY-NOTICES.md`. Confirm both may ship in a private repo.
+2. The taskbar disc counts Finished, Question and Failed tabs as Prism Terminal does, and is on by
+   default. Confirm it stays on. No answer is recorded yet.
+3. Sonara still reads `PRISM_TAB_ID` (decision O6). Flare posts `host_tab` with `FLARE_TAB_ID`, so a
+   Flare tab's question is not read aloud until Sonara learns the new name. Raise it in Sonara's repo.
+
+### Numbers for the M6 PR (measured 2026-10-17)
+
+- **Tests.** `cargo nextest run --workspace` (debug profile): 2502 passed, 6 skipped. Per crate: flare 707, flare-term 551, flare-agent 314 (new in M6: the indicator, hook state, poll, resume, plugin and scan tests), flare-theme 235, flare-settings 135, flare-win 136, flare-tabs 157, flare-render 127, flare-shells 103, flare-diag 24 (M6 adds `agent_diag`), material-spike 13. The M6 ledger's own columns give about 223 ported and 60 new tests; that is the planned split, not a per-test count.
+- **Hub drain.** 10,000 `Output` events for a hooked session through `AgentHub::on_host_events`: 80 microseconds, best of five, release.
+- **Process snapshot.** `flare_win::procs::snapshot_processes` with one root on this machine (609 processes): 9.0 milliseconds, best of five, release. The plan's 10 shells and 300 processes were not reproduced.
+- **First frame.** `flare --scene marks-ring --size 1000x640 --screenshot`, whole process from start to exit, five runs each: software median 274 ms (first run 526 ms), GPU median 652 ms. This includes process start, so it is not an in-process first-frame timer.
+- **Not measured in this run.** The idle CPU of the windowed app over 10 s (with a finished tab, and with a working tab), and the cold-restore timings of Task 32. Both need an interactive window and an agent tab, so they belong to the Task 36 review.

@@ -4326,7 +4326,7 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawn", |f| !f.sp.made().is_empty());
+        f.wait_made("C:\\c");
         assert!(env_of(&f.made_with("C:\\c")[0], "FLARE_RESUME_ID").is_none());
         assert!(!f.h.comp.get_skeleton_shown(), "no skeleton");
         let id = f.ids()[0].clone();
@@ -4343,7 +4343,7 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawn", |f| !f.sp.made().is_empty());
+        f.wait_made("C:\\c");
         let m = &f.made_with("C:\\c")[0];
         assert!(env_of(m, "FLARE_RESUME_ID").is_none());
         assert_eq!(m.spec().args, resume_pwsh().args, "plain args");
@@ -4361,7 +4361,7 @@ mod tests {
         });
         assert!(f.h.comp.get_skeleton_shown(), "from the first frame");
         f.start_restore_and_wait();
-        f.pump_until("the spawn", |f| !f.sp.made().is_empty());
+        f.wait_made("C:\\c");
         assert!(f.h.comp.get_skeleton_shown());
         assert!(!f.h.comp.get_skeleton_leaving());
         // The shell's own text comes first, then the agent paints.

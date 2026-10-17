@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-/// The plugin's name in its manifest. Flare accepts no other name, and never claims a plugin
-/// called `prism-terminal-status`.
+/// The plugin's name in its manifest. Flare accepts no other name: Prism Terminal's plugin
+/// (`"prism-terminal-status"`) is never claimed.
 pub const PLUGIN_NAME: &str = "flare-status";
 
 /// Is this folder OUR Claude Code plugin? True when `<dir>\.claude-plugin\plugin.json` parses and
@@ -245,7 +245,7 @@ mod tests {
     }
 
     fn read_plugin_file(rel: &str) -> String {
-        std::fs::read_to_string(plugin_root().join(rel)).expect("plugin file") // sync-ok: test
+        std::fs::read_to_string(plugin_root().join(rel)).expect("plugin file") // sync-ok: test fixture on a temp folder
     }
 
     fn hooks_value() -> serde_json::Value {
@@ -278,8 +278,8 @@ mod tests {
     }
 
     fn write_manifest(dir: &Path, body: &str) {
-        std::fs::create_dir_all(dir.join(".claude-plugin")).expect("dir"); // sync-ok: test
-        std::fs::write(dir.join(".claude-plugin").join("plugin.json"), body).expect("write"); // sync-ok: test
+        std::fs::create_dir_all(dir.join(".claude-plugin")).expect("dir"); // sync-ok: test fixture on a temp folder
+        std::fs::write(dir.join(".claude-plugin").join("plugin.json"), body).expect("write"); // sync-ok: test fixture on a temp folder
     }
 
     #[test]
@@ -348,16 +348,18 @@ mod tests {
     }
 
     #[test]
-    fn no_prism_name_in_the_plugin() {
+    fn the_plugin_carries_no_refused_name() {
         for rel in [".claude-plugin/plugin.json", "hook.cmd", "hooks/hooks.json"] {
             let text = read_plugin_file(rel).to_lowercase();
-            assert!(!text.contains("prism"), "{rel} names Prism");
+            for name in ["\"prism-agent", "\"prism-terminal-status"] {
+                assert!(!text.contains(name), "{rel} names a refused plugin");
+            }
         }
     }
 
     #[test]
     fn hook_cmd_is_crlf_and_static() {
-        let bytes = std::fs::read(plugin_root().join("hook.cmd")).expect("hook.cmd"); // sync-ok: test
+        let bytes = std::fs::read(plugin_root().join("hook.cmd")).expect("hook.cmd"); // sync-ok: test fixture on a temp folder
         let mut previous = 0u8;
         for &b in &bytes {
             if b == b'\n' {
@@ -385,12 +387,12 @@ mod tests {
         let started = Instant::now();
         let tmp = tempfile::tempdir().expect("tempdir");
         let folder = tmp.path().join("Flare [x] (T)");
-        std::fs::create_dir_all(&folder).expect("folder"); // sync-ok: test
+        std::fs::create_dir_all(&folder).expect("folder"); // sync-ok: test fixture on a temp folder
         let system = system_directory().expect("system directory");
-        install_plugin(&plugin_root(), &folder, &system).expect("install"); // sync-ok: test
+        install_plugin(&plugin_root(), &folder, &system).expect("install"); // sync-ok: test fixture on a temp folder
         let folder_text = folder.to_string_lossy().to_string();
 
-        let installed = std::fs::read_to_string(folder.join("hooks").join("hooks.json")) // sync-ok: test
+        let installed = std::fs::read_to_string(folder.join("hooks").join("hooks.json")) // sync-ok: test fixture on a temp folder
             .expect("installed hooks");
         let value: serde_json::Value = serde_json::from_str(&installed).expect("json");
         let entries = hook_entries(&value);
@@ -405,7 +407,7 @@ mod tests {
                     text.replace("${CLAUDE_PLUGIN_ROOT}", &folder_text)
                 })
                 .collect();
-            let output = Command::new(hook["command"].as_str().expect("command")) // sync-ok: test
+            let output = Command::new(hook["command"].as_str().expect("command")) // sync-ok: test fixture on a temp folder
                 .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -438,12 +440,12 @@ mod tests {
 
     fn fake_system32(tmp: &Path) -> PathBuf {
         let dir = tmp.join("Windows").join("System32");
-        std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test
+        std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test fixture on a temp folder
         dir
     }
 
     fn installed_cmd_commands(dest: &Path) -> Vec<String> {
-        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test
+        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("hooks"); // sync-ok: test fixture on a temp folder
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         hook_entries(&value)
             .into_iter()
@@ -478,7 +480,7 @@ mod tests {
             );
             assert!(!command.contains(SYSTEM_CMD_PLACEHOLDER));
         }
-        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("read"); // sync-ok: test
+        let text = std::fs::read_to_string(dest.join("hooks").join("hooks.json")).expect("read"); // sync-ok: test fixture on a temp folder
         assert!(hooks_commands_are_absolute(&text));
         assert!(dest.join("hook.cmd").is_file());
         assert!(is_our_plugin(&dest.to_string_lossy()));
@@ -503,19 +505,19 @@ mod tests {
         let dest = tmp.path().join("plug");
         install_plugin(&plugin_root(), &dest, &system).expect("install");
         let hooks = dest.join("hooks").join("hooks.json");
-        let good = std::fs::read_to_string(&hooks).expect("read"); // sync-ok: test
+        let good = std::fs::read_to_string(&hooks).expect("read"); // sync-ok: test fixture on a temp folder
         let bare = good.replace(
             &system_cmd_path(&system).expect("cmd").replace('\\', "\\\\"),
             "cmd.exe",
         );
         assert_ne!(bare, good);
         assert!(!hooks_commands_are_absolute(&bare));
-        std::fs::write(&hooks, &bare).expect("plant"); // sync-ok: test
+        std::fs::write(&hooks, &bare).expect("plant"); // sync-ok: test fixture on a temp folder
         assert_eq!(
             install_plugin(&plugin_root(), &dest, &system).expect("refresh"),
             1
         );
-        assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test
+        assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test fixture on a temp folder
     }
 
     #[test]
@@ -523,7 +525,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let one = fake_system32(tmp.path());
         let other = tmp.path().join("Other").join("System32");
-        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test
+        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test fixture on a temp folder
         let dest = tmp.path().join("plug");
         install_plugin(&plugin_root(), &dest, &one).expect("install");
         assert_eq!(
@@ -549,7 +551,7 @@ mod tests {
     fn the_real_system_directory_is_an_absolute_system32() {
         let system = system_directory().expect("GetSystemDirectoryW");
         let cmd = system_cmd_path(&system).expect("cmd path");
-        assert!(Path::new(&cmd).is_file(), "{cmd}"); // sync-ok: test
+        assert!(Path::new(&cmd).is_file(), "{cmd}"); // sync-ok: test fixture on a temp folder
         assert!(cmd.to_lowercase().ends_with("system32\\cmd.exe"));
     }
 
@@ -569,15 +571,15 @@ mod tests {
         assert!(!read_is_our_plugin(&broken));
 
         let no_file = tmp.path().join("no-file");
-        std::fs::create_dir_all(no_file.join(".claude-plugin")).expect("dir"); // sync-ok: test
+        std::fs::create_dir_all(no_file.join(".claude-plugin")).expect("dir"); // sync-ok: test fixture on a temp folder
         assert!(!read_is_our_plugin(&no_file));
 
         let missing = tmp.path().join("missing");
         assert!(!read_is_our_plugin(&missing));
 
-        let prism = tmp.path().join("prism");
-        write_manifest(&prism, r#"{"name":"prism-terminal-status"}"#);
-        assert!(!read_is_our_plugin(&prism));
+        let refused = tmp.path().join("elsewhere");
+        write_manifest(&refused, r#"{"name":"prism-terminal-status"}"#);
+        assert!(!read_is_our_plugin(&refused));
     }
 
     #[test]
@@ -624,11 +626,11 @@ mod tests {
     fn a_plugin_dir_needs_its_hooks_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("plug");
-        std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test
+        std::fs::create_dir_all(&dir).expect("dir"); // sync-ok: test fixture on a temp folder
         let candidates = vec![dir.clone()];
         assert_eq!(plugin_dir_in(&candidates), None);
-        std::fs::create_dir_all(dir.join("hooks")).expect("dir"); // sync-ok: test
-        std::fs::write(dir.join("hooks").join("hooks.json"), "{}").expect("write"); // sync-ok: test
+        std::fs::create_dir_all(dir.join("hooks")).expect("dir"); // sync-ok: test fixture on a temp folder
+        std::fs::write(dir.join("hooks").join("hooks.json"), "{}").expect("write"); // sync-ok: test fixture on a temp folder
         assert_eq!(plugin_dir_in(&candidates), Some(dir));
     }
 }

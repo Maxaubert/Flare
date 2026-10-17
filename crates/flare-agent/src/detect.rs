@@ -118,10 +118,10 @@ mod tests {
     #[test]
     fn does_not_match_a_dev_folder_named_claude() {
         assert!(!looks_like_agent(
-            r"node C:\Users\Admin\Documents\Claude\Github\Prism\out\main\index.js"
+            r"node C:\Users\Admin\Documents\Claude\Github\Other\out\main\index.js"
         ));
         assert!(!looks_like_agent(
-            r"vitest run C:\Users\Admin\Documents\Claude\Github\Prism"
+            r"vitest run C:\Users\Admin\Documents\Claude\Github\Other"
         ));
     }
 

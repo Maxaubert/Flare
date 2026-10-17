@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn font_sizes_follow_prism_terminals() {
+    fn font_sizes_follow_the_ported_badge() {
         assert_eq!(font_px(16, 1), 13);
         assert_eq!(font_px(36, 1), 29);
         assert_eq!(font_px(36, 2), 20);

@@ -236,6 +236,7 @@ impl PollWorker {
                 loop {
                     let due = soon.map_or(next_tick, |s| s.min(next_tick));
                     let wait = due.saturating_duration_since(Instant::now());
+                    // sync-ok: the poll worker thread waits here, never the UI thread
                     match rx.recv_timeout(wait) {
                         Ok(PollCmd::Look) => look(&mut poll, true),
                         Ok(PollCmd::Soon(ms)) => {

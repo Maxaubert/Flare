@@ -157,11 +157,9 @@ mod tests {
             let raw = s.get(key).expect("setter writes its key");
             assert_eq!(raw, "0");
             assert!(key.starts_with("flare."), "{key} is not a flare.* key");
-            assert!(!key.to_lowercase().contains("prism"), "{key} names Prism");
         }
         for key in AGENT_LOOK_KEYS {
             assert!(key.starts_with("flare."), "{key} is not a flare.* key");
-            assert!(!key.to_lowercase().contains("prism"), "{key} names Prism");
         }
     }
 

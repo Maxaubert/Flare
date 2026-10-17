@@ -1,5 +1,5 @@
-//! The tab agent icon: which icon a tab wears and its artwork (Task 13). Ported from Prism
-//! Terminal's `agentIcon.ts`. The artwork is data; the drawing is Slint's (Task 24).
+//! The tab agent icon: which icon a tab wears and its artwork (Task 13). Ported from Prism Terminal's
+//! `agentIcon.ts`. The artwork is data; the drawing is Slint's (Task 24).
 
 use crate::kinds::DetectedAgent;
 
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn the_glyph_data_is_what_prism_terminal_ships() {
+    fn the_glyph_data_is_the_ported_artwork() {
         assert_eq!(OPENAI_PATH.len(), 1460);
         assert!(OPENAI_PATH.starts_with("M22.2819 9.8211a5.98"));
         assert!(OPENAI_PATH.ends_with(".4997-2.6067-1.4997Z"));
