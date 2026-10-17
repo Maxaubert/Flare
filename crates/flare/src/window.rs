@@ -8,8 +8,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
@@ -27,7 +27,7 @@ use flare_win::monitors::work_areas;
 use flare_win::pick::{ParentWindow, PickOptions, pick_folder};
 use flare_win::session_end::SessionEndWatch;
 use flare_win::shell_open;
-use flare_win::single_instance::{InstanceGuard, InstanceNames, serve};
+use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServer, serve};
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
@@ -57,13 +57,76 @@ const SAVE_DELAY: Duration = Duration::from_millis(400);
 /// The bar's height in css pixels (`Theme.bar-height`).
 const BAR_CSS: f64 = 36.0;
 
-/// The first instance's claim on the profile: the lock, kept for the whole run, and the names the
-/// hand-off server listens on.
+/// The first instance's claim on the profile: the lock, kept for the whole run, and its
+/// hand-off server.
 pub struct Instance {
     pub profile: Profile,
-    pub names: InstanceNames,
+    /// The hand-off server, started by `main` right after the lock, BEFORE the backend and the
+    /// window: a second launch that starts while this one is still creating its window must
+    /// find the pipe within its wait. Declared before `_guard`, so it stops first.
+    pub server: Option<PipeServer>,
+    /// Where the server's hand-offs wait until the controller exists.
+    pub sink: HandoffSink,
     /// Held only so the lock lasts as long as the run.
     pub _guard: Option<InstanceGuard>,
+}
+
+impl Instance {
+    /// Starts the hand-off server for `names`; a failure is logged and the run goes on without it.
+    pub fn start(profile: Profile, names: InstanceNames, guard: Option<InstanceGuard>) -> Self {
+        let sink = HandoffSink::default();
+        let server = match serve(&names, {
+            let sink = sink.clone();
+            move |h| sink.deliver(h)
+        }) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                log::warn!("the hand-off server did not start: {e}");
+                None
+            }
+        };
+        Self {
+            profile,
+            server,
+            sink,
+            _guard: guard,
+        }
+    }
+}
+
+/// Hand-offs that arrive before the controller exists are kept here; once attached, each goes
+/// straight to `post` (in arrival order: both paths post under the lock).
+#[derive(Clone, Default)]
+pub struct HandoffSink(Arc<Mutex<SinkState>>);
+
+#[derive(Default)]
+struct SinkState {
+    early: Vec<Handoff>,
+    post: Option<Post>,
+}
+
+impl HandoffSink {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SinkState> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The pipe thread's callback.
+    pub fn deliver(&self, h: Handoff) {
+        let mut s = self.lock();
+        match &s.post {
+            Some(post) => post(UiMsg::Handoff(h)),
+            None => s.early.push(h),
+        }
+    }
+
+    /// The controller is ready: what came early is posted now, the rest as it arrives.
+    pub fn attach(&self, post: Post) {
+        let mut s = self.lock();
+        for h in std::mem::take(&mut s.early) {
+            post(UiMsg::Handoff(h));
+        }
+        s.post = Some(post);
+    }
 }
 
 /// Where the window opens, made safe.
@@ -192,20 +255,31 @@ fn make_post() -> Post {
             if is_wake {
                 flag.store(false, Ordering::SeqCst);
             }
-            let target = APP_CTL.with(|cell| cell.borrow().clone());
-            // A message after the window closed is dropped.
-            let Some((ctl, weak)) = target else { return };
-            if weak.upgrade().is_none() {
-                return;
-            }
-            if let Ok(mut c) = ctl.try_borrow_mut() {
-                c.on_msg(msg);
-            }
+            deliver_on_ui(msg);
         });
         if queued.is_err() {
             log::debug!("post: event loop closed");
         }
     })
+}
+
+/// On the UI thread: hands `msg` to the controller. A message after the window closed is
+/// dropped; one that finds the controller busy (a re-entrant moment) goes to the back of the
+/// queue instead of being lost (a lost `RestoreDone` would leave placeholders forever).
+fn deliver_on_ui(msg: UiMsg) {
+    let target = APP_CTL.with(|cell| cell.borrow().clone());
+    let Some((ctl, weak)) = target else { return };
+    if weak.upgrade().is_none() {
+        return;
+    }
+    match ctl.try_borrow_mut() {
+        Ok(mut c) => c.on_msg(msg),
+        Err(_) => {
+            if slint::invoke_from_event_loop(move || deliver_on_ui(msg)).is_err() {
+                log::debug!("post: event loop closed");
+            }
+        }
+    }
 }
 
 /// The window's HWND, when it has one.
@@ -389,7 +463,6 @@ pub fn run_window(
     // ---- the controller -----------------------------------------------------------------------
     let front: FrontCell = Rc::new(RefCell::new(None));
     let mut ctl: Option<CtlRc> = None;
-    let mut serve_guard = None;
     let mut session_end = None;
     let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
@@ -508,17 +581,9 @@ pub fn run_window(
         };
         let rc = AppCtl::new(&app, deps);
         APP_CTL.with(|cell| *cell.borrow_mut() = Some((rc.clone(), app.as_weak())));
-        // The second launch's folders arrive on the pipe thread and hop onto the event loop.
-        serve_guard = match serve(&inst.names, {
-            let post = Arc::clone(&post);
-            move |h| post(UiMsg::Handoff(h))
-        }) {
-            Ok(s) => Some(s),
-            Err(e) => {
-                log::warn!("the hand-off server did not start: {e}");
-                None
-            }
-        };
+        // The second launch's folders arrive on the pipe thread (running since main took the
+        // lock) and hop onto the event loop; any that came while the window was being made go now.
+        inst.sink.attach(Arc::clone(&post));
         // A logoff or shutdown flushes both stores synchronously (the OS ends us right after).
         session_end = match SessionEndWatch::start({
             let tabs = Arc::clone(&tabs_store);
@@ -683,10 +748,12 @@ pub fn run_window(
     let result = app.run();
 
     // After run(): the end of life once more (idempotent), so no path leaves a shell behind.
+    // Never through on_close_requested: a working agent would ask again with no window left to
+    // answer it, and the shells would outlive the app.
     if let Some(rc) = &ctl
         && let Ok(mut c) = rc.try_borrow_mut()
     {
-        let _ = c.on_close_requested();
+        c.end();
     }
     if let Some((tabs, window, prefs)) = &stores {
         window.flush();
@@ -694,7 +761,8 @@ pub fn run_window(
         prefs.flush();
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
-    if let Some(s) = serve_guard {
+    let mut instance = instance;
+    if let Some(s) = instance.as_mut().and_then(|i| i.server.take()) {
         s.stop();
     }
     if let Some(w) = session_end {
@@ -715,6 +783,33 @@ fn apply_initial(app: &AppWindow, init: &InitialWindow) {
     ));
     if let Some((x, y)) = init.pos {
         window.set_position(slint::PhysicalPosition::new(x, y));
+    }
+}
+
+/// How long after the window is made a scale change may still re-apply the saved bounds.
+const REAPPLY_WINDOW: Duration = Duration::from_secs(3);
+
+/// The saved bounds, re-applied ONCE on a scale change at startup (the saved scale may differ
+/// from the monitor the window opens on). Later, a scale change means the user moved the window
+/// to another monitor, and snapping it back to the saved spot would be wrong: so the chance
+/// ends at the first key or click, or after `REAPPLY_WINDOW`.
+struct Reapply<T> {
+    value: Option<T>,
+    since: Instant,
+}
+
+impl<T> Reapply<T> {
+    fn new(value: Option<T>, since: Instant) -> Self {
+        Self { value, since }
+    }
+
+    fn user_acted(&mut self) {
+        self.value = None;
+    }
+
+    fn take(&mut self, now: Instant) -> Option<T> {
+        let v = self.value.take()?;
+        (now.saturating_duration_since(self.since) <= REAPPLY_WINDOW).then_some(v)
     }
 }
 
@@ -740,7 +835,10 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
     let accum = RefCell::new(WheelAccum::new());
     // Codes whose press the app consumed: their release must not reach the shell either.
     let consumed: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-    let reapply = Cell::new(initial.filter(|i| !i.maximise));
+    let reapply = RefCell::new(Reapply::new(
+        initial.filter(|i| !i.maximise),
+        Instant::now(),
+    ));
     let weak = app.as_weak();
 
     // While the pointer is OUTSIDE the window and the sidebar is collapsed, the cursor is read from
@@ -839,6 +937,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 state: ElementState::Pressed,
                 ..
             } => {
+                reapply.borrow_mut().user_acted();
                 with_ctl(&mut |c| c.on_pointer_down());
                 EventResult::Propagate
             }
@@ -874,7 +973,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The saved scale may differ from the monitor the window opened on: set the
                 // saved logical size and physical position once more at the real scale.
-                if let Some(init) = reapply.take() {
+                if let Some(init) = reapply.borrow_mut().take(Instant::now()) {
                     window.set_size(slint::LogicalSize::new(
                         init.logical_size.0 as f32,
                         init.logical_size.1 as f32,
@@ -892,6 +991,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 is_synthetic: false,
                 ..
             } => {
+                reapply.borrow_mut().user_acted();
                 let ev = key_event_from_parts(
                     event.state == ElementState::Pressed,
                     &event.physical_key,
@@ -997,6 +1097,47 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn h(cwd: &str) -> Handoff {
+        Handoff {
+            cwd: cwd.to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn a_handoff_before_the_controller_waits_and_arrives_in_order() {
+        let sink = HandoffSink::default();
+        sink.deliver(h("C:\\one"));
+        sink.deliver(h("C:\\two"));
+        let got: Arc<Mutex<Vec<String>>> = Arc::default();
+        let post: Post = {
+            let got = Arc::clone(&got);
+            Arc::new(move |m| {
+                if let UiMsg::Handoff(x) = m {
+                    got.lock().unwrap().push(x.cwd);
+                }
+            })
+        };
+        assert!(got.lock().unwrap().is_empty());
+        sink.attach(post);
+        sink.deliver(h("C:\\three"));
+        assert_eq!(*got.lock().unwrap(), ["C:\\one", "C:\\two", "C:\\three"]);
+    }
+
+    #[test]
+    fn the_saved_bounds_are_reapplied_only_at_startup() {
+        let t0 = Instant::now();
+        let mut r = Reapply::new(Some(5), t0);
+        // A user action ends the startup window: a later monitor move must not snap back.
+        r.user_acted();
+        assert_eq!(r.take(t0), None);
+        let mut r = Reapply::new(Some(5), t0);
+        assert_eq!(r.take(t0 + REAPPLY_WINDOW + Duration::from_millis(1)), None);
+        let mut r = Reapply::new(Some(5), t0);
+        assert_eq!(r.take(t0 + Duration::from_millis(100)), Some(5));
+        assert_eq!(r.take(t0 + Duration::from_millis(200)), None);
+    }
     use flare_win::window_state::parse_window_state;
 
     const NO_AREAS: &[Area] = &[];

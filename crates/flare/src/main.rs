@@ -148,11 +148,7 @@ fn main() {
             Ok(startup::Launch::First {
                 guard,
                 server_names,
-            }) => Some(window::Instance {
-                profile,
-                names: server_names,
-                _guard: guard,
-            }),
+            }) => Some(window::Instance::start(profile, server_names, guard)),
             Err(message) => {
                 attach_parent_console();
                 eprintln!("flare: {message}");

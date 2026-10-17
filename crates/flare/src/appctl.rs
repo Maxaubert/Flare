@@ -1378,6 +1378,11 @@ impl AppCtl {
         }
     }
 
+    /// After the event loop: the end of life without asking (idempotent).
+    pub fn end(&mut self) {
+        self.finish();
+    }
+
     /// The end of life: both state files flushed, then every shell killed and waited for.
     fn finish(&mut self) {
         if self.ended {
@@ -1449,6 +1454,11 @@ impl AppCtl {
 
     /// The one entry for worker answers.
     pub fn on_msg(&mut self, m: UiMsg) {
+        // After the end of life nothing may raise the window or start a shell: a hand-off, a
+        // picked folder or a late restore answer would spawn a shell the quit never waits for.
+        if self.ended {
+            return;
+        }
         match m {
             UiMsg::RestoreDone(plan) => self.restored(plan),
             UiMsg::Picked(Some(dir)) => {
@@ -2125,6 +2135,28 @@ mod tests {
         assert_eq!(f.log.borrow().raised, 1);
         f.ctl.borrow_mut().handoff(h());
         f.pump_until("a second tab", |f| f.rows() == 2);
+    }
+
+    #[test]
+    fn nothing_opens_or_raises_after_the_end_of_life() {
+        let f = fx_with(Opts {
+            real_fs: true,
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.ctl.borrow_mut().end();
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        f.ctl.borrow_mut().on_msg(UiMsg::Handoff(Handoff {
+            cwd: dir.clone(),
+            args: vec!["flare.exe".to_string(), dir.clone()],
+        }));
+        f.ctl.borrow_mut().on_msg(UiMsg::Folders(vec![dir.clone()]));
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Picked(Some(PathBuf::from(&dir))));
+        f.ctl.borrow_mut().on_msg(UiMsg::FolderResolved(dir));
+        assert_eq!(f.rows(), 0);
+        assert_eq!(f.log.borrow().raised, 0);
     }
 
     #[test]
