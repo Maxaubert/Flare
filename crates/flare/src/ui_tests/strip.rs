@@ -384,6 +384,61 @@ fn the_more_button_shows_the_count_and_up_to_four_dots() {
 }
 
 #[test]
+fn the_more_buttons_chevron_sits_beside_the_count_on_its_middle() {
+    // Visual review (Task 33): the chevron sat at the button's top-right corner, 12 px past
+    // the count. PT: "+N", 6 px, an 11 px chevron, all centred on the button's middle.
+    for scale in [1.0_f32, 1.5, 2.25] {
+        let (rows, _) = rows_for(3, 1, scale, 1000.0);
+        let geom = StripGeom {
+            more_x: (400.0 * scale).round() as i32,
+            more_w: (72.0 * scale).round() as i32,
+            plus_x: (476.0 * scale).round() as i32,
+            plus_w: (28.0 * scale).round() as i32,
+            more_count: 7,
+            dots: ModelRc::default(),
+        };
+        let r = rig(scale, 1000, 0.0, rows, geom);
+        let f = r.h.render();
+        let (x0, x1) = (r.h.phys(400.0), r.h.phys(472.0));
+        // Ink columns in the button, grouped into the count and the chevron.
+        let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
+        let mut last: Option<u32> = None;
+        for x in x0..x1 {
+            let Some((_, b, _, d)) = f.bbox_where(x, 0, x + 1, f.h, bright) else {
+                continue;
+            };
+            match (last, runs.last_mut()) {
+                (Some(l), Some(run)) if x - l <= r.h.phys(4.0) => {
+                    run.1 = run.1.min(b);
+                    run.2 = x;
+                    run.3 = run.3.max(d);
+                }
+                _ => runs.push((x, b, x, d)),
+            }
+            last = Some(x);
+        }
+        assert_eq!(
+            runs.len(),
+            2,
+            "scale {scale}: the count and the chevron: {runs:?}"
+        );
+        let (count, chevron) = (runs[0], runs[1]);
+        let mid2 = i64::from(r.h.phys(18.0)) * 2;
+        let chev2 = i64::from(chevron.1 + chevron.3 + 1);
+        assert!(
+            (chev2 - mid2).abs() <= 2 * i64::from(r.h.phys(1.5)),
+            "scale {scale}: the chevron's middle is {} device px off the button's",
+            (chev2 - mid2) / 2
+        );
+        let gap = chevron.0 - count.2;
+        assert!(
+            gap <= r.h.phys(13.0),
+            "scale {scale}: {gap} device px between the count and the chevron"
+        );
+    }
+}
+
+#[test]
 fn a_carried_tab_follows_the_pointer_and_neighbours_slide() {
     let (mut rows, geom) = rows_for(3, 2, 1.0, 1000.0);
     let r = {

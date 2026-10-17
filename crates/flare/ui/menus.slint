@@ -17,7 +17,17 @@ component MenuItem inherits Rectangle {
         enabled: !root.item.disabled;
         clicked => { root.picked(root.index); }
     }
-    HorizontalLayout {
+    // What the row's layout wants, so the panel can grow to it (a Rectangle does not pass
+    // its child layout's width on by itself).
+    min-width: lay.min-width;
+    // The label as it would be drawn whole: never shown, only measured.
+    probe := Text {
+        visible: false;
+        text: root.item.label;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+    }
+    lay := HorizontalLayout {
         padding-left: 11px;
         padding-right: 11px;
         spacing: 8px;
@@ -44,6 +54,9 @@ component MenuItem inherits Rectangle {
             font-size: 12px;
             color: ta.has-hover && !root.item.disabled ? Theme.text : Theme.text-soft;
             overflow: elide;
+            // An eliding Text asks for no width, so the label claims what the unelided probe
+            // measures (up to 320 px, past which it elides) and the panel grows to it.
+            min-width: min(probe.preferred-width, 320px);
         }
         Rectangle { min-width: 32px; horizontal-stretch: 1; }
         if root.item.hint != "": Text {
@@ -115,10 +128,13 @@ export component ContextMenu inherits Rectangle {
     changed open => { if root.open { fs.focus(); } }
 
     panel := Rectangle {
-        width: max(156px, col.min-width) + 2 * Px.hair();
+        // At least 156 and as wide as its rows want (PT's min-w-[156px] on a fit-content
+        // panel): a label never gives way to its key hint. Only the window's edge caps it.
+        // Snapped, as the text's width is any fraction: the border stays on whole pixels.
+        width: Px.snap(min(max(156px, col.preferred-width) + 2 * Px.hair(), root.width - 16px));
         height: col.preferred-height + 2 * Px.hair();
-        x: min(root.at-x, root.width - self.width - 8px);
-        y: min(root.at-y, root.height - self.height - 8px);
+        x: Px.snap(min(root.at-x, root.width - self.width - 8px));
+        y: Px.snap(min(root.at-y, root.height - self.height - 8px));
         background: Theme.side-flat;
         border-radius: 2px;
         border-width: Px.hair();

@@ -318,3 +318,53 @@ fn the_tip_is_pointer_transparent_and_hidden_when_empty() {
     h.click(30.0, 30.0);
     assert_eq!(h.comp.get_back_clicks(), 1);
 }
+
+#[test]
+fn a_label_is_never_cut_for_its_key_hint() {
+    // Visual review (Task 33): the tab menu read "Clo..." beside Ctrl+W. PT's panel is at
+    // least 156 wide and grows to its rows; the label never gives way to the hint.
+    let labelled = |hint: &str| MenuRow {
+        icon: "M7 7l10 10M17 7L7 17".into(),
+        hint: hint.into(),
+        ..row("Copy folder path")
+    };
+    for scale in [1.0_f32, 1.5, 2.25] {
+        let h = harness(scale);
+        // Widths are read after a paint: the rows' repeater is laid out by it.
+        open_menu(&h, vec![labelled("")], 20.0, 20.0);
+        let bare = h.render();
+        let bare_w = h.comp.get_panel_w();
+        open_menu(&h, vec![labelled("Ctrl+Shift+C")], 20.0, 20.0);
+        let hinted = h.render();
+        let hinted_w = h.comp.get_panel_w();
+        assert!(
+            bare_w > 160.0,
+            "scale {scale}: the label alone fits in {bare_w}"
+        );
+        // A panel that grows to its text still ends on a whole device pixel (crisp border).
+        for (what, w) in [("bare", bare_w), ("hinted", hinted_w)] {
+            let dev = w * scale;
+            assert!(
+                (dev - dev.round()).abs() < 0.01,
+                "scale {scale}: the {what} panel is {dev} device px wide"
+            );
+        }
+        assert!(
+            hinted_w >= bare_w + 40.0,
+            "scale {scale}: the hint did not widen the panel ({bare_w} to {hinted_w})"
+        );
+        // The label is drawn the same, pixel for pixel, with the hint beside it.
+        let (px, py) = (h.comp.get_panel_x(), h.comp.get_panel_y());
+        let (x0, x1) = (h.phys(px + 2.0), h.phys(px + bare_w - 34.0));
+        let (y0, y1) = (h.phys(py + 2.0), h.phys(py + 28.0));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                assert_eq!(
+                    bare.px(x, y),
+                    hinted.px(x, y),
+                    "scale {scale}: the label differs at ({x}, {y})"
+                );
+            }
+        }
+    }
+}

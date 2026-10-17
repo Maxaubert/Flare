@@ -312,3 +312,93 @@ fn a_long_place_name_elides_and_never_pushes_pinned_out() {
         "the pinned tag is pushed past the row"
     );
 }
+
+/// The ink in a device-pixel box, by column, grouped into runs that `gap` empty columns
+/// split: each run's (x0, y0, x1, y1).
+fn ink_runs(
+    f: &Frame,
+    (x0, y0, x1, y1): (u32, u32, u32, u32),
+    gap: u32,
+) -> Vec<(u32, u32, u32, u32)> {
+    let ink = |p: [u8; 4]| !Frame::near(p, GROUND, 12);
+    let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
+    let mut last: Option<u32> = None;
+    for x in x0..x1 {
+        let Some((_, b, _, d)) = f.bbox_where(x, y0, x + 1, y1, ink) else {
+            continue;
+        };
+        match (last, runs.last_mut()) {
+            (Some(l), Some(r)) if x - l <= gap => {
+                r.1 = r.1.min(b);
+                r.2 = x;
+                r.3 = r.3.max(d);
+            }
+            _ => runs.push((x, b, x, d)),
+        }
+        last = Some(x);
+    }
+    runs
+}
+
+#[test]
+fn every_row_starts_at_the_left_with_its_glyph_centred_on_the_row() {
+    // Visual review (Task 33): each row was centred on its own and its glyph sat at the
+    // row's top. PT lays every row out from the left: the glyph 10 px in, centred on the
+    // row, the name 12 px after it, so the glyphs make one column.
+    for s in [1.0_f32, 1.5, 2.25] {
+        let h = screen(
+            s,
+            vec![
+                place("C:\\a\\api", true),
+                place("C:\\a\\a-much-longer-name", false),
+            ],
+        );
+        let new_y = h.comp.get_new_y();
+        let f = h.render();
+        let left = (W as f32 - NAV_W) / 2.0;
+        let tops = [
+            new_y,
+            place_top(new_y, 0),
+            place_top(new_y, 1),
+            settings_top(new_y, 2),
+        ];
+        for (i, top) in tops.iter().enumerate() {
+            let boxed = (
+                h.phys(left),
+                h.phys(*top),
+                h.phys(left + NAV_W),
+                h.phys(top + ROW_H),
+            );
+            let runs = ink_runs(&f, boxed, h.phys(5.0));
+            let (gx0, gy0, gx1, gy1) = *runs.first().expect("the row draws a glyph");
+            assert!(
+                gx0 + 1 >= h.phys(left + 10.0) && gx1 <= h.phys(left + 26.0) + 1,
+                "scale {s} row {i}: the glyph spans {gx0}..{gx1}, not inside {}..{}",
+                h.phys(left + 10.0),
+                h.phys(left + 26.0)
+            );
+            let mid2 = i64::from(gy0 + gy1 + 1);
+            let row2 = i64::from(h.phys(*top) + h.phys(top + ROW_H));
+            assert!(
+                (mid2 - row2).abs() <= 2 * i64::from(h.phys(1.5)),
+                "scale {s} row {i}: the glyph's centre is off the row's by {} device px",
+                (mid2 - row2) / 2
+            );
+            let (nx0, ..) = runs.get(1).copied().expect("the row draws a name");
+            let want = i64::from(h.phys(left + 38.0));
+            assert!(
+                (i64::from(nx0) - want).abs() <= i64::from(h.phys(2.0)),
+                "scale {s} row {i}: the name starts at {nx0}, want about {want}"
+            );
+            // The key (New, Settings) and the Pinned tag end at the row's right padding.
+            if i != 2 {
+                let (.., rx1, _) = *runs.last().expect("the row draws its end");
+                let want = i64::from(h.phys(left + NAV_W - 10.0));
+                assert!(
+                    (i64::from(rx1) - want).abs() <= i64::from(h.phys(2.0)),
+                    "scale {s} row {i}: the row's end text ends at {rx1}, want about {want}"
+                );
+            }
+        }
+    }
+}

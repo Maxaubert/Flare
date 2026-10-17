@@ -623,7 +623,8 @@ impl Scene {
             "strip-list" => {
                 let (x, y) = self.more_centre();
                 self.click((x, y), PointerEventButton::Left);
-                self.type_text("api");
+                // "2" keeps the hidden Tab20..Tab29: the list shows rows, not its empty line.
+                self.type_text("2");
             }
             "sidebar-find" => {
                 self.app.invoke_focus_sidebar_find();

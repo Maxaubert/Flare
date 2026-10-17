@@ -504,6 +504,18 @@ fn new_terminal_from_the_start_screen_opens_one_tab_in_the_home_folder() {
 }
 
 #[test]
+fn the_start_screen_footer_says_version_in_words() {
+    // Visual review (Task 33): the footer read "v0.1.0". PT and the plan: "Version 0.1.0".
+    let f = Fx::new(Opts::default());
+    f.restore();
+    assert_eq!(f.h.comp.get_front_kind(), 2);
+    assert_eq!(
+        f.h.comp.get_version_text().as_str(),
+        format!("Version {}", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn every_tab_is_one_width_and_picking_moves_no_tab() {
     for s in [1.0_f32, 1.5, 2.25] {
         let f = Fx::new(

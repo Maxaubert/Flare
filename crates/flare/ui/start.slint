@@ -29,19 +29,25 @@ component StartRow inherits Rectangle {
         padding-left: 10px;
         padding-right: 10px;
         spacing: 12px;
-        alignment: center;
-        Path {
+        // From the left, as PT's flex row: the glyphs make one column down the nav. The glyph
+        // sits in a 16 px column, centred on the row (a layout puts a fixed-height child at
+        // its top).
+        Rectangle {
             width: 16px;
-            height: 16px;
-            vertical-stretch: 0;
-            viewbox-width: 24;
-            viewbox-height: 24;
-            commands: root.glyph;
-            fill: transparent;
-            stroke: ta.has-hover ? Theme.accent-hi : Theme.icon;
-            stroke-width: 1.6 * 16px / 24;
-            stroke-line-cap: round;
-            stroke-line-join: round;
+            Path {
+                x: 0;
+                y: Px.snap((parent.height - 16px) / 2);
+                width: 16px;
+                height: 16px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: root.glyph;
+                fill: transparent;
+                stroke: ta.has-hover ? Theme.accent-hi : Theme.icon;
+                stroke-width: 1.6 * 16px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
         }
         Text {
             text: root.name;
@@ -53,7 +59,8 @@ component StartRow inherits Rectangle {
             // The name does not shrink, but a long one is capped at 60% of the row so the
             // "Pinned" tag and the near end always stay on screen.
             horizontal-stretch: root.near == "" ? 1 : 0;
-            max-width: root.width * 0.6;
+            // With no near end the name takes the spare width, so the key sits at the right.
+            max-width: root.near == "" ? root.width : root.width * 0.6;
         }
         if root.near != "" : Text {
             text: root.near;
