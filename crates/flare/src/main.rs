@@ -1,5 +1,6 @@
 mod backend;
 mod config;
+mod headless;
 mod host;
 mod memory;
 mod window;
@@ -40,10 +41,16 @@ fn main() {
     }
 
     if args.screenshot.is_some() || args.bench_frames.is_some() {
-        // Task 17 adds `headless::run(args, start)` here: it exits 2 when its error starts
-        // with "GPU unavailable", else 1.
-        eprintln!("flare: --screenshot and --bench-frames are not available yet");
-        std::process::exit(1);
+        if let Err(message) = headless::run(args, start) {
+            eprintln!("flare: {message}");
+            let code = if message.starts_with("GPU unavailable") {
+                2
+            } else {
+                1
+            };
+            std::process::exit(code);
+        }
+        std::process::exit(0);
     }
 
     let outcome = match backend::select_backend(args.renderer) {

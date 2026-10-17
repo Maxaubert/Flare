@@ -5,11 +5,11 @@ use std::time::Instant;
 use flare_render::color::Palette;
 use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::glyph::GlyphSource;
-use flare_render::gpu::GpuPainter;
+use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::Grid;
 use flare_render::metrics::{cell_metrics, grid_dims};
 use flare_render::sample::sample_grid;
-use flare_render::scene::build_scene;
+use flare_render::scene::{Scene, build_scene};
 use flare_render::stats::FrameStats;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -25,6 +25,8 @@ pub struct GridHost {
     glyphs: Box<dyn GlyphSource>,
     painter: GridPainter,
     gpu: Option<GpuPainter>,
+    /// The device and queue behind `gpu`, kept so `render_rgba` can read the texture back.
+    readback: Option<(wgpu::Device, wgpu::Queue)>,
     cpu_image: RgbaImage,
     size: (u32, u32),
     scale: f32,
@@ -40,6 +42,7 @@ impl GridHost {
             glyphs,
             painter,
             gpu: None,
+            readback: None,
             cpu_image: RgbaImage::new(0, 0),
             size: (0, 0),
             scale: 1.0,
@@ -50,6 +53,7 @@ impl GridHost {
 
     pub fn attach_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.gpu = Some(GpuPainter::new(device, queue));
+        self.readback = Some((device.clone(), queue.clone()));
         self.dirty = true;
     }
 
@@ -58,6 +62,7 @@ impl GridHost {
         if self.gpu.take().is_some() {
             self.dirty = true;
         }
+        self.readback = None;
         self.painter = GridPainter::Cpu;
     }
 
@@ -96,17 +101,22 @@ impl GridHost {
         self.dirty
     }
 
-    /// Lays out and paints one frame with the active painter. None for a 0x0 size.
-    pub fn render(&mut self) -> Option<Image> {
+    /// Lays out the sample grid for the current size and scale. None for a 0x0 size.
+    fn layout(&self) -> Option<Scene> {
         let (w, h) = self.size;
         if w == 0 || h == 0 {
             return None;
         }
-        let start = Instant::now();
         let metrics = cell_metrics(&self.glyphs.font_units(), self.scale);
         let (cols, rows) = grid_dims(w, h, &metrics);
         let grid = (self.grid_src)(cols, rows);
-        let scene = build_scene(&grid, &self.palette, &metrics, w, h);
+        Some(build_scene(&grid, &self.palette, &metrics, w, h))
+    }
+
+    /// Lays out and paints one frame with the active painter. None for a 0x0 size.
+    pub fn render(&mut self) -> Option<Image> {
+        let start = Instant::now();
+        let scene = self.layout()?;
 
         let mut image = None;
         if self.painter == GridPainter::Gpu
@@ -136,6 +146,28 @@ impl GridHost {
         self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
         self.dirty = false;
         Some(image)
+    }
+
+    /// Lays out and paints one frame into plain RGBA bytes, for the headless tools. The GPU
+    /// path reads its texture back; the CPU path paints its own image. None for a 0x0 size.
+    pub fn render_rgba(&mut self) -> Option<&RgbaImage> {
+        let start = Instant::now();
+        let scene = self.layout()?;
+        match (self.painter, self.gpu.as_mut(), self.readback.as_ref()) {
+            (GridPainter::Gpu, Some(gpu), Some((device, queue))) => {
+                let texture = gpu.paint(&scene, self.glyphs.as_mut());
+                let data = read_texture(device, queue, &texture);
+                self.cpu_image = RgbaImage {
+                    width: texture.width(),
+                    height: texture.height(),
+                    data,
+                };
+            }
+            _ => paint_scene(&scene, self.glyphs.as_mut(), &mut self.cpu_image),
+        }
+        self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
+        self.dirty = false;
+        Some(&self.cpu_image)
     }
 }
 
@@ -219,6 +251,37 @@ mod tests {
         let img = h.render().expect("image");
         assert_eq!(img.size().width, 200);
         assert_eq!(img.size().height, 100);
+    }
+
+    #[test]
+    fn render_rgba_cpu_returns_image_of_size() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        let img = h.render_rgba().expect("image");
+        assert_eq!((img.width, img.height), (200, 100));
+        assert_eq!(img.data.len(), 200 * 100 * 4);
+    }
+
+    #[test]
+    fn render_rgba_zero_size_is_none() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(0, 0, 1.0);
+        assert!(h.render_rgba().is_none());
+    }
+
+    #[test]
+    fn render_rgba_gpu_reads_back_same_size() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        h.resize(200, 100, 1.0);
+        let img = h.render_rgba().expect("image");
+        assert_eq!((img.width, img.height), (200, 100));
+        assert_eq!(img.data.len(), 200 * 100 * 4);
+        assert_eq!(h.painter(), GridPainter::Gpu);
     }
 
     #[test]
