@@ -14,7 +14,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52 as AlacrittyOsc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use flare_render::grid::Grid;
-use flare_shells::cwd::parse_osc9;
+use flare_shells::cwd::{has_control, parse_osc9};
 
 use crate::click_caret::MouseTracking;
 use crate::grid_map::snapshot_grid;
@@ -168,7 +168,7 @@ impl Emulator {
                 };
                 match ident {
                     9 => {
-                        if let Some(p) = parse_osc9(data) {
+                        if let Some(p) = parse_osc9(data).filter(|p| !has_control(p)) {
                             out.push(TermEvent::Cwd(p));
                         }
                     }
@@ -429,6 +429,21 @@ mod tests {
             vec![TermEvent::Cwd("C:\\Users\\me".into())]
         );
         assert!(e.feed(b"\x1b]9;4;100;50\x07").is_empty());
+    }
+
+    #[test]
+    fn osc_9_9_with_a_control_character_never_emits_a_folder() {
+        let mut e = Emulator::new(80, 24);
+        let evs = e.feed("\x1b]9;9;C:\\x\u{85}calc\x07".as_bytes());
+        assert!(
+            !evs.iter().any(|ev| matches!(ev, TermEvent::Cwd(_))),
+            "{evs:?}"
+        );
+        let evs = e.feed(b"\x1b]9;9;C:\\x\rcalc\x07");
+        assert!(
+            !evs.iter().any(|ev| matches!(ev, TermEvent::Cwd(_))),
+            "{evs:?}"
+        );
     }
 
     #[test]

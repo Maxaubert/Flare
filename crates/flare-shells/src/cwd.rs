@@ -12,10 +12,35 @@ pub fn parse_osc9(data: &str) -> Option<String> {
     if p.len() > 1 && p.starts_with('"') && p.ends_with('"') {
         p = &p[1..p.len() - 1];
     }
-    if is_absolute(p) {
+    if is_absolute(p) && !has_control(p) {
         Some(p.to_string())
     } else {
         None
+    }
+}
+
+/// True when the text holds a C0 control, DEL or a C1 control. A real Windows folder name never does, and in
+/// a typed `cd` line a CR or LF would end the command and run the rest.
+pub fn has_control(p: &str) -> bool {
+    p.chars()
+        .any(|c| c < ' ' || ('\u{7f}'..='\u{9f}').contains(&c))
+}
+
+/// True for a UNC path (`\\host\share`, also with forward slashes or the `\\?\UNC\` form).
+pub fn is_unc(p: &str) -> bool {
+    let n = p.replace('/', "\\").to_lowercase();
+    (n.starts_with("\\\\") && !n.starts_with("\\\\?\\") && !n.starts_with("\\\\.\\"))
+        || n.starts_with("\\\\?\\unc\\")
+}
+
+/// The folder a tab may spawn, restore or stat after an OSC 9 report: a UNC report is never trusted (Windows
+/// would connect over SMB and can leak the NTLM hash), so the tab keeps its last local folder. Only an
+/// explicit user action may use a UNC folder.
+pub fn folder_after_report<'a>(last_local: &'a str, reported: &'a str) -> &'a str {
+    if is_unc(reported) {
+        last_local
+    } else {
+        reported
     }
 }
 
@@ -77,14 +102,14 @@ fn norm(p: &str) -> String {
 /// ' U+2018 U+2019 U+201A U+201B is doubled. cmd: None if the path has '%' or '"', else format!("cd /d \"{path}\"\r").
 /// Anything else (wsl-*, None) or an empty path: None.
 pub fn cd_command(shell_id: Option<&str>, path: &str) -> Option<String> {
-    if path.is_empty() {
+    if path.is_empty() || has_control(path) {
         return None;
     }
     match shell_id {
         Some("pwsh") | Some("powershell") => {
             Some(format!("Set-Location -LiteralPath {}\r", ps_quote(path)))
         }
-        Some("cmd") if !path.contains(['%', '"']) => Some(format!("cd /d \"{path}\"\r")),
+        Some("cmd") if !path.contains(['%', '"', '!', '^']) => Some(format!("cd /d \"{path}\"\r")),
         _ => None,
     }
 }
@@ -173,6 +198,60 @@ mod tests {
     fn cd_command_for_cmd_refuses_percent_and_quote() {
         assert_eq!(cd_command(Some("cmd"), "D:\\%PATH%\\x"), None);
         assert_eq!(cd_command(Some("cmd"), "D:\\a\"b"), None);
+    }
+
+    #[test]
+    fn parse_osc9_refuses_control_characters() {
+        for bad in [
+            "9;C:\\x\rcalc",
+            "9;C:\\x\ncalc",
+            "9;C:\\x\x1b[0m",
+            "9;C:\\x\x7f",
+            "9;C:\\x\u{85}y",
+            "9;C:\\x\u{9b}y",
+            "9;C:\\x\0y",
+            "9;\\\\h\\s\rcalc",
+        ] {
+            assert_eq!(parse_osc9(bad), None, "{bad:?}");
+        }
+        assert_eq!(
+            parse_osc9("9;C:\\Users\\Zo\u{eb} \u{65e5}\u{672c}\\a b"),
+            Some("C:\\Users\\Zo\u{eb} \u{65e5}\u{672c}\\a b".to_string())
+        );
+    }
+
+    #[test]
+    fn cd_command_refuses_control_characters_in_every_shell() {
+        for shell in ["pwsh", "powershell", "cmd"] {
+            for bad in [
+                "C:\\x\rcalc",
+                "C:\\x\ncalc",
+                "C:\\x\x1b",
+                "C:\\x\x7f",
+                "C:\\x\u{85}",
+                "C:\\x\u{9b}",
+            ] {
+                assert_eq!(cd_command(Some(shell), bad), None, "{shell} {bad:?}");
+            }
+        }
+        assert!(cd_command(Some("pwsh"), "C:\\a b\\\u{e9}").is_some());
+    }
+
+    #[test]
+    fn cd_command_for_cmd_refuses_bang_and_caret() {
+        assert_eq!(cd_command(Some("cmd"), "D:\\a!b"), None);
+        assert_eq!(cd_command(Some("cmd"), "D:\\a^b"), None);
+    }
+
+    #[test]
+    fn a_unc_report_never_replaces_the_local_folder() {
+        for unc in ["\\\\evil\\share", "//evil/share", "\\\\?\\UNC\\evil\\share"] {
+            assert!(is_unc(unc), "{unc}");
+            assert_eq!(folder_after_report("C:\\work", unc), "C:\\work");
+        }
+        assert!(!is_unc("C:\\work"));
+        assert!(!is_unc("\\\\?\\C:\\work"));
+        assert_eq!(folder_after_report("C:\\work", "D:\\other"), "D:\\other");
     }
 
     #[test]
