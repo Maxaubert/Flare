@@ -137,6 +137,11 @@ with Slint attribution, first-run import from Prism Terminal.
 
 ## Milestone 8: Dictation (branch `m8-dictation`)
 
+**Dictation is built last** (owner, 2026-10-17: "make sure you do dictation last since that's still
+actively worked on with the Prism Terminal session"). Order of work: M0 to M7, M9, M10, then M8. When M8
+starts, its plan re-reads Prism Terminal's dictation as it stands then and asks the owner whether the
+parity target for dictation moves forward.
+
 Bundled engines and models with pinned checksums, GPU pack, hotkey, the pill, microphone only,
 pause media while dictating.
 
