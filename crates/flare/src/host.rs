@@ -9,7 +9,7 @@ use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::Grid;
 use flare_render::metrics::{CellMetrics, cell_metrics, grid_dims};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{Scene, build_scene};
+use flare_render::scene::{GroundPaint, Scene, build_scene_ground};
 use flare_render::stats::FrameStats;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -64,6 +64,8 @@ pub struct GridHost {
     /// The cols x rows last given to the source (None = not yet told).
     dims: Option<(usize, usize)>,
     palette: Palette,
+    /// Who paints the ground behind the cells: the grid, or the UI (glass).
+    ground: GroundPaint,
     glyphs: Box<dyn GlyphSource>,
     painter: GridPainter,
     /// The painter asked for (at start or by the overlay switch), restored when a GPU attaches.
@@ -84,6 +86,7 @@ impl GridHost {
             source: Box::new(SampleSource::new()),
             dims: None,
             palette: Palette::pt_default(),
+            ground: GroundPaint::InGrid,
             glyphs,
             painter,
             wanted: painter,
@@ -112,6 +115,17 @@ impl GridHost {
         }
         self.readback = None;
         self.painter = GridPainter::Cpu;
+    }
+
+    /// Sets the palette and who paints the ground; marks dirty only when something differs.
+    #[allow(dead_code)] // used by the look controller (Task 23)
+    pub fn set_look(&mut self, palette: Palette, ground: GroundPaint) {
+        if self.palette == palette && self.ground == ground {
+            return;
+        }
+        self.palette = palette;
+        self.ground = ground;
+        self.dirty = true;
     }
 
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
@@ -188,7 +202,14 @@ impl GridHost {
             self.dims = Some((cols, rows));
         }
         let grid = self.source.grid();
-        Some(build_scene(&grid, &self.palette, &metrics, w, h))
+        Some(build_scene_ground(
+            &grid,
+            &self.palette,
+            &metrics,
+            w,
+            h,
+            self.ground,
+        ))
     }
 
     /// Lays out and paints one frame with the active painter. None for a 0x0 size.
@@ -218,7 +239,8 @@ impl GridHost {
                     self.cpu_image.width,
                     self.cpu_image.height,
                 );
-                Image::from_rgba8(buffer)
+                // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
+                Image::from_rgba8_premultiplied(buffer)
             }
         };
         self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
@@ -498,5 +520,72 @@ mod tests {
         let img = h.render();
         assert!(img.is_some());
         assert_eq!(h.painter(), GridPainter::Gpu);
+    }
+
+    #[test]
+    fn render_rgba_in_by_ui_is_clear_where_the_ground_is() {
+        let mut h = host(GridPainter::Cpu);
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        h.resize(200, 100, 1.0);
+        let img = h.render_rgba().expect("image");
+        // The sample grid has its cursor and text; the far corner is a blank cell.
+        assert_eq!(img.pixel(199, 99)[3], 0);
+        assert!(
+            img.data.chunks(4).any(|px| px[3] == 255),
+            "a coloured block cell is opaque"
+        );
+    }
+
+    #[test]
+    fn set_look_marks_dirty_only_on_a_change() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        h.render();
+        h.set_look(Palette::pt_default(), GroundPaint::InGrid);
+        assert!(!h.is_dirty());
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        assert!(h.is_dirty());
+        h.render();
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        assert!(!h.is_dirty());
+        let mut p = Palette::pt_default();
+        p.fg = flare_render::color::Rgba::rgb(1, 1, 1);
+        h.set_look(p, GroundPaint::ByUi);
+        assert!(h.is_dirty());
+    }
+
+    slint::slint! {
+        export component PremulWin inherits Window {
+            in property <image> grid;
+            width: 20px;
+            height: 20px;
+            background: white;
+            Image { source: root.grid; width: 20px; height: 20px; }
+        }
+    }
+
+    #[test]
+    fn a_half_covered_pixel_over_white_is_lighter_than_straight_would_be() {
+        use crate::ui_harness::{Frame, Harness};
+        let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(4, 4);
+        for px in buf.make_mut_slice() {
+            *px = Rgba8Pixel {
+                r: 128,
+                g: 0,
+                b: 0,
+                a: 128,
+            };
+        }
+        for scale in [1.0, 2.25] {
+            let hn = Harness::new(scale, 20, 20, || PremulWin::new().unwrap());
+            hn.comp
+                .set_grid(Image::from_rgba8_premultiplied(buf.clone()));
+            let f = hn.render();
+            let c = f.px(f.w / 2, f.h / 2);
+            assert!(
+                Frame::near(c, [255, 127, 127, 255], 2),
+                "scale {scale}: {c:?}"
+            );
+        }
     }
 }

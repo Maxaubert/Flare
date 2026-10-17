@@ -7,7 +7,9 @@ use flare_render::gpu::{GpuPainter, headless_device, read_texture};
 use flare_render::metrics::{cell_metrics, grid_dims};
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{GlyphDraw, RectFill, Scene, build_scene};
+use flare_render::scene::{
+    GlyphDraw, GroundPaint, RectFill, Scene, build_scene, build_scene_ground,
+};
 
 macro_rules! device_or_skip {
     () => {{
@@ -29,10 +31,26 @@ fn max_diff(a: &[u8], b: &[u8]) -> u8 {
         .unwrap_or(0)
 }
 
-fn sample_scene(glyphs: &dyn GlyphSource, scale: f32, w: u32, h: u32) -> Scene {
+fn sample_scene_ground(
+    glyphs: &dyn GlyphSource,
+    scale: f32,
+    w: u32,
+    h: u32,
+    ground: GroundPaint,
+) -> Scene {
     let m = cell_metrics(&glyphs.font_units(), scale);
     let (cols, rows) = grid_dims(w, h, &m);
-    build_scene(&sample_grid(cols, rows), &Palette::pt_default(), &m, w, h)
+    if ground == GroundPaint::InGrid {
+        return build_scene(&sample_grid(cols, rows), &Palette::pt_default(), &m, w, h);
+    }
+    build_scene_ground(
+        &sample_grid(cols, rows),
+        &Palette::pt_default(),
+        &m,
+        w,
+        h,
+        ground,
+    )
 }
 
 fn empty_scene(w: u32, h: u32) -> Scene {
@@ -47,11 +65,15 @@ fn empty_scene(w: u32, h: u32) -> Scene {
 }
 
 fn parity(glyphs: &mut dyn GlyphSource, scale: f32) {
+    parity_ground(glyphs, scale, GroundPaint::InGrid);
+}
+
+fn parity_ground(glyphs: &mut dyn GlyphSource, scale: f32, ground: GroundPaint) {
     let (device, queue) = device_or_skip!();
     glyphs.set_scale(scale);
     let w = (648.0 * scale).round() as u32;
     let h = (264.0 * scale).round() as u32;
-    let scene = sample_scene(glyphs, scale, w, h);
+    let scene = sample_scene_ground(glyphs, scale, w, h, ground);
     let mut gpu = GpuPainter::new(&device, &queue);
     let tex = gpu.paint(&scene, glyphs);
     let got = read_texture(&device, &queue, &tex);
@@ -121,6 +143,17 @@ fn real_glyphs_match_cpu_within_2() {
 #[test]
 fn real_glyphs_match_cpu_within_2_at_225_percent() {
     parity(&mut Rasterizer::new(DEFAULT_FAMILIES, 1.0), 2.25);
+}
+
+#[test]
+fn gpu_matches_cpu_on_a_transparent_ground() {
+    for scale in [1.0, 2.25] {
+        parity_ground(
+            &mut Rasterizer::new(DEFAULT_FAMILIES, 1.0),
+            scale,
+            GroundPaint::ByUi,
+        );
+    }
 }
 
 #[test]
