@@ -12,14 +12,16 @@ are added as milestones land.
 - **Debug overlay (F12).** Shows the renderer, the grid painter, frame statistics and memory.
 - **Flags and variables.** `--renderer gpu|software` (or `FLARE_RENDERER`, which applies only when
   the flag is absent); `--screenshot <png>` renders headlessly to a PNG for visual checks;
-  `--bench-frames <n>` reports frame time; `--probe-backend` reports which painter would start.
+  `--bench-frames <n>` reports frame time; `--probe-backend` reports which Slint renderer would start
+  (gpu, or software with the fallback reason).
   `FLARE_FORCE_GPU_FAIL=1` makes the GPU start fail, to test the fallback.
 - **Release build is a GUI app.** No console window appears in a release build (`windows_subsystem`
-  is set outside debug builds). The software path redraws on a 16 ms timer, and only when the grid is
-  dirty.
+  is set outside debug builds). The headless modes and start-up errors attach to the parent console,
+  so their output still shows when run from a terminal. The software path redraws on a 16 ms timer,
+  and only when the grid is dirty.
 - **Tests that hold it.** Config tests for the flags (`crates/flare/src/config.rs`), the
   `--probe-backend` and `FLARE_FORCE_GPU_FAIL` binary tests (`crates/flare/tests/headless.rs`, no
   window), host dirty-tracking tests (`crates/flare/src/host.rs`), and GPU versus CPU pixel parity
-  within 2 per channel (`crates/flare-render`).
+  within 2 per channel at 100% and 225% (`crates/flare-render/tests/gpu_parity.rs`).
 - **Regression rules.** `docs/regression-rules.md` rules 130 to 132: the raised wgpu limits, the
   physical-size grid texture, and no redraw without a dirty grid.

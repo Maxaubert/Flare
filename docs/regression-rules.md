@@ -159,8 +159,8 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 
 ## Rendering (M1)
 
-130. **Slint's wgpu device limits are raised to `Limits::default()`.** Slint's defaults are the WebGL2 set (2048 px textures), so a 4K window at 225% would fail. Native: `device_required_limits` is set in `crates/flare/src/backend.rs` before the renderer starts; pinned by the Task 15 config tests. Source: roadmap M1 Review Focus.
-131. **The grid texture is the Image's physical size, `round(width / 1phx)`.** Anything else blurs or stretches a stale frame at 225% and when maximised. Native: `headless.rs` computes `round(size * scale)` for the grid; the host test that changes only the scale checks that a new size marks the grid dirty. Source: roadmap M1 Review Focus.
+130. **Slint's wgpu device limits are raised to `Limits::default()`.** Slint's defaults are the WebGL2 set (2048 px textures), so a 4K window at 225% would fail. Native: `device_required_limits` is set in `crates/flare/src/backend.rs` before the renderer starts; pinned by `backend::tests::gpu_limits_fit_a_4k_window_at_225_percent`. Source: roadmap M1 Review Focus.
+131. **The grid texture is the Image's physical size, `round(width / 1phx)`.** Anything else blurs or stretches a stale frame at 225% and when maximised. Native: `ui/app.slint` exports `grid-phys-width`/`grid-phys-height` as `round(grid-area / 1phx)` and the host paints exactly that size (`headless.rs` sizes its window to `round(size * scale)`); pinned by `host::tests::cpu_render_returns_image_of_size`, `scale_change_marks_dirty` and the 400x300 headless screenshot tests. Source: roadmap M1 Review Focus.
 132. **No redraw without a dirty grid.** A resize or a scene change marks the host dirty; the software path's 16 ms timer repaints only when dirty, and the GPU path repaints from Slint's rendering notifier. Native: `host.rs` `is_dirty` and `repaint_due` in `window.rs`; pinned by the host tests (`render_clears_dirty`, the resize tests). Source: roadmap M1 Review Focus.
 
 ## Dropped Electron-only rules
