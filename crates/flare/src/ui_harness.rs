@@ -151,6 +151,27 @@ impl<C: ComponentHandle> Harness<C> {
         }
     }
 
+    /// Presses shift and ctrl as asked, types `text`, then releases the modifiers.
+    pub fn key_with(&self, shift: bool, ctrl: bool, text: &str) {
+        let mods: Vec<SharedString> = [
+            (shift, slint::platform::Key::Shift),
+            (ctrl, slint::platform::Key::Control),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, k)| SharedString::from(char::from(k)))
+        .collect();
+        for m in &mods {
+            self.win
+                .dispatch_event(WindowEvent::KeyPressed { text: m.clone() });
+        }
+        self.key_text(text);
+        for m in mods.iter().rev() {
+            self.win
+                .dispatch_event(WindowEvent::KeyReleased { text: m.clone() });
+        }
+    }
+
     pub fn advance(&self, ms: u64) {
         CLOCK_MS.with(|c| c.set(c.get() + ms));
         slint::platform::update_timers_and_animations();
