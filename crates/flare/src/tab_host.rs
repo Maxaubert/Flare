@@ -48,6 +48,32 @@ pub enum HostEvent {
         id: String,
         text: String,
     },
+    /// An OSC 777 payload (everything after `777;`); the agent code parses it.
+    Osc777 {
+        id: String,
+        data: String,
+    },
+    /// The pty printed (one per drained batch).
+    Output {
+        id: String,
+    },
+    /// A person typed in the tab.
+    Typed {
+        id: String,
+    },
+    /// Enter, Esc, Ctrl+C or a digit was sent by a user key.
+    AnswerKey {
+        id: String,
+        key: String,
+    },
+    /// A refit ran.
+    Resized {
+        id: String,
+    },
+    /// A resuming tab's terminal is shown now.
+    Revealed {
+        id: String,
+    },
 }
 
 pub struct TabHost {
@@ -215,11 +241,24 @@ impl TabHost {
                     TermEvent::ClipboardWrite(text) => {
                         out.push(HostEvent::ClipboardWrite { id, text });
                     }
+                    TermEvent::Osc { ident: 777, data } => {
+                        out.push(HostEvent::Osc777 { id, data });
+                    }
+                    TermEvent::Output => out.push(HostEvent::Output { id }),
+                    TermEvent::Typed => out.push(HostEvent::Typed { id }),
+                    TermEvent::AnswerKey(key) => out.push(HostEvent::AnswerKey { id, key }),
+                    TermEvent::Resized => out.push(HostEvent::Resized { id }),
+                    TermEvent::Revealed => out.push(HostEvent::Revealed { id }),
                     _ => {}
                 }
             }
         }
         out
+    }
+
+    /// The session manager, for the agent poll (live pids, output ticks) and the tab tokens.
+    pub fn manager(&self) -> Arc<SessionManager> {
+        Arc::clone(&self.mgr)
     }
 
     pub fn live_ids(&self) -> Vec<String> {
@@ -444,6 +483,27 @@ mod tests {
             path: "C:\\w".into(),
         };
         assert_eq!(evs.iter().filter(|e| **e == want).count(), 1);
+    }
+
+    #[test]
+    fn osc_777_and_the_activity_events_reach_the_host_and_other_oscs_do_not() {
+        let (mut h, sp, _p) = host();
+        h.spawn("t1", "C:\\a", None);
+        made(&sp, 1);
+        sp.made()[0].feed(b"\x1b]777;flare-agent;state=done\x07\x1b]1337;SetMark\x07x");
+        let evs = events_until(&h, |e| {
+            e.iter().any(|x| matches!(x, HostEvent::Output { .. }))
+        });
+        assert!(evs.contains(&HostEvent::Osc777 {
+            id: "t1".into(),
+            data: "flare-agent;state=done".into()
+        }));
+        assert_eq!(
+            evs.iter()
+                .filter(|e| matches!(e, HostEvent::Osc777 { .. }))
+                .count(),
+            1
+        );
     }
 
     #[test]
