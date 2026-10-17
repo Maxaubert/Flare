@@ -1185,6 +1185,12 @@ impl AppCtl {
 
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        // A right-click menu takes no keyboard (PT ContextMenu.tsx): Escape closes it and never
+        // reaches the shell; every other key goes where it would without the menu.
+        if ev.pressed && ev.key == "Escape" && self.menu.is_some() {
+            self.close_menu();
+            return KeyOutcome::Consumed;
+        }
         let ctx = self.key_context();
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
         let shell_in_front = self.front_handle().is_some();
@@ -1213,10 +1219,12 @@ impl AppCtl {
         chords::on_key_up(ev, &mut Target(self));
     }
 
-    /// The window lost the keyboard: a Most recent walk ends, tips go.
+    /// The window lost the keyboard: a Most recent walk ends, tips go, a right-click menu shuts
+    /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
         self.model.commit_walk();
         self.clear_tip();
+        self.close_menu();
     }
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
@@ -2288,5 +2296,30 @@ mod tests {
         assert!(f.h.comp.get_menu_open());
         f.h.comp.invoke_menu_picked(0); // the recent folder C:\a
         assert_eq!(f.rows(), 2);
+    }
+
+    #[test]
+    fn an_open_menu_takes_escape_and_leaves_every_other_key_to_the_shell() {
+        let f = fx();
+        let id = f.ctl.borrow_mut().open_folder("C:\\a");
+        f.wait_made("C:\\a");
+        f.ctl.borrow_mut().open_tab_menu(&id, 10.0, 10.0);
+        assert!(f.h.comp.get_menu_open());
+        // A letter types into the shell and the menu stays up, as in Prism Terminal.
+        assert_eq!(f.key(KeyEvent::new("a", "KeyA")), KeyOutcome::Pty);
+        assert!(f.h.comp.get_menu_open());
+        // Escape shuts the menu and the shell never sees it.
+        assert_eq!(
+            f.key(KeyEvent::new("Escape", "Escape")),
+            KeyOutcome::Consumed
+        );
+        assert!(!f.h.comp.get_menu_open());
+        // With no menu, Escape is the shell's again.
+        assert_eq!(f.key(KeyEvent::new("Escape", "Escape")), KeyOutcome::Pty);
+        // The window losing the keyboard shuts a menu too.
+        f.ctl.borrow_mut().open_plus_menu(10.0, 10.0);
+        assert!(f.h.comp.get_menu_open());
+        f.ctl.borrow_mut().on_focus_lost();
+        assert!(!f.h.comp.get_menu_open());
     }
 }
