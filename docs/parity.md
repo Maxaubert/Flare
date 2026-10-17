@@ -66,7 +66,7 @@ How to read it:
 - [ ] PowerShell 7 is the first absolute path from `where pwsh.exe` not in the current directory; none means no pwsh entry (shells.ts pwshPath; shells.test).
 - [ ] Shell list order and ids: pwsh "PowerShell 7", powershell "Windows PowerShell" (full System32 path), cmd "Command Prompt", then one `wsl-<name>` "WSL: <name>" per distro with args `-d <name> --cd .` (shells.ts).
 - [ ] WSL list: `wsl -l -q` decoded UTF-16LE, NULs stripped, only lines matching `^[\w.-]+$` kept (shells.ts parseWslList; shells.test).
-- [ ] Git Bash is detected as Prism Terminal does (design spec inventory; shells.ts). DECISION: confirm the detection rule from shells.ts when porting.
+- [ ] Prism Terminal v0.55.6 does NOT detect Git Bash: shells.ts lists only pwsh, powershell, cmd and WSL distros (no `bash.exe` probe anywhere in core/main). The design spec's "Git Bash, as Prism Terminal detects them" is therefore not parity. DECISION: open decision O21.
 - [ ] Windows tools (where, powershell, cmd, wsl) start by full System32 path, never a bare name (core/main/sysTools.ts SYS; shells.test).
 - [ ] Saved shell id resolves via shellById: saved, else pwsh, else powershell, else first; the UI names a shell only by id (shells.ts shellById; shells.test).
 - [ ] PowerShell 7 startup: `-NoLogo -NoExit -Command` with PredictionSource History, `EnableScreenReaderMode:$false` in try/catch, then file style and prompt hook (shells.ts).
@@ -544,6 +544,7 @@ verbatim from termTheme.ts; derived = from deriveAnsi(bg, fg)).
 - [ ] Path candidates: no whitespace/quote/`<>|*?`; leading `([{` and trailing `.,;:!)]}` and `:line[:col]` stripped; length 2 to 260; must contain a letter; leading `-` is a flag; needs a separator or `.ext` (1 to 8 alphanumerics); bare drive refused; URLs left to the link finder (core/renderer/lib/termPaths.ts findPaths; termPaths.test).
 - [ ] A path is painted and clickable only when it exists; answers cached per folder; a "no" forgotten after 15 s (core/renderer/lib/termPathLinks.ts; regression-rules path-links #99).
 - [ ] Relative paths resolve against the shell's folder (OSC 9;9) and folders the tab has shown; a bare name only in the shown folder; the folder itself is never a link (termPathLinks.test).
+- [ ] Path answer cache: at most 5000 entries; a "no" lives 15 s (NO_TTL_MS); asks batched every 40 ms (BATCH_MS); a relative path tries at most 4 anchor folders (ANCHORS_MAX) and 4 ancestors (ANCESTORS); a tab teaches at most 256 folders (TAUGHT_MAX), each looked at again once in the tab's life; a folder holds the cwd case-insensitively (termPathLinks.ts holdsCwd, parentDir, anchorBases; termPathLinks.test).
 - [ ] Paths asked in pieces of at most 300 (PATHS_MAX) one after another; a short answer is never read as missing past its end (core/shared/termLimits.ts; termPathLinks.test).
 - [ ] A found path repaints only the asking tab and lines; a multi-folder tab settles after one wake per folder; a closed tab forgets what it taught (termPathLinks.test).
 - [ ] The backend re-resolves the text and never trusts the UI: `~` is home, UNC refused, NUL refused, over 1024 chars refused, relative needs a drive-letter folder, `\foo` takes the shell's drive (core/main/termPathOpen.ts resolveTermPath; termPathOpen.test).
@@ -1162,3 +1163,4 @@ Scope is v0.55.6 dictation: Parakeet, warm-up and the GPU pack are in; dictate-a
 - [ ] O18: Prism Terminal's spec lists Tab width and Show title bar rows that the shipped 0.55.x build does not have; port the shipped build.
 - [ ] O19: the media pause mechanism (native GSMTC through the `windows` crate) and the unzip step (PowerShell Expand-Archive or a Rust zip crate) each add a recorded dependency decision.
 - [ ] O20: `rename` appears in roadmap M3 but not in Prism Terminal (see M3); Explorer verbs sit in M9, not M3; schedule once.
+- [ ] O21: Git Bash. Prism Terminal v0.55.6 detects no Git Bash (core/main/shells.ts), but the design spec lists it. Port parity (no Git Bash, recommended for the parity sweep) or add it as a new feature with its own detection rule (for example `where bash.exe` filtered to a Git for Windows install, or the Git install path from the registry), quoting as bash and no resume (O5).

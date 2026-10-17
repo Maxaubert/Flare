@@ -46,17 +46,10 @@ opphavsrett til andsverk mv.) and the Berne Convention.
 
    Any permission granted by this licence ends automatically, without notice, if
    you breach any of its terms. On termination you must stop using the Software
-   and delete every copy of it in your possession or control. Sections 3, 6 and 7
+   and delete every copy of it in your possession or control. Sections 3 and 6
    survive termination.
 
-6. PRIOR RELEASES
-
-   Versions of this software published on or before 2026-10-03 (up to and
-   including release v0.79.1, commit 441bfec) were released under the MIT
-   licence. That grant continues to apply to those versions, and to those
-   versions only. It does not extend to this version or to any later version.
-
-7. GOVERNING LAW AND JURISDICTION
+6. GOVERNING LAW AND JURISDICTION
 
    This licence is governed by the laws of Norway, without regard to its
    conflict-of-law rules. Any dispute arising out of or in connection with this
