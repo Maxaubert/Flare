@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_settings::kv::{FileBackend, PrefStore};
+use flare_settings::look::LookStore;
 use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::handle::TermHandle;
@@ -48,12 +49,11 @@ use crate::e2e;
 use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
+use crate::look_ctl::LookCtl;
 use crate::material_ctl::WindowMaterial;
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
-use flare_theme::edges::WindowEdges;
-use flare_theme::ground::DEFAULT_GROUND;
 use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
@@ -729,6 +729,48 @@ pub fn run_window(
         });
     }
 
+    // The look (Task 26): the first frame wears the saved theme, opaque (no flash of the default), because
+    // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
+    let look_prefs = stores
+        .as_ref()
+        .map_or_else(PrefStore::memory, |(_, _, p)| p.clone());
+    let look = {
+        let ctl = LookCtl::new(
+            &app,
+            LookStore::new(look_prefs),
+            host.clone(),
+            material.clone(),
+            &outcome,
+            args.look.clone(),
+        );
+        if args.e2e || sample {
+            // Headless-style runs apply once, with their overrides, and never listen.
+            let mut ctl = ctl;
+            ctl.apply_now();
+            Rc::new(RefCell::new(ctl))
+        } else {
+            let rc = ctl.install();
+            rc.borrow_mut().apply_now();
+            rc
+        }
+    };
+    app.on_debug_step_theme({
+        let look = look.clone();
+        move |dir| {
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.debug_step_theme(dir);
+            }
+        }
+    });
+    app.on_debug_step_see_through({
+        let look = look.clone();
+        move || {
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.debug_step_see_through();
+            }
+        }
+    });
+
     app.show()?;
     if args.e2e {
         apply_e2e_style(&app);
@@ -743,16 +785,17 @@ pub fn run_window(
     // so it is made after the show; the look controller (Task 26) drives it from the settings.
     {
         let now = Instant::now();
-        let mut m = WindowMaterial::new(&app, os_version(), args.e2e);
-        if let Some(m) = m.as_mut() {
-            m.set_solid_ground(DEFAULT_GROUND, WindowEdges::Hairline, now);
+        if let Some(mut m) = WindowMaterial::new(&app, os_version(), args.e2e) {
             m.on_window_state(
                 app.window().is_maximized(),
                 app.window().is_fullscreen(),
                 now,
             );
+            // A saved see-through level becomes glass only now: the backdrop first, then the ground.
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.attach_material(m);
+            }
         }
-        *material.borrow_mut() = m;
     }
     let material_timer = slint::Timer::default();
     material_timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), {
@@ -793,6 +836,7 @@ pub fn run_window(
         prefs.flush();
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
+    LookCtl::uninstall();
     let mut instance = instance;
     if let Some(s) = instance.as_mut().and_then(|i| i.server.take()) {
         s.stop();

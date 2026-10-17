@@ -124,6 +124,10 @@ export component AppWindow inherits Window {
     callback maximize-clicked();
     callback close-clicked();
     callback toggle-grid-renderer();
+    // The developer chords (decision D13), live only with the F12 overlay open: F9 / Shift+F9 walk the
+    // theme wall (-1 or 1), F8 steps the see-through level.
+    callback debug-step-theme(int);
+    callback debug-step-see-through();
 
     // ---- layout ----
     in property <bool> layout-vertical;
@@ -233,6 +237,14 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             if (event.text == Key.F12) {
                 root.overlay-visible = !root.overlay-visible;
+                return accept;
+            }
+            if (root.overlay-visible && event.text == Key.F9) {
+                root.debug-step-theme(event.modifiers.shift ? -1 : 1);
+                return accept;
+            }
+            if (root.overlay-visible && event.text == Key.F8) {
+                root.debug-step-see-through();
                 return accept;
             }
             reject
