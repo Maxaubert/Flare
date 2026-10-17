@@ -45,6 +45,8 @@ export global Theme {
 
     // The window's own clear colour (PT's setBackgroundColor): the solid ground, or transparent under glass.
     in property <color> window-clear: #171717;
+    // The window edge colour from edge_for (docs/material.md E4); transparent for none, maximised or full screen.
+    in property <color> edge: transparent;
     // True when the measured ground is light (WCAG relative luminance above 0.4); set from Rust.
     in property <bool> light: false;
     out property <color> danger-fill: #b4353f; // Dialog danger

@@ -9,6 +9,7 @@ import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 
+export { Theme, Px } from "theme.slint";
 export { TabStripPreview } from "tabs.slint";
 export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
@@ -103,7 +104,7 @@ component TitleButtons inherits Rectangle {
 export component AppWindow inherits Window {
     title: "Flare";
     no-frame: true;
-    background: Theme.ground;
+    background: Theme.window-clear;
     preferred-width: 1000px;
     preferred-height: 640px;
     min-width: 560px;
@@ -554,6 +555,18 @@ export component AppWindow inherits Window {
             danger: root.dialog-danger;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
+        }
+        // The window edge (the DWM border does not show on a frameless window, docs/material.md E4):
+        // one device pixel in the colour edge_for answers; transparent when none, maximised or full screen.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            visible: Theme.edge.alpha > 0;
+            background: transparent;
+            border-width: Px.hair();
+            border-color: Theme.edge;
         }
     }
 }

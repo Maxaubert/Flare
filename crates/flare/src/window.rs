@@ -48,9 +48,13 @@ use crate::e2e;
 use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
+use crate::material_ctl::WindowMaterial;
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
+use flare_theme::edges::WindowEdges;
+use flare_theme::ground::DEFAULT_GROUND;
+use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
 const SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -675,6 +679,7 @@ pub fn run_window(
             CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
             CloseDecision::Close => CloseRequestResponse::HideWindow,
         });
+    let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
     if let Some(rc) = &ctl {
         install_window_filter(
             &app,
@@ -683,6 +688,7 @@ pub fn run_window(
                 front: front.clone(),
                 host: host.clone(),
                 initial: initial.clone(),
+                material: material.clone(),
             },
         );
     }
@@ -733,6 +739,32 @@ pub fn run_window(
     if !sample {
         app.window().with_winit_window(|w| w.set_ime_allowed(true));
     }
+    // The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window,
+    // so it is made after the show; the look controller (Task 26) drives it from the settings.
+    {
+        let now = Instant::now();
+        let mut m = WindowMaterial::new(&app, os_version(), args.e2e);
+        if let Some(m) = m.as_mut() {
+            m.set_solid_ground(DEFAULT_GROUND, WindowEdges::Hairline, now);
+            m.on_window_state(
+                app.window().is_maximized(),
+                app.window().is_fullscreen(),
+                now,
+            );
+        }
+        *material.borrow_mut() = m;
+    }
+    let material_timer = slint::Timer::default();
+    material_timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), {
+        let material = material.clone();
+        move || {
+            if let Ok(mut m) = material.try_borrow_mut()
+                && let Some(m) = m.as_mut()
+            {
+                m.tick(Instant::now());
+            }
+        }
+    });
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
@@ -818,6 +850,8 @@ struct FilterState {
     front: FrontCell,
     host: Rc<RefCell<GridHost>>,
     initial: Option<InitialWindow>,
+    /// Filled after the show, when the window has its handle.
+    material: Rc<RefCell<Option<WindowMaterial>>>,
 }
 
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
@@ -829,6 +863,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         front,
         host,
         initial,
+        material,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
@@ -966,6 +1001,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                if let Ok(mut m) = material.try_borrow_mut()
+                    && let Some(m) = m.as_mut()
+                {
+                    m.on_window_state(
+                        window.is_maximized(),
+                        window.is_fullscreen(),
+                        Instant::now(),
+                    );
+                }
                 let o = observe(window);
                 with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate

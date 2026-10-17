@@ -120,9 +120,11 @@ fn the_token_names_are_the_chrome_tokens_minus_the_prefix() {
         .collect();
     let mut expected = mapped;
     expected.insert("window-clear".to_string());
+    // Task 25: the window edge, drawn by Slint because the DWM border does not show (docs/material.md E4).
+    expected.insert("edge".to_string());
     assert_eq!(
         in_colours, expected,
-        "the settable colours are the 31 chrome tokens plus window-clear"
+        "the settable colours are the 31 chrome tokens plus window-clear and edge"
     );
 }
 
