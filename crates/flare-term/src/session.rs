@@ -40,6 +40,23 @@ impl ShellSource for RealShells {
     }
 }
 
+/// Is this plugin folder OUR Claude plugin? The default reads the folder's `plugin.json`, so
+/// EVERY manager drops an inherited copy of ours without its caller remembering (rule 109).
+#[derive(Clone)]
+pub struct IsOurs(pub Arc<dyn Fn(&str) -> bool + Send + Sync>);
+
+impl Default for IsOurs {
+    fn default() -> Self {
+        IsOurs(Arc::new(flare_agent::plugin::is_our_plugin))
+    }
+}
+
+impl std::fmt::Debug for IsOurs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IsOurs")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
     pub resize_retry_delay: Duration,
@@ -49,6 +66,9 @@ pub struct SessionOptions {
     pub warm_banner_cap: usize,
     pub exit_grace: Duration,
     pub backlog_max: usize,
+    pub is_ours: IsOurs,
+    /// The environment a shell inherits; None = the process environment (a test seam).
+    pub base_env: Option<Vec<(String, String)>>,
 }
 
 impl Default for SessionOptions {
@@ -61,6 +81,8 @@ impl Default for SessionOptions {
             warm_banner_cap: 65_536,
             exit_grace: Duration::from_millis(100),
             backlog_max: 4 * 1024 * 1024,
+            is_ours: IsOurs::default(),
+            base_env: None,
         }
     }
 }
@@ -529,8 +551,17 @@ impl SessionManager {
                 env: None,
             },
         };
-        let from: Vec<(String, String)> = std::env::vars().collect();
-        let mut env = pty_env(&from, Some(def.id.as_str()), plugin, None, Some(token));
+        let from: Vec<(String, String)> = match &self.sh.opts.base_env {
+            Some(b) => b.clone(),
+            None => std::env::vars().collect(),
+        };
+        let mut env = pty_env(
+            &from,
+            Some(def.id.as_str()),
+            plugin,
+            Some(&*self.sh.opts.is_ours.0),
+            Some(token),
+        );
         if let Some(pair) = launch.env {
             env.push(pair);
         }
@@ -563,6 +594,15 @@ impl SessionManager {
         resume: Option<&str>,
         plugin: Option<&PluginEnv>,
     ) -> bool {
+        // An invalid id is no resume at all (the length only is logged, never the text).
+        let valid = flare_agent::resume::valid_resume(resume);
+        if resume.is_some() && valid.is_none() {
+            log::warn!(
+                "a resume id of {} chars is not a session id; starting a plain shell",
+                resume.map_or(0, str::len)
+            );
+        }
+        let resume = valid;
         {
             let mut st = lk(&self.sh.st);
             if st.sessions.contains_key(id) || st.pending.contains(id) {
@@ -1181,6 +1221,123 @@ mod tests {
 
     // New tests.
 
+    fn env_of(sp: &Arc<FakeSpawner>, i: usize, key: &str) -> Option<String> {
+        sp.made()[i]
+            .spec()
+            .env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    fn with_base(
+        sp: &Arc<FakeSpawner>,
+        pairs: &[(&str, &str)],
+        ours: fn(&str) -> bool,
+    ) -> Arc<SessionManager> {
+        let base = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        mgr_with(
+            sp,
+            FakeShells::new(),
+            SessionOptions {
+                base_env: Some(base),
+                is_ours: IsOurs(Arc::new(ours)),
+                ..fast()
+            },
+        )
+    }
+
+    #[test]
+    fn the_plugin_folder_reaches_a_new_shell_once_after_the_users_own() {
+        let key = "CLAUDE_CODE_PLUGIN_DIRS";
+        let sp = FakeSpawner::new();
+        let m = with_base(&sp, &[(key, "D:\\mine;E:\\too")], |_| false);
+        let on = PluginEnv {
+            dir: "C:\\F\\claude-plugin".into(),
+            on: true,
+        };
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&on)));
+        assert_eq!(
+            env_of(&sp, 0, key).as_deref(),
+            Some("D:\\mine;E:\\too;C:\\F\\claude-plugin")
+        );
+        let off = PluginEnv {
+            on: false,
+            ..on.clone()
+        };
+        assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
+        assert_eq!(env_of(&sp, 1, key).as_deref(), Some("D:\\mine;E:\\too"));
+        let sp2 = FakeSpawner::new();
+        let m2 = with_base(&sp2, &[], |_| false);
+        assert!(m2.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
+        assert_eq!(env_of(&sp2, 0, key), None);
+    }
+
+    #[test]
+    fn an_inherited_copy_of_our_plugin_is_dropped() {
+        let key = "CLAUDE_CODE_PLUGIN_DIRS";
+        let ours: fn(&str) -> bool = |d| d.ends_with("other-flare\\claude-plugin");
+        let sp = FakeSpawner::new();
+        let m = with_base(
+            &sp,
+            &[(key, "D:\\mine;C:\\other-flare\\claude-plugin")],
+            ours,
+        );
+        let on = PluginEnv {
+            dir: "C:\\F\\claude-plugin".into(),
+            on: true,
+        };
+        let off = PluginEnv {
+            on: false,
+            ..on.clone()
+        };
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&on)));
+        assert_eq!(
+            env_of(&sp, 0, key).as_deref(),
+            Some("D:\\mine;C:\\F\\claude-plugin")
+        );
+        assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
+        assert_eq!(env_of(&sp, 1, key).as_deref(), Some("D:\\mine"));
+        let sp2 = FakeSpawner::new();
+        let m2 = with_base(&sp2, &[(key, "C:\\other-flare\\claude-plugin")], ours);
+        assert!(m2.spawn("a", "C:\\x", Some("pwsh"), null(), None, Some(&off)));
+        assert_eq!(env_of(&sp2, 0, key), None);
+    }
+
+    #[test]
+    fn an_invalid_resume_id_is_no_resume() {
+        let sp = FakeSpawner::new();
+        let def = ShellDef {
+            id: "pwsh".into(),
+            name: "PowerShell 7".into(),
+            exe: "pwsh.exe".into(),
+            args: vec!["-NoLogo".into(), "-Command".into(), "hook".into()],
+        };
+        let m = mgr_with(
+            &sp,
+            FakeShells::with(vec![def]),
+            SessionOptions {
+                base_env: Some(Vec::new()),
+                ..fast()
+            },
+        );
+        assert!(m.spawn("plain", "C:\\x", Some("pwsh"), null(), None, None));
+        let bad = ["x; rm -rf", "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f; calc"];
+        for (i, b) in bad.iter().enumerate() {
+            let tab = format!("bad{i}");
+            assert!(m.spawn(&tab, "C:\\x", Some("pwsh"), null(), Some(b), None));
+            assert_eq!(sp.made()[i + 1].spec().args, sp.made()[0].spec().args);
+            assert_eq!(env_of(&sp, i + 1, "FLARE_RESUME_ID"), None);
+        }
+        let good = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+        assert!(m.spawn("good", "C:\\x", Some("pwsh"), null(), Some(good), None));
+        assert_eq!(env_of(&sp, 3, "FLARE_RESUME_ID").as_deref(), Some(good));
+        assert_ne!(sp.made()[3].spec().args, sp.made()[0].spec().args);
+    }
+
     #[test]
     fn a_spawn_for_a_live_id_is_refused() {
         let sp = FakeSpawner::new();
@@ -1391,11 +1548,11 @@ mod tests {
             args: vec!["-Command".into(), "hook".into()],
         };
         let m = mgr_with(&sp, FakeShells::with(vec![def]), fast());
-        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), Some("abc-123"), None));
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), Some("abc-1234"), None));
         let env = sp.made()[0].spec().env;
         assert!(env.contains(&("TERM".to_string(), "xterm-256color".to_string())));
         assert!(env.contains(&("COLORTERM".to_string(), "truecolor".to_string())));
-        assert!(env.contains(&("FLARE_RESUME_ID".to_string(), "abc-123".to_string())));
+        assert!(env.contains(&("FLARE_RESUME_ID".to_string(), "abc-1234".to_string())));
     }
 
     #[test]

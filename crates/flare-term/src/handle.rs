@@ -10,6 +10,7 @@ use crate::replies::bell_gate;
 use crate::session::{SessionManager, SessionSink};
 use crate::wheel::{WheelAction, WheelContext, wheel_action};
 use alacritty_terminal::sync::FairMutex;
+use flare_agent::reveal::{self, RevealState};
 use flare_render::decor::Decor;
 use flare_shells::env::PluginEnv;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +33,7 @@ pub struct StartOptions {
 }
 
 type Waker = Arc<dyn Fn() + Send + Sync>;
+type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 struct Shared {
     id: String,
@@ -45,9 +47,46 @@ struct Shared {
     sync_armed: AtomicBool,
     output_pending: AtomicBool,
     t0: Instant,
+    reveal: Mutex<Option<RevealState>>,
+    clock: Mutex<Option<Clock>>,
 }
 
 impl Shared {
+    /// Milliseconds on the reveal's clock: the injected one, else since the handle was made.
+    fn now(&self) -> u64 {
+        let c = lk(&self.clock).clone();
+        match c {
+            Some(f) => f(),
+            None => self.t0.elapsed().as_millis() as u64,
+        }
+    }
+
+    fn resuming(&self) -> bool {
+        lk(&self.reveal).as_ref().is_some_and(|r| !r.revealed)
+    }
+
+    /// Applies `f` to a live reveal; queues `Revealed` once when it flips.
+    fn reveal_step(&self, f: impl FnOnce(&RevealState) -> RevealState) {
+        let flipped = {
+            let mut g = lk(&self.reveal);
+            let Some(cur) = g.as_ref().filter(|r| !r.revealed) else {
+                return;
+            };
+            let next = f(cur);
+            let flipped = next.revealed;
+            *g = Some(next);
+            flipped
+        };
+        if flipped {
+            lk(&self.events).push(TermEvent::Revealed);
+            self.wake();
+        }
+    }
+
+    fn finish_reveal(&self) {
+        self.reveal_step(reveal::reveal_now);
+    }
+
     fn wake(&self) {
         self.dirty.store(true, Ordering::SeqCst);
         let w = lk(&self.waker).clone();
@@ -103,9 +142,40 @@ struct Sink(Weak<Shared>);
 impl SessionSink for Sink {
     fn data(&self, _id: &str, bytes: Vec<u8>) {
         let Some(sh) = self.0.upgrade() else { return };
-        for slice in bytes.chunks(SLICE) {
-            let evs = sh.emu.lock().feed(slice);
-            sh.handle(evs);
+        // The reveal reads the WHOLE chunk once, so a title is never cut by a slice boundary.
+        let clear_at = if sh.resuming() {
+            let now = sh.now();
+            let mut clear_at: Option<usize> = None;
+            sh.reveal_step(|st| {
+                let (next, at) = reveal::on_chunk(st, &bytes, now);
+                clear_at = at;
+                next
+            });
+            clear_at.map(|at| at.min(bytes.len()))
+        } else {
+            None
+        };
+        let was_alt = sh.emu.lock().mode().alt_screen;
+        match clear_at {
+            Some(at) => {
+                feed_slices(&sh, &bytes[..at]);
+                // The clear is the GRID's only: it is never given to the pty.
+                let evs = sh.emu.lock().feed(reveal::CLEAR);
+                sh.handle(
+                    evs.into_iter()
+                        .filter(|e| !matches!(e, TermEvent::Reply(_)))
+                        .collect(),
+                );
+                feed_slices(&sh, &bytes[at..]);
+            }
+            None => feed_slices(&sh, &bytes),
+        }
+        if sh.resuming() {
+            let now = sh.now();
+            if !was_alt && sh.emu.lock().mode().alt_screen {
+                sh.reveal_step(|st| reveal::on_alternate(st, now));
+            }
+            sh.reveal_step(|st| reveal::on_tick(st, now));
         }
         sh.note_output();
         sh.wake();
@@ -114,8 +184,16 @@ impl SessionSink for Sink {
 
     fn exit(&self, _id: &str, code: Option<u32>) {
         let Some(sh) = self.0.upgrade() else { return };
+        sh.finish_reveal();
         lk(&sh.events).push(TermEvent::Exited(code));
         sh.wake();
+    }
+}
+
+fn feed_slices(sh: &Shared, bytes: &[u8]) {
+    for slice in bytes.chunks(SLICE) {
+        let evs = sh.emu.lock().feed(slice);
+        sh.handle(evs);
     }
 }
 
@@ -179,6 +257,8 @@ impl TermHandle {
             sync_armed: AtomicBool::new(false),
             output_pending: AtomicBool::new(false),
             t0: Instant::now(),
+            reveal: Mutex::new(None),
+            clock: Mutex::new(None),
         });
         Arc::new(Self { sh, emu })
     }
@@ -192,8 +272,35 @@ impl TermHandle {
         *lk(&self.sh.waker) = Some(f);
     }
 
+    /// The reveal's clock, in ms (a test seam). Default: milliseconds since the handle was made.
+    pub fn set_clock(&self, f: Arc<dyn Fn() -> u64 + Send + Sync>) {
+        *lk(&self.sh.clock) = Some(f);
+    }
+
+    /// True from `start` with a resume until the agent has painted (or a key, an exit, a failed
+    /// spawn, the ceiling).
+    pub fn resuming(&self) -> bool {
+        self.sh.resuming()
+    }
+
+    /// The glue calls it on its timer while `resuming()`; a `Revealed` is queued when it ends.
+    pub fn reveal_tick(&self) {
+        let now = self.sh.now();
+        self.sh.reveal_step(|st| reveal::on_tick(st, now));
+    }
+
+    /// Shows the terminal now.
+    pub fn finish_reveal(&self) {
+        self.sh.finish_reveal();
+    }
+
     /// Starts the shell on a worker thread (the spawn blocks).
     pub fn start(self: &Arc<Self>, opts: StartOptions) {
+        // On the calling thread, BEFORE the spawn worker: no chunk can arrive first.
+        if let Some(r) = flare_agent::resume::valid_resume(opts.resume.as_deref()) {
+            let st = reveal::start_reveal(reveal::agent_of_resume(r), self.sh.now());
+            *lk(&self.sh.reveal) = Some(st);
+        }
         let sh = Arc::clone(&self.sh);
         let r = std::thread::Builder::new()
             .name("flare-start".into())
@@ -216,6 +323,7 @@ impl TermHandle {
                     };
                     sh.mgr.resize(&sh.id, c, r);
                 } else {
+                    sh.finish_reveal();
                     let evs = sh
                         .emu
                         .lock()
@@ -227,6 +335,7 @@ impl TermHandle {
             });
         if let Err(e) = r {
             log::warn!("could not start the spawn worker: {e}");
+            self.sh.finish_reveal();
             lk(&self.sh.events).push(TermEvent::StartFailed);
             self.sh.wake();
         }
@@ -283,6 +392,7 @@ impl TermHandle {
         let Some(bytes) = crate::key_encode::encode_key(ev, app_cursor) else {
             return false;
         };
+        self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
         self.sh.mark_typed();
@@ -298,6 +408,7 @@ impl TermHandle {
         if text.is_empty() {
             return;
         }
+        self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, text.as_bytes());
         self.sh.mark_typed();
@@ -309,6 +420,7 @@ impl TermHandle {
             return;
         }
         let bytes = flare_shells::paste::paste_bytes(text, self.mode().bracketed_paste);
+        self.sh.finish_reveal();
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
         self.sh.mark_typed();
@@ -449,6 +561,220 @@ mod tests {
 
     fn key_a() -> KeyEvent {
         KeyEvent::new("a", "KeyA").text("a")
+    }
+
+    // The resume reveal.
+
+    const RID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    struct R {
+        t: T,
+        now: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl R {
+        fn at(&self, ms: u64) {
+            self.now.store(ms, Ordering::SeqCst);
+        }
+        fn tick(&self, ms: u64) {
+            self.at(ms);
+            self.t.h.reveal_tick();
+        }
+        fn feed(&self, bytes: &[u8]) {
+            self.t.fake().feed(bytes);
+        }
+        /// Feeds a marker line and waits for it, so everything before it is parsed.
+        fn sync(&self, marker: &str) {
+            self.feed(marker.as_bytes());
+            let m = marker.to_string();
+            wait_until("the marker", || self.t.text().contains(&m));
+        }
+        fn revealed_events(&self) -> usize {
+            self.t
+                .h
+                .drain_events()
+                .iter()
+                .filter(|e| **e == TermEvent::Revealed)
+                .count()
+        }
+    }
+
+    impl T {
+        fn text(&self) -> String {
+            let g = self.h.snapshot();
+            (0..g.rows())
+                .map(|r| {
+                    (0..g.cols())
+                        .map(|c| g.cell(c, r).ch)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+
+    fn resumed_with(resume: Option<&str>) -> R {
+        let t = T::new();
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let n = Arc::clone(&now);
+        t.h.set_clock(Arc::new(move || n.load(Ordering::SeqCst)));
+        t.h.start(StartOptions {
+            resume: resume.map(str::to_string),
+            ..start_opts()
+        });
+        wait_until("the spawn", || !t.sp.made().is_empty());
+        wait_until("Started", || t.has(&TermEvent::Started));
+        R { t, now }
+    }
+
+    fn resumed() -> R {
+        resumed_with(Some(RID))
+    }
+
+    #[test]
+    fn a_resume_never_writes_into_the_shell() {
+        let r = resumed();
+        r.feed(b"PS C:\\work> ");
+        r.sync("one");
+        r.feed(b"\x1b]0;claude\x07");
+        r.sync("two");
+        assert!(r.t.fake().written().is_empty());
+    }
+
+    #[test]
+    fn the_clear_alone_makes_no_reply() {
+        let mut e = Emulator::new(80, 24);
+        assert!(e.feed(reveal::CLEAR).is_empty());
+    }
+
+    #[test]
+    fn a_resume_clears_the_grid_just_before_the_agents_title() {
+        let r = resumed();
+        r.at(3600);
+        r.feed(b"PS C:\\work> \x1b]0;claude\x07agent text");
+        wait_until("agent text", || r.t.text().contains("agent text"));
+        assert!(!r.t.text().contains("PS C:"));
+        assert!(r.t.fake().written().is_empty());
+    }
+
+    #[test]
+    fn the_clear_is_written_once() {
+        let r = resumed();
+        r.feed(b"\x1b]0;claude\x07first");
+        wait_until("first", || r.t.text().contains("first"));
+        r.feed(b"typed\x1b]0;claude\x07");
+        r.sync("after");
+        assert!(r.t.text().contains("typed"));
+    }
+
+    #[test]
+    fn a_shell_title_or_a_folder_called_claude_clears_nothing() {
+        let r = resumed();
+        r.feed(b"prompt one\x1b]0;C:\\Users\\me\\Documents\\Claude\x07");
+        r.feed(b"\x1b]0;pwsh\x07");
+        r.sync(" end");
+        assert!(r.t.text().contains("prompt one"));
+    }
+
+    #[test]
+    fn the_terminal_is_revealed_150_ms_after_the_agents_own_title() {
+        let r = resumed();
+        r.at(3600);
+        r.feed(b"\x1b]0;claude\x07");
+        r.sync("x");
+        r.at(5410);
+        r.feed("\x1b]0;\u{2733} Claude Code\x07".as_bytes());
+        r.sync("y");
+        r.tick(5559);
+        assert!(r.t.h.resuming());
+        r.tick(5560);
+        assert!(!r.t.h.resuming());
+        r.tick(9000);
+        assert_eq!(r.revealed_events(), 1);
+    }
+
+    #[test]
+    fn the_alternate_screen_reveals_too() {
+        let r = resumed();
+        r.at(3600);
+        r.feed(b"\x1b]0;claude\x07");
+        r.sync("x");
+        r.at(5445);
+        r.feed(b"\x1b[?1049h");
+        wait_until("the alt screen", || r.t.h.mode().alt_screen);
+        r.tick(5594);
+        assert!(r.t.h.resuming());
+        r.tick(5595);
+        assert!(!r.t.h.resuming());
+    }
+
+    #[test]
+    fn a_key_a_paste_an_exit_and_a_failed_spawn_reveal_at_once() {
+        let r = resumed();
+        assert!(r.t.h.resuming());
+        r.t.h.send_key(&key_a());
+        assert!(!r.t.h.resuming());
+        let r = resumed();
+        r.t.h.paste("hi");
+        assert!(!r.t.h.resuming());
+        let r = resumed();
+        r.t.fake().exit(0);
+        wait_until("the reveal", || !r.t.h.resuming());
+        let t = T::new();
+        t.sp.fail_next_spawn();
+        t.h.start(StartOptions {
+            resume: Some(RID.into()),
+            ..start_opts()
+        });
+        wait_until("StartFailed", || t.has(&TermEvent::StartFailed));
+        assert!(!t.h.resuming());
+    }
+
+    #[test]
+    fn the_ceiling_reveals_whatever_is_there() {
+        let r = resumed();
+        r.tick(11_999);
+        assert!(r.t.h.resuming());
+        r.tick(12_000);
+        assert!(!r.t.h.resuming());
+    }
+
+    #[test]
+    fn a_plain_tab_is_never_resuming_or_cleared() {
+        let r = resumed_with(None);
+        assert!(!r.t.h.resuming());
+        r.feed(b"keep me\x1b]0;claude\x07");
+        r.sync(" end");
+        assert!(r.t.text().contains("keep me"));
+        r.tick(20_000);
+        assert_eq!(r.revealed_events(), 0);
+    }
+
+    #[test]
+    fn a_title_split_across_two_chunks_does_not_clear_but_the_ceiling_still_reveals() {
+        let r = resumed();
+        r.sync("shell text");
+        r.feed(b"\x1b]0;cla");
+        r.sync(" ");
+        r.feed(b"ude\x07");
+        r.sync("z");
+        assert!(r.t.text().contains("shell text"));
+        r.tick(12_000);
+        assert!(!r.t.h.resuming());
+    }
+
+    #[test]
+    fn the_failed_spawn_line_still_shows() {
+        let t = T::new();
+        t.sp.fail_next_spawn();
+        t.h.start(StartOptions {
+            resume: Some(RID.into()),
+            ..start_opts()
+        });
+        wait_until("StartFailed", || t.has(&TermEvent::StartFailed));
+        assert!(t.row0().starts_with("Could not start the shell."));
     }
 
     #[test]

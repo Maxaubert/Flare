@@ -85,6 +85,8 @@ pub enum TermEvent {
     AnswerKey(String),
     /// `TermHandle::resize` ran (output we caused by a refit is not work).
     Resized,
+    /// A resuming tab's terminal is shown now (the agent painted, a key, an exit, the ceiling).
+    Revealed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
