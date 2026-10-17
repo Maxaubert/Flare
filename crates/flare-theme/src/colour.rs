@@ -59,7 +59,11 @@ fn num(tok: &str, pct: Option<f64>) -> Option<f64> {
     if !n.is_finite() {
         return None;
     }
-    if has_pct { pct.map(|p| n * p) } else { Some(n) }
+    if has_pct {
+        pct.map(|p| n * p)
+    } else {
+        Some(n)
+    }
 }
 
 /// An alpha token: 0..1 or 0%..100%.
