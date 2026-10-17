@@ -8,3 +8,7 @@ pub const LIGHT_GROUND: f64 = 0.4;
 
 /// The dark ink chosen where white would not read: the ground's own near-black.
 pub const ON_DARK_INK: &str = DEFAULT_GROUND;
+
+/// The ink and the cursor of a Custom theme that names neither (PT `paletteOf`'s fallbacks).
+pub const DEFAULT_INK: &str = "#e7e7ee";
+pub const DEFAULT_CURSOR: &str = "#5b5bd6";

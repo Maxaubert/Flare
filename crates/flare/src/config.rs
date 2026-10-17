@@ -191,7 +191,7 @@ fn value<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, S
 fn parse_look_colour(flag: &str, v: &str) -> Result<String, String> {
     parse_colour(v)
         .map(|c| to_stored(&c))
-        .ok_or_else(|| format!("{flag} needs a colour such as #e07a2f, not '{v}'"))
+        .ok_or_else(|| format!("{flag} needs a colour such as #rrggbb, not '{v}'"))
 }
 
 fn parse_renderer(v: &str) -> Result<RendererChoice, String> {

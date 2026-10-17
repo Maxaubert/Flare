@@ -1222,12 +1222,15 @@ fn a_tab_with_an_agent_asks_and_cancel_keeps_it() {
     );
     let body = |working: Option<u64>| {
         let label = f.ctl.borrow().model().labels()[0].clone();
-        ask_view(&tab_ask(
-            &id,
-            &label,
-            flare_agent::kinds::DetectedAgent::Claude,
-            working,
-        ))
+        ask_view(
+            &tab_ask(
+                &id,
+                &label,
+                flare_agent::kinds::DetectedAgent::Claude,
+                working,
+            ),
+            flare_tabs::close_flow::NAME_INK,
+        )
         .body
     };
     assert!(body(None).contains("Claude"), "{}", body(None));

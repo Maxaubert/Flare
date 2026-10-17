@@ -1419,7 +1419,7 @@ impl AppCtl {
         if let Some(app) = self.app() {
             match &self.ask {
                 Some(a) => {
-                    let v = ask_view(a);
+                    let v = ask_view(a, &crate::chrome_apply::text_ink());
                     let body = slint::StyledText::from_markdown(&v.body)
                         .unwrap_or_else(|_| slint::StyledText::from_plain_text(&v.body));
                     app.set_dialog_title(v.title.into());

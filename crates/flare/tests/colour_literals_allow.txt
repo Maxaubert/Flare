@@ -1,0 +1,2 @@
+// Task 24: fixed colours the app keeps, each with its reason. Format: path | literal | reason (path from the repo root, forward slashes).
+crates/flare-tabs/src/close_flow.rs | #dedacf | M3's default close-question ink, the test value; at run time the dialogs pass the theme's --p-text (chrome_apply::text_ink)

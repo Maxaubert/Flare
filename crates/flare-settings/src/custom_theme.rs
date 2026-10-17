@@ -8,7 +8,7 @@
 
 use flare_theme::ansi::{ANSI_KEYS, PartialAnsi, normalize_color};
 use flare_theme::colour::{canonical_stored, opaque, parse_colour, to_stored};
-use flare_theme::ground::DEFAULT_GROUND;
+use flare_theme::ground::{DEFAULT_CURSOR, DEFAULT_GROUND, DEFAULT_INK};
 use flare_theme::resolve::{CustomPalette, preset_accent, resolve_saved_theme};
 use flare_theme::see_through::see_through_level;
 use serde_json::{Map, Value};
@@ -126,8 +126,8 @@ pub fn palette_of(id: &str, custom: Option<&CustomTheme>, in_force: &str) -> Cus
     let t = resolve_saved_theme(id, saved, None);
     CustomPalette {
         bg: normalize_color(&t.background, DEFAULT_GROUND),
-        fg: normalize_color(&t.foreground, "#e7e7ee"),
-        cursor: normalize_color(&t.cursor, "#5b5bd6"),
+        fg: normalize_color(&t.foreground, DEFAULT_INK),
+        cursor: normalize_color(&t.cursor, DEFAULT_CURSOR),
         selection: None,
         ansi: t.ansi.clone(),
         accent: preset_accent(id, in_force, saved, None),

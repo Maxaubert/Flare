@@ -6,6 +6,7 @@
 // The look controller (Task 26) calls these; until it lands they are reached from the tests only.
 #![allow(dead_code)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flare_render::color::{Palette, Rgba};
@@ -72,6 +73,30 @@ token_table! {
 
 static WARNED: AtomicBool = AtomicBool::new(false);
 
+/// The text colour of the look last applied (`--p-text`): the close question's names wear it. Empty until
+/// the first apply, which reads as the default ink.
+static TEXT_INK: Mutex<String> = Mutex::new(String::new());
+
+/// The theme's text colour (`--p-text`) of a look, or M3's default ink when the look names none.
+pub fn ink_of(look: &AppliedLook) -> String {
+    look.chrome
+        .vars
+        .get("--p-text")
+        .cloned()
+        .unwrap_or_else(|| flare_tabs::close_flow::NAME_INK.to_string())
+}
+
+/// The theme's text colour for the dialogs that name things (the close question), or M3's default ink
+/// before any look has been applied.
+pub fn text_ink() -> String {
+    let ink = TEXT_INK.lock().map(|s| s.clone()).unwrap_or_default();
+    if ink.is_empty() {
+        flare_tabs::close_flow::NAME_INK.to_string()
+    } else {
+        ink
+    }
+}
+
 /// `#rrggbb` or `#rrggbbaa` to a Slint colour. Anything else logs one error and is transparent.
 pub fn colour(hex: &str) -> Color {
     match Rgba::from_hex(hex) {
@@ -99,6 +124,9 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     };
     theme.set_window_clear(clear);
     theme.set_light(look.light);
+    if let Ok(mut slot) = TEXT_INK.lock() {
+        *slot = ink_of(look);
+    }
 }
 
 /// The grid's palette for a resolved theme. Background, foreground and cursor are opaque; the selection keeps its
@@ -180,6 +208,15 @@ mod tests {
 
     fn argb(c: Color) -> (u8, u8, u8, u8) {
         (c.alpha(), c.red(), c.green(), c.blue())
+    }
+
+    #[test]
+    fn the_close_question_ink_is_the_applied_text_token() {
+        let look = look_of("pt-default", 0, false);
+        assert_eq!(ink_of(&look), look.chrome.vars["--p-text"]);
+        let mut bare = look.clone();
+        bare.chrome.vars.remove("--p-text");
+        assert_eq!(ink_of(&bare), flare_tabs::close_flow::NAME_INK);
     }
 
     #[test]
