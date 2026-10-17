@@ -2,8 +2,6 @@
 //! fits what was clicked: a path adds its open, reveal and copy rows, a link its copy and open rows,
 //! a selection its copy row. Paste and Find are always there; Command help only while its setting is on.
 
-#![allow(dead_code)] // wired into the window by Task 23
-
 use crate::menus_ui::MenuRowData;
 use flare_term::link_target::TermPathAt;
 use flare_term::path_open::PathKind;

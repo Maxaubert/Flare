@@ -31,7 +31,6 @@ impl LiveSource {
         }
     }
 
-    #[allow(dead_code)] // wired by the window in Task 24
     /// A source that also paints the controller's decoration (selection, find, links).
     pub fn with_inputs(handle: Arc<TermHandle>, inputs: Rc<RefCell<DecorInputs>>) -> Self {
         Self {

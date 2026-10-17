@@ -534,6 +534,7 @@ impl Scene {
             hide: Rc::new(|| {}),
             launch_folders: Vec::new(),
             e2e: true,
+            term: crate::appctl::TermPorts::inert(),
         };
         let ctl = AppCtl::new(&app, deps);
         let scene = Self {

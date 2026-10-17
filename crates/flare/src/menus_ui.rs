@@ -58,7 +58,14 @@ impl MenuRowData {
 
 pub enum MenuKind {
     Plus,
-    Tab { id: String, cwd: String },
+    Tab {
+        id: String,
+        cwd: String,
+    },
+    /// The terminal's menu; its rows and picks belong to `TermUi`.
+    Term {
+        tab: String,
+    },
 }
 
 /// The + menu: pins first, then the newest unpinned recents. None at all: one disabled row.

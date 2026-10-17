@@ -5,7 +5,6 @@
 //! Positions arrive in CSS px relative to the grid area; every hit test is in whole device pixels.
 //! Source: PT `TerminalPanel.tsx` (`attachClickCaret`, `deleteSelection`, `termContextAt`, the key
 //! handler, `pasteHere`), `App.tsx` (the menu, the drop, the find chord), xterm `SelectionService`.
-#![allow(dead_code)] // wired into the window by Task 24; remove this line then
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;

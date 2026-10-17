@@ -22,12 +22,32 @@ const QUIT_WAIT: Duration = Duration::from_secs(3);
 /// What a tab's shell reported, tagged with the tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostEvent {
-    Cwd { id: String, path: String },
-    Exited { id: String, code: Option<u32> },
-    Started { id: String },
-    StartFailed { id: String },
-    Title { id: String, text: String },
-    Bell { id: String },
+    Cwd {
+        id: String,
+        path: String,
+    },
+    Exited {
+        id: String,
+        code: Option<u32>,
+    },
+    Started {
+        id: String,
+    },
+    StartFailed {
+        id: String,
+    },
+    Title {
+        id: String,
+        text: String,
+    },
+    Bell {
+        id: String,
+    },
+    /// A program wrote the clipboard (OSC 52).
+    ClipboardWrite {
+        id: String,
+        text: String,
+    },
 }
 
 pub struct TabHost {
@@ -176,7 +196,7 @@ impl TabHost {
     }
 
     /// Every handle's events, mapped. Bell is already gated by the handle. Events the host has
-    /// no reader for yet (clipboard writes, raw OSC) are dropped here.
+    /// no reader for (raw OSC) are dropped here.
     pub fn drain_events(&self) -> Vec<HostEvent> {
         let mut out = Vec::new();
         for id in &self.order {
@@ -192,6 +212,9 @@ impl TabHost {
                     TermEvent::StartFailed => out.push(HostEvent::StartFailed { id }),
                     TermEvent::Title(text) => out.push(HostEvent::Title { id, text }),
                     TermEvent::Bell => out.push(HostEvent::Bell { id }),
+                    TermEvent::ClipboardWrite(text) => {
+                        out.push(HostEvent::ClipboardWrite { id, text });
+                    }
                     _ => {}
                 }
             }
