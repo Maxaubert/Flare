@@ -83,31 +83,14 @@ mod tests {
     /// Reads the clipboard's Unicode text back (test only).
     fn read_text() -> Option<String> {
         use windows_sys::Win32::System::DataExchange::GetClipboardData;
-        // SAFETY: the clipboard is opened, read and closed on this thread; the handle from
-        // GetClipboardData is locked only while it is non-null, and the text is read up to its
-        // terminating zero, which set_text always writes.
+        // SAFETY: the clipboard is opened, read and closed on this thread, so the handle from
+        // GetClipboardData stays live for the bounded read (`read_utf16_block` stops at the
+        // block's own size and unlocks on every path).
         unsafe {
             if OpenClipboard(ptr::null_mut()) == 0 {
                 return None;
             }
-            let handle = GetClipboardData(CF_UNICODETEXT);
-            let text = if handle.is_null() {
-                None
-            } else {
-                let locked = GlobalLock(handle).cast::<u16>();
-                if locked.is_null() {
-                    None
-                } else {
-                    let mut len = 0;
-                    while *locked.add(len) != 0 {
-                        len += 1;
-                    }
-                    let units = std::slice::from_raw_parts(locked, len);
-                    let s = String::from_utf16_lossy(units);
-                    GlobalUnlock(handle);
-                    Some(s)
-                }
-            };
+            let text = crate::clipboard_port::read_utf16_block(GetClipboardData(CF_UNICODETEXT));
             CloseClipboard();
             text
         }

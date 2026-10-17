@@ -8,7 +8,15 @@ use std::cell::Cell;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::ptr;
+use std::time::Duration;
 
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFileInformationByHandle, OPEN_EXISTING,
+};
 use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx,
 };
@@ -167,27 +175,81 @@ fn spawn_explorer(args: &str) -> Result<(), String> {
         .map_err(|e| format!("explorer did not start: {}", e.kind()))
 }
 
-/// Re-verifies, on the canonical path, that `abs` is a folder, then hands that path to `spawn`.
+/// How long a folder stays held after Explorer is started: long enough for Explorer to resolve
+/// the path it was handed.
+const FOLDER_HOLD: Duration = Duration::from_secs(10);
+
+/// An open handle on a real directory, shared for read and write but NOT delete: while it lives
+/// the directory cannot be renamed or removed, so its name cannot become a runnable file.
+pub(crate) struct FolderHold(HANDLE);
+
+// SAFETY: a kernel handle may be closed from any thread; nothing else touches it.
+unsafe impl Send for FolderHold {}
+
+impl Drop for FolderHold {
+    fn drop(&mut self) {
+        // SAFETY: built only from a valid handle CreateFileW returned; closed exactly once.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+/// Holds `canon` open when it is a real directory now (not a file, not a link or junction).
+fn hold_folder(canon: &str) -> Option<FolderHold> {
+    let wide = utf16_with_nul(canon);
+    // SAFETY: `wide` is a zero-terminated UTF-16 path that outlives the call; null security
+    // attributes and template are allowed. FILE_LIST_DIRECTORY makes the share mode binding (an
+    // attribute-only open would not stop a rename).
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return None;
+    }
+    let hold = FolderHold(handle);
+    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid value of this plain C struct.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `handle` is live (owned by `hold`) and `info` is a writable struct of the right type.
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return None;
+    }
+    let attrs = info.dwFileAttributes;
+    (attrs & FILE_ATTRIBUTE_DIRECTORY != 0 && attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0)
+        .then_some(hold)
+}
+
+/// Holds the canonical path as a directory (refused otherwise), then hands that path to `spawn`.
+/// The hold is returned so it outlives the spawn: the name stays a folder while Explorer reads it.
 fn open_folder_with(
     abs: &str,
     spawn: impl FnOnce(&str) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<FolderHold, String> {
     let canon = canonical(abs).ok_or_else(|| "path not found".to_string())?;
-    // sync-ok: called from the open worker only
-    if !std::fs::metadata(&canon)
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
-    {
-        return Err("not a folder".to_string());
-    }
+    let hold = hold_folder(&canon).ok_or_else(|| "not a folder".to_string())?;
     let args = folder_args(&canon).ok_or_else(|| "path refused".to_string())?;
-    spawn(&args)
+    spawn(&args)?;
+    Ok(hold)
 }
 
-/// Opens a folder in Explorer. The canonical path is checked to be a folder right before the
-/// spawn and is what Explorer receives, so a file swapped in meanwhile is never run.
+/// Opens a folder in Explorer. The canonical path is held open as a directory (no rename, no
+/// delete) from before the spawn until `FOLDER_HOLD` after it, so a file swapped in under that
+/// name is never what Explorer runs.
 pub fn explorer_open_folder(abs: &str) -> Result<(), String> {
-    open_folder_with(abs, spawn_explorer)
+    let hold = open_folder_with(abs, spawn_explorer)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(FOLDER_HOLD); // sync-ok: a detached thread that only keeps the hold
+        drop(hold);
+    });
+    Ok(())
 }
 
 /// Shows a file selected in Explorer.
@@ -325,6 +387,34 @@ mod tests {
         assert!(got.starts_with('"') && got.ends_with('"'), "{got}");
         assert!(!got.contains(r"\\?\"), "{got}");
         assert!(got.contains("a b"), "{got}");
+    }
+
+    #[test]
+    fn a_folder_is_held_against_rename_and_delete_while_explorer_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("p");
+        let sub = parent.join("tool.exe");
+        std::fs::create_dir_all(&sub).unwrap();
+        let moved = parent.join("moved");
+        let parent_moved = dir.path().join("q");
+        let mut checked = false;
+        let hold = open_folder_with(sub.to_str().unwrap(), |_| {
+            // The name cannot be freed for a runnable file while Explorer resolves it, neither
+            // by moving the folder nor by moving the folder above it.
+            assert!(std::fs::rename(&sub, &moved).is_err());
+            assert!(std::fs::remove_dir(&sub).is_err());
+            assert!(std::fs::rename(&parent, &parent_moved).is_err());
+            checked = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(checked);
+        assert!(
+            std::fs::rename(&sub, &moved).is_err(),
+            "still held after the spawn"
+        );
+        drop(hold);
+        std::fs::rename(&sub, &moved).unwrap();
     }
 
     #[test]
