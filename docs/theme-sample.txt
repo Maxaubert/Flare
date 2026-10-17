@@ -1,0 +1,10 @@
+PS C:\Users\Admin\Documents> Get-ChildItem -Recurse
+
+[1mFlare theme sample[0m  https://example.com/themes
+normal : [30m 0 [0m[31m 1 [0m[32m 2 [0m[33m 3 [0m[34m 4 [0m[35m 5 [0m[36m 6 [0m[37m 7 [0m
+bright : [90m 8 [0m[91m 9 [0m[92m10 [0m[93m11 [0m[94m12 [0m[95m13 [0m[96m14 [0m[97m15 [0m
+blocks : [40m  [0m[41m  [0m[42m  [0m[43m  [0m[44m  [0m[45m  [0m[46m  [0m[47m  [0m[100m  [0m[101m  [0m[102m  [0m[103m  [0m[104m  [0m[105m  [0m[106m  [0m[107m  [0m
+bold   : [1;31mred[0m [1;32mgreen[0m [1;33myellow[0m [1;34mblue[0m [1;35mmagenta[0m [1;36mcyan[0m
+style  : [4munderline[0m [7minverse[0m [90mprediction[0m
+
+PS C:\Users\Admin\Documents> 
