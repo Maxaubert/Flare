@@ -1,1 +1,9 @@
-//! flare-shells, see the roadmap crate table for its role.
+pub mod cwd;
+pub mod detect;
+pub mod env;
+pub mod list;
+pub mod paste;
+pub mod prompt;
+pub mod ps_quote;
+pub mod resume;
+pub mod sys;
