@@ -934,6 +934,10 @@ impl Scene {
             "term-find-many" => {
                 find("err");
                 self.settle(60);
+                // Back from the first match wraps to the last, past the thousand that are
+                // counted: the readout is `1000+` (xterm's -1 index).
+                self.app.invoke_find_prev();
+                self.settle(4);
             }
             "term-find-empty" => self.term_key("f", "KeyF", true),
             "term-links" => {
@@ -1069,4 +1073,39 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
     write_png(path, scene.phys.0, scene.phys.1, &rgba)?;
     println!("screenshot: {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::parse_args;
+
+    fn staged(name: &str) -> Scene {
+        let argv: Vec<String> = [
+            "--scene",
+            name,
+            "--scale",
+            "1",
+            "--size",
+            "1000x640",
+            "--renderer",
+            "software",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let args = parse_args(&argv, None).expect("the arguments parse");
+        let (saved, prep) = setup(name);
+        let scene = Scene::build_with(&args, saved, prep, false, true).expect("the scene builds");
+        scene.stage(name).expect("the scene stages");
+        scene
+    }
+
+    /// Task 27: the screenshot of `term-find-many` read "1 of 1000"; the plan's scene shows the
+    /// readout `1000+` (the active match past the thousand that are counted).
+    #[test]
+    fn the_many_scene_reads_a_thousand_plus() {
+        let scene = staged("term-find-many");
+        assert_eq!(scene.app.get_find_readout().as_str(), "1000+");
+    }
 }

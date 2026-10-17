@@ -132,7 +132,8 @@ export component ContextMenu inherits Rectangle {
         // panel): a label never gives way to its key hint. Only the window's edge caps it.
         // Snapped, as the text's width is any fraction: the border stays on whole pixels.
         width: Px.snap(min(max(156px, col.preferred-width) + 2 * Px.hair(), root.width - 16px));
-        height: col.preferred-height + 2 * Px.hair();
+        // The layout's padding is the border already: adding it again made the last row taller.
+        height: col.preferred-height;
         x: Px.snap(min(root.at-x, root.width - self.width - 8px));
         y: Px.snap(min(root.at-y, root.height - self.height - 8px));
         background: Theme.side-flat;

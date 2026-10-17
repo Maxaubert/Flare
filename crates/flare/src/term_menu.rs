@@ -306,6 +306,12 @@ mod tests {
         for r in &rows {
             let decl = format!("out property <string> {}:", r.icon);
             assert!(slint.contains(&decl), "missing glyph {}", r.icon);
+            // The window draws what `glyph_path` answers; "" draws nothing (Task 27).
+            assert!(
+                !crate::menus_ui::glyph_path(r.icon).is_empty(),
+                "no path for {}",
+                r.icon
+            );
         }
     }
 

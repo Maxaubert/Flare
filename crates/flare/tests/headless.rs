@@ -514,3 +514,72 @@ fn the_strip_scene_has_crisp_dividers_at_every_scale() {
         }
     }
 }
+
+/// The top-left of the first run of at least `min_run` pixels equal to `colour`, from row
+/// `from_y` down: a panel's inner corner (a stray anti-aliased pixel never makes such a run).
+fn panel_corner(img: &Decoded, colour: [u8; 3], from_y: u32, min_run: u32) -> Option<(u32, u32)> {
+    for y in from_y..img.1 {
+        let mut x = 0;
+        while x < img.0 {
+            if pixel(img, x, y) == colour {
+                let start = x;
+                while x < img.0 && pixel(img, x, y) == colour {
+                    x += 1;
+                }
+                if x - start >= min_run {
+                    return Some((start, y));
+                }
+            } else {
+                x += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Task 27: every row of the terminal menu wears its glyph (PT `MenuIcon` on every row); the
+/// screenshots showed only `Copy path` with one.
+#[test]
+fn every_terminal_menu_row_has_its_glyph() {
+    const PANEL: [u8; 3] = [0x1f, 0x1f, 0x1e];
+    for (name, rows) in [
+        ("term-menu-path", 5u32),
+        ("term-menu-link", 4),
+        ("term-menu-plain", 2),
+    ] {
+        for scale in ["1", "1.5", "2.25"] {
+            let s: f32 = scale.parse().expect("scale");
+            let hair = s.floor().max(1.0) as u32;
+            let (_dir, img) = scene_png(name, scale);
+            // Below the tab strip, which wears the same colour.
+            let below_strip = (40.0 * s).round() as u32;
+            let (x0, y0) = panel_corner(&img, PANEL, below_strip, (100.0 * s) as u32)
+                .expect("the menu is shown");
+            let row_h = (28.0 * s).round() as u32;
+            // The icon column: 11 css px in from the inner edge, 13 css px wide, then the 8 px
+            // gap before the label. A row without a glyph puts its label in both.
+            let at = |css: f32| x0 + (css * s).round() as u32;
+            let ink_in = |ry: u32, xa: u32, xb: u32| {
+                let mut n = 0;
+                for y in ry + 2..ry + row_h - 2 {
+                    for x in xa..xb {
+                        let p = pixel(&img, x, y);
+                        if p.iter().zip(PANEL).any(|(a, b)| a.abs_diff(b) > 10) {
+                            n += 1;
+                        }
+                    }
+                }
+                n
+            };
+            for i in 0..rows {
+                let ry = y0 + i * (row_h + hair);
+                let glyph = ink_in(ry, at(11.0), at(26.0));
+                let gap = ink_in(ry, at(26.0), at(30.0));
+                assert!(
+                    glyph >= 4 && gap == 0,
+                    "{name} at {scale}: row {i} has no glyph (glyph {glyph} px, gap {gap} px)"
+                );
+            }
+        }
+    }
+}
