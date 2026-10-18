@@ -23,7 +23,7 @@ use crate::cells::{
     BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
-use crate::find::{CountJob, FindMatch, FindOpts, Finder, index_of, scroll_to_show};
+use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
 use crate::grid_map::snapshot_grid;
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
 use crate::link_target::{TermPathAt, menu_link, shown_link_over};
@@ -129,6 +129,8 @@ pub struct Emulator {
     find_recount: bool,
     find_hits: Vec<FindMatch>,
     find_active: Option<FindMatch>,
+    /// The search Enter, the arrows or typing started, walked a slice at a time; None when none runs.
+    search: Option<StepJob>,
     links: LinkScanner,
     /// The marks of the last `link_marks` call; None before the first scan.
     link_last: Option<Vec<LinkMark>>,
@@ -142,8 +144,11 @@ pub struct FindView {
     pub active: Option<FindMatch>,
     pub count: usize,
     pub index: Option<usize>,
-    /// True when the count has walked the whole buffer, or no search runs.
+    /// True when the count has walked the whole buffer.
     pub done: bool,
+    /// True while a search (Enter, the arrows, typing) is walking; the active match changes only
+    /// when it lands, so the readout keeps its text until then.
+    pub searching: bool,
 }
 
 /// alacritty answers DA1 with `ESC[?6c`; xterm.js (and the e2e parity check) say `ESC[?1;2c`.
@@ -180,6 +185,7 @@ impl Emulator {
             find_recount: false,
             find_hits: Vec::new(),
             find_active: None,
+            search: None,
             links: LinkScanner::new(),
             link_last: None,
         }
@@ -855,7 +861,8 @@ impl Emulator {
     }
 
     /// A new query: forgets the counted matches and starts a new count, but keeps the active
-    /// match, so the incremental search that follows starts at it. No scroll, no selection.
+    /// match, so the incremental search that follows starts at it. No scroll, no selection. A
+    /// search still walking for the old query is cancelled.
     pub fn find_set(&mut self, query: &str) {
         if query.is_empty() {
             self.find_clear();
@@ -864,6 +871,7 @@ impl Emulator {
         self.find_query = query.to_string();
         self.find_hits.clear();
         self.find_recount = false;
+        self.search = None;
         self.find_restart();
     }
 
@@ -873,61 +881,99 @@ impl Emulator {
             Finder::new(&self.find_query, FindOpts::default()).map(|f| CountJob::new(f, total));
     }
 
+    /// Starts a search from the anchor, cancelling one that runs. `incremental` (typing) keeps the
+    /// active match when it still matches; Enter and the arrows (`false`) step past it. The walk
+    /// happens in `find_step`, a slice at a time; the match lands then.
+    pub fn find_start(&mut self, query: &str, dir: Dir, incremental: bool) {
+        self.search = None;
+        let Some(f) = Finder::new(query, FindOpts::default()) else {
+            return;
+        };
+        let prev = self.find_anchor();
+        let total = self.total_rows();
+        self.search = Some(StepJob::new(f, dir, prev, !incremental, total));
+    }
+
     /// Enter (`incremental: false`) and typing (`incremental: true`): the next match after the
-    /// anchor. Returns the match and the scroll the caller applies as `scroll_view(-scroll)`.
+    /// anchor, answered at once. Returns the match and the scroll the caller applies as
+    /// `scroll_view(-scroll)`.
     pub fn find_next(
         &mut self,
         query: &str,
         incremental: bool,
     ) -> Option<(FindMatch, Option<i32>)> {
-        let f = Finder::new(query, FindOpts::default())?;
-        let prev = self.find_anchor();
-        let cols = self.cols();
-        let found = {
-            let b = TermBuf::all(&self.term);
-            f.next(&b, cols, prev.as_ref(), !incremental)
-        };
-        self.find_land(found)
+        self.find_now(query, Dir::Next, !incremental)
     }
 
-    /// Shift+Enter and the up button: the match before the anchor.
+    /// Shift+Enter and the up button: the match before the anchor, answered at once.
     pub fn find_prev(&mut self, query: &str) -> Option<(FindMatch, Option<i32>)> {
+        self.find_now(query, Dir::Prev, true)
+    }
+
+    /// A search run to its end in this call (no budget).
+    fn find_now(
+        &mut self,
+        query: &str,
+        dir: Dir,
+        same_term: bool,
+    ) -> Option<(FindMatch, Option<i32>)> {
         let f = Finder::new(query, FindOpts::default())?;
         let prev = self.find_anchor();
         let cols = self.cols();
+        let total = self.total_rows();
         let found = {
             let b = TermBuf::all(&self.term);
-            f.previous(&b, cols, prev.as_ref(), true)
+            let mut job = StepJob::new(f, dir, prev, same_term, total);
+            job.run(&b, cols)
         };
         self.find_land(found)
     }
 
-    /// Runs one slice of the count job. True when the counted matches or the done state changed.
-    pub fn find_step(&mut self, now: &dyn Fn() -> f64) -> bool {
-        let cols = self.cols();
-        let Some(job) = self.find_job.as_mut() else {
-            return false;
-        };
-        let before_hits = self.find_hits.clone();
-        let before_done = job.done();
-        let done = {
-            let b = TermBuf::all(&self.term);
-            job.step(&b, cols, now)
-        };
-        if done || !self.find_recount {
-            self.find_hits = job.results();
-        }
-        if done {
-            self.find_recount = false;
-        }
-        self.find_hits != before_hits || done != before_done
+    /// Whether the count or a search still has slices to run.
+    pub fn find_busy(&self) -> bool {
+        self.search.is_some() || self.find_job.as_ref().is_some_and(|j| !j.done())
     }
 
-    /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match.
+    /// Runs ONE slice: the running search's, else the count job's, so one UI turn holds one slice.
+    /// Returns the scroll that a search landing asks for (`scroll_view(-scroll)`), None when
+    /// nothing landed or none is needed.
+    pub fn find_step(&mut self, now: &dyn Fn() -> f64) -> Option<i32> {
+        let cols = self.cols();
+        if self.search.is_some() {
+            let slice = {
+                let b = TermBuf::all(&self.term);
+                self.search
+                    .as_mut()
+                    .and_then(|search| search.step(&b, cols, now))
+            };
+            let found = slice?;
+            self.search = None;
+            return self.find_land(found).and_then(|(_, scroll)| scroll);
+        }
+        if let Some(job) = self.find_job.as_mut() {
+            let done = {
+                let b = TermBuf::all(&self.term);
+                job.step(&b, cols, now)
+            };
+            if done || !self.find_recount {
+                self.find_hits = job.results();
+            }
+            if done {
+                self.find_recount = false;
+            }
+        }
+        None
+    }
+
+    /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match. A
+    /// search that runs starts again from its anchor, as the count does.
     pub fn find_refresh(&mut self) {
         if !self.find_query.is_empty() {
             self.find_recount = true;
             self.find_restart();
+            if let Some(search) = self.search.as_mut() {
+                search.restart();
+            }
         }
     }
 
@@ -935,6 +981,7 @@ impl Emulator {
     pub fn find_clear(&mut self) {
         self.find_query.clear();
         self.find_job = None;
+        self.search = None;
         self.find_recount = false;
         self.find_hits.clear();
         self.find_active = None;
@@ -947,6 +994,7 @@ impl Emulator {
             count: self.find_hits.len(),
             index: self.find_active.and_then(|a| index_of(&self.find_hits, &a)),
             done: self.find_job.as_ref().is_none_or(|j| j.done()),
+            searching: self.search.is_some(),
         }
     }
 
@@ -2237,6 +2285,81 @@ mod tests {
             let (m, _) = e.find_next(q, true).unwrap();
             assert_eq!((m.row, m.col), (0, 0));
         }
+    }
+
+    #[test]
+    fn a_new_query_cancels_the_running_job() {
+        let mut e = Emulator::new(20, 3);
+        for _ in 0..300 {
+            e.feed(b"row of text\r\n");
+        }
+        e.feed(b"foo bar");
+        let ticks = std::cell::Cell::new(0.0f64);
+        // Every read of the clock is 5 ms later: one row per slice, so the walk cannot finish.
+        let slow = || {
+            ticks.set(ticks.get() + 5.0);
+            ticks.get()
+        };
+        e.find_start("foo", Dir::Next, true);
+        e.find_step(&slow);
+        assert!(
+            e.find_view().searching,
+            "one slice does not finish the walk"
+        );
+        assert_eq!(e.find_view().active, None, "nothing has landed yet");
+        e.find_set("bar");
+        assert!(
+            !e.find_view().searching,
+            "the new query cancels the old walk"
+        );
+        e.find_start("bar", Dir::Next, true);
+        assert_eq!(
+            e.find_step(&|| 0.0),
+            None,
+            "a match in view does not scroll"
+        );
+        assert_eq!(e.sel_text(), "bar");
+    }
+
+    #[test]
+    fn a_search_with_a_match_near_the_top_lands_in_one_step() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo\r\n");
+        for _ in 0..300 {
+            e.feed(b"row of text\r\n");
+        }
+        e.find_start("foo", Dir::Next, true);
+        let ticks = std::cell::Cell::new(0.0f64);
+        let slow = || {
+            ticks.set(ticks.get() + 5.0);
+            ticks.get()
+        };
+        e.find_step(&slow);
+        assert!(!e.find_view().searching);
+        assert_eq!(e.find_view().active.map(|m| (m.row, m.col)), Some((0, 0)));
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn typing_a_letter_with_no_match_holds_the_ui_thread_under_10_ms() {
+        let mut e = Emulator::new(40, 5);
+        for i in 0..10_000 {
+            e.feed(format!("line {i} of the scrollback\r\n").as_bytes());
+        }
+        let t0 = Instant::now();
+        let clock = move || t0.elapsed().as_secs_f64() * 1000.0;
+        let mut longest = 0.0f64;
+        let started = Instant::now();
+        e.find_set("zq");
+        e.find_start("zq", Dir::Next, true);
+        longest = longest.max(started.elapsed().as_secs_f64() * 1000.0);
+        while e.find_busy() {
+            let turn = Instant::now();
+            e.find_step(&clock);
+            longest = longest.max(turn.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!("longest UI-thread turn over 10,000 lines: {longest:.2} ms");
+        assert!(longest < 10.0, "the longest turn took {longest:.2} ms");
     }
 
     #[test]

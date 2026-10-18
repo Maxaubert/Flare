@@ -276,6 +276,243 @@ pub fn scroll_to_show(row: usize, top: usize, rows: usize) -> Option<i32> {
     }
 }
 
+/// Whether a slice may visit one more row: its elapsed time plus the costliest row it has seen
+/// must stay under `SLICE_MS`, so the slice ends before the row that would cross the budget.
+pub fn slice_may_continue(elapsed_ms: f64, max_row_ms: f64) -> bool {
+    elapsed_ms + max_row_ms < SLICE_MS
+}
+
+/// Which way a search walks: Enter and the down button go next, Shift+Enter and the up button
+/// go previous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    Next,
+    Prev,
+}
+
+/// One pass of a search, the same walks as `Finder::first_from` and `Finder::last_before`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Walk {
+    /// Down from row `from / cols` through the logical lines that start at or before `last_row`;
+    /// a match counts when its start key is `>= from`.
+    Forward { from: usize, last_row: usize },
+    /// Up from row `limit / cols` through the logical lines, down to the one that holds
+    /// `stop_row`; a match counts when its start key is `< limit`.
+    Backward { limit: usize, stop_row: usize },
+}
+
+/// What one unit of a walk found.
+enum Unit {
+    Found(FindMatch),
+    Exhausted,
+    Continue,
+}
+
+/// A search cut into slices of at most `SLICE_MS`. Run to the end it gives exactly the answer of
+/// `Finder::next` or `Finder::previous` (the unsliced reference). One unit of work is one logical
+/// line. Output moves the buffer between slices: a change in its length restarts the walk from the
+/// anchor, and so does `restart` (the emulator calls it when output or a trim arrives).
+pub struct StepJob {
+    finder: Finder,
+    dir: Dir,
+    prev: Option<FindMatch>,
+    same_term: bool,
+    /// The buffer length the walk was planned against.
+    total_rows: usize,
+    planned: bool,
+    passes: Vec<Walk>,
+    /// The running pass.
+    pass: usize,
+    /// The row the running pass reads next; None before that pass starts.
+    at: Option<usize>,
+    cancelled: bool,
+}
+
+impl StepJob {
+    pub fn new(
+        finder: Finder,
+        dir: Dir,
+        prev: Option<FindMatch>,
+        same_term: bool,
+        total_rows: usize,
+    ) -> Self {
+        Self {
+            finder,
+            dir,
+            prev,
+            same_term,
+            total_rows,
+            planned: false,
+            passes: Vec::new(),
+            pass: 0,
+            at: None,
+            cancelled: false,
+        }
+    }
+
+    /// Starts the walk again from its anchor: the buffer moved (output, or rows trimmed off the top).
+    pub fn restart(&mut self) {
+        self.planned = false;
+        self.passes.clear();
+        self.pass = 0;
+        self.at = None;
+    }
+
+    /// Ends the walk: the next step answers "no match" and does no work.
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+
+    /// One slice. None = not finished; Some(None) = finished with no match; Some(Some(m)) = found.
+    pub fn step(
+        &mut self,
+        b: &dyn BufferLike,
+        cols: usize,
+        now: &dyn Fn() -> f64,
+    ) -> Option<Option<FindMatch>> {
+        if self.cancelled {
+            return Some(None);
+        }
+        if b.len() != self.total_rows {
+            self.total_rows = b.len();
+            self.restart();
+        }
+        if !self.planned {
+            self.passes = self.plan(b, cols);
+            self.planned = true;
+        }
+        let start = now();
+        let mut elapsed = 0.0;
+        let mut max_row = 0.0f64;
+        let mut first = true;
+        loop {
+            if self.pass >= self.passes.len() {
+                return Some(None);
+            }
+            if !first && !slice_may_continue(elapsed, max_row) {
+                return None;
+            }
+            first = false;
+            let unit_start = now();
+            let unit = self.unit(b, cols);
+            let unit_end = now();
+            max_row = max_row.max(unit_end - unit_start);
+            elapsed = unit_end - start;
+            match unit {
+                Unit::Found(m) => return Some(Some(m)),
+                Unit::Exhausted => {
+                    self.pass += 1;
+                    self.at = None;
+                }
+                Unit::Continue => {}
+            }
+        }
+    }
+
+    /// The answer with no budget: the walk runs to its end in this call.
+    pub fn run(&mut self, b: &dyn BufferLike, cols: usize) -> Option<FindMatch> {
+        let no_budget = || 0.0;
+        loop {
+            if let Some(answer) = self.step(b, cols, &no_budget) {
+                return answer;
+            }
+        }
+    }
+
+    /// The passes of this search, in the order `Finder::next` or `Finder::previous` makes them.
+    fn plan(&self, b: &dyn BufferLike, cols: usize) -> Vec<Walk> {
+        if b.is_empty() || cols == 0 {
+            return Vec::new();
+        }
+        match (self.dir, self.prev) {
+            (Dir::Next, prev) => {
+                let start = match prev {
+                    None => 0,
+                    Some(p) if self.same_term => p.key(cols) + p.size.max(1),
+                    Some(p) => p.key(cols),
+                };
+                vec![
+                    Walk::Forward {
+                        from: start,
+                        last_row: usize::MAX,
+                    },
+                    Walk::Forward {
+                        from: 0,
+                        last_row: start / cols,
+                    },
+                ]
+            }
+            (Dir::Prev, None) => vec![Walk::Backward {
+                limit: usize::MAX,
+                stop_row: 0,
+            }],
+            (Dir::Prev, Some(p)) => {
+                let k = p.key(cols);
+                let mut passes = Vec::with_capacity(3);
+                if !self.same_term && p.row < b.len() {
+                    passes.push(Walk::Forward {
+                        from: k,
+                        last_row: p.row,
+                    });
+                }
+                passes.push(Walk::Backward {
+                    limit: k,
+                    stop_row: 0,
+                });
+                passes.push(Walk::Backward {
+                    limit: usize::MAX,
+                    stop_row: p.row,
+                });
+                passes
+            }
+        }
+    }
+
+    /// One logical line of the running pass.
+    fn unit(&mut self, b: &dyn BufferLike, cols: usize) -> Unit {
+        if b.is_empty() {
+            return Unit::Exhausted;
+        }
+        match self.passes[self.pass] {
+            Walk::Forward { from, last_row } => {
+                let y = self.at.unwrap_or(from / cols);
+                if y >= b.len() || y > last_row {
+                    return Unit::Exhausted;
+                }
+                let ll = logical_line(b, cols, y);
+                if let Some(m) = self
+                    .finder
+                    .line_matches(&ll, cols)
+                    .into_iter()
+                    .find(|m| m.key(cols) >= from)
+                {
+                    return Unit::Found(m);
+                }
+                self.at = Some(ll.last + 1);
+                Unit::Continue
+            }
+            Walk::Backward { limit, stop_row } => {
+                let y = self.at.unwrap_or((limit / cols).min(b.len() - 1));
+                let ll = logical_line(b, cols, y);
+                if let Some(m) = self
+                    .finder
+                    .line_matches(&ll, cols)
+                    .into_iter()
+                    .rev()
+                    .find(|m| m.key(cols) < limit)
+                {
+                    return Unit::Found(m);
+                }
+                if ll.first == 0 || ll.first <= stop_row {
+                    return Unit::Exhausted;
+                }
+                self.at = Some(ll.first - 1);
+                Unit::Continue
+            }
+        }
+    }
+}
+
 /// The sliced count of every match, so the bar's number can grow without holding the window.
 /// Walks bottom-up in slices of `SLICE_MS` (the `scan_plan` budget rule).
 pub struct CountJob {
@@ -297,14 +534,23 @@ impl CountJob {
         }
     }
 
-    /// One slice by `now` (a millisecond clock); the clock is read after each visited row and a
-    /// slice always holds at least one row. True when the whole buffer has been walked.
+    /// One slice by `now` (a millisecond clock). A slice always holds at least one row, and before
+    /// each further row it stops when `slice_may_continue` says the next row would cross the budget.
+    /// True when the whole buffer has been walked.
     pub fn step(&mut self, b: &dyn BufferLike, cols: usize, now: &dyn Fn() -> f64) -> bool {
         if self.at >= b.len() as i64 {
             self.at = b.len() as i64 - 1;
         }
         let start = now();
+        let mut elapsed = 0.0;
+        let mut max_row = 0.0f64;
+        let mut first = true;
         while self.at >= 0 {
+            if !first && !slice_may_continue(elapsed, max_row) {
+                break;
+            }
+            first = false;
+            let row_start = now();
             let row = self.at as usize;
             self.at -= 1;
             let continuation = b.line(row).is_some_and(LineLike::is_wrapped);
@@ -315,9 +561,9 @@ impl CountJob {
                 }
                 self.found.truncate(HIGHLIGHT_LIMIT);
             }
-            if now() - start >= SLICE_MS {
-                break;
-            }
+            let row_end = now();
+            max_row = max_row.max(row_end - row_start);
+            elapsed = row_end - start;
         }
         self.done()
     }
@@ -336,7 +582,8 @@ impl CountJob {
 mod tests {
     use super::*;
     use crate::cells::ScratchCell;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     struct Row {
         cells: Vec<(String, u8)>,
@@ -534,17 +781,50 @@ mod tests {
         assert_eq!(scroll_to_show(99, 100, 24), Some(99 - 100 - 12));
     }
 
+    /// A buffer whose rows cost `cost` ms the first time a walk reads them: the fake clock moves
+    /// only when a row is read, so a slice's length is the work of the rows it visited.
+    struct Timed {
+        rows: Vec<Row>,
+        clock: Rc<Cell<f64>>,
+        cost: f64,
+        charged: RefCell<Vec<bool>>,
+    }
+    impl Timed {
+        fn new(rows: Vec<Row>, clock: &Rc<Cell<f64>>, cost: f64) -> Self {
+            let n = rows.len();
+            Self {
+                rows,
+                clock: Rc::clone(clock),
+                cost,
+                charged: RefCell::new(vec![false; n]),
+            }
+        }
+    }
+    impl BufferLike for Timed {
+        fn len(&self) -> usize {
+            self.rows.len()
+        }
+        fn line(&self, y: usize) -> Option<&dyn LineLike> {
+            let mut charged = self.charged.borrow_mut();
+            if let Some(seen) = charged.get_mut(y).filter(|seen| !**seen) {
+                *seen = true;
+                self.clock.set(self.clock.get() + self.cost);
+            }
+            drop(charged);
+            self.rows.get(y).map(|r| r as &dyn LineLike)
+        }
+    }
+    fn clock_of(c: &Rc<Cell<f64>>) -> impl Fn() -> f64 {
+        let c = Rc::clone(c);
+        move || c.get()
+    }
+
     #[test]
     fn the_count_job_walks_in_slices_and_counts_in_reading_order() {
-        let b = Buf {
-            rows: (0..10_000).map(|_| row("a", false)).collect(),
-        };
+        let clock = Rc::new(Cell::new(0.0));
+        let b = Timed::new((0..10_000).map(|_| row("a", false)).collect(), &clock, 1.0);
         let mut job = CountJob::new(finder("a"), b.len());
-        let ticks = Cell::new(0.0f64);
-        let now = || {
-            ticks.set(ticks.get() + 1.0);
-            ticks.get()
-        };
+        let now = clock_of(&clock);
         let mut calls = 0;
         loop {
             let before = job.found.len();
@@ -554,9 +834,10 @@ mod tests {
             if done {
                 break;
             }
-            assert!(calls < 1250, "finished late");
+            assert!(calls < 2000, "finished late");
         }
-        assert_eq!(calls, 1250);
+        // 1 ms a row: a slice takes 7 rows (7 + 1 >= 8 refuses the eighth), 10,000 rows in 1,429 slices.
+        assert_eq!(calls, 1429);
         let r = job.results();
         assert_eq!(r.len(), 1000);
         assert!(
@@ -564,6 +845,176 @@ mod tests {
                 .all(|w| (w[0].row, w[0].col) < (w[1].row, w[1].col))
         );
         assert!(job.done());
+    }
+
+    #[test]
+    fn a_sliced_search_equals_the_unsliced_one() {
+        let mut seed = 0x2545_f491_u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for case in 0..300 {
+            let rows_n = 1 + rnd(40) as usize;
+            let rows: Vec<(String, bool)> = (0..rows_n)
+                .map(|i| {
+                    let len = rnd(12) as usize;
+                    let text: String = (0..len).map(|_| ['a', 'b', ' '][rnd(3) as usize]).collect();
+                    (text, i > 0 && rnd(4) == 0)
+                })
+                .collect();
+            let b = Buf {
+                rows: rows.iter().map(|(t, w)| row(t, *w)).collect(),
+            };
+            let query = ["a", "ab", "b", "ba"][rnd(4) as usize];
+            let cols = 3 + rnd(6) as usize;
+            let prev = match rnd(4) {
+                0 => None,
+                1 => Some(m(
+                    rnd(rows_n as u64) as usize,
+                    rnd(cols as u64) as usize,
+                    rnd(3) as usize,
+                )),
+                _ => {
+                    let all = finder(query).matches_in(&b, cols, 0, rows_n - 1);
+                    if all.is_empty() {
+                        None
+                    } else {
+                        Some(all[rnd(all.len() as u64) as usize])
+                    }
+                }
+            };
+            let same_term = rnd(2) == 0;
+            let dir = if rnd(2) == 0 { Dir::Next } else { Dir::Prev };
+            let expected = match dir {
+                Dir::Next => finder(query).next(&b, cols, prev.as_ref(), same_term),
+                Dir::Prev => finder(query).previous(&b, cols, prev.as_ref(), same_term),
+            };
+            let ticks = Cell::new(0.0f64);
+            let now = || {
+                ticks.set(ticks.get() + 1.0);
+                ticks.get()
+            };
+            let mut job = StepJob::new(finder(query), dir, prev, same_term, b.len());
+            let mut steps = 0;
+            let got = loop {
+                steps += 1;
+                assert!(steps < 100_000, "case {case} never finished");
+                if let Some(answer) = job.step(&b, cols, &now) {
+                    break answer;
+                }
+            };
+            assert_eq!(got, expected, "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_no_match_search_over_10000_lines_takes_many_short_steps() {
+        let clock = Rc::new(Cell::new(0.0));
+        let b = Timed::new((0..10_000).map(|_| row("x", false)).collect(), &clock, 0.05);
+        let now = clock_of(&clock);
+        let mut job = StepJob::new(finder("zz"), Dir::Next, None, false, b.len());
+        let mut steps = 0;
+        let mut worst = 0.0f64;
+        loop {
+            let before = clock.get();
+            let done = job.step(&b, 10, &now).is_some();
+            worst = worst.max(clock.get() - before);
+            steps += 1;
+            if done {
+                break;
+            }
+        }
+        assert!(steps >= 60, "{steps} steps");
+        assert!(worst <= SLICE_MS, "the worst slice took {worst} ms");
+        assert!((clock.get() - 500.0).abs() < 1e-6, "{}", clock.get());
+    }
+
+    #[test]
+    fn a_costly_row_never_pushes_a_slice_past_the_budget() {
+        let clock = Rc::new(Cell::new(0.0));
+        let b = Timed::new((0..50).map(|_| row("x", false)).collect(), &clock, 5.0);
+        let now = clock_of(&clock);
+        let mut job = StepJob::new(finder("zz"), Dir::Next, None, false, b.len());
+        let mut slices = Vec::new();
+        loop {
+            let before = clock.get();
+            if job.step(&b, 10, &now).is_some() {
+                break;
+            }
+            slices.push(clock.get() - before);
+        }
+        // Each slice holds one row: 5 + 5 >= 8 refuses the second. The first also reads the
+        // wrap flag of row 1, so its slice is charged for two rows.
+        assert!(slices.len() >= 49, "{} slices", slices.len());
+        assert!(slices[0] <= 10.0);
+        assert!(slices.iter().skip(1).all(|&d| d <= 5.0), "{slices:?}");
+    }
+
+    #[test]
+    fn count_slices_stay_at_or_under_the_budget() {
+        let clock = Rc::new(Cell::new(0.0));
+        let b = Timed::new((0..10_000).map(|_| row("a", false)).collect(), &clock, 0.8);
+        let now = clock_of(&clock);
+        let mut job = CountJob::new(finder("a"), b.len());
+        let mut calls = 0;
+        loop {
+            let before = clock.get();
+            let done = job.step(&b, 10, &now);
+            let took = clock.get() - before;
+            assert!(took <= SLICE_MS, "a slice took {took} ms");
+            calls += 1;
+            if done {
+                break;
+            }
+        }
+        assert!(calls > 1000, "{calls} slices");
+    }
+
+    #[test]
+    fn find_with_a_match_near_the_top_is_found_in_one_step() {
+        let clock = Rc::new(Cell::new(0.0));
+        let mut texts = vec!["x"; 10_000];
+        texts[2] = "foo";
+        let b = Timed::new(texts.iter().map(|t| row(t, false)).collect(), &clock, 0.05);
+        let now = clock_of(&clock);
+        let mut job = StepJob::new(finder("foo"), Dir::Next, None, false, b.len());
+        assert_eq!(job.step(&b, 10, &now), Some(Some(m(2, 0, 3))));
+    }
+
+    #[test]
+    fn output_between_slices_neither_skips_nor_repeats_a_row() {
+        // History at capacity: every feed pushes a row in at the bottom and trims one off the top.
+        let mut b = Buf {
+            rows: (0..200)
+                .map(|i| row(if i % 7 == 0 { "foo" } else { "x" }, false))
+                .collect(),
+        };
+        let ticks = Cell::new(0.0f64);
+        let now = || {
+            ticks.set(ticks.get() + 1.0);
+            ticks.get()
+        };
+        let mut job = StepJob::new(finder("foo"), Dir::Next, None, false, b.len());
+        let mut feeds = 0;
+        let got = loop {
+            if feeds < 50 {
+                for i in 0..1000 {
+                    b.rows
+                        .push(row(if i % 5 == 0 { "foo" } else { "y" }, false));
+                    b.rows.remove(0);
+                }
+                // What the emulator does on output: the walk starts again from its anchor.
+                job.restart();
+                feeds += 1;
+            }
+            if let Some(answer) = job.step(&b, 10, &now) {
+                break answer;
+            }
+        };
+        assert_eq!(got, finder("foo").next(&b, 10, None, false));
     }
 
     #[test]
