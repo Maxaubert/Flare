@@ -20,6 +20,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // A placeholder log link in the headless scene text (printed, never opened).
     ("flare/src/headless.rs", "Links"),
     ("flare/src/appctl.rs", "Links"),
+    // The e2e scenarios: address literals typed into a terminal, shown in a fixture row or offered by
+    // the fake update feed. The harness never requests them (its only server is the loopback stand-in).
+    ("e2e/src/scenarios/input_b.rs", "Links"),
+    ("e2e/src/scenarios/input_d.rs", "Links"),
+    ("e2e/src/scenarios/update.rs", "update check"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

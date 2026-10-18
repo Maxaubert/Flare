@@ -1276,8 +1276,9 @@ fn ask_open(ctx: &mut Ctx, app: &mut App, ms: u64) -> bool {
     })
 }
 
-/// Relaunches on the same profile after seeding the old app's storage in a stand-in Prism profile
-/// (the import seam), the way PT seeds localStorage and quits.
+/// Relaunches on the same profile after seeding the old app's storage in a stand-in profile
+/// (the import seam), the way PT seeds localStorage and quits. `entries` name the settings by
+/// their short name (`theme`, `acrylic`, `opacity`, `custom`).
 fn relaunch_with(
     ctx: &mut Ctx,
     app: &mut App,
@@ -1293,7 +1294,7 @@ fn relaunch_with(
     };
     // The once-only import runs again on a profile that has not done it.
     let _ = std::fs::remove_file(profile.join("settings.json"));
-    flare_settings::import::ldb::write_stand_in_profile(&roaming, "PrismTerminal", entries)?;
+    flare_settings::import::ldb::write_old_app_profile(&roaming, entries)?;
     let dir = roaming.to_string_lossy().into_owned();
     launch_settings(
         ctx,
@@ -1308,17 +1309,13 @@ fn relaunch_with(
 
 /// PT: run.mjs:6350-6459. What the old app left, the window it was: the Opacity slider became the
 /// Background's alpha (#114) and that alpha and the switch became the see-through slider. Old
-/// storage is seeded as a stand-in Prism profile, the app is launched on it (the import seam), and
+/// storage is seeded as a stand-in profile, the app is launched on it (the import seam), and
 /// the window must be the window it was. On the software renderer the ground is solid and the slider
 /// is disabled (DIFF-5), so what paints or moves the slider is `skip`ped there.
 pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
     // The first run is an empty profile (PT's first launch); it quits before the old storage is seeded.
     let mut app = launch_settings(ctx, &[], &[("FLARE_E2E_REDUCED_MOTION", "1")], None)?;
-    let seed1 = [
-        ("prism.term.theme", "dracula"),
-        ("prism.term.acrylic", "1"),
-        ("prism.term.opacity", "60"),
-    ];
+    let seed1 = [("theme", "dracula"), ("acrylic", "1"), ("opacity", "60")];
     // 1. A preset, Opacity 60, acrylic on.
     let mut app = relaunch_with(ctx, &mut app, &seed1, None)?;
     let gpu = on_gpu(&mut app);
@@ -1457,10 +1454,10 @@ pub fn opacity_alpha(ctx: &mut Ctx) -> Result<(), String> {
     // 2. A Custom saved at 80, left live at 60.
     let custom = r##"{"bg":"#1d1f21","fg":"#c5c8c6","cursor":"#f0c674","ansi":{},"acrylic":true,"opacity":80}"##;
     let seed2 = [
-        ("prism.term.theme", "custom"),
-        ("prism.term.acrylic", "1"),
-        ("prism.term.opacity", "60"),
-        ("prism.term.custom", custom),
+        ("theme", "custom"),
+        ("acrylic", "1"),
+        ("opacity", "60"),
+        ("custom", custom),
     ];
     let mut app = relaunch_with(ctx, &mut app, &seed2, None)?;
     let live = ctx.until("a Custom left live at 60 to paint 60", 10_000, &mut || {
@@ -1561,7 +1558,7 @@ fn all_near(v: &[f64], want: f64) -> bool {
     !v.is_empty() && v.iter().all(|a| (a - want).abs() < 0.015)
 }
 
-/// PT: run.mjs:6460-6579. The see-through slider: the row is named and placed as Prism's, right under
+/// PT: run.mjs:6460-6579. The see-through slider: the row is named and placed as in Prism Terminal, right under
 /// the wall, holds a slider (0 by default, solid), a level paints the window's ground at
 /// 1 - level/100 on every surface as one coat, the Background picker carries no Alpha and a picked
 /// colour leaves the level alone, a moved slider is a change to save, a theme pick asks and puts the

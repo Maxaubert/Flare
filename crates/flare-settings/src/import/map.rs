@@ -15,6 +15,10 @@
 /// reads it from here).
 pub const PREFIX: &str = "prism.";
 
+/// The folder name of Prism Terminal's main profile under the roaming app data (the e2e's stand-in
+/// profile writer uses it; the importer's own candidates list keeps its own literals).
+pub const MAIN_PROFILE_FOLDER: &str = "PrismTerminal";
+
 use flare_theme::colour::{ColourFormat, canonical_stored};
 use flare_theme::fonts::{font_id_or_default, font_pct_from};
 use flare_theme::retired::live_theme_id;

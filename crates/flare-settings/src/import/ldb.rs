@@ -228,6 +228,20 @@ pub fn write_stand_in_profile(
     db.flush().map_err(|e| e.to_string())?;
     db.close().map_err(|e| e.to_string())
 }
+
+/// `write_stand_in_profile` for the old app's main profile, with the settings named by their short
+/// name (`theme`, `acrylic`, `opacity`, `custom`): the e2e scenarios never spell the old app's folder
+/// or key prefix; `map.rs` holds both.
+pub fn write_old_app_profile(appdata: &Path, entries: &[(&str, &str)]) -> Result<(), String> {
+    let prefix = super::map::PREFIX;
+    let keyed: Vec<(String, &str)> = entries
+        .iter()
+        .map(|(short, value)| (format!("{prefix}term.{short}"), *value))
+        .collect();
+    let refs: Vec<(&str, &str)> = keyed.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    write_stand_in_profile(appdata, super::map::MAIN_PROFILE_FOLDER, &refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +317,17 @@ mod tests {
         let ls = read(p.path(), t.path()).unwrap();
         assert_eq!(ls.values["a"], "pt-default");
         assert_eq!(ls.values["b"], "Ærø");
+    }
+
+    #[test]
+    fn an_old_app_profile_is_written_under_its_folder_with_prefixed_keys() {
+        let appdata = tempfile::tempdir().unwrap();
+        write_old_app_profile(appdata.path(), &[("theme", "dracula"), ("opacity", "60")]).unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let ls = read(&appdata.path().join("PrismTerminal"), t.path()).unwrap();
+        assert_eq!(ls.values["prism.term.theme"], "dracula");
+        assert_eq!(ls.values["prism.term.opacity"], "60");
+        assert_eq!(ls.values.len(), 2);
     }
 
     #[test]

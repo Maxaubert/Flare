@@ -646,6 +646,13 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_PACKAGED",
     // M10 Appendix F: harness-only, which renderers hookSmoke runs (software, gpu).
     "FLARE_E2E_HOOKSMOKE_RENDERERS",
+    // M10 Appendix F: harness-only, which renderers the other scenarios run (tools/e2e input_b).
+    "FLARE_E2E_RENDERERS",
+    // M10 Appendix F: the Claude plugin copy is made under --e2e only when asked (startup.rs; the
+    // harness sets LOCALAPPDATA to its sandbox first).
+    "FLARE_E2E_PLUGIN",
+    // M10 Appendix F (M7, unchanged): the importer's source folder under --e2e (tools/e2e settings_c).
+    "FLARE_E2E_IMPORT_APPDATA",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
 ];

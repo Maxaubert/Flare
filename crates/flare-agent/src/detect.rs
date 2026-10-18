@@ -284,10 +284,14 @@ mod tests {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).unwrap_or_default(); // sync-ok: test-only
-                let hand = text.lines().any(|line| {
-                    (line.contains("AgentKind::Claude") && line.contains("AgentKind::Codex"))
-                        || (line.contains("\"claude\"") && line.contains("\"codex\""))
-                });
+                // A comment that names the agents is prose, not a second list.
+                let hand = text
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .any(|line| {
+                        (line.contains("AgentKind::Claude") && line.contains("AgentKind::Codex"))
+                            || (line.contains("\"claude\"") && line.contains("\"codex\""))
+                    });
                 if hand {
                     offenders.push(path.display().to_string());
                 }

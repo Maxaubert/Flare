@@ -692,7 +692,7 @@ fn path_links_on(
     });
     ctx.ok(
         opened_png,
-        "a folder opens through Windows' folder verb (Prism #393)",
+        "a folder opens through Windows' folder verb (PT #393)",
     );
 
     let bat_s = bat.to_string_lossy().into_owned();

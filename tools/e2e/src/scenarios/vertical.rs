@@ -603,7 +603,7 @@ fn settings_tab_centre(app: &mut App) -> Option<(f32, f32)> {
 pub fn vertical_tabs(ctx: &mut Ctx) -> Result<(), String> {
     let root = ctx.ensure_world().root.clone();
     let folders: Vec<std::path::PathBuf> =
-        ["PrismTerminal", "notes", "api", "web", "infra", "docs"]
+        ["FlareTerminal", "notes", "api", "web", "infra", "docs"]
             .iter()
             .map(|n| {
                 let d = root.join(n);

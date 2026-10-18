@@ -770,7 +770,7 @@ pub fn edges(ctx: &mut Ctx) -> Result<(), String> {
         .unwrap_or_default();
     ctx.ok(
         names.join("|") == "None|Faint|Hairline|Solid",
-        "Settings > Appearance has an Edges row, weakest to strongest as in Prism: None, Faint, Hairline, Solid",
+        "Settings > Appearance has an Edges row, weakest to strongest as in PT: None, Faint, Hairline, Solid",
     );
     ctx.ok(
         r["value"].as_str() == Some("hairline"),

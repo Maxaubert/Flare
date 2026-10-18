@@ -25,8 +25,16 @@ fn sources() -> Vec<(String, String)> {
     files
         .iter()
         .map(|p| {
-            let text = std::fs::read_to_string(p).unwrap();
-            let code = text.split("#[cfg(test)]").next().unwrap_or("").to_string();
+            // LF whatever the checkout's line endings are; a comment that names a call is no call.
+            let text = std::fs::read_to_string(p).unwrap().replace("\r\n", "\n");
+            let code = text
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or("")
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
             (name, code)
         })

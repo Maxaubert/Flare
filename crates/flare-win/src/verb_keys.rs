@@ -152,7 +152,8 @@ mod tests {
     fn the_registry_source_writes_only_under_the_current_user_hive() {
         // A source scan of registry.rs: the machine hive is named only inside the read-only
         // LocalMachineRead impl, and that impl has no write call.
-        let src = include_str!("registry.rs");
+        // LF whatever the checkout's line endings are.
+        let src = &include_str!("registry.rs").replace("\r\n", "\n");
         let without_use = remove_span(src, "use windows_sys::Win32::System::Registry::{", "};");
         let without_lm = remove_span(&without_use, "impl LocalMachineRead {", "\n}\n");
         assert!(!without_lm.contains("HKEY_LOCAL_MACHINE"));

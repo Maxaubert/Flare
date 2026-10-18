@@ -374,7 +374,7 @@ pub fn tab_width(ctx: &mut Ctx) -> Result<(), String> {
 pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     let root = ctx.ensure_world().root.clone();
     let folders: Vec<std::path::PathBuf> =
-        ["PrismTerminal", "notes", "api", "web", "infra", "docs"]
+        ["FlareTerminal", "notes", "api", "web", "infra", "docs"]
             .iter()
             .map(|n| {
                 let d = root.join(n);
