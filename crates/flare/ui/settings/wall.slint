@@ -218,10 +218,11 @@ export component ThemeCard inherits Rectangle {
         }
 
         Path {
-            x: 4.5px;
-            y: 4.5px;
-            width: 11px;
-            height: 11px;
+            x: (4.5px) - (1.9 * 11px / 24) / 2;
+            y: (4.5px) - (1.9 * 11px / 24) / 2;
+            width: 11px + (1.9 * 11px / 24);
+            height: 11px + (1.9 * 11px / 24);
+            // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
             viewbox-width: 24;
             viewbox-height: 24;
             commands: "M15 5l4 4L8 20H4v-4z";
@@ -321,10 +322,11 @@ export component ThemeWallView inherits Rectangle {
 
         // M6 9l6 6 6-6 (down) turned half a turn is M6 15l6-6 6 6 (up)
         Path {
-            x: Px.snap((parent.width - 15px) / 2);
-            y: Px.snap((parent.height - 15px) / 2);
-            width: 15px;
-            height: 15px;
+            x: (Px.snap((parent.width - 15px) / 2)) - (2.2 * 15px / 24) / 2;
+            y: (Px.snap((parent.height - 15px) / 2)) - (2.2 * 15px / 24) / 2;
+            width: 15px + (2.2 * 15px / 24);
+            height: 15px + (2.2 * 15px / 24);
+            // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
             viewbox-width: 24;
             viewbox-height: 24;
             commands: root.expanded ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6";

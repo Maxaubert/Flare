@@ -298,3 +298,123 @@ fn the_menu_has_no_shadow_and_the_row_radius() {
         );
     }
 }
+
+/// The mean row (device px, from the box's top) of the chevron's ink in its middle columns.
+fn chevron_apex_row(h: &Harness<SelectPreview>, f: &Frame) -> f32 {
+    let s = h.scale();
+    let c = &h.comp;
+    // The chevron: 12 px, 10 px in from the trigger's right edge, centred on its height.
+    let x0 = c.get_trig_x() + c.get_trig_w() - 22.0;
+    let y0 = c.get_trig_y() + (c.get_trig_h() - 12.0) / 2.0;
+    let (cx0, cx1) = (px(x0 + 5.0, s), px(x0 + 7.0, s));
+    let (ry0, ry1) = (px(y0, s), px(y0 + 12.0, s));
+    let (mut sum, mut n) = (0.0f32, 0.0f32);
+    for y in ry0..ry1 {
+        for x in cx0..cx1 {
+            let p = f.px(x, y);
+            if p[0] > 70 {
+                sum += (y - ry0) as f32;
+                n += 1.0;
+            }
+        }
+    }
+    assert!(n > 0.0, "the chevron is drawn");
+    sum / n / s
+}
+
+#[test]
+fn the_chevron_turns_over_while_the_menu_is_open() {
+    // PT: `rotate-180` on the chevron while open (Task 53: Flare's stayed pointing down).
+    for s in SCALES {
+        let h = three(s, "a");
+        let shut = chevron_apex_row(&h, &h.render());
+        h.comp.set_open(true);
+        h.advance(400);
+        let open = chevron_apex_row(&h, &h.render());
+        // The point sits 6 of 12 px from one edge of the box or the other.
+        assert!(
+            shut - open > 0.8,
+            "scale {s}: the point's row closed {shut:.1}, open {open:.1}"
+        );
+    }
+}
+
+#[test]
+fn the_chevron_is_drawn_at_its_full_12_px() {
+    // "M6 9l6 6 6-6" in a 12 px box spans 6 css px, plus a round cap of half the 1.1 px stroke at
+    // each end: 7.1 wide, as Chromium draws it. Slint insets a stroked path by its stroke, which
+    // drew it at 6 (Task 53).
+    for s in [2.0f32, 3.0] {
+        let h = three(s, "a");
+        let f = h.render();
+        let c = &h.comp;
+        let x0 = c.get_trig_x() + c.get_trig_w() - 26.0;
+        let y0 = c.get_trig_y() + 4.0;
+        let bb = f
+            .bbox_where(
+                px(x0, s),
+                px(y0, s),
+                px(x0 + 20.0, s),
+                px(y0 + 24.0, s),
+                |p| p[0] > 60,
+            )
+            .expect("the chevron is drawn");
+        let w = (bb.2 - bb.0 + 1) as f32 / s;
+        assert!(
+            (6.6..=7.6).contains(&w),
+            "scale {s}: the chevron is {w:.2} css px wide"
+        );
+    }
+}
+
+/// The ink of a word in a box: pixels past half way from the box's left-edge fill to its brightest.
+fn word_ink(f: &Frame, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
+    let bg = i32::from(f.px(x0, (y0 + y1) / 2)[0]);
+    let mut peak = bg;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            peak = peak.max(i32::from(f.px(x, y)[0]));
+        }
+    }
+    let cut = bg + (peak - bg) / 2;
+    f.count_where(x0, y0, x1, y1, |p| i32::from(p[0]) > cut)
+}
+
+#[test]
+fn the_trigger_word_is_semibold_and_the_menu_rows_regular() {
+    // PT: the trigger is font-medium (500), an option row the normal weight. Segoe UI has no Medium
+    // face and Chromium draws 500 with the Semibold one (Task 53), so the trigger's word is visibly
+    // heavier than the same word in the menu.
+    for s in SCALES {
+        let h = make(s, vec![opt("a", "Bravo", ""), opt("b", "Bravo", "")], "a");
+        let f = open(&h);
+        let c = &h.comp;
+        let (tx, ty) = (c.get_trig_x(), c.get_trig_y());
+        // The word sits from 10 px in; 60 px holds "Bravo" at 12 px.
+        let trig = word_ink(
+            &f,
+            px(tx + 4.0, s),
+            px(ty + 4.0, s),
+            px(tx + 70.0, s),
+            px(ty + 28.0, s),
+        );
+        let (mx, my) = (c.get_menu_x(), c.get_menu_y());
+        let top = my + 2.0 + 28.0;
+        let row = word_ink(
+            &f,
+            px(mx + 4.0, s),
+            px(top + 2.0, s),
+            px(mx + 72.0, s),
+            px(top + 26.0, s),
+        );
+        assert!(
+            trig > 0 && row > 0,
+            "scale {s}: both words drawn ({trig}, {row})"
+        );
+        let ratio = trig as f32 / row as f32;
+        assert!(
+            ratio > 1.12,
+            "scale {s}: the trigger word has {trig} ink pixels, the menu row {row} (ratio {ratio:.2})"
+        );
+    }
+}

@@ -343,16 +343,17 @@ export component SettingsView inherits Rectangle {
             y: 0px;
             width: parent.width;
             height: parent.height;
+            // PT SettingsSection: the heading row is `mx-0.5`, 2 px in from each panel edge.
             SetSectionHeading {
-                x: fr.content-x;
+                x: fr.content-x + 2px;
                 y: section.title-y;
-                width: fr.content-w;
+                width: fr.content-w - 4px;
                 title: section.title;
                 tag: section.tag;
             }
             // The heading lays its children out from the left, so the Save sits at the right edge here.
             if section.action-save: SetSaveButton {
-                x: Px.snap(fr.content-x + fr.content-w - self.width);
+                x: Px.snap(fr.content-x + fr.content-w - 2px - self.width);
                 y: Px.snap(section.title-y + (20px - self.height) / 2);
                 dirty: section.action-dirty;
                 title: section.action-title;

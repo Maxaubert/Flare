@@ -260,10 +260,11 @@ component HelpRow inherits Rectangle {
                 }
                 // The copy icon, and the check it turns into.
                 Path {
-                    x: (parent.width - 15px) / 2;
-                    y: (parent.height - 15px) / 2;
-                    width: 15px;
-                    height: 15px;
+                    x: ((parent.width - 15px) / 2) - (1.8 * 15px / 24) / 2;
+                    y: ((parent.height - 15px) / 2) - (1.8 * 15px / 24) / 2;
+                    width: 15px + (1.8 * 15px / 24);
+                    height: 15px + (1.8 * 15px / 24);
+                    // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
                     viewbox-width: 24;
                     viewbox-height: 24;
                     commands: "M11 9h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z M5 15V6a2 2 0 0 1 2-2h9";
@@ -284,10 +285,11 @@ component HelpRow inherits Rectangle {
                     clip: true;
                     animate width { duration: root.still ? 0ms : (root.d.copied ? 340ms : 0ms); delay: root.still ? 0ms : (root.d.copied ? 60ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
                     Path {
-                        x: 0px;
-                        y: 0px;
-                        width: 17px;
-                        height: 17px;
+                        x: (0px) - (2.4 * 17px / 24) / 2;
+                        y: (0px) - (2.4 * 17px / 24) / 2;
+                        width: 17px + (2.4 * 17px / 24);
+                        height: 17px + (2.4 * 17px / 24);
+                        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
                         viewbox-width: 24;
                         viewbox-height: 24;
                         commands: "M5 12.5l4.5 4.5L19 7.5";
@@ -465,10 +467,11 @@ export component HelpPanel inherits Rectangle {
                                     }
                                 }
                                 Path {
-                                    x: (parent.width - 13px) / 2;
-                                    y: (parent.height - 13px) / 2;
-                                    width: 13px;
-                                    height: 13px;
+                                    x: ((parent.width - 13px) / 2) - (1.8 * 13px / 24) / 2;
+                                    y: ((parent.height - 13px) / 2) - (1.8 * 13px / 24) / 2;
+                                    width: 13px + (1.8 * 13px / 24);
+                                    height: 13px + (1.8 * 13px / 24);
+                                    // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
                                     viewbox-width: 24;
                                     viewbox-height: 24;
                                     commands: "M7 7l10 10M17 7L7 17";
@@ -499,10 +502,11 @@ export component HelpPanel inherits Rectangle {
                                 background: transparent;
                             }
                             Path {
-                                x: Px.hair() + 12px;
-                                y: (parent.height - 15px) / 2;
-                                width: 15px;
-                                height: 15px;
+                                x: (Px.hair() + 12px) - (2 * 15px / 24) / 2;
+                                y: ((parent.height - 15px) / 2) - (2 * 15px / 24) / 2;
+                                width: 15px + (2 * 15px / 24);
+                                height: 15px + (2 * 15px / 24);
+                                // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
                                 viewbox-width: 24;
                                 viewbox-height: 24;
                                 commands: "M17.5 11a6.5 6.5 0 1 1-13 0a6.5 6.5 0 0 1 13 0z M16 16l4.5 4.5";

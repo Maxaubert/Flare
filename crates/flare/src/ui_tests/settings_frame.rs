@@ -434,3 +434,43 @@ fn the_pane_scrolls_and_shows_no_bar() {
         assert_eq!(strip, 0, "scale {s}: no scrollbar pixels");
     }
 }
+
+/// Pixels of a rail item's label that stand clear of the fill under them (the ink of the word).
+fn label_ink(f: &Frame, s: f32, top: f32) -> usize {
+    let bg = i32::from(f.px(dev(s, 236.0), dev(s, top + 4.0))[0]);
+    let (x0, y0, x1, y1) = (dev(s, 48.0), dev(s, top), dev(s, 230.0), dev(s, top + 36.0));
+    // Half way from the fill to the brightest pixel of the word, so the ink colour cancels out.
+    let mut peak = bg;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            peak = peak.max(i32::from(f.px(x, y)[0]));
+        }
+    }
+    let cut = bg + (peak - bg) / 2;
+    f.count_where(x0, y0, x1, y1, |p| i32::from(p[0]) > cut)
+}
+
+#[test]
+fn every_rail_label_is_as_heavy_as_the_chosen_one() {
+    // Prism Terminal sets the rail in Segoe UI 500 (font-medium) and 600 when chosen. Segoe UI has
+    // no Medium face, and Chromium draws 500 with the Semibold one (seen in the Task 53 images), so
+    // every label of the rail reads at one weight: an unchosen label is as heavy as the chosen one.
+    for s in SCALES {
+        let h = wide(s);
+        // The second item (Terminal) sits one item and one gap under the first.
+        let top = 94.0 + 36.0 + 2.0;
+        let off = label_ink(&h.render(), s, top);
+        h.comp.set_chosen_id("terminal".into());
+        h.advance(0);
+        let on = label_ink(&h.render(), s, top);
+        assert!(
+            on > 0 && off > 0,
+            "scale {s}: the label is drawn ({off}, {on})"
+        );
+        let ratio = off as f32 / on as f32;
+        assert!(
+            ratio > 0.82,
+            "scale {s}: the unchosen label has {off} ink pixels, chosen {on} (ratio {ratio:.2})"
+        );
+    }
+}

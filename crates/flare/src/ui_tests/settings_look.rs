@@ -169,7 +169,7 @@ fn the_wall_cards_are_one_height_in_rows_of_the_right_count() {
             // at most one hairline lower; a documented difference for docs/screenshots/m7/README.md.)
             assert!(
                 dy.abs() <= 1.0 + sc.hair(),
-                "{w} @{s}: the first card is {dy} css px off Prism Terminal's 14 under the block's top"
+                "{w} @{s}: the first card is {dy} css px off the reference's 14 under the block's top"
             );
             // The first card of the second row is 138 lower; its ground is the same height.
             if sc.wall.positions.len() > cols {
@@ -231,7 +231,7 @@ fn the_wall_cards_start_16_in_from_the_blocks_edge() {
         let dx = f64::from(start) / sc.scale - left - sc.hair();
         assert!(
             (dx - 16.0).abs() <= 1.0,
-            "@{s}: the first card starts {dx} css px in from the block's edge, Prism Terminal's is 16"
+            "@{s}: the first card starts {dx} css px in from the block's edge, the reference's is 16"
         );
     }
 }

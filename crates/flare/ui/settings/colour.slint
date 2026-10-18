@@ -7,6 +7,29 @@
 // from the TOP (the square's brightness is 1 - y, worked out in Rust).
 import { Px, SettingsFixed, SettingsShape, Theme } from "../theme.slint";
 
+// How the last swatch was opened. PT's square takes the focus on open and its ring is
+// `focus-visible`: a click opens the popover with no ring, Enter or Space with it (Task 53).
+export global PickerOpening {
+    in-out property <bool> by-pointer;
+}
+
+// Rounds the corners of the box it covers by painting the popover's fill outside an arc of `r`: a
+// ring as wide as `r` whose inner edge is the rounded box. It draws nothing inside the box.
+component RoundMask inherits Rectangle {
+    in property <length> r;
+    // On whole device pixels, so the ring's inner edge lands on the box's own edges.
+    property <length> rr: max(Px.snap(root.r), Px.hair());
+    Rectangle {
+        x: -root.rr;
+        y: -root.rr;
+        width: root.width + 2 * root.rr;
+        height: root.height + 2 * root.rr;
+        border-width: root.rr;
+        border-radius: 2 * root.rr;
+        border-color: Theme.side-flat;
+    }
+}
+
 // PT CHECKER: a repeating conic gradient of checker-a (0 to 25%) and checker-b (to 50%) at 8 px, so 4 px squares:
 // top-left light, top-right dark, bottom-left dark, bottom-right light.
 component Checker inherits Rectangle {
@@ -191,6 +214,7 @@ export component ColourField inherits Rectangle {
         accessible-label: "Pick " + root.label;
         accessible-expanded: root.open;
         accessible-action-default => {
+            PickerOpening.by-pointer = false;
             root.swatch-clicked(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
         }
 
@@ -222,6 +246,7 @@ export component ColourField inherits Rectangle {
         key-pressed(e) => {
             if e.text == Key.Space || e.text == Key.Return {
                 root.swatch-by-pointer = false;
+                PickerOpening.by-pointer = false;
                 root.swatch-clicked(swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
                 return accept;
             }
@@ -239,6 +264,7 @@ export component ColourField inherits Rectangle {
             }
         }
         clicked => {
+            PickerOpening.by-pointer = true;
             root.swatch-clicked(swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
         }
         changed has-hover => {
@@ -277,10 +303,11 @@ component PopButton inherits Rectangle {
     }
 
     if root.icon != "": Path {
-        x: (parent.width - 13px) / 2;
-        y: (parent.height - 13px) / 2;
-        width: 13px;
-        height: 13px;
+        x: ((parent.width - 13px) / 2) - (1.9 * 13px / 24) / 2;
+        y: ((parent.height - 13px) / 2) - (1.9 * 13px / 24) / 2;
+        width: 13px + (1.9 * 13px / 24);
+        height: 13px + (1.9 * 13px / 24);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.icon;
@@ -463,6 +490,7 @@ export component ColourPopover inherits Rectangle {
     }
     changed open => {
         if root.open {
+            root.by-pointer = PickerOpening.by-pointer;
             sv.focus();
         }
     }
@@ -529,8 +557,6 @@ export component ColourPopover inherits Rectangle {
             y: root.sv-y;
             width: root.sv-w;
             height: root.sv-h;
-            border-radius: SettingsShape.radius-sm;
-            clip: true;
 
             Rectangle {
                 background: @linear-gradient(90deg, SettingsFixed.white 0%, root.hue-colour 100%);
@@ -539,6 +565,16 @@ export component ColourPopover inherits Rectangle {
             Rectangle {
                 background: @linear-gradient(0deg, SettingsFixed.black 0%, SettingsFixed.black.with-alpha(0) 100%);
             }
+        }
+
+        // The software painter draws a gradient square whatever the radius or clip (Task 53), so
+        // the corners are rounded by a mask of the popover's fill, on both painters alike.
+        RoundMask {
+            x: root.sv-x;
+            y: root.sv-y;
+            width: root.sv-w;
+            height: root.sv-h;
+            r: SettingsShape.radius-sm;
         }
 
         // The ring that shows a keyboard focus: 2 px, offset 2.
@@ -614,17 +650,35 @@ export component ColourPopover inherits Rectangle {
             }
         }
 
+        // The spectrum as six two-stop pieces on whole device pixels: the software painter leaves a
+        // dark seam where a many-stop gradient's stop falls between pixels (Task 53).
         Rectangle {
             x: root.hue-x;
             y: root.hue-y;
             width: root.hue-w;
             height: root.hue-h;
-            border-radius: self.height / 2;
-            clip: true;
 
-            Rectangle {
-                background: @linear-gradient(90deg, SettingsFixed.hue-red 0%, SettingsFixed.hue-yellow 16.67%, SettingsFixed.hue-green 33.33%, SettingsFixed.hue-cyan 50%, SettingsFixed.hue-blue 66.67%, SettingsFixed.hue-magenta 83.33%, SettingsFixed.hue-red 100%);
+            for seg[i] in [
+                { a: SettingsFixed.hue-red, b: SettingsFixed.hue-yellow },
+                { a: SettingsFixed.hue-yellow, b: SettingsFixed.hue-green },
+                { a: SettingsFixed.hue-green, b: SettingsFixed.hue-cyan },
+                { a: SettingsFixed.hue-cyan, b: SettingsFixed.hue-blue },
+                { a: SettingsFixed.hue-blue, b: SettingsFixed.hue-magenta },
+                { a: SettingsFixed.hue-magenta, b: SettingsFixed.hue-red },
+            ]: Rectangle {
+                x: Px.snap(root.hue-w * i / 6);
+                width: Px.snap(root.hue-w * (i + 1) / 6) - Px.snap(root.hue-w * i / 6);
+                height: parent.height;
+                background: @linear-gradient(90deg, seg.a 0%, seg.b 100%);
             }
+        }
+
+        RoundMask {
+            x: root.hue-x;
+            y: root.hue-y;
+            width: root.hue-w;
+            height: root.hue-h;
+            r: self.height / 2;
         }
 
         Rectangle {
@@ -643,8 +697,10 @@ export component ColourPopover inherits Rectangle {
             y: Px.snap(root.hue-y + root.hue-h / 2 - 8px) - 1.5px;
             width: 19px;
             height: 19px;
+            // PT THUMB: the outer 1.5 px ring of the ground, the inside clear (Task 53).
             border-radius: 9.5px;
-            background: Theme.ground;
+            border-width: 1.5px;
+            border-color: Theme.ground;
 
             Rectangle {
                 x: 1.5px;
@@ -714,6 +770,14 @@ export component ColourPopover inherits Rectangle {
             }
         }
 
+        if root.alpha-on: RoundMask {
+            x: root.alpha-x;
+            y: root.alpha-y;
+            width: root.alpha-w;
+            height: root.alpha-h;
+            r: self.height / 2;
+        }
+
         if root.alpha-on: Rectangle {
             x: root.alpha-x - 4px;
             y: root.alpha-y - 4px;
@@ -731,7 +795,8 @@ export component ColourPopover inherits Rectangle {
             width: 19px;
             height: 19px;
             border-radius: 9.5px;
-            background: Theme.ground;
+            border-width: 1.5px;
+            border-color: Theme.ground;
             opacity: root.alpha-disabled ? 0.4 : 1;
 
             Rectangle {

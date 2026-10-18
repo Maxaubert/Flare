@@ -640,3 +640,123 @@ fn the_popover_buttons_and_chip_carry_prism_terminals_tooltips() {
     h.move_to(c.get_drop_x() + 5.0, c.get_foot_y() + 5.0);
     assert_eq!(c.get_last_tip(), "Pick a colour from the screen");
 }
+
+const ACCENT_HI: [u8; 4] = [0xf6, 0xa2, 0x5b, 255];
+const POP: [u8; 4] = [0x1f, 0x1f, 0x1e, 255];
+
+/// Accent pixels in the 2 px ring zone left of the square (the ring is offset 2, 2 wide).
+fn ring_px(h: &Harness<ColourPreview>) -> usize {
+    let s = h.scale();
+    let f = h.render();
+    let c = &h.comp;
+    let d = |v: f32| (v * s).round() as u32;
+    f.count_where(
+        d(c.get_sv_x() - 5.0),
+        d(c.get_sv_y() + 20.0),
+        d(c.get_sv_x() - 1.0),
+        d(c.get_sv_y() + 100.0),
+        |p| Frame::near(p, ACCENT_HI, 40),
+    )
+}
+
+#[test]
+fn a_pointer_open_shows_no_focus_ring_and_a_keyboard_open_does() {
+    // PT focuses the square on open, but its ring is `focus-visible`: a click on the swatch opens
+    // the popover with no ring (the Task 53 images: Flare showed one), Enter on the swatch with it.
+    for s in [1.0f32, 1.5, 2.25] {
+        let h = make(s);
+        h.comp.set_hue_colour(Color::from_rgb_u8(255, 0, 0));
+        let weak = slint::ComponentHandle::as_weak(&h.comp);
+        h.comp.on_field_swatch(move |_, _, _, _| {
+            if let Some(c) = weak.upgrade() {
+                c.set_open(true);
+            }
+        });
+        let c = &h.comp;
+        h.click(
+            20.0 + c.get_swatch_x() + c.get_swatch_w() / 2.0,
+            20.0 + c.get_swatch_h() / 2.0,
+        );
+        h.advance(0);
+        assert!(c.get_open(), "scale {s}: the click opened the popover");
+        assert_eq!(ring_px(&h), 0, "scale {s}: no ring after a pointer open");
+        c.set_open(false);
+        h.advance(0);
+        c.invoke_focus_swatch();
+        h.key_text(&key(Key::Return));
+        h.advance(0);
+        assert!(c.get_open(), "scale {s}: Enter opened the popover");
+        assert!(ring_px(&h) > 0, "scale {s}: the ring after a keyboard open");
+    }
+}
+
+#[test]
+fn the_square_has_round_corners_and_the_bars_round_ends() {
+    // PT: the square is rounded-[var(--p-radius-sm)], the bars rounded-full.
+    for s in SCALES {
+        let h = open_popover(s);
+        // Both thumbs in the middle, away from the ends.
+        h.comp.set_hue(180.0);
+        h.comp.set_alpha(0.5);
+        h.advance(0);
+        let f = h.render();
+        let c = &h.comp;
+        let d = |v: f32| (v * s).round() as u32;
+        // The square's top-right corner pixel is outside its arc.
+        let sq = f.px(d(c.get_sv_x() + c.get_sv_w()) - 1, d(c.get_sv_y()));
+        assert!(Frame::near(sq, POP, 30), "scale {s}: square corner {sq:?}");
+        // The hue bar's right end: its top-right corner pixel is outside the half circle.
+        let end = f.px(d(c.get_hue_x() + c.get_hue_w()) - 1, d(c.get_hue_y()));
+        assert!(Frame::near(end, POP, 30), "scale {s}: hue bar end {end:?}");
+        let aend = f.px(d(c.get_alpha_x() + c.get_alpha_w()) - 1, d(c.get_alpha_y()));
+        assert!(
+            Frame::near(aend, POP, 30),
+            "scale {s}: alpha bar end {aend:?}"
+        );
+    }
+}
+
+#[test]
+fn the_hue_thumb_is_a_ring_the_bar_shows_through() {
+    // PT THUMB: a 2 px ring of the ink and a 1.5 px outer ring of the ground; the inside is clear.
+    for s in SCALES {
+        let h = open_popover(s);
+        h.comp.set_hue(180.0);
+        h.advance(0);
+        let f = h.render();
+        let c = &h.comp;
+        let mid = at(
+            &f,
+            s,
+            c.get_hue_x() + c.get_hue_w() / 2.0,
+            c.get_hue_y() + c.get_hue_h() / 2.0,
+        );
+        // Cyan (0, 255, 255) at the middle of the spectrum.
+        assert!(
+            mid[1] > 180 && mid[2] > 180 && mid[0] < 90,
+            "scale {s}: inside the thumb {mid:?}"
+        );
+    }
+}
+
+#[test]
+fn the_hue_bar_has_no_dark_specks() {
+    // The Task 53 images showed dark specks at the stops of the six-stop gradient. Every hue has one
+    // channel at 255, so no pixel of the bar's inner rows may be dark.
+    for s in SCALES {
+        let h = open_popover(s);
+        h.comp.set_hue(359.0);
+        h.advance(0);
+        let f = h.render();
+        let c = &h.comp;
+        let d = |v: f32| (v * s).round() as u32;
+        let dark = f.count_where(
+            d(c.get_hue_x() + 7.0),
+            d(c.get_hue_y() + 2.0),
+            d(c.get_hue_x() + c.get_hue_w() - 12.0),
+            d(c.get_hue_y() + c.get_hue_h() - 2.0),
+            |p| p[0].max(p[1]).max(p[2]) < 200,
+        );
+        assert_eq!(dark, 0, "scale {s}: dark pixels in the hue bar");
+    }
+}

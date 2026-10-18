@@ -907,7 +907,7 @@ fn a_section_without_a_title_reserves_no_heading_gap() {
             let first = &sc.layout.sections[0];
             assert!(
                 within(first.panel_y, panel.1, 1.0),
-                "{page} @{key}: the first panel is at y {}, Prism Terminal's at {}",
+                "{page} @{key}: the first panel is at y {}, the reference's at {}",
                 first.panel_y,
                 panel.1
             );

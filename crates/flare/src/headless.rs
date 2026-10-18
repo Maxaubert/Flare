@@ -1132,6 +1132,10 @@ impl Scene {
             }
             SettingsOpen::Picker => {
                 let (id, a) = anchor(SetKind::Colour, "colour")?;
+                // The scene stands for a click on the swatch (the Prism Terminal capture clicks).
+                self.app
+                    .global::<crate::PickerOpening>()
+                    .set_by_pointer(true);
                 bridge.invoke_colour_swatch(id.as_str().into(), a[0], a[1], a[2], a[3]);
             }
             SettingsOpen::Editor => bridge.invoke_wall_edit(card_id(true, true)?),

@@ -10,10 +10,11 @@ export component SetIconTile inherits Rectangle {
     border-radius: SettingsShape.tile-radius;
     background: SettingsInk.tile-fill;
     Path {
-        x: 8px;
-        y: 8px;
-        width: 16px;
-        height: 16px;
+        x: (8px) - (1.7 * 16px / 24) / 2;
+        y: (8px) - (1.7 * 16px / 24) / 2;
+        width: 16px + (1.7 * 16px / 24);
+        height: 16px + (1.7 * 16px / 24);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.icon;

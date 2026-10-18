@@ -373,6 +373,42 @@ fn the_overlays_are_not_clipped_by_the_pane() {
     );
 }
 
+#[test]
+fn the_section_heading_starts_2_px_inside_the_panel_edge() {
+    // PT SettingsSection: the heading row is `mx-0.5`, so its text starts 2 css px right of the
+    // panel's left edge (measured: heading x 290, panel x 288).
+    for s in SCALES {
+        let (h, _) = make(s, vec![section(every_kind(), false)]);
+        // No page title: the preview's heading sits where the header would be.
+        h.comp.global::<SettingsBridge>().set_page_title("".into());
+        h.advance(0);
+        let (left, _, _) = edges(&h);
+        let f = h.render();
+        let dev = |c: f32| (c * s).round() as u32;
+        // The panel's top: the first pixel down the column 300 px in that leaves the ground.
+        let ground = f.px(dev(left + 300.0), 1);
+        let col = dev(left + 300.0);
+        let top = (0..f.h)
+            .find(|&y| !Frame::near(f.px(col, y), ground, 3))
+            .expect("the panel is drawn");
+        // The heading's ink: the band 26 css px above the panel, from 8 px left of the panel.
+        let ink = f
+            .bbox_where(
+                dev(left - 8.0),
+                top - dev(26.0),
+                dev(left + 200.0),
+                top - dev(3.0),
+                |p| p[0] > 110,
+            )
+            .expect("the heading is drawn");
+        let dx = ink.0 as f32 / s - left;
+        assert!(
+            (1.5..=3.5).contains(&dx),
+            "scale {s}: the heading's ink starts {dx:.2} css px from the panel's edge"
+        );
+    }
+}
+
 /// `Px.hair()` in css px: a whole number of device pixels, at least one.
 fn hair(scale: f32) -> f32 {
     scale.floor().max(1.0) / scale

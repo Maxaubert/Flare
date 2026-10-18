@@ -49,30 +49,30 @@ export component SetSelect inherits Rectangle {
         height: root.height;
         text: o.name;
         font-size: 12px;
-        font-weight: 500;
+        // PT: font-medium. Segoe UI has no Medium face and Chromium draws 500 with the
+        // Semibold one, so 600 here (Task 53).
+        font-weight: 600;
         font-family: o.face == "" ? Theme.font-ui : o.face;
         color: Theme.text;
         vertical-alignment: center;
         overflow: elide;
     }
 
-    // PT chevron "M6 9l6 6 6-6" (24 box), 12 px, turning over 150 ms while open.
+    // PT chevron "M6 9l6 6 6-6" (24 box), 12 px, turned over while open. The software painter
+    // does not rotate a Path (Task 53: it stayed pointing down), so the open one is drawn
+    // pointing up instead; the 150 ms turn is the one thing lost.
     Path {
-        x: root.width - 10px - 12px;
-        y: (root.height - 12px) / 2;
-        width: 12px;
-        height: 12px;
+        x: (root.width - 10px - 12px) - (1.1px) / 2;
+        y: ((root.height - 12px) / 2) - (1.1px) / 2;
+        width: 12px + (1.1px);
+        height: 12px + (1.1px);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
         viewbox-width: 24;
         viewbox-height: 24;
-        commands: "M6 9l6 6 6-6";
+        commands: root.open ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6";
         stroke: Theme.dim;
         stroke-width: 1.1px;
         fill: transparent;
-        transform-rotation: root.open ? 180deg : 0deg;
-        animate transform-rotation {
-            duration: 150ms;
-            easing: ease-out;
-        }
     }
 
     // The FocusScope comes first: a later sibling takes the pointer.
@@ -266,10 +266,11 @@ export component SelectMenu inherits Rectangle {
                 // PT check "M4.5 12.5l5 5 10-11" (24 box), 12 px, at the right.
                 Path {
                     visible: o.id == root.value;
-                    x: parent.width - 11px - 12px;
-                    y: (parent.height - 12px) / 2;
-                    width: 12px;
-                    height: 12px;
+                    x: (parent.width - 11px - 12px) - (1.2px) / 2;
+                    y: ((parent.height - 12px) / 2) - (1.2px) / 2;
+                    width: 12px + (1.2px);
+                    height: 12px + (1.2px);
+                    // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
                     viewbox-width: 24;
                     viewbox-height: 24;
                     commands: "M4.5 12.5l5 5 10-11";
