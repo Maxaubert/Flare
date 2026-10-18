@@ -150,7 +150,9 @@ export component SetFrame inherits Rectangle {
     changed scroll-y => { fl.content-y = -root.scroll-y; }
     init => { fl.content-y = -root.scroll-y; }
 
-    background: Theme.ground;
+    // No ground of its own: the page behind it already paints the ground, and a second coat over a
+    // see-through window shows twice as dense (0.91 where one coat at 0.7 is meant). The test
+    // windows (FramePreview, SettingsPreview) carry their own ground.
 
     // The rail.
     Rectangle {

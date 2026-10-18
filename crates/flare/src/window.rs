@@ -376,6 +376,68 @@ fn park_e2e_window_when_ready(app: &AppWindow) -> Rc<slint::Timer> {
     timer
 }
 
+/// The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window.
+/// Returns false when there is no handle yet (nothing is attached then).
+fn attach_window_material(
+    app: &AppWindow,
+    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    look: &Rc<RefCell<LookCtl>>,
+    e2e: bool,
+) -> bool {
+    let now = Instant::now();
+    let Some(mut m) = WindowMaterial::new(app, os_version(), e2e) else {
+        return false;
+    };
+    // No polling: the material arms a one-shot wake only while the border is due.
+    m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
+    m.on_window_state(
+        app.window().is_maximized(),
+        app.window().is_fullscreen(),
+        now,
+    );
+    // A saved see-through level becomes glass only now: the backdrop first, then the ground.
+    if let Ok(mut l) = look.try_borrow_mut() {
+        l.attach_material(m);
+    }
+    true
+}
+
+/// Attaches the window material as soon as the window has a handle (looking as often as the
+/// `--e2e` park timer does). Keep the returned timer alive for the run.
+fn attach_material_when_ready(
+    app: &AppWindow,
+    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    look: &Rc<RefCell<LookCtl>>,
+    e2e: bool,
+) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let (material, look) = (material.clone(), look.clone());
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(_) => {
+                    attach_window_material(&app, &material, &look, e2e);
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("the window never got a handle, so it has no glass");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
+}
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
     let minimised = app.window().is_minimized();
@@ -1174,22 +1236,11 @@ pub fn run_window(
     }
     // The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window,
     // so it is made after the show; the look controller (Task 26) drives it from the settings.
-    {
-        let now = Instant::now();
-        if let Some(mut m) = WindowMaterial::new(&app, os_version(), args.e2e) {
-            // No polling: the material arms a one-shot wake only while the border is due.
-            m.set_wake(Box::new(SlintWake::new(Rc::downgrade(&material))), now);
-            m.on_window_state(
-                app.window().is_maximized(),
-                app.window().is_fullscreen(),
-                now,
-            );
-            // A saved see-through level becomes glass only now: the backdrop first, then the ground.
-            if let Ok(mut l) = look.try_borrow_mut() {
-                l.attach_material(m);
-            }
-        }
-    }
+    // The handle can be missing right after the show (the winit backend makes the native window
+    // once the event loop runs, as under `--e2e`): a short timer then attaches the material the
+    // moment the handle exists, or the window would stay solid for the whole run.
+    let material_timer = (!attach_window_material(&app, &material, &look, args.e2e))
+        .then(|| attach_material_when_ready(&app, &material, &look, args.e2e));
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
@@ -1249,6 +1300,7 @@ pub fn run_window(
     drop(frame_timer);
     drop(beat_timer);
     drop(park_timer);
+    drop(material_timer);
     drop(instance); // the lock is released last
     result
 }

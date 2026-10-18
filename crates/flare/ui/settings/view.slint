@@ -20,6 +20,10 @@ export global SettingsBridge {
     in-out property <[RailItem]> rail;
     in-out property <string> page-title;
     in-out property <[SetSection]> sections;
+    // The slider that holds the keys. The page is rebuilt on every change, which makes new sliders,
+    // so the new one with this id takes the keys back and Left and Right keep stepping.
+    in-out property <string> slider-focus-id;
+    in-out property <string> slider-focus-page;
     in-out property <length> content-h;
     in-out property <bool> narrow;
     in-out property <string> find-text;
@@ -223,6 +227,15 @@ component RowControls inherits HorizontalLayout {
             text: root.data.num-text;
             disabled: root.data.off;
             label: root.data.label;
+            want-focus: SettingsBridge.slider-focus-id == root.data.id && SettingsBridge.slider-focus-page == SettingsBridge.page-title;
+            focus-changed(on) => {
+                if (on) {
+                    SettingsBridge.slider-focus-id = root.data.id;
+                    SettingsBridge.slider-focus-page = SettingsBridge.page-title;
+                } else if (SettingsBridge.slider-focus-id == root.data.id) {
+                    SettingsBridge.slider-focus-id = "";
+                }
+            }
             changed(v) => { SettingsBridge.row-slide(root.data.id, v); }
         }
     }

@@ -32,9 +32,18 @@ export component SetSlider inherits Rectangle {
     out property <length> value-w: Px.snap(root.track-x + 218px) - root.value-x;
 
     callback changed(int);
+    // The slider took or lost the keys.
+    callback focus-changed(bool);
+    // A rebuilt page makes a new slider: this one takes the keys at once when the old one had them.
+    in property <bool> want-focus;
+    init => {
+        if (root.want-focus) {
+            keys.focus();
+        }
+    }
 
     // The last value sent, so one value is reported once; a new Rust value clears it.
-    private property <int> last-sent;
+    private property <int> last-sent: -1;
     changed value => { root.last-sent = root.value; }
 
     // One change: clamped, not the current value, not the last one sent.
@@ -53,7 +62,10 @@ export component SetSlider inherits Rectangle {
         root.go(round(g * root.max));
     }
 
-    public function focus-me() { keys.focus(); }
+    public function focus-me() {
+        keys.focus();
+        root.focus-changed(true);
+    }
 
     accessible-role: slider;
     accessible-label: root.label;
@@ -113,6 +125,7 @@ export component SetSlider inherits Rectangle {
         y: 0;
         width: root.track-w;
         height: root.height;
+        changed has-focus => { root.focus-changed(self.has-focus); }
         key-pressed(e) => {
             if (root.disabled) {
                 return reject;
@@ -155,6 +168,9 @@ export component SetSlider inherits Rectangle {
         enabled: !root.disabled;
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                // The press hands the keys over, as a range input does: Left and Right then step it.
+                keys.focus();
+                root.focus-changed(true);
                 root.set-from(self.mouse-x);
             }
         }
@@ -179,7 +195,9 @@ export component SliderPreview inherits Window {
     in-out property <int> max: 70;
     in-out property <string> text;
     in-out property <bool> disabled;
+    in-out property <bool> want-focus;
     callback changed(int);
+    callback focus-changed(bool);
 
     out property <string> val-text: sl.text;
     out property <length> tr-x: sl.track-x;
@@ -205,6 +223,8 @@ export component SliderPreview inherits Window {
         text: root.text;
         disabled: root.disabled;
         label: "Slider";
+        want-focus: root.want-focus;
         changed(v) => { root.changed(v); }
+        focus-changed(on) => { root.focus-changed(on); }
     }
 }

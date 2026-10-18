@@ -118,6 +118,41 @@ fn a_press_and_a_drag_set_the_value_and_fire_once_per_change() {
 }
 
 #[test]
+fn a_press_on_the_track_gives_the_slider_the_keys() {
+    let h = make(1.0);
+    set(&h, 0, 70);
+    let log = log_changes(&h);
+    // a press at x = 84 sets 35; the slider is not focused any other way
+    h.move_to(84.0, 20.0);
+    h.press(84.0, 20.0, PointerEventButton::Left);
+    h.release(84.0, 20.0, PointerEventButton::Left);
+    assert_eq!(*log.borrow(), vec![35]);
+    h.comp.set_value(35);
+    let right = String::from(char::from(Key::RightArrow));
+    h.key_text(&right);
+    assert_eq!(
+        *log.borrow(),
+        vec![35, 36],
+        "Right steps the slider a press has just set"
+    );
+}
+
+#[test]
+fn the_slider_says_when_it_takes_and_loses_the_keys() {
+    let h = make(1.0);
+    set(&h, 0, 70);
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    h.comp.on_focus_changed(move |on| l.borrow_mut().push(on));
+    h.comp.invoke_focus_slider();
+    assert_eq!(
+        *log.borrow(),
+        vec![true],
+        "the page keeps this to give the keys back after a rebuild"
+    );
+}
+
+#[test]
 fn right_steps_one_and_stops_at_the_top() {
     let h = make(1.0);
     set(&h, 30, 70);
