@@ -529,6 +529,15 @@ impl GlueCtx {
         Ok(())
     }
 
+    fn dpi_change(&self, dpi: u32, origin: Option<(i32, i32)>) -> Result<(), String> {
+        if dpi == 0 {
+            return Err("dpi must be above zero".into());
+        }
+        let app = self.app.upgrade().ok_or("the window is gone")?;
+        let hwnd = crate::window::hwnd_of(&app).ok_or("the window has no handle")?;
+        apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
+        Ok(())
+    }
     fn clip_set(&self, text: Option<&str>, png: Option<&str>) -> Result<(), String> {
         if !crate::e2e::global().on() {
             return Err("the real clipboard is never written".into());
@@ -549,6 +558,121 @@ pub fn block_ui(ms: u64, resp: Responder, sleep: impl FnOnce(Duration)) {
     sleep(Duration::from_millis(ms)); // sync-ok: e2e only, holds the UI thread on purpose
 }
 
+// ---- the DPI change (Task 9) ---------------------------------------------------------------
+
+/// 96 dpi is 100 percent.
+pub fn dpi_to_scale(dpi: u32) -> f32 {
+    dpi as f32 / 96.0
+}
+
+/// The rectangle Windows would suggest in `WM_DPICHANGED` for a window of `logical` size at
+/// `origin`: left, top, right, bottom in device px, the size being `round(logical * dpi / 96)`.
+pub fn suggested_rect(origin: (i32, i32), logical: (f32, f32), dpi: u32) -> (i32, i32, i32, i32) {
+    let s = dpi_to_scale(dpi);
+    let w = (logical.0 * s).round() as i32;
+    let h = (logical.1 * s).round() as i32;
+    (origin.0, origin.1, origin.0 + w, origin.1 + h)
+}
+
+/// How a DPI change reaches the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpiMode {
+    /// A real `WM_DPICHANGED` through the window procedure (the default).
+    Message,
+    /// The fallback: the `ScaleFactorChanged` event, then the new size.
+    Event,
+}
+
+impl DpiMode {
+    /// `FLARE_E2E_DPI_MODE=event` picks the fallback; anything else (or absent) the message.
+    pub fn from_env_value(v: Option<&str>) -> DpiMode {
+        match v {
+            Some(s) if s.trim().eq_ignore_ascii_case("event") => DpiMode::Event,
+            _ => DpiMode::Message,
+        }
+    }
+
+    pub fn from_env() -> DpiMode {
+        let name = ["FLARE_E2E", "_DPI_MODE"].concat();
+        DpiMode::from_env_value(crate::e2e::global().env(&name).as_deref())
+    }
+}
+
+/// What the event fallback needs from a window; a fake records the calls in the test.
+pub trait DpiSeam {
+    fn scale_factor_changed(&mut self, scale_factor: f32);
+    fn set_physical_size(&mut self, w: u32, h: u32);
+}
+
+/// A `&slint::Window` as a `DpiSeam`.
+struct WindowRef<'a>(&'a slint::Window);
+
+impl DpiSeam for WindowRef<'_> {
+    fn scale_factor_changed(&mut self, scale_factor: f32) {
+        self.0
+            .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor });
+    }
+
+    fn set_physical_size(&mut self, w: u32, h: u32) {
+        self.0.set_size(slint::PhysicalSize::new(w, h));
+    }
+}
+
+/// The event fallback: the same pair winit would send (the scale, then the resize to the suggested
+/// size).
+pub fn apply_dpi_event(seam: &mut dyn DpiSeam, logical: (f32, f32), dpi: u32) {
+    let (l, t, r, b) = suggested_rect((0, 0), logical, dpi);
+    seam.scale_factor_changed(dpi_to_scale(dpi));
+    seam.set_physical_size((r - l) as u32, (b - t) as u32);
+}
+
+/// Changes the window's scaling as a monitor move would. `origin` is the new top-left in device
+/// px, else the window's own. Runs on the UI thread; the reply is sent after it returns, and the
+/// client then waits for the `app.state.scale` probe (the glue never claims success itself).
+pub fn apply_dpi(
+    hwnd: isize,
+    window: &slint::Window,
+    dpi: u32,
+    origin: Option<(i32, i32)>,
+    mode: DpiMode,
+) {
+    let scale = window.scale_factor().max(0.01);
+    let size = window.size();
+    let logical = (size.width as f32 / scale, size.height as f32 / scale);
+    match mode {
+        DpiMode::Message => {
+            use windows_sys::Win32::Foundation::RECT;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetWindowRect, SendMessageW, WM_DPICHANGED,
+            };
+            let h = hwnd as windows_sys::Win32::Foundation::HWND;
+            let at = origin.unwrap_or_else(|| {
+                let mut r = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                // SAFETY: `h` is this process's window and `r` is a valid out pointer.
+                unsafe { GetWindowRect(h, &mut r) };
+                (r.left, r.top)
+            });
+            let (left, top, right, bottom) = suggested_rect(at, logical, dpi);
+            let rect = RECT {
+                left,
+                top,
+                right,
+                bottom,
+            };
+            let wparam = (dpi as usize) | ((dpi as usize) << 16);
+            // SAFETY: sent from the UI thread to its own window; `rect` outlives the synchronous call.
+            unsafe {
+                SendMessageW(h, WM_DPICHANGED, wparam, &rect as *const RECT as isize);
+            }
+        }
+        DpiMode::Event => apply_dpi_event(&mut WindowRef(window), logical, dpi),
+    }
+}
 /// The one `match` over every request. Tasks 8 to 11 each own the arms named in their title.
 fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
     let result: Result<(), String> = match req {
@@ -599,7 +723,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::Quit { force } => ctx.quit(force),
         // Tasks 9 to 11 replace these.
         Request::Hello => Err("Hello is answered by the server".into()),
-        Request::DpiChange { .. } => Err("DpiChange is not built yet (Task 9)".into()),
+        Request::DpiChange { dpi, x, y } => ctx.dpi_change(dpi, x.zip(y)),
         Request::Snapshot { .. }
         | Request::Pixel { .. }
         | Request::Frames { .. }
@@ -928,5 +1052,58 @@ mod tests {
             "a field with text claims Escape"
         );
         assert_eq!(h.comp.get_last_key(), "find:Escape");
+    }
+
+    #[test]
+    fn dpi_96_to_288_is_the_eight_scales() {
+        let want = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0];
+        for (dpi, w) in [96, 120, 144, 168, 192, 216, 240, 288]
+            .into_iter()
+            .zip(want)
+        {
+            assert!((dpi_to_scale(dpi) - w).abs() < 1e-6, "dpi {dpi}");
+        }
+    }
+
+    #[test]
+    fn the_suggested_rect_keeps_the_logical_size_and_the_origin() {
+        for dpi in [96u32, 120, 144, 168, 192, 216, 240, 288] {
+            let s = dpi_to_scale(dpi);
+            let (l, t, r, b) = suggested_rect((-1920, 40), (1000.0, 640.0), dpi);
+            assert_eq!((l, t), (-1920, 40), "origin at {dpi}");
+            assert_eq!(r - l, (1000.0 * s).round() as i32, "width at {dpi}");
+            assert_eq!(b - t, (640.0 * s).round() as i32, "height at {dpi}");
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeWindow {
+        calls: Vec<String>,
+    }
+
+    impl DpiSeam for FakeWindow {
+        fn scale_factor_changed(&mut self, scale_factor: f32) {
+            self.calls.push(format!("scale {scale_factor}"));
+        }
+
+        fn set_physical_size(&mut self, w: u32, h: u32) {
+            self.calls.push(format!("size {w}x{h}"));
+        }
+    }
+
+    #[test]
+    fn the_event_fallback_sends_the_same_pair_winit_would() {
+        let mut w = FakeWindow::default();
+        apply_dpi_event(&mut w, (800.0, 600.0), 144);
+        assert_eq!(w.calls, vec!["scale 1.5", "size 1200x900"]);
+    }
+
+    #[test]
+    fn the_default_mode_is_the_message() {
+        assert_eq!(DpiMode::from_env_value(None), DpiMode::Message);
+        assert_eq!(DpiMode::from_env_value(Some("")), DpiMode::Message);
+        assert_eq!(DpiMode::from_env_value(Some("nonsense")), DpiMode::Message);
+        assert_eq!(DpiMode::from_env_value(Some("event")), DpiMode::Event);
+        assert_eq!(DpiMode::from_env_value(Some("EVENT")), DpiMode::Event);
     }
 }
