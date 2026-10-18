@@ -1041,8 +1041,10 @@ pub fn run_window(
             &outcome,
             args.look.clone(),
         );
-        if args.e2e || sample {
-            // Headless-style runs apply once, with their overrides, and never listen.
+        if sample {
+            // Headless-style runs apply once, with their overrides, and never listen. An `--e2e` run
+            // listens like the real app: PT's e2e drives Settings and reads the live chrome, and a
+            // picked accent or background must reach the window (FLARE-DEFECT, Task 34).
             let rc = ctl.install_quiet();
             rc.borrow_mut().apply_now();
             rc
