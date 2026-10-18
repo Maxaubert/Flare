@@ -542,12 +542,22 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     // PT: run.mjs:1904. Hovered: the ring stays and the close slides in: the close is not exported.
     ctx.skip("hovered, the ring stays and the close slides in after it: the close's slide is not exported");
 
-    // PT: run.mjs:1908. Every tab one width, 140 to 152 px.
+    // PT: run.mjs:1908. Every tab one width. PT's rule is `flex-[0_1_150px] min-w-[84px]` with the
+    // strip's room shared equally, so the width is the strip's share of its room: 150 at most, 84
+    // at least, and 140 to 152 only when the room has it. At 1100 css with Flare's title row (the
+    // mark and the buttons, help on by default) the six tabs get 139.1 css, the share, and no tab
+    // is squeezed below PT's floor. The room is read from the probe in device px at 225 percent
+    // (DPI_225 216 = 2.25); the strip keeps 4 px on its right and the + takes 28.
     let widths: Vec<f32> = tabs.iter().map(|t| rect_of(t).2).collect();
     let one_width = widths.iter().all(|w| (w - widths[0]).abs() < 0.5);
+    let strip_css =
+        strip_state(&mut app)["strip_px"].as_f64().unwrap_or(0.0) / (f64::from(DPI_225) / 96.0);
+    let share = ((strip_css - 4.0 - 28.0) / widths.len().max(1) as f64).clamp(84.0, 150.0);
     ctx.ok(
-        one_width && (140.0..=152.0).contains(&widths[0]),
-        format!("every tab one width ({widths:?})"),
+        one_width && (f64::from(widths[0]) - share).abs() < 0.5,
+        format!(
+            "every tab one width, the strip's share of its room ({widths:?}, share {share:.1})"
+        ),
     );
 
     // PT: run.mjs:1914. A click moves no tab.

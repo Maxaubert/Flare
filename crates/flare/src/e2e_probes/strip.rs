@@ -106,6 +106,8 @@ fn strip_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .next()
         .map(|r| r.label.to_string())
         .unwrap_or_default();
+    // The strip's own width in device px: the room the tabs share (tabLooks works out the fit).
+    answer["strip_px"] = json!(ctx.app.get_strip_phys_width() as i64);
     answer["more"] = json!({ "x_px": geom.more_x as i64, "w_px": geom.more_w as i64 });
     answer["list_first"] = json!(first);
     Ok(answer)
