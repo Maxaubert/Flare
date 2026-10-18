@@ -949,6 +949,7 @@ impl AppCtl {
         // The Settings view's tooltips go the same way as every other surface's.
         {
             let weak = Rc::downgrade(rc);
+            // untimed: a tooltip request only records the hover and returns at once
             app.global::<SettingsBridge>().on_tip(
                 move |t: SharedString, x: f32, y: f32, w: f32, h: f32| {
                     if let Some(rc) = weak.upgrade()
@@ -961,6 +962,7 @@ impl AppCtl {
         }
         {
             let weak = Rc::downgrade(rc);
+            // untimed: a tooltip request only records the hover and returns at once
             app.global::<HelpBridge>().on_tip(
                 move |t: SharedString, x: f32, y: f32, w: f32, h: f32| {
                     if let Some(rc) = weak.upgrade()

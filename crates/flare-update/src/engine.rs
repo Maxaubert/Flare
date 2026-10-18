@@ -393,7 +393,7 @@ impl Engine {
                                 break;
                             }
                             inner.tick();
-                            if !inner.sleeper.sleep(CHECK_EVERY_MS)
+                            if !inner.sleeper.sleep(CHECK_EVERY_MS) // sync-ok: the update thread paces its own checks, never the UI
                                 || inner.stopped.load(Ordering::SeqCst)
                             {
                                 break;

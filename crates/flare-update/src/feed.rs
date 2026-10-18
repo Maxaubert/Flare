@@ -306,7 +306,7 @@ impl Feed for FakeFeed {
         let result = (|| {
             for step in steps {
                 if let Some(latch) = &hold {
-                    latch.wait();
+                    latch.wait(); // sync-ok: test double hold, runs on the download worker
                 }
                 if cancel.is_cancelled() {
                     return Err(FeedError::Cancelled);

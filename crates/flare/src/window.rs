@@ -843,6 +843,7 @@ pub fn run_window(
             FontCtl::new(LookStore::new(prefs.clone()), host.clone())
                 .with_overrides(args.look.font.clone(), args.look.font_pct),
         );
+        // untimed: the font subscriber only queues one event-loop call and returns at once
         _font_sub = Some(LookStore::new(prefs.clone()).on_look_change(|| {
             let queued = slint::invoke_from_event_loop(|| {
                 let target = APP_CTL.with(|cell| cell.borrow().clone());
@@ -928,9 +929,11 @@ pub fn run_window(
         }
     });
     app.window()
-        .on_close_requested(move || match close_decision() {
-            CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
-            CloseDecision::Close => CloseRequestResponse::HideWindow,
+        .on_close_requested(move || {
+            crate::diag_ctl::timed("on_close_requested", || match close_decision() {
+                CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
+                CloseDecision::Close => CloseRequestResponse::HideWindow,
+            })
         });
     let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
     if let Some(rc) = &ctl {
@@ -1300,6 +1303,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         }),
     )));
 
+    // untimed: winit events arrive per pixel, so the handler keeps its own cheap path
     app.window().on_winit_window_event(move |window, event| {
         let with_ctl = |f: &mut dyn FnMut(&mut AppCtl)| {
             if let Some(rc) = ctl.upgrade()

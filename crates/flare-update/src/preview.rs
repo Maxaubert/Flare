@@ -87,13 +87,13 @@ pub fn run_preview_install(
     let mut waited = 0;
     for i in 1..=STEPS {
         let target = round_half_up(tick * i as f64);
-        wait.wait(target - waited);
+        wait.wait(target - waited); // sync-ok: the preview runs on its own worker, the Wait is injected
         waited = target;
         if cancelled() {
             return false;
         }
         on_pct(round_half_up(100.0 * i as f64 / STEPS as f64) as u8);
     }
-    wait.wait(hold);
+    wait.wait(hold); // sync-ok: the preview runs on its own worker, the Wait is injected
     false
 }
