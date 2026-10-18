@@ -1528,10 +1528,8 @@ pub fn install(
     kp: &Rc<KeyPath>,
     clip: Option<Arc<dyn ClipboardPort>>,
 ) {
-    match crate::window::hwnd_of(app) {
-        Some(hwnd) => flare_win::window_park::park(hwnd),
-        None => log::warn!("e2e: the window has no handle, it is not parked"),
-    }
+    // Parking is window.rs's job (`park_e2e_window_when_ready`): the native window does not exist
+    // yet when this runs, so no look for its handle is made here.
     let appdata = std::env::var("APPDATA").ok();
     let profile = crate::startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref());
     match crate::e2e_hook::start(&profile) {
@@ -1776,17 +1774,20 @@ mod tests {
     }
 
     #[test]
-    fn park_is_called_first_in_install() {
+    fn install_does_not_look_for_a_handle_the_window_has_not_got_yet() {
+        // The native window exists only once the event loop runs, so a look for it inside `install`
+        // always failed ("the window has no handle, it is not parked"). window.rs parks it by timer.
         let src = include_str!("e2e_glue.rs");
         let from = src.find("pub fn install(").expect("install exists");
-        let body = &src[from..];
-        let open = body.find('{').expect("a body");
-        let first = body[open + 1..].trim_start();
+        let to = src[from..].find("\n}\n").expect("install ends") + from;
+        let body = &src[from..to];
         assert!(
-            first.starts_with("match crate::window::hwnd_of(app)")
-                && first[..200].contains("window_park::park"),
-            "park must be the first thing install does"
+            !body.contains("hwnd_of"),
+            "install must not look for the handle"
         );
+        let win = include_str!("window.rs");
+        assert!(win.contains("park_e2e_window_when_ready(&app)"));
+        assert!(win.contains("flare_win::window_park::park(h)"));
     }
 
     #[test]

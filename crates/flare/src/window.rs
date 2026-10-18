@@ -302,11 +302,7 @@ pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
 }
 
 /// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
-fn apply_e2e_style(app: &AppWindow) {
-    let Some(hwnd) = hwnd_of(app) else {
-        log::warn!("e2e: the window has no handle, its style is unchanged");
-        return;
-    };
+fn apply_e2e_style_to(hwnd: isize) {
     let hwnd = hwnd as *mut std::ffi::c_void;
     // SAFETY: `hwnd` is this process's own live window on the UI thread; reading and writing its
     // extended style touches no memory of ours.
@@ -314,6 +310,64 @@ fn apply_e2e_style(app: &AppWindow) {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, e2e_ex_style(current) as isize);
     }
+}
+
+/// How often the `--e2e` window looks for its handle, and how many looks it makes (about 10 s).
+const E2E_HANDLE_POLL_MS: u64 = 10;
+const E2E_HANDLE_POLLS: u32 = 1000;
+
+/// What one look for the `--e2e` window's handle decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlePoll {
+    /// The window exists: style and park it.
+    Found(isize),
+    /// Not yet: look again.
+    Wait,
+    /// Looked `max` times in vain: say so and stop.
+    GiveUp,
+}
+
+/// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
+pub fn poll_handle(polls: u32, max: u32, hwnd: Option<isize>) -> HandlePoll {
+    match hwnd {
+        Some(h) => HandlePoll::Found(h),
+        None if polls + 1 >= max => HandlePoll::GiveUp,
+        None => HandlePoll::Wait,
+    }
+}
+
+/// Styles and parks the `--e2e` window as soon as it has a handle. The winit backend makes the
+/// native window only once the event loop runs, so right after `show()` there is no handle yet:
+/// a short timer looks until it exists. Keep the returned timer alive for the run.
+fn park_e2e_window_when_ready(app: &AppWindow) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(h) => {
+                    apply_e2e_style_to(h);
+                    flare_win::window_park::park(h);
+                    log::info!("e2e: the window is styled and parked");
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("e2e: the window never got a handle, it is not parked");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
 }
 
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
@@ -1065,8 +1119,9 @@ pub fn run_window(
     if let Some(hwnd) = hwnd_of(&app) {
         crate::diag_ctl::set_window(hwnd);
     }
+    // The handle does not exist before the event loop runs: style and park when it appears.
+    let park_timer = args.e2e.then(|| park_e2e_window_when_ready(&app));
     if args.e2e {
-        apply_e2e_style(&app);
         tell_renderer(
             effective,
             note.borrow().as_deref(),
@@ -1181,6 +1236,7 @@ pub fn run_window(
     drop(timer);
     drop(frame_timer);
     drop(beat_timer);
+    drop(park_timer);
     drop(instance); // the lock is released last
     result
 }
@@ -1642,6 +1698,19 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_e2e_window_is_parked_when_its_handle_appears_not_before() {
+        // No handle yet (the first looks after show()): wait, until the budget is spent.
+        assert_eq!(poll_handle(0, 3, None), HandlePoll::Wait);
+        assert_eq!(poll_handle(1, 3, None), HandlePoll::Wait);
+        assert_eq!(poll_handle(2, 3, None), HandlePoll::GiveUp);
+        // The handle shows up on any look: that look parks it.
+        assert_eq!(poll_handle(0, 3, Some(77)), HandlePoll::Found(77));
+        assert_eq!(poll_handle(2, 3, Some(77)), HandlePoll::Found(77));
+        // The wait is long enough for a slow start and short enough to give up.
+        assert!(E2E_HANDLE_POLL_MS * u64::from(E2E_HANDLE_POLLS) >= 5_000);
+    }
 
     fn h(cwd: &str) -> Handoff {
         Handoff {
