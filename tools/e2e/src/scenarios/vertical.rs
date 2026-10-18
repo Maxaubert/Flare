@@ -1906,13 +1906,21 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
         format!("with the strip, the same quiet mark sits before the tabs ({mark_rect:?}, first tab at {first_tab})"),
     );
     // With the strip, Ctrl+Shift+B is the shell's again.
+    // The settings file is written a moment after a change, so wait for the pin from above to land
+    // before taking the "before" reading; a stale "collapsed" would blame the chord for that write.
+    ctx.until("the pinned mode is stored", 4_000, &mut || {
+        stored(app, "flare.window.sidebar") == "open"
+    });
     let mode_before = stored(app, "flare.window.sidebar");
     key(app, "Ctrl+Shift+B");
     hold(ctx, 400);
     // PT: run.mjs:2814
     ctx.ok(
         stored(app, "flare.window.sidebar") == "open" && mode_before == "open",
-        "with the strip, Ctrl+Shift+B does not touch the sidebar",
+        format!(
+            "with the strip, Ctrl+Shift+B does not touch the sidebar ({mode_before:?} then {:?})",
+            stored(app, "flare.window.sidebar")
+        ),
     );
     Ok(())
 }
