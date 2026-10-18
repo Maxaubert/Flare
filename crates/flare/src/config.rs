@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use flare_settings::pages::PAGES;
 use flare_theme::colour::{parse_colour, to_stored};
 use flare_theme::edges::WindowEdges;
 use flare_theme::fonts::font_id_or_default;
@@ -23,6 +24,45 @@ pub struct LookOverrides {
     pub background: Option<String>,
     pub secondary: Option<String>,
     pub edges: Option<WindowEdges>,
+}
+
+/// What `--settings-open` leaves open in the Settings scene (Task 51).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsOpen {
+    #[default]
+    None,
+    Select,
+    Picker,
+    Editor,
+    Ask,
+    Help,
+    WallExpanded,
+}
+
+/// The words `--settings-open` takes, in the order the matrix lists them.
+pub const SETTINGS_OPEN_WORDS: [&str; 7] = [
+    "none",
+    "select",
+    "picker",
+    "editor",
+    "ask",
+    "help",
+    "wall-expanded",
+];
+
+impl SettingsOpen {
+    pub fn from_word(w: &str) -> Option<SettingsOpen> {
+        Some(match w {
+            "none" => SettingsOpen::None,
+            "select" => SettingsOpen::Select,
+            "picker" => SettingsOpen::Picker,
+            "editor" => SettingsOpen::Editor,
+            "ask" => SettingsOpen::Ask,
+            "help" => SettingsOpen::Help,
+            "wall-expanded" => SettingsOpen::WallExpanded,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +88,12 @@ pub struct Args {
     pub live_tabs: Option<u32>,
     /// `--instance-probe`: answers whether this process was the first instance.
     pub instance_probe: bool,
+    /// `--settings-page <id>`: the page the settings scene shows (default appearance).
+    pub settings_page: Option<String>,
+    /// `--settings-find <text>`: typed into the settings scene's Find field.
+    pub settings_find: Option<String>,
+    /// `--settings-open <word>`: the overlay the settings scene leaves open.
+    pub settings_open: SettingsOpen,
     /// `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`.
     pub look: LookOverrides,
     /// Bare arguments (folders or files), in order.
@@ -76,6 +122,9 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         scene: None,
         live_tabs: None,
         instance_probe: false,
+        settings_page: None,
+        settings_find: None,
+        settings_open: SettingsOpen::None,
         look: LookOverrides::default(),
         positional: Vec::new(),
     };
@@ -116,6 +165,27 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                     .parse()
                     .map_err(|_| "--live-tabs needs a whole number".to_string())?;
                 out.live_tabs = Some(n);
+            }
+            "--settings-page" => {
+                let id = value(args, &mut i, flag)?;
+                if !PAGES.iter().any(|p| p.id == id) {
+                    let ids: Vec<&str> = PAGES.iter().map(|p| p.id).collect();
+                    return Err(format!(
+                        "unknown settings page '{id}': use one of {}",
+                        ids.join(", ")
+                    ));
+                }
+                out.settings_page = Some(id.to_string());
+            }
+            "--settings-find" => out.settings_find = Some(value(args, &mut i, flag)?.to_string()),
+            "--settings-open" => {
+                let w = value(args, &mut i, flag)?;
+                out.settings_open = SettingsOpen::from_word(w).ok_or_else(|| {
+                    format!(
+                        "unknown --settings-open '{w}': use one of {}",
+                        SETTINGS_OPEN_WORDS.join(", ")
+                    )
+                })?;
             }
             "--theme" => out.look.theme = Some(value(args, &mut i, flag)?.to_string()),
             "--see-through" => {
@@ -174,6 +244,12 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
     }
     if out.live_shell.is_some() && out.live_screenshot.is_none() {
         return Err("--live-shell needs --live-screenshot <path>".to_string());
+    }
+    let settings_flag = out.settings_page.is_some()
+        || out.settings_find.is_some()
+        || out.settings_open != SettingsOpen::None;
+    if settings_flag && out.scene.as_deref() != Some("settings") {
+        return Err("the --settings-* flags need --scene settings".to_string());
     }
     out.renderer = match (renderer_flag, env_renderer) {
         (Some(choice), _) => choice,
@@ -405,5 +481,59 @@ mod tests {
         assert!(parse_args(&a(&["--theme"]), None).is_err());
         assert!(parse_args(&a(&["--accent", "soup"]), None).is_err());
         assert!(parse_args(&a(&["--font", "comic"]), None).is_err());
+    }
+
+    #[test]
+    fn the_scene_flags_parse_and_a_bad_page_is_an_error() {
+        let args = parse_args(
+            &a(&[
+                "--scene",
+                "settings",
+                "--settings-page",
+                "terminal",
+                "--settings-find",
+                "colour",
+                "--settings-open",
+                "wall-expanded",
+                "--scale",
+                "1.5",
+                "--size",
+                "800x600",
+                "--screenshot",
+                "x.png",
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(args.settings_page.as_deref(), Some("terminal"));
+        assert_eq!(args.settings_find.as_deref(), Some("colour"));
+        assert_eq!(args.settings_open, SettingsOpen::WallExpanded);
+        assert_eq!(args.size, (800, 600));
+        let plain = parse_args(&a(&["--scene", "settings"]), None).unwrap();
+        assert_eq!(plain.settings_page, None);
+        assert_eq!(plain.settings_open, SettingsOpen::None);
+        for word in SETTINGS_OPEN_WORDS {
+            let args =
+                parse_args(&a(&["--scene", "settings", "--settings-open", word]), None).unwrap();
+            assert_eq!(Some(args.settings_open), SettingsOpen::from_word(word));
+        }
+        let bad = |extra: &[&str]| {
+            let mut v = vec!["--scene", "settings"];
+            v.extend_from_slice(extra);
+            parse_args(&a(&v), None)
+        };
+        let err = bad(&["--settings-page", "colours"]).unwrap_err();
+        assert!(
+            err.contains("appearance"),
+            "the error names the pages: {err}"
+        );
+        assert!(bad(&["--settings-open", "menu"]).is_err());
+        assert!(bad(&["--settings-page"]).is_err());
+        assert!(bad(&["--settings-find"]).is_err());
+        assert!(
+            parse_args(&a(&["--settings-page", "about"]), None).is_err(),
+            "the flags need the settings scene"
+        );
+        assert!(parse_args(&a(&["--scene", "tip", "--settings-open", "ask"]), None).is_err());
     }
 }

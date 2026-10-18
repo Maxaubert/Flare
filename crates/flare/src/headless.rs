@@ -40,14 +40,18 @@ use slint::{
 
 use crate::appctl::{AppCtl, Deps, Post, TermPorts, UiMsg};
 use crate::chrome_apply::{apply_chrome, apply_to_host};
-use crate::config::{Args, RendererChoice};
+use crate::config::{Args, RendererChoice, SettingsOpen};
 use crate::host::{GridHost, GridPainter, GridSource, SampleSource};
 use crate::live::{Live, LiveSource, shutdown};
 use crate::memory::process_memory;
+use crate::settings_ctl::SettingsCtl;
+use crate::settings_scene;
 use crate::tab_host::TabHost;
 use crate::term_ui::{DecorInputs, PointerIn};
 use crate::theme_scene::{SAMPLE_STREAM, StreamSource, scene_font, scene_look};
-use crate::{AppWindow, MarkMotion};
+use crate::{AppWindow, MarkMotion, SetKind, SettingsBridge};
+use flare_settings::pages::DEFAULT_PAGE;
+use flare_settings::window_colours::ACCENT;
 use flare_term::keys::KeyEvent;
 use flare_term::path_open::{PathKind, StatFn};
 
@@ -261,7 +265,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 // ---- --scene: the window in one fixed state ----------------------------------------------------
 
 /// The scenes `--scene` takes, in the order the screenshot plan lists them.
-pub const SCENES: [&str; 36] = [
+pub const SCENES: [&str; 37] = [
     "strip-3",
     "strip-hover",
     "strip-many",
@@ -298,6 +302,7 @@ pub const SCENES: [&str; 36] = [
     "marks-skeleton",
     "marks-close",
     "badge",
+    "settings",
 ];
 
 /// The folder the scenes' tabs sit in. Inert: nothing is spawned in it and nothing is read from it.
@@ -436,6 +441,9 @@ pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         "dialog-close" => (saved(&three, 0), no_prefs),
         // M3's strip-3 window with a single tab.
         "theme-sample" => (saved(&[github("Flare")], 0), no_prefs),
+        // The Settings tab alone, as a fresh Prism Terminal profile shows it, in a fixed store
+        // (M7, Task 51).
+        "settings" => (saved(&[], 0), crate::settings_scene::prep),
         // The terminal scenes: one live tab in the Flare folder, its shell fed with the text.
         name if is_term_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         name if is_mark_scene(name) => marks_setup(name),
@@ -708,6 +716,8 @@ pub(crate) struct Scene {
     pub(crate) scale: f32,
     pub(crate) phys: (u32, u32),
     dir: PathBuf,
+    /// The scene's own in-memory store (the Settings scene hands it to its controller).
+    prefs: PrefStore,
     /// The shell the grid shows (the terminal scenes feed it and read its cells).
     front: Rc<RefCell<Option<Arc<TermHandle>>>>,
     /// Every fake shell the tabs spawned (the mark scenes feed them the agents' signals).
@@ -874,6 +884,7 @@ impl Scene {
             scale,
             phys,
             dir,
+            prefs,
             front,
             spawner,
         };
@@ -1023,6 +1034,129 @@ impl Scene {
             .borrow()
             .clone()
             .ok_or_else(|| "the scene has no live tab".to_string())
+    }
+
+    /// The Settings scene (M7, Task 51): the Settings tab opened over the restored tab, on the
+    /// page and with the overlay the flags name. The controller is made here, over the scene's own
+    /// in-memory store and fixed ports, and everything is driven through its own callbacks.
+    fn stage_settings(&self, args: &Args) -> Result<(), String> {
+        let post: Post = {
+            let queue = self.queue.clone();
+            Arc::new(move |m| {
+                queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push_back(m);
+            })
+        };
+        let ports = settings_scene::deps(&self.prefs, post, Rc::new(scene_now));
+        let settings = SettingsCtl::new(&self.app, ports);
+        {
+            let mut ctl = self.ctl.borrow_mut();
+            ctl.set_settings(settings);
+            ctl.model_mut().open_settings();
+            ctl.refresh();
+        }
+        // The shell list and the Explorer verb answer on workers: wait for both.
+        let until = Instant::now() + Duration::from_secs(5);
+        let mut answers = 0;
+        while answers < 2 {
+            let next = self
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front();
+            match next {
+                Some(m) => {
+                    answers += usize::from(matches!(m, UiMsg::Settings(_)));
+                    self.ctl.borrow_mut().on_msg(m);
+                }
+                None if Instant::now() >= until => {
+                    return Err("the settings workers did not answer within 5 s".to_string());
+                }
+                None => std::thread::sleep(Duration::from_millis(5)), // sync-ok: scene tooling, waits for the settings workers
+            }
+        }
+        // One paint lays the view out and tells the controller its frame.
+        self.settle(4);
+        let page = args
+            .settings_page
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PAGE.to_string());
+        let bridge = self.app.global::<SettingsBridge>();
+        bridge.invoke_page_chosen(page.as_str().into());
+        self.settle(4);
+        if let Some(query) = &args.settings_find {
+            bridge.set_find_text(query.as_str().into());
+            bridge.invoke_find_edited(query.as_str().into());
+            self.settle(4);
+        }
+        let css = (
+            f64::from(self.phys.0) / f64::from(self.scale),
+            f64::from(self.phys.1) / f64::from(self.scale),
+        );
+        let anchor = |kind: SetKind, what: &str| -> Result<(String, [f32; 4]), String> {
+            let id = settings_scene::first_row_of(&self.app, kind)
+                .ok_or_else(|| format!("the {page} page has no {what} to open"))?;
+            let place = || {
+                settings_scene::control_anchor(&self.app, css, f64::from(self.scale), &id, kind)
+                    .ok_or_else(|| "the settings view has not been laid out".to_string())
+            };
+            let mut at = place()?;
+            // A control below the fold is scrolled to the middle first, as a click would.
+            if let Some(y) = settings_scene::reveal_scroll(&self.app, css, at) {
+                bridge.set_scroll_y(y);
+                self.settle(2);
+                at = place()?;
+            }
+            Ok((id, at.map(|v| v as f32)))
+        };
+        let cards = bridge.get_wall_cards();
+        let card_id = |chosen: bool, edit: bool| -> Result<SharedString, String> {
+            (0..cards.row_count())
+                .filter_map(|i| cards.row_data(i))
+                .find(|c| if edit { c.edit } else { c.on == chosen })
+                .or_else(|| {
+                    (0..cards.row_count())
+                        .filter_map(|i| cards.row_data(i))
+                        .find(|c| c.on == chosen)
+                })
+                .map(|c| c.id)
+                .ok_or_else(|| format!("the {page} page has no theme wall"))
+        };
+        match args.settings_open {
+            SettingsOpen::None => {}
+            SettingsOpen::Select => {
+                let (id, a) = anchor(SetKind::Select, "select")?;
+                bridge.invoke_select_open_request(id.as_str().into(), a[0], a[1], a[2], a[3]);
+            }
+            SettingsOpen::Picker => {
+                let (id, a) = anchor(SetKind::Colour, "colour")?;
+                bridge.invoke_colour_swatch(id.as_str().into(), a[0], a[1], a[2], a[3]);
+            }
+            SettingsOpen::Editor => bridge.invoke_wall_edit(card_id(true, true)?),
+            SettingsOpen::Ask => {
+                ACCENT.set(&self.prefs, Some(settings_scene::DIRTY_ACCENT));
+                self.settle(4);
+                bridge.invoke_wall_pick(card_id(false, false)?);
+                if !bridge.get_ask_open() {
+                    return Err("the switch question did not open".to_string());
+                }
+            }
+            SettingsOpen::Help => self.term_key("F1", "F1", false),
+            SettingsOpen::WallExpanded => {
+                if cards.row_count() == 0 {
+                    return Err(format!("the {page} page has no theme wall"));
+                }
+                bridge.invoke_wall_toggle();
+                // The opened wall reaches below the first screen: both captures scroll the same
+                // distance, so the cards the toggle revealed are in the picture.
+                bridge.set_scroll_y(settings_scene::WALL_SCROLL);
+            }
+        }
+        // Long enough for the help panel's slide (460 ms) and the flashes to be over.
+        self.settle(30);
+        Ok(())
     }
 
     /// A pointer position in css px from the grid's corner, at a cell (`right`: its right half),
@@ -1378,7 +1512,11 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         name == "theme-sample",
         is_term_scene(name),
     )?;
-    scene.stage(name)?;
+    if name == "settings" {
+        scene.stage_settings(&args)?;
+    } else {
+        scene.stage(name)?;
+    }
     let rgba = scene.render();
     write_png(path, scene.phys.0, scene.phys.1, &rgba)?;
     println!("screenshot: {}", path.display());
