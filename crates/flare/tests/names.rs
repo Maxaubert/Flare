@@ -638,6 +638,8 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_UPDATE_NOTES",
     "FLARE_E2E_UPDATE_SOURCE",
     "FLARE_E2E_PICK_COLOUR",
+    // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
+    "FLARE_E2E_INSTALL",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

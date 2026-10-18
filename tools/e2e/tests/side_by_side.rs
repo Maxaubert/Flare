@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use flare_e2e::proc::{Child, pid_alive, reap_by_profile};
+use flare_e2e::proc::{pid_alive, reap_by_profile, Child};
 use flare_e2e::regsandbox::{RealVerbs, RegProbe};
 use flare_e2e::sandbox::Sandbox;
 use flare_win::names;
@@ -27,7 +27,7 @@ use flare_win::single_instance::instance_names;
 use serde_json::Value;
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 

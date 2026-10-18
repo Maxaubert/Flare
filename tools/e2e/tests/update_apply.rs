@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use flare_e2e::proc::{Child, pid_alive, reap_by_profile};
+use flare_e2e::proc::{pid_alive, reap_by_profile, Child};
 use flare_e2e::sandbox::Sandbox;
 use serde_json::Value;
 

@@ -928,13 +928,12 @@ pub fn run_window(
             }
         }
     });
-    app.window()
-        .on_close_requested(move || {
-            crate::diag_ctl::timed("on_close_requested", || match close_decision() {
-                CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
-                CloseDecision::Close => CloseRequestResponse::HideWindow,
-            })
-        });
+    app.window().on_close_requested(move || {
+        crate::diag_ctl::timed("on_close_requested", || match close_decision() {
+            CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
+            CloseDecision::Close => CloseRequestResponse::HideWindow,
+        })
+    });
     let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
     if let Some(rc) = &ctl {
         install_window_filter(
