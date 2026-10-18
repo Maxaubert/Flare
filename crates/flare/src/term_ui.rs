@@ -142,6 +142,26 @@ pub struct TickOut {
     pub focus_terminal: bool,
 }
 
+thread_local! {
+    /// The link colour the worn theme chose (`AppliedLook::link_colour`), set by the look apply.
+    static WORN_LINK: Cell<Option<flare_render::color::Rgba>> = const { Cell::new(None) };
+}
+
+/// Records the theme's link colour for the decoration (a hex the theme computed; junk is ignored).
+pub fn set_worn_link(hex: &str) {
+    if let Some(c) = flare_render::color::Rgba::from_hex(hex) {
+        WORN_LINK.with(|w| w.set(Some(c)));
+    }
+}
+
+/// The default ink with the worn theme's link colour, or `None` before any theme was worn.
+fn worn_ink() -> Option<DecorInk> {
+    WORN_LINK.with(Cell::get).map(|link| DecorInk {
+        link: flare_render::color::Rgba::rgb(link.r, link.g, link.b),
+        ..DecorInk::pt_default()
+    })
+}
+
 /// What the frame decoration needs from the controller (shared with `LiveSource::decor`).
 pub struct DecorInputs {
     pub hover: Option<(usize, usize)>,
@@ -178,7 +198,7 @@ impl DecorInputs {
             ink_key: self.ink_key,
             hover: self.hover,
             find_open: self.find_open,
-            ink: self.ink,
+            ink: self.ink.or_else(worn_ink),
         };
         handle.decor(&mut req)
     }
@@ -1240,6 +1260,13 @@ impl MenuStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_worn_theme_link_colour_reaches_the_ink() {
+        set_worn_link("#1a4f9c");
+        let ink = worn_ink().expect("worn");
+        assert_eq!(ink.link, flare_render::color::Rgba::rgb(0x1a, 0x4f, 0x9c));
+        assert_eq!(ink.selection, DecorInk::pt_default().selection);
+    }
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use flare_agent::kinds::AgentKind;

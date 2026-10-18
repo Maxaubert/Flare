@@ -158,6 +158,7 @@ pub fn ground_paint(look: &AppliedLook) -> GroundPaint {
 
 /// Hands the grid its palette and who paints the ground (marks it dirty only on a change).
 pub fn apply_to_host(host: &mut GridHost, look: &AppliedLook) {
+    crate::term_ui::set_worn_link(&look.link_colour);
     host.set_look(palette_of(&look.term), ground_paint(look));
 }
 
