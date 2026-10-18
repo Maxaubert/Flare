@@ -52,6 +52,21 @@ fn wide(s: &str) -> Result<Vec<u16>, RegError> {
     Ok(s.encode_utf16().chain(std::iter::once(0)).collect())
 }
 
+/// A subkey of the hive as UTF-16. Refuses an empty key (or only separators and blanks): handed
+/// to `RegDeleteTreeW`, an empty subkey means "everything under HKCU".
+fn subkey(key: &str) -> Result<Vec<u16>, RegError> {
+    if key
+        .trim_matches(|c: char| c == '\\' || c.is_whitespace())
+        .is_empty()
+    {
+        return Err(RegError {
+            code: 87,
+            what: "empty key",
+        });
+    }
+    wide(key)
+}
+
 fn wide_opt(s: Option<&str>) -> Result<Option<Vec<u16>>, RegError> {
     s.map(wide).transpose()
 }
@@ -142,7 +157,7 @@ impl WinRegistry {
 
 impl Registry for WinRegistry {
     fn set_string(&self, key: &str, name: Option<&str>, value: &str) -> Result<(), RegError> {
-        let key_w = wide(key)?;
+        let key_w = subkey(key)?;
         let name_w = wide_opt(name)?;
         let value_w = wide(value)?;
         let mut h: HKEY = null_mut();
@@ -192,7 +207,7 @@ impl Registry for WinRegistry {
     }
 
     fn delete_tree(&self, key: &str) -> Result<(), RegError> {
-        let key_w = wide(key)?;
+        let key_w = subkey(key)?;
         // SAFETY: key_w is NUL-terminated and outlives the call.
         let rc = unsafe { RegDeleteTreeW(self.hive, key_w.as_ptr()) };
         if rc == ERROR_SUCCESS || is_missing(rc) {
@@ -206,7 +221,7 @@ impl Registry for WinRegistry {
     }
 
     fn delete_if_empty(&self, key: &str) -> Result<bool, RegError> {
-        let key_w = wide(key)?;
+        let key_w = subkey(key)?;
         let mut h: HKEY = null_mut();
         // SAFETY: key_w is NUL-terminated; h receives an owned handle on success.
         let rc = unsafe { RegOpenKeyExW(self.hive, key_w.as_ptr(), 0, KEY_READ, &mut h) };
@@ -266,7 +281,7 @@ impl Registry for WinRegistry {
     }
 
     fn key_exists(&self, key: &str) -> Result<bool, RegError> {
-        let key_w = wide(key)?;
+        let key_w = subkey(key)?;
         let mut h: HKEY = null_mut();
         // SAFETY: key_w is NUL-terminated; h receives an owned handle on success.
         let rc = unsafe { RegOpenKeyExW(self.hive, key_w.as_ptr(), 0, KEY_READ, &mut h) };
@@ -606,6 +621,24 @@ mod tests {
         assert!(real.set_string(&format!("{key}\0"), None, "a").is_err());
         assert!(real.set_string(&key, Some("n\0"), "a").is_err());
         assert!(!real.key_exists(&key).unwrap());
+    }
+
+    /// Review fix: `RegDeleteTreeW(HKCU, "")` deletes EVERY subkey of the hive. An empty key (or one
+    /// that is only separators) must be refused before any Win32 call, on every path.
+    #[test]
+    fn an_empty_key_is_refused_before_any_win32_call() {
+        for bad in ["", "\\", "\\\\", " ", "\t"] {
+            assert!(subkey(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(subkey("A\\B").unwrap(), wide("A\\B").unwrap());
+        let code = include_str!("registry.rs");
+        let real = &code[code.find("impl Registry for WinRegistry").unwrap()..];
+        let real = &real[..real.find("pub struct LocalMachineRead").unwrap()];
+        assert!(
+            !real.contains("wide(key)"),
+            "WinRegistry must use subkey(key)"
+        );
+        assert_eq!(real.matches("subkey(key)?").count(), 4);
     }
 
     #[test]
