@@ -306,6 +306,50 @@ fn pick_card(app: &mut App, id: &str) -> bool {
     }
 }
 
+/// Presses a theme card the way a person would: the wall starts clipped, so its toggle is pressed
+/// when the card is below the fold, and the page is wheeled until the card is in the pane. A
+/// card that is listed but not `visible` would take a press on nothing.
+fn scroll_pick_card(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
+    let at = pane_point(app);
+    let mid = |app: &mut App| {
+        rect(&ui_rect(app, "grid"))
+            .map(|(_, gy, _, gh)| gy + gh / 2.0)
+            .unwrap_or(300.0)
+    };
+    let wheel = |app: &mut App, y: f64, mid: f64| {
+        let dy = if y > mid { -160.0 } else { 160.0 };
+        let _ = app.session.call(&Request::Pointer {
+            x: at.0,
+            y: at.1,
+            action: PointerAction::Wheel { dx: 0.0, dy },
+        });
+    };
+    let in_view = ctx.until(&format!("card {id} to be in view"), 12_000, &mut || {
+        let w = probe(app, "picker.wall", Value::Null);
+        let Some(c) = w["cards"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"].as_str() == Some(id)))
+        else {
+            return false;
+        };
+        if c["visible"] == json!(true) {
+            return true;
+        }
+        let m = mid(app);
+        if c["shown"] != json!(true) && w["expanded"] != json!(true) {
+            // Below the fold of the clipped wall: reach the toggle and press it.
+            if w["toggle_visible"] == json!(true) {
+                click_rect(app, &w["toggle"]);
+            } else {
+                wheel(app, w["toggle"]["y"].as_f64().unwrap_or(0.0), m);
+            }
+            return false;
+        }
+        wheel(app, c["rect"]["y"].as_f64().unwrap_or(0.0), m);
+        false
+    });
+    in_view && pick_card(app, id)
+}
 /// Opens a theme's editor from its pencil.
 fn edit_card(app: &mut App, id: &str) -> bool {
     let t = theme(app);
@@ -821,6 +865,9 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     ctx.skip("the segmented pills and the font menu are not probed, so the settings are written to settings.json before the switch");
     let profile = app.profile.clone();
     app.close();
+    // The relaunch starts clean: the saved strip would restore the first run's tab beside the
+    // alpha folder and make two.
+    let _ = std::fs::remove_file(profile.join("tabs.json"));
     let _ = std::fs::write(
         profile.join("settings.json"),
         r#"{"flare.term.fontPct":"140","flare.term.font":"jetbrains","flare.term.agentIndicator":"minimal","flare.window.edges":"solid"}"#,
@@ -848,7 +895,7 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(!save_dirty(&mut app), "none of them lights Save changes");
 
     // PT: a theme switch after them asks nothing.
-    let picked = pick_card(&mut app, "nord");
+    let picked = scroll_pick_card(ctx, &mut app, "nord");
     let switched = ctx.until("the switch to nord lands", 4_000, &mut || {
         stored_str(&app, "flare.term.theme") == "nord"
     });
@@ -865,6 +912,9 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
 
     // PT: a Custom to lead the wall: an agent colour, saved with the page's Save.
     let agent = fill_row_colour(ctx, &mut app, "agent-color", "#3DA9FC");
+    let _ = goto_page(ctx, &mut app, "appearance");
+    // Flare keeps the one Save changes on the Appearance page (PT shows it in the agent heading too).
+    let _ = goto_page(ctx, &mut app, "appearance");
     let agent_dirty = ctx.until("the agent colour lights Save changes", 4_000, &mut || {
         save_dirty(&mut app)
     });
@@ -911,7 +961,7 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(picked_both, "a background and an accent are picked");
     let _ = goto_page(ctx, &mut app, "appearance");
     ctx.ok(save_dirty(&mut app), "and they light Save changes");
-    let _ = pick_card(&mut app, "pitch");
+    let _ = scroll_pick_card(ctx, &mut app, "pitch");
     let asks = ctx.until("so a theme switch asks first", 3_000, &mut || {
         ask_open(&mut app)
     });
@@ -940,12 +990,13 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
 
     // PT: unsaved, Cancel keeps everything as it was.
     fill_row_colour(ctx, &mut app, "agent-color", "#C0FFEE");
+    let _ = goto_page(ctx, &mut app, "appearance");
     ctx.until("the unsaved agent colour is held", 3_000, &mut || {
         save_dirty(&mut app)
     });
     let dirty_agent = stored_str(&app, "flare.term.agentColor");
     let _ = goto_page(ctx, &mut app, "appearance");
-    let _ = pick_card(&mut app, "nord");
+    let _ = scroll_pick_card(ctx, &mut app, "nord");
     let asks_again = ctx.until(
         "with a change unsaved, picking a theme asks first",
         3_000,
@@ -958,19 +1009,24 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     let kept_theme = stored_str(&app, "flare.term.theme");
     let kept_agent = stored_str(&app, "flare.term.agentColor");
     ctx.ok(
-        asks_again && !ask_open(&mut app) && kept_theme == "pitch" && kept_agent == dirty_agent,
+        asks_again
+            && !ask_open(&mut app)
+            && kept_theme == "pitch"
+            && kept_agent == dirty_agent
+            && save_dirty(&mut app),
         format!("Cancel changes nothing (theme {kept_theme}, agent {kept_agent})"),
     );
 
     // PT: Discard switches, and the change is gone.
-    let _ = pick_card(&mut app, "nord");
+    let _ = scroll_pick_card(ctx, &mut app, "nord");
     ctx.until("the question asks", 3_000, &mut || ask_open(&mut app));
     let _ = app.session.key("Tab");
     let _ = app.session.key("Tab");
     let _ = app.session.key("Enter");
     let gone = ctx.until("Discard switches and drops the change", 4_000, &mut || {
-        stored_str(&app, "flare.term.theme") == "nord"
-            && stored_str(&app, "flare.term.agentColor") != dirty_agent
+        // The held colour is a draft until saved, so the store never shows it: the change is gone
+        // when the switch landed and Save changes went quiet.
+        stored_str(&app, "flare.term.theme") == "nord" && !save_dirty(&mut app)
     });
     ctx.ok(
         gone,
@@ -983,11 +1039,12 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
 
     // PT: Save as Custom keeps the change in Custom, then the switch happens.
     fill_row_colour(ctx, &mut app, "agent-color", "#C0FFEE");
+    let _ = goto_page(ctx, &mut app, "appearance");
     ctx.until("the agent colour is held again", 3_000, &mut || {
         save_dirty(&mut app)
     });
     let _ = goto_page(ctx, &mut app, "appearance");
-    let _ = pick_card(&mut app, "pitch");
+    let _ = scroll_pick_card(ctx, &mut app, "pitch");
     ctx.until("the question asks again", 3_000, &mut || ask_open(&mut app));
     // Save as Custom is the focused answer: Enter answers it.
     let _ = app.session.key("Enter");
