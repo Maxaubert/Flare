@@ -7,17 +7,19 @@
 import { Theme, Px } from "theme.slint";
 
 // One of the two buttons. PT: rounded-lg, px 14, py 6, 12.5 px weight 600.
-component DialogButton inherits Rectangle {
+export component DialogButton inherits Rectangle {
     in property <string> label;
+    in property <bool> enabled: true;
     in property <bool> is-primary: false;
     in property <bool> danger: false;
     in property <bool> ringed: false;
     callback clicked();
+    opacity: root.enabled ? 1 : 0.45;
     property <color> base: root.is-primary ? (root.danger ? Theme.danger-fill : Theme.accent) : Theme.hover;
     height: 30px;
     width: lbl.preferred-width + 28px;
     border-radius: 8px;
-    background: ta.has-hover && root.is-primary ? root.base.brighter(0.1) : root.base;
+    background: ta.has-hover && root.enabled && root.is-primary ? root.base.brighter(0.1) : root.base;
     border-width: root.is-primary ? 0px : Px.hair();
     border-color: Theme.divider;
     HorizontalLayout {
@@ -30,7 +32,7 @@ component DialogButton inherits Rectangle {
             font-family: Theme.font-ui;
             font-size: 12.5px;
             font-weight: 600;
-            color: root.is-primary ? Theme.on-accent : (ta.has-hover ? Theme.text : Theme.text-soft);
+            color: root.is-primary ? Theme.on-accent : (ta.has-hover && root.enabled ? Theme.text : Theme.text-soft);
         }
     }
     // The keyboard focus ring: 2 px in accent-hi, drawn over the button.
@@ -39,9 +41,10 @@ component DialogButton inherits Rectangle {
         height: parent.height;
         border-radius: 8px;
         border-width: 2px;
-        border-color: root.ringed ? Theme.accent-hi : transparent;
+        border-color: root.ringed && root.enabled ? Theme.accent-hi : transparent;
     }
     ta := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 }
