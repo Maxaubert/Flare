@@ -844,7 +844,6 @@ pub fn slint_text_for(ev: &KeyEvent) -> Option<SharedString> {
     Some(SharedString::from(char::from(k)))
 }
 
-
 /// What Slint should see for one key it was left: the modifiers held (Slint tracks Shift, Control,
 /// Alt and Meta from their own key events), then the key; on release the key, then the modifiers
 /// let go. A Ctrl or Alt chord on a character sends the character, so Ctrl+A is select-all there.
@@ -854,7 +853,9 @@ pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
     let text = slint_text_for(ev).or_else(|| {
         let mut chars = ev.key.chars();
         match (chars.next(), chars.next()) {
-            (Some(c), None) if ev.ctrl || ev.alt || ev.meta => Some(SharedString::from(c.to_string())),
+            (Some(c), None) if ev.ctrl || ev.alt || ev.meta => {
+                Some(SharedString::from(c.to_string()))
+            }
             _ => None,
         }
     });
@@ -1012,10 +1013,34 @@ fn err(message: impl Into<String>) -> Reply {
     }
 }
 
+/// What the real window tells the controller about the cursor that an injected Slint pointer event
+/// does not: winit's `CursorMoved` and `CursorLeft`. Only a collapsed sidebar listens (it is revealed
+/// by the cursor), so every other scenario keeps the events it always had. `Some(Some(p))` is a move
+/// to `p` in css px, `Some(None)` the cursor leaving, `None` nothing to tell.
+pub fn cursor_forward(e: &WindowEvent, sidebar_collapsed: bool) -> Option<Option<(f32, f32)>> {
+    if !sidebar_collapsed {
+        return None;
+    }
+    match e {
+        WindowEvent::PointerMoved { position } => Some(Some((position.x, position.y))),
+        WindowEvent::PointerExited => Some(None),
+        _ => None,
+    }
+}
+
 impl GlueCtx {
     fn dispatch(&self, events: Vec<WindowEvent>) -> Result<(), String> {
         let app = self.app.upgrade().ok_or("the window is gone")?;
         for e in events {
+            if let Some(told) = cursor_forward(&e, app.get_sidebar_collapsed())
+                && let Some(rc) = self.ctl.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                match told {
+                    Some((x, y)) => c.on_cursor(x, y),
+                    None => c.on_cursor_left(),
+                }
+            }
             app.window().dispatch_event(e);
         }
         Ok(())
@@ -1525,6 +1550,40 @@ pub fn install(
 
 #[cfg(test)]
 mod tests {
+    // Task 23: a collapsed sidebar is revealed by the cursor, which the real window hears from winit
+    // (`CursorMoved`) and an injected Slint pointer event never reaches.
+    #[test]
+    fn a_pointer_move_over_a_collapsed_sidebar_is_told_to_the_controller() {
+        let at = LogicalPosition::new(2.0, 400.0);
+        assert_eq!(
+            cursor_forward(&WindowEvent::PointerMoved { position: at }, true),
+            Some(Some((2.0, 400.0)))
+        );
+        assert_eq!(
+            cursor_forward(&WindowEvent::PointerExited, true),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn a_pointer_move_is_not_forwarded_while_the_sidebar_is_pinned_or_absent() {
+        let at = LogicalPosition::new(2.0, 400.0);
+        assert_eq!(
+            cursor_forward(&WindowEvent::PointerMoved { position: at }, false),
+            None
+        );
+        assert_eq!(cursor_forward(&WindowEvent::PointerExited, false), None);
+    }
+
+    #[test]
+    fn only_moves_and_exits_are_forwarded() {
+        let at = LogicalPosition::new(2.0, 400.0);
+        let press = WindowEvent::PointerPressed {
+            position: at,
+            button: PointerEventButton::Left,
+        };
+        assert_eq!(cursor_forward(&press, true), None);
+    }
     use super::*;
     use crate::keymap::key_event_from_parts;
     use slint::winit_030::winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
@@ -1744,15 +1803,17 @@ mod tests {
         let shift = format!("{:?}", String::from(char::from(Key::Shift)));
         let ctrl = format!("{:?}", String::from(char::from(Key::Control)));
         let left = format!("{:?}", String::from(char::from(Key::LeftArrow)));
-        let down: Vec<String> = slint_key_events(&event_from_chord("Shift+ArrowLeft", true).unwrap())
-            .iter()
-            .map(kind)
-            .collect();
+        let down: Vec<String> =
+            slint_key_events(&event_from_chord("Shift+ArrowLeft", true).unwrap())
+                .iter()
+                .map(kind)
+                .collect();
         assert_eq!(down, vec![format!("down {shift}"), format!("down {left}")]);
-        let up: Vec<String> = slint_key_events(&event_from_chord("Shift+ArrowLeft", false).unwrap())
-            .iter()
-            .map(kind)
-            .collect();
+        let up: Vec<String> =
+            slint_key_events(&event_from_chord("Shift+ArrowLeft", false).unwrap())
+                .iter()
+                .map(kind)
+                .collect();
         assert_eq!(up, vec![format!("up {left}"), format!("up {shift}")]);
         // Ctrl+A is the character with Control held, so a text field selects all.
         let sel: Vec<String> = slint_key_events(&event_from_chord("Ctrl+KeyA", true).unwrap())
@@ -1761,11 +1822,17 @@ mod tests {
             .collect();
         assert_eq!(sel, vec![format!("down {ctrl}"), "down \"a\"".to_string()]);
         // A plain key carries no modifier, and a key Slint has no text for sends nothing.
-        assert_eq!(slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(), 1);
+        assert_eq!(
+            slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(),
+            1
+        );
         // A release the app took still lets go of the modifiers Slint saw pressed.
         let rel = slint_modifier_releases(&event_from_chord("Ctrl+Shift+KeyA", false).unwrap());
         assert_eq!(rel.len(), 2);
-        assert!(rel.iter().all(|e| matches!(e, WindowEvent::KeyReleased { .. })));
+        assert!(
+            rel.iter()
+                .all(|e| matches!(e, WindowEvent::KeyReleased { .. }))
+        );
         assert!(slint_modifier_releases(&event_from_chord("KeyA", false).unwrap()).is_empty());
         assert!(slint_key_events(&event_from_chord("F11", true).unwrap()).is_empty());
     }
