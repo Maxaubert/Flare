@@ -30,8 +30,6 @@ README = ROOT / 'docs' / 'assets' / 'flare-icon.png'
 # What Windows asks for between 100% and 300% scaling (small 16, taskbar 24, large 32,
 # each times the scale), so the shell never resamples a neighbour.
 SIZES = [16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 96, 128, 256]
-VIEWBOX = 1254  # the SVG's width and height in its own units
-DPI_AT_NATIVE = 96  # ImageMagick draws the SVG's 1254 units at 1254 px when density is 96
 
 
 def magick() -> str:
@@ -42,16 +40,19 @@ def magick() -> str:
 
 
 def render(px: int, out: Path) -> None:
-    """Rasterise the SVG at exactly px x px, straight from the vector artwork."""
-    density = DPI_AT_NATIVE * px / VIEWBOX
+    """Rasterise the SVG at exactly px x px, straight from the vector artwork.
+
+    `-size` hands librsvg the output size itself. A `-density` derived from the size (the
+    earlier way) rounds 10 of the 19 sizes one pixel short, and a `-resize` back to the size
+    then blurred them (M9 Task 41), so nothing here resizes: a size that comes out wrong fails.
+    """
     subprocess.run(
         [
             magick(),
             '-background', 'none',
-            '-density', f'{density:.6f}',
+            '-size', f'{px}x{px}',
             str(SVG),
             '-depth', '8',
-            '-resize', f'{px}x{px}!',
             f'PNG32:{out}',
         ],
         check=True,

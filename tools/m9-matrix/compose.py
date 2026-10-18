@@ -1,9 +1,9 @@
-"""Side-by-sides (Flare left, Prism Terminal right) and the two contact sheets of the M9 matrix.
+"""Side-by-sides (Flare left, PT right) and the two contact sheets of the M9 matrix.
 
 Reads docs/screenshots/m9/flare (from run.ps1) and docs/screenshots/m9/pt (from
 tools/pt-shot/pt-update.mjs) and writes, under docs/screenshots/m9/:
 
-  side/<scene>-<scale>.png   for 1.0, 1.5 and 2.25: Flare left, Prism Terminal right, a 24 px header
+  side/<scene>-<scale>.png   for 1.0, 1.5 and 2.25: Flare left, PT right, a 24 px header
                              strip over each half carrying the two names
   matrix-chip.png            the update-chip scene at the eight Flare scales, in a labelled grid
   matrix-window.png          the update-window scene at the eight Flare scales, in a labelled grid
@@ -32,6 +32,16 @@ SCENES = [
     "update-window-small",
     "update-window-empty",
 ]
+# The names Task 3's capture gave the same states (docs/screenshots/m9/pt), used when the
+# pt-update.mjs name is absent. Its many-entries shot is 640 high, not 420: a near pair only.
+TASK3_NAMES = {
+    "update-chip": "chip",
+    "update-chip-notice": "chip-notice",
+    "update-window": "window",
+    "update-window-running": "window-running",
+    "update-window-notice": "window-notice",
+    "update-window-small": "window-many",
+}
 SIDE_SCALES = [1.0, 1.5, 2.25]
 ALL_SCALES = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0]
 HEADER_H = 24
@@ -113,10 +123,10 @@ def main(argv: list[str]) -> int:
     flare_dir, pt_dir, side_dir = shots / "flare", shots / "pt", shots / "side"
     side_dir.mkdir(parents=True, exist_ok=True)
 
-    pt_name = "Prism Terminal"
+    pt_name = "PT"
     version = pt_dir / "VERSION.txt"
     if version.is_file():
-        pt_name = f"Prism Terminal {version.read_text(encoding='utf-8').strip()}"
+        pt_name = f"PT {version.read_text(encoding='utf-8').strip()}"
 
     made = skipped = 0
     for scene in SCENES:
@@ -124,6 +134,8 @@ def main(argv: list[str]) -> int:
             t = tag(scale)
             flare = flare_dir / f"{scene}-{t}-{args.renderer}.png"
             pt = pt_dir / f"{scene}-{t}.png"
+            if not pt.is_file() and scene in TASK3_NAMES:
+                pt = pt_dir / f"{TASK3_NAMES[scene]}-{t}.png"
             if not flare.is_file() or not pt.is_file():
                 print(f"skip {scene}-{t}: an image is missing ({'flare' if not flare.is_file() else 'pt'})")
                 skipped += 1

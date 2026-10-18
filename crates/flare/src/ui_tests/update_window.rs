@@ -475,6 +475,67 @@ fn closer_to_dot_than_surface(p: [u8; 4]) -> bool {
     d(ACCENT_HI) < d(SIDE_FLAT)
 }
 
+/// The sample release grouped (flare_update::preview::SAMPLE_NOTES through the grouping): three
+/// sections, seven entries, one of them long enough to wrap in a 460 px box.
+fn sample_sections() -> Vec<NoteSection> {
+    vec![
+        section(
+            "New features",
+            &[
+                "The update button opens a window with the patch notes, Cancel and Install",
+                "Explorer entries read \"Open in Flare\", and a window edges setting",
+                "Dictation: speak into the terminal, transcribed on your own machine",
+                "Links are painted in a colour that follows the theme",
+            ],
+        ),
+        section(
+            "Bug fixes",
+            &[
+                "A prompt survives the window getting narrower and wider again",
+                "Closing a tab that hosts an agent asks first, working or idle",
+            ],
+        ),
+        section("Under the hood", &["Bump electron from 43.1.0 to 43.1.1"]),
+    ]
+}
+
+#[test]
+fn every_entry_of_a_release_that_fits_is_drawn() {
+    // Prism Terminal shows all seven entries of the sample release without scrolling (its list is
+    // 265 css px under a 281.6 cap). A list measured shorter than it lays out clips the last entry
+    // and gives the scroller nothing to reach it with.
+    for s in SCALES {
+        let h = harness(s);
+        set_sections(&h, sample_sections());
+        open(&h);
+        let f = h.render();
+        // The dot column only (padding 20, dot 4): headings start at 20 too, so a pixel counts
+        // when it is the dot's orange, not the text's grey.
+        let x0 = ((h.comp.get_box_x() + 20.0) * s) as u32;
+        let x1 = ((h.comp.get_box_x() + 24.0) * s).ceil() as u32;
+        let orange =
+            |p: [u8; 4]| closer_to_dot_than_surface(p) && i32::from(p[0]) - i32::from(p[2]) > 60;
+        let y0 = (h.comp.get_box_y() * s) as u32;
+        let y1 = ((h.comp.get_box_y() + h.comp.get_box_h()) * s) as u32;
+        let mut dots = 0;
+        let mut inside = false;
+        for y in y0..y1 {
+            let hit = (x0..x1).any(|x| orange(f.px(x, y)));
+            if hit && !inside {
+                dots += 1;
+            }
+            inside = hit;
+        }
+        assert_eq!(
+            dots,
+            7,
+            "scale {s}: {dots} entries drawn (notes {} of content {})",
+            h.comp.get_notes_h(),
+            h.comp.get_notes_content_h()
+        );
+    }
+}
+
 // ---- Task 33: the window at all eight display scalings -----------------------------------------------
 
 mod scales {

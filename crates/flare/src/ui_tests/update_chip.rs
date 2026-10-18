@@ -371,10 +371,39 @@ mod scales {
         h
     }
 
+    /// The title buttons' block opens with 8 css px of padding before its first button (app.slint
+    /// `TitleButtons`, PT's `pl-2`), so the first control starts that far inside the block.
+    const BLOCK_PAD_LEFT: f32 = 8.0;
+
+    #[test]
+    fn the_chip_ends_192_css_px_from_the_right_edge_as_in_pt() {
+        // Task 3's update.json, `chipLayout.toRightEdge`: 192 (100%), 191.67 (150%), 191.78 (225%)
+        // in a 1000 css px window with the help button shown. Read off the drawn fill.
+        for s in SCALES {
+            let h = Harness::new(s, 1000, 300, || {
+                AppWindow::new().expect("the window builds")
+            });
+            h.comp.set_help_visible(true);
+            h.comp.set_update_chip_shown(true);
+            h.comp.set_update_chip_label(LABEL.into());
+            h.advance(0);
+            let f = h.render();
+            let cy = (h.comp.get_update_chip_y() * s).round() as u32 + h.phys(12.0);
+            let drawn = f
+                .bbox_where(f.w / 2, cy, f.w, cy + 1, |p| Frame::near(p, SEL_BG, 4))
+                .expect("the chip is drawn");
+            let to_right = (f.w - (drawn.2 + 1)) as f32 / s;
+            assert!(
+                (to_right - 192.0).abs() * s <= 1.0 + 1e-3,
+                "scale {s}: the chip ends {to_right} css px from the right edge, PT 192"
+            );
+        }
+    }
+
     #[test]
     fn the_chip_is_the_leftmost_control_of_the_right_group_and_clears_the_buttons() {
-        // The measured gap is 10 css px (geom::CHIP_TO_BUTTONS, Task 3's update.json); the plan's
-        // table said 8, the measurement of Prism Terminal's own bar wins.
+        // The measured gap is 10 css px (geom::CHIP_TO_BUTTONS, Task 3's update.json
+        // `toNextControl`): from the chip to the first BUTTON, not to the block's padded edge.
         for s in SCALES {
             let p = harness(s);
             let gap = p.comp.get_buttons_left() - (p.comp.get_chip_x() + p.comp.get_chip_w());
@@ -386,7 +415,7 @@ mod scales {
                 let h = app_with_chip(s, css_w);
                 let buttons_left = css_w as f32 - h.comp.get_title_buttons_w();
                 let chip_right = h.comp.get_update_chip_x() + h.comp.get_update_chip_w();
-                let gap = buttons_left - chip_right;
+                let gap = buttons_left + BLOCK_PAD_LEFT - chip_right;
                 assert!(
                     (gap * s - (geom::CHIP_TO_BUTTONS * s).round()).abs() <= 1.0,
                     "scale {s} width {css_w}: gap {gap}"
@@ -489,6 +518,110 @@ mod scales {
                 (mid_y - (by + side / 2.0)).abs() <= 1.0,
                 "scale {s}: y centre {mid_y} vs {}",
                 by + side / 2.0
+            );
+        }
+    }
+
+    #[test]
+    fn the_help_circle_beside_the_chip_is_drawn_at_pt_size() {
+        // The buttons right of the chip share the chip arrow's Path rule: Prism Terminal's help
+        // circle is r 9 of 24 units in a 15 px svg with a 1.8-unit stroke, 12.375 css px across.
+        // A Path box that is only the icon size draws it 7 percent small (M9 Task 41).
+        let want = 18.0 * 15.0 / 24.0 + 1.8 * 15.0 / 24.0;
+        for s in SCALES {
+            let h = Harness::new(s, 1000, 300, || {
+                AppWindow::new().expect("the window builds")
+            });
+            h.comp.set_help_visible(true);
+            h.advance(0);
+            let f = h.render();
+            let block = 1000.0 - h.comp.get_title_buttons_w();
+            let (x0, x1) = (((block + 8.0) * s) as u32, ((block + 40.0) * s) as u32);
+            let tabs = f.px(x0, h.phys(2.0));
+            let bb = f
+                .bbox_where(x0, h.phys(4.0), x1, h.phys(32.0), |p| dist(p, tabs) > 120)
+                .expect("the help circle is drawn");
+            let w = (bb.2 - bb.0 + 1) as f32;
+            assert!(
+                (w - want * s).abs() <= 1.5,
+                "scale {s}: help circle {w} device px across, PT {}",
+                want * s
+            );
+        }
+    }
+
+    #[test]
+    fn no_component_sets_its_shadow_on_its_root_element() {
+        // PT's notice casts `0 10px 30px rgba(0,0,0,.45)`; Prism Terminal's own capture reads the
+        // ground 7 levels darker just under it. Slint DROPS a `drop-shadow-*` set on a component's
+        // root element (a compiler warning, "the shadow will not be visible"), so the GPU chrome drew
+        // the notice flat. The headless software renderer draws no BoxShadow at all (Slint 1.18:
+        // `draw_box_shadow` is a TODO), so no frame can show it: the rule is held on the source.
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        let mut files = vec![];
+        let mut dirs = vec![ui];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).expect("ui folder") {
+                let p = e.expect("entry").path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "slint") {
+                    files.push(p);
+                }
+            }
+        }
+        let mut found = vec![];
+        for f in files {
+            let text = std::fs::read_to_string(&f).expect("slint source");
+            let mut depth = 0_i32;
+            let mut comp = String::new();
+            for (i, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                let t = code.trim_start();
+                if depth == 0 && (t.starts_with("component ") || t.starts_with("export component "))
+                {
+                    comp = t.to_string();
+                }
+                if depth == 1 && !comp.is_empty() && code.contains("drop-shadow-") {
+                    found.push(format!("{}:{}: {comp}", f.display(), i + 1));
+                }
+                depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+            }
+        }
+        assert!(found.is_empty(), "shadows Slint drops: {found:#?}");
+    }
+
+    #[test]
+    fn the_arrow_is_drawn_at_pt_size() {
+        // Task 3's update.json `chipPath`: the path is 6.42 x 7.33 css px (14 x 16 of 24 units in an
+        // 11 px box); the 1.1 px round-capped stroke adds 1.1 to each. A Path that shrinks its
+        // geometry to keep the stroke inside its box draws the arrow about 10 percent small.
+        let want_w = 14.0 * 11.0 / 24.0 + 1.1;
+        let want_h = 16.0 * 11.0 / 24.0 + 1.1;
+        for s in SCALES {
+            let h = harness(s);
+            let f = h.render();
+            let (cx, cy, _, hh) = chip_px(&h);
+            let label_x = cx + (h.comp.get_label_x() * s).round() as u32;
+            let bb = f
+                .bbox_where(
+                    cx + h.phys(5.0),
+                    cy + h.phys(4.0),
+                    label_x - 1,
+                    cy + hh - h.phys(4.0),
+                    |p| dist(p, SEL_BG) > 200,
+                )
+                .expect("the arrow is drawn");
+            let (w, ht) = ((bb.2 - bb.0 + 1) as f32, (bb.3 - bb.1 + 1) as f32);
+            assert!(
+                (w - want_w * s).abs() <= 1.5,
+                "scale {s}: arrow {w} device px wide, PT {}",
+                want_w * s
+            );
+            assert!(
+                (ht - want_h * s).abs() <= 1.5,
+                "scale {s}: arrow {ht} device px high, PT {}",
+                want_h * s
             );
         }
     }

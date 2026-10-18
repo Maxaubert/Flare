@@ -65,9 +65,11 @@ component TitleButton inherits Rectangle {
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
+    // Slint fits the path into its box LESS the stroke, so the box is the icon grown by one stroke
+    // (still centred): the 24 units then cover `icon-size` as the svg does (M9 Task 41).
     Path {
-        width: root.icon-size;
-        height: root.icon-size;
+        width: root.icon-size + self.stroke-width;
+        height: root.icon-size + self.stroke-width;
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.commands;
@@ -437,10 +439,12 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    // The update chip (M9 Task 30): 10 px left of the buttons, in a slot that takes its
-                    // width from the strip while an offer exists.
+                    // The update chip (M9 Task 30): 10 px left of the first BUTTON (PT `toNextControl`),
+                    // in a slot that takes its width from the strip while an offer exists. The buttons'
+                    // block opens with its own 8 px padding, so the slot adds only the other 2 (M9 Task
+                    // 41: with the full 10 the chip sat 8 px further left than Prism Terminal's).
                     Rectangle {
-                        width: (root.update-chip-shown && !root.side-mode) ? top-chip.chip-width + Px.snap(10px) : 0px;
+                        width: (root.update-chip-shown && !root.side-mode) ? top-chip.chip-width + Px.snap(10px - 8px) : 0px;
                         top-chip := UpdateChip {
                             x: 0px;
                             y: Px.snap((Theme.bar-height - self.height) / 2);
@@ -492,7 +496,7 @@ export component AppWindow inherits Window {
                     size: 17px;
                 }
                 side-chip := UpdateChip {
-                    x: side-buttons.x - Px.snap(10px) - self.width;
+                    x: side-buttons.x - Px.snap(10px - 8px) - self.width;
                     y: Px.snap((Theme.bar-height - self.height) / 2);
                     width: self.chip-width;
                     height: 24px;

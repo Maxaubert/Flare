@@ -68,6 +68,23 @@ class IconFrames(unittest.TestCase):
             self.assertTrue(r > 200 and g > 180 and b < 120, f'frame {n}: not yellow')
             self.assertEqual(a, 255, f'frame {n}: the square is not opaque')
 
+    def test_every_frame_is_as_sharp_as_the_vector(self):
+        # Each frame against the 1024 px render averaged down to its size (each pixel the mean of
+        # the area it covers: the coverage a vector rasteriser draws). M9 Task 41: ImageMagick's
+        # `-density` path rendered 10 of the 19 sizes one pixel short and `-resize` stretched them
+        # back, so 16, 20, 42, 48, 54, 56, 60, 96, 128 and 256 were blurred (16 px: 51 levels off
+        # on average, the yellow stroke in the flame gone).
+        ref = Image.open(SOURCE).convert('RGBA')
+        im = Image.open(ICO)
+        for n in SIZES:
+            im.size = (n, n)
+            im.load()
+            frame = im.convert('RGBA')
+            want = ref.resize((n, n), Image.BOX)
+            a, b = frame.tobytes(), want.tobytes()
+            mean = sum(abs(p - q) for p, q in zip(a, b)) / len(a)
+            self.assertLess(mean, 3.0, f'frame {n} is {mean:.1f} levels from the vector on average')
+
     def test_there_is_no_badge_or_outline(self):
         # PT's icon had a #202020 edge on a black badge; Flare's is the artwork as it is.
         im = Image.open(ICO)

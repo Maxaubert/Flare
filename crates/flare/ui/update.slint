@@ -50,11 +50,14 @@ export component UpdateChip inherits Rectangle {
         border-radius: 6px;
         background: touch.has-hover ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg;
 
+        // Slint's Path fits its geometry into its box LESS the stroke width (and shifts it by half the
+        // stroke), so the box is the 11 px icon grown by one stroke: the 24 units then map onto 11 px
+        // exactly as the svg does in Prism Terminal (M9 Task 41: the arrow was drawn 10 percent small).
         icon := Path {
-            x: root.icon-x;
-            y: root.icon-y;
-            width: root.icon-h;
-            height: root.icon-h;
+            x: root.icon-x - self.stroke-width / 2;
+            y: root.icon-y - self.stroke-width / 2;
+            width: root.icon-h + self.stroke-width;
+            height: root.icon-h + self.stroke-width;
             viewbox-width: 24;
             viewbox-height: 24;
             commands: "M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14";
@@ -135,13 +138,20 @@ export component UpdateNotice inherits Rectangle {
     visible: root.text != "";
     width: root.notice-w;
     height: root.notice-h;
-    background: Theme.side-flat;
-    border-radius: 6px;
-    border-width: Px.hair();
-    border-color: Theme.divider;
-    drop-shadow-offset-y: 10px;
-    drop-shadow-blur: 30px;
-    drop-shadow-color: #00000073;
+
+    // The surface is a child: Slint drops a shadow set on a component's root element (M9 Task 41,
+    // the notice was drawn flat in the GPU chrome).
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000073;
+    }
 
     body := Text {
         x: Px.snap(10px) + Px.hair();
@@ -433,20 +443,24 @@ export component UpdateWindow inherits Rectangle {
                                     font-weight: 600;
                                     color: Theme.text;
                                 }
-                                for entry in section.entries : HorizontalLayout {
-                                    spacing: 8px;
+                                // Not a HorizontalLayout: through one, a wrapping Text reports its
+                                // one-line height, the list measured short of what it drew and the
+                                // last entry was clipped beyond the scroller's reach (M9 Task 41).
+                                // Here the Text has its width first and the row takes its height.
+                                for entry in section.entries : Rectangle {
+                                    height: entry-text.preferred-height;
                                     Rectangle {
+                                        x: 0px;
+                                        y: 6px;
                                         width: 4px;
-                                        Rectangle {
-                                            y: 6px;
-                                            width: 4px;
-                                            height: 4px;
-                                            border-radius: 2px;
-                                            background: Theme.accent-hi;
-                                        }
+                                        height: 4px;
+                                        border-radius: 2px;
+                                        background: Theme.accent-hi;
                                     }
-                                    Text {
-                                        horizontal-stretch: 1;
+                                    entry-text := Text {
+                                        x: 12px;
+                                        y: 0px;
+                                        width: parent.width - 12px;
                                         text: entry;
                                         wrap: word-wrap;
                                         font-family: Theme.font-ui;
