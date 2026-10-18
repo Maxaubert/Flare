@@ -42,6 +42,18 @@ pub fn recorded() -> Vec<OpenedRecord> {
     ALL.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Records an open the window itself took under `--e2e` (a folder or a file), so the `open.log`
+/// probe sees it like any recorder's call.
+pub fn record_window_open(path: &std::path::Path) {
+    let text = path.to_string_lossy().into_owned();
+    let rec = if path.is_dir() {
+        OpenedRecord::Folder(text)
+    } else {
+        OpenedRecord::Open(text)
+    };
+    ALL.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+}
+
 /// One call recorded by `RecordingOpeners`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenedRecord {

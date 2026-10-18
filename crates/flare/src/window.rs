@@ -392,6 +392,7 @@ fn settings_deps(
             } else if e2e_on {
                 // Under --e2e nothing opens; the attempt is recorded in the log instead.
                 log::info!("e2e: open {text} (nothing opened)");
+                crate::openers::record_window_open(p);
             } else if let Err(e) = std::process::Command::new("explorer.exe").arg(p).spawn()
             // sync-ok: spawn returns at once
             {
