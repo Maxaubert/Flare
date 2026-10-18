@@ -148,6 +148,12 @@ impl PtyProcess for PortablePty {
     }
 
     fn kill(&mut self) {
+        // The shell's children (an agent, a ping) would keep the pseudo console open after the shell is
+        // gone, and closing it waits for them: end the tree first, while the shell still names them.
+        let running = !self.exit.lock().unwrap_or_else(|p| p.into_inner()).done;
+        if running && self.pid != 0 {
+            kill_descendants(self.pid);
+        }
         // Errors mean the process is already gone.
         let _ = self.killer.kill();
     }
@@ -169,11 +175,71 @@ impl PtyProcess for PortablePty {
     }
 }
 
+/// Pure: every process below `root` in a (pid, parent pid) list, cycle-safe, `root` excluded.
+fn descendants_of(rows: &[(u32, u32)], root: u32) -> Vec<u32> {
+    let mut seen = std::collections::HashSet::from([root]);
+    let mut out = Vec::new();
+    let mut queue = vec![root];
+    let mut i = 0;
+    while i < queue.len() {
+        let p = queue[i];
+        i += 1;
+        for &(pid, ppid) in rows {
+            if ppid == p && seen.insert(pid) {
+                out.push(pid);
+                queue.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// Ends every process below `root` (TerminateProcess). Never waits; failures are ignored.
+fn kill_descendants(root: u32) {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: plain values in; an invalid handle is checked.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap == INVALID_HANDLE_VALUE || snap.is_null() {
+        return;
+    }
+    let mut rows: Vec<(u32, u32)> = Vec::new();
+    // SAFETY: PROCESSENTRY32W is plain data; zero is valid before dwSize is set.
+    let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    // SAFETY: `snap` is a live snapshot handle and `e` has its size set.
+    let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
+    while ok {
+        rows.push((e.th32ProcessID, e.th32ParentProcessID));
+        // SAFETY: as above.
+        ok = unsafe { Process32NextW(snap, &mut e) } != 0;
+    }
+    // SAFETY: `snap` is closed once.
+    unsafe { CloseHandle(snap) };
+    // Deepest first is not needed: a parent's death does not stop a child.
+    for pid in descendants_of(&rows, root) {
+        // SAFETY: OpenProcess takes plain values; a null handle means failure and is checked.
+        let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if h.is_null() {
+            continue;
+        }
+        // SAFETY: `h` is a live process handle with terminate access, closed once.
+        unsafe {
+            TerminateProcess(h, 1);
+            CloseHandle(h);
+        }
+    }
+}
+
 impl Drop for PortablePty {
     fn drop(&mut self) {
         // End the shell so the waiter returns, then close the pseudo console, which is what finally
         // ends a blocked read (the reader gets no end-of-file when the shell exits on its own).
-        let _ = self.killer.kill();
+        self.kill();
         self.writer = None;
         self.master = None;
         if let Some(w) = self.waiter.take() {
@@ -186,6 +252,16 @@ impl Drop for PortablePty {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn descendants_of_walks_the_tree_and_survives_a_cycle() {
+        let rows = [(10, 1), (20, 10), (30, 20), (40, 1), (5, 6), (6, 5)];
+        let mut d = descendants_of(&rows, 10);
+        d.sort();
+        assert_eq!(d, vec![20, 30]);
+        assert!(descendants_of(&rows, 40).is_empty());
+        assert_eq!(descendants_of(&rows, 5), vec![6]);
+    }
 
     type Shared = Arc<Mutex<Vec<u8>>>;
     type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
