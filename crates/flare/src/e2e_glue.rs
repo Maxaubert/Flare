@@ -1176,8 +1176,8 @@ impl GlueCtx {
             return Err("the real clipboard is never written".into());
         }
         let port = self.clip.as_ref().ok_or("no clipboard port")?;
-        if png.is_some() {
-            return Err("an image on the in-memory clipboard is not supported yet".into());
+        if let Some(png) = png {
+            return port.set_image_png_b64(png);
         }
         let text = text.ok_or("ClipSet needs text")?;
         port.write_text(text, usize::MAX)
