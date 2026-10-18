@@ -206,10 +206,8 @@ impl Ctx {
         shot_file(&dir, self.name, name, |p| app.session.snapshot(p))
     }
 
-    /// Starts the app on this scenario's sandbox (one profile per scenario), connects its pipe,
-    /// waits for `Hello`, and sets the scale when asked.
-    pub fn launch(&mut self, opts: Launch) -> Result<App, String> {
-        let packaged = opts.packaged || self.packaged;
+    /// The scenario's world, made on first use. A `--run-one` child prints its root once, here.
+    pub fn ensure_world(&mut self) -> &World {
         if self.world.is_none() {
             let w = World::new();
             if self.json {
@@ -217,6 +215,14 @@ impl Ctx {
             }
             self.world = Some(w);
         }
+        self.world.as_ref().expect("world was just created")
+    }
+
+    /// Starts the app on this scenario's sandbox (one profile per scenario), connects its pipe,
+    /// waits for `Hello`, and sets the scale when asked.
+    pub fn launch(&mut self, opts: Launch) -> Result<App, String> {
+        let packaged = opts.packaged || self.packaged;
+        self.ensure_world();
         let w = self.world.as_ref().expect("world was just created");
         let mut env = w.env();
         env.extend(opts.env.iter().cloned());

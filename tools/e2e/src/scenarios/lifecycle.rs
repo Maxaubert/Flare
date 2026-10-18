@@ -1,13 +1,19 @@
-//! Lifecycle scenarios (Task 16, 20): spawn, hookSmoke, cwdLabel, restore, handoff, quitManyShells, lastTab, exitClosesTab, promptLayout. Each is a stub until its port task fills it.
+//! Lifecycle scenarios (Tasks 16 and 20): spawn, hookSmoke, cwdLabel, restore, handoff, quitManyShells, lastTab, exitClosesTab, promptLayout.
 
-use std::path::Path;
-use std::time::Duration;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{Reply, Request, SnapMode};
+use flare_tabs::restore::{parse_tabs, SavedTab, SavedTabs};
+use flare_tabs::tabs_store::TabsStore;
+use serde_json::json;
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::proc::reap_by_profile;
-use crate::world::{prompt_timeout, rows_text, wait_for_prompt, Shell};
+use crate::guards::ReapGuard;
+use crate::proc::{reap_by_profile, Child};
+use crate::session::{Rect, TabState};
+use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// How many tabs the app shows now (0 when the probe fails).
 fn tab_count(app: &mut App) -> usize {
@@ -144,7 +150,9 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
     let writes = reg["count"].as_u64().unwrap_or(u64::MAX);
     ctx.ok(
         writes == 0 || sandboxed,
-        format!("no registry write was attempted outside the sandbox under --e2e ({writes} in {root:?})"),
+        format!(
+            "no registry write was attempted outside the sandbox under --e2e ({writes} in {root:?})"
+        ),
     );
 
     app.close();
@@ -270,39 +278,419 @@ pub fn hook_smoke(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
-/// Stub until Task 20 ports "cwdLabel".
+/// The tabs the app shows now, in strip order (empty when the probe is not answered).
+fn tabs_of(app: &mut App) -> Vec<TabState> {
+    app.session.state().map(|s| s.tabs).unwrap_or_default()
+}
+
+/// The id of the tab in front, or an empty string when the probe is not answered.
+fn front_id(app: &mut App) -> String {
+    app.session
+        .state()
+        .ok()
+        .and_then(|s| s.front)
+        .unwrap_or_default()
+}
+
+/// True when `cwd` (a Windows path) ends in the folder `name`, ignoring case and trailing slashes.
+fn folder_is(cwd: &str, name: &str) -> bool {
+    cwd.trim_end_matches(['\\', '/'])
+        .rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case(name))
+}
+
+/// Types `text` into the front shell and presses Enter (PT `typeLine`).
+fn type_line(app: &mut App, text: &str) -> Result<(), String> {
+    app.session.type_text(text)?;
+    app.session.key("Enter")
+}
+
+/// The centre of the named rectangle the window exports (`ui.rect`), in client pixels.
+fn centre_of(app: &mut App, name: &str) -> Option<(f32, f32)> {
+    let v = app.session.probe("ui.rect", json!({ "name": name })).ok()?;
+    let r: Rect = serde_json::from_value(v).ok()?;
+    Some((r.x + r.w / 2.0, r.y + r.h / 2.0))
+}
+
+/// Writes `tabs.json` into `profile` with the app's own store: one saved tab per folder, the
+/// first one active. Flushed at once, so the file is there before the app starts.
+fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), String> {
+    fs::create_dir_all(profile).map_err(|e| format!("the profile folder: {e}"))?;
+    let store = TabsStore::new(profile.join("tabs.json"), Duration::from_millis(400));
+    let saved = SavedTabs {
+        tabs: folders
+            .iter()
+            .map(|f| SavedTab {
+                cwd: f.to_string_lossy().into_owned(),
+                agent: None,
+            })
+            .collect(),
+        active: 0,
+    };
+    store.save(&saved);
+    store.flush();
+    Ok(())
+}
+
+/// The label follows the shell's own folder report. PT: run.mjs:510-518.
 pub fn cwd_label(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        folders: vec![alpha],
+        ..Launch::default()
+    })?;
+    let opened = ctx.until("the launch folder's tab", 15_000, &mut || {
+        tabs_of(&mut app)
+            .first()
+            .is_some_and(|t| t.title.contains("alpha"))
+    });
+    ctx.ok(opened, "a launch folder opens as a tab named for it");
+
+    let front = front_id(&mut app);
+    ctx.until("the first prompt", 45_000, &mut || {
+        prompt_showing(&rows_text(&mut app, &front), Shell::PowerShell)
+    });
+    type_line(&mut app, "mkdir sub | Out-Null; cd sub")?;
+    let renamed = ctx.until("the tab to be renamed", 15_000, &mut || {
+        tabs_of(&mut app)
+            .first()
+            .is_some_and(|t| t.title.contains("sub"))
+    });
+    ctx.ok(renamed, "cd renames the tab");
+    let tip = tabs_of(&mut app)
+        .first()
+        .map(|t| t.tooltip.clone())
+        .unwrap_or_default();
+    ctx.ok(
+        folder_is(&tip, "sub"),
+        format!("and the tooltip follows ({tip})"),
+    );
+    app.close();
+    Ok(())
 }
 
-/// Stub until Task 20 ports "restore".
+/// The saved strip comes back in its folders, in order. PT: run.mjs:3378-3394. The file is written
+/// with the app's store before the first launch; the quit's flush is what is then checked.
 pub fn restore(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let (alpha, beta, profile) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.beta.clone(), w.profile.clone())
+    };
+    write_tabs(&profile, &[alpha.clone(), beta.clone()])?;
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        ..Launch::default()
+    })?;
+    ctx.until("two tabs back", 20_000, &mut || {
+        tabs_of(&mut app).len() == 2
+    });
+    app.close();
+
+    let saved = parse_tabs(&fs::read_to_string(profile.join("tabs.json")).unwrap_or_default());
+    ctx.ok(
+        saved.tabs.len() == 2,
+        format!(
+            "tabs.json holds both ({})",
+            saved
+                .tabs
+                .iter()
+                .map(|t| t.cwd.rsplit('\\').next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    );
+
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        ..Launch::default()
+    })?;
+    let back = ctx.until("a relaunch bringing both back", 20_000, &mut || {
+        tabs_of(&mut app).len() == 2
+    });
+    ctx.ok(back, "a relaunch brings both back");
+    if back {
+        let tabs = tabs_of(&mut app);
+        ctx.ok(
+            folder_is(&tabs[0].cwd, "alpha") && folder_is(&tabs[1].cwd, "beta"),
+            "in their folders, in order",
+        );
+    }
+    app.close();
+    Ok(())
 }
 
-/// Stub until Task 20 ports "handoff".
+/// A second launch hands its folder to the running window and exits. PT: run.mjs:3396-3417. The
+/// second instance runs software too (no GPU device for a hand-off), and the same folder again is
+/// still a new tab: two shells in one folder is normal.
 pub fn handoff(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let (alpha, beta, env) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.beta.clone(), w.env())
+    };
+    let exe = ctx.exe.clone();
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        folders: vec![alpha],
+        ..Launch::default()
+    })?;
+    ctx.until("the first tab", 15_000, &mut || {
+        tabs_of(&mut app).len() == 1
+    });
+
+    let beta_arg = beta.to_string_lossy().into_owned();
+    let args = ["--renderer", "software", beta_arg.as_str()];
+    let child = Child::launch(&exe, &args, &env, &app.profile);
+    let left = child.wait_for(|| child.exited().is_some(), Duration::from_secs(5));
+    ctx.ok(
+        left && child.exited() == Some(0),
+        "the second instance exits with code 0 within 5 s",
+    );
+    let added = ctx.until("its folder as a new tab in the first", 15_000, &mut || {
+        tabs_of(&mut app).len() == 2
+    });
+    ctx.ok(added, "and its folder is a new tab in the first");
+
+    let again = Child::launch(&exe, &args, &env, &app.profile);
+    again.wait_for(|| again.exited().is_some(), Duration::from_secs(5));
+    let twice = ctx.until(
+        "a folder some tab already holds still gets its own tab",
+        15_000,
+        &mut || tabs_of(&mut app).len() == 3,
+    );
+    ctx.ok(
+        twice,
+        "a folder some tab already holds still gets its own tab",
+    );
+    app.close();
+    Ok(())
 }
 
-/// Stub until Task 20 ports "quitManyShells".
+/// Ten live shells, quit, three times: the process exits by itself, quickly, with 0 and no stray is
+/// left. PT: run.mjs:3419-3450 (#127: node-pty's exit threads raced, and the prebuild asserted). A
+/// fresh strip per round, or the last round's ten tabs would come back.
 pub fn quit_many_shells(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let (alpha, profile, root) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.profile.clone(), w.root.clone())
+    };
+    for round in 1..=3 {
+        let _ = fs::remove_file(profile.join("tabs.json"));
+        let mut app = ctx.launch(Launch {
+            renderer: Some("software"),
+            folders: vec![alpha.clone()],
+            ..Launch::default()
+        })?;
+        ctx.until("the first tab", 15_000, &mut || {
+            tabs_of(&mut app).len() == 1
+        });
+        for n in 2..=10usize {
+            app.session.key("Ctrl+T")?;
+            ctx.until(&format!("tab {n}"), 8_000, &mut || {
+                tabs_of(&mut app).len() == n
+            });
+            let front = front_id(&mut app);
+            let _ = wait_for_prompt(
+                &mut app,
+                &front,
+                Shell::PowerShell,
+                prompt_timeout(Shell::PowerShell),
+            );
+        }
+        ctx.ok(
+            tabs_of(&mut app).len() == 10,
+            format!("round {round}: ten shells open"),
+        );
+
+        let started = Instant::now();
+        let _ = app.session.call(&Request::Quit { force: true });
+        let child = &app.child;
+        let left = child.wait_for(|| child.exited().is_some(), Duration::from_secs(15));
+        let code = app.child.exited();
+        ctx.ok(
+            left && code == Some(0),
+            format!(
+                "round {round}: the app quit by itself with exit code 0 ({:?} ms, {code:?})",
+                started.elapsed().as_millis()
+            ),
+        );
+
+        let mut reap = ReapGuard::new(root.clone());
+        let strays = reap.reap();
+        ctx.ok(
+            strays == 0,
+            format!("round {round}: no stray process is left ({strays})"),
+        );
+    }
+    Ok(())
 }
 
-/// Stub until Task 20 ports "lastTab".
+/// Closing the last tab lands on the start screen; the window stays; the folders are offered; the X
+/// really quits, and what was open when it quit comes back. PT: run.mjs:3452-3478. The start screen
+/// offers the New row only in a click, so one press opens a shell through it.
 pub fn last_tab(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let (alpha, beta) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.beta.clone())
+    };
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        folders: vec![alpha, beta],
+        ..Launch::default()
+    })?;
+    ctx.until("two tabs", 15_000, &mut || tabs_of(&mut app).len() == 2);
+    app.session.key("Ctrl+W")?;
+    ctx.until("one tab left", 6_000, &mut || tabs_of(&mut app).len() == 1);
+    app.session.key("Ctrl+W")?;
+    let shown = ctx.until("the start screen", 6_000, &mut || {
+        app.session
+            .probe_str("start.state")
+            .ok()
+            .and_then(|v| v["shown"].as_bool())
+            == Some(true)
+    });
+    ctx.ok(shown, "closing the last tab lands on the start screen");
+    let quitting = app.session.state().map(|s| s.quitting).unwrap_or(true);
+    ctx.ok(!quitting, "and the window stays");
+
+    let start = app.session.probe_str("start.state")?;
+    let places = start["places"].as_u64().unwrap_or(0);
+    ctx.ok(
+        places == 2,
+        format!("and offers the folders you were just in ({places})"),
+    );
+    let new_at = (
+        start["new_centre"]["x"].as_f64().unwrap_or(0.0) as f32,
+        start["new_centre"]["y"].as_f64().unwrap_or(0.0) as f32,
+    );
+    app.session.click(new_at.0, new_at.1)?;
+    let opened = ctx.until("one press opening a shell", 15_000, &mut || {
+        tabs_of(&mut app).len() == 1
+    });
+    ctx.ok(opened, "one press opens a shell in one of them");
+    // Past the 400 ms save debounce, as PT waits.
+    std::thread::sleep(Duration::from_millis(900)); // sync-ok: test harness, off the app
+
+    // The X really quits: no resident process is left holding the lock.
+    if let Some((x, y)) = centre_of(&mut app, "close") {
+        app.session.click(x, y)?;
+    }
+    let gone = app
+        .child
+        .wait_for(|| app.child.exited().is_some(), Duration::from_secs(10));
+    ctx.ok(gone, "the X ends the process");
+
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        ..Launch::default()
+    })?;
+    let back = ctx.until("the tab open when it quit", 20_000, &mut || {
+        tabs_of(&mut app).len() == 1
+    });
+    ctx.ok(back, "and the tab that was open when it quit comes back");
+    app.close();
+    Ok(())
 }
 
-/// Stub until Task 20 ports "exitClosesTab".
+/// `exit` closes the tab it was typed in. PT: run.mjs:8086-8105. Ctrl+W closes a tab from inside a
+/// focused shell (owner, 2026-09-19): the terminal must yield the chord, or nothing closes.
 pub fn exit_closes_tab(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let (alpha, beta) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.beta.clone())
+    };
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        folders: vec![alpha, beta],
+        ..Launch::default()
+    })?;
+    ctx.until("two tabs", 15_000, &mut || tabs_of(&mut app).len() == 2);
+    app.session.key("Ctrl+T")?;
+    ctx.until("a third tab", 15_000, &mut || tabs_of(&mut app).len() == 3);
+    let front = front_id(&mut app);
+    let _ = wait_for_prompt(
+        &mut app,
+        &front,
+        Shell::PowerShell,
+        prompt_timeout(Shell::PowerShell),
+    );
+    type_line(&mut app, "echo third")?;
+    app.session.key("Ctrl+W")?;
+    let closed = ctx.until(
+        "Ctrl+W closes the tab over a focused shell",
+        6_000,
+        &mut || tabs_of(&mut app).len() == 2,
+    );
+    ctx.ok(closed, "Ctrl+W closes the tab over a focused shell");
+
+    if let Some((x, y)) = centre_of(&mut app, "tab:1") {
+        app.session.click(x, y)?;
+    }
+    type_line(&mut app, "exit")?;
+    let ended = ctx.until("the shell ending takes its tab", 15_000, &mut || {
+        tabs_of(&mut app).len() == 1
+    });
+    ctx.ok(ended, "the shell ending takes its tab");
+    let tabs = tabs_of(&mut app);
+    ctx.ok(
+        tabs.first().is_some_and(|t| folder_is(&t.cwd, "alpha")),
+        "and the other tab comes to the front",
+    );
+    app.close();
+    Ok(())
 }
 
-/// Stub until Task 20 ports "promptLayout".
+/// A prompt survives the window getting narrower and wider again (ConPTY sends nothing on a
+/// resize). PT: run.mjs:8107-8128.
 pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(20)
+    let alpha = ctx.ensure_world().alpha.clone();
+    let mut app = ctx.launch(Launch {
+        renderer: Some("software"),
+        folders: vec![alpha],
+        ..Launch::default()
+    })?;
+    ctx.until("the first tab", 15_000, &mut || {
+        tabs_of(&mut app).len() == 1
+    });
+    let front = front_id(&mut app);
+    let _ = wait_for_prompt(
+        &mut app,
+        &front,
+        Shell::PowerShell,
+        prompt_timeout(Shell::PowerShell),
+    );
+    type_line(&mut app, "echo ready")?;
+    ctx.until("the echo", 15_000, &mut || {
+        rows_text(&mut app, &front).contains("ready")
+    });
+
+    app.session.call(&Request::Resize { w: 620.0, h: 600.0 })?;
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test harness, off the app
+    app.session.call(&Request::Resize {
+        w: 1200.0,
+        h: 600.0,
+    })?;
+    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test harness, off the app
+
+    let last = rows_text(&mut app, &front)
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .trim_end()
+        .to_string();
+    ctx.ok(
+        last.starts_with("PS ") && last.ends_with("alpha>"),
+        format!("the prompt is whole after a narrow-then-wide resize (\"{last}\")"),
+    );
+    type_line(&mut app, "echo after-$(1+1)")?;
+    let typed = ctx.until("the echo after the resize", 15_000, &mut || {
+        rows_text(&mut app, &front).contains("after-2")
+    });
+    ctx.ok(typed, "and typing lands where the prompt is");
+    app.close();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,6 +721,26 @@ mod tests {
             assert_eq!(png_is_not_blank(&p), paint, "{name}");
         }
         assert!(!png_is_not_blank(&dir.path().join("missing.png")));
+    }
+
+    #[test]
+    fn a_folder_is_the_last_segment_of_its_path() {
+        assert!(folder_is(r"C:\Users\me\alpha", "alpha"));
+        assert!(folder_is(r"C:\Users\me\ALPHA\", "alpha"));
+        assert!(!folder_is(r"C:\Users\me\alphabet", "alpha"));
+        assert!(!folder_is("", "alpha"));
+    }
+
+    #[test]
+    fn write_tabs_saves_a_strip_the_app_reads_back_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let folders = vec![PathBuf::from(r"C:\w\alpha"), PathBuf::from(r"C:\w\beta")];
+        write_tabs(dir.path(), &folders).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("tabs.json")).unwrap();
+        let saved = parse_tabs(&raw);
+        assert_eq!(saved.tabs.len(), 2);
+        assert_eq!(saved.tabs[0].cwd, r"C:\w\alpha");
+        assert_eq!(saved.tabs[1].cwd, r"C:\w\beta");
     }
 
     #[test]
