@@ -94,6 +94,7 @@ use crate::term_menu::to_menu_row;
 use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
+use crate::update_ctl::{AskInstall, Spawn, UpdateCtl, UpdateDeps, UpdateMsg};
 use crate::{
     AppWindow, HelpBridge, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom,
     TabRow,
@@ -123,6 +124,8 @@ pub enum UiMsg {
     Settings(SettingsMsg),
     /// A command help setting changed (the switch, the shell chip or the panel width).
     Help,
+    /// A worker's answer or a timer for the update controller (M9 Task 30).
+    Update(UpdateMsg),
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -167,6 +170,14 @@ pub struct Deps {
     pub e2e: bool,
     /// The terminal's ports (M5): the real ones in production, in-memory stand-ins under `--e2e`.
     pub term: TermPorts,
+}
+
+/// What the update controller needs from the glue (M9 Task 30; Task 32 builds the engine).
+pub struct UpdateParts {
+    pub engine: Arc<flare_update::engine::Engine>,
+    pub current_version: String,
+    pub e2e_dir: Option<PathBuf>,
+    pub spawn: Spawn,
 }
 
 /// What the terminal controller needs from the outside (Task 24).
@@ -398,6 +409,12 @@ pub struct AppCtl {
     help_front: Rc<RefCell<Option<String>>>,
     help_dirty: Arc<AtomicBool>,
     _help_sub: Option<Subscription>,
+    /// The update controller (M9 Task 30); the window glue hands it over after this one exists.
+    update: Option<Rc<RefCell<UpdateCtl>>>,
+    /// The update install is waiting on the close question: the answer goes here.
+    install_cb: Option<Box<dyn FnOnce(bool)>>,
+    /// The engine's worker sets this once the installer is started: the next close goes through.
+    update_agreed: Arc<AtomicBool>,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -693,6 +710,9 @@ impl AppCtl {
             help_front: Rc::default(),
             help_dirty: Arc::new(AtomicBool::new(false)),
             _help_sub: None,
+            update: None,
+            install_cb: None,
+            update_agreed: Arc::new(AtomicBool::new(false)),
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -700,6 +720,106 @@ impl AppCtl {
         Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
         rc
+    }
+
+    /// Makes the update controller over this window (M9 Task 30). The engine is built by the glue
+    /// (Task 32) with [`crate::update_ctl::PostEvents`] over this controller's `post`.
+    pub fn attach_update(app: &AppWindow, rc: &Rc<RefCell<AppCtl>>, parts: UpdateParts) {
+        let (post, agreed) = {
+            let c = rc.borrow();
+            (Arc::clone(&c.deps.post), Arc::clone(&c.update_agreed))
+        };
+        let ask_install: AskInstall = {
+            let me = Rc::downgrade(rc);
+            Rc::new(move |cb| match me.upgrade() {
+                Some(rc) => match rc.try_borrow_mut() {
+                    Ok(mut c) => c.ask_install(cb),
+                    Err(_) => cb(false),
+                },
+                None => cb(false),
+            })
+        };
+        let quit: Rc<dyn Fn()> = {
+            let me = Rc::downgrade(rc);
+            Rc::new(move || {
+                if let Some(rc) = me.upgrade()
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.quit_for_update();
+                }
+            })
+        };
+        let ctl = UpdateCtl::new(
+            app,
+            UpdateDeps {
+                engine: parts.engine,
+                post,
+                current_version: parts.current_version,
+                ask_install,
+                agree: Arc::new(move || agreed.store(true, Ordering::SeqCst)),
+                spawn: parts.spawn,
+                e2e_dir: parts.e2e_dir,
+                quit,
+            },
+        );
+        rc.borrow_mut().update = Some(ctl);
+    }
+
+    /// The update window is up (the keys and the chords belong to it).
+    fn update_up(&self) -> bool {
+        self.update
+            .as_ref()
+            .is_some_and(|u| u.try_borrow().is_ok_and(|u| u.window_up()))
+    }
+
+    /// The host's close question for an update install (PT App.tsx `onInstall`): with no agent at
+    /// work or present the install may start at once; else the close question is raised in its
+    /// install wording and the answer reaches `cb`.
+    fn ask_install(&mut self, cb: Box<dyn FnOnce(bool)>) {
+        let busy = self.busy_agents();
+        let ask = match window_ask(&busy) {
+            Some(a) => Some(a),
+            None => {
+                let labels = self.model.labels();
+                self.model
+                    .state
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.kind == TabKind::Shell && self.agent_present(&t.id))
+                    .map(|(i, t)| Ask {
+                        target: crate::startup::AskTarget::Window,
+                        label: labels.get(i).cloned().unwrap_or_default(),
+                        agent: self.agent_named(&t.id),
+                        for_ms: None,
+                        others: 0,
+                        install: false,
+                    })
+            }
+        };
+        let Some(mut ask) = ask else {
+            cb(true);
+            return;
+        };
+        ask.install = true;
+        self.drop_install_ask();
+        self.install_cb = Some(cb);
+        (self.deps.raise)();
+        self.ask = Some(ask);
+        self.show_ask();
+    }
+
+    /// A different question replaces a pending install question: the install is not going ahead.
+    fn drop_install_ask(&mut self) {
+        if let Some(cb) = self.install_cb.take() {
+            cb(false);
+        }
+    }
+
+    /// The update is installing and the installer asked the app to go: the end of life, then exit.
+    fn quit_for_update(&mut self) {
+        self.finish();
+        (self.deps.quit)();
     }
 
     /// The Command help controller over this window. It opens on the language of the shell in
@@ -987,6 +1107,13 @@ impl AppCtl {
             1.0
         };
         let strip_phys = app.get_strip_phys_width();
+        if let Some(u) = self.update.clone()
+            && let Ok(mut u) = u.try_borrow_mut()
+        {
+            let size = app.window().size();
+            let sc = self.scale as f32;
+            u.on_scale_or_size(size.width as f32 / sc, size.height as f32 / sc, sc);
+        }
         self.sync_hub();
         if self.prune_restoring(now) {
             self.sync_model_agents();
@@ -1649,6 +1776,7 @@ impl AppCtl {
                 .and_then(|i| self.model.labels().get(i).cloned())
                 .unwrap_or_default();
             let for_ms = self.working_for_ms(id);
+            self.drop_install_ask();
             self.ask = Some(tab_ask(id, &label, self.agent_named(id), for_ms));
             self.show_ask();
             return;
@@ -2649,6 +2777,15 @@ impl AppCtl {
     /// Folders from a second launch: raise the window, then each folder is a new tab.
     pub fn handoff(&mut self, h: Handoff) {
         (self.deps.raise)();
+        // `--preview-update` on a second launch shows the update window in the running app; with a
+        // real offer present the engine changes nothing. Alone, it opens no tab.
+        if flare_update::preview::wants_preview(&h.args) {
+            (self.deps.post)(UiMsg::Update(UpdateMsg::PreviewRequested));
+            // The program's own name may head the list; only flags besides it means nothing to open.
+            if (h.args.iter()).all(|a| a.starts_with("--") || a.to_lowercase().ends_with(".exe")) {
+                return;
+            }
+        }
         let post = Arc::clone(&self.deps.post);
         let r = std::thread::Builder::new()
             .name("flare-handoff".into())
@@ -2689,10 +2826,14 @@ impl AppCtl {
 
     /// Every route out of the window ends here. A working agent vetoes the close and asks.
     pub fn on_close_requested(&mut self) -> CloseDecision {
+        if self.update_agreed.load(Ordering::SeqCst) {
+            self.close_flow.agree();
+        }
         let busy = self.busy_agents();
         self.close_flow.set_busy(holds_window_close(busy.len()));
         match self.close_flow.on_close() {
             CloseVerdict::Ask => {
+                self.drop_install_ask();
                 self.ask = window_ask(&busy);
                 (self.deps.raise)();
                 self.show_ask();
@@ -2755,13 +2896,26 @@ impl AppCtl {
 
     fn dialog_cancel(&mut self) {
         self.ask = None;
+        let install = self.install_cb.take();
         self.show_ask();
-        self.focus_terminal();
+        match install {
+            // The update window comes back and lands its own focus.
+            Some(cb) => cb(false),
+            None => self.focus_terminal(),
+        }
     }
 
     fn dialog_confirm(&mut self) {
         let Some(ask) = self.ask.take() else { return };
+        let install = self.install_cb.take();
         self.show_ask();
+        if ask.install {
+            // The go-ahead for the install only: the app quits later, when the installer starts.
+            if let Some(cb) = install {
+                cb(true);
+            }
+            return;
+        }
         match ask.target {
             crate::startup::AskTarget::Tab(id) => {
                 self.close_now(&id);
@@ -2812,6 +2966,13 @@ impl AppCtl {
                     && let Ok(mut s) = s.try_borrow_mut()
                 {
                     s.on_msg(m);
+                }
+            }
+            UiMsg::Update(m) => {
+                if let Some(u) = self.update.clone()
+                    && let Ok(mut u) = u.try_borrow_mut()
+                {
+                    u.on_msg(m);
                 }
             }
             UiMsg::Help => {
@@ -2898,7 +3059,7 @@ struct Target<'a>(&'a mut AppCtl);
 
 impl ChordTarget for Target<'_> {
     fn blocked(&self) -> bool {
-        self.0.ask.is_some()
+        self.0.ask.is_some() || self.0.update_up()
     }
 
     fn toggle_fullscreen(&mut self) {
@@ -5003,5 +5164,218 @@ mod tests {
         assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
         assert_eq!(f.rows(), rows + 1);
         assert!(fake.written().is_empty());
+    }
+
+    // ---- the update install question and the preview hand-off (M9 Task 30) ----
+
+    type UpJobs = Rc<RefCell<Vec<Box<dyn FnOnce() + Send>>>>;
+
+    struct NoWait;
+    impl flare_update::preview::Waiter for NoWait {
+        fn wait(&self, _ms: u64) {}
+    }
+
+    fn attach_update(
+        f: &Fx,
+        mode: flare_update::engine::Mode,
+    ) -> (Arc<flare_update::engine::Engine>, UpJobs) {
+        use flare_update::engine::{CondvarSleeper, Engine};
+        use flare_update::feed::{FakeFeed, Feed};
+        let q = f.q.clone();
+        let post: Post = Arc::new(move |m| q.lock().unwrap().push_back(m));
+        let feed: Arc<dyn Feed> = Arc::new(FakeFeed::new().offering("99.0.0", "* a thing"));
+        let engine = Engine::new(
+            mode,
+            feed,
+            "0.1.0",
+            None,
+            Arc::new(crate::update_ctl::PostEvents { post }),
+            Arc::new(CondvarSleeper::new()),
+            Arc::new(NoWait),
+        );
+        let jobs: UpJobs = Rc::default();
+        let j = jobs.clone();
+        AppCtl::attach_update(
+            &f.h.comp,
+            &f.ctl,
+            UpdateParts {
+                engine: engine.clone(),
+                current_version: "0.1.0".to_string(),
+                e2e_dir: None,
+                spawn: Rc::new(move |job| j.borrow_mut().push(job)),
+            },
+        );
+        (engine, jobs)
+    }
+
+    fn with_a_working_agent(f: &Fx) {
+        let id = f.ctl.borrow_mut().open_folder("C:\\a");
+        {
+            let mut c = f.ctl.borrow_mut();
+            c.model_mut().set_agent(&id, Some(AgentKind::Claude));
+            c.set_working(&id, Some(0));
+        }
+        f.clock.set(5_000);
+    }
+
+    #[test]
+    fn the_update_install_asks_first_when_an_agent_works() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        with_a_working_agent(&f);
+        let (engine, jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_chip_clicked();
+        assert!(f.h.comp.get_update_open());
+        f.h.comp.invoke_update_install();
+        assert!(f.h.comp.get_dialog_open(), "the close question is up");
+        assert_eq!(
+            f.h.comp.get_dialog_title().as_str(),
+            "Stop the agent and install the update?"
+        );
+        assert_eq!(
+            f.h.comp.get_dialog_primary().as_str(),
+            "Install and restart"
+        );
+        assert!(f.ctl.borrow().ask.as_ref().expect("an ask").install);
+        assert!(!f.h.comp.get_update_open(), "the update window steps aside");
+        assert_eq!(engine.calls().installs, 0);
+        assert!(jobs.borrow().is_empty());
+        // No: nothing starts and the window comes back.
+        f.h.comp.invoke_dialog_cancel();
+        assert!(!f.h.comp.get_dialog_open());
+        assert!(f.h.comp.get_update_open());
+        assert!(jobs.borrow().is_empty());
+        // Yes: the install starts, and the app does not quit yet.
+        f.h.comp.invoke_update_install();
+        f.h.comp.invoke_dialog_confirm();
+        assert_eq!(jobs.borrow().len(), 1, "a worker was started");
+        assert!(f.h.comp.get_update_running());
+        assert!(f.h.comp.get_update_open());
+        assert_eq!(f.log.borrow().quit, 0);
+        assert!(!f.ctl.borrow().ended);
+    }
+
+    #[test]
+    fn the_update_install_with_no_agent_starts_at_once_and_quits_after_the_apply() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        f.ctl.borrow_mut().open_folder("C:\\a");
+        let (engine, jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_chip_clicked();
+        f.h.comp.invoke_update_install();
+        assert!(!f.h.comp.get_dialog_open(), "nothing to ask");
+        assert!(f.h.comp.get_update_running());
+        let job = jobs.borrow_mut().pop().expect("the install worker");
+        job();
+        f.pump();
+        assert_eq!(f.log.borrow().quit, 0, "not before the 400 ms");
+        f.h.advance(400);
+        assert_eq!(f.log.borrow().quit, 1);
+        assert!(f.ctl.borrow().ended, "the end of life ran first");
+    }
+
+    #[test]
+    fn an_agreed_install_lets_the_close_through_even_with_an_agent_working() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        with_a_working_agent(&f);
+        let (engine, jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_install();
+        f.h.comp.invoke_dialog_confirm();
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::KeepOpen,
+            "not agreed before the installer has started"
+        );
+        f.h.comp.invoke_dialog_cancel();
+        let job = jobs.borrow_mut().pop().expect("the install worker");
+        job();
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::Close,
+            "agreed at the apply"
+        );
+    }
+
+    #[test]
+    fn a_second_launch_with_the_flag_previews_in_the_running_app() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        f.start_restore_and_wait();
+        let (engine, _jobs) = attach_update(&f, Mode::Off);
+        let tabs = f.rows();
+        f.ctl.borrow_mut().handoff(Handoff {
+            cwd: f.dir.path().to_string_lossy().into_owned(),
+            args: vec!["--preview-update".to_string()],
+        });
+        f.pump();
+        assert_eq!(f.log.borrow().raised, 1);
+        assert!(f.h.comp.get_update_chip_shown(), "the preview offer is up");
+        assert!(
+            f.h.comp
+                .get_update_chip_tip()
+                .starts_with("Preview: see what")
+        );
+        assert_eq!(f.rows(), tabs, "no tab is opened");
+        assert_eq!(engine.calls().installs, 0);
+        // With the program's name in front, as a second launch really passes it.
+        let g = fx();
+        g.start_restore_and_wait();
+        let (_e, _j) = attach_update(&g, Mode::Off);
+        let tabs = g.rows();
+        g.ctl.borrow_mut().handoff(Handoff {
+            cwd: g.dir.path().to_string_lossy().into_owned(),
+            args: vec!["flare.exe".to_string(), "--preview-update".to_string()],
+        });
+        g.pump();
+        assert!(g.h.comp.get_update_chip_shown());
+        assert_eq!(g.rows(), tabs);
+    }
+
+    #[test]
+    fn a_preview_request_changes_nothing_while_a_real_offer_is_present() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        f.start_restore_and_wait();
+        let (engine, _jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        assert_eq!(f.h.comp.get_update_chip_label().as_str(), "Update 99.0.0");
+        f.ctl.borrow_mut().handoff(Handoff {
+            cwd: f.dir.path().to_string_lossy().into_owned(),
+            args: vec!["--preview-update".to_string()],
+        });
+        f.pump();
+        assert_eq!(f.h.comp.get_update_chip_label().as_str(), "Update 99.0.0");
+        assert!(
+            f.h.comp
+                .get_update_chip_tip()
+                .starts_with("See what is new")
+        );
+    }
+
+    #[test]
+    fn the_chords_are_swallowed_while_the_update_window_is_up() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        f.start_restore_and_wait();
+        let (engine, _jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_chip_clicked();
+        assert!(f.h.comp.get_update_open());
+        assert!(f.h.comp.get_chrome_has_focus(), "its keys are the window's");
+        let rows = f.rows();
+        f.key(ctrl("t", "KeyT"));
+        assert_eq!(f.rows(), rows, "no new tab behind the window");
+        f.h.comp.invoke_update_cancel();
+        f.key(ctrl("t", "KeyT"));
+        assert_eq!(f.rows(), rows + 1, "and back to normal after");
     }
 }
