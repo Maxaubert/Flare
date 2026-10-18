@@ -135,14 +135,26 @@ fn with_window_attributes(
     }
     let transparent = plan.transparent;
     selector.with_winit_window_attributes_hook(move |attributes| {
-        use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
         let attributes = attributes.with_transparent(transparent);
         if e2e {
-            attributes.with_active(false).with_skip_taskbar(true)
+            e2e_attributes(attributes)
         } else {
             attributes
         }
     })
+}
+
+/// The --e2e window is BORN inactive, off the taskbar and parked off every monitor, so it never
+/// shows at its normal place before the hook parks it.
+pub fn e2e_attributes(
+    attributes: slint::winit_030::winit::window::WindowAttributes,
+) -> slint::winit_030::winit::window::WindowAttributes {
+    use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
+    let (x, y) = flare_win::window_park::parked_origin();
+    attributes
+        .with_active(false)
+        .with_skip_taskbar(true)
+        .with_position(slint::winit_030::winit::dpi::PhysicalPosition::new(x, y))
 }
 
 /// Slint's software renderer. Must not be combined with `require_wgpu_30`.
@@ -156,6 +168,17 @@ fn select_software(e2e: bool, plan: GlassPlan) -> Result<(), slint::PlatformErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_e2e_window_is_created_at_the_parking_spot() {
+        use slint::winit_030::winit::dpi::Position;
+        let a = e2e_attributes(slint::winit_030::winit::window::WindowAttributes::default());
+        let Some(Position::Physical(p)) = a.position else {
+            panic!("no physical position: {:?}", a.position);
+        };
+        assert_eq!((p.x, p.y), (-32000, -32000));
+        assert!(!a.active);
+    }
 
     fn v(build: u32) -> OsVersion {
         OsVersion {

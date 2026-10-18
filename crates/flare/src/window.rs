@@ -19,6 +19,7 @@ use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
+use flare_term::keys::KeyEvent;
 use flare_term::path_open::FsStat;
 use flare_term::pty::PortableSpawner;
 use flare_term::session::RealShells;
@@ -291,7 +292,7 @@ fn deliver_on_ui(msg: UiMsg) {
 }
 
 /// The window's HWND, when it has one.
-fn hwnd_of(app: &AppWindow) -> Option<isize> {
+pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
     app.window()
         .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
@@ -577,11 +578,13 @@ pub fn run_window(
         initial_window(&WindowStateStore::read(file, &areas), &areas)
     });
     if let Some(init) = &initial {
-        apply_initial(&app, init);
+        apply_initial(&app, init, args.e2e);
     }
 
     // ---- the controller -----------------------------------------------------------------------
     let mut ctl: Option<CtlRc> = None;
+    // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
+    let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
     // A font setting changed: the grid takes the new face and size (Task 27).
     let mut _font_sub = None;
@@ -645,6 +648,7 @@ pub fn run_window(
         // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
         // touch the desktop, and a url click is only recorded.
         let backends = Backends::new(e2e_on);
+        backends_clip = Some(Arc::clone(&backends.clip_port));
         // Filled right after the controller exists: the grid source paints the controller's decoration.
         let inputs_cell: Rc<RefCell<Option<Rc<RefCell<crate::term_ui::DecorInputs>>>>> =
             Rc::default();
@@ -944,7 +948,7 @@ pub fn run_window(
         })
     });
     let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
-    if let Some(rc) = &ctl {
+    let key_path: Option<Rc<KeyPath>> = ctl.as_ref().map(|rc| {
         install_window_filter(
             &app,
             FilterState {
@@ -954,9 +958,10 @@ pub fn run_window(
                 initial: initial.clone(),
                 material: material.clone(),
                 caret: caret.clone(),
+                e2e: args.e2e,
             },
-        );
-    }
+        )
+    });
     app.on_toggle_grid_renderer({
         let host = host.clone();
         let render_now = render_now.clone();
@@ -1029,8 +1034,8 @@ pub fn run_window(
     }
     if args.e2e {
         apply_e2e_style(&app);
-        if let Some(rc) = &ctl {
-            crate::e2e_glue::install(&app, rc, args);
+        if let (Some(rc), Some(kp)) = (&ctl, &key_path) {
+            crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
         }
     }
     // The exe's own icon on the window (and again on every scale-factor change).
@@ -1140,13 +1145,19 @@ pub fn run_window(
 }
 
 /// The size (logical) and position (physical) the window opens with.
-fn apply_initial(app: &AppWindow, init: &InitialWindow) {
+/// The saved position to apply, if any. An `--e2e` run never applies one: its window stays parked
+/// off every monitor (the size is still applied).
+pub fn saved_position(init: &InitialWindow, e2e: bool) -> Option<(i32, i32)> {
+    if e2e { None } else { init.pos }
+}
+
+fn apply_initial(app: &AppWindow, init: &InitialWindow, e2e: bool) {
     let window = app.window();
     window.set_size(slint::LogicalSize::new(
         init.logical_size.0 as f32,
         init.logical_size.1 as f32,
     ));
-    if let Some((x, y)) = init.pos {
+    if let Some((x, y)) = saved_position(init, e2e) {
         window.set_position(slint::PhysicalPosition::new(x, y));
     }
 }
@@ -1187,6 +1198,85 @@ struct FilterState {
     material: Rc<RefCell<Option<WindowMaterial>>>,
     /// The IME caret hold (Task 24b): a typed key opens its window.
     caret: Rc<RefCell<CaretFollower>>,
+    /// `--e2e`: the saved position is never applied.
+    e2e: bool,
+}
+
+/// Everything a key (and a focus change) needs: the winit filter and the e2e glue both go through
+/// it, so a test key takes exactly the path of a real one.
+pub(crate) struct KeyPath {
+    pub ctl: std::rc::Weak<RefCell<AppCtl>>,
+    pub front: FrontCell,
+    /// The IME caret hold (Task 24b): a typed key opens its window.
+    pub caret: Rc<RefCell<CaretFollower>>,
+    /// Codes whose press the app consumed: their release must not reach the shell either.
+    pub consumed: RefCell<HashSet<String>>,
+    pub app: slint::Weak<AppWindow>,
+}
+
+impl KeyPath {
+    fn with_ctl(&self, f: &mut dyn FnMut(&mut AppCtl)) {
+        if let Some(rc) = self.ctl.upgrade()
+            && let Ok(mut c) = rc.try_borrow_mut()
+        {
+            f(&mut c);
+        }
+    }
+}
+
+/// One key event, from winit or from the test hook: the controller first, then the shell.
+/// Returns what the window should do with the event.
+pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
+    if reserved_for_slint(&ev.code) {
+        return EventResult::Propagate;
+    }
+    if ev.pressed {
+        // A typed key opens the IME caret hold (Task 24b).
+        kp.caret.borrow_mut().on_key(epoch_ms() as i64);
+    }
+    let chrome_focus = kp
+        .app
+        .upgrade()
+        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
+    let outcome = if ev.pressed {
+        let mut out = KeyOutcome::Slint;
+        kp.with_ctl(&mut |c| out = c.on_key(ev));
+        if out == KeyOutcome::Consumed {
+            kp.consumed.borrow_mut().insert(ev.code.clone());
+        }
+        out
+    } else {
+        kp.with_ctl(&mut |c| c.on_key_up(ev));
+        if kp.consumed.borrow_mut().remove(&ev.code) {
+            KeyOutcome::Consumed
+        } else if chrome_focus {
+            KeyOutcome::Slint
+        } else {
+            KeyOutcome::Pty
+        }
+    };
+    let (action, to_pty) = key_outcome_to_filter(outcome);
+    if !to_pty {
+        return to_event_result(action);
+    }
+    let Some(handle) = kp.front.borrow().clone() else {
+        // Nothing to type into (Settings, the start screen): swallow the key.
+        return EventResult::PreventDefault;
+    };
+    // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
+    // its own); what is left for the shell is typed here.
+    handle.send_key(ev);
+    EventResult::PreventDefault
+}
+
+/// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
+pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
+    if on {
+        // Coming back to the window is a look at the tab in front.
+        kp.with_ctl(&mut |c| c.on_focus(true));
+    } else {
+        kp.with_ctl(&mut |c| c.on_focus_lost());
+    }
 }
 
 /// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
@@ -1240,7 +1330,7 @@ fn place_ime(
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
 /// the window's own movements are reported to it. Physical keys, IME text and the wheel reach the
 /// FRONT shell; a chord never does (the controller consumes it first).
-fn install_window_filter(app: &AppWindow, st: FilterState) {
+fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
     let FilterState {
         ctl,
         front,
@@ -1248,12 +1338,20 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         initial,
         material,
         caret,
+        e2e,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
     let accum = RefCell::new(WheelAccum::new());
-    // Codes whose press the app consumed: their release must not reach the shell either.
-    let consumed: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    // The key path (and the codes whose press the app consumed) is shared with the e2e glue.
+    let kp = Rc::new(KeyPath {
+        ctl: ctl.clone(),
+        front: front.clone(),
+        caret,
+        consumed: RefCell::new(HashSet::new()),
+        app: app.as_weak(),
+    });
+    let kp_out = kp.clone();
     let reapply = RefCell::new(Reapply::new(
         initial.filter(|i| !i.maximise),
         Instant::now(),
@@ -1381,13 +1479,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 with_ctl(&mut |c| c.on_dropped_path(path.clone(), (at.0 as f32, at.1 as f32)));
                 EventResult::Propagate
             }
-            WindowEvent::Focused(false) => {
-                with_ctl(&mut |c| c.on_focus_lost());
-                EventResult::Propagate
-            }
-            WindowEvent::Focused(true) => {
-                // Coming back to the window is a look at the tab in front.
-                with_ctl(&mut |c| c.on_focus(true));
+            WindowEvent::Focused(on) => {
+                handle_focus(&kp, *on);
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -1412,7 +1505,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                         init.logical_size.0 as f32,
                         init.logical_size.1 as f32,
                     ));
-                    if let Some((x, y)) = init.pos {
+                    if let Some((x, y)) = saved_position(&init, e2e) {
                         window.set_position(slint::PhysicalPosition::new(x, y));
                     }
                 }
@@ -1441,45 +1534,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                     event.text.as_deref(),
                     mods.get(),
                 );
-                if reserved_for_slint(&ev.code) {
-                    return EventResult::Propagate;
-                }
-                if ev.pressed {
-                    // A typed key opens the IME caret hold (Task 24b).
-                    caret.borrow_mut().on_key(epoch_ms() as i64);
-                }
-                let chrome_focus = weak
-                    .upgrade()
-                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
-                let outcome = if ev.pressed {
-                    let mut out = KeyOutcome::Slint;
-                    with_ctl(&mut |c| out = c.on_key(&ev));
-                    if out == KeyOutcome::Consumed {
-                        consumed.borrow_mut().insert(ev.code.clone());
-                    }
-                    out
-                } else {
-                    with_ctl(&mut |c| c.on_key_up(&ev));
-                    if consumed.borrow_mut().remove(&ev.code) {
-                        KeyOutcome::Consumed
-                    } else if chrome_focus {
-                        KeyOutcome::Slint
-                    } else {
-                        KeyOutcome::Pty
-                    }
-                };
-                let (action, to_pty) = key_outcome_to_filter(outcome);
-                if !to_pty {
-                    return to_event_result(action);
-                }
-                let Some(handle) = front.borrow().clone() else {
-                    // Nothing to type into (Settings, the start screen): swallow the key.
-                    return EventResult::PreventDefault;
-                };
-                // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
-                // its own); what is left for the shell is typed here.
-                handle.send_key(&ev);
-                EventResult::PreventDefault
+                handle_key(&kp, &ev)
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
                 if weak
@@ -1540,6 +1595,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
             _ => EventResult::Propagate,
         }
     });
+    kp_out
 }
 
 #[cfg(test)]
@@ -1571,6 +1627,34 @@ mod tests {
         sink.attach(post);
         sink.deliver(h("C:\\three"));
         assert_eq!(*got.lock().unwrap(), ["C:\\one", "C:\\two", "C:\\three"]);
+    }
+
+    #[test]
+    fn an_e2e_run_never_applies_a_saved_position() {
+        let init = InitialWindow {
+            pos: Some((120, 80)),
+            logical_size: (900, 600),
+            maximise: false,
+        };
+        assert_eq!(saved_position(&init, false), Some((120, 80)));
+        assert_eq!(saved_position(&init, true), None);
+    }
+
+    #[test]
+    fn the_winit_filter_calls_handle_key_and_nothing_else() {
+        let src = include_str!("window.rs");
+        let from = src
+            .find("WindowEvent::KeyboardInput {")
+            .expect("the filter has a keyboard arm");
+        let rest = &src[from..];
+        let to = rest.find("WindowEvent::Ime(").expect("the Ime arm follows");
+        let arm = &rest[..to];
+        for needed in ["user_acted", "key_event_from_parts", "handle_key"] {
+            assert!(arm.contains(needed), "the arm lacks {needed}");
+        }
+        for banned in [".on_key(", ".on_key_up(", ".send_key(", "consumed"] {
+            assert!(!arm.contains(banned), "the arm still has {banned}");
+        }
     }
 
     #[test]
