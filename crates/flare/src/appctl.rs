@@ -417,6 +417,8 @@ pub struct AppCtl {
     install_cb: Option<Box<dyn FnOnce(bool)>>,
     /// The engine's worker sets this once the installer is started: the next close goes through.
     update_agreed: Arc<AtomicBool>,
+    /// The update window was put away for a close question: it comes back when that is cancelled.
+    update_stepped_aside: bool,
     /// The tab in front when the last `tab-switch` crumb was said.
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
@@ -734,6 +736,7 @@ impl AppCtl {
             update: None,
             install_cb: None,
             update_agreed: Arc::new(AtomicBool::new(false)),
+            update_stepped_aside: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
         };
@@ -3077,6 +3080,16 @@ impl AppCtl {
         {
             h.close();
         }
+        // The update window steps aside for any close question, as an install's does (it is
+        // already borrowed while an install asks, and that path hides it itself).
+        if self.ask.is_some()
+            && let Some(u) = self.update.clone()
+            && let Ok(mut u) = u.try_borrow_mut()
+            && u.window_up()
+        {
+            u.hide();
+            self.update_stepped_aside = true;
+        }
         if let Some(app) = self.app() {
             match &self.ask {
                 Some(a) => {
@@ -3099,15 +3112,28 @@ impl AppCtl {
         self.ask = None;
         let install = self.install_cb.take();
         self.show_ask();
+        let stepped = std::mem::take(&mut self.update_stepped_aside);
         match install {
             // The update window comes back and lands its own focus.
             Some(cb) => cb(false),
+            None if stepped => self.update_show_again(),
             None => self.focus_terminal(),
+        }
+    }
+
+    /// The update window that stepped aside for a close question comes back (the question was cancelled).
+    fn update_show_again(&mut self) {
+        if let Some(u) = self.update.clone()
+            && let Ok(mut u) = u.try_borrow_mut()
+        {
+            u.show_again();
         }
     }
 
     fn dialog_confirm(&mut self) {
         let Some(ask) = self.ask.take() else { return };
+        // Confirmed: the window stays put away (the tab is closing, or the install is going ahead).
+        self.update_stepped_aside = false;
         let install = self.install_cb.take();
         self.show_ask();
         if ask.install {
@@ -5600,6 +5626,31 @@ mod tests {
         assert!(f.h.comp.get_update_open());
         assert_eq!(f.log.borrow().quit, 0);
         assert!(!f.ctl.borrow().ended);
+    }
+
+    #[test]
+    fn a_tab_close_question_puts_the_update_window_away() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        with_a_working_agent(&f);
+        let (engine, _jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_chip_clicked();
+        assert!(f.h.comp.get_update_open(), "the update window is up");
+        let id = f.ctl.borrow().front_id().expect("a tab in front");
+        f.ctl.borrow_mut().request_close(&id);
+        assert!(f.h.comp.get_dialog_open(), "the close question is up");
+        assert!(
+            !f.h.comp.get_update_open(),
+            "the update window gives way to the question"
+        );
+        // Cancelled: the window comes back, nothing installs, and the tab stays.
+        f.h.comp.invoke_dialog_cancel();
+        assert!(!f.h.comp.get_dialog_open());
+        assert!(f.h.comp.get_update_open(), "the window comes back");
+        assert_eq!(engine.calls().installs, 0);
+        assert_eq!(f.ctl.borrow().model().state.tabs.len(), 1);
     }
 
     #[test]
