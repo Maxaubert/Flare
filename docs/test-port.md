@@ -88,12 +88,12 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `core/renderer/lib/termPrefs.test.ts` | port | saved shell id, undefined until chosen, in the Flare settings file |
 | flare-settings | `core/renderer/settings/fields.test.ts` | port | colour commit rules: nothing typed, same colour, typed alpha |
 | flare-settings | `core/renderer/settings/layout/search.test.ts` | port | word-prefix match, folding, label-first ranking, hidden keywords |
-| flare-settings | `core/renderer/settings/neutralControls.test.ts` | port (rewritten) | asserts the Slint style constants (only Save and on-switch use the accent); the Prism source-scan form is dropped |
+| flare (`ui_tests/settings_ink`), flare (`tests/settings_text`) | `core/renderer/settings/neutralControls.test.ts` | port (rewritten) | asserts the Slint style constants (only Save and on-switch use the accent); the Prism source-scan form is dropped |
 | flare-settings | `core/renderer/settings/options.test.ts` | port | list parity, section order, storage keys, copy rules, flat entries as tests over the row tables |
 | flare-settings | `core/renderer/settings/sections/opts.test.ts` | port | see-through row name, Find words the row as the page does, Save title |
 | flare-settings | `core/renderer/settings/theme/useTermSetup.test.ts` | port | dirty state, see-through level in Save, picked background never lights Save, editor opens on opaque ground |
-| flare-settings | `core/shared/help/catalogue.test.ts` | port (M5: the shellOfShellId group is flare-shells `path_shell_of`) | ids, categories, task and summary shape, one-line ASCII commands, placeholders, keywords, danger lines, key-press detection, shell filtering, blankless, row names, real questions, speed |
-| flare-settings | `core/shared/help/search.test.ts` | port | tokenise, stop words, stems, synonyms, one-slip typos, ranking, ties, empty query, cost bound |
+| flare-help (`tests/entries`, `catalogue`, `speed`) | `core/shared/help/catalogue.test.ts` | port (M5: the shellOfShellId group is flare-shells `path_shell_of`) | ids, categories, task and summary shape, one-line ASCII commands, placeholders, keywords, danger lines, key-press detection, shell filtering, blankless, row names, real questions, speed |
+| flare-help (`tests/words`, `golden`) | `core/shared/help/search.test.ts` | port | tokenise, stop words, stems, synonyms, one-slip typos, ranking, ties, empty query, cost bound |
 | flare-settings | `core/shared/settingsCopy.test.ts` | port | symbol rule, key-name rule, ternary and template descriptions, eight-word limit |
 | flare-settings | `src/renderer/src/components/settings/appOptions.test.ts` | port | unique ids, known icon/page/section, literal row ids, order, GPU gating, no Tab style row |
 | flare-settings | `src/renderer/src/components/settings/optionKeys.test.ts` | port | every storage key is one its module stores under |
@@ -103,8 +103,8 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `src/renderer/src/lib/customWindowColours.test.ts` | port | window colours kept with Custom |
 | flare-settings | `src/renderer/src/lib/edgesPrefs.test.ts` | port | edges store, validation, change listener |
 | flare-settings | `src/renderer/src/lib/newTabPrefs.test.ts` | port | new-tab mode and folder persistence |
-| flare-settings | `src/renderer/src/lib/opacityMigration.test.ts` | port | one-time import of PT Opacity N into the alpha byte |
-| flare-settings | `src/renderer/src/lib/seeThroughMigration.test.ts` | port | one-time import of PT switch and alpha into a see-through level |
+| flare-settings (`import/legacy`) | `src/renderer/src/lib/opacityMigration.test.ts` | port | one-time import of PT Opacity N into the alpha byte |
+| flare-settings (`import/legacy`) | `src/renderer/src/lib/seeThroughMigration.test.ts` | port | one-time import of PT switch and alpha into a see-through level |
 | flare-settings | `src/renderer/src/lib/sidebarPrefs.test.ts` | port | open or collapsed, width 150 to 420, initial 220, slide flag |
 | flare-settings | `src/renderer/src/lib/tabLayoutPrefs.test.ts` | port | horizontal default, unknown reads horizontal, listeners |
 | flare-settings | `src/renderer/src/lib/tabSwitchPrefs.test.ts` | port | In order default, unknown reads In order, listeners |

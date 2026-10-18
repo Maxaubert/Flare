@@ -56,6 +56,9 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `memchr`: the fast scan for escape bytes in the output stream.
 - `base64`: decodes and encodes OSC 52 clipboard payloads.
 - `url`: compares the host of an OSC 8 link, so only web links open.
+- `rusty-leveldb` 4.0.1 (MIT): reads Prism Terminal's Chromium Local Storage once, from a copy made in a temp folder, for the first-run import (M7). Never writes into Prism Terminal's folders.
+- `unicode-normalization` 0.1.25 (MIT OR Apache-2.0): the accent folding of Find a setting and the command help search, as JavaScript's `normalize('NFKD')` does (M7).
+- `fancy-regex` (dev only, 0.19.2): the lookbehind the command help catalogue gate needs (M7).
 - `uuid`: the per-shell random tab token (`FLARE_TAB_ID`).
 - `serde`: derives the (de)serialisation of the state files (`tabs.json`, `window.json`, the settings file).
 - `serde_json`: reads and writes those JSON state files, and encodes the single-instance hand-off message.
@@ -83,6 +86,14 @@ Development tools in `tools/`, never shipped in the installer:
   150 and 225 percent, compose the contact sheets and compare the two renderers.
 - `tools/material-spike`: the Windows 11 material spike (acrylic, the z-order and the sampling); its
   results are in `docs/material.md`.
+- `tools/oracle-help`: Node (v24, no install step). It generates Flare's command help catalogue and the
+  search golden vectors from Prism Terminal's own help code; `node --test tools/oracle-help/` checks them.
+- `tools/pt-metrics`: Node. Measures the installed Prism Terminal's Settings page (rects and computed
+  style) at display scales 1 and 1.5 for the layout test (M7).
+- `tools/pt-shot/pt-settings.mjs`: Playwright (from Prism's `node_modules`) takes Prism Terminal's
+  Settings screenshots for the comparison (M7).
+- `tools/settings-matrix`: PowerShell scripts that take Flare's Settings screenshots beside Prism
+  Terminal's at every display scaling and compose them (M7).
 
 ## Licence
 
