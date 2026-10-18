@@ -33,6 +33,15 @@ impl PathOpeners for WinOpeners {
     }
 }
 
+/// Every call any recorder took, in order: the test hook's `open.log` probe reads it (the app has
+/// one recorder under `--e2e`).
+static ALL: Mutex<Vec<OpenedRecord>> = Mutex::new(Vec::new());
+
+/// Every call the recorders took so far.
+pub fn recorded() -> Vec<OpenedRecord> {
+    ALL.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// One call recorded by `RecordingOpeners`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpenedRecord {
@@ -53,6 +62,9 @@ impl RecordingOpeners {
     }
 
     fn push(&self, rec: OpenedRecord) {
+        ALL.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(rec.clone());
         self.calls
             .lock()
             .unwrap_or_else(|e| e.into_inner())

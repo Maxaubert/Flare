@@ -381,7 +381,6 @@ impl FrameState {
 }
 
 /// `prompt_ms` and `usable_ms` of the last `KeyAtPrompt` (None until known), for `startup.trace`.
-#[allow(dead_code)] // Task 11's `startup.trace` probe reads it
 pub fn prompt_marks() -> (Option<f64>, Option<f64>) {
     FRAMES.with(|f| f.try_borrow().map(|s| s.marks).unwrap_or((None, None)))
 }
@@ -947,6 +946,8 @@ pub struct GlueCtx {
     ctl: std::rc::Weak<RefCell<AppCtl>>,
     kp: Rc<KeyPath>,
     clip: Option<Arc<dyn ClipboardPort>>,
+    args: Args,
+    probes: crate::e2e_probes::ProbeRegistry,
 }
 
 fn err(message: impl Into<String>) -> Reply {
@@ -1120,6 +1121,24 @@ impl FrameEnv for GlueCtx {
 }
 
 impl GlueCtx {
+    /// `Probe`: a read-only look, answered at once from the UI thread.
+    fn probe(&self, name: &str, arg: &serde_json::Value) -> Reply {
+        let (Some(app), Some(ctl)) = (self.app.upgrade(), self.ctl.upgrade()) else {
+            return err("the window is gone");
+        };
+        let pctx = crate::e2e_probes::ProbeCtx {
+            app: &app,
+            ctl: &ctl,
+            args: &self.args,
+            clip: self.clip.as_ref(),
+            front: self.kp.front.borrow().clone(),
+        };
+        match self.probes.call(name, &pctx, arg) {
+            Ok(value) => Reply::Value { value },
+            Err(message) => Reply::Err { message },
+        }
+    }
+
     /// `Latency`: the key goes in now, the answer comes from the first frame holding `expect`.
     fn latency(
         &self,
@@ -1401,7 +1420,10 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             chord,
             prompt_suffix,
         } => ctx.key_at_prompt(&chord, &prompt_suffix),
-        Request::Probe { name, .. } => Err(format!("probe {name:?} is not built yet (Task 11)")),
+        Request::Probe { name, arg } => {
+            resp.reply(ctx.probe(&name, &arg));
+            return;
+        }
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,
@@ -1432,16 +1454,19 @@ pub fn install(
         }
         Err(e) => log::warn!("e2e: the test hook did not start: {e:?}"),
     }
+    let mut probes = crate::e2e_probes::ProbeRegistry::new();
+    crate::e2e_probes::register_all(&mut probes);
     let ctx = Rc::new(GlueCtx {
         app: app.as_weak(),
         ctl: Rc::downgrade(ctl),
         kp: kp.clone(),
         clip,
+        args: args.clone(),
+        probes,
     });
     let env: Rc<dyn FrameEnv> = ctx.clone();
     FRAMES.with(|f| f.borrow_mut().env = Some(env));
     crate::e2e_hook::register_ui_handler(Rc::new(move |req, resp| handle(&ctx, req, resp)));
-    crate::e2e_probes::register_all(&mut crate::e2e_probes::ProbeRegistry);
 }
 
 #[cfg(test)]

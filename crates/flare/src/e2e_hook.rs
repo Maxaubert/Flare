@@ -82,6 +82,11 @@ pub fn set_hello_info(renderer: &str, scale: f32) {
     }
 }
 
+/// What Hello reports besides the constants: the renderer word and the scale, empty until the window glue says.
+pub fn hello_info() -> (String, f32) {
+    HELLO.lock().map(|h| h.clone()).unwrap_or_default()
+}
+
 /// Hands one request to something that will answer it. Production posts it to the UI thread; the
 /// unit tests pass their own, because a unit test has no event loop.
 type Dispatch = Arc<dyn Fn(Request, Responder) + Send + Sync>;
