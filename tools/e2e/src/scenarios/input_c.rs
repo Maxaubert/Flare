@@ -263,6 +263,19 @@ fn type_line(app: &mut App, line: &str) -> Result<(), String> {
     app.session.key("Enter")
 }
 
+/// Types a marker line until the shell runs it (a fresh PowerShell drops what is typed before its
+/// line editor is up). True once the marker's answer shows.
+fn shell_ready(ctx: &mut Ctx, app: &mut App) -> bool {
+    for _ in 0..20 {
+        // Escape throws away whatever half a line an earlier try left.
+        let _ = app.session.key("Escape");
+        let _ = type_line(app, "echo rdy-$(1+1)");
+        if ctx.poll(2_000, &mut || front_rows(app).contains("rdy-2")) {
+            return true;
+        }
+    }
+    false
+}
 /// Holds for `ms` in 50 ms steps: a "nothing happens" proof, as PT's sleeps are.
 fn hold(ctx: &mut Ctx, ms: u64) {
     for _ in 0..(ms / 50) {
@@ -633,6 +646,10 @@ pub fn bell(ctx: &mut Ctx) -> Result<(), String> {
     if !prompt {
         return Err("the PowerShell prompt did not come back".into());
     }
+    // A fresh PowerShell shows its prompt before PSReadLine is reading, and a line typed then is
+    // dropped (the first characters, and the Enter). Typed lines go in only once one has run.
+    let ready = shell_ready(ctx, &mut app);
+    ctx.ok(ready, "the shell runs a typed line");
     let before = flash_count(&mut app);
     ctx.ok(before == 0, format!("no flash before a bell ({before})"));
 
@@ -642,7 +659,6 @@ pub fn bell(ctx: &mut Ctx) -> Result<(), String> {
         one,
         format!("one bell, one flash ({})", flash_count(&mut app)),
     );
-
     hold(ctx, 1_300); // past the one-second gate
     type_line(
         &mut app,
