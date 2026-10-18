@@ -495,7 +495,7 @@ fn hooks_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         state(app, 0) == "question"
     });
     ctx.ok(front_q, "a question asked on the tab in front marks it");
-    let _ = app.session.key("Down");
+    let _ = app.session.key("ArrowDown");
     pause(ctx, 1200);
     let s = state(app, 0);
     // PT: run.mjs:839

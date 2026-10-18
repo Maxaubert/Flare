@@ -522,7 +522,7 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
             let _ = app.session.key("Escape");
             continue;
         }
-        let _ = app.session.key("Down");
+        let _ = app.session.key("ArrowDown");
         let _ = app.session.key("Enter");
         let landed = ctx.until(&format!("{id} is flashed on screen"), 4_000, &mut || {
             row_landed(&mut app, id)
@@ -549,7 +549,7 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     });
     let status = str_of(&search_now(&mut app), "status").to_string();
     ctx.ok(counted, format!("a status line says how many ({status})"));
-    let _ = app.session.key("Down");
+    let _ = app.session.key("ArrowDown");
     let at_first = ctx.until("Down moves to the first result", 2_000, &mut || {
         search_now(&mut app)["hit_cursor"] == json!(0)
     });
@@ -651,8 +651,8 @@ pub fn settings_keys(ctx: &mut Ctx) -> Result<(), String> {
     ctx.skip("Down walks the rail: focus is not probed");
     ctx.skip("End jumps to the last page: focus is not probed");
     ctx.skip("Home jumps to the first page: focus is not probed");
-    let _ = app.session.key("Down");
-    let _ = app.session.key("Down");
+    let _ = app.session.key("ArrowDown");
+    let _ = app.session.key("ArrowDown");
     let _ = app.session.key("Enter");
     let agents = ctx.until("Enter opens the agents page", 5_000, &mut || {
         page_now(&mut app).as_deref() == Some("agents")
