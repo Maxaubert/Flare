@@ -178,8 +178,12 @@ fn live_updates_need_a_public_repository() {
     assert!(step.contains("gh repo view"));
     assert!(step.contains("--json visibility"));
     assert!(step.contains("$vis -ne 'PUBLIC'"));
-    assert!(step.contains("crates/flare/Cargo.toml, crates/flare-update/Cargo.toml"));
-    assert!(step.contains("default"));
+    // Review fix: a line scan of `default = [...]` missed a multi-line list and a dependency line
+    // that turns the feature on (`flare-update = { .., features = ["live-updates"] }`). The step
+    // asks Cargo's own feature resolution instead.
+    assert!(step.contains("cargo metadata --format-version 1"));
+    assert!(step.contains("$_.features -contains 'live-updates'"));
+    assert!(!step.contains("Select-String"), "no line scan of the manifests");
     let throw = step
         .find("throw \"the updater is switched on")
         .expect("the refusal throws");

@@ -100,7 +100,11 @@ jobs:
           # The updater stays OFF while the repository is private (owner, 2026-10-17; docs/updater-flip.md).
           $vis = gh repo view "${{ github.repository }}" --json visibility --jq .visibility
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vis)) { throw "could not read the repository visibility" }
-          $flipped = Select-String -Path crates/flare/Cargo.toml, crates/flare-update/Cargo.toml -Pattern '^\s*default\s*=\s*\[[^\]]*live-updates' -Quiet
+          # Cargo's own resolution of the default build: catches a flipped `default` (one line or many)
+          # and any dependency line that turns the feature on.
+          $meta = cargo metadata --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $meta.resolve) { throw "could not resolve the workspace features" }
+          $flipped = @($meta.resolve.nodes | Where-Object { $_.id -match 'flare-update' -and $_.features -contains 'live-updates' }).Count -gt 0
           $features = @()
           if ('${{ vars.FLARE_LIVE_UPDATES }}' -eq 'on') { $features = @('--features', 'live-updates') }
           if (($features.Count -gt 0 -or $flipped) -and $vis -ne 'PUBLIC') {
