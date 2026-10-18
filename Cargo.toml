@@ -55,7 +55,7 @@ uuid = { version = "=1.28.0", features = ["v4"] }
 sha2 = "=0.10.9"
 tempfile = "=3.27.0"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 rusty-leveldb = "=4.0.1"
 unicode-normalization = "=0.1.25"
 fancy-regex = "=0.19.2"
