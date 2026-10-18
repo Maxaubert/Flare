@@ -2700,9 +2700,12 @@ impl AppCtl {
                 }
             }
             Dispatch::NotAChord => {
-                if self
-                    .app()
-                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                // The Settings page has no shell, and its own fields (the find field, a colour code,
+                // the popover's Escape) are Slint's: a key that is no chord goes to Slint there.
+                if self.view.front_kind == 1
+                    || self
+                        .app()
+                        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
                 {
                     KeyOutcome::Slint
                 } else if shell_in_front {
@@ -5290,6 +5293,27 @@ mod tests {
         assert_eq!(f.h.comp.get_front_kind(), 1);
         assert_eq!(f.key(f1()), KeyOutcome::Consumed);
         assert!(help_open(&f));
+        assert!(fake.written().is_empty(), "nothing reached the shell");
+    }
+
+    #[test]
+    fn a_key_over_the_settings_page_goes_to_slint_not_the_void() {
+        // The e2e found it (colourPicker, settingsSearch): with the Settings page in front there is no
+        // shell, so a key that is no chord was consumed and never reached the find field, a code field
+        // or the colour popover's Escape.
+        let (f, _h, fake) = live(Opts::default());
+        assert_eq!(
+            f.key(KeyEvent::new("a", "KeyA")),
+            KeyOutcome::Pty,
+            "a shell: the shell's"
+        );
+        f.ctl.borrow_mut().toggle_settings();
+        assert_eq!(f.h.comp.get_front_kind(), 1);
+        assert_eq!(f.key(KeyEvent::new("a", "KeyA")), KeyOutcome::Slint);
+        assert_eq!(f.key(KeyEvent::new("Escape", "Escape")), KeyOutcome::Slint);
+        assert_eq!(f.key(KeyEvent::new("Enter", "Enter")), KeyOutcome::Slint);
+        // A chord is still the app's, and nothing reached the shell.
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
         assert!(fake.written().is_empty(), "nothing reached the shell");
     }
 

@@ -844,6 +844,62 @@ pub fn slint_text_for(ev: &KeyEvent) -> Option<SharedString> {
     Some(SharedString::from(char::from(k)))
 }
 
+
+/// What Slint should see for one key it was left: the modifiers held (Slint tracks Shift, Control,
+/// Alt and Meta from their own key events), then the key; on release the key, then the modifiers
+/// let go. A Ctrl or Alt chord on a character sends the character, so Ctrl+A is select-all there.
+/// Nothing when Slint has no text for the key.
+pub fn slint_key_events(ev: &KeyEvent) -> Vec<WindowEvent> {
+    use slint::platform::Key;
+    let text = slint_text_for(ev).or_else(|| {
+        let mut chars = ev.key.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if ev.ctrl || ev.alt || ev.meta => Some(SharedString::from(c.to_string())),
+            _ => None,
+        }
+    });
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    let held: Vec<SharedString> = [
+        (ev.shift, Key::Shift),
+        (ev.ctrl, Key::Control),
+        (ev.alt, Key::Alt),
+        (ev.meta, Key::Meta),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, k)| SharedString::from(char::from(k)))
+    .collect();
+    let down = |t: SharedString| WindowEvent::KeyPressed { text: t };
+    let up = |t: SharedString| WindowEvent::KeyReleased { text: t };
+    if ev.pressed {
+        let mut out: Vec<WindowEvent> = held.into_iter().map(down).collect();
+        out.push(down(text));
+        out
+    } else {
+        let mut out = vec![up(text)];
+        out.extend(held.into_iter().rev().map(up));
+        out
+    }
+}
+
+/// The key-up of each modifier a chord holds, so Slint never keeps one pressed after the chord.
+pub fn slint_modifier_releases(ev: &KeyEvent) -> Vec<WindowEvent> {
+    use slint::platform::Key;
+    [
+        (ev.shift, Key::Shift),
+        (ev.ctrl, Key::Control),
+        (ev.alt, Key::Alt),
+        (ev.meta, Key::Meta),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, k)| WindowEvent::KeyReleased {
+        text: SharedString::from(char::from(k)),
+    })
+    .collect()
+}
 // ---- pointer events (pure) -----------------------------------------------------------------
 
 fn button(b: Button) -> PointerEventButton {
@@ -965,18 +1021,16 @@ impl GlueCtx {
         Ok(())
     }
 
-    /// One key through the path a real key takes; a key the app leaves to Slint reaches it too.
+    /// One key through the path a real key takes; a key the app leaves to Slint reaches it too,
+    /// with the modifiers a real keyboard would have pressed before it.
     fn key(&self, ev: &KeyEvent) -> Result<(), String> {
         let result = crate::window::handle_key(&self.kp, ev);
-        if matches!(result, EventResult::Propagate)
-            && let Some(text) = slint_text_for(ev)
-        {
-            let e = if ev.pressed {
-                WindowEvent::KeyPressed { text }
-            } else {
-                WindowEvent::KeyReleased { text }
-            };
-            self.dispatch(vec![e])?;
+        if matches!(result, EventResult::Propagate) {
+            self.dispatch(slint_key_events(ev))?;
+        } else if !ev.pressed {
+            // The key was the app's, but its press may have gone to Slint with the modifiers: a
+            // release is never forwarded, so Slint is told the modifiers are up here.
+            self.dispatch(slint_modifier_releases(ev))?;
         }
         Ok(())
     }
@@ -1677,6 +1731,43 @@ mod tests {
             String::from(char::from(slint::platform::Key::Escape))
         );
         assert!(slint_text_for(&event_from_chord("F11", true).expect("parses")).is_none());
+    }
+
+    #[test]
+    fn a_chord_with_modifiers_reaches_slint_as_modifier_presses_around_the_key() {
+        use slint::platform::Key;
+        let kind = |e: &WindowEvent| match e {
+            WindowEvent::KeyPressed { text } => format!("down {:?}", text.as_str()),
+            WindowEvent::KeyReleased { text } => format!("up {:?}", text.as_str()),
+            _ => "other".to_string(),
+        };
+        let shift = format!("{:?}", String::from(char::from(Key::Shift)));
+        let ctrl = format!("{:?}", String::from(char::from(Key::Control)));
+        let left = format!("{:?}", String::from(char::from(Key::LeftArrow)));
+        let down: Vec<String> = slint_key_events(&event_from_chord("Shift+ArrowLeft", true).unwrap())
+            .iter()
+            .map(kind)
+            .collect();
+        assert_eq!(down, vec![format!("down {shift}"), format!("down {left}")]);
+        let up: Vec<String> = slint_key_events(&event_from_chord("Shift+ArrowLeft", false).unwrap())
+            .iter()
+            .map(kind)
+            .collect();
+        assert_eq!(up, vec![format!("up {left}"), format!("up {shift}")]);
+        // Ctrl+A is the character with Control held, so a text field selects all.
+        let sel: Vec<String> = slint_key_events(&event_from_chord("Ctrl+KeyA", true).unwrap())
+            .iter()
+            .map(kind)
+            .collect();
+        assert_eq!(sel, vec![format!("down {ctrl}"), "down \"a\"".to_string()]);
+        // A plain key carries no modifier, and a key Slint has no text for sends nothing.
+        assert_eq!(slint_key_events(&event_from_chord("ArrowLeft", true).unwrap()).len(), 1);
+        // A release the app took still lets go of the modifiers Slint saw pressed.
+        let rel = slint_modifier_releases(&event_from_chord("Ctrl+Shift+KeyA", false).unwrap());
+        assert_eq!(rel.len(), 2);
+        assert!(rel.iter().all(|e| matches!(e, WindowEvent::KeyReleased { .. })));
+        assert!(slint_modifier_releases(&event_from_chord("KeyA", false).unwrap()).is_empty());
+        assert!(slint_key_events(&event_from_chord("F11", true).unwrap()).is_empty());
     }
 
     #[test]
