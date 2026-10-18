@@ -9,7 +9,7 @@ use slint::{Color, ComponentHandle};
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{RowPreview, Theme};
 
-const LONG_SUB: &str = "Pick the folder that new tabs open in, every time.";
+const LONG_SUB: &str = "Pick the folder that new tabs open in.";
 
 fn harness(scale: f32, panel_w: f32) -> Harness<RowPreview> {
     let h = Harness::new(scale, 640, 400, || RowPreview::new().unwrap());

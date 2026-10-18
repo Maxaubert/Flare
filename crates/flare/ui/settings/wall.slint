@@ -652,7 +652,7 @@ export component ThemeEditor inherits Rectangle {
             border-color: Theme.divider;
             drop-shadow-offset-y: 24px;
             drop-shadow-blur: 70px;
-            drop-shadow-color: #00000099;
+            drop-shadow-color: SettingsFixed.modal-shadow;
             accessible-role: none;
             accessible-label: "Edit terminal colours";
 
@@ -1175,7 +1175,7 @@ export component WallPreview inherits Window {
         width: 120px;
         height: 80px;
         visible: root.popover-shown;
-        background: #ff00ff;
+        background: SettingsFixed.hue-magenta;
         TouchArea {
             clicked => {
                 root.popover-clicks += 1;

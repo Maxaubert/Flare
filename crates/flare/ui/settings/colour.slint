@@ -7,7 +7,7 @@
 // from the TOP (the square's brightness is 1 - y, worked out in Rust).
 import { Px, SettingsFixed, SettingsShape, Theme } from "../theme.slint";
 
-// PT CHECKER: repeating-conic-gradient(#c4c4c4 0 25%, #f4f4f4 0 50%) at 8 px, so 4 px squares:
+// PT CHECKER: a repeating conic gradient of checker-a (0 to 25%) and checker-b (to 50%) at 8 px, so 4 px squares:
 // top-left light, top-right dark, bottom-left dark, bottom-right light.
 component Checker inherits Rectangle {
     property <int> cols: ceil(self.width / 4px);
@@ -863,8 +863,8 @@ export component ColourPreview inherits Window {
     init => { Px.scale = self.win-scale; }
 
     // The field.
-    in-out property <string> field-text: "#fe8f34";
-    in-out property <color> field-colour: #fe8f34;
+    in-out property <string> field-text: "FE8F34";
+    in-out property <color> field-colour: Theme.accent;
     in-out property <bool> field-wide;
     in-out property <bool> field-upper: true;
     in-out property <bool> field-open;
@@ -891,10 +891,10 @@ export component ColourPreview inherits Window {
     in-out property <float> sat: 50;
     in-out property <float> val: 50;
     in-out property <float> alpha: 1;
-    in-out property <color> solid-colour: #808040;
-    in-out property <color> start-colour: #ff0000;
-    in-out property <color> now-colour: #00ff00;
-    in-out property <color> hue-colour: #ff0000;
+    in-out property <color> solid-colour: Theme.accent-hi;
+    in-out property <color> start-colour: SettingsFixed.hue-red;
+    in-out property <color> now-colour: SettingsFixed.hue-green;
+    in-out property <color> hue-colour: SettingsFixed.hue-red;
     in-out property <bool> alpha-on: true;
     in-out property <bool> alpha-disabled;
     in-out property <bool> dropper-on: true;

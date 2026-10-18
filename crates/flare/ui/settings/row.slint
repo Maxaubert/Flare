@@ -273,7 +273,7 @@ export component RowPreview inherits Window {
                     width: 36px;
                     height: 20px;
                     border-radius: 10px;
-                    background: #5e5c59;
+                    background: Theme.divider;
                     TouchArea { clicked => { root.control-taps += 1; } }
                 }
             }
@@ -287,7 +287,7 @@ export component RowPreview inherits Window {
             after-block: root.after-block;
             icon: "M4 6h16v12H4z";
             label: "Folder";
-            sub: "Pick the folder that new tabs open in, every time.";
+            sub: "Pick the folder that new tabs open in.";
             tip(t, a, b, c, d) => { root.tip-count += 1; root.tip-text = t; }
         }
         r3 := SetRowFrame {
