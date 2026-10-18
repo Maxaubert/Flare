@@ -12,10 +12,17 @@ component RailButton inherits Rectangle {
     in property <bool> narrow;
     in property <bool> on;
     in property <int> index;
-    in property <int> focus-target: -1;
-    changed focus-target => {
-        if (self.focus-target == self.index && self.index >= 0) { fs.focus(); }
+    in-out property <int> focus-target: -1;
+    // A request names an index; the item it names takes the focus and clears the request, so the
+    // next one fires again. An item made after the request (the rail is rebuilt) takes it at init.
+    function take-focus() {
+        if (self.focus-target == self.index && self.index >= 0) {
+            fs.focus();
+            self.focus-target = -1;
+        }
     }
+    changed focus-target => { self.take-focus(); }
+    init => { self.take-focus(); }
     callback chosen();
     callback key(string);
     callback tip(string, length, length, length, length);
@@ -177,7 +184,7 @@ export component SetFrame inherits Rectangle {
             width: root.item-w;
             item: item;
             index: i;
-            focus-target: root.focus-rail-index;
+            focus-target <=> root.focus-rail-index;
             narrow: root.narrow;
             on: item.chosen && !root.searching;
             chosen => { root.page-chosen(item.id); }

@@ -931,7 +931,7 @@ impl SettingsCtl {
                 label: p.label.into(),
                 icon: icon_path(p.icon).unwrap_or("").into(),
                 end: p.end,
-                chosen: p.id == self.page,
+                chosen: !searching && p.id == self.page,
                 y: (if p.end { end_y } else { rl.items[i].0 }) as f32,
             })
             .collect();
@@ -1614,16 +1614,7 @@ impl SettingsCtl {
             && let Some(app) = self.weak.upgrade()
         {
             app.invoke_settings_focus_rail(next as i32);
-            let me = self.me.clone();
-            // The request is a property edge: it is cleared on the next turn so it can fire again.
-            slint::Timer::single_shot(Duration::from_millis(0), move || {
-                if let Some(rc) = me.upgrade()
-                    && let Ok(c) = rc.try_borrow()
-                    && let Some(app) = c.weak.upgrade()
-                {
-                    app.invoke_settings_focus_rail(-1);
-                }
-            });
+            // The rail item clears the request itself once it has taken the focus.
         }
     }
 
