@@ -89,6 +89,35 @@ fn offends(line: &str) -> bool {
     !(source_note || refusal_literal)
 }
 
+/// The flare-theme files that hold the stock theme id. The exact literal `"prism"` (with quotes) is
+/// allowed in these and nowhere else: it is a saved-settings and import compatibility id, so a settings
+/// file or a theme import that names the stock theme keeps resolving.
+const STOCK_ID_FILES: &[&str] = &[
+    "crates/flare-theme/src/chrome.rs",
+    "crates/flare-theme/src/presets_data.rs",
+    "crates/flare-theme/src/resolve.rs",
+    "crates/flare-theme/src/preset.rs",
+    "crates/flare-theme/src/order.rs",
+    "crates/flare-theme/src/look.rs",
+];
+
+/// `offends` for the line at `path` (relative, forward slashes), with the two narrow widenings.
+/// (1) In `.md`, `.ps1` and `.yml` files a line naming "Prism Terminal" is prose about the reference
+/// app, the release workflow or the shipping notes. (2) The stock theme id literal in `STOCK_ID_FILES`.
+fn offends_at(path: &str, line: &str) -> bool {
+    if !offends(line) {
+        return false;
+    }
+    let prose = [".md", ".ps1", ".yml"].iter().any(|e| path.ends_with(e));
+    if prose && line.contains("Prism Terminal") {
+        return false;
+    }
+    if STOCK_ID_FILES.contains(&path) {
+        return offends(&line.replace("\"prism\"", ""));
+    }
+    true
+}
+
 /// The files the name rule covers: the crates' `src`, the viewer's `ui`, the bundled plugin, the tools
 /// (not the Prism Terminal oracles), the build script, the workflows and two documents.
 fn covered_files() -> Vec<PathBuf> {
@@ -159,7 +188,7 @@ fn no_flare_source_names_prism_outside_the_allowed_places() {
             continue;
         }
         for (i, line) in text.lines().enumerate() {
-            if offends(line) {
+            if offends_at(&r, line) {
                 bad.push(format!("{r}:{}: {}", i + 1, line.trim()));
             }
         }
@@ -201,6 +230,33 @@ fn the_name_scan_rejects_a_prism_name_in_code() {
     assert!(offends(&bare), "{bare}");
     let code = ["    let t = \"", "pri", "sm-terminal\";"].concat();
     assert!(offends(&code), "{code}");
+}
+
+#[test]
+fn the_widenings_are_narrow() {
+    // (1) prose about the reference app in md, ps1 and yml only
+    assert!(!offends_at(
+        "docs/shipping.md",
+        "Flare beside Prism Terminal on the runner"
+    ));
+    assert!(!offends_at("tools/a.ps1", "the Prism Terminal size"));
+    assert!(!offends_at(
+        ".github/workflows/r.yml",
+        "- name: beside Prism Terminal"
+    ));
+    assert!(offends_at(
+        "crates/flare/src/a.rs",
+        "let x = Prism Terminal;"
+    ));
+    assert!(offends_at("docs/shipping.md", "beside Prism alone"));
+    // (2) the stock theme id, exact literal, in the listed files only
+    let id = ["\"pri", "sm\""].concat();
+    let line = format!("let p = find_preset({id});");
+    assert!(!offends_at("crates/flare-theme/src/preset.rs", &line));
+    assert!(offends_at("crates/flare-theme/src/marks.rs", &line));
+    assert!(offends_at("crates/flare/src/a.rs", &line));
+    let other = ["\"Pri", "sm\""].concat();
+    assert!(offends_at("crates/flare-theme/src/preset.rs", &other));
 }
 
 #[test]

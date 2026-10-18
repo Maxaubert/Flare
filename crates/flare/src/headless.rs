@@ -403,7 +403,7 @@ fn collapsed(p: &PrefStore) {
 
 /// Two pinned places and two recent ones: the start screen.
 fn start_places(p: &PrefStore) {
-    toggle_pin(p, &github("Prism"));
+    toggle_pin(p, &github("Atlas"));
     toggle_pin(p, &github("Flare"));
     remember_root(p, &github("Sonara"));
     remember_root(p, &github("notes"));
@@ -411,7 +411,7 @@ fn start_places(p: &PrefStore) {
 
 /// Two pinned places and three recent ones: the + button's right-click menu lists them.
 fn menu_places(p: &PrefStore) {
-    toggle_pin(p, &github("Prism"));
+    toggle_pin(p, &github("Atlas"));
     toggle_pin(p, &github("Flare"));
     remember_root(p, &github("Sonara"));
     remember_root(p, &github("notes"));
@@ -420,14 +420,14 @@ fn menu_places(p: &PrefStore) {
 
 /// The tabs a scene restores and the preferences it sets before the window is made.
 pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
-    let three = [github("Prism"), github("Flare"), github("Sonara")];
+    let three = [github("Atlas"), github("Flare"), github("Sonara")];
     // Thirty tabs: at 1000 px the strip shows icons and the +N control (sixteen all fit).
     let many: Vec<String> = (1..=30).map(|i| github(&format!("Tab{i:02}"))).collect();
     // Two rows share the name "Flare" (two folders): the sidebar must show both.
     let side = [
         github("api"),
         github("web"),
-        github("Prism"),
+        github("Atlas"),
         github("Flare"),
         r"C:\Users\Admin\Documents\Claude\zz-Misc\Flare".to_string(),
         github("notes"),
@@ -485,7 +485,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
     match name {
         "marks-ring" | "marks-bar" | "marks-bar-flow" => {
             let tabs = vec![
-                mark_tab("Prism", claude),
+                mark_tab("Atlas", claude),
                 mark_tab("Flare", None),
                 mark_tab("Sonara", None),
                 mark_tab("api", None),
@@ -502,7 +502,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         }
         "marks-sidebar" | "marks-sidebar-bar" => {
             let tabs = vec![
-                mark_tab("Prism", claude),
+                mark_tab("Atlas", claude),
                 mark_tab("Flare", codex),
                 mark_tab("Sonara", None),
                 mark_tab("api", None),
@@ -519,7 +519,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
             // Clawd, the OpenAI mark (Flare, a Codex tab), the prompt (docs, a plain shell) and,
             // staged, the cog of Settings.
             let tabs = vec![
-                mark_tab("Prism", claude),
+                mark_tab("Atlas", claude),
                 mark_tab("Flare", codex),
                 mark_tab("Sonara", None),
                 mark_tab("docs", None),
@@ -535,7 +535,7 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         }
         "marks-tip" => {
             let tabs = vec![
-                mark_tab("Prism", None),
+                mark_tab("Atlas", None),
                 mark_tab("Flare", None),
                 mark_tab("Sonara", None),
                 mark_tab("api", None),
@@ -544,14 +544,14 @@ fn marks_setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         }
         "marks-skeleton" => {
             // A Claude tab coming back, in front: the skeleton draws over its grid.
-            let tabs = vec![mark_tab("Prism", claude), mark_tab("Flare", claude)];
+            let tabs = vec![mark_tab("Atlas", claude), mark_tab("Flare", claude)];
             (SavedTabs { tabs, active: 1 }, no_prefs)
         }
         // marks-close: one working Claude tab. Saved as a plain shell, so it is not coming back to
         // a session: the question stands over the shell, not over a resume skeleton.
         _ => (
             SavedTabs {
-                tabs: vec![mark_tab("Prism", None)],
+                tabs: vec![mark_tab("Atlas", None)],
                 active: 0,
             },
             no_prefs,
@@ -568,19 +568,19 @@ fn mark_plan(name: &str) -> Vec<(String, &'static str)> {
     let failed = OSC_FAILED;
     let plan: Vec<(&str, &'static str)> = match name {
         "marks-ring" | "marks-bar" | "marks-bar-flow" => vec![
-            ("Prism", working),
+            ("Atlas", working),
             ("Flare", question),
             ("Sonara", done),
             ("api", failed),
             ("tools", working),
         ],
         "marks-sidebar" | "marks-sidebar-bar" => vec![
-            ("Prism", working),
+            ("Atlas", working),
             ("Flare", question),
             ("Sonara", done),
             ("api", failed),
         ],
-        "marks-icons" => vec![("Prism", working), ("Flare", question), ("Sonara", done)],
+        "marks-icons" => vec![("Atlas", working), ("Flare", question), ("Sonara", done)],
         // The hidden tabs carry the states: the +N list shows them and the +N control shows a dot
         // of each mark colour.
         // More tabs need you than the strip has room for: the hidden ones are rows of the list and
@@ -600,8 +600,8 @@ fn mark_plan(name: &str) -> Vec<(String, &'static str)> {
             ("Tab15", failed),
             ("Tab16", question),
         ],
-        "marks-tip" => vec![("Prism", working), ("Flare", question), ("api", failed)],
-        "marks-close" => vec![("Prism", working)],
+        "marks-tip" => vec![("Atlas", working), ("Flare", question), ("api", failed)],
+        "marks-close" => vec![("Atlas", working)],
         _ => Vec::new(),
     };
     plan.into_iter()

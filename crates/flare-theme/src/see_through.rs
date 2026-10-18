@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_levels_are_prisms_two_as_they_paint() {
+    fn the_default_levels_are_the_references_two_as_they_paint() {
         assert_eq!(js_round(SEE_THROUGH_ALPHA_DARK * 255.0), 185.0);
         assert_eq!(js_round(SEE_THROUGH_ALPHA_LIGHT * 255.0), 209.0);
     }

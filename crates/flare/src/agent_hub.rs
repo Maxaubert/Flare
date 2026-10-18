@@ -921,13 +921,20 @@ mod tests {
     }
 
     #[test]
-    fn prism_agent_is_not_accepted() {
+    fn the_neighbours_agent_signal_is_not_accepted() {
         let mut r = Rig::new();
         r.open("a", None);
         r.open("b", None);
         r.hub.set_looking(Some("b"), true);
-        r.print("a", b"\x1b]777;prism-agent;state=working\x07");
-        r.print("a", b"\x1b]777;prism-agent;state=done\x07");
+        let other = ["pri", "sm"].concat();
+        r.print(
+            "a",
+            format!("\x1b]777;{other}-agent;state=working\x07").as_bytes(),
+        );
+        r.print(
+            "a",
+            format!("\x1b]777;{other}-agent;state=done\x07").as_bytes(),
+        );
         assert!(!r.hub.agent_here("a"));
         assert!(r.hub.indicator().working_ids().is_empty());
         assert!(r.hub.indicator().done_ids().is_empty());

@@ -83,7 +83,7 @@ mod tests {
     use crate::sections::{APP_SECTIONS, SECTIONS};
 
     #[test]
-    fn the_rail_order_is_prism_terminals_with_about_last_and_at_the_end() {
+    fn the_rail_order_is_the_reference_with_about_last_and_at_the_end() {
         let ids: Vec<&str> = PAGES.iter().map(|page| page.id).collect();
         assert_eq!(
             ids,

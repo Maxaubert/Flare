@@ -99,8 +99,8 @@ mod tests {
     #[test]
     fn find_links_keeps_its_own_bracket() {
         assert_eq!(
-            found("https://en.wikipedia.org/wiki/Prism_(optics) is one"),
-            vec!["https://en.wikipedia.org/wiki/Prism_(optics)"]
+            found("https://en.wikipedia.org/wiki/Atlas_(optics) is one"),
+            vec!["https://en.wikipedia.org/wiki/Atlas_(optics)"]
         );
     }
 

@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_card_is_126_high_like_prism_terminals() {
+    fn a_card_is_126_high_like_the_reference() {
         let m = metrics();
         let h = m["scales"]["1"]["appearance"]["termCard"]["height"]
             .as_f64()

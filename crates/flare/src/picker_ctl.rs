@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn shift_left_walks_alpha_in_steps() {
-        // Flare sets no host alpha table (that is Prism Primary's glass levels), so Shift walks by
+        // Flare sets no host alpha table (that is the host table of Prism Terminal's glass levels), so Shift walks by
         // ten percent and a plain press by one.
         let mut f = fx();
         f.world
@@ -924,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn the_popover_is_placed_by_prism_terminals_rules() {
+    fn the_popover_is_placed_by_the_reference_rules() {
         let mut f = fx();
         f.window = (800.0, 600.0);
         let open_at = |f: &mut Fx, x: f64, y: f64| {

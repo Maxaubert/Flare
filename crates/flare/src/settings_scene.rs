@@ -132,7 +132,7 @@ pub fn control_anchor(
     kind: SetKind,
 ) -> Option<[f64; 4]> {
     let bridge = app.global::<SettingsBridge>();
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     let (pane_w, pane_h) = (
         f64::from(bridge.get_pane_w()),
         f64::from(bridge.get_pane_h()),

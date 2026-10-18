@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn pt_default_matches_prism_terminal() {
+    fn pt_default_matches_the_reference() {
         let p = Palette::pt_default();
         assert_eq!(p.bg, Rgba::from_hex("#171717").unwrap());
         assert_eq!(p.fg, Rgba::from_hex("#dedacf").unwrap());

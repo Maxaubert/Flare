@@ -1,7 +1,7 @@
 //! winit key events -> flare_term KeyEvent (decision O2: physical keys decide the byte).
 //! Slint 1.18 key events carry no scan code, so the window's winit event filter feeds the
-//! parts of a winit `KeyboardInput` through `key_event_from_parts`. Names follow Prism
-//! Terminal's W3C convention: `code` is the Debug name of the physical `KeyCode`
+//! parts of a winit `KeyboardInput` through `key_event_from_parts`. Names follow the
+//! Prism Terminal W3C convention: `code` is the Debug name of the physical `KeyCode`
 //! ("KeyC", "Digit1", "NumpadEnter"), which is the W3C code name for that key.
 
 use flare_term::keys::KeyEvent;

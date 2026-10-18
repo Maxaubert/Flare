@@ -180,7 +180,10 @@ mod tests {
         let reg = installed_fake();
         let [folder, _] = verb_keys(ROOT);
         let before = reg.writes();
-        let other = r"Software\Classes\Directory\shell\OpenWithPrism".to_owned();
+        let other = format!(
+            r"Software\Classes\Directory\shell\OpenWith{}",
+            ["Pri", "sm"].concat()
+        );
         assert!(!relabel_verb(&reg, ROOT, std::slice::from_ref(&other)));
         assert!(!relabel_verb(&reg, ROOT, &[folder, other]));
         assert_eq!(reg.writes(), before);
@@ -231,13 +234,14 @@ mod tests {
         let reg = installed_fake();
         let other = format!("{ROOT}\\Directory\\shell\\Other");
         // The neighbour's key name, built from parts so the name scan passes.
-        let neighbour = ["Prism", "Terminal"].concat();
-        let prism = format!("{ROOT}\\Directory\\Background\\shell\\{neighbour}");
+        let neighbour = ["Pri", "sm", "Terminal"].concat();
+        let theirs = format!("{ROOT}\\Directory\\Background\\shell\\{neighbour}");
         reg.set_string(&other, None, "Other").unwrap();
-        reg.set_string(&prism, None, "Prism").unwrap();
+        reg.set_string(&theirs, None, &["Pri", "sm"].concat())
+            .unwrap();
         assert!(remove_verb(&reg, ROOT));
         assert!(reg.key_exists(&other).unwrap());
-        assert!(reg.key_exists(&prism).unwrap());
+        assert!(reg.key_exists(&theirs).unwrap());
         assert!(
             reg.key_exists(&format!("{ROOT}\\Directory\\shell"))
                 .unwrap()

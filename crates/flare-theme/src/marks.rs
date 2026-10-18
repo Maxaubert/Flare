@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(mode_of("fawn"), Mode::Light);
         assert_eq!(mode_of("paper"), Mode::Light);
         assert_eq!(mode_of("pt-default"), Mode::Dark);
-        assert_eq!(mode_of("prism"), Mode::Dark);
+        assert_eq!(mode_of(crate::preset::DEFAULT_TERM_THEME), Mode::Dark);
         assert_eq!(ground_mode("#e6d8c040"), Mode::Light);
     }
 

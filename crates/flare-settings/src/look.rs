@@ -853,8 +853,8 @@ mod tests {
         l.set_draft(Some(d.clone()));
         // A card for another theme resolves as saved; only the theme in force wears the draft.
         assert_eq!(
-            resolve_theme("prism", "pt-default", None, Some(&d), None),
-            resolve_saved_theme("prism", None, None)
+            resolve_theme("paper", "pt-default", None, Some(&d), None),
+            resolve_saved_theme("paper", None, None)
         );
         assert_eq!(
             resolve_saved_theme("pt-default", None, None),

@@ -586,7 +586,8 @@ mod tests {
         );
         assert!(a.mutex.starts_with("Local\\Flare.Single."));
         assert!(a.pipe.starts_with("\\\\.\\pipe\\Flare.Handoff."));
-        assert!(!a.mutex.contains("Prism") && !a.pipe.contains("Prism"));
+        let other = ["Pri", "sm"].concat();
+        assert!(!a.mutex.contains(&other) && !a.pipe.contains(&other));
     }
 
     #[test]

@@ -192,7 +192,7 @@ fn metrics() -> serde_json::Value {
 }
 
 #[test]
-fn header_search_and_chip_boxes_match_prism_terminal() {
+fn header_search_and_chip_boxes_match_the_reference() {
     let m = metrics();
     for (key, scale) in [("1", 1.0_f32), ("1.5", 1.5)] {
         let p = &m["scales"][key]["helpPanel"];

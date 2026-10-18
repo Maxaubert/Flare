@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn serialize_uses_prism_terminals_field_names_and_round_trips() {
+    fn serialize_uses_the_reference_field_names_and_round_trips() {
         let mut p = pal("#111111");
         p.selection = Some("#33445566".into());
         p.accent = Some("#fe8f34".into());

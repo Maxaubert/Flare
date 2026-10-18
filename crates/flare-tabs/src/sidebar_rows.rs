@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn folder_line_is_the_parent_with_home_as_tilde() {
         assert_eq!(
-            folder_line(r"C:\Users\Admin\Documents\Claude\Github\Prism", HOME),
+            folder_line(r"C:\Users\Admin\Documents\Claude\Github\Atlas", HOME),
             r"~\Documents\Claude\Github"
         );
         assert_eq!(folder_line(r"C:\Users\Admin\dotfiles", HOME), "~");
@@ -63,13 +63,13 @@ mod tests {
 
     #[test]
     fn find_keeps_every_word_any_case_any_order() {
-        assert!(find_keeps("", "Prism", r"C:\x"));
-        assert!(find_keeps("pri", "Prismatic", r"C:\x"));
+        assert!(find_keeps("", "Atlas", r"C:\x"));
+        assert!(find_keeps("atl", "Atlantic", r"C:\x"));
         assert!(find_keeps(
-            "github prism",
-            "Prism",
-            r"C:\Users\Admin\Documents\Claude\Github\Prism"
+            "github atlas",
+            "Atlas",
+            r"C:\Users\Admin\Documents\Claude\Github\Atlas"
         ));
-        assert!(!find_keeps("sonara", "Prism", r"C:\x"));
+        assert!(!find_keeps("sonara", "Atlas", r"C:\x"));
     }
 }

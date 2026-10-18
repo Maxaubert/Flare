@@ -56,7 +56,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// Prism Terminal v0.58 (the measured file), at 100 percent.
-    pub fn prism_terminal() -> Metrics {
+    pub fn reference() -> Metrics {
         Metrics {
             rail_w: 244.0,
             rail_w_narrow: 56.0,
@@ -201,12 +201,12 @@ pub struct RailLayout {
 
 /// Below this frame width the Settings tab uses its narrow paddings and rail.
 pub fn is_narrow(frame_w: f64) -> bool {
-    frame_w < Metrics::prism_terminal().narrow_below
+    frame_w < Metrics::reference().narrow_below
 }
 
 /// The rail's width at this frame width: 244, or 56 when narrow.
 pub fn rail_width(frame_w: f64) -> f64 {
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     if is_narrow(frame_w) {
         m.rail_w_narrow
     } else {
@@ -295,7 +295,7 @@ pub fn layout_page(
     expanded_wall_h: f64,
     slint_badge_h: f64,
 ) -> PageLayout {
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     let grid = SnapGrid { scale };
     let narrow = is_narrow(frame_w);
     let pane_w = frame_w - rail_width(frame_w);
@@ -341,7 +341,7 @@ pub fn layout_page(
 
 /// The Results list of `hits` rows (each 58 high) in a frame `frame_w` wide.
 pub fn layout_results(hits: usize, frame_w: f64, scale: f64) -> ResultsLayout {
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     let grid = SnapGrid { scale };
     let narrow = is_narrow(frame_w);
     let pane_w = frame_w - rail_width(frame_w);
@@ -377,7 +377,7 @@ pub fn layout_results(hits: usize, frame_w: f64, scale: f64) -> ResultsLayout {
 
 /// The rail at this frame width with `items` items (About last). Positions are from the top; see `about_y`.
 pub fn rail_layout(frame_w: f64, scale: f64, items: usize) -> RailLayout {
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     let grid = SnapGrid { scale };
     let narrow = is_narrow(frame_w);
     let width = rail_width(frame_w);
@@ -413,7 +413,7 @@ pub fn rail_layout(frame_w: f64, scale: f64, items: usize) -> RailLayout {
 
 /// The About item's top: pinned to the bottom of a rail `frame_h` high, 12 px above the edge.
 pub fn about_y(rail: &RailLayout, frame_h: f64) -> f64 {
-    let m = Metrics::prism_terminal();
+    let m = Metrics::reference();
     let css = frame_h - m.rail_pad_bottom - m.item_h;
     SnapGrid { scale: rail.scale }.edge(css)
 }
@@ -515,7 +515,7 @@ mod tests {
 
     /// The wall as the page builds it: the panel's inner width under the column.
     fn wall_for(frame_w: f64, expanded: bool) -> WallLayout {
-        let m = Metrics::prism_terminal();
+        let m = Metrics::reference();
         let narrow = is_narrow(frame_w);
         let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
         let pane = frame_w - rail_width(frame_w);
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_match_prism_terminals_measured_boxes() {
+    fn rows_match_the_references_measured_boxes() {
         let m = metrics();
         let pt = &m["scales"]["1"]["appearance"];
         let l = laid_out("appearance", 1000.0, 1.0);
@@ -701,9 +701,9 @@ mod tests {
         }
         let tile_dx = num(&pt["rowTile"]["x"]) - num(&pt["row"]["x"]);
         let tile_dy = num(&pt["rowTile"]["y"]) - num(&pt["row"]["y"]);
-        assert_eq!(tile_dx, Metrics::prism_terminal().row_pad_left);
-        assert_eq!(num(&pt["rowTile"]["width"]), Metrics::prism_terminal().tile);
-        assert_eq!(tile_dy, (row.h - Metrics::prism_terminal().tile) / 2.0);
+        assert_eq!(tile_dx, Metrics::reference().row_pad_left);
+        assert_eq!(num(&pt["rowTile"]["width"]), Metrics::reference().tile);
+        assert_eq!(tile_dy, (row.h - Metrics::reference().tile) / 2.0);
     }
 
     #[test]

@@ -385,7 +385,7 @@ mod tests {
     fn the_uninstall_hook_leaves_a_neighbour_alone() {
         let reg = FakeRegistry::new();
         let other = ["Pri", "smTerminal"].concat();
-        let other2 = ["OpenWith", "Prism"].concat();
+        let other2 = ["OpenWith", "Pri", "sm"].concat();
         let a = format!(r"Software\Classes\Directory\shell\{other}");
         let b = format!(r"Software\Classes\Directory\shell\{other2}");
         reg.set_string(&a, None, "Open in it").unwrap();

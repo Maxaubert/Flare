@@ -847,7 +847,7 @@ impl SettingsCtl {
 
     /// The wall's layout at this frame: the cards as they sit now, the clip as it is now.
     fn wall_for(&self, frame_w: f64) -> (WallLayout, f64) {
-        let m = layout::Metrics::prism_terminal();
+        let m = layout::Metrics::reference();
         let narrow = layout::is_narrow(frame_w);
         let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
         let pane = frame_w - rail_width(frame_w);

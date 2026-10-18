@@ -144,7 +144,7 @@ fn popover_is_226_wide_the_square_200_by_140_the_bars_12_high() {
 }
 
 #[test]
-fn the_three_sliders_have_prism_terminals_names_in_order() {
+fn the_three_sliders_have_the_reference_names_in_order() {
     let h = open_popover(1.0);
     let c = &h.comp;
     assert_eq!(c.get_sv_name(), "Saturation and brightness");
@@ -630,7 +630,7 @@ fn the_alpha_bar_is_inert_and_faded_when_disabled() {
 }
 
 #[test]
-fn the_popover_buttons_and_chip_carry_prism_terminals_tooltips() {
+fn the_popover_buttons_and_chip_carry_the_reference_tooltips() {
     let h = open_popover(1.0);
     let c = &h.comp;
     h.move_to(c.get_fmt_x() + 5.0, c.get_foot_y() + 5.0);

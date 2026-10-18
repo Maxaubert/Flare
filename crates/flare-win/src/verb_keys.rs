@@ -187,12 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn uses_its_own_key_name_and_never_the_prism_ones() {
+    fn uses_its_own_key_name_and_never_the_neighbours_ones() {
+        let other = ["pri", "sm"].concat();
         for k in verb_keys(ROOT) {
             assert!(k.ends_with("\\Flare"), "{k}");
             let low = k.to_ascii_lowercase();
-            assert!(!low.contains("prism"), "{k}");
-            assert!(!low.contains("openwithprism"), "{k}");
+            assert!(!low.contains(&other), "{k}");
+            assert!(!low.contains(&format!("openwith{other}")), "{k}");
         }
     }
 

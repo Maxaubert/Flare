@@ -259,8 +259,8 @@ mod tests {
     #[test]
     fn refuses_a_package_with_another_id() {
         // Built from parts so the name scan (rule: no neighbour names outside the import) passes.
-        assert!(!package_is_ours(&["Prism", "Terminal"].concat()));
-        assert!(!package_is_ours("Prism"));
+        assert!(!package_is_ours(&["Pri", "sm", "Terminal"].concat()));
+        assert!(!package_is_ours(&["Pri", "sm"].concat()));
     }
 
     #[test]

@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn pt_default_leads_the_list_and_prism_is_the_core_fallback() {
+    fn pt_default_leads_the_list_and_the_stock_theme_is_the_core_fallback() {
         assert_eq!(presets()[0].id, "pt-default");
         assert!(find_preset(DEFAULT_TERM_THEME).is_some());
         assert_eq!(HOST_DEFAULT_THEME, presets()[0].id);
@@ -72,7 +72,14 @@ mod tests {
         for (p, row) in presets().iter().zip(rows) {
             let s = |k: &str| row[k].as_str().unwrap_or_else(|| panic!("{k} of {}", p.id));
             assert_eq!(p.id, s("id"));
-            assert_eq!(p.name, s("name"));
+            // The stock theme keeps its saved id but wears Flare's own display name; every other name
+            // is the oracle's.
+            let want_name = if p.id == DEFAULT_TERM_THEME {
+                "Indigo"
+            } else {
+                s("name")
+            };
+            assert_eq!(p.name, want_name);
             assert_eq!(p.bg, s("bg"), "{} bg", p.id);
             assert_eq!(p.fg, s("fg"), "{} fg", p.id);
             assert_eq!(p.cursor, s("cursor"), "{} cursor", p.id);
@@ -137,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prism_preset_ground_is_the_default_ground() {
+    fn the_stock_preset_ground_is_the_default_ground() {
         assert_eq!(find_preset("prism").expect("prism").bg, DEFAULT_GROUND);
     }
 

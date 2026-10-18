@@ -169,8 +169,11 @@ mod tests {
     }
 
     #[test]
-    fn working_wears_the_indigo_on_the_prism_theme() {
-        assert_eq!(colours("prism").working, "#5b5bd6");
+    fn working_wears_the_indigo_on_the_stock_theme() {
+        assert_eq!(
+            colours(crate::preset::DEFAULT_TERM_THEME).working,
+            "#5b5bd6"
+        );
     }
 
     #[test]

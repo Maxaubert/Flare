@@ -155,14 +155,14 @@ mod tests {
 
     #[test]
     fn decide_follow_tells_same_inside_outside() {
-        let root = "C:\\work\\Prism";
-        assert_eq!(decide_follow(root, "c:\\WORK\\prism"), Follow::Same);
-        assert_eq!(decide_follow(root, "C:\\work\\Prism\\"), Follow::Same);
+        let root = "C:\\work\\Atlas";
+        assert_eq!(decide_follow(root, "c:\\WORK\\atlas"), Follow::Same);
+        assert_eq!(decide_follow(root, "C:\\work\\Atlas\\"), Follow::Same);
         assert_eq!(
-            decide_follow(root, "C:\\work\\Prism\\src\\main"),
+            decide_follow(root, "C:\\work\\Atlas\\src\\main"),
             Follow::Inside
         );
-        assert_eq!(decide_follow(root, "C:\\work\\Prism2"), Follow::Outside);
+        assert_eq!(decide_follow(root, "C:\\work\\Atlas2"), Follow::Outside);
         assert_eq!(decide_follow(root, "C:\\work"), Follow::Outside);
         assert_eq!(decide_follow(root, "D:\\"), Follow::Outside);
     }

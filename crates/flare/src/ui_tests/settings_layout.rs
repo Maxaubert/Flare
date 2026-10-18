@@ -105,7 +105,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
 
 /// The wall's layout in a frame `frame_w` wide, the way `SettingsCtl::wall_for` computes it.
 pub(super) fn wall_at(frame_w: f64, expanded: bool, custom: bool) -> (WallLayout, f64) {
-    let m = layout::Metrics::prism_terminal();
+    let m = layout::Metrics::reference();
     let narrow = layout::is_narrow(frame_w);
     let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
     let pane = frame_w - rail_width(frame_w);
@@ -574,7 +574,7 @@ fn every_edge_is_a_whole_device_pixel() {
 }
 
 #[test]
-fn the_rail_and_the_find_field_match_prism_terminal() {
+fn the_rail_and_the_find_field_match_reference() {
     let fx = [("1", 1.0_f32), ("1.5", 1.5_f32)];
     for (key, s) in fx {
         for page in MEASURED {
@@ -652,7 +652,7 @@ fn the_rail_and_the_find_field_match_prism_terminal() {
 }
 
 #[test]
-fn the_rows_and_controls_match_prism_terminals_boxes() {
+fn the_rows_and_controls_match_the_reference_boxes() {
     // (page, PT selector, Flare path as (width, height) in css px). The Flare path is the component's own
     // out geometry in its Preview window, or the SettingsShape token the component draws with.
     let css_h = |v: f32| f64::from(v);
