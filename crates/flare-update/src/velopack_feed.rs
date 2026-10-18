@@ -78,6 +78,15 @@ pub fn is_bare_file_name(name: &str) -> bool {
         && !name.ends_with(['.', ' '])
 }
 
+/// Velopack joins every asset's `FileName` to the packages folder itself (download, delta and
+/// apply), so an offer is taken only when every name in it is bare.
+pub fn names_are_bare(info: &UpdateInfo) -> bool {
+    std::iter::once(&info.TargetFullRelease)
+        .chain(info.BaseRelease.iter())
+        .chain(info.DeltasToTarget.iter())
+        .all(|a| is_bare_file_name(&a.FileName))
+}
+
 /// True only for `http://127.0.0.1:<digits>` followed by nothing, or by `/`, `?` or `#`: no
 /// userinfo, no other host, no backslash, an explicit numeric port.
 #[cfg(any(test, feature = "live-updates"))]
@@ -185,6 +194,10 @@ impl Feed for VelopackFeed {
                         info.TargetFullRelease.PackageId,
                         info.IsDowngrade
                     );
+                    return Ok(None);
+                }
+                if !names_are_bare(&info) {
+                    log::warn!("update: ignoring an offer whose file names are not bare");
                     return Ok(None);
                 }
                 let found = Found {
@@ -407,6 +420,26 @@ mod tests {
             ..UpdateInfo::default()
         };
         assert!(discard_paths(Path::new("C:\\pk"), &info).is_empty());
+    }
+
+    #[test]
+    fn an_offer_is_taken_only_when_every_name_is_bare() {
+        let good = UpdateInfo {
+            TargetFullRelease: asset("Flare-0.0.2-full.nupkg"),
+            BaseRelease: Some(asset("Flare-0.0.1-full.nupkg")),
+            DeltasToTarget: vec![asset("Flare-0.0.2-delta.nupkg")],
+            IsDowngrade: false,
+        };
+        assert!(names_are_bare(&good));
+        let mut bad_target = good.clone();
+        bad_target.TargetFullRelease = asset("..\\evil.nupkg");
+        assert!(!names_are_bare(&bad_target));
+        let mut bad_base = good.clone();
+        bad_base.BaseRelease = Some(asset("C:\\x.nupkg"));
+        assert!(!names_are_bare(&bad_base));
+        let mut bad_delta = good;
+        bad_delta.DeltasToTarget.push(asset("../d.nupkg"));
+        assert!(!names_are_bare(&bad_delta));
     }
 
     #[test]
