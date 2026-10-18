@@ -538,3 +538,37 @@ fn the_install_hands_the_feed_the_offered_version() {
     assert_eq!(r.feed.downloads(), 1);
     assert_eq!(r.feed.refused(), 0);
 }
+
+/// Review fix: a check already on the wire when the install starts must finish before the install
+/// reads the offer. Otherwise the check swaps the feed's stored find mid-install: the apply of the
+/// offered version is refused, the discard removes the NEW find's files and leaves the downloaded
+/// package behind, and the window gets a new offer in the middle of the run.
+#[test]
+fn an_install_waits_for_a_check_already_in_flight() {
+    let latch = Latch::new();
+    let r = live(
+        offered("1.2.0")
+            .slow_check(Duration::from_millis(400))
+            .hold_download(&latch),
+    );
+    r.engine.tick();
+    let token = r.engine.offer().expect("offer").token;
+    r.feed.next_offering("1.3.0", "newer");
+    let checker = {
+        let engine = r.engine.clone();
+        thread::spawn(move || engine.tick())
+    };
+    wait_until("the second check to start", || r.feed.checks() == 2);
+    let installer = {
+        let engine = r.engine.clone();
+        thread::spawn(move || engine.install(Some(token), &|| {}))
+    };
+    checker.join().expect("checker");
+    latch.open();
+    // The offer changed under the user: the old token installs nothing and downloads nothing.
+    assert!(!installer.join().expect("installer"));
+    assert_eq!(r.feed.downloads(), 0, "nothing downloaded for a stale offer");
+    assert_eq!(r.feed.refused(), 0, "the feed was never asked for a stale version");
+    assert!(!r.feed.files_left());
+    assert_eq!(r.engine.offer().expect("offer").version, "1.3.0");
+}

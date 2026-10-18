@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::feed::{Feed, FeedError, offer_from};
@@ -142,6 +142,10 @@ struct Inner {
     stopped: AtomicBool,
     /// True while an install or a preview run is current (no check runs meanwhile, D2).
     running: AtomicBool,
+    /// Held by a check for its whole length and by an install for its whole length, so an install
+    /// never starts under a check that is already on the wire (that check would swap the feed's
+    /// stored find and the offer in the middle of the run).
+    checking: Mutex<()>,
 }
 
 thread_local! {
@@ -189,6 +193,15 @@ impl Drop for RunGuard<'_> {
 impl Inner {
     fn tick(&self) {
         if self.mode != Mode::Live || self.running.load(Ordering::SeqCst) {
+            return;
+        }
+        let _checking = match self.checking.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            // A check or an install holds it: this tick is not needed.
+            Err(TryLockError::WouldBlock) => return,
+        };
+        if self.running.load(Ordering::SeqCst) {
             return;
         }
         lock(&self.state).calls.checks += 1;
@@ -311,6 +324,8 @@ impl GateDeps for Inner {
 
     fn install(&self, token: u64, cancel: &CancelToken, agree: &dyn Fn()) -> bool {
         let _run = RunGuard::new(&self.running);
+        // Waits for a check already in flight (on the install worker, never the UI thread).
+        let _checking = lock(&self.checking); // sync-ok: install worker
         let version = match lock(&self.state).offer.clone() {
             Some(o) if o.token == token && !o.mock => o.version,
             _ => return false,
@@ -355,6 +370,7 @@ impl Engine {
             state: Mutex::new(State::default()),
             stopped: AtomicBool::new(false),
             running: AtomicBool::new(false),
+            checking: Mutex::new(()),
         });
         let gate = Gate::new(inner.clone());
         Arc::new(Engine { inner, gate })
