@@ -486,9 +486,27 @@ pub fn apply_window_icon(hwnd: Option<isize>) {
     }
 }
 
-/// The restore's Claude session lookup: the real transcript store of the home folder.
-pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
-    std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::from_env())
+/// The lookup a start uses. Under `--e2e` nothing resumes the owner's real conversations (no
+/// sessions), unless a scenario hands over its own sandboxed HOME and says so with the
+/// `FLARE_E2E_SESSIONS=1` seam (`seam` is its value): then the transcript store of that HOME is read.
+pub fn session_lookup(
+    e2e_on: bool,
+    seam: Option<&str>,
+) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    session_lookup_at(e2e_on, seam, flare_agent::resume::claude_home())
+}
+
+/// `session_lookup` over a given home folder (the seam for the test).
+pub fn session_lookup_at(
+    e2e_on: bool,
+    seam: Option<&str>,
+    home: Option<std::path::PathBuf>,
+) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    if e2e_on && seam != Some("1") {
+        std::sync::Arc::new(flare_tabs::restore::NoSessions)
+    } else {
+        std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::new(home))
+    }
 }
 
 // ---- M7 Task 44: the first-run import, the Settings ports and the warm-up ----------------------
@@ -621,6 +639,25 @@ mod tests {
 
     fn names_of(a: &str, ink: &str) -> String {
         format!("<font color=\"{ink}\">{a}</font>")
+    }
+
+    #[test]
+    fn a_test_run_reads_sessions_only_when_its_scenario_hands_over_a_home() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let id = "5a1d0c2e-1111-4222-8333-94445555a666";
+        let dir = tmp.path().join(".claude").join("projects").join("C--w");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            "{\"type\":\"user\",\"entrypoint\":\"cli\"}\n",
+        )
+        .expect("transcript");
+        let home = || Some(tmp.path().to_path_buf());
+        let sessions = |e2e, seam| session_lookup_at(e2e, seam, home()).sessions("C:\\w");
+        assert!(sessions(true, None).is_empty(), "e2e alone resumes nothing");
+        assert!(sessions(true, Some("0")).is_empty());
+        assert_eq!(sessions(true, Some("1")), vec![id.to_string()]);
+        assert_eq!(sessions(false, None), vec![id.to_string()]);
     }
 
     #[test]

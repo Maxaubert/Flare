@@ -15,7 +15,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
-use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
@@ -809,12 +808,14 @@ pub fn run_window(
             tabs_store: Arc::clone(&tabs_store),
             window_store: Arc::clone(&window_store),
             host: tab_host,
-            // Under --e2e nothing resumes the owner's real conversations.
-            lookup: if e2e_on {
-                Arc::new(NoSessions)
-            } else {
-                crate::startup::production_lookup()
-            },
+            // Under --e2e nothing resumes the owner's real conversations, unless a scenario hands
+            // over a sandboxed HOME with FLARE_E2E_SESSIONS=1.
+            lookup: crate::startup::session_lookup(
+                e2e_on,
+                e2e::global()
+                    .env(&["FLARE_E2E", "_SESSIONS"].concat())
+                    .as_deref(),
+            ),
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
             home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()),

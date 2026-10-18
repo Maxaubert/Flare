@@ -363,9 +363,13 @@ pub fn launch_skeleton(ctx: &mut Ctx) -> Result<(), String> {
     std::fs::write(profile.join("tabs.json"), saved.to_string())
         .map_err(|e| format!("write tabs.json: {e}"))?;
 
+    // The restore reads the stand-in's own HOME (its transcripts), never the owner's: the app resumes
+    // sessions under --e2e only when a scenario says so.
+    let mut env = claude.env();
+    env.push(("FLARE_E2E_SESSIONS".into(), "1".into()));
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
-        env: claude.env(),
+        env,
         ..Launch::default()
     })?;
     let outcome = launch_skeleton_checks(ctx, &mut app);
