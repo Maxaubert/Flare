@@ -687,6 +687,28 @@ impl Fx {
     }
 }
 
+/// The rail by keyboard in the whole window (e2e settingsKeys): Tab from the Find field lands on the
+/// rail's first page, Down walks it, Enter opens the page.
+fn tab_from_the_field_lands_on_the_rail_and_enter_opens_the_page_at(f: &Fx) {
+    f.h.activate();
+    f.h.comp.invoke_settings_focus_find();
+    f.h.advance(0);
+    let key = |k: slint::platform::Key| f.h.key_text(&String::from(char::from(k)));
+    f.h.key_text("\t");
+    key(slint::platform::Key::DownArrow);
+    key(slint::platform::Key::DownArrow);
+    f.pump();
+    key(slint::platform::Key::Return);
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(f.b().get_page_title().as_str(), "Agents");
+}
+
+#[test]
+fn tab_from_the_field_lands_on_the_rail_and_enter_opens_the_page() {
+    every_scale(tab_from_the_field_lands_on_the_rail_and_enter_opens_the_page_at);
+}
+
 #[test]
 fn the_working_colour_follows_the_theme_until_changed_and_its_picker_is_named() {
     every_scale(the_working_colour_follows_the_theme_until_changed_and_its_picker_is_named_at);

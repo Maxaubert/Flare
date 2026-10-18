@@ -535,7 +535,8 @@ impl SettingsCtl {
         on!(app, rc, on_hit_chosen, |c, i: i32| c
             .choose(usize::try_from(i).unwrap_or(usize::MAX)));
         on!(app, rc, on_hit_key, |c, k: SharedString| c.hit_key(&k));
-        on!(app, rc, on_rail_key, |c, k: SharedString| c.rail_key(&k));
+        on!(app, rc, on_rail_key, |c, k: SharedString, i: i32| c
+            .rail_key(&k, i));
         on!(app, rc, on_row_switch, |c, id: SharedString, on: bool| c
             .event(Event::Switch {
                 row: id.to_string(),
@@ -1626,9 +1627,11 @@ impl SettingsCtl {
         }
     }
 
-    fn rail_key(&mut self, word: &str) {
+    /// An arrow on the rail: the walk goes from the item that has the keys (t), which is not
+    /// always the chosen page: Down Down from the first item reaches the third before Enter chooses.
+    fn rail_key(&mut self, word: &str, at: i32) {
         let Some(key) = key_of(word) else { return };
-        let cur = PAGES.iter().position(|p| p.id == self.page).unwrap_or(0);
+        let cur = usize::try_from(at).unwrap_or(0);
         if let Some(next) = rail_key(cur, PAGES.len(), key)
             && let Some(app) = self.weak.upgrade()
         {

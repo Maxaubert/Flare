@@ -97,7 +97,7 @@ export global SettingsBridge {
     callback find-key(string, bool);
     callback hit-chosen(int);
     callback hit-key(string);
-    callback rail-key(string);
+    callback rail-key(string, int);
     callback row-switch(string, bool);
     callback row-choose(string, string);
     callback row-slide(string, int);
@@ -357,7 +357,7 @@ export component SettingsView inherits Rectangle {
         find-key(k, s) => { SettingsBridge.find-key(k, s); }
         hit-chosen(i) => { SettingsBridge.hit-chosen(i); }
         hit-key(k) => { SettingsBridge.hit-key(k); }
-        rail-key(k) => { SettingsBridge.rail-key(k); }
+        rail-key(k, i) => { SettingsBridge.rail-key(k, i); }
         frame-resized(w, h) => {
             root.report();
             SettingsBridge.frame-resized(w, h);
