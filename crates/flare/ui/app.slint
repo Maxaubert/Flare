@@ -270,6 +270,30 @@ export component AppWindow inherits Window {
     out property <length> update-notice-w: unote.width;
     out property <length> update-notice-h: unote.height;
     out property <bool> update-window-focus: uwin.chrome-has-focus;
+    // The update window's boxes, for the e2e probe `update.window` (Task 39). All in window
+    // coordinates, because the window covers the whole client area.
+    out property <length> update-chip-icon-h: top-chip.icon-h;
+    out property <int> update-focus-idx: uwin.focus-idx;
+    out property <length> update-box-x: uwin.box-x;
+    out property <length> update-box-y: uwin.box-y;
+    out property <length> update-box-w: uwin.box-w;
+    out property <length> update-box-h: uwin.box-h;
+    out property <length> update-track-x: uwin.track-x;
+    out property <length> update-track-y: uwin.track-y;
+    out property <length> update-track-w: uwin.track-w;
+    out property <length> update-track-h: uwin.track-h;
+    out property <length> update-fill-w: uwin.fill-w;
+    out property <length> update-notes-y: uwin.notes-y;
+    out property <length> update-notes-h: uwin.notes-h;
+    out property <length> update-notes-content-h: uwin.notes-content-h;
+    out property <length> update-install-x: uwin.install-x;
+    out property <length> update-install-y: uwin.install-y;
+    out property <length> update-install-w: uwin.install-w;
+    out property <length> update-install-h: uwin.install-h;
+    out property <length> update-cancel-x: uwin.cancel-x;
+    out property <length> update-cancel-y: uwin.cancel-y;
+    out property <length> update-cancel-w: uwin.cancel-w;
+    out property <length> update-cancel-h: uwin.cancel-h;
     in property <bool> dialog-open;
     in property <string> dialog-title;
     in property <styled-text> dialog-body;
