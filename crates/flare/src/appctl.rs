@@ -28,7 +28,6 @@ use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_c
 use flare_agent::resume::valid_resume;
 use flare_agent::tab_look::{Switches, TabSets};
 use flare_agent::tab_mark::MarkState;
-use flare_diag::agent_diag::NullSink;
 use flare_render::metrics::CellMetrics;
 use flare_settings::agent_prefs::{
     agent_done_on, agent_failed_on, agent_guard, agent_question_on, agent_rainbow,
@@ -415,6 +414,10 @@ pub struct AppCtl {
     install_cb: Option<Box<dyn FnOnce(bool)>>,
     /// The engine's worker sets this once the installer is started: the next close goes through.
     update_agreed: Arc<AtomicBool>,
+    /// The tab in front when the last `tab-switch` crumb was said.
+    crumbed_front: Option<String>,
+    /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
+    spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -538,7 +541,9 @@ macro_rules! bind {
         $app.$reg(move |$($a: $t),*| {
             if let Some(rc) = weak.upgrade() {
                 if let Ok(mut $c) = rc.try_borrow_mut() {
-                    $body;
+                    crate::diag_ctl::timed(stringify!($reg), || {
+                        $body;
+                    });
                 }
             }
         });
@@ -616,7 +621,7 @@ impl AppCtl {
                 } else {
                     sonara_post()
                 },
-                diag: Arc::new(NullSink),
+                diag: crate::diag_ctl::agent_sink(),
                 wake: Arc::new(move || post(UiMsg::HostWake)),
                 reports_off: Rc::new(|_| {}),
             })
@@ -713,6 +718,8 @@ impl AppCtl {
             update: None,
             install_cb: None,
             update_agreed: Arc::new(AtomicBool::new(false)),
+            crumbed_front: None,
+            spawn_marks: HashMap::new(),
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -1100,6 +1107,13 @@ impl AppCtl {
     pub fn refresh(&mut self) {
         let Some(app) = self.app() else { return };
         let now = self.now();
+        let front = self.model.state.active_id.clone();
+        if front != self.crumbed_front {
+            if let Some(id) = &front {
+                crate::diag_ctl::crumb_often("tab-switch", &[("id", crate::diag_ctl::txt(id))]);
+            }
+            self.crumbed_front = front;
+        }
         let scale = f64::from(app.get_scale());
         self.scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -1581,7 +1595,9 @@ impl AppCtl {
                         pause.borrow_mut().set_minimized(true, now);
                         return;
                     }
-                    Self::mark_frame(&app, &pause.borrow(), now, start, skeleton.get());
+                    crate::diag_ctl::timed("mark_frame", || {
+                        Self::mark_frame(&app, &pause.borrow(), now, start, skeleton.get());
+                    });
                 },
             );
         }
@@ -1684,6 +1700,7 @@ impl AppCtl {
         let now = self.now();
         for s in spawns {
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
+            self.note_spawn(&s.id, &s.cwd, s.resume.is_some());
             self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
             // Only an id that passed the check is a resume; the rest is a plain shell.
             let kind = match valid_resume(s.resume.as_deref()) {
@@ -1710,9 +1727,104 @@ impl AppCtl {
     pub(crate) fn open_folder(&mut self, dir: &str) -> String {
         let id = self.model.open_tab(dir);
         self.deps.host.spawn(&id, dir, None);
+        self.note_spawn(&id, dir, false);
         self.hub.on_spawned(&id, dir, None);
         self.refresh();
         id
+    }
+
+    /// A tab was added and its shell asked for: the `tab-open` crumb, and the clock of `shell-spawn`.
+    fn note_spawn(&mut self, id: &str, cwd: &str, resume: bool) {
+        crate::diag_ctl::crumb(
+            "tab-open",
+            &[
+                ("id", crate::diag_ctl::txt(id)),
+                ("cwd", crate::diag_ctl::txt(cwd)),
+                ("resume", serde_json::Value::Bool(resume)),
+            ],
+        );
+        self.spawn_marks.insert(
+            id.to_owned(),
+            (std::time::Instant::now(), cwd.to_owned(), resume),
+        );
+    }
+
+    /// A tab goes: the `tab-close` crumb, `kind` being the agent in it (`claude`, `codex`) or `shell`.
+    fn note_close(&mut self, id: &str) {
+        let kind = match self.model.agent_kind(id) {
+            Some(AgentKind::Claude) => "claude",
+            Some(AgentKind::Codex) => "codex",
+            None => "shell",
+        };
+        crate::diag_ctl::crumb(
+            "tab-close",
+            &[
+                ("id", crate::diag_ctl::txt(id)),
+                ("kind", crate::diag_ctl::txt(kind)),
+            ],
+        );
+        self.spawn_marks.remove(id);
+    }
+
+    /// What a shell reported: `shell-spawn` (how long the start took), `shell-spawn-failed`, `shell-exit`.
+    fn shell_crumb(&mut self, ev: &HostEvent) {
+        use serde_json::Value;
+        let pid_of = |ctl: &Self, id: &str| -> Option<u32> {
+            ctl.deps
+                .host
+                .manager()
+                .live_pids()
+                .into_iter()
+                .find(|(t, _)| t == id)
+                .map(|(_, pid)| pid)
+        };
+        match ev {
+            HostEvent::Started { id } => {
+                let (ms, cwd, resume) = self.spawn_marks.get(id).map_or_else(
+                    || (0, String::new(), false),
+                    |(at, cwd, resume)| (at.elapsed().as_millis() as u64, cwd.clone(), *resume),
+                );
+                let shell = self.deps.host.shell_id_of(id).flatten().unwrap_or_default();
+                crate::diag_ctl::crumb(
+                    "shell-spawn",
+                    &[
+                        ("id", crate::diag_ctl::txt(id)),
+                        ("pid", Value::from(pid_of(self, id).unwrap_or(0))),
+                        ("shell", Value::String(shell)),
+                        ("cwd", Value::String(cwd)),
+                        ("resume", Value::Bool(resume)),
+                        ("ms", Value::from(ms)),
+                    ],
+                );
+            }
+            HostEvent::StartFailed { id } => {
+                let (cwd, _) = self
+                    .spawn_marks
+                    .get(id)
+                    .map_or((String::new(), false), |(_, c, r)| (c.clone(), *r));
+                let shell = self.deps.host.shell_id_of(id).flatten().unwrap_or_default();
+                crate::diag_ctl::crumb(
+                    "shell-spawn-failed",
+                    &[
+                        ("id", crate::diag_ctl::txt(id)),
+                        ("shell", Value::String(shell)),
+                        ("cwd", Value::String(cwd)),
+                        ("err", crate::diag_ctl::txt("start failed")),
+                    ],
+                );
+            }
+            HostEvent::Exited { id, code } => {
+                crate::diag_ctl::crumb(
+                    "shell-exit",
+                    &[
+                        ("id", crate::diag_ctl::txt(id)),
+                        ("pid", Value::from(pid_of(self, id).unwrap_or(0))),
+                        ("exitCode", code.map_or(Value::Null, Value::from)),
+                    ],
+                );
+            }
+            _ => {}
+        }
     }
 
     fn open_recent(&mut self, path: &str) {
@@ -1785,6 +1897,7 @@ impl AppCtl {
     }
 
     fn close_now(&mut self, id: &str) {
+        self.note_close(id);
         self.deps.host.kill(id);
         self.working.remove(id);
         self.model.close(id);
@@ -2437,7 +2550,7 @@ impl AppCtl {
                 if let Some(rc) = weak.upgrade()
                     && let Ok(mut c) = rc.try_borrow_mut()
                 {
-                    c.tick();
+                    crate::diag_ctl::timed("ctl_tick", || c.tick());
                 }
             },
         );
@@ -2868,6 +2981,8 @@ impl AppCtl {
             &self.deps.window_store,
             &mut self.deps.host,
         );
+        // The shells are gone: the `quit` line is the last line of the log.
+        crate::diag_ctl::quit();
     }
 
     // ---- the close question ------------------------------------------------------------------------------------------------
@@ -3012,6 +3127,7 @@ impl AppCtl {
             changed = true;
         }
         for ev in events {
+            self.shell_crumb(&ev);
             match ev {
                 HostEvent::Revealed { .. } => changed = true,
                 HostEvent::Cwd { id, path } => {
@@ -3020,6 +3136,7 @@ impl AppCtl {
                     }
                 }
                 HostEvent::Exited { id, .. } => {
+                    self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
                     self.term.tab_closed(&id);

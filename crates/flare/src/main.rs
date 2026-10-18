@@ -193,6 +193,15 @@ fn main() {
         outcome.effective,
         outcome.fallback_reason
     );
+    // The diagnostics log starts here: the profile is known, this run is the first instance, and no
+    // window or tab exists yet. The session line says which renderer won.
+    if let Some(inst) = &instance {
+        let backend = match outcome.effective {
+            config::RendererChoice::Gpu => "gpu",
+            config::RendererChoice::Software => "software",
+        };
+        startup::start_diagnostics(&inst.profile, backend, args.e2e);
+    }
     if let Err(e) = flare_term::conpty::verify_bundled() {
         show_fatal("Flare cannot start", &e.to_string(), true);
         std::process::exit(3);

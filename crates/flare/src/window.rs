@@ -364,7 +364,7 @@ fn settings_deps(
         prefs: prefs.clone(),
         look: LookStore::new(prefs.clone()),
         diag: Rc::new(crate::startup::DiagPort(
-            flare_diag::control::DiagControl::new(&profile, None),
+            flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
         verb: Arc::new(PendingVerb),
         dictation: Rc::new(PlaceholderDictation),
@@ -616,6 +616,13 @@ pub fn run_window(
             waker,
             crate::startup::production_plugin_dir(e2e_on),
         );
+        // The memory watch sums the shells' memory through the tab host's live pids.
+        {
+            let mgr = tab_host.manager();
+            crate::diag_ctl::set_shell_pids(Arc::new(move || {
+                mgr.live_pids().into_iter().map(|(_, pid)| pid).collect()
+            }));
+        }
         let argv: Vec<String> = std::env::args().collect();
         let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
         let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
@@ -768,16 +775,22 @@ pub fn run_window(
         // lock) and hop onto the event loop; any that came while the window was being made go now.
         inst.sink.attach(Arc::clone(&post));
         // A logoff or shutdown flushes both stores synchronously (the OS ends us right after).
-        session_end = match SessionEndWatch::start({
-            let tabs = Arc::clone(&tabs_store);
-            let window = Arc::clone(&window_store);
-            let prefs = prefs.clone();
-            move || {
-                window.flush();
-                tabs.flush();
-                prefs.flush();
-            }
-        }) {
+        session_end = match SessionEndWatch::start_with_power(
+            {
+                let tabs = Arc::clone(&tabs_store);
+                let window = Arc::clone(&window_store);
+                let prefs = prefs.clone();
+                move || {
+                    window.flush();
+                    tabs.flush();
+                    prefs.flush();
+                    // The log says so last, and is on the disk before the OS ends us.
+                    crate::diag_ctl::session_end();
+                }
+            },
+            // A sleep is not a stall: the watchdog drops the gap across it.
+            crate::diag_ctl::power_events(),
+        ) {
             Ok(w) => Some(w),
             Err(e) => {
                 log::warn!("no session-end watcher: {e}");
@@ -812,18 +825,20 @@ pub fn run_window(
         let render_now = render_now.clone();
         let ctl = ctl.as_ref().map(Rc::downgrade);
         move |w, h, scale| {
-            host.borrow_mut()
-                .resize(w.max(0) as u32, h.max(0) as u32, scale);
-            render_now();
-            let (cols, rows) = host.borrow().dims();
-            if cols == 0 || rows == 0 {
-                return;
-            }
-            if let Some(rc) = ctl.as_ref().and_then(std::rc::Weak::upgrade)
-                && let Ok(mut c) = rc.try_borrow_mut()
-            {
-                c.on_grid_dims(cols, rows);
-            }
+            crate::diag_ctl::timed("on_grid_resized", || {
+                host.borrow_mut()
+                    .resize(w.max(0) as u32, h.max(0) as u32, scale);
+                render_now();
+                let (cols, rows) = host.borrow().dims();
+                if cols == 0 || rows == 0 {
+                    return;
+                }
+                if let Some(rc) = ctl.as_ref().and_then(std::rc::Weak::upgrade)
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.on_grid_dims(cols, rows);
+                }
+            });
         }
     });
     app.on_minimize_clicked({
@@ -895,9 +910,11 @@ pub fn run_window(
         let render_now = render_now.clone();
         let refresh_overlay = refresh_overlay.clone();
         move || {
-            host.borrow_mut().toggle_painter();
-            render_now();
-            refresh_overlay();
+            crate::diag_ctl::timed("on_toggle_grid_renderer", || {
+                host.borrow_mut().toggle_painter();
+                render_now();
+                refresh_overlay();
+            });
         }
     });
 
@@ -908,7 +925,7 @@ pub fn run_window(
         let refresh_overlay = refresh_overlay.clone();
         move || {
             if weak.upgrade().is_some_and(|app| app.get_overlay_visible()) {
-                refresh_overlay();
+                crate::diag_ctl::timed("overlay_refresh", &refresh_overlay);
             }
         }
     });
@@ -921,7 +938,7 @@ pub fn run_window(
             let render_now = render_now.clone();
             move || {
                 if repaint_due(host.borrow().is_dirty()) {
-                    render_now();
+                    crate::diag_ctl::timed("frame_render", &render_now);
                 }
             }
         });
@@ -953,6 +970,11 @@ pub fn run_window(
         }
     };
     app.show()?;
+    // The watchdog: the UI thread beats every 50 ms, and the hung-window poll looks at this window.
+    let beat_timer = crate::diag_ctl::beat_timer();
+    if let Some(hwnd) = hwnd_of(&app) {
+        crate::diag_ctl::set_window(hwnd);
+    }
     if args.e2e {
         apply_e2e_style(&app);
     }
@@ -1036,6 +1058,7 @@ pub fn run_window(
     }
     drop(timer);
     drop(frame_timer);
+    drop(beat_timer);
     drop(instance); // the lock is released last
     result
 }

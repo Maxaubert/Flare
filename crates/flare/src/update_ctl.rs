@@ -162,7 +162,18 @@ impl Events for PostEvents {
     }
 
     fn crumb(&self, name: &str, fields: Vec<(String, Fld)>) {
-        log::info!("{name} {fields:?}");
+        let fields: Vec<(&str, serde_json::Value)> = fields
+            .iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    Fld::Bool(b) => serde_json::Value::Bool(*b),
+                    Fld::Num(n) => serde_json::Value::from(*n),
+                    Fld::Str(s) => serde_json::Value::String(s.clone()),
+                };
+                (k.as_str(), v)
+            })
+            .collect();
+        crate::diag_ctl::crumb(name, &fields);
     }
 
     fn quit_in(&self, ms: u64) {
@@ -170,7 +181,7 @@ impl Events for PostEvents {
     }
 
     fn rss_mb(&self) -> Option<u64> {
-        None
+        crate::memory::process_memory().map(|m| (m.working_set as u64) >> 20)
     }
 }
 
@@ -230,7 +241,7 @@ impl UpdateCtl {
                     if let Some(rc) = me.upgrade()
                         && let Ok(mut $c) = rc.try_borrow_mut()
                     {
-                        $body
+                        crate::diag_ctl::timed(stringify!($on), || $body)
                     }
                 });
             }};
@@ -272,6 +283,7 @@ impl UpdateCtl {
 
     /// A click on the chip opens the window. It never installs.
     pub fn chip_clicked(&mut self) {
+        self.update_crumb("update-open");
         self.apply(Action::Open);
     }
 
@@ -332,6 +344,18 @@ impl UpdateCtl {
         self.apply(Action::Hide);
     }
 
+    /// `update-open` / `update-install`: the offered version and whether it is a preview.
+    fn update_crumb(&self, name: &str) {
+        let Some(info) = &self.flow.info else { return };
+        crate::diag_ctl::crumb(
+            name,
+            &[
+                ("version", crate::diag_ctl::txt(&info.version)),
+                ("preview", serde_json::Value::Bool(info.mock)),
+            ],
+        );
+    }
+
     /// The window comes back (the close question was answered no).
     pub fn show_again(&mut self) {
         self.apply(Action::Open);
@@ -356,13 +380,17 @@ impl UpdateCtl {
         if self.flow.phase != Phase::Idle {
             return;
         }
+        self.update_crumb("update-install");
         self.apply(Action::Install);
         let engine = Arc::clone(&self.deps.engine);
         let post = Arc::clone(&self.deps.post);
         let agree = Arc::clone(&self.deps.agree);
         let token = info.token;
         (self.deps.spawn)(Box::new(move || {
-            let ok = engine.install(Some(token), &*agree);
+            // The install waits on a download and the installer: it is never a slow work item.
+            let ok = crate::diag_ctl::timed_waits("update_install", || {
+                engine.install(Some(token), &*agree)
+            });
             post(UiMsg::Update(UpdateMsg::Settled(ok)));
         }));
     }

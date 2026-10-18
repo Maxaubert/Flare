@@ -417,7 +417,9 @@ macro_rules! on {
             if let Some(rc) = weak.upgrade()
                 && let Ok(mut $c) = rc.try_borrow_mut()
             {
-                $body;
+                crate::diag_ctl::timed(stringify!($reg), || {
+                    $body;
+                });
             }
         });
     }};
@@ -662,6 +664,10 @@ impl SettingsCtl {
     /// Settings came to the front: rebuild, recall a kept picker, focus nothing.
     pub fn show(&mut self) {
         self.visible = true;
+        crate::diag_ctl::crumb(
+            "settings-page",
+            &[("page", crate::diag_ctl::txt(self.page))],
+        );
         self.diag_verbose.set(None);
         self.ask_verb();
         self.rebuild();
@@ -1149,6 +1155,10 @@ impl SettingsCtl {
 
     fn page_chosen(&mut self, id: &str) {
         self.page = page_static(id);
+        crate::diag_ctl::crumb(
+            "settings-page",
+            &[("page", crate::diag_ctl::txt(self.page))],
+        );
         self.watch = None;
         if let Some(app) = self.weak.upgrade() {
             app.global::<SettingsBridge>().set_scroll_y(0.0);

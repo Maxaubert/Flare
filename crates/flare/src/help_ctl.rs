@@ -265,7 +265,9 @@ impl HelpCtl {
                     if let Some(rc) = weak.upgrade()
                         && let Ok(mut $c) = rc.try_borrow_mut()
                     {
-                        $body;
+                        crate::diag_ctl::timed(stringify!($reg), || {
+                            $body;
+                        });
                     }
                 });
             }};
