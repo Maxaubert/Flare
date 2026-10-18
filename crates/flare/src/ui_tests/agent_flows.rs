@@ -312,7 +312,16 @@ impl Fx {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        panic!("timed out waiting for {what}");
+        let shells: Vec<String> = self
+            .sp
+            .made()
+            .iter()
+            .map(|m| m.spec().cwd.clone())
+            .collect();
+        panic!(
+            "timed out waiting for {what}; tabs {:?}, shells {shells:?}",
+            self.cwds()
+        );
     }
 
     /// The window clock and the Slint animation clock move together; the controller ticks and the
@@ -1452,6 +1461,14 @@ fn a_tab_behind_shows_its_agent_at_once_and_restored_tabs_carry_no_marks() {
 fn a_saved_claude_and_a_plain_tab_come_back_the_right_way() {
     let (f, lookup) = restoring_fx();
     restore(&f);
+    // The restore returns as the answers arrive: wait for all three shells and the lookup.
+    f.pump_until("all three shells and the lookup", |f| {
+        let made = f.sp.made();
+        ["C:\\c", "C:\\x", "C:\\p"]
+            .iter()
+            .all(|c| made.iter().any(|m| m.spec().cwd == *c))
+            && !lookup.asked().is_empty()
+    });
     assert_eq!(
         f.cwds(),
         ["C:\\c", "C:\\x", "C:\\p"],
