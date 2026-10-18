@@ -72,7 +72,7 @@ use flare_win::taskbar::TaskbarBadge;
 use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::agent_hub::{AgentHub, HubDeps, sonara_post};
+use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
@@ -630,9 +630,9 @@ impl AppCtl {
                 now: Rc::clone(&deps.clock),
                 handle: Rc::new(move |id| by_id.borrow().get(id).cloned()),
                 token: Rc::new(move |id| mgr.tab_token(id)),
-                // Under --e2e and in tests nothing is posted to a real Sonara.
+                // Under --e2e the post reads only a SONARA_HOME (the test's sandbox), never the owner's Sonara.
                 post_question: if deps.e2e {
-                    Arc::new(|_, _| {})
+                    e2e_sonara_post()
                 } else {
                     sonara_post()
                 },

@@ -159,6 +159,20 @@ pub fn sonara_post() -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
     threaded_post(Arc::new(|k| std::env::var(k).ok()), SONARA_TIMEOUT)
 }
 
+/// The environment of a `--e2e` run's post: the process's `SONARA_HOME` (the test points it at a
+/// sandbox) and nothing else, so a run with no sandbox never reaches the owner's `%LOCALAPPDATA%\Sonara`.
+pub fn e2e_sonara_env(real: impl Fn(&str) -> Option<String>) -> impl Fn(&str) -> Option<String> {
+    move |k| if k == "SONARA_HOME" { real(k) } else { None }
+}
+
+/// The Sonara post of a `--e2e` run: [`e2e_sonara_env`] over the real environment, PT's 1500 ms.
+pub fn e2e_sonara_post() -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
+    threaded_post(
+        Arc::new(e2e_sonara_env(|k| std::env::var(k).ok())),
+        SONARA_TIMEOUT,
+    )
+}
+
 pub struct AgentHub {
     deps: HubDeps,
     ind: Indicator,
@@ -1113,6 +1127,25 @@ mod tests {
         r.print("b", &paint(&screens("run2-01-question-1")));
         r.advance(150);
         assert_eq!(r.posts.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn under_e2e_the_sonara_env_names_only_the_sandbox_home() {
+        let real = |k: &str| match k {
+            "SONARA_HOME" => Some("C:\\sandbox".to_string()),
+            "LOCALAPPDATA" => Some("C:\\owner".to_string()),
+            _ => None,
+        };
+        // The sandbox home is read, so the post reaches the test's Sonara stand-in.
+        let read = e2e_sonara_env(real);
+        assert_eq!(
+            flare_agent::sonara::sonara_home(&read),
+            Some(std::path::PathBuf::from("C:\\sandbox"))
+        );
+        // With no sandbox home nothing falls back to the owner's %LOCALAPPDATA%\Sonara.
+        let owner_only = |k: &str| (k == "LOCALAPPDATA").then(|| "C:\\owner".to_string());
+        let read = e2e_sonara_env(owner_only);
+        assert_eq!(flare_agent::sonara::sonara_home(&read), None);
     }
 
     #[test]
