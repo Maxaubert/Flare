@@ -28,7 +28,7 @@ use flare_settings::icons::icon_path;
 use flare_settings::kv::{PrefStore, Subscription};
 use flare_settings::layout::{
     self, BlockKind as LayoutBlock, PageLayout, SectionLayout, about_y, layout_page,
-    layout_results, place_menu, rail_layout, rail_width, scroll_target,
+    layout_results, place_menu_at, rail_layout, rail_width, scroll_target,
 };
 use flare_settings::look::LookStore;
 use flare_settings::page::{
@@ -1357,6 +1357,7 @@ impl SettingsCtl {
         let ctx = PickerCtx {
             prefs: &self.deps.prefs,
             window,
+            scale,
             lookup: &lookup,
             seam: crate::e2e::global().env(&["FLARE_E2E", "_PICK_COLOUR"].concat()),
             post: &self.deps.post,
@@ -1512,7 +1513,7 @@ impl SettingsCtl {
             f64::from(size.height) / scale,
         );
         let content = options.len() as f64 * OPTION_H + MENU_PAD;
-        let (x, y, h) = place_menu(
+        let (x, y, h) = place_menu_at(
             Rect {
                 x: anchor[0],
                 y: anchor[1],
@@ -1523,6 +1524,7 @@ impl SettingsCtl {
             content,
             window,
             MENU_MAX_H,
+            scale,
         );
         let b = app.global::<SettingsBridge>();
         b.set_select_options(options_of(options));

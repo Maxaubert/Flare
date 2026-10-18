@@ -245,10 +245,15 @@ fn place_section(
     pad_x: f64,
     content_w: f64,
     children: &[Child],
+    has_heading: bool,
 ) -> (SectionLayout, f64) {
     let title_top = top + gap;
-    let title_h = m.heading_line.max(m.heading_min);
-    let panel_top = title_top + title_h + m.heading_gap;
+    let title_h = if has_heading {
+        m.heading_line.max(m.heading_min)
+    } else {
+        0.0
+    };
+    let panel_top = title_top + title_h + if has_heading { m.heading_gap } else { 0.0 };
     let (rx, rw) = grid.span(pad_x + m.border, content_w - 2.0 * m.border);
     let mut y = panel_top + m.border;
     let mut rows = Vec::with_capacity(children.len());
@@ -307,8 +312,17 @@ pub fn layout_page(
             .iter()
             .map(|b| child_of(b, wall, slint_badge_h, &m))
             .collect();
-        let (section, bottom) =
-            place_section(grid, &m, s.id, top, gap, pad_x, content_w, &children);
+        let (section, bottom) = place_section(
+            grid,
+            &m,
+            s.id,
+            top,
+            gap,
+            pad_x,
+            content_w,
+            &children,
+            !s.title.is_empty(),
+        );
         sections.push(section);
         top = bottom;
     }
@@ -351,6 +365,7 @@ pub fn layout_results(hits: usize, frame_w: f64, scale: f64) -> ResultsLayout {
         pad_x,
         content_w,
         &children,
+        true,
     );
     ResultsLayout {
         header_y,
@@ -417,6 +432,34 @@ pub fn scroll_target(layout: &PageLayout, row_id: &str, pane_h: f64) -> Option<f
 /// `min(content_h, max_h)` shrunk to fit the window less 8. When fewer than 120 px fit below and more
 /// fit above, it opens upward. Never left of 8.
 pub fn place_menu(
+    anchor: Rect,
+    menu_w: f64,
+    content_h: f64,
+    window: (f64, f64),
+    max_h: f64,
+) -> (f64, f64, f64) {
+    place_menu_at(anchor, menu_w, content_h, window, max_h, 0.0)
+}
+
+/// `place_menu` with every edge rounded to the device grid at `scale` (0 leaves them as they are).
+pub fn place_menu_at(
+    anchor: Rect,
+    menu_w: f64,
+    content_h: f64,
+    window: (f64, f64),
+    max_h: f64,
+    scale: f64,
+) -> (f64, f64, f64) {
+    let (x, y, h) = place_menu_raw(anchor, menu_w, content_h, window, max_h);
+    if scale > 0.0 {
+        let sn = |v: f64| (v * scale).round() / scale;
+        (sn(x), sn(y), sn(y + h) - sn(y))
+    } else {
+        (x, y, h)
+    }
+}
+
+fn place_menu_raw(
     anchor: Rect,
     menu_w: f64,
     content_h: f64,

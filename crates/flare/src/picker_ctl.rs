@@ -13,7 +13,7 @@ use flare_settings::actions::Event;
 use flare_settings::colour_format::{colour_format, cycle_colour_format};
 use flare_settings::kv::PrefStore;
 use flare_settings::picker::{
-    Closed, CodeField, KeptPicker, POPOVER_W, Picker, Rect, SliderKey, picker_key, place_popover,
+    Closed, CodeField, KeptPicker, POPOVER_W, Picker, Rect, SliderKey, picker_key, place_popover_at,
 };
 use flare_theme::colour::{ColourFormat, Hsva, Rgba, hsv_to_rgb, parse_colour};
 use flare_theme::colour_contrast::AlphaRange;
@@ -43,6 +43,8 @@ pub struct PickerCtx<'a> {
     pub prefs: &'a PrefStore,
     /// The window in logical px, for the placement.
     pub window: (f64, f64),
+    /// The device scale, so the popover lands on the pixel grid.
+    pub scale: f64,
     /// `(row or well key, in the theme editor)` to what it holds now.
     pub lookup: &'a dyn Fn(&str, bool) -> Option<RowColour>,
     /// The value of `FLARE_E2E_PICK_COLOUR` (None unless the e2e flag is on).
@@ -214,7 +216,7 @@ impl PickerCtl {
         } else {
             POP_H_PLAIN
         };
-        let pos = place_popover(anchor, (POPOVER_W, h), ctx.window);
+        let pos = place_popover_at(anchor, (POPOVER_W, h), ctx.window, ctx.scale);
         self.session = Some(PickerSession {
             row: row.to_string(),
             in_editor,
@@ -617,6 +619,7 @@ mod tests {
             let ctx = PickerCtx {
                 prefs: &self.prefs,
                 window: self.window,
+                scale: 0.0,
                 lookup: &lookup,
                 seam: self.seam.clone(),
                 post: &self.post,

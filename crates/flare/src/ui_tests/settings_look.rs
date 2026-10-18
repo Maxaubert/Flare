@@ -7,11 +7,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use flare_settings::layout::place_menu;
+use flare_settings::layout::place_menu_at;
 use flare_settings::layout::{BlockKind as LayoutBlock, SectionLayout};
 use flare_settings::page::{BlockModel, Control, RowModel};
 use flare_settings::pages::PAGES;
-use flare_settings::picker::{POPOVER_W, Rect, place_popover};
+use flare_settings::picker::{POPOVER_W, Rect, place_popover_at};
 use slint::{ComponentHandle, Model};
 
 use super::settings_layout::{Scene, row_blocks};
@@ -395,7 +395,7 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
             _ => unreachable!(),
         };
         let window = (sc.frame_w, sc.frame_h);
-        let (mx, my, mh) = place_menu(
+        let (mx, my, mh) = place_menu_at(
             Rect {
                 x: f64::from(ax),
                 y: f64::from(ay),
@@ -406,6 +406,7 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
             options * 28.0 + 8.0,
             window,
             320.0,
+            sc64,
         );
         for (what, v) in [
             ("x", mx),
@@ -476,7 +477,7 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
         for (what, v) in [("x", sx), ("y", sy), ("w", sw), ("h", sh)] {
             check(format!("the swatch's {what}"), f64::from(v));
         }
-        let (px, py) = place_popover(
+        let (px, py) = place_popover_at(
             Rect {
                 x: f64::from(sx),
                 y: f64::from(sy),
@@ -485,12 +486,14 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
             },
             (POPOVER_W, 254.0),
             (sc2.frame_w, sc2.frame_h),
+            sc64,
         );
+        let snap = |v: f64| (v * sc64).round() / sc64;
         for (what, v) in [
             ("x", px),
             ("y", py),
-            ("right", px + POPOVER_W),
-            ("bottom", py + 254.0),
+            ("right", px + snap(POPOVER_W)),
+            ("bottom", py + snap(254.0)),
         ] {
             check(format!("the popover's {what}"), v);
         }

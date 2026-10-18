@@ -201,7 +201,7 @@ component RowControls inherits HorizontalLayout {
             disabled: root.data.off;
             label: root.data.label;
             open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
-            open-request(x, y, w, h) => { SettingsBridge.select-open-request(root.data.id, x, y, w, h); }
+            open-request(x, y, w, h) => { SettingsBridge.select-open-request(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
         }
     }
     if root.data.kind == SetKind.slider: VerticalLayout {
@@ -249,7 +249,7 @@ component RowControls inherits HorizontalLayout {
             edited(t) => { SettingsBridge.colour-edited(root.data.id, t); }
             committed => { SettingsBridge.colour-committed(root.data.id); }
             escape-key => { SettingsBridge.colour-escape(root.data.id); }
-            swatch-clicked(x, y, w, h) => { SettingsBridge.colour-swatch(root.data.id, x, y, w, h); }
+            swatch-clicked(x, y, w, h) => { SettingsBridge.colour-swatch(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
     }
@@ -396,6 +396,8 @@ export component SettingsView inherits Rectangle {
                         first: i == 0;
                         pad: true;
                         ThemeWallView {
+                            x: 0px;
+                            y: 14px;
                             width: parent.width;
                             cards: SettingsBridge.wall-cards;
                             clip-h: SettingsBridge.wall-clip-h;

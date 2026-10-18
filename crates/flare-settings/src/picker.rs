@@ -309,7 +309,25 @@ pub struct Rect {
 
 /// Under the swatch, or above it when there is no room below; inside the window either way.
 pub fn place_popover(anchor: Rect, size: (f64, f64), window: (f64, f64)) -> (f64, f64) {
-    let (w, h) = size;
+    place_popover_at(anchor, size, window, 0.0)
+}
+
+/// `place_popover` with the size and the corner rounded to the device grid at `scale` (0 leaves
+/// them as they are): the right edge stays on the swatch's, the borders stay crisp.
+pub fn place_popover_at(
+    anchor: Rect,
+    size: (f64, f64),
+    window: (f64, f64),
+    scale: f64,
+) -> (f64, f64) {
+    let sn = |v: f64| {
+        if scale > 0.0 {
+            (v * scale).round() / scale
+        } else {
+            v
+        }
+    };
+    let (w, h) = (sn(size.0), sn(size.1));
     let left = clamp(anchor.x + anchor.w - w, 8.0, window.0 - w - 8.0);
     let below = anchor.y + anchor.h + 6.0;
     let top = if below + h <= window.1 - 8.0 {
@@ -317,7 +335,7 @@ pub fn place_popover(anchor: Rect, size: (f64, f64), window: (f64, f64)) -> (f64
     } else {
         (anchor.y - h - 6.0).max(8.0)
     };
-    (left, top)
+    (sn(left), sn(top))
 }
 
 /// The key of a picker kept open: the field's label, and whether it is in the theme editor.
