@@ -466,6 +466,14 @@ pub fn production_plugin_dir(e2e: bool) -> Option<String> {
     flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Puts the exe's own icon on the window (M9 Task 32): once its handle exists, and again on every
+/// scale-factor change (the icon sizes follow the monitor's DPI).
+pub fn apply_window_icon(hwnd: Option<isize>) {
+    if let Some(hwnd) = hwnd {
+        crate::ship_ctl::set_window_icon(hwnd);
+    }
+}
+
 /// The restore's Claude session lookup: the real transcript store of the home folder.
 pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
     std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::from_env())

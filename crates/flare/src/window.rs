@@ -347,6 +347,7 @@ fn observe(window: &slint::Window) -> Observed {
 
 /// The Settings controller's ports (Task 41), made real in Task 44: the diagnostics control on the
 /// profile folder, the glass support of this window and the copyright line of the licence.
+#[allow(clippy::too_many_arguments)] // one call site; each port is a different thing
 fn settings_deps(
     app: &AppWindow,
     prefs: &PrefStore,
@@ -355,9 +356,9 @@ fn settings_deps(
     open_url: Rc<dyn Fn(&str)>,
     e2e_on: bool,
     glass: flare_settings::page::GlassSupport,
+    verb: Arc<dyn flare_settings::verb::ExplorerVerb>,
 ) -> crate::settings_ctl::SettingsDeps {
     use flare_settings::page::PlaceholderDictation;
-    use flare_settings::verb::PendingVerb;
     let look = LookStore::new(prefs.clone());
     let weak = app.as_weak();
     crate::settings_ctl::SettingsDeps {
@@ -366,7 +367,7 @@ fn settings_deps(
         diag: Rc::new(crate::startup::DiagPort(
             flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
-        verb: Arc::new(PendingVerb),
+        verb,
         dictation: Rc::new(PlaceholderDictation),
         pick_folder: Rc::new(move |default_dir, answer| {
             let parent = weak
@@ -576,6 +577,13 @@ pub fn run_window(
     let mut session_end = None;
     // A font setting changed: the grid takes the new face and size (Task 27).
     let mut _font_sub = None;
+    // The Explorer verb (reconciled on a worker after the restore) and the update engine (started
+    // after the window is shown), both made with the controller (M9 Task 32).
+    let mut verb_switch: Option<Arc<flare_win::verb_switch::VerbSwitch>> = None;
+    let mut update_engine: Option<(
+        Arc<flare_update::engine::Engine>,
+        Option<flare_update::types::Offer>,
+    )> = None;
     let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
@@ -753,6 +761,39 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // What this run is: installed or not, e2e or not (M9 Task 32). The verb and the update
+        // engine follow from it.
+        let ship = crate::ship_ctl::Ship::detect(
+            std::env::current_exe().unwrap_or_default(), // sync-ok: startup, before the window shows
+            args.e2e,
+            args.preview_update,
+        );
+        let switch = ship.real_verb_switch(&inst.profile.dir);
+        verb_switch = Some(Arc::clone(&switch));
+        {
+            let choice = crate::ship_ctl::choose_feed(&ship, &|suffix| {
+                crate::ship_ctl::e2e_var(suffix)
+            });
+            let engine = crate::ship_ctl::build_engine(
+                &choice,
+                env!("CARGO_PKG_VERSION"),
+                args.user_data_dir.clone(),
+                Arc::new(crate::update_ctl::PostEvents {
+                    post: Arc::clone(&post),
+                }),
+            );
+            AppCtl::attach_update(
+                &app,
+                &rc,
+                crate::appctl::UpdateParts {
+                    engine: Arc::clone(&engine),
+                    current_version: env!("CARGO_PKG_VERSION").to_string(),
+                    e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
+                    spawn: crate::update_ctl::std_spawn(),
+                },
+            );
+            update_engine = Some((engine, choice.preset_offer));
+        }
         // The Settings controller (Task 41). Task 44 swaps the stand-ins (the diagnostics control,
         // the shell list) for the real ones.
         {
@@ -765,6 +806,7 @@ pub fn run_window(
                 backends.open_url(),
                 e2e_on,
                 glass,
+                Arc::new(flare_win::verb_switch::RegistryVerb::new(switch)),
             );
             let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
             rc.borrow_mut().set_settings(settings);
@@ -978,6 +1020,8 @@ pub fn run_window(
     if args.e2e {
         apply_e2e_style(&app);
     }
+    // The exe's own icon on the window (and again on every scale-factor change).
+    crate::startup::apply_window_icon(hwnd_of(&app));
     // Command help's catalogue and first search are built on a worker after the first paint (Task 44).
     if stores
         .as_ref()
@@ -1032,7 +1076,26 @@ pub fn run_window(
         // Placeholders are drawn already; the restore answers on a worker and settles in place.
         AppCtl::start_restore(rc);
     }
+    // The window is up and the restore is under way: the update engine starts (an e2e offer is set
+    // once, so the chip shows with no check made), and the verb is repaired on a worker.
+    if let Some((engine, preset)) = &update_engine {
+        engine.start();
+        if let Some(offer) = preset {
+            engine.set_offer(offer.clone());
+        }
+    }
+    if let Some(switch) = verb_switch.take() {
+        let spawned = std::thread::Builder::new()
+            .name("flare-verb-reconcile".into())
+            .spawn(move || switch.reconcile());
+        if let Err(e) = spawned {
+            log::warn!("could not start the verb reconcile: {e}");
+        }
+    }
     let result = app.run();
+    if let Some((engine, _)) = &update_engine {
+        engine.stop();
+    }
 
     // After run(): the end of life once more (idempotent), so no path leaves a shell behind.
     // Never through on_close_requested: a working agent would ask again with no window left to
@@ -1339,6 +1402,14 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                         window.set_position(slint::PhysicalPosition::new(x, y));
                     }
                 }
+                // The icon sizes follow the new monitor's DPI.
+                let hwnd = window
+                    .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
+                        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+                        _ => None,
+                    })
+                    .flatten();
+                crate::startup::apply_window_icon(hwnd);
                 let o = observe(window);
                 with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate

@@ -49,6 +49,8 @@ mod ui_tests;
 slint::include_modules!();
 
 fn main() {
+    // Velopack's hooks may end the process here, before anything else starts.
+    ship_ctl::bootstrap();
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
