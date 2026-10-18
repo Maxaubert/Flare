@@ -11,6 +11,8 @@ import { Px, SettingsFixed, SettingsShape, Theme } from "../theme.slint";
 // `focus-visible`: a click opens the popover with no ring, Enter or Space with it (Task 53).
 export global PickerOpening {
     in-out property <bool> by-pointer;
+    // Set only while a swatch reports that it MOVED under its open popover (not a press).
+    in-out property <bool> reanchor;
 }
 
 // Rounds the corners of the box it covers by painting the popover's fill outside an arc of `r`: a
@@ -253,6 +255,20 @@ export component ColourField inherits Rectangle {
             return reject;
         }
     }
+
+    // The swatch moved while its popover is open (the format toggle widens the fields, so the wells
+    // shift): report the new box so the popover follows.
+    property <length> sw-ax: swatch.absolute-position.x;
+    property <length> sw-ay: swatch.absolute-position.y;
+    function moved() {
+        if root.open {
+            PickerOpening.reanchor = true;
+            root.swatch-clicked(swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
+            PickerOpening.reanchor = false;
+        }
+    }
+    changed sw-ax => { root.moved(); }
+    changed sw-ay => { root.moved(); }
 
     swatch-ta := TouchArea {
         x: root.swatch-x;

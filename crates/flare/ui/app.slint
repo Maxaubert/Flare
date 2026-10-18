@@ -849,7 +849,7 @@ export component AppWindow inherits Window {
             slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
             format-clicked => { SettingsBridge.picker-format-clicked(); }
             dropper-clicked => { SettingsBridge.picker-dropper(); }
-            escape-pressed => { SettingsBridge.picker-escape(); }
+            escape-pressed => { SettingsBridge.swatch-back = SettingsBridge.picker-label; SettingsBridge.picker-escape(); }
             outside-pressed => { SettingsBridge.picker-outside(); }
             focus-left => { SettingsBridge.picker-focus-left(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }

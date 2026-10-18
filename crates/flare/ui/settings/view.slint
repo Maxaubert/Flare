@@ -55,6 +55,8 @@ export global SettingsBridge {
     in-out property <length> select-w;
     in-out property <length> select-h;
     in-out property <bool> picker-open;
+    // Escape closed the popover opened from the row with this label: that row's swatch takes the focus back.
+    in-out property <string> swatch-back;
     in-out property <length> picker-x;
     in-out property <length> picker-y;
     in-out property <string> picker-label;
@@ -237,6 +239,13 @@ component RowControls inherits HorizontalLayout {
             if self.want {
                 fld.focus-code();
                 SettingsBridge.focus-id = "";
+            }
+        }
+        property <bool> back: SettingsBridge.swatch-back == root.data.label;
+        changed back => {
+            if self.back {
+                fld.focus-swatch();
+                SettingsBridge.swatch-back = "";
             }
         }
         fld := ColourField {
@@ -551,7 +560,7 @@ export component SettingsPreview inherits Window {
         slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
         format-clicked => { SettingsBridge.picker-format-clicked(); }
         dropper-clicked => { SettingsBridge.picker-dropper(); }
-        escape-pressed => { SettingsBridge.picker-escape(); }
+        escape-pressed => { SettingsBridge.swatch-back = SettingsBridge.picker-label; SettingsBridge.picker-escape(); }
         outside-pressed => { SettingsBridge.picker-outside(); }
         focus-left => { SettingsBridge.picker-focus-left(); }
         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }

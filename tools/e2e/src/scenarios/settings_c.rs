@@ -649,8 +649,7 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     );
     // PT: run.mjs:6066. Focus is not queryable, so the swatch having it is proved by what a key does
     // there: Space on the focused swatch opens its picker again.
-    // FLARE-DEFECT: colourPicker / and the focus is back on the swatch / crates/flare/ui/settings/view.slint
-    // (ColourField.focus-swatch() is never called when the popover closes, so the keys fall to nothing).
+
     press(&mut app, "Space");
     let back = wait_picker(
         ctx,
@@ -822,20 +821,11 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     // PT: run.mjs:6153
     let gone = wait_picker(ctx, &mut app, false, "the picker to go under help");
     ctx.ok(gone, "and the picker is gone");
-    // FLARE-DEFECT: colourPicker / Escape closes Command help opened over the Settings page /
-    // crates/flare/src/help_ctl.rs (the panel takes no keys until it holds Slint focus, which F1 does
-    // not give it); F1 again closes it, so the scenario falls back to that.
     press(&mut app, "Escape");
-    let shut = ctx.until("Escape to close Command help", 1_500, &mut || {
+    let shut = ctx.until("Escape to close Command help", 4_000, &mut || {
         probe(&mut app, "picker.layers", Value::Null)["help_open"] == json!(false)
     });
-    let _ = shut;
-    if probe(&mut app, "picker.layers", Value::Null)["help_open"] == json!(true) {
-        press(&mut app, "F1");
-        ctx.until("F1 to close Command help", 4_000, &mut || {
-            probe(&mut app, "picker.layers", Value::Null)["help_open"] == json!(false)
-        });
-    }
+    ctx.ok(shut, "Escape closes Command help opened over the Settings page");
     open_swatch(ctx, &mut app, ID);
     // Where PT clicks the chip with no pointer press, Flare's chip answers a click, which is also a
     // press outside the picker; either way the picker must be gone and the window open.
@@ -954,9 +944,7 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     });
     let at_rgba = beside(&mut app);
     let moved = matches!((at_hex, at_rgba), (Some(a), Some(b)) if (a.1 - b.1).abs() > 0.5);
-    // FLARE-DEFECT: colourPicker / the picker stays on its swatch as RGBA widens the fields /
-    // crates/flare/src/picker_ctl.rs (the popover's position is placed once at open and is not
-    // re-placed when the editor's wells move).
+
     // PT: run.mjs:6232
     ctx.ok(
         at_hex.is_some_and(|a| a.0) && at_rgba.is_some_and(|b| b.0) && moved,
@@ -977,8 +965,7 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     );
     escape_picker(ctx, &mut app);
     let bg_well = well(&mut app, "Background");
-    // FLARE-DEFECT: colourPicker / the theme's Background has no Alpha / crates/flare/src/settings_ctl.rs
-    // (the editor's Background well opens a popover with an Alpha bar; PT's has none).
+
     // PT: run.mjs:6239
     ctx.ok(bg_well.is_some(), "the Background well is there");
     if let Some(w) = &bg_well {
@@ -1597,13 +1584,13 @@ pub fn see_through(ctx: &mut Ctx) -> Result<(), String> {
     );
     reveal(ctx, &mut app, ID);
     let r = row(&mut app, ID);
-    // FLARE-DEFECT: seeThrough / it is a slider called See-through window / crates/flare-settings/src/rows.rs
-    // (the row, and so the slider's accessible name, is "See through window"; PT's aria-label has the hyphen).
+    // DELIBERATE: PT's aria-label has a hyphen, but Flare's settings copy is plain words (letters, digits,
+    // spaces, commas and full stops; copy_rules.rs), so the row reads "See through window".
     // PT: run.mjs:6506
     ctx.ok(
-        str_of(&r, "kind") == "slider" && str_of(&r, "label") == "See-through window",
+        str_of(&r, "kind") == "slider" && str_of(&r, "label") == "See through window",
         format!(
-            "it is a slider called See-through window ({} / {})",
+            "it is a slider called See through window ({} / {})",
             str_of(&r, "kind"),
             str_of(&r, "label")
         ),

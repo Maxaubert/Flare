@@ -1341,12 +1341,14 @@ impl SettingsCtl {
             label,
             value,
             stored,
+            // The theme's Background is a colour only (owner, 2026-10-13: the See-through slider is the
+            // only way to make the window see-through), so its popover has no Alpha bar.
             range: flare_theme::colour_contrast::AlphaRange {
-                alpha: true,
+                alpha: key != "bg",
                 alpha_min: 0.0,
                 alpha_max,
             },
-            alpha_disabled: false,
+            alpha_disabled: key == "bg",
         })
     }
 
@@ -1415,6 +1417,13 @@ impl SettingsCtl {
             w: anchor[2],
             h: anchor[3],
         };
+        // A swatch that moved under its open popover reports the same way, marked so it is not a press.
+        if let Some(app) = self.weak.upgrade()
+            && app.global::<crate::PickerOpening>().get_reanchor()
+        {
+            self.picker_do(|p, ctx| p.reanchor(id, in_editor, rect, ctx));
+            return;
+        }
         self.close_select();
         self.picker_do(|p, ctx| p.open(id, in_editor, rect, ctx));
     }
