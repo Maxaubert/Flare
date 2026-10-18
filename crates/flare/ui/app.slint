@@ -326,6 +326,7 @@ export component AppWindow inherits Window {
     out property <length> dialog-box-y: dlg.box-y;
     out property <length> dialog-box-w: dlg.box-w;
     out property <length> dialog-box-h: dlg.box-h;
+    out property <int> dialog-focus: dlg.focused-button;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
