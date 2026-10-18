@@ -335,3 +335,84 @@ fn the_f8_and_f9_chords_are_gone() {
         }
     }
 }
+
+// ---- M7 Task 46: the em-dash scan and the settings files listed in app.slint ----------------
+
+/// Every file of the given extensions under `dir`, recursively (nothing if the folder is missing).
+fn files_under(dir: &std::path::Path, exts: &[&str], out: &mut Vec<PathBuf>) {
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            files_under(&path, exts, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| exts.contains(&e))
+        {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_em_dash_in_settings_files() {
+    // The Settings milestone's files: the Slint files, the Rust code of the three crates and of the
+    // Settings tests, the JSON data and the Node tools. The repo-wide scan is tests/no_em_dash.rs.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let mut files = Vec::new();
+    files_under(
+        &root.join("crates/flare/ui/settings"),
+        &["slint"],
+        &mut files,
+    );
+    files_under(&root.join("crates/flare/src"), &["rs"], &mut files);
+    files_under(&root.join("crates/flare-settings/src"), &["rs"], &mut files);
+    files_under(&root.join("crates/flare-help/src"), &["rs"], &mut files);
+    files_under(&root.join("crates/flare-help/data"), &["json"], &mut files);
+    files_under(
+        &root.join("tools"),
+        &["mjs", "js", "cjs", "ts", "json"],
+        &mut files,
+    );
+    assert!(
+        files.len() > 20,
+        "the Settings files are found: {}",
+        files.len()
+    );
+    let dash = '\u{2014}';
+    let bad: Vec<String> = files
+        .iter()
+        .filter(|p| fs::read_to_string(p).is_ok_and(|t| t.contains(dash)))
+        .map(|p| p.display().to_string())
+        .collect();
+    assert!(bad.is_empty(), "em dash in: {bad:#?}");
+}
+
+#[test]
+fn every_settings_slint_file_is_listed_in_app_slint() {
+    // A Settings file that app.slint never imports or re-exports is not compiled into the window.
+    let app = fs::read_to_string(ui_dir().join("app.slint")).expect("read app.slint");
+    let mut files = Vec::new();
+    files_under(&ui_dir().join("settings"), &["slint"], &mut files);
+    assert!(
+        files.len() >= 10,
+        "the Settings .slint files are found: {}",
+        files.len()
+    );
+    for path in files {
+        let name = path
+            .file_name()
+            .expect("a file name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            app.contains(&format!("settings/{name}\"")),
+            "app.slint imports or re-exports settings/{name}"
+        );
+    }
+}
