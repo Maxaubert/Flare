@@ -35,6 +35,9 @@ mod term_menu;
 mod term_ui;
 mod theme_scene;
 mod window;
+mod update_ctl;
+mod diag_ctl;
+mod ship_ctl;
 
 #[cfg(test)]
 mod theme_tests;

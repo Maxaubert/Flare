@@ -24,3 +24,11 @@ pub mod single_instance;
 pub mod taskbar;
 pub mod window_edge;
 pub mod window_state;
+
+pub mod names;
+pub mod packaged;
+pub mod registry;
+pub mod thread_stack;
+pub mod verb;
+pub mod verb_keys;
+pub mod verb_switch;

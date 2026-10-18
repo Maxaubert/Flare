@@ -6,6 +6,10 @@ const BUNDLED: [&str; 2] = ["conpty.dll", "OpenConsole.exe"];
 
 fn main() {
     slint_build::compile("ui/app.slint").expect("Slint UI failed to compile");
+    // The exe's icon and version resource (M9). A missing RC.EXE fails the build here, loudly.
+    embed_resource::compile("flare.rc", embed_resource::NONE)
+        .manifest_required()
+        .expect("embed the exe resource (flare.rc)");
     copy_bundled_conpty();
     copy_claude_plugin();
 }

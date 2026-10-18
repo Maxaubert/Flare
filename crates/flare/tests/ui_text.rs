@@ -276,3 +276,12 @@ fn settings_slint_has_no_em_dash() {
         assert!(!text.contains('\u{2014}'), "{name} contains an em-dash");
     }
 }
+
+#[test]
+fn update_slint_exists() {
+    let found: Vec<String> = all_slint().into_iter().map(|(name, _)| name).collect();
+    assert!(
+        found.iter().any(|f| f == "update.slint"),
+        "update.slint exists under ui/"
+    );
+}
