@@ -2228,10 +2228,13 @@ mod flow {
         }
     }
 
-    /// The window moves to a monitor of another scaling and back. Where the new scale fits the same
-    /// number of columns the selection stands and its highlight tiles the same cells; where it fits
-    /// another number the emulator clears the selection, as for any column-count resize (decision D2),
-    /// and no stale highlight is left. After the round trip a new selection works at the first scale.
+    /// The window moves to a monitor of another scaling and back. The selection stands whatever the
+    /// new column count is (owner decision O23, M5 plan D2, closed in M10 Task 19, register row
+    /// DIFF-10: the anchors keep their rows and clamp their columns, as in xterm), and its highlight
+    /// tiles the same cells at every scale. This test once expected another column count to clear
+    /// the selection, which was alacritty's rule until Task 19 replaced it; the assertion follows
+    /// the decision, it was not loosened. After the round trip a new selection works at the first
+    /// scale.
     #[test]
     fn moving_between_monitors_keeps_the_cell_math() {
         let w = Wx::new(1.0);
@@ -2240,30 +2243,19 @@ mod flow {
         assert_eq!(w.text(), "cdefg");
         w.assert_tiles("1.0");
         let cols = w.cols();
-        let mut kept = 0;
+        let mut other_cols = 0;
         for s in &SCALES[1..] {
             w.move_grid_to_scale(*s);
-            let m = w.metrics();
-            if w.cols() == cols {
-                kept += 1;
-                assert_eq!(
-                    w.text(),
-                    "cdefg",
-                    "scale {s}: the same cells fit, the selection stands"
-                );
-                w.assert_tiles(&format!("scale {s}"));
-            } else {
-                assert_eq!(
-                    w.text(),
-                    "",
-                    "scale {s}: another column count clears the selection"
-                );
-                assert_eq!(
-                    w.grid_px(m.padding + 2 * m.cell_w, m.padding + m.cell_h),
-                    GROUND,
-                    "scale {s}: no stale highlight"
-                );
+            if w.cols() != cols {
+                other_cols += 1;
             }
+            assert!(w.cols() >= 7, "scale {s}: the selected cells still fit");
+            assert_eq!(
+                w.text(),
+                "cdefg",
+                "scale {s}: the selection stands, whatever the column count"
+            );
+            w.assert_tiles(&format!("scale {s}"));
             w.move_grid_to_scale(1.0);
             // Past the double-click time, so the next press is a first click.
             w.step(1000);
@@ -2275,6 +2267,9 @@ mod flow {
             );
             w.assert_tiles(&format!("1.0 after {s}"));
         }
-        assert!(kept >= 1, "at least one scale keeps the column count");
+        assert!(
+            other_cols >= 1,
+            "at least one scale changes the column count, or this proves nothing about O23"
+        );
     }
 }

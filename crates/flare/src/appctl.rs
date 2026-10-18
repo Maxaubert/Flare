@@ -4823,7 +4823,13 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 3);
+        // Wait for the three shells the test reads, not for a count: the gone folder's shell may be
+        // one of the first three made, and the codex tab's would then not exist yet.
+        f.pump_until("the spawns", |f| {
+            ["C:\\c", "C:\\p", "C:\\x"]
+                .iter()
+                .all(|cwd| !f.made_with(cwd).is_empty())
+        });
         assert_eq!(
             lookup.asked(),
             ["C:\\c"],

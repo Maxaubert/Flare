@@ -1777,7 +1777,7 @@ mod tests {
     fn install_does_not_look_for_a_handle_the_window_has_not_got_yet() {
         // The native window exists only once the event loop runs, so a look for it inside `install`
         // always failed ("the window has no handle, it is not parked"). window.rs parks it by timer.
-        let src = include_str!("e2e_glue.rs");
+        let src = &include_str!("e2e_glue.rs").replace("\r\n", "\n");
         let from = src.find("pub fn install(").expect("install exists");
         let to = src[from..].find("\n}\n").expect("install ends") + from;
         let body = &src[from..to];
