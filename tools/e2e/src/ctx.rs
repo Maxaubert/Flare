@@ -40,8 +40,10 @@ pub struct Ctx {
     pub fails: Vec<String>,
     /// True in a `--run-one` child: every check, skip and the world root print as JSON lines.
     pub json: bool,
-    /// True right after `until` timed out: the very next failing `ok` is the same failure said again.
-    timed_out: bool,
+    /// The wait a timed-out `until` gave up on, not yet recorded. The next check takes it: a failing
+    /// check is then the same failure with both texts, one entry; any other check, a skip or the end
+    /// of the scenario records it alone. So a timeout is one FAIL, never two.
+    pending_timeout: Option<String>,
 }
 
 /// What to start: the app's own arguments, its environment on top of the sandbox's, the folders
@@ -146,27 +148,12 @@ impl Ctx {
             skips: 0,
             fails: Vec::new(),
             json: false,
-            timed_out: false,
+            pending_timeout: None,
         }
     }
 
-    /// Prints a pass or a FAIL line and counts it. A failing check straight after a timed-out
-    /// `until` is that same failure: it is printed, folded into the timeout's entry (which then
-    /// carries both texts) and not counted again.
-    pub fn ok(&mut self, cond: bool, msg: impl AsRef<str>) {
-        let msg = msg.as_ref();
-        let folded = std::mem::take(&mut self.timed_out) && !cond;
-        if folded {
-            if self.json {
-                println!("{}", json!({"pass": false, "msg": msg}));
-            } else {
-                println!("  FAIL  {msg}");
-            }
-            if let Some(last) = self.fails.last_mut() {
-                *last = format!("{msg} ({last})");
-            }
-            return;
-        }
+    /// Prints one check and counts it; a failing one is kept in `fails`.
+    fn record(&mut self, cond: bool, msg: &str) {
         self.checks += 1;
         if self.json {
             println!("{}", json!({"pass": cond, "msg": msg}));
@@ -180,8 +167,43 @@ impl Ctx {
         }
     }
 
+    /// Records a timed-out wait on its own, if one is still pending.
+    fn flush_timeout(&mut self) {
+        if let Some(what) = self.pending_timeout.take() {
+            self.record(false, &format!("timed out waiting for {what}"));
+        }
+    }
+
+    /// Records a pending timeout alone, at the end of a scenario that did not check it.
+    pub fn finish(&mut self) {
+        self.flush_timeout();
+    }
+
+    /// True while a timed-out `until` has not been recorded yet.
+    pub fn has_pending_timeout(&self) -> bool {
+        self.pending_timeout.is_some()
+    }
+
+    /// Prints a pass or a FAIL line and counts it. A failing check straight after a timed-out
+    /// `until` is that same failure: one FAIL carrying both texts. A passing one leaves the timeout
+    /// standing as its own failure.
+    pub fn ok(&mut self, cond: bool, msg: impl AsRef<str>) {
+        let msg = msg.as_ref();
+        match self.pending_timeout.take() {
+            Some(what) if !cond => {
+                self.record(false, &format!("{msg} (timed out waiting for {what})"));
+            }
+            Some(what) => {
+                self.record(false, &format!("timed out waiting for {what}"));
+                self.record(true, msg);
+            }
+            None => self.record(cond, msg),
+        }
+    }
+
     /// Prints a skip line. A skip is counted apart from passes and fails; it is never a pass.
     pub fn skip(&mut self, why: &str) {
+        self.flush_timeout();
         self.skips += 1;
         if self.json {
             println!("{}", json!({"skip": why}));
@@ -197,15 +219,15 @@ impl Ctx {
         Err(msg)
     }
 
-    /// The one wait. Polls `f` every 25 ms; on timeout records one FAIL `timed out waiting for
-    /// <what>` and returns false.
+    /// The one wait. Polls `f` every 25 ms and returns whether it held. A timeout records nothing
+    /// yet: the next check, skip or `finish` records it once (see `pending_timeout`).
     pub fn until(&mut self, what: &str, timeout_ms: u64, f: &mut dyn FnMut() -> bool) -> bool {
+        self.flush_timeout();
         let mut clock = SystemClock::new();
         if wait_on(&mut clock, timeout_ms, f) {
             return true;
         }
-        self.ok(false, format!("timed out waiting for {what}"));
-        self.timed_out = true;
+        self.pending_timeout = Some(what.to_string());
         false
     }
 

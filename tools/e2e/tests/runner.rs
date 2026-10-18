@@ -78,10 +78,13 @@ fn until_records_exactly_one_failure_on_timeout() {
     assert!(!held);
     assert!(clock.now >= 100, "gives up only at the timeout");
 
-    // Through the context, a timeout is one counted FAIL with the wait's name.
+    // Through the context, `until` records nothing; the timeout becomes one counted FAIL with the
+    // wait's name when the scenario's next check, skip or finish comes.
     let mut ctx = Ctx::new("timeout");
     let held = ctx.until("never", 60, &mut || false);
     assert!(!held);
+    assert!(ctx.fails.is_empty(), "{:?}", ctx.fails);
+    ctx.finish();
     assert_eq!(ctx.fails.len(), 1);
     assert_eq!(ctx.fails[0], "timed out waiting for never");
     assert_eq!(ctx.checks, 1);
@@ -288,4 +291,64 @@ fn a_bare_timeout_is_still_one_failure() {
     assert!(!ctx.until("nothing", 50, &mut || false));
     ctx.ok(true, "a pass");
     assert_eq!(ctx.fails.len(), 1);
+}
+
+#[test]
+fn until_returns_false_without_recording_anything() {
+    let mut ctx = Ctx::new("silent");
+    assert!(!ctx.until("never", 50, &mut || false));
+    assert!(ctx.fails.is_empty(), "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 0);
+}
+
+#[test]
+fn a_timeout_with_no_check_after_it_is_one_failure_at_finish() {
+    let mut ctx = Ctx::new("finish");
+    assert!(!ctx.until("the menu", 50, &mut || false));
+    ctx.finish();
+    assert_eq!(ctx.fails.len(), 1, "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 1);
+    assert!(ctx.fails[0].contains("timed out waiting for the menu"));
+}
+
+#[test]
+fn a_timeout_then_a_skip_is_not_folded_into_a_later_check() {
+    let mut ctx = Ctx::new("skipped");
+    assert!(!ctx.until("the tab", 50, &mut || false));
+    ctx.skip("not on this box");
+    ctx.ok(false, "an unrelated check");
+    assert_eq!(ctx.fails.len(), 2, "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 2);
+    assert_eq!(ctx.skips, 1);
+    assert!(ctx.fails[0].contains("timed out waiting for the tab"));
+    assert_eq!(ctx.fails[1], "an unrelated check");
+}
+
+#[test]
+fn a_timeout_then_a_passing_check_stays_a_failure() {
+    let mut ctx = Ctx::new("passing");
+    assert!(!ctx.until("the badge", 50, &mut || false));
+    ctx.ok(true, "a pass");
+    assert_eq!(ctx.fails.len(), 1, "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 2, "the timeout and the pass");
+}
+
+#[test]
+fn a_returned_error_matches_a_recorded_failure_exactly_not_by_substring() {
+    let mut ctx = Ctx::new("exact");
+    ctx.ok(false, "the app did not start properly");
+    flare_e2e::runner::keep_error(&mut ctx, "the app did not start");
+    assert_eq!(ctx.fails.len(), 2, "{:?}", ctx.fails);
+    assert_eq!(ctx.fails[1], "the app did not start");
+}
+
+#[test]
+fn a_returned_error_after_a_timeout_keeps_both_texts_in_one_failure() {
+    let mut ctx = Ctx::new("both");
+    assert!(!ctx.until("the page", 50, &mut || false));
+    flare_e2e::runner::keep_error(&mut ctx, "could not reach the page");
+    assert_eq!(ctx.fails.len(), 1, "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 1);
+    assert!(ctx.fails[0].contains("could not reach the page"));
+    assert!(ctx.fails[0].contains("timed out waiting for the page"));
 }

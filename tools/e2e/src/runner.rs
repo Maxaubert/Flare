@@ -94,12 +94,15 @@ pub fn exe_path(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_EXE))
 }
 
-/// A scenario's returned `Err` is always kept as a failure, even after earlier failures; only one
-/// the context already recorded (`not_ported` records its own text) is not said twice.
+/// A scenario's returned `Err` is always kept as a failure, even after earlier failures. Only a
+/// failure whose text is exactly `e` (`not_ported` records its own text) is not said twice; a
+/// substring match is not enough, or a longer earlier failure would drop the error. A timeout
+/// still pending is folded into the error's one entry.
 pub fn keep_error(ctx: &mut Ctx, e: &str) {
-    if !ctx.fails.iter().any(|f| f.contains(e)) {
-        ctx.ok(false, e);
+    if !ctx.has_pending_timeout() && ctx.fails.iter().any(|f| f == e) {
+        return;
     }
+    ctx.ok(false, e);
 }
 
 /// The child: runs one scenario in this process and prints its JSON lines. Exit 0 when it passed.
@@ -118,8 +121,9 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
     if let Some(dir) = &cli.shots {
         ctx.shots = dir.clone();
     }
-    if let Err(e) = (s.run)(&mut ctx) {
-        keep_error(&mut ctx, &e);
+    match (s.run)(&mut ctx) {
+        Ok(()) => ctx.finish(),
+        Err(e) => keep_error(&mut ctx, &e),
     }
     println!(
         "{}",
