@@ -32,7 +32,7 @@ use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
 use crate::path_links::{Found, PathLinks, path_candidates};
 use crate::replies::{Ground, colour_query_replies, xtversion_reply};
-use crate::scan::{ScanEvent, Scanner};
+use crate::scan::{Erase, ScanEvent, Scanner};
 use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
 use crate::sel_text::selection_text;
 use crate::selection_edit::{SelectionGate, selection_delete_allowed, selection_delete_keys};
@@ -192,10 +192,30 @@ impl Emulator {
         let mut out = Vec::new();
         let mut at = 0;
         for ev in scanned {
+            if let ScanEvent::SelectionGuard { start, end, erase } = ev {
+                let (start, end) = (start.min(bytes.len()), end.min(bytes.len()));
+                if start > at {
+                    self.processor.advance(&mut self.term, &bytes[at..start]);
+                    at = start;
+                }
+                let saved = self.term.selection.clone();
+                let moved = if erase == Erase::Screen {
+                    self.viewport_used_lines()
+                } else {
+                    0
+                };
+                if end > at {
+                    self.processor.advance(&mut self.term, &bytes[at..end]);
+                    at = end;
+                }
+                self.restore_selection(saved, moved);
+                continue;
+            }
             let end = match &ev {
                 ScanEvent::Osc { end, .. } | ScanEvent::Xtversion { end } => {
                     (*end).min(bytes.len())
                 }
+                ScanEvent::SelectionGuard { .. } => continue,
             };
             if end > at {
                 self.processor.advance(&mut self.term, &bytes[at..end]);
@@ -213,6 +233,7 @@ impl Emulator {
 
     fn act(&mut self, ev: ScanEvent, out: &mut Vec<TermEvent>) {
         match ev {
+            ScanEvent::SelectionGuard { .. } => {}
             ScanEvent::Xtversion { .. } => out.push(TermEvent::Reply(
                 xtversion_reply(FLARE_TERM_VERSION, ALACRITTY_TERMINAL_VERSION).into_bytes(),
             )),
@@ -267,7 +288,60 @@ impl Emulator {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // alacritty drops the selection when the column count changes; xterm keeps it (decision
+        // O23), so it is read before and set again after with its columns clamped to the width.
+        let kept = if cols != self.cols() {
+            self.sel_bounds()
+        } else {
+            None
+        };
         crate::resize::resize_conpty(&mut self.term, cols, rows);
+        if let Some((s, e, block)) = kept
+            && self.term.selection.is_none()
+        {
+            let c = self.cols();
+            self.sel_apply(SelOut::Set(SelSpec {
+                block,
+                start: Anchor {
+                    row: s.0,
+                    b: s.1.min(c),
+                },
+                end: Anchor {
+                    row: e.0,
+                    b: e.1.min(c),
+                },
+            }));
+        }
+    }
+
+    /// Screen lines `clear_viewport` (ED 2) pushes into the history: down to the last line that
+    /// holds anything, counted the way alacritty counts it (none on the alternate screen).
+    fn viewport_used_lines(&self) -> usize {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return 0;
+        }
+        let grid = self.term.grid();
+        for line in (0..self.rows()).rev() {
+            for col in 0..self.cols() {
+                let at = Point::new(Line(line as i32), Column(col));
+                if !alacritty_terminal::grid::GridCell::is_empty(&grid[at]) {
+                    return line + 1;
+                }
+            }
+        }
+        0
+    }
+
+    /// Puts back the selection an erase took away (decision O23). `moved` is the number of lines an
+    /// ED 2 scrolled into the history: the selection rides up with the text it was on.
+    fn restore_selection(&mut self, saved: Option<Selection>, moved: usize) {
+        let Some(sel) = saved else { return };
+        let lines = Line(self.rows() as i32);
+        self.term.selection = if moved == 0 {
+            Some(sel)
+        } else {
+            sel.rotate(&self.term, &(Line(0)..lines), moved as i32)
+        };
     }
 
     pub fn cols(&self) -> usize {
@@ -1685,12 +1759,229 @@ mod tests {
     }
 
     #[test]
-    fn an_erase_over_the_selection_clears_it() {
+    fn an_erase_over_the_selection_keeps_it_and_copies_the_new_text() {
         let mut e = Emulator::new(20, 3);
         e.feed(b"hello world");
         e.sel_apply(sel(false, 0, 0, 0, 5));
         e.feed(b"\x1b[2K");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "");
+        e.feed(b"\rHELLO");
+        assert_eq!(e.sel_text(), "HELLO");
+    }
+
+    #[test]
+    fn el_inside_a_selection_keeps_it() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 11));
+        e.feed(b"\x1b[1;6H\x1b[K");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "hello");
+    }
+
+    /// Claude-style: cursor home and rewrite the whole screen, many times.
+    #[test]
+    fn a_selection_survives_a_cursor_home_redraw_of_the_whole_screen() {
+        let mut e = Emulator::new(20, 24);
+        for i in 0..20 {
+            e.feed(format!("row {i:02}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 3, 0, 5, 6));
+        for pass in 0..3 {
+            e.feed(b"\x1b[H");
+            for i in 0..20 {
+                e.feed(format!("\x1b[2Kline {pass}{i:02}\r\n").as_bytes());
+            }
+            e.feed(b"\x1b[J");
+            assert!(e.has_selection(), "pass {pass}");
+        }
+        assert_eq!(e.sel_text(), "line 203\r\nline 204\r\nline 2");
+    }
+
+    #[test]
+    fn a_selection_follows_the_text_when_history_trims() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..6 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 2, 0, 2, 5));
+        assert_eq!(e.sel_text(), "line2");
+        for i in 6..30 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert_eq!(e.sel_text(), "line2");
+    }
+
+    #[test]
+    fn ed2_keeps_the_selection_on_the_text_it_moved_into_history() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"aaa\r\nbbb\r\nccc");
+        e.sel_apply(sel(false, 1, 0, 1, 3));
+        assert_eq!(e.sel_text(), "bbb");
+        e.feed(b"\x1b[2J");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "bbb");
+        e.feed(b"\x1b[Hnew");
+        assert_eq!(e.sel_text(), "bbb");
+    }
+
+    #[test]
+    fn ed2_on_a_selection_over_the_screen_keeps_it_in_history() {
+        let mut e = Emulator::new(10, 4);
+        for i in 0..8 {
+            e.feed(format!("l{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 5, 0, 6, 2));
+        let before = e.sel_text();
+        assert_eq!(before, "l5\r\nl6");
+        e.feed(b"\x1b[2J");
+        assert_eq!(e.sel_text(), before);
+    }
+
+    #[test]
+    fn ed3_clears_a_selection_in_the_cleared_history() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..10 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 1, 0, 1, 5));
+        e.feed(b"\x1b[3J");
         assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn the_alt_screen_clears_the_selection() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"hello");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1b[?1049h");
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn ris_clears_the_selection() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"hello");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1bc");
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn a_column_resize_clamps_the_selection() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world foo");
+        e.sel_apply(sel(false, 0, 6, 0, 15));
+        e.resize(10, 3);
+        assert!(e.has_selection());
+        let (s, end, _) = e.sel_bounds().expect("selection");
+        assert_eq!(s.1, 6);
+        assert_eq!(end.1, 10);
+        e.resize(20, 3);
+        assert!(e.has_selection());
+    }
+
+    #[test]
+    fn a_column_resize_drops_a_selection_that_became_empty() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world foo");
+        e.sel_apply(sel(false, 0, 12, 0, 15));
+        e.resize(10, 3);
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn a_row_resize_keeps_the_selection() {
+        let mut e = Emulator::new(20, 6);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.resize(20, 4);
+        assert_eq!(e.sel_text(), "hello");
+        e.resize(20, 8);
+        assert_eq!(e.sel_text(), "hello");
+    }
+
+    #[test]
+    fn a_block_selection_survives_a_redraw() {
+        let mut e = Emulator::new(20, 4);
+        e.feed(b"abcdef\r\nghijkl");
+        e.sel_apply(sel(true, 0, 2, 1, 4));
+        e.feed(b"\x1b[H\x1b[2Kabcdef\r\n\x1b[2Kghijkl\x1b[J");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "cd\r\nij");
+    }
+
+    #[test]
+    fn find_still_selects_a_match() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.find_next("world", false);
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "world");
+    }
+
+    #[test]
+    fn an_insert_line_above_moves_the_selection_down() {
+        let mut e = Emulator::new(10, 5);
+        e.feed(b"one\r\ntwo\r\nthree");
+        e.sel_apply(sel(false, 1, 0, 1, 3));
+        assert_eq!(e.sel_text(), "two");
+        e.feed(b"\x1b[1;1H\x1b[L");
+        assert_eq!(e.sel_text(), "two");
+        let (s, _, _) = e.sel_bounds().expect("selection");
+        assert_eq!(s.0, 2);
+    }
+
+    #[test]
+    fn a_guard_split_across_two_feeds_still_keeps_the_selection() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1b[2");
+        e.feed(b"Kx");
+        assert!(e.has_selection());
+    }
+
+    /// 200 selections over a static screen (history and screen, simple and block): the text
+    /// `sel_text` returns is the text captured into the fixture before the redraw change.
+    #[test]
+    fn copy_text_is_unchanged_for_an_unchanged_screen() {
+        let mut e = Emulator::new(24, 8);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |m: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m as u64) as usize
+        };
+        for i in 0..40 {
+            let n = next(24);
+            let body: String = (0..n)
+                .map(|k| (b'a' + ((i + k) % 26) as u8) as char)
+                .collect();
+            e.feed(format!("{i:02} {body}\r\n").as_bytes());
+        }
+        let total = e.history_size() + e.rows();
+        let mut got = String::new();
+        for k in 0..200 {
+            let (r0, r1) = (next(total), next(total));
+            let (b0, b1) = (next(25), next(25));
+            e.sel_apply(sel(k % 3 == 0, r0, b0, r1, b1));
+            got.push_str(&format!("{:?}\n", e.sel_text()));
+        }
+        if std::env::var_os("FLARE_WRITE_SEL_FIXTURE").is_some() {
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/sel_text_200.txt"
+                ),
+                &got,
+            )
+            .expect("write fixture");
+        }
+        let want = include_str!("../tests/fixtures/sel_text_200.txt");
+        assert_eq!(got.replace("\r\n", "\n"), want.replace("\r\n", "\n"));
     }
 
     #[test]
