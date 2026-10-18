@@ -1266,3 +1266,25 @@ M6 owner questions (none blocks M6; recorded by the M6 builder, 2026-10-17):
 - Q2 The taskbar disc counts Finished, Question and Failed tabs exactly as Prism Terminal does, and is on by default. Confirm it stays on. No answer is recorded yet.
 - Q3 Sonara still reads `PRISM_TAB_ID` (O6). Until Sonara learns `FLARE_TAB_ID`, a Flare tab's question is not read aloud. Raise it in Sonara's repo when M6 ships.
 - The planner decisions D1 to D16 for the owner to overrule are in the M6 entry of `docs/features.md`.
+
+## Deliberate differences
+
+Each row is a recorded difference from Prism Terminal that a parity line may be ticked with (`DIFF-<n>`). The
+"Rests on" cell names the owner decision or planner decision it stands on; a row without one fails `parity_lines.rs`.
+A PROPOSED row awaits the owner's yes and is repeated in the PR description (M10 plan, Questions Q2).
+
+| Id | Prism Terminal does | Flare does | Rests on | State |
+|---|---|---|---|---|
+| DIFF-1 | Custom title bar on the DWM frame, never frameless (parity M1) | A frameless Slint window (`no-frame: true`) with the DWM backdrop called on it; the M4 spike showed no DWM border and working acrylic | M1 design (Slint draws all chrome), `docs/material.md` Decisions ("DWM border visible on the frameless window: no") | PROPOSED |
+| DIFF-2 | The two-path app mark in the title bar | The owner's flame mark, tinted like the old one | Owner, 2026-10-17, answers O17 and ICON update in the follow-ups queue | confirmed |
+| DIFF-3 | 2 px backdrop blur behind scrims and menus | None (Slint has no backdrop blur) | M3 Q1, M7 D9 | PROPOSED |
+| DIFF-4 | ClearType fringes, Chromium's hinting and 3-device-pixel hairlines at 225% | Greyscale text, 2 device-pixel hairlines at 225% by `Px.hair()` | M7 image review, M3 D8 | PROPOSED |
+| DIFF-5 | See-through glass on its renderer | See-through needs the GPU renderer; the software renderer stays solid and says so | M4 Q1 (owner has not answered) | PROPOSED |
+| DIFF-6 | Click-to-open denylist | Allowlist | O22 | confirmed (rule 134) |
+| DIFF-7 | Keys `prism.*` | Keys `flare.*` with an import map | O10, M3 D2 | confirmed |
+| DIFF-8 | Explorer verb label "Open terminal here" | "Open in Flare" | O4 | confirmed |
+| DIFF-9 | Page-stack and IPC timing in the diagnostics log | A native UI-thread watchdog and work timers | O16 | confirmed |
+| DIFF-10 | A selection moves with xterm's reflow when the column count changes | The selection's anchors keep their rows and clamp their columns (Task 19) | M5 plan D2, O23 (owner: fix the redraw case in M10) | PROPOSED |
+| DIFF-11 | The Prism-style switch and style-owned glass | Absent (host specific) | M4 scope | PROPOSED |
+| DIFF-12 | Text contrast floors are judged against the theme ground | Under see-through without acrylic, judged against the ground blended with a mid-grey desktop (only if Task 57's table shows a failure) | The owner's follow-up "look by eye" | PROPOSED, only if applied |
+| DIFF-13 | The e2e parks the window at (-4000, -4000) with opacity 0 (parity harness rule "Offscreen, never hidden") | Parks at (-32000, -32000), created there by the window-attributes hook, never made transparent (no part of it is on any monitor) | Planner D4 | PROPOSED |
