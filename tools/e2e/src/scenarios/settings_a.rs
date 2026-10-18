@@ -135,15 +135,18 @@ fn resize(app: &mut App, w: f32, h: f32) -> bool {
 }
 
 /// Gives the find field the keyboard, as PT's `find.focus()` does: a click in the field's box
-/// (`settings.find_rect`). Ctrl+F is the terminal's find bar, not Settings', so it is the fallback
-/// only where the field is folded (the narrow frame), and then it does nothing useful.
+/// (`settings.find_rect`). Where the field is folded (the narrow frame) there is no box to click,
+/// and Ctrl+F is the terminal's find bar, not Settings', so the result is false.
 fn focus_find(app: &mut App) -> bool {
     match boxed(&probe(app, "settings.find_rect", Value::Null)) {
         Some(r) => {
+            // The window is never focused in the e2e (it may not take the foreground): the
+            // window's own focus event is sent first, as a person returning to it would.
+            let _ = app.session.call(&Request::Focus { on: true });
             let (x, y) = centre(r);
             app.session.click(x, y).is_ok()
         }
-        None => app.session.key("Ctrl+F").is_ok(),
+        None => false,
     }
 }
 
@@ -228,15 +231,19 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
 
     // The Dictation rows are M8's: the page draws no dictation row until M8 (Task 47), so they are
     // skipped here and not counted as missing.
-    let (dictation, terminal): (Vec<&Value>, Vec<&Value>) =
-        core.iter().partition(|r| str_of(r, "source") == "dictation");
+    let (dictation, terminal): (Vec<&Value>, Vec<&Value>) = core
+        .iter()
+        .partition(|r| str_of(r, "source") == "dictation");
     if !dictation.is_empty() {
         ctx.skip(&format!(
             "the {} Dictation rows are M8's: the page draws none until M8 (Task 47)",
             dictation.len()
         ));
     }
-    let wanted: Vec<String> = terminal.iter().map(|r| str_of(r, "id").to_string()).collect();
+    let wanted: Vec<String> = terminal
+        .iter()
+        .map(|r| str_of(r, "id").to_string())
+        .collect();
     let missing: Vec<&String> = wanted.iter().filter(|id| !shown.contains(*id)).collect();
     ctx.ok(
         missing.is_empty(),
@@ -257,10 +264,7 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
             .filter(|r| str_of(r, "section") == s)
             .map(|r| str_of(r, "id").to_string())
             .collect();
-        let drawn: Vec<&Value> = sections
-            .iter()
-            .filter(|x| str_of(x, "id") == s)
-            .collect();
+        let drawn: Vec<&Value> = sections.iter().filter(|x| str_of(x, "id") == s).collect();
         ctx.ok(
             drawn.len() == 1,
             format!("the core section {s} is drawn once ({})", drawn.len()),
@@ -280,7 +284,10 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
             .collect();
         ctx.ok(
             order == list,
-            format!("{s}: its rows come in the shared order ({})", order.join(" > ")),
+            format!(
+                "{s}: its rows come in the shared order ({})",
+                order.join(" > ")
+            ),
         );
     }
 
@@ -372,15 +379,17 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
     ctx.skip("the chosen rail page is the hover fill: the hover colour is not exported");
 
     // The accent, from the start screen's mark (the same accent the window draws in).
-    let accent = rgb_of_hex(str_of(&probe(&mut app, "start.state", Value::Null), "mark_colour"));
+    let accent = rgb_of_hex(str_of(
+        &probe(&mut app, "start.state", Value::Null),
+        "mark_colour",
+    ));
     let k = scale_of(&mut app);
     for tab in PAGES {
         goto_page(ctx, &mut app, tab);
         let _ = ctx.shot(&mut app, &format!("settings-look-{tab}"));
         // The chosen rail item's fill, read in its right-hand part (no label or icon there).
-        let fill = rail_rect(&mut app, tab).and_then(|r| {
-            pixel(&mut app, (r.0 + r.2 - 6.0) * k, (r.1 + r.3 / 2.0) * k)
-        });
+        let fill = rail_rect(&mut app, tab)
+            .and_then(|r| pixel(&mut app, (r.0 + r.2 - 6.0) * k, (r.1 + r.3 / 2.0) * k));
         ctx.ok(
             fill.is_some_and(|c| c != accent),
             format!("{tab}: and not the accent ({fill:?})"),
@@ -444,12 +453,17 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter(|r| !r["only_nvidia"].as_bool().unwrap_or(false) && str_of(r, "page") != "dictation")
+        .filter(|r| {
+            !r["only_nvidia"].as_bool().unwrap_or(false) && str_of(r, "page") != "dictation"
+        })
         .map(|r| (str_of(r, "id").to_string(), str_of(r, "label").to_string()))
         .collect();
     ctx.ok(
         indexed.len() >= 30,
-        format!("the index covers every row drawn on this PC ({})", indexed.len()),
+        format!(
+            "the index covers every row drawn on this PC ({})",
+            indexed.len()
+        ),
     );
     if !open_settings(ctx, &mut app) {
         ctx.ok(false, "the cog opens Settings");
@@ -470,6 +484,11 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     let typed = ctx.until("the field holds the text", 3_000, &mut || {
         search_now(&mut app)["owns_escape"] == json!(true)
     });
+    // FLARE-DEFECT: settingsSearch / typing into the Settings find field / crates/flare/src/appctl.rs
+    // (`on_key`, the NotAChord arm: with no shell in front a letter is consumed) and
+    // crates/flare/ui/app.slint (`chrome-has-focus` leaves the Settings field out). The field is
+    // focused by its click (settings.find_rect); the letters never reach it. Every typed check
+    // below waits on this one fix.
     ctx.ok(typed, "a field holding text does");
     let _ = app.session.key("Escape");
     ctx.until("the field is clear", 3_000, &mut || {
@@ -554,7 +573,7 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     focus_find(&mut app);
     let _ = app.session.type_text("colour");
     ctx.until("results for colour", 3_000, &mut || {
-        str_of(&search_now(&mut app), "status") != ""
+        !str_of(&search_now(&mut app), "status").is_empty()
     });
     let during = search_now(&mut app);
     ctx.ok(
@@ -571,9 +590,11 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     // Nothing found.
     focus_find(&mut app);
     let _ = app.session.type_text("zebra");
-    let none = ctx.until("a word that matches nothing says No results", 3_000, &mut || {
-        str_of(&search_now(&mut app), "status") == "No results"
-    });
+    let none = ctx.until(
+        "a word that matches nothing says No results",
+        3_000,
+        &mut || str_of(&search_now(&mut app), "status") == "No results",
+    );
     ctx.ok(none, "a word that matches nothing says No results");
     let nothing = str_of(&search_now(&mut app), "nothing").to_string();
     ctx.ok(

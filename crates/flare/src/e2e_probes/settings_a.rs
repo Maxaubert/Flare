@@ -199,7 +199,11 @@ mod tests {
         let c = catalogue_json();
         let rows = c["rows"].as_array().expect("rows");
         assert_eq!(c["count"].as_u64(), Some(rows.len() as u64));
-        assert!(rows.len() >= 39, "the 39 rows of the draw order ({})", rows.len());
+        assert!(
+            rows.len() >= 39,
+            "the 39 rows of the draw order ({})",
+            rows.len()
+        );
         let mut ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
         let n = ids.len();
         ids.sort();
@@ -216,7 +220,14 @@ mod tests {
         let c = catalogue_json();
         let rows = c["rows"].as_array().unwrap();
         let sources: Vec<&str> = rows.iter().map(|r| r["source"].as_str().unwrap()).collect();
-        for s in ["terminal", "marks", "dictation", "help", "diagnostics", "app"] {
+        for s in [
+            "terminal",
+            "marks",
+            "dictation",
+            "help",
+            "diagnostics",
+            "app",
+        ] {
             assert!(sources.contains(&s), "the {s} source is listed");
         }
         let gpu = rows.iter().find(|r| r["id"] == "dictation-gpu").unwrap();
