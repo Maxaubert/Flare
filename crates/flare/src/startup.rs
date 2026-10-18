@@ -457,13 +457,25 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
 }
 
 /// The folder of the Claude plugin, found ONCE at startup (two small stats and the install of the
-/// plugin copy). None under `--e2e`: a test run never installs into the real profile folder.
+/// plugin copy). None under `--e2e` unless the run asks for it with the plugin seam: the harness
+/// then sets `LOCALAPPDATA` to its sandbox, so the copy lands there and never in the real profile.
 pub fn production_plugin_dir(e2e: bool) -> Option<String> {
-    if e2e {
+    if e2e
+        && !plugin_seam_on(
+            crate::e2e::global()
+                .env(&["FLARE_E2E", "_PLUGIN"].concat())
+                .as_deref(),
+        )
+    {
         return None;
     }
     // sync-ok: startup, two small stats
     flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// True when the plugin seam variable says "1": a test run that wants the real plugin.
+fn plugin_seam_on(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 /// Puts the exe's own icon on the window (M9 Task 32): once its handle exists, and again on every
@@ -609,6 +621,16 @@ mod tests {
 
     fn names_of(a: &str, ink: &str) -> String {
         format!("<font color=\"{ink}\">{a}</font>")
+    }
+
+    #[test]
+    fn a_test_run_gets_the_plugin_only_when_it_asks_for_it() {
+        assert!(!plugin_seam_on(None), "no variable, no plugin");
+        assert!(!plugin_seam_on(Some("")));
+        assert!(!plugin_seam_on(Some("0")));
+        assert!(plugin_seam_on(Some("1")));
+        // Off, or without --e2e, it is the old answer: nothing is installed or handed out.
+        assert_eq!(production_plugin_dir(true), None);
     }
 
     #[test]

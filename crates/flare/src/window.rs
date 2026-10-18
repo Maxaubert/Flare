@@ -1077,13 +1077,16 @@ pub fn run_window(
         crate::startup::warm_help_index();
     }
     // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
-    // exists now). Under --e2e the overlay is never touched.
+    // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
+    // the badge's text can be read.
     if let Some(rc) = &ctl {
         let mut c = rc.borrow_mut();
         c.start_agent_poll();
-        if !args.e2e
-            && let Some(hwnd) = hwnd_of(&app)
-        {
+        if args.e2e {
+            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
+                flare_win::taskbar::RecordShell,
+            )));
+        } else if let Some(hwnd) = hwnd_of(&app) {
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }

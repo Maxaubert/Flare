@@ -1670,6 +1670,11 @@ impl AppCtl {
         &mut self.hub
     }
 
+    /// The hub, read only: what the test hook's agent probe asks.
+    pub(crate) fn hub(&self) -> &AgentHub {
+        &self.hub
+    }
+
     /// The live terminal of a tab (window flow tests send keys through it, as the window does).
     #[cfg(test)]
     pub(crate) fn handle_of(&self, id: &str) -> Option<Arc<TermHandle>> {
@@ -2732,19 +2737,24 @@ impl AppCtl {
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
 
-    /// The pointer in window css pixels.
-    pub fn on_cursor(&mut self, x_css: f32, y_css: f32) {
-        if self.tips.shown() {
-            self.clear_tip();
-        }
+    /// A pointer moving over an unfocused window is a look (the indicator throttles it). The test
+    /// hook tells the controller this much of every pointer move, as the real window does.
+    pub fn on_pointer_look(&mut self) {
         if !self.focused {
-            // A pointer moving over an unfocused window is a look (the indicator throttles it).
             self.hub.pointer_moved();
             if self.hub.take_changed() {
                 self.sync_model_agents();
                 self.refresh();
             }
         }
+    }
+
+    /// The pointer in window css pixels.
+    pub fn on_cursor(&mut self, x_css: f32, y_css: f32) {
+        if self.tips.shown() {
+            self.clear_tip();
+        }
+        self.on_pointer_look();
         let now = self.now();
         self.sidebar.pointer(
             Some(Point {
@@ -5242,6 +5252,22 @@ mod tests {
         assert!(
             !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
             "a pointer move is a look"
+        );
+        // The look alone, without the rest of a cursor move, does the same.
+        let h = fx();
+        let ids = h.open_tabs(&["C:\\a"]);
+        h.ctl.borrow_mut().on_focus_lost();
+        h.say("C:\\a", OSC_WORKING);
+        h.say("C:\\a", OSC_DONE);
+        h.pump_until("the finished mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        h.clock.set(h.clock.get() + 2_000);
+        h.ctl.borrow_mut().on_pointer_look();
+        h.ctl.borrow_mut().on_pointer_look();
+        assert!(
+            !h.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "a pointer look on an unfocused window is a look"
         );
         // Coming back to the window is a look.
         let g = fx();

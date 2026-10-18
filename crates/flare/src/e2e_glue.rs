@@ -1032,6 +1032,14 @@ impl GlueCtx {
     fn dispatch(&self, events: Vec<WindowEvent>) -> Result<(), String> {
         let app = self.app.upgrade().ok_or("the window is gone")?;
         for e in events {
+            // A pointer move over an unfocused window is a look; the real window tells the
+            // controller so, and an injected Slint event does not.
+            if matches!(e, WindowEvent::PointerMoved { .. })
+                && let Some(rc) = self.ctl.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                c.on_pointer_look();
+            }
             if let Some(told) = cursor_forward(&e, app.get_sidebar_collapsed())
                 && let Some(rc) = self.ctl.upgrade()
                 && let Ok(mut c) = rc.try_borrow_mut()
