@@ -2,16 +2,41 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "src/rc_text.rs"]
+mod rc_text;
+
 const BUNDLED: [&str; 2] = ["conpty.dll", "OpenConsole.exe"];
 
 fn main() {
     slint_build::compile("ui/app.slint").expect("Slint UI failed to compile");
-    // The exe's icon and version resource (M9). A missing RC.EXE fails the build here, loudly.
-    embed_resource::compile("flare.rc", embed_resource::NONE)
-        .manifest_required()
-        .expect("embed the exe resource (flare.rc)");
+    write_resource();
     copy_bundled_conpty();
     copy_claude_plugin();
+}
+
+/// The exe's icon and version resource (M9 Task 26): the owner's icon (`build/icon.ico`, made by
+/// `tools/make-icon.py`) and the workspace version, written as resource text into OUT_DIR and compiled
+/// there. A missing RC.EXE fails the build here, loudly.
+fn write_resource() {
+    let manifest =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo sets the manifest dir"));
+    // crates/flare -> the workspace root, two levels up, with no `..` left in the path.
+    let icon = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("the flare crate sits two levels under the workspace root")
+        .join("build")
+        .join("icon.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    println!("cargo:rerun-if-changed=src/rc_text.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let version = env::var("CARGO_PKG_VERSION").expect("cargo sets the package version");
+    let text = rc_text::rc_text(&version, &icon.to_string_lossy());
+    let out = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("flare.rc");
+    fs::write(&out, text).expect("write the generated resource script");
+    embed_resource::compile(&out, embed_resource::NONE)
+        .manifest_required()
+        .expect("embed the exe resource (flare.rc)");
 }
 
 /// Copies the bundled Claude Code plugin (`flare-agent/claude-plugin`) to `<profile>/claude-plugin`,

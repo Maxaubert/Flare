@@ -1031,9 +1031,9 @@ Scope is v0.55.6 dictation: Parakeet, warm-up and the GPU pack are in; dictate-a
 
 ### Icon and brand
 
-- [ ] One .ico for app, installer, uninstaller and taskbar, generated from square artwork on a rounded black square (inset round(8*n/256), corner radius 56/256) with a #202020 one-pixel outline, 8x supersampling, LANCZOS; frames 16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 96, 128, 256 (tools/make-icon.py).
+- [x] One .ico for app, installer, uninstaller and taskbar, generated from square artwork on a rounded black square (inset round(8*n/256), corner radius 56/256) with a #202020 one-pixel outline, 8x supersampling, LANCZOS; frames 16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 96, 128, 256 (tools/make-icon.py). Superseded by O17 (2026-10-17): the owner's artwork is rendered as it is, with no badge and no outline.
 - [ ] The window icon is the exe's own; the badge stays an overlay.
-- [ ] DECISION: Flare artwork reuse or new (O17).
+- [x] DECISION: Flare artwork reuse or new (O17). Answered 2026-10-17: the owner's artwork (assets/icon/flare-color.svg) is the app icon and the in-app mark, used as it is.
 
 ## M10: Parity sweep, e2e, performance
 
@@ -1144,7 +1144,7 @@ Scope is v0.55.6 dictation: Parakeet, warm-up and the GPU pack are in; dictate-a
 ## Decisions (2026-10-17)
 
 Settled by the builder under the owner's standing rule (obvious picks decided, parity by default);
-only O17's artwork waits for the owner.
+O17's artwork arrived 2026-10-17 (the owner's own icon).
 
 - O1 the cd line: KEEP for parity (`termCwd.ts cdCommand`). The design's "only command is the
   resume" is read as Prism Terminal's actual rule, which includes the idle-prompt cd line.
@@ -1169,7 +1169,7 @@ only O17's artwork waits for the owner.
   the update chip and window stay as the UI (off until the repo is public).
 - O16 diagnostics: a native stall watchdog (UI thread heartbeat) and timing of slow work replace
   the page-stack and IPC timings; M9 builder's call within that.
-- O17 icon: a placeholder until the owner picks artwork (asked at the next status call);
+- O17 icon: answered 2026-10-17. The owner's artwork (assets/icon/flare-color.svg) is the app icon and the in-app mark; the placeholder is dropped;
   XTVERSION reports `Flare <version>`.
 - O18 rows: port the shipped v0.55.6 build, not Prism Terminal's spec.
 - O19 media pause: native GSMTC through the `windows` crate; unzip with a Rust zip crate. Both
