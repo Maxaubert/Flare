@@ -7,3 +7,7 @@ crates/flare-agent/src/badge.rs | #ffffff | the taskbar disc's count ink, white 
 crates/flare-agent/src/icon.rs | #d77757 | Clawd's orange as Claude Code draws it in the terminal: the agent's own colour, never a theme value
 crates/flare/src/appctl.rs | #ffffff | the ink `ask_text` passes to `ask_view` inside a #[cfg(test)] fn (the scan stops only at a top-level cfg(test)); the tests read the dialog's words, not its colour
 crates/flare-win/src/taskbar.rs | #25242c | the taskbar disc's fill named in doc comments, the same fixed value as badge.rs
+// M7: the settings.
+crates/flare-settings/src/actions.rs | #888888 | the editor's fallback for a cleared ANSI well, Prism Terminal's own (ThemeWall.tsx, `v ?? '#888888'`); a placeholder grey, never a theme value
+crates/flare/src/ui_tests/settings_select.rs | #f6a25b | a comment naming the accent-hi ink that the warm-pixel test checks for
+crates/flare/src/ui_tests/settings_view.rs | #FE8F34 | a test row's colour code text (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
