@@ -150,7 +150,8 @@ fn open_and_read(dir: &Path) -> Result<LocalStorage, String> {
 }
 
 /// Read Prism Terminal's Local Storage from a copy. `pause` is called once (300 ms) before the
-/// single retry when the first copy will not open (a copy taken mid-write can be torn).
+/// single retry when the first copy fails or will not open (a copy taken mid-write can be torn; a
+/// file can be held or vanish while it is copied).
 pub fn read_local_storage(
     profile: &Path,
     temp_root: &Path,
@@ -171,19 +172,28 @@ pub fn read_local_storage_in(
     if !fs::metadata(&src).map(|m| m.is_dir()).unwrap_or(false) {
         return Err(ReadError::NoFolder);
     }
-    let first = temp_root.join(unique_name(""));
-    let mut guard = Cleanup(Some(first.clone()));
-    let mut files = copy_folder(&src, &first)?;
-    let mut result = open_and_read(&first);
-    if result.is_err() {
-        pause(Duration::from_millis(300));
-        drop(guard);
-        let retry = temp_root.join(unique_name("-retry"));
-        guard = Cleanup(Some(retry.clone()));
-        files = copy_folder(&src, &retry)?;
-        result = open_and_read(&retry);
+    match attempt(&src, temp_root, "", keep) {
+        Ok(done) => Ok(done),
+        Err(_) => {
+            // A copy taken mid-write can be torn, and a file can be held or vanish (a compaction)
+            // while it is copied: one more go after the pause.
+            pause(Duration::from_millis(300));
+            attempt(&src, temp_root, "-retry", keep)
+        }
     }
-    let mut ls = result.map_err(ReadError::Open)?;
+}
+
+/// One copy and read; the copy folder is removed on every path unless `keep`.
+fn attempt(
+    src: &Path,
+    temp_root: &Path,
+    suffix: &str,
+    keep: bool,
+) -> Result<(LocalStorage, Option<PathBuf>), ReadError> {
+    let dir = temp_root.join(unique_name(suffix));
+    let mut guard = Cleanup(Some(dir.clone()));
+    let files = copy_folder(src, &dir)?;
+    let mut ls = open_and_read(&dir).map_err(ReadError::Open)?;
     ls.files_copied = files;
     let kept = if keep { guard.keep() } else { None };
     Ok((ls, kept))
@@ -419,6 +429,45 @@ mod tests {
         assert!(matches!(r, Err(ReadError::Open(_))));
         assert_eq!(calls.get(), 1);
         assert_eq!(waited.get(), Duration::from_millis(300));
+    }
+
+    /// A file Prism Terminal (or a scanner) holds with no sharing cannot be copied; one retry after the
+    /// pause reads it once it is let go, and a lock held throughout is a Copy error, never a panic.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_locked_during_the_first_copy_is_one_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let p = profile(false, |db| db.put(&key("a"), &latin1("1")).unwrap());
+        let ldb = p.path().join("Local Storage/leveldb");
+        let log = fs::read_dir(&ldb)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|x| x == "log"))
+            .expect("a log file");
+        let open_locked = || {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&log)
+                .unwrap()
+        };
+        let t = tempfile::tempdir().unwrap();
+
+        let held = std::cell::RefCell::new(Some(open_locked()));
+        let calls = Cell::new(0);
+        let ls = read_local_storage(p.path(), t.path(), &|_| {
+            calls.set(calls.get() + 1);
+            held.borrow_mut().take();
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(ls.values["a"], "1");
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
+
+        let _still = open_locked();
+        let r = read_local_storage(p.path(), t.path(), &|_| {});
+        assert!(matches!(r, Err(ReadError::Copy(_))), "{r:?}");
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
     }
 
     #[test]
