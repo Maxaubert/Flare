@@ -496,9 +496,13 @@ fn pick_card(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
         return false;
     };
     click_r(app, &card["rect"]);
-    ctx.until(&format!("the {id} card to be on"), 4_000, &mut || {
+    // A pick with changes unsaved opens the question instead of switching, so that is an answer
+    // too: the wait ends on either, records nothing, and the caller's check says which it wanted.
+    ctx.poll(4_000, &mut || {
         card_of(app).is_some_and(|c| c["on"] == json!(true))
-    })
+            || state(app)["ask_open"] == json!(true)
+    });
+    card_of(app).is_some_and(|c| c["on"] == json!(true))
 }
 
 /// Opens the theme editor on the card in force by its pencil.
@@ -1271,9 +1275,8 @@ fn answer_ask(ctx: &mut Ctx, app: &mut App, answer: &str) {
 }
 
 fn ask_open(ctx: &mut Ctx, app: &mut App, ms: u64) -> bool {
-    ctx.until("the switch question to open", ms, &mut || {
-        state(app)["ask_open"] == json!(true)
-    })
+    // A miss is an answer ("no question opened"), so the wait records nothing.
+    ctx.poll(ms, &mut || state(app)["ask_open"] == json!(true))
 }
 
 /// Relaunches on the same profile after seeding the old app's storage in a stand-in profile
@@ -1533,6 +1536,9 @@ fn coats(app: &mut App, tmp: &Path) -> Vec<f64> {
     let mut out: Vec<f64> = ["tabs", "title", "side", "ground"]
         .iter()
         .map(|k| a[*k].as_f64().unwrap_or(-1.0))
+        // A token with no alpha at all paints no coat of its own (the settings rail leaves the
+        // ground's coat showing); the pixel read at the rail below proves the one coat there.
+        .filter(|a| *a != 0.0)
         .collect();
     // The pixels: one device pixel inside each surface, alpha straight from the swapchain.
     if app.session.snapshot(&tmp.join("coats.png")).is_ok() {
@@ -1748,6 +1754,11 @@ pub fn see_through(ctx: &mut Ctx) -> Result<(), String> {
 
     // Custom keeps its level: save at 45, leave, come back.
     set_slider(ctx, &mut app, ID, 45);
+    // The slider sits far below the Save row: scroll it into the pane before pressing it.
+    bring_into_view(ctx, &mut app, "the Save button", &mut |a| {
+        let s = probe(a, "picker.save", Value::Null);
+        Some((s["point"]["y"].as_f64()?, s["visible"] == json!(true)))
+    });
     let sv = probe(&mut app, "picker.save", Value::Null);
     if let (Some(x), Some(y)) = (sv["point"]["x"].as_f64(), sv["point"]["y"].as_f64()) {
         click_at(&mut app, (x as f32, y as f32));
@@ -1757,6 +1768,8 @@ pub fn see_through(ctx: &mut Ctx) -> Result<(), String> {
     });
     // PT: run.mjs:6577
     ctx.ok(lit_off, "Save changes keeps it");
+    // The settings file is written a moment after the button goes quiet.
+    ctx.poll(4_000, &mut || custom_json(&app)["seeThrough"] == json!(45));
     let kept = custom_json(&app)["seeThrough"].clone();
     // PT: run.mjs:6578
     ctx.ok(kept == json!(45), format!("as Custom's own level ({kept})"));

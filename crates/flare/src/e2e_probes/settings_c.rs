@@ -503,6 +503,12 @@ fn picker_save(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
             "visible": in_pane(ctx, area),
         }));
     }
+    // The Appearance page keeps its Save changes as a row of the theme section, not a heading
+    // action: the same button settings.theme lists.
+    let t = super::settings_b::settings_theme(ctx, &Value::Null)?;
+    if let Some(s) = t["saves"].as_array().and_then(|a| a.first()) {
+        return Ok(s.clone());
+    }
     Err("picker.save: no section on this page has a Save".into())
 }
 

@@ -231,6 +231,14 @@ impl Ctx {
         false
     }
 
+    /// A wait whose miss is an answer, not a failure ("did a question open?"). Polls like `until`
+    /// and returns whether it held, but never records or holds a timeout: the caller's own check
+    /// states the verdict.
+    pub fn poll(&mut self, timeout_ms: u64, f: &mut dyn FnMut() -> bool) -> bool {
+        let mut clock = SystemClock::new();
+        wait_on(&mut clock, timeout_ms, f)
+    }
+
     /// Holds the scenario still for at most 50 ms. Only for "nothing changed" proofs.
     pub fn settle(&mut self, ms: u64) {
         assert!(

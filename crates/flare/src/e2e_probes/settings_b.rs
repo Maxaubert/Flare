@@ -338,7 +338,7 @@ fn saves(ctx: &ProbeCtx, f: &Frame) -> Vec<Value> {
 /// `settings.theme`: the theme wall (its cards, the one being edited), the theme editor (open,
 /// its wells, its Save and Cancel), the colour picker (open, its colour), the switch question
 /// (open, its buttons in order) and every section's Save changes (dirty, lit, where to click).
-fn settings_theme(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+pub(super) fn settings_theme(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let b = ctx.app.global::<SettingsBridge>();
     let f = frame(ctx);
     let (ww, wh) = css_window(ctx);
