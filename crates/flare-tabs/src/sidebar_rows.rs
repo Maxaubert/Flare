@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn find_keeps_every_word_any_case_any_order() {
         assert!(find_keeps("", "Prism", r"C:\x"));
-        assert!(find_keeps("pri", "PrismTerminal", r"C:\x"));
+        assert!(find_keeps("pri", "Prismatic", r"C:\x"));
         assert!(find_keeps(
             "github prism",
             "Prism",

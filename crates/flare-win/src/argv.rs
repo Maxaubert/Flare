@@ -158,7 +158,7 @@ mod tests {
         let b = base.join("b.jpg");
         fs::write(&a, b"a").unwrap();
         fs::write(&b, b"b").unwrap();
-        let got = paths_from_argv(&args(&["prism.exe", &s(&a), &s(&b)]), &[], base);
+        let got = paths_from_argv(&args(&["flare.exe", &s(&a), &s(&b)]), &[], base);
         assert_eq!(named(&got), vec![(a, false), (b, false)]);
     }
 

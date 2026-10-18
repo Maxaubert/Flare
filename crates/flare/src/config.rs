@@ -40,6 +40,8 @@ pub struct Args {
     pub user_data_dir: Option<PathBuf>,
     /// `--e2e`: the window shows inactive, never raises, stays off the taskbar.
     pub e2e: bool,
+    /// `--no-import`: the first-run import from Prism Terminal does not run this start.
+    pub no_import: bool,
     /// `--scene <name>`: a headless scene for the screenshots.
     pub scene: Option<String>,
     /// `--live-tabs <n>`: how many live tabs a scene shows.
@@ -70,6 +72,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         live_shell: None,
         user_data_dir: None,
         e2e: false,
+        no_import: false,
         scene: None,
         live_tabs: None,
         instance_probe: false,
@@ -105,6 +108,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             }
             "--live-shell" => out.live_shell = Some(value(args, &mut i, flag)?.to_string()),
             "--e2e" => out.e2e = true,
+            "--no-import" => out.no_import = true,
             "--instance-probe" => out.instance_probe = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
             "--live-tabs" => {
@@ -345,6 +349,13 @@ mod tests {
     fn live_shell_needs_live_screenshot() {
         assert!(parse_args(&a(&["--live-shell", "cmd"]), None).is_err());
         assert!(parse_args(&a(&["--live-shell"]), None).is_err());
+    }
+
+    #[test]
+    fn no_import_parses() {
+        assert!(!parse_args(&a(&[]), None).unwrap().no_import);
+        assert!(parse_args(&a(&["--no-import"]), None).unwrap().no_import);
+        assert!(parse_args(&a(&["--no-import=yes"]), None).is_err());
     }
 
     #[test]

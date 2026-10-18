@@ -20,8 +20,6 @@ use flare_settings::look::{LookSnapshot, LookStore};
 use flare_theme::edges::WindowEdges;
 use flare_theme::look::{AppliedLook, apply_look};
 use flare_theme::marks::Mode;
-use flare_theme::order::wall_ids;
-use flare_theme::preset::HOST_DEFAULT_THEME;
 use flare_theme::reports::{
     NUDGE_AFTER_MS, NUDGE_HOLD_MS, THEME_REPORTS_OFF, ThemeReports, nudge_widths, theme_push,
 };
@@ -492,37 +490,6 @@ impl LookCtl {
             })
             .min()
     }
-
-    // ---- the developer chords (decision D13) ------------------------------------------------------
-
-    /// F9 and Shift+F9: the next or previous theme of the wall (Custom first when saved, then the host
-    /// default, then the ordered rest). Writes the store; wraps.
-    pub fn debug_step_theme(&mut self, dir: i32) {
-        let ids = wall_ids(self.store.custom().is_some(), HOST_DEFAULT_THEME);
-        let n = ids.len() as i32;
-        if n == 0 {
-            return;
-        }
-        let here = self.store.theme_id();
-        let at = ids.iter().position(|i| *i == here).map_or(-1, |i| i as i32);
-        let next = (at + dir.signum()).rem_euclid(n) as usize;
-        self.store.set_theme_id(&ids[next]);
-    }
-
-    /// F8: the see-through level plus ten, 70 back to 0. Ignored when the window cannot show glass.
-    pub fn debug_step_see_through(&mut self) {
-        if !self.glass_possible() {
-            log::info!("see-through: this window cannot show glass (renderer or Windows build)");
-            return;
-        }
-        let level = self.store.see_through();
-        let next = if level >= SEE_THROUGH_TOP {
-            0
-        } else {
-            level + 10
-        };
-        self.store.set_see_through(next);
-    }
 }
 
 #[cfg(test)]
@@ -534,7 +501,6 @@ mod tests {
     use flare_render::glyph::FakeGlyphs;
     use flare_render::grid::Grid;
     use flare_settings::kv::PrefStore;
-    use flare_theme::order::wall_ids;
     use flare_theme::reports::theme_reports;
     use std::cell::Cell;
     use std::sync::atomic::AtomicUsize;
@@ -826,40 +792,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn f9_walks_the_wall_and_wraps() {
-        let (mut c, prefs, store, _) = ctl_with(false, LookOverrides::default());
-        with_custom(&prefs);
-        assert!(store.custom().is_some());
-        let wall = wall_ids(true, "pt-default");
-        assert_eq!(wall.len(), 40);
-        assert_eq!(wall[0], "custom");
-        assert_eq!(wall[1], "pt-default");
-        assert_eq!(store.theme_id(), "pt-default");
-        for i in 0..40 {
-            c.debug_step_theme(1);
-            assert_eq!(store.theme_id(), wall[(2 + i) % 40], "press {i}");
-        }
-        assert_eq!(store.theme_id(), "pt-default");
-        c.debug_step_theme(-1);
-        assert_eq!(store.theme_id(), "custom");
-        c.debug_step_theme(-1);
-        assert_eq!(store.theme_id(), "butter");
-        assert_eq!(wall.last().map(String::as_str), Some("butter"));
-    }
-
-    #[test]
-    fn f8_steps_the_see_through_by_ten_and_wraps() {
-        let (mut c, _, store, _) = ctl_with(true, LookOverrides::default());
-        for want in [10u8, 20, 30, 40, 50, 60, 70, 0] {
-            c.debug_step_see_through();
-            assert_eq!(store.see_through(), want);
-        }
-        let (mut c, _, store, _) = ctl_with(false, LookOverrides::default());
-        c.debug_step_see_through();
-        assert_eq!(store.see_through(), 0);
-    }
-
     fn outcome() -> BackendOutcome {
         BackendOutcome {
             effective: RendererChoice::Software,
@@ -922,31 +854,5 @@ mod tests {
                 "scale {scale}: {mid:?}"
             );
         }
-    }
-
-    #[test]
-    fn the_debug_keys_work_only_with_the_overlay_open() {
-        let h = Harness::new(1.0, 1000, 640, || {
-            AppWindow::new().expect("the window builds")
-        });
-        let themes = Rc::new(Cell::new(0));
-        let levels = Rc::new(Cell::new(0));
-        h.comp.on_debug_step_theme({
-            let themes = themes.clone();
-            move |dir| themes.set(themes.get() + dir)
-        });
-        h.comp.on_debug_step_see_through({
-            let levels = levels.clone();
-            move || levels.set(levels.get() + 1)
-        });
-        let f9: slint::SharedString = slint::platform::Key::F9.into();
-        let f8: slint::SharedString = slint::platform::Key::F8.into();
-        h.key_text(&f9);
-        h.key_text(&f8);
-        assert_eq!((themes.get(), levels.get()), (0, 0));
-        h.comp.set_overlay_visible(true);
-        h.key_text(&f9);
-        h.key_text(&f8);
-        assert_eq!((themes.get(), levels.get()), (1, 1));
     }
 }

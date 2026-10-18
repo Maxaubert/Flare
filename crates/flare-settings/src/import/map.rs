@@ -11,6 +11,10 @@
 //! This file, `legacy.rs` and the test fixtures of `import/` are the only places in
 //! `crates/*/src` where the text of Prism Terminal's key prefix may be written.
 
+/// Prism Terminal's key prefix: every key it stores starts with it. The importer's one copy (run.rs
+/// reads it from here).
+pub const PREFIX: &str = "prism.";
+
 use flare_theme::colour::{ColourFormat, canonical_stored};
 use flare_theme::fonts::{font_id_or_default, font_pct_from};
 use flare_theme::retired::live_theme_id;

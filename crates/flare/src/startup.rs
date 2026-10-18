@@ -5,13 +5,21 @@
 
 #![allow(dead_code)] // wired by AppCtl (a later task); remove this line then
 
+use crate::config::{Args, RendererChoice};
 use crate::tab_host::TabHost;
 use flare_agent::close::{
     CloseTarget, close_primary_label, close_question_title, holds_window_close,
 };
 use flare_agent::kinds::DetectedAgent;
+use flare_diag::control::DiagControl;
+use flare_settings::import::run::{ImportPaths, ImportReport, run_once, should_run};
+use flare_settings::kv::PrefStore;
+use flare_settings::page::GlassSupport;
+use flare_settings::verb::DiagControlApi;
 use flare_tabs::close_flow::close_question_body;
 use flare_tabs::tabs_store::TabsStore;
+use flare_win::material::{Support, support};
+use flare_win::os_build::OsVersion;
 use flare_win::single_instance::{
     Acquired, Handoff, InstanceGuard, InstanceNames, acquire, encode_handoff, instance_names,
     send_handoff, serve,
@@ -447,6 +455,123 @@ pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLoo
     std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::from_env())
 }
 
+// ---- M7 Task 44: the first-run import, the Settings ports and the warm-up ----------------------
+
+/// The licence file; its `Copyright` line is the About page's copyright (decision: read, never typed).
+pub const LICENCE: &str = include_str!("../../../LICENSE");
+
+/// The import's ceiling: one bounded wait before the first paint (decision D14).
+pub const IMPORT_CEILING: Duration = Duration::from_millis(1500);
+
+/// Where the first-run import reads from, or why it does not run this start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportPlan {
+    Skip,
+    Run { appdata: PathBuf },
+}
+
+/// The import's gate. Headless modes and `--no-import` never import. Under `--e2e` only the seam's
+/// folder is read (never the owner's Prism Terminal data), and no seam means no import. Otherwise
+/// the folder is `%APPDATA%`.
+pub fn import_plan(args: &Args, e2e_seam: Option<&str>, appdata: Option<&str>) -> ImportPlan {
+    let headless = args.sample
+        || args.scene.is_some()
+        || args.screenshot.is_some()
+        || args.live_screenshot.is_some()
+        || args.instance_probe
+        || args.probe_backend
+        || args.bench_frames.is_some();
+    if args.no_import || headless {
+        return ImportPlan::Skip;
+    }
+    let folder = if args.e2e { e2e_seam } else { appdata };
+    match folder.filter(|f| !f.is_empty()) {
+        Some(f) => ImportPlan::Run {
+            appdata: PathBuf::from(f),
+        },
+        None => ImportPlan::Skip,
+    }
+}
+
+/// Runs the once-only import when the plan says so and the settings file does not record it yet.
+/// Called before anything reads a setting; it waits at most `IMPORT_CEILING`. None when nothing ran.
+pub fn import_at_start(
+    prefs: &PrefStore,
+    plan: &ImportPlan,
+    temp_root: &Path,
+) -> Option<ImportReport> {
+    let ImportPlan::Run { appdata } = plan else {
+        return None;
+    };
+    if !should_run(prefs) {
+        return None;
+    }
+    let paths = ImportPaths {
+        appdata: appdata.clone(),
+        temp_root: temp_root.to_path_buf(),
+    };
+    // sync-ok: once, before the first paint, bounded by the ceiling
+    Some(run_once(prefs, &paths, IMPORT_CEILING))
+}
+
+/// The diagnostics control as the Settings page sees it: the real flag file and folder. The mark
+/// goes to no sink until M9 owns the diagnostics writer.
+pub struct DiagPort(pub DiagControl);
+
+impl DiagControlApi for DiagPort {
+    fn verbose(&self) -> bool {
+        self.0.verbose()
+    }
+
+    fn set_verbose(&self, on: bool) -> bool {
+        self.0.set_verbose(on)
+    }
+
+    fn mark(&self) {
+        self.0.mark();
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.0.dir()
+    }
+}
+
+/// The first line of the licence that starts with `Copyright`, trimmed; empty when there is none.
+pub fn copyright_line(licence: &str) -> String {
+    licence
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("Copyright"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// What the glass rows may say: See-through needs the GPU renderer and Windows 11 22H2 (the DWM
+/// backdrop build); the older builds and the software renderer say why.
+pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
+    if effective != RendererChoice::Gpu {
+        return GlassSupport::NeedsGraphicsRenderer;
+    }
+    match support(os) {
+        Support::Ok => GlassSupport::Ok,
+        Support::NeedsWindows11 => GlassSupport::NeedsWindows11,
+        Support::NeedsWindows11_22H2 => GlassSupport::NeedsWindows11Update,
+    }
+}
+
+/// Builds the help catalogue and runs one search on a worker, so the first query is quick.
+pub fn warm_help_index() {
+    let spawned = std::thread::Builder::new()
+        .name("flare-help-warm".into())
+        .spawn(|| {
+            let all = flare_help::entries::all_help();
+            let _ = flare_help::search::search_help(all, "warm", &Default::default());
+        });
+    if let Err(e) = spawned {
+        log::warn!("could not warm the help index: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +837,202 @@ mod tests {
         glue(&model);
         tabs.flush();
         assert!(profile.tabs_file().exists());
+    }
+}
+
+#[cfg(test)]
+mod m7_start_tests {
+    use super::*;
+    use flare_settings::kv::{Backend, PrefStore};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    fn args(words: &[&str]) -> Args {
+        let owned: Vec<String> = words.iter().map(|w| (*w).to_string()).collect();
+        crate::config::parse_args(&owned, None).expect("the flags parse")
+    }
+
+    /// Records every get and set, in order, and keeps the values in memory.
+    #[derive(Default)]
+    struct Recording {
+        log: Mutex<Vec<String>>,
+        values: Mutex<BTreeMap<String, String>>,
+    }
+
+    impl Backend for Recording {
+        fn get(&self, key: &str) -> Option<String> {
+            self.log.lock().unwrap().push(format!("get {key}"));
+            self.values.lock().unwrap().get(key).cloned()
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            self.log.lock().unwrap().push(format!("set {key}"));
+            self.values
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_string());
+        }
+
+        fn remove(&self, key: &str) {
+            self.log.lock().unwrap().push(format!("remove {key}"));
+            self.values.lock().unwrap().remove(key);
+        }
+    }
+
+    #[test]
+    fn the_import_is_skipped_under_e2e_without_the_seam_and_under_no_import() {
+        let appdata = Some("C:\\Users\\someone\\AppData\\Roaming");
+        assert_eq!(
+            import_plan(&args(&["--e2e"]), None, appdata),
+            ImportPlan::Skip
+        );
+        assert_eq!(
+            import_plan(&args(&["--e2e"]), Some(""), appdata),
+            ImportPlan::Skip
+        );
+        assert_eq!(
+            import_plan(&args(&["--no-import"]), None, appdata),
+            ImportPlan::Skip
+        );
+        assert_eq!(
+            import_plan(&args(&[]), None, None),
+            ImportPlan::Skip,
+            "no APPDATA, no import"
+        );
+    }
+
+    #[test]
+    fn the_import_is_skipped_in_every_headless_mode() {
+        let appdata = Some("C:\\A");
+        for words in [
+            vec!["--scene", "settings"],
+            vec!["--screenshot", "x.png"],
+            vec!["--live-screenshot", "x.png"],
+            vec!["--instance-probe"],
+            vec!["--probe-backend"],
+            vec!["--bench-frames", "5"],
+            vec!["--sample"],
+        ] {
+            assert_eq!(
+                import_plan(&args(&words), None, appdata),
+                ImportPlan::Skip,
+                "{words:?}"
+            );
+        }
+        assert_eq!(
+            import_plan(&args(&[]), None, appdata),
+            ImportPlan::Run {
+                appdata: PathBuf::from("C:\\A")
+            }
+        );
+    }
+
+    #[test]
+    fn the_e2e_seam_points_the_importer_at_a_test_folder() {
+        assert_eq!(
+            import_plan(&args(&["--e2e"]), Some("D:\\scratch\\pt"), Some("C:\\A")),
+            ImportPlan::Run {
+                appdata: PathBuf::from("D:\\scratch\\pt")
+            },
+            "under e2e the seam wins and %APPDATA% is never read"
+        );
+    }
+
+    #[test]
+    fn a_second_start_does_not_import_again() {
+        let appdata = tempfile::tempdir().expect("a temp folder");
+        let temp = tempfile::tempdir().expect("a temp folder");
+        let prefs = PrefStore::memory();
+        let plan = ImportPlan::Run {
+            appdata: appdata.path().to_path_buf(),
+        };
+        let first = import_at_start(&prefs, &plan, temp.path());
+        assert!(first.is_some(), "the first start runs the import");
+        assert!(prefs.get(flare_settings::import::run::DONE_KEY).is_some());
+        assert!(import_at_start(&prefs, &plan, temp.path()).is_none());
+    }
+
+    #[test]
+    fn no_setting_is_read_before_the_import_records_itself() {
+        let appdata = tempfile::tempdir().expect("a temp folder");
+        let temp = tempfile::tempdir().expect("a temp folder");
+        let backend = Arc::new(Recording::default());
+        let prefs = PrefStore::new(backend.clone());
+        let plan = ImportPlan::Run {
+            appdata: appdata.path().to_path_buf(),
+        };
+        import_at_start(&prefs, &plan, temp.path());
+        let log = backend.log.lock().unwrap().clone();
+        let done = format!("set {}", flare_settings::import::run::DONE_KEY);
+        let at = log
+            .iter()
+            .position(|l| *l == done)
+            .expect("the import records itself");
+        for line in &log[..at] {
+            let key = line.trim_start_matches("get ").trim_start_matches("set ");
+            assert!(
+                key.starts_with("flare.import.") || key.starts_with("flare."),
+                "before the record only import keys are touched: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_copyright_line_is_read_from_license() {
+        let line = copyright_line(LICENCE);
+        assert!(line.starts_with("Copyright (c) 2026"), "{line}");
+        assert_eq!(copyright_line("no notice here"), "");
+    }
+
+    #[test]
+    fn glass_says_why_it_is_off() {
+        let os = |build| OsVersion {
+            major: 10,
+            minor: 0,
+            build,
+        };
+        assert_eq!(
+            glass_support(RendererChoice::Software, os(26100)),
+            GlassSupport::NeedsGraphicsRenderer
+        );
+        assert_eq!(
+            glass_support(RendererChoice::Gpu, os(19045)),
+            GlassSupport::NeedsWindows11
+        );
+        assert_eq!(
+            glass_support(RendererChoice::Gpu, os(22000)),
+            GlassSupport::NeedsWindows11Update
+        );
+        assert_eq!(
+            glass_support(RendererChoice::Gpu, os(22621)),
+            GlassSupport::Ok
+        );
+    }
+
+    #[test]
+    fn the_diagnostics_port_reads_and_writes_the_flag_file() {
+        let profile = tempfile::tempdir().expect("a temp folder");
+        let port = DiagPort(DiagControl::new(profile.path(), None));
+        assert!(!port.verbose());
+        assert!(port.set_verbose(true));
+        assert!(port.verbose());
+        assert_eq!(port.dir(), profile.path().join("logs"));
+        port.mark();
+    }
+
+    #[test]
+    fn the_import_runs_before_the_look_and_the_first_paint() {
+        let src = include_str!("window.rs");
+        let at = |needle: &str| {
+            src.find(needle)
+                .unwrap_or_else(|| panic!("window.rs has {needle}"))
+        };
+        let import = at("import_at_start(");
+        assert!(import < at("TabHost::new("), "the import precedes the tabs");
+        assert!(import < at("LookCtl::new("), "the import precedes the look");
+        assert!(
+            import < at("app.show()?"),
+            "the import precedes the first paint"
+        );
     }
 }

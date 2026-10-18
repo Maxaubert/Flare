@@ -198,3 +198,140 @@ fn no_text_property_uses_a_dash_family_name() {
         Some("\"Cascadia Mono\"")
     );
 }
+
+// ---- M7 Task 44: the names and the removed developer chords ----------------------------------
+
+fn crate_sources_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+/// Every `.rs` file under any crate's `src` folder, in a stable order.
+fn rust_sources() -> Vec<PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read a source folder") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(crate_sources_dir()).expect("the crates folder") {
+        let src = entry.expect("a directory entry").path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut out);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The parts of a code line between double quotes (odd pieces of a split on `"`).
+fn string_literals(line: &str) -> Vec<&str> {
+    line.split('"').skip(1).step_by(2).collect()
+}
+
+/// The Prism Terminal names a Flare line may not carry: the key prefix `prism.` anywhere in code,
+/// the folder name `PrismTerminal` anywhere in code, and the product name `Prism Terminal` inside a
+/// string literal. Comment lines are exempt. (The plain word `Prism` is not Prism Terminal's name:
+/// it is a theme's name in Prism Terminal's own preset data, and a folder of the owner's repos.)
+fn prism_names(line: &str) -> bool {
+    let code = line.trim_start();
+    if code.starts_with("//") {
+        return false;
+    }
+    if code.contains("prism.") || code.contains("PrismTerminal") {
+        return true;
+    }
+    string_literals(code)
+        .iter()
+        .any(|lit| lit.contains("Prism Terminal"))
+}
+
+/// Where the Prism Terminal names may stand inside `flare-settings/src/import/` (decision O10 and the
+/// Global Constraints): `map.rs` and `legacy.rs` whole; `ldb.rs` and `run.rs` only in their
+/// `#[cfg(test)]` parts; in `run.rs` only inside `fn candidates`.
+fn import_line_allowed(file: &str, lines: &[&str]) -> Vec<bool> {
+    let test_at = lines
+        .iter()
+        .position(|l| l.trim() == "#[cfg(test)]")
+        .unwrap_or(lines.len());
+    let mut allowed = vec![false; lines.len()];
+    if file.ends_with("map.rs") || file.ends_with("legacy.rs") {
+        allowed.iter_mut().for_each(|a| *a = true);
+    } else if file.ends_with("ldb.rs") || file.ends_with("run.rs") {
+        for a in allowed.iter_mut().skip(test_at) {
+            *a = true;
+        }
+        if file.ends_with("run.rs") {
+            let mut inside = false;
+            for (i, line) in lines.iter().enumerate().take(test_at) {
+                if line.contains("fn candidates(") {
+                    inside = true;
+                }
+                if inside {
+                    allowed[i] = true;
+                }
+                if inside && line.starts_with('}') {
+                    inside = false;
+                }
+            }
+        }
+    }
+    allowed
+}
+
+#[test]
+fn no_prism_name_outside_the_import() {
+    let import_dir = crate_sources_dir().join("flare-settings/src/import");
+    let mut bad = Vec::new();
+    for path in rust_sources() {
+        let file = path.to_string_lossy().replace('\\', "/");
+        let text = fs::read_to_string(&path).expect("read a source file");
+        let lines: Vec<&str> = text.lines().collect();
+        let in_import = path.starts_with(&import_dir);
+        let allowed = if in_import {
+            import_line_allowed(&file, &lines)
+        } else {
+            vec![false; lines.len()]
+        };
+        if in_import
+            && !file.ends_with("map.rs")
+            && !file.ends_with("legacy.rs")
+            && !file.ends_with("ldb.rs")
+            && !file.ends_with("run.rs")
+        {
+            // mod.rs and any other file of the import folder carry no Prism name at all.
+            for (i, line) in lines.iter().enumerate() {
+                if prism_names(line) {
+                    bad.push(format!("{file}:{}", i + 1));
+                }
+            }
+            continue;
+        }
+        for (i, line) in lines.iter().enumerate() {
+            if !allowed[i] && prism_names(line) {
+                bad.push(format!("{file}:{}", i + 1));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "Prism names outside the import: {bad:#?}");
+}
+
+#[test]
+fn the_f8_and_f9_chords_are_gone() {
+    let mut files = rust_sources();
+    files.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"));
+    for path in files {
+        let text = fs::read_to_string(&path).expect("read a source file");
+        for needle in ["debug_step", "debug-step", "Key.F9", "Key.F8"] {
+            assert!(
+                !text.contains(needle),
+                "{} still has {needle}",
+                path.display()
+            );
+        }
+    }
+}

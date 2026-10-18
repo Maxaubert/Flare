@@ -128,7 +128,7 @@ fn read_with_ceiling(
 }
 
 fn has_prism_keys(ls: &LocalStorage) -> bool {
-    ls.values.keys().any(|k| k.starts_with("prism."))
+    ls.values.keys().any(|k| k.starts_with(map::PREFIX))
 }
 
 fn now_secs() -> u64 {
@@ -222,10 +222,10 @@ fn import(prefs: &PrefStore, origin: Origin, ls: LocalStorage) -> ImportReport {
     let mut source: Source = ls
         .values
         .into_iter()
-        .filter(|(k, _)| k.starts_with("prism."))
+        .filter(|(k, _)| k.starts_with(map::PREFIX))
         .collect();
     for (name, why) in ls.unreadable {
-        if name.starts_with("prism.") {
+        if name.starts_with(map::PREFIX) {
             report.skipped.push((name, why.to_string()));
         }
     }

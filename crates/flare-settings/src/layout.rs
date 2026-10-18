@@ -653,7 +653,7 @@ mod tests {
         for (what, got, want) in checks {
             assert!(
                 (got - want).abs() <= 1.0,
-                "{what}: layout {got}, Prism Terminal {want}"
+                "{what}: layout {got}, the reference {want}"
             );
         }
         let tile_dx = num(&pt["rowTile"]["x"]) - num(&pt["row"]["x"]);
