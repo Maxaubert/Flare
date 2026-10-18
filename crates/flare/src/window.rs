@@ -771,9 +771,8 @@ pub fn run_window(
         let switch = ship.real_verb_switch(&inst.profile.dir);
         verb_switch = Some(Arc::clone(&switch));
         {
-            let choice = crate::ship_ctl::choose_feed(&ship, &|suffix| {
-                crate::ship_ctl::e2e_var(suffix)
-            });
+            let choice =
+                crate::ship_ctl::choose_feed(&ship, &|suffix| crate::ship_ctl::e2e_var(suffix));
             let engine = crate::ship_ctl::build_engine(
                 &choice,
                 env!("CARGO_PKG_VERSION"),

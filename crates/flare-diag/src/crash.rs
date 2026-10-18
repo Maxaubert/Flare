@@ -10,13 +10,13 @@
 //! is caught, so the sinks must not panic (the writer recovers poisoned locks and guards its own calls).
 //! The body runs under `catch_unwind` anyway, and a re-entrant call goes straight to the previous hook.
 
-use crate::gate::{DEFAULT_BUDGET, DEFAULT_EVERY_MS, DiagGate};
+use crate::gate::{DiagGate, DEFAULT_BUDGET, DEFAULT_EVERY_MS};
 use crate::summary::error_fields;
 use crate::writer::{DiagLog, LineSink};
 use serde_json::{Map, Value};
 use std::backtrace::Backtrace;
 use std::cell::Cell;
-use std::panic::{AssertUnwindSafe, PanicHookInfo, catch_unwind, set_hook, take_hook};
+use std::panic::{catch_unwind, set_hook, take_hook, AssertUnwindSafe, PanicHookInfo};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;
 

@@ -2,8 +2,8 @@
 
 use flare_diag::stall::*;
 use flare_diag::writer::LineSink;
-use serde_json::{Map, Value, json};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use serde_json::{json, Map, Value};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

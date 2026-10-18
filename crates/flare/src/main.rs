@@ -8,6 +8,7 @@ mod chords;
 mod chrome_apply;
 mod clip_flow;
 mod config;
+mod diag_ctl;
 mod drop_flow;
 mod e2e;
 mod font_ctl;
@@ -27,6 +28,7 @@ mod picker_ctl;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
+mod ship_ctl;
 mod sidebar_ui;
 mod startup;
 mod tab_host;
@@ -34,10 +36,8 @@ mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
-mod window;
 mod update_ctl;
-mod diag_ctl;
-mod ship_ctl;
+mod window;
 
 #[cfg(test)]
 mod theme_tests;

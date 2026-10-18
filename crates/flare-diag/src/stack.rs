@@ -68,11 +68,9 @@ mod tests {
     #[test]
     fn no_frames_means_none() {
         assert!(Win32Sampler(Fake(None)).sample().is_none());
-        assert!(
-            Win32Sampler(Fake(Some(([0; MAX_FRAMES], 0))))
-                .sample()
-                .is_none()
-        );
+        assert!(Win32Sampler(Fake(Some(([0; MAX_FRAMES], 0))))
+            .sample()
+            .is_none());
         assert!(NoSampler.sample().is_none());
     }
 }

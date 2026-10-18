@@ -80,7 +80,7 @@ impl Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::writer::{DIAG_FILE, DiagLogOptions};
+    use crate::writer::{DiagLogOptions, DIAG_FILE};
     use serde_json::json;
     use std::fs;
 

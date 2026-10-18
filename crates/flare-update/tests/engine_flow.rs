@@ -567,8 +567,16 @@ fn an_install_waits_for_a_check_already_in_flight() {
     latch.open();
     // The offer changed under the user: the old token installs nothing and downloads nothing.
     assert!(!installer.join().expect("installer"));
-    assert_eq!(r.feed.downloads(), 0, "nothing downloaded for a stale offer");
-    assert_eq!(r.feed.refused(), 0, "the feed was never asked for a stale version");
+    assert_eq!(
+        r.feed.downloads(),
+        0,
+        "nothing downloaded for a stale offer"
+    );
+    assert_eq!(
+        r.feed.refused(),
+        0,
+        "the feed was never asked for a stale version"
+    );
     assert!(!r.feed.files_left());
     assert_eq!(r.engine.offer().expect("offer").version, "1.3.0");
 }

@@ -158,7 +158,7 @@ impl<T: Clone> DiagGate<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     #[test]
     fn writes_an_error_once_holds_its_copies_and_says_how_many_on_the_next_line() {
@@ -209,10 +209,9 @@ mod tests {
             .count();
         assert_eq!(written, 10);
         // Another kind has its own budget.
-        assert!(
-            gate.offer("page-rejection", "r", json!({"msg": "r"}), 100)
-                .is_some()
-        );
+        assert!(gate
+            .offer("page-rejection", "r", json!({"msg": "r"}), 100)
+            .is_some());
         // The held ones come out as the budget allows, ten per window.
         assert_eq!(gate.sweep(10_000).len(), 10);
     }

@@ -9,9 +9,9 @@
 //! serde_json's `Map` sorts keys unless the `preserve_order` feature is on. The vectors whose answer depends
 //! on key order (the first twelve keys, the first forty) are skipped while it is off, and the test says so.
 
-use flare_diag::gate::{DEFAULT_BUDGET, DEFAULT_EVERY_MS, DiagGate};
+use flare_diag::gate::{DiagGate, DEFAULT_BUDGET, DEFAULT_EVERY_MS};
 use flare_diag::summary::{self, Arg, STRING_MAX};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const SUMMARY: &str = include_str!("fixtures/summary.json");
 const GATE: &str = include_str!("fixtures/gate.json");

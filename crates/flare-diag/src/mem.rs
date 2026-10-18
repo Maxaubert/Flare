@@ -10,7 +10,7 @@
 
 use crate::writer::LineSink;
 use serde_json::{Map, Value};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -275,12 +275,10 @@ mod tests {
             waits.borrow().len() < 3
         });
         assert_eq!(rec.kind("crumb").len(), 3);
-        assert!(
-            waits
-                .borrow()
-                .iter()
-                .all(|d| *d == Duration::from_millis(MEM_EVERY_MS))
-        );
+        assert!(waits
+            .borrow()
+            .iter()
+            .all(|d| *d == Duration::from_millis(MEM_EVERY_MS)));
     }
 
     #[test]

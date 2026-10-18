@@ -2,7 +2,7 @@
 //! a time (a static lock), each one setting and taking back its own hook.
 
 use flare_diag::crash::CrashHooks;
-use flare_diag::writer::{DIAG_FILE, DiagLog, DiagLogOptions};
+use flare_diag::writer::{DiagLog, DiagLogOptions, DIAG_FILE};
 use serde_json::Value;
 use std::fs;
 use std::panic::{set_hook, take_hook};
@@ -66,11 +66,9 @@ fn logs_a_panic_by_observing_only_and_writes_it_at_once() {
     assert_eq!(panic_line["msg"], "kaput for the log");
     assert_eq!(panic_line["origin"], "panic");
     assert_eq!(panic_line["thread"], "crash-test");
-    assert!(
-        panic_line["loc"]
-            .as_str()
-            .is_some_and(|s| s.contains("panic_hook.rs"))
-    );
+    assert!(panic_line["loc"]
+        .as_str()
+        .is_some_and(|s| s.contains("panic_hook.rs")));
     assert!(
         previous_ran.load(Ordering::SeqCst),
         "the previous hook still ran"
