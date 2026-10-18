@@ -100,7 +100,19 @@ fn no_retry_loop_outside_until() {
         if text.contains("loop {") && text.contains("sleep") {
             bad.push(format!("{}: loop with a sleep", path.display()));
         }
+        // Only a SLEEP over 50 ms is a retry loop's wait: a duration used as a number (a debounce, a
+        // sampling interval compared against an elapsed time) is no sleep. A `sleep(` whose argument
+        // sits on the next line (rustfmt wraps) counts too.
+        let mut after_sleep = false;
         for line in text.lines() {
+            let sleeping = line.contains("sleep(") || after_sleep;
+            after_sleep = line.trim_end().ends_with("sleep(");
+            if !sleeping {
+                continue;
+            }
+            if line.contains("from_secs") {
+                bad.push(format!("{}: sleep of whole seconds", path.display()));
+            }
             if let Some(i) = line.find("from_millis(") {
                 let rest = &line[i + "from_millis(".len()..];
                 let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -173,19 +185,36 @@ fn a_missing_exe_exits_1_with_the_build_hint() {
 
 #[test]
 fn the_run_one_child_prints_json_lines() {
+    // Every scenario is ported now, so the child is pointed at an exe that is not there: the launch
+    // fails at once and the scenario's returned Err must come out as a failing check line.
     let exe = env!("CARGO_BIN_EXE_flare-e2e");
     let out = Command::new(exe)
-        .args(["--run-one", "spawn", "--exe", exe])
+        .args([
+            "--run-one",
+            "spawn",
+            "--exe",
+            r"C:\flare-e2e-no-such\Flare.exe",
+        ])
         .output()
         .expect("run the child");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with('{')).collect();
-    assert!(lines.len() >= 2, "a check line and a done line: {text}");
-    let first: serde_json::Value = serde_json::from_str(lines[0]).expect("json");
-    assert_eq!(first["pass"], serde_json::Value::Bool(false));
-    assert!(first["msg"].as_str().unwrap().contains("not ported"));
-    let last: serde_json::Value = serde_json::from_str(lines[lines.len() - 1]).expect("json");
+    let values: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .collect();
+    assert!(values.len() >= 2, "a check line and a done line: {text}");
+    let check = values
+        .iter()
+        .find(|v| v["pass"] == serde_json::Value::Bool(false))
+        .unwrap_or_else(|| panic!("a failing check line: {text}"));
+    assert!(
+        check["msg"].as_str().unwrap().contains("is missing"),
+        "{text}"
+    );
+    let last = values.last().expect("a last line");
     assert_eq!(last["done"], serde_json::Value::Bool(true));
+    assert!(last["fails"].as_u64().unwrap() >= 1, "{text}");
     assert_eq!(out.status.code(), Some(1));
 }
 

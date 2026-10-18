@@ -313,11 +313,24 @@ fn centre_of(app: &mut App, name: &str) -> Option<(f32, f32)> {
     Some((r.x + r.w / 2.0, r.y + r.h / 2.0))
 }
 
+/// The save debounce of the tabs store the scenario writes `tabs.json` with.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// The width of the terminal grid (`ui.rect grid`), in client pixels.
+fn grid_width(app: &mut App) -> Option<f32> {
+    let v = app
+        .session
+        .probe("ui.rect", json!({ "name": "grid" }))
+        .ok()?;
+    let r: Rect = serde_json::from_value(v).ok()?;
+    Some(r.w)
+}
+
 /// Writes `tabs.json` into `profile` with the app's own store: one saved tab per folder, the
 /// first one active. Flushed at once, so the file is there before the app starts.
 fn write_tabs(profile: &Path, folders: &[PathBuf]) -> Result<(), String> {
     fs::create_dir_all(profile).map_err(|e| format!("the profile folder: {e}"))?;
-    let store = TabsStore::new(profile.join("tabs.json"), Duration::from_millis(400));
+    let store = TabsStore::new(profile.join("tabs.json"), SAVE_DEBOUNCE);
     let saved = SavedTabs {
         tabs: folders
             .iter()
@@ -569,8 +582,13 @@ pub fn last_tab(ctx: &mut Ctx) -> Result<(), String> {
         tabs_of(&mut app).len() == 1
     });
     ctx.ok(opened, "one press opens a shell in one of them");
-    // Past the 400 ms save debounce, as PT waits.
-    std::thread::sleep(Duration::from_millis(900)); // sync-ok: test harness, off the app
+    // Past the 400 ms save debounce, as PT waits: until the saved strip holds the one tab.
+    let tabs_file = ctx.ensure_world().profile.join("tabs.json");
+    ctx.until("the one tab to be saved", 10_000, &mut || {
+        fs::read_to_string(&tabs_file)
+            .map(|raw| parse_tabs(&raw).tabs.len() == 1)
+            .unwrap_or(false)
+    });
 
     // The X really quits: no resident process is left holding the lock.
     if let Some((x, y)) = centre_of(&mut app, "close") {
@@ -665,13 +683,19 @@ pub fn prompt_layout(ctx: &mut Ctx) -> Result<(), String> {
         rows_text(&mut app, &front).contains("ready")
     });
 
+    let start_w = grid_width(&mut app).unwrap_or(0.0);
     app.session.call(&Request::Resize { w: 620.0, h: 600.0 })?;
-    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test harness, off the app
+    ctx.until("the grid to narrow", 10_000, &mut || {
+        grid_width(&mut app).is_some_and(|w| w < start_w.min(700.0))
+    });
+    let narrow_w = grid_width(&mut app).unwrap_or(0.0);
     app.session.call(&Request::Resize {
         w: 1200.0,
         h: 600.0,
     })?;
-    std::thread::sleep(Duration::from_millis(600)); // sync-ok: test harness, off the app
+    ctx.until("the grid to widen again", 10_000, &mut || {
+        grid_width(&mut app).is_some_and(|w| w > narrow_w + 100.0)
+    });
 
     let last = rows_text(&mut app, &front)
         .lines()
