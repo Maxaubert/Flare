@@ -121,7 +121,8 @@ fn the_label_is_on_accent_and_clears_4_5_to_1() {
         }
     }
     assert!(dist(ink, ON_ACCENT) <= 24, "ink {ink:?}");
-    let ratio = flare_theme::ansi::contrast_ratio("#0b0b0f", "#fe8f34");
+    let hex = |c: [u8; 4]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let ratio = flare_theme::ansi::contrast_ratio(&hex(ON_ACCENT), &hex(SEL_BG));
     assert!(ratio >= 4.5, "contrast {ratio}");
 }
 

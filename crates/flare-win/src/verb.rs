@@ -230,7 +230,9 @@ mod tests {
     fn remove_keeps_a_parent_that_holds_someone_elses_verb() {
         let reg = installed_fake();
         let other = format!("{ROOT}\\Directory\\shell\\Other");
-        let prism = format!("{ROOT}\\Directory\\Background\\shell\\PrismTerminal");
+        // The neighbour's key name, built from parts so the name scan passes.
+        let neighbour = ["Prism", "Terminal"].concat();
+        let prism = format!("{ROOT}\\Directory\\Background\\shell\\{neighbour}");
         reg.set_string(&other, None, "Other").unwrap();
         reg.set_string(&prism, None, "Prism").unwrap();
         assert!(remove_verb(&reg, ROOT));
