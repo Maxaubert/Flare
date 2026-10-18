@@ -174,7 +174,17 @@ impl Drop for HookServer {
                 .read(true)
                 .write(true)
                 .open(&self.pipe);
-            let _ = thread.join(); // sync-ok: test hook teardown, only under --e2e
+            // Joined only once the thread has said it is finished: this drop also runs in a
+            // thread-local destructor during process exit, when the OS has already ended the
+            // thread and a plain join panics (the app then exits 101, not 0). A thread that
+            // does not finish in time is left to the process exit.
+            for _ in 0..50 {
+                if thread.is_finished() {
+                    let _ = thread.join(); // sync-ok: test hook teardown, only under --e2e
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5)); // sync-ok: test hook teardown, only under --e2e
+            }
         }
     }
 }

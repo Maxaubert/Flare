@@ -805,6 +805,9 @@ pub fn run_window(
         );
         let switch = ship.real_verb_switch(&inst.profile.dir);
         verb_switch = Some(Arc::clone(&switch));
+        if args.e2e {
+            crate::e2e_probes::chrome::note_verb_switch(Arc::clone(&switch), ship.root.clone());
+        }
         {
             let choice =
                 crate::ship_ctl::choose_feed(&ship, &|suffix| crate::ship_ctl::e2e_var(suffix));
