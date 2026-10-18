@@ -31,7 +31,9 @@ use crate::links::find_links;
 use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
 use crate::path_links::{Found, PathLinks, path_candidates};
-use crate::replies::{Ground, colour_query_replies, xtversion_reply};
+use crate::replies::{
+    Ground, colour_query_replies, decrqm_reply, dsr_theme_reply, ground_mode, xtversion_reply,
+};
 use crate::scan::{Erase, ScanEvent, Scanner};
 use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
 use crate::sel_text::selection_text;
@@ -39,6 +41,7 @@ use crate::selection_edit::{SelectionGate, selection_delete_allowed, selection_d
 use crate::term_buf::{TermBuf, abs_to_line, line_to_abs, total_rows, viewport_top};
 use crate::version::{ALACRITTY_TERMINAL_VERSION, FLARE_TERM_VERSION};
 use crate::word_at::word_range;
+use flare_theme::reports::{THEME_REPORTS_OFF, ThemeReports, note_theme_mode, theme_reports};
 
 /// The size handed to `Term::new` and `Term::resize`.
 pub struct Dims {
@@ -117,6 +120,8 @@ pub struct Emulator {
     events: Receiver<Event>,
     fg: String,
     bg: String,
+    /// What the program asked of theme reports (?2031h) and the mode it was last told.
+    reports: ThemeReports,
     find_query: String,
     find_job: Option<CountJob>,
     /// A recount after output: the previous count stays on show until the new one is done, so
@@ -169,6 +174,7 @@ impl Emulator {
             events: rx,
             fg: "#dedacf".to_string(),
             bg: "#171717".to_string(),
+            reports: THEME_REPORTS_OFF,
             find_query: String::new(),
             find_job: None,
             find_recount: false,
@@ -177,6 +183,15 @@ impl Emulator {
             links: LinkScanner::new(),
             link_last: None,
         }
+    }
+
+    /// What the program asked of theme reports, and the mode it was last told.
+    pub fn theme_reports(&self) -> ThemeReports {
+        self.reports
+    }
+
+    pub fn set_theme_reports(&mut self, s: ThemeReports) {
+        self.reports = s;
     }
 
     /// What OSC 10 and 11 queries are answered with.
@@ -212,9 +227,12 @@ impl Emulator {
                 continue;
             }
             let end = match &ev {
-                ScanEvent::Osc { end, .. } | ScanEvent::Xtversion { end } => {
-                    (*end).min(bytes.len())
-                }
+                ScanEvent::Osc { end, .. }
+                | ScanEvent::Xtversion { end }
+                | ScanEvent::ThemeQuery { end }
+                | ScanEvent::Decrqm { end, .. }
+                | ScanEvent::PrivateMode { end, .. }
+                | ScanEvent::Ris { end } => (*end).min(bytes.len()),
                 ScanEvent::SelectionGuard { .. } => continue,
             };
             if end > at {
@@ -222,6 +240,12 @@ impl Emulator {
                 at = end;
             }
             self.drain(&mut out);
+            if matches!(ev, ScanEvent::Decrqm { mode: 2031, .. })
+                && matches!(out.last(), Some(TermEvent::Reply(r)) if r == b"\x1b[?2031;0$y")
+            {
+                // alacritty does not know the mode and says so; the answer is Flare's.
+                out.pop();
+            }
             self.act(ev, &mut out);
         }
         if at < bytes.len() {
@@ -234,6 +258,22 @@ impl Emulator {
     fn act(&mut self, ev: ScanEvent, out: &mut Vec<TermEvent>) {
         match ev {
             ScanEvent::SelectionGuard { .. } => {}
+            ScanEvent::ThemeQuery { .. } => {
+                let mode = ground_mode(&self.bg);
+                out.push(TermEvent::Reply(dsr_theme_reply(mode).into_bytes()));
+                self.reports = note_theme_mode(self.reports, mode);
+            }
+            ScanEvent::Decrqm { mode, .. } => {
+                if mode == 2031 {
+                    out.push(TermEvent::Reply(
+                        decrqm_reply(2031, self.reports.on).into_bytes(),
+                    ));
+                }
+            }
+            ScanEvent::PrivateMode { set, .. } => {
+                self.reports = theme_reports(self.reports, set, ground_mode(&self.bg));
+            }
+            ScanEvent::Ris { .. } => self.reports = THEME_REPORTS_OFF,
             ScanEvent::Xtversion { .. } => out.push(TermEvent::Reply(
                 xtversion_reply(FLARE_TERM_VERSION, ALACRITTY_TERMINAL_VERSION).into_bytes(),
             )),
@@ -260,6 +300,10 @@ impl Emulator {
                             bg: &self.bg,
                         };
                         if let Some(rs) = colour_query_replies(ident as u8, data, &ground) {
+                            if ident == 11 || rs.len() > 1 {
+                                let mode = ground_mode(&self.bg);
+                                self.reports = note_theme_mode(self.reports, mode);
+                            }
                             out.extend(rs.into_iter().map(|r| TermEvent::Reply(r.into_bytes())));
                         }
                     }
@@ -1494,8 +1538,87 @@ mod tests {
     #[test]
     fn unasked_things_are_not_answered() {
         let mut e = Emulator::new(80, 24);
-        let evs = e.feed(b"\x1b[?1004h\x1b[?9001h\x1b[?996n\x1b[?2031h");
+        let evs = e.feed(b"\x1b[?1004h\x1b[?9001h");
         assert!(replies(&evs).is_empty());
+    }
+
+    const DARK_DSR: &[u8] = b"\x1b[?997;1n";
+    const LIGHT_DSR: &[u8] = b"\x1b[?997;2n";
+
+    #[test]
+    fn csi_996n_answers_the_ground_mode() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(replies(&e.feed(b"\x1b[?996n")), vec![DARK_DSR.to_vec()]);
+        e.set_colours("#3d2a1f", "#e6d8c0");
+        assert_eq!(replies(&e.feed(b"\x1b[?996n")), vec![LIGHT_DSR.to_vec()]);
+        assert_eq!(
+            e.theme_reports().last,
+            Some(flare_theme::marks::Mode::Light)
+        );
+        assert!(!e.theme_reports().on);
+    }
+
+    #[test]
+    fn decrqm_2031_answers_set_after_2031h_and_reset_after_2031l() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;2$y".to_vec()]
+        );
+        e.feed(b"\x1b[?2031h");
+        assert!(e.theme_reports().on);
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;1$y".to_vec()]
+        );
+        e.feed(b"\x1b[?2031l");
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;2$y".to_vec()]
+        );
+    }
+
+    #[test]
+    fn another_decrqm_is_left_to_alacritty() {
+        let mut e = Emulator::new(80, 24);
+        let r = replies(&e.feed(b"\x1b[?2004$p"));
+        assert_eq!(r, vec![b"\x1b[?2004;2$y".to_vec()]);
+    }
+
+    #[test]
+    fn replies_keep_stream_order_with_da1_last() {
+        let mut e = Emulator::new(80, 24);
+        let got = replies(&e.feed(
+            b"\x1b]11;?\x07\x1b]10;?\x07\x1b[?996n\x1b[?2031h\x1b[?2031$p\x1b[>q\x1b[>q\x1b[c",
+        ));
+        assert_eq!(got.len(), 7, "{got:?}");
+        assert!(got[0].starts_with(b"\x1b]11;"));
+        assert!(got[1].starts_with(b"\x1b]10;"));
+        assert_eq!(got[2], DARK_DSR);
+        assert_eq!(got[3], b"\x1b[?2031;1$y");
+        assert_eq!(got[4], xt());
+        assert_eq!(got[5], xt());
+        assert_eq!(got[6], b"\x1b[?1;2c");
+    }
+
+    #[test]
+    fn ris_turns_theme_reports_off() {
+        let mut e = Emulator::new(80, 24);
+        e.feed(b"\x1b[?2031h");
+        assert!(e.theme_reports().on);
+        e.feed(b"\x1bc");
+        assert_eq!(e.theme_reports(), THEME_REPORTS_OFF);
+    }
+
+    #[test]
+    fn osc11_notes_the_mode() {
+        let mut e = Emulator::new(80, 24);
+        e.set_colours("#3d2a1f", "#e6d8c0");
+        e.feed(b"\x1b]11;?\x07");
+        assert_eq!(
+            e.theme_reports().last,
+            Some(flare_theme::marks::Mode::Light)
+        );
     }
 
     #[test]

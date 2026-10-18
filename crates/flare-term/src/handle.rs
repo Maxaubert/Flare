@@ -434,6 +434,26 @@ impl TermHandle {
         self.sh.mgr.write(&self.sh.id, bytes);
     }
 
+    /// What the program asked of theme reports (?2031h) and the mode it was last told.
+    pub fn theme_reports(&self) -> flare_theme::reports::ThemeReports {
+        self.emu.lock().theme_reports()
+    }
+
+    pub fn set_theme_reports(&self, s: flare_theme::reports::ThemeReports) {
+        self.emu.lock().set_theme_reports(s);
+    }
+
+    /// The colours OSC 10 and 11 queries are answered with (the theme the tab wears).
+    pub fn set_colours(&self, fg: &str, bg: &str) {
+        self.emu.lock().set_colours(fg, bg);
+    }
+
+    /// The size in columns and rows.
+    pub fn size(&self) -> (usize, usize) {
+        let e = self.emu.lock();
+        (e.cols(), e.rows())
+    }
+
     /// The id the RUNNING shell was spawned with, resolved by the session even when the tab asked
     /// for none; None before the spawn finished or after it failed.
     pub fn shell_id(&self) -> Option<String> {

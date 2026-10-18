@@ -19,7 +19,7 @@ use flare_settings::kv::Subscription;
 use flare_settings::look::{LookSnapshot, LookStore};
 use flare_theme::edges::WindowEdges;
 use flare_theme::look::{AppliedLook, apply_look};
-use flare_theme::marks::Mode;
+use flare_theme::marks::{Mode, ground_mode};
 use flare_theme::reports::{
     NUDGE_AFTER_MS, NUDGE_HOLD_MS, THEME_REPORTS_OFF, ThemeReports, nudge_widths, theme_push,
 };
@@ -102,7 +102,33 @@ pub trait ThemePushTarget {
     fn write_report(&self, bytes: &str);
     fn size(&self) -> (usize, usize);
     fn resize(&self, cols: usize, rows: usize);
+    /// The colours the tab's colour queries are answered with.
+    fn set_colours(&self, _fg: &str, _bg: &str) {}
 }
+
+impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
+    fn reports(&self) -> ThemeReports {
+        self.theme_reports()
+    }
+    fn set_reports(&self, s: ThemeReports) {
+        self.set_theme_reports(s);
+    }
+    fn write_report(&self, bytes: &str) {
+        flare_term::handle::TermHandle::write_report(self, bytes.as_bytes());
+    }
+    fn size(&self) -> (usize, usize) {
+        flare_term::handle::TermHandle::size(self)
+    }
+    fn resize(&self, cols: usize, rows: usize) {
+        flare_term::handle::TermHandle::resize(self, cols, rows);
+    }
+    fn set_colours(&self, fg: &str, bg: &str) {
+        flare_term::handle::TermHandle::set_colours(self, fg, bg);
+    }
+}
+
+/// Where the controller finds every live tab (front and background); the app sets it once.
+pub type TabSource = Rc<dyn Fn() -> Vec<Rc<dyn ThemePushTarget>>>;
 
 /// A tab whose handle does not expose the program's `?2031h` state: it is never told anything.
 /// (M2's emulator parses `?2031h` but the handle keeps no per-tab report state, so every tab is this
@@ -138,6 +164,8 @@ struct Nudge {
 // ---- the controller ----------------------------------------------------------------------------
 
 thread_local! {
+    /// The live tabs, as the app lists them (the UI thread only).
+    static TABS: RefCell<Option<TabSource>> = const { RefCell::new(None) };
     /// The controller the coalesced apply reaches (the UI thread only).
     static CURRENT: RefCell<Option<Rc<RefCell<LookCtl>>>> = const { RefCell::new(None) };
 }
@@ -170,6 +198,8 @@ pub struct LookCtl {
     queued: Arc<AtomicBool>,
     scheduler: Arc<dyn Fn() + Send + Sync>,
     nudges: Vec<Nudge>,
+    /// One-shot: runs the nudges when they fall due; never repeats, and idle when none is due.
+    nudge_timer: slint::Timer,
     sub: Option<Subscription>,
 }
 
@@ -220,6 +250,7 @@ impl LookCtl {
             queued: Arc::new(AtomicBool::new(false)),
             scheduler,
             nudges: Vec::new(),
+            nudge_timer: slint::Timer::default(),
             sub: None,
         }
     }
@@ -356,8 +387,48 @@ impl LookCtl {
         self.was_glass = worn_glass;
         self.was_wanted = look.glass;
         self.last_light = worn.light;
+        self.theme_to_tabs(&worn, now);
     }
 
+    /// Hands the new colours to every live tab's colour queries, tells each program that asked the new
+    /// mode (?2031h), and arms the one-shot timer for the nudges that follow.
+    fn theme_to_tabs(&mut self, look: &AppliedLook, now: Instant) {
+        let Some(source) = TABS.with(|t| t.borrow().clone()) else {
+            return;
+        };
+        let tabs = source();
+        for tab in &tabs {
+            tab.set_colours(&look.term.foreground, &look.term.background);
+        }
+        self.push_theme(&tabs, ground_mode(&look.term.background), now);
+        self.arm_timer();
+    }
+
+    /// The tab list the theme push reaches.
+    pub fn set_tab_source(source: TabSource) {
+        TABS.with(|t| *t.borrow_mut() = Some(source));
+    }
+
+    /// One timer for the next due nudge; stopped when none is.
+    fn arm_timer(&mut self) {
+        let Some(at) = self.next_deadline() else {
+            self.nudge_timer.stop();
+            return;
+        };
+        let wait = at.saturating_duration_since(Instant::now());
+        self.nudge_timer
+            .start(slint::TimerMode::SingleShot, wait, || {
+                LookCtl::with_current(|l| {
+                    l.tick(Instant::now());
+                    l.arm_timer();
+                });
+            });
+    }
+
+    /// Whether the nudge timer is armed.
+    pub fn nudge_timer_running(&self) -> bool {
+        self.nudge_timer.running()
+    }
     fn apply_material(&mut self, look: &AppliedLook, wanted_changed: bool, now: Instant) {
         if let Some(m) = self.material.as_mut() {
             m.set_solid_ground(&look.solid_ground, look.edges, now);
@@ -785,6 +856,161 @@ mod tests {
         assert!(c.next_deadline().is_none());
     }
 
+    // ---- Task 17: a theme change reaches running programs ------------------------------------------
+
+    fn tab_set(tabs: &[&Rc<FakeTab>]) -> Vec<Rc<dyn ThemePushTarget>> {
+        tabs.iter()
+            .map(|t| Rc::clone(*t) as Rc<dyn ThemePushTarget>)
+            .collect()
+    }
+
+    fn mode_of_preset(id: &str) -> Mode {
+        let theme = flare_theme::resolve::resolve_preset(
+            flare_theme::preset::presets()
+                .iter()
+                .find(|p| p.id == id)
+                .expect("preset"),
+        );
+        ground_mode(&theme.background)
+    }
+
+    #[test]
+    fn a_theme_change_pushes_one_report_to_each_reporting_tab() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let a = FakeTab::new(true, Mode::Dark);
+        let b = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&a, &b]), Mode::Light, t0);
+        assert_eq!(*a.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        assert_eq!(*b.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        // The same mode again tells nobody anything.
+        c.push_theme(&tab_set(&[&a, &b]), Mode::Light, t0);
+        assert_eq!(a.written.borrow().len(), 1);
+        assert_eq!(b.written.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_tab_that_never_asked_gets_neither_report_nor_nudge() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let quiet = FakeTab::new(false, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&quiet]), Mode::Light, t0);
+        assert!(quiet.written.borrow().is_empty());
+        c.tick(t0 + Duration::from_secs(1));
+        assert!(quiet.resizes.borrow().is_empty());
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn the_nudge_is_never_a_key() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        c.tick(t0 + Duration::from_millis(250));
+        c.tick(t0 + Duration::from_millis(330));
+        // The only bytes a program is ever sent are the one report: no printable byte, no CR, no LF.
+        let all: String = tab.written.borrow().concat();
+        assert_eq!(all, "\x1b[?997;2n");
+        assert!(!all.contains(['\r', '\n', '\x07']));
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+    }
+
+    #[test]
+    fn no_report_when_the_mode_did_not_change() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        assert_eq!(mode_of_preset("pt-default"), Mode::Dark);
+        assert_eq!(mode_of_preset("nord"), Mode::Dark);
+        let tab = FakeTab::new(true, mode_of_preset("pt-default"));
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("nord"), Instant::now());
+        assert!(tab.written.borrow().is_empty());
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn fawn_tells_light_once_and_back_to_default_tells_dark() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, mode_of_preset("pt-default"));
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("fawn"), t0);
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("fawn"), t0);
+        assert_eq!(*tab.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        let t1 = t0 + Duration::from_secs(1);
+        c.tick(t1);
+        c.tick(t1 + Duration::from_millis(100));
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("pt-default"), t1);
+        assert_eq!(
+            *tab.written.borrow(),
+            vec!["\x1b[?997;2n".to_string(), "\x1b[?997;1n".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_timer_runs_when_no_nudge_is_due() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        c.arm_timer();
+        assert!(!c.nudge_timer_running());
+        let quiet = FakeTab::new(false, Mode::Dark);
+        c.push_theme(&tab_set(&[&quiet]), Mode::Light, Instant::now());
+        c.arm_timer();
+        assert!(!c.nudge_timer_running());
+    }
+
+    #[test]
+    fn an_applied_look_reaches_every_tab_the_app_lists() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Light);
+        let listed = Rc::clone(&tab);
+        LookCtl::set_tab_source(Rc::new(move || {
+            vec![Rc::clone(&listed) as Rc<dyn ThemePushTarget>]
+        }));
+        c.apply_now();
+        // The first look is dark and the program was last told light: one dark report.
+        assert_eq!(*tab.written.borrow(), vec!["\x1b[?997;1n".to_string()]);
+        assert!(c.next_deadline().is_some());
+        assert!(c.nudge_timer_running());
+    }
+
+    #[test]
+    fn the_handle_reports_what_the_program_asked() {
+        use flare_term::fake::{FakeShells, FakeSpawner};
+        use flare_term::session::{SessionManager, SessionOptions};
+        let sp = FakeSpawner::new();
+        let mgr = SessionManager::new(sp.clone(), FakeShells::new(), SessionOptions::default());
+        let handle = flare_term::handle::TermHandle::new("th", Arc::clone(&mgr), 80, 24);
+        handle.start(flare_term::handle::StartOptions {
+            root: "C:\\x".to_string(),
+            ..Default::default()
+        });
+        let t = Instant::now();
+        while handle.shell_id().is_none() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tab: Rc<dyn ThemePushTarget> = Rc::new(Arc::clone(&handle));
+        assert!(!tab.reports().on);
+        handle.with_emu(|e| {
+            e.feed(b"\x1b[?2031h");
+        });
+        assert!(tab.reports().on);
+        tab.set_colours("#3d2a1f", "#e6d8c0");
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let t0 = Instant::now();
+        c.push_theme(&[Rc::clone(&tab)], Mode::Light, t0);
+        // The report reaches the pty as itself.
+        let fake = Arc::clone(&sp.made()[0]);
+        let t = Instant::now();
+        while !String::from_utf8_lossy(&fake.written()).contains("\x1b[?997;2n")
+            && t.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(String::from_utf8_lossy(&fake.written()).contains("\x1b[?997;2n"));
+        assert_eq!(tab.size(), (80, 24));
+        c.tick(t0 + Duration::from_millis(250));
+        assert_eq!(tab.size(), (79, 24));
+        c.tick(t0 + Duration::from_millis(330));
+        assert_eq!(tab.size(), (80, 24));
+    }
     fn with_custom(prefs: &PrefStore) {
         prefs.set(
             flare_settings::custom_theme::CUSTOM_KEY,

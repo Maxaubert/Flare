@@ -17,6 +17,14 @@ pub enum ScanEvent {
     Osc { end: usize, payload: Vec<u8> },
     /// ESC [ > q or ESC [ > 0 q (XTVERSION). `end` as above.
     Xtversion { end: usize },
+    /// ESC [ ? 996 n: the program asks which mode the ground wears.
+    ThemeQuery { end: usize },
+    /// ESC [ ? Pn $ p: a private-mode query (DECRQM), a single plain number only.
+    Decrqm { end: usize, mode: u32 },
+    /// ESC [ ? 2031 h or l: the program turns theme reports on or off.
+    PrivateMode { end: usize, mode: u32, set: bool },
+    /// ESC c: a full reset.
+    Ris { end: usize },
     /// A CSI erase that alacritty answers by dropping the selection (EL and ED, with their `?`
     /// forms). `start` is where the sequence begins in THIS chunk (0 when it began in an earlier
     /// chunk), `end` just after its final byte. The caller feeds up to `start`, saves the
@@ -129,6 +137,9 @@ impl Scanner {
                     None => break,
                 },
                 State::Esc => {
+                    if chunk[i] == b'c' {
+                        out.push(ScanEvent::Ris { end: i + 1 });
+                    }
                     self.after_esc(chunk[i], i.saturating_sub(1));
                     i += 1;
                 }
@@ -191,6 +202,8 @@ impl Scanner {
                         0x40..=0x7e => {
                             if b == b'q' && (self.csi == b">" || self.csi == b">0") {
                                 out.push(ScanEvent::Xtversion { end: i });
+                            } else if let Some(ev) = private_event(b, &self.csi, i) {
+                                out.push(ev);
                             } else if let Some(erase) = guarded_erase(b, &self.csi) {
                                 out.push(ScanEvent::SelectionGuard {
                                     start: self.csi_start,
@@ -207,6 +220,33 @@ impl Scanner {
             }
         }
         out
+    }
+}
+
+/// The theme-related private sequences: `?996n`, `?Pn` and `?2031h/l`.
+fn private_event(final_byte: u8, params: &[u8], end: usize) -> Option<ScanEvent> {
+    let rest = params.strip_prefix(b"?")?;
+    let number = |d: &[u8]| -> Option<u32> {
+        if d.is_empty() || d.len() > 6 || !d.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(d).ok()?.parse().ok()
+    };
+    match final_byte {
+        b'n' if rest == b"996" => Some(ScanEvent::ThemeQuery { end }),
+        b'p' => {
+            let digits = rest.strip_suffix(b"$")?;
+            Some(ScanEvent::Decrqm {
+                end,
+                mode: number(digits)?,
+            })
+        }
+        b'h' | b'l' if rest == b"2031" => Some(ScanEvent::PrivateMode {
+            end,
+            mode: 2031,
+            set: final_byte == b'h',
+        }),
+        _ => None,
     }
 }
 
@@ -353,6 +393,36 @@ mod tests {
     fn esc_osc_inside_an_osc_restarts_it() {
         let mut s = Scanner::new();
         assert_eq!(s.scan(b"\x1b]0;a\x1b]0;b\x07"), vec![osc(11, b"0;b")]);
+    }
+
+    #[test]
+    fn theme_sequences_are_found() {
+        use super::ScanEvent::{Decrqm, PrivateMode, ThemeQuery};
+        let mut s = Scanner::new();
+        assert_eq!(s.scan(b"\x1b[?996n"), vec![ThemeQuery { end: 7 }]);
+        assert_eq!(s.scan(b"\x1b[?2031$p"), vec![Decrqm { end: 9, mode: 2031 }]);
+        assert_eq!(
+            s.scan(b"\x1b[?2031h\x1b[?2031l"),
+            vec![
+                PrivateMode {
+                    end: 8,
+                    mode: 2031,
+                    set: true
+                },
+                PrivateMode {
+                    end: 16,
+                    mode: 2031,
+                    set: false
+                },
+            ]
+        );
+        assert_eq!(s.scan(b"\x1b[?1004h\x1b[?996;1n\x1b[996n"), vec![]);
+    }
+
+    #[test]
+    fn esc_c_is_a_full_reset() {
+        let mut s = Scanner::new();
+        assert_eq!(s.scan(b"ab\x1bcd"), vec![ScanEvent::Ris { end: 4 }]);
     }
 
     #[test]

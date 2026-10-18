@@ -606,6 +606,16 @@ impl AppCtl {
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
         let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
+        {
+            // The look controller reaches every live tab (front and background) through this.
+            let live = Rc::clone(&handles);
+            crate::look_ctl::LookCtl::set_tab_source(Rc::new(move || {
+                live.borrow()
+                    .values()
+                    .map(|h| Rc::new(Arc::clone(h)) as Rc<dyn crate::look_ctl::ThemePushTarget>)
+                    .collect()
+            }));
+        }
         let hub = {
             let mgr = deps.host.manager();
             let by_id = Rc::clone(&handles);
@@ -1498,6 +1508,21 @@ impl AppCtl {
             .filter(|id| !live.contains_key(*id))
             .cloned()
             .collect();
+        // A tab that is new wears the colours the look already wears, so its colour queries and
+        // theme reports are right from its first byte.
+        let fresh: Vec<Arc<TermHandle>> = live
+            .iter()
+            .filter(|(id, _)| !self.hub_known.contains(*id))
+            .map(|(_, h)| Arc::clone(h))
+            .collect();
+        if !fresh.is_empty() {
+            crate::look_ctl::LookCtl::with_current(|l| {
+                let term = l.current_look().term;
+                for h in &fresh {
+                    h.set_colours(&term.foreground, &term.background);
+                }
+            });
+        }
         *self.handles.borrow_mut() = live;
         for id in gone {
             self.hub.on_closed(&id);
