@@ -184,13 +184,23 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
 
 #[test]
 fn a_write_never_does_io_on_the_calling_thread() {
+    // Review fix: this was a 100 ms stopwatch over 10,000 writes, which failed under the full
+    // parallel suite. The rule is checked directly now: every file append records its thread, and
+    // none is the caller's. The stopwatch stays as a loose sanity bound.
     let tmp = tempfile::tempdir().unwrap();
     let mut o = opts(tmp.path());
     o.flush_ms = 10;
+    let appenders = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rec = appenders.clone();
+    o.on_file_write = Some(Arc::new(move || {
+        rec.lock().unwrap().push(std::thread::current().id());
+    }));
     let log = DiagLog::start(o);
     log.write("main", "first", Map::new());
     log.flush();
-    let _held = OpenOptions::new()
+    let me = std::thread::current().id();
+    appenders.lock().unwrap().clear();
+    let held = OpenOptions::new()
         .read(true)
         .share_mode(1)
         .open(live(tmp.path()))
@@ -199,10 +209,17 @@ fn a_write_never_does_io_on_the_calling_thread() {
     for _ in 0..10_000 {
         log.write("main", "x", fields(&[("a", json!(1))]));
     }
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    drop(held);
+    let t1 = Instant::now();
+    while appenders.lock().unwrap().is_empty() && t1.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let seen = appenders.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the writer thread never appended");
     assert!(
-        t0.elapsed() < Duration::from_millis(100),
-        "{:?}",
-        t0.elapsed()
+        seen.iter().all(|t| *t != me),
+        "a write appended on the calling thread"
     );
 }
 

@@ -183,7 +183,10 @@ fn live_updates_need_a_public_repository() {
     // asks Cargo's own feature resolution instead.
     assert!(step.contains("cargo metadata --format-version 1"));
     assert!(step.contains("$_.features -contains 'live-updates'"));
-    assert!(!step.contains("Select-String"), "no line scan of the manifests");
+    assert!(
+        !step.contains("Select-String"),
+        "no line scan of the manifests"
+    );
     let throw = step
         .find("throw \"the updater is switched on")
         .expect("the refusal throws");
