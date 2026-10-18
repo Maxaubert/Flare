@@ -1,0 +1,405 @@
+{
+  "previewVersion": [
+    {
+      "in": "0.55.6",
+      "out": "0.56.0"
+    },
+    {
+      "in": "v1.2.3",
+      "out": "1.3.0"
+    },
+    {
+      "in": "x",
+      "out": "0.1.0"
+    },
+    {
+      "in": "7",
+      "out": "7.1.0"
+    },
+    {
+      "in": "0.0.0",
+      "out": "0.1.0"
+    },
+    {
+      "in": "1.9",
+      "out": "1.10.0"
+    },
+    {
+      "in": "",
+      "out": "0.1.0"
+    },
+    {
+      "in": "nightly",
+      "out": "0.1.0"
+    },
+    {
+      "in": "3",
+      "out": "3.1.0"
+    },
+    {
+      "in": "0.4.7",
+      "out": "0.5.0"
+    },
+    {
+      "in": "1.19.3",
+      "out": "1.20.0"
+    },
+    {
+      "in": "v2.0.1",
+      "out": "2.1.0"
+    }
+  ],
+  "wantsPreview": [
+    {
+      "argv": [
+        "app.exe",
+        "--preview-update"
+      ],
+      "out": true
+    },
+    {
+      "argv": [
+        "app.exe",
+        "--user-data-dir=x",
+        "--e2e",
+        "main.js",
+        "--preview-update",
+        "C:/f"
+      ],
+      "out": true
+    },
+    {
+      "argv": [
+        "app.exe"
+      ],
+      "out": false
+    },
+    {
+      "argv": [
+        "app.exe",
+        "--preview-updates",
+        "preview-update",
+        "--PREVIEW-UPDATE=1"
+      ],
+      "out": false
+    },
+    {
+      "argv": [],
+      "out": false
+    },
+    {
+      "argv": [
+        "--preview"
+      ],
+      "out": false
+    },
+    {
+      "argv": [
+        "--preview-update"
+      ],
+      "out": true
+    },
+    {
+      "argv": [
+        "--preview-update",
+        "--preview-update"
+      ],
+      "out": true
+    },
+    {
+      "argv": [
+        "app.exe",
+        "--previewupdate"
+      ],
+      "out": false
+    },
+    {
+      "argv": [
+        "app.exe",
+        " --preview-update"
+      ],
+      "out": false
+    }
+  ],
+  "previewUpdate": {
+    "version": "0.56.0",
+    "url": "",
+    "notes": "<!-- Release notes generated using configuration in .github/release.yml at main -->\n\n## What's Changed\n* The update button opens a window with the patch notes, Cancel and Install by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/30\n* Explorer entries read \"Open terminal here\", and a window edges setting (#27) by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/29\n* Dictation: speak into the terminal, transcribed on your own machine by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/22\n* fix(terminal): a prompt survives the window getting narrower and wider again by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/31\n* fix(tabs): closing a tab that hosts an agent asks first, working or idle by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/32\n* Links are painted in a colour that follows the theme by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/33\n* Bump electron from 43.1.0 to 43.1.1 by @dependabot[bot] in https://github.com/Maxaubert/PrismTerminal/pull/34\n\n## New Contributors\n* @dependabot[bot] made their first contribution in https://github.com/Maxaubert/PrismTerminal/pull/34\n\n**Full Changelog**: https://github.com/Maxaubert/PrismTerminal/compare/v0.4.0...v0.5.0",
+    "mock": true
+  },
+  "previewMs": 3000,
+  "sample": {
+    "notes": "<!-- Release notes generated using configuration in .github/release.yml at main -->\n\n## What's Changed\n* The update button opens a window with the patch notes, Cancel and Install by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/30\n* Explorer entries read \"Open terminal here\", and a window edges setting (#27) by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/29\n* Dictation: speak into the terminal, transcribed on your own machine by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/22\n* fix(terminal): a prompt survives the window getting narrower and wider again by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/31\n* fix(tabs): closing a tab that hosts an agent asks first, working or idle by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/32\n* Links are painted in a colour that follows the theme by @Maxaubert in https://github.com/Maxaubert/PrismTerminal/pull/33\n* Bump electron from 43.1.0 to 43.1.1 by @dependabot[bot] in https://github.com/Maxaubert/PrismTerminal/pull/34\n\n## New Contributors\n* @dependabot[bot] made their first contribution in https://github.com/Maxaubert/PrismTerminal/pull/34\n\n**Full Changelog**: https://github.com/Maxaubert/PrismTerminal/compare/v0.4.0...v0.5.0",
+    "parsed": {
+      "entries": [
+        "The update button opens a window with the patch notes, Cancel and Install (#30)",
+        "Explorer entries read \"Open terminal here\", and a window edges setting (#27) (#29)",
+        "Dictation: speak into the terminal, transcribed on your own machine (#22)",
+        "fix(terminal): a prompt survives the window getting narrower and wider again (#31)",
+        "fix(tabs): closing a tab that hosts an agent asks first, working or idle (#32)",
+        "Links are painted in a colour that follows the theme (#33)",
+        "Bump electron from 43.1.0 to 43.1.1 (#34)"
+      ],
+      "more": 0,
+      "empty": false
+    },
+    "grouped": [
+      {
+        "kind": "features",
+        "heading": "New features",
+        "entries": [
+          "The update button opens a window with the patch notes, Cancel and Install",
+          "Explorer entries read \"Open terminal here\", and a window edges setting",
+          "Dictation: speak into the terminal, transcribed on your own machine",
+          "Links are painted in a colour that follows the theme"
+        ]
+      },
+      {
+        "kind": "fixes",
+        "heading": "Bug fixes",
+        "entries": [
+          "A prompt survives the window getting narrower and wider again",
+          "Closing a tab that hosts an agent asks first, working or idle"
+        ]
+      },
+      {
+        "kind": "internal",
+        "heading": "Under the hood",
+        "entries": [
+          "Bump electron from 43.1.0 to 43.1.1"
+        ]
+      }
+    ]
+  },
+  "runs": [
+    {
+      "ms": 3000,
+      "cancelAfter": null,
+      "waits": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        600
+      ],
+      "onPct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100
+      ],
+      "result": false
+    },
+    {
+      "ms": 1000,
+      "cancelAfter": null,
+      "waits": [
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        40,
+        200
+      ],
+      "onPct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100
+      ],
+      "result": false
+    },
+    {
+      "ms": 0,
+      "cancelAfter": null,
+      "waits": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "onPct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100
+      ],
+      "result": false
+    },
+    {
+      "ms": 3000,
+      "cancelAfter": 7,
+      "waits": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120
+      ],
+      "onPct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35
+      ],
+      "result": false
+    },
+    {
+      "ms": 3000,
+      "cancelAfter": 20,
+      "waits": [
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        600
+      ],
+      "onPct": [
+        0,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100
+      ],
+      "result": false
+    }
+  ]
+}

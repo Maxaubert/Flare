@@ -1,0 +1,20 @@
+{
+  "pt": {
+    "verbKey": "PrismTerminal",
+    "verbLabel": "Open terminal here",
+    "appId": "com.prism.terminal",
+    "aumid": "com.prism.terminal",
+    "productName": "Prism Terminal",
+    "exeName": "PrismTerminal.exe",
+    "installerPrefix": "PrismTerminal-Setup-x64-",
+    "profileFolder": "PrismTerminal",
+    "dictationFolder": "PrismDictation",
+    "pluginName": "prism-terminal-status",
+    "hookSignal": "prism-agent",
+    "tabIdVar": "PRISM_TAB_ID",
+    "resumeIdVar": "PRISM_RESUME_ID",
+    "installDir": "%LOCALAPPDATA%\\Programs\\PrismTerminal",
+    "verbDirKey": "Directory\\shell\\PrismTerminal",
+    "verbBgKey": "Directory\\Background\\shell\\PrismTerminal"
+  }
+}
