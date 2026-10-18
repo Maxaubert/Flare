@@ -1054,6 +1054,8 @@ pub fn run_window(
         c.start_agent_poll();
         if !args.e2e
             && let Some(hwnd) = hwnd_of(&app)
+        // The frameless window gets a system menu for Alt+Space (no caption is added).
+        flare_win::sysmenu::ensure_sysmenu_style(hwnd);
         {
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }

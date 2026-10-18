@@ -3296,6 +3296,33 @@ impl ChordTarget for Target<'_> {
     fn find(&mut self) {
         self.0.toggle_find();
     }
+
+    fn open_system_menu(&mut self) {
+        self.0.open_system_menu();
+    }
+}
+
+/// How many times the system menu was asked for (the `--e2e` hook reads it; a pointer event
+/// never raises it).
+static SYSTEM_MENU_REQUESTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The system menu requests so far.
+pub fn system_menu_requests() -> u32 {
+    SYSTEM_MENU_REQUESTS.load(Ordering::SeqCst)
+}
+
+impl AppCtl {
+    /// Alt+Space: counts the request; outside `--e2e` the system menu shows at the window's
+    /// top-left (the e2e never opens a native menu: it would take the foreground).
+    pub fn open_system_menu(&mut self) {
+        SYSTEM_MENU_REQUESTS.fetch_add(1, Ordering::SeqCst);
+        if self.deps.e2e {
+            return;
+        }
+        if let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) {
+            flare_win::sysmenu::show_at_top_left(hwnd);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4256,6 +4283,25 @@ mod tests {
         assert!(fake.written().is_empty(), "{:?}", fake.written());
         let b = f.made_with("C:\\b");
         assert!(b.iter().all(|m| m.written().is_empty()));
+    }
+
+    #[test]
+    fn a_right_click_on_the_strip_calls_no_system_menu() {
+        let f = fx_with(Opts::default());
+        let before = system_menu_requests();
+        for x in [300.0, 500.0, 700.0] {
+            f.h.right_click(x, BAR_H / 2.0);
+        }
+        assert_eq!(system_menu_requests(), before);
+    }
+
+    #[test]
+    fn alt_space_asks_for_the_system_menu_once() {
+        let f = fx_with(Opts::default());
+        let before = system_menu_requests();
+        let alt_space = KeyEvent::new(" ", "Space").alt();
+        assert_eq!(f.key(alt_space), KeyOutcome::Consumed);
+        assert_eq!(system_menu_requests(), before + 1);
     }
 
     #[test]
