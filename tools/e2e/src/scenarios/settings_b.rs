@@ -1206,6 +1206,8 @@ pub fn review_settings(ctx: &mut Ctx) -> Result<(), String> {
     // keeps the agent colour and forgets the picked background.
     let agent = fill_row_colour(ctx, &mut app, "agent-color", "#3DA9FC");
     let _ = agent;
+    // Flare keeps the one Save changes on the Appearance page.
+    let _ = goto_page(ctx, &mut app, "appearance");
     let _ = click_save(&mut app);
     ctx.until("the agent colour is saved", 4_000, &mut || {
         !save_dirty(&mut app)
