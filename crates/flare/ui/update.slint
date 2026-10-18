@@ -1,13 +1,234 @@
-// The update chip, its notice and the update window (M9). Stubs until Tasks 24 and 25 fill them in.
-// Every colour comes from Theme (theme.slint); no hex literal lives in this file.
+// The update chip, its notice and the update window (M9). Task 24 fills the chip and the notice;
+// Task 25 fills the window. Every colour comes from Theme (theme.slint); no hex literal lives here
+// except the notice's shadow, which Prism Terminal fixes the same way.
+// Source: PT core/renderer/components/UpdateChip.tsx (Appendix C of the plan).
+import { Theme, Px } from "theme.slint";
 
-export component UpdateChipPreview inherits Window {}
+// The update chip: a 24 px pill in the title bar, label "Update <version>", an arrow-down-to-tray icon.
+// The parent sets the width (chip-width) and the height (24 px) and places it with geom::chip_rect.
+export component UpdateChip inherits Rectangle {
+    in property <bool> shown;                 // an offer exists
+    in property <string> label;               // "Update 0.56.0"
+    in property <string> aria;                // "Update to 0.56.0"
+    in property <string> tip;                 // the tooltip text (chip_tip)
+    in property <bool> busy;                  // phase != idle (accessible state only; the look never changes)
+    // Width from the measured label: 10 pad + 11 icon + 6 gap + label + 10 pad, snapped to a device pixel.
+    out property <length> chip-width: Px.snap(10px + 11px + 6px + label-measure.preferred-width + 10px);
+    out property <length> icon-x: Px.snap(10px);
+    out property <length> label-x: Px.snap(10px + 11px + 6px);
+    out property <length> icon-y: Px.snap((root.height - 11px) / 2);
+    out property <length> icon-h: 11px;
+    callback clicked();
+    callback tip-request(string, length, length, length, length);
+
+    // Measures the label only; it draws nothing and takes no input.
+    label-measure := Text {
+        opacity: 0;
+        text: root.label;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        font-weight: 600;
+    }
+
+    // The 1 px gap between the chip and its focus ring, in side-flat.
+    if root.shown && focus.has-focus : gap := Rectangle {
+        x: -1px;
+        y: -1px;
+        width: root.width + 2px;
+        height: root.height + 2px;
+        border-radius: 7px;
+        background: Theme.side-flat;
+    }
+
+    if root.shown : face := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        border-radius: 6px;
+        background: touch.has-hover ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg;
+
+        icon := Path {
+            x: root.icon-x;
+            y: root.icon-y;
+            width: root.icon-h;
+            height: root.icon-h;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14";
+            fill: transparent;
+            stroke: Theme.on-accent;
+            stroke-width: 2.4 * 11 / 24 * 1px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+
+        label-text := Text {
+            x: root.label-x;
+            y: 0px;
+            width: root.width - root.label-x;
+            height: root.height;
+            vertical-alignment: center;
+            text: root.label;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: Theme.on-accent;
+        }
+
+        // The focus ring: 2 px accent-hi drawn 1 px outside the gap.
+        if focus.has-focus : Rectangle {
+            x: -3px;
+            y: -3px;
+            width: root.width + 6px;
+            height: root.height + 6px;
+            border-radius: 9px;
+            border-width: 2px;
+            border-color: Theme.accent-hi;
+            background: transparent;
+        }
+
+        touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                root.clicked();
+            }
+            changed has-hover => {
+                if (self.has-hover) {
+                    root.tip-request(root.tip, root.absolute-position.x, root.absolute-position.y + root.height, root.width, root.height);
+                }
+            }
+        }
+    }
+
+    // Zero-sized, so it never takes a pointer; a click moves the keyboard focus here (touch below).
+    focus := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.aria;
+    accessible-description: root.tip;
+}
+
+// The notice under the chip: a flat surface with a hairline, the text in text-soft. A click anywhere
+// dismisses it. Hidden while its text is empty. The parent places it by geom::notice_rect.
+export component UpdateNotice inherits Rectangle {
+    in property <string> text;                // "" hides it
+    callback dismissed();                     // a click anywhere on it
+    out property <length> notice-w: Px.snap(body.preferred-width + 20px + 2 * Px.hair());
+    out property <length> notice-h: Px.snap(body.preferred-height + 12px + 2 * Px.hair());
+
+    visible: root.text != "";
+    width: root.notice-w;
+    height: root.notice-h;
+    background: Theme.side-flat;
+    border-radius: 6px;
+    border-width: Px.hair();
+    border-color: Theme.divider;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-blur: 30px;
+    drop-shadow-color: #00000073;
+
+    body := Text {
+        x: Px.snap(10px) + Px.hair();
+        y: Px.snap(6px) + Px.hair();
+        text: root.text;
+        wrap: no-wrap;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: Theme.text-soft;
+    }
+
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+}
+
+// The chip, its notice and the title-bar buttons' block in a 1000 x 120 window (the bar is 36 px high).
+// The chip sits 10 px left of a 154 px button block; positions use the same snapping as geom.rs.
+export component UpdateChipPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 120px;
+    background: Theme.ground;
+
+    in-out property <bool> shown: true;
+    in-out property <string> label: "Update 0.56.0";
+    in-out property <string> aria: "Update to 0.56.0";
+    in-out property <string> tip: "See what is new in 0.56.0";
+    in-out property <bool> busy: false;
+    in-out property <string> notice: "";
+    out property <int> clicks: 0;
+    out property <int> tip-requests: 0;
+    out property <string> last-tip: "";
+    out property <int> dismissals: 0;
+
+    out property <length> buttons-left: 1000px - 154px;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    bar := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: 36px;
+        background: Theme.tabs;
+    }
+
+    chip := UpdateChip {
+        width: chip.chip-width;
+        height: 24px;
+        x: Px.snap(root.buttons-left - 10px) - Px.snap(self.width);
+        y: Px.snap((bar.height - self.height) / 2);
+        shown: root.shown;
+        label: root.label;
+        aria: root.aria;
+        tip: root.tip;
+        busy: root.busy;
+        clicked => { root.clicks += 1; }
+        tip-request(text, x, y, w, h) => {
+            root.tip-requests += 1;
+            root.last-tip = text;
+        }
+    }
+
+    nt := UpdateNotice {
+        text: root.notice;
+        x: Px.snap(chip.x + chip.width) - self.width;
+        y: Px.snap(chip.y + chip.height + 8px);
+        dismissed => { root.dismissals += 1; }
+    }
+
+    out property <length> chip-x: chip.x;
+    out property <length> chip-y: chip.y;
+    out property <length> chip-w: chip.width;
+    out property <length> chip-h: chip.height;
+    out property <length> icon-x: chip.icon-x;
+    out property <length> icon-y: chip.icon-y;
+    out property <length> icon-h: chip.icon-h;
+    out property <length> label-x: chip.label-x;
+    out property <length> notice-x: nt.x;
+    out property <length> notice-y: nt.y;
+    out property <length> notice-w: nt.width;
+    out property <length> notice-h: nt.height;
+}
 
 export component UpdateWindowPreview inherits Window {}
-
-export component UpdateChip inherits Rectangle {}
-
-export component UpdateNotice inherits Rectangle {}
 
 export component UpdateWindow inherits Rectangle {}
 
