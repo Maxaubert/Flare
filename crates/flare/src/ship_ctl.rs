@@ -219,6 +219,10 @@ pub fn choose_feed(ship: &Ship, env: &dyn Fn(&str) -> Option<String>) -> FeedCho
             // A URL goes to `loopback`, which refuses every host but 127.0.0.1 itself.
             let feed = if value.contains("://") {
                 VelopackFeed::loopback(&value)
+            } else if !is_local_drive_path(&value) {
+                Err(flare_update::feed::FeedError::Failed(
+                    "update source is not a local drive path".into(),
+                ))
             } else {
                 VelopackFeed::with_source(
                     Box::new(velopack::sources::FileSource::new(&value)),
@@ -323,10 +327,48 @@ pub fn set_window_icon(hwnd: isize) {
     }
 }
 
+/// True only for an absolute local drive path (`C:\dir` or `C:/dir`). UNC, device and
+/// extended-length forms (`\\server\share`, `\\?\UNC\`, `\\.\`, `//host`) and relative paths are
+/// refused, so a package folder can never be a remote share.
+#[cfg(any(test, feature = "live-updates"))]
+fn is_local_drive_path(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/')
+        && !p[2..].starts_with("\\\\")
+        && !p[2..].starts_with("//")
+        && !p[2..].contains(['?', '*', '<', '>', '"', '|', ':', '\0'])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use flare_win::registry::FakeRegistry;
+
+    #[test]
+    fn update_source_must_be_a_local_drive_path() {
+        for ok in [r"C:\feed", r"d:\a\b", "C:/feed"] {
+            assert!(is_local_drive_path(ok), "{ok}");
+        }
+        for bad in [
+            r"\\server\share",
+            r"\\?\UNC\server\share",
+            r"\\?\C:\feed",
+            r"\\.\C:\feed",
+            "//host/share",
+            "/feed",
+            r"feed",
+            r"C:feed",
+            r"C:",
+            r"C:\feed:stream",
+            r"C:\\server",
+            "",
+        ] {
+            assert!(!is_local_drive_path(bad), "{bad}");
+        }
+    }
     use flare_win::verb::install_verb;
     use std::collections::HashMap;
 

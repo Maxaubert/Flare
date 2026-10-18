@@ -898,7 +898,7 @@ pub fn cli_main() -> i32 {
     let o = match parse_args(&argv) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("{e}\n{USAGE}");
+            eprintln!("{}\n{USAGE}", sanitize_for_terminal(&e));
             return 2;
         }
     };
@@ -918,13 +918,41 @@ pub fn cli_main() -> i32 {
     } else {
         render(&o, &label, &lines, now_ms(), &WinLocal)
     };
-    print!("{text}");
+    print!("{}", sanitize_for_terminal(&text));
     0
+}
+
+/// Text safe to print to a terminal: ESC and every other C0 / C1 control, DEL and the bidi
+/// controls become a visible `\u{..}` escape. Newline and tab stay. A hostile log line cannot
+/// inject terminal escapes through the reader.
+pub fn sanitize_for_terminal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let bad = matches!(c,
+            '\u{0}'..='\u{8}' | '\u{b}'..='\u{1f}' | '\u{7f}'..='\u{9f}'
+            | '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}'
+            | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+        if bad {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_escapes_terminal_and_bidi_controls() {
+        let hostile = "a\u{1b}[2Jb\u{9b}31m\u{202e}c\u{7}d\r\u{85}e";
+        let got = sanitize_for_terminal(hostile);
+        assert_eq!(got, "a\\u{1b}[2Jb\\u{9b}31m\\u{202e}c\\u{7}d\\u{d}\\u{85}e");
+        assert!(!got.chars().any(|c| c.is_control()));
+        assert_eq!(sanitize_for_terminal("ok\n\tline é"), "ok\n\tline é");
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()

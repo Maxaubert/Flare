@@ -57,7 +57,7 @@ pub fn bootstrap(hooks: Hooks) {
 pub fn discard_paths(packages_dir: &Path, info: &UpdateInfo) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for asset in std::iter::once(&info.TargetFullRelease).chain(info.DeltasToTarget.iter()) {
-        if asset.FileName.is_empty() {
+        if !is_bare_file_name(&asset.FileName) {
             continue;
         }
         let full = packages_dir.join(&asset.FileName);
@@ -65,6 +65,34 @@ pub fn discard_paths(packages_dir: &Path, info: &UpdateInfo) -> Vec<PathBuf> {
         out.push(full.with_extension("partial"));
     }
     out
+}
+
+/// A file name taken from a feed is only ever joined to the packages folder when it is a bare
+/// name: no separators, no `..`, no drive or stream colon, no control characters.
+pub fn is_bare_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.chars().any(char::is_control)
+        && !name.ends_with(['.', ' '])
+}
+
+/// True only for `http://127.0.0.1:<digits>` followed by nothing, or by `/`, `?` or `#`: no
+/// userinfo, no other host, no backslash, an explicit numeric port.
+#[cfg(any(test, feature = "live-updates"))]
+fn is_loopback_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://127.0.0.1:") else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 5 || rest[..digits].parse::<u32>().map_or(true, |p| p > 65535) {
+        return false;
+    }
+    let tail = &rest[digits..];
+    (tail.is_empty() || tail.starts_with(['/', '?', '#']))
+        && !tail.contains(['@', '\\', ' ', '\t', '\r', '\n'])
+        && !url.chars().any(char::is_control)
 }
 
 fn remove_all(packages_dir: &Path, info: &UpdateInfo) {
@@ -126,7 +154,7 @@ impl VelopackFeed {
     /// e2e only: a loopback HTTP feed. Any other host is refused before anything is built.
     #[cfg(feature = "live-updates")]
     pub fn loopback(url: &str) -> Result<Self, FeedError> {
-        if !url.starts_with("http://127.0.0.1:") {
+        if !is_loopback_url(url) {
             return Err(FeedError::Failed("not loopback".into()));
         }
         let source = velopack::sources::HttpSource::new(url);
@@ -314,6 +342,71 @@ mod tests {
         ] {
             assert!(VelopackFeed::loopback(url).is_err(), "{url}");
         }
+    }
+
+    #[test]
+    fn loopback_urls_are_parsed_not_prefix_matched() {
+        for ok in [
+            "http://127.0.0.1:80",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.1:1/feed/x?y=1",
+        ] {
+            assert!(is_loopback_url(ok), "{ok}");
+        }
+        for bad in [
+            "http://127.0.0.1:80@evil.example/",
+            "http://127.0.0.1:80@evil.example",
+            "http://user@127.0.0.1:80/",
+            "http://127.0.0.1:80\\@evil.example/",
+            "http://127.0.0.1:80.evil.example/",
+            "http://127.0.0.1:/",
+            "http://127.0.0.1/",
+            "http://127.0.0.1:99999/",
+            "http://127.0.0.1:8a/",
+            "https://127.0.0.1:80/",
+            "http://127.0.0.2:80/",
+            "http://localhost:80/",
+            "http://127.0.0.1:80 @evil/",
+            "HTTP://127.0.0.1:80/",
+            "",
+        ] {
+            assert!(!is_loopback_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn feed_file_names_must_be_bare() {
+        for ok in ["Flare-0.0.2-full.nupkg", "a.b-c_d.nupkg"] {
+            assert!(is_bare_file_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x.nupkg",
+            "..\\x",
+            "a/b",
+            "a\\b",
+            "C:x.nupkg",
+            "C:\\x",
+            "/abs",
+            "\\\\srv\\x",
+            "f.nupkg:stream",
+            "a\u{0}b",
+            "a\nb",
+            "x.",
+        ] {
+            assert!(!is_bare_file_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn discard_skips_a_traversing_feed_name() {
+        let info = UpdateInfo {
+            TargetFullRelease: asset("..\\..\\evil.nupkg"),
+            ..UpdateInfo::default()
+        };
+        assert!(discard_paths(Path::new("C:\\pk"), &info).is_empty());
     }
 
     #[test]
