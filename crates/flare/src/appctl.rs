@@ -1088,6 +1088,12 @@ impl AppCtl {
         self.deps.host.handle(&t.id)
     }
 
+    /// Whether the front tab's grid shows a non-empty row (the start-up trace's prompt test).
+    fn front_shows_prompt(&self) -> bool {
+        self.front_handle()
+            .is_some_and(|h| h.screen_tail(1).iter().any(|r| !r.trim().is_empty()))
+    }
+
     /// What the grid source reads each frame: the selection, the find matches, the links.
     pub fn decor_inputs(&self) -> Rc<RefCell<crate::term_ui::DecorInputs>> {
         self.term.inputs()
@@ -1737,6 +1743,7 @@ impl AppCtl {
 
     /// A tab was added and its shell asked for: the `tab-open` crumb, and the clock of `shell-spawn`.
     fn note_spawn(&mut self, id: &str, cwd: &str, resume: bool) {
+        crate::startup_trace::mark(crate::startup_trace::Phase::ShellSpawn);
         crate::diag_ctl::crumb(
             "tab-open",
             &[
@@ -2397,6 +2404,12 @@ impl AppCtl {
         };
         self.term_due = out.next_due_ms;
         self.term_hot = self.term_hot.saturating_sub(1);
+        // Start-up trace: the first tick in which the front grid shows a non-empty row.
+        if !crate::startup_trace::is_marked(crate::startup_trace::Phase::FirstPrompt)
+            && self.front_shows_prompt()
+        {
+            crate::startup_trace::mark(crate::startup_trace::Phase::FirstPrompt);
+        }
         if out.focus_terminal {
             self.focus_terminal();
         }
@@ -2642,6 +2655,16 @@ impl AppCtl {
         let ctx = self.key_context();
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
         let shell_in_front = self.front_handle().is_some();
+        // Start-up trace: the first key that reaches a tab already showing a prompt row is the
+        // usable mark, and the one place the phase line is logged.
+        if shell_in_front
+            && crate::startup_trace::is_marked(crate::startup_trace::Phase::FirstPrompt)
+            && !crate::startup_trace::is_marked(crate::startup_trace::Phase::Usable)
+            && self.front_shows_prompt()
+        {
+            crate::startup_trace::mark(crate::startup_trace::Phase::Usable);
+            log::info!("{}", crate::startup_trace::line());
+        }
         match d {
             Dispatch::Taken => KeyOutcome::Consumed,
             Dispatch::ActedShellToo => {
