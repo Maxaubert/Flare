@@ -416,19 +416,49 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         "sidebar" => Err("ui.rect sidebar: the sidebar is not open".into()),
         "tip" if a.get_tip_visible() => Ok(tip_rect(ctx)),
         "tip" => Err("ui.rect tip: no tooltip is showing".into()),
-        "menu" if a.get_menu_open() => {
-            // The menu's corner is exported, its size is not.
-            let mut v = rect_json(a.get_menu_x(), a.get_menu_y(), 0.0, 0.0, k);
-            v["w"] = Value::Null;
-            v["h"] = Value::Null;
-            v["dw"] = Value::Null;
-            v["dh"] = Value::Null;
-            Ok(v)
-        }
+        "menu" if a.get_menu_open() => Ok(rect_json(
+            a.get_menu_panel_x(),
+            a.get_menu_panel_y(),
+            a.get_menu_w(),
+            a.get_menu_h(),
+            k,
+        )),
         "menu" => Err("ui.rect menu: no menu is open".into()),
-        "strip" | "mark" | "find" | "badge" | "dialog" | "scrollbar" | "start" => {
-            Err(not_exported(name))
-        }
+        "find" if a.get_find_open() => Ok(rect_json(
+            a.get_find_bar_x(),
+            a.get_find_bar_y(),
+            a.get_find_bar_w(),
+            a.get_find_bar_h(),
+            k,
+        )),
+        "find" => Err("ui.rect find: the find bar is not open".into()),
+        "badge" if a.get_copied_phase() != 0 => Ok(rect_json(
+            a.get_badge_x(),
+            a.get_badge_y(),
+            a.get_badge_w(),
+            a.get_badge_h(),
+            k,
+        )),
+        "badge" => Err("ui.rect badge: the Copied badge is not showing".into()),
+        "dialog" if a.get_dialog_open() => Ok(rect_json(
+            a.get_dialog_box_x(),
+            a.get_dialog_box_y(),
+            a.get_dialog_box_w(),
+            a.get_dialog_box_h(),
+            k,
+        )),
+        "dialog" => Err("ui.rect dialog: no dialog is open".into()),
+        "start" if a.get_front_kind() == 2 => Ok(rect_json(
+            a.get_start_x(),
+            a.get_start_y(),
+            a.get_start_w(),
+            a.get_start_h(),
+            k,
+        )),
+        "start" => Err("ui.rect start: the start page is not showing".into()),
+        // The grid paints its own scrollbar-less view: there is no scrollbar rectangle to give.
+        "scrollbar" => Err("ui.rect scrollbar: this window draws no scrollbar".into()),
+        "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }
 }
@@ -487,6 +517,7 @@ fn dpi_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let gh = ctx.app.get_grid_phys_height().max(0) as u32;
     // The cell is what the grid's pixels leave after the padding, shared by the cells: exact to
     // the pixels left over (less than one per cell).
+    let noted = crate::e2e_hook::cell();
     let cell = |px: u32, n: usize| {
         if n == 0 {
             Value::Null
@@ -498,8 +529,8 @@ fn dpi_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "scale": k,
         "grid_cols": cols,
         "grid_rows": rows,
-        "cell_w": cell(gw, cols),
-        "cell_h": cell(gh, rows),
+        "cell_w": noted.map_or_else(|| cell(gw, cols), |(w, _)| Value::from(w)),
+        "cell_h": noted.map_or_else(|| cell(gh, rows), |(_, h)| Value::from(h)),
         "padding": pad,
         "client_w_px": size.width,
         "client_h_px": size.height,
@@ -782,6 +813,8 @@ mod tests {
         let s = f.probe("app.state", Value::Null).unwrap();
         assert_eq!(s["menu"]["open"], true);
         assert!(!s["menu"]["rows"].as_array().unwrap().is_empty());
+        let m = f.probe("ui.rect", json!({ "name": "menu" })).unwrap();
+        assert!(m["w"].as_f64().unwrap() > 0.0 && m["h"].as_f64().unwrap() > 0.0);
 
         // The find bar.
         f.h.comp.set_find_query("needle".into());
@@ -791,6 +824,19 @@ mod tests {
         assert_eq!(s["find"]["open"], true);
         assert_eq!(s["find"]["query"], "needle");
         assert_eq!(s["find"]["readout"], "1/3");
+        let b = f.probe("ui.rect", json!({ "name": "find" })).unwrap();
+        assert!(b["w"].as_f64().unwrap() > 0.0 && b["h"].as_f64().unwrap() > 0.0);
+
+        // The dialog box and the badge answer once they show, and are errors while they do not.
+        assert!(f.probe("ui.rect", json!({ "name": "dialog" })).is_err());
+        f.h.comp.set_dialog_open(true);
+        let d = f.probe("ui.rect", json!({ "name": "dialog" })).unwrap();
+        assert!(d["w"].as_f64().unwrap() > 0.0);
+        f.h.comp.set_dialog_open(false);
+        assert!(f.probe("ui.rect", json!({ "name": "badge" })).is_err());
+        f.h.comp.set_copied_phase(1);
+        let g = f.probe("ui.rect", json!({ "name": "badge" })).unwrap();
+        assert!(g["w"].as_f64().unwrap() > 0.0 && g["h"].as_f64().unwrap() > 0.0);
     }
 
     #[test]

@@ -43,6 +43,11 @@ export component FindBar inherits Rectangle {
     in property <string> readout;              // "", "none", "1000+", "3 of 12"
     in property <bool> can-step;               // false: previous and next are dimmed and do nothing
     out property <bool> input-has-focus: input.has-focus;
+    // The box in the window, for ui.rect (the bar is the whole of what it draws).
+    out property <length> bar-x: bar.absolute-position.x;
+    out property <length> bar-y: bar.absolute-position.y;
+    out property <length> bar-w: bar.width;
+    out property <length> bar-h: bar.height;
     callback query-edited(string);             // every edit
     callback next();
     callback previous();

@@ -87,6 +87,20 @@ pub fn hello_info() -> (String, f32) {
     HELLO.lock().map(|h| h.clone()).unwrap_or_default()
 }
 
+/// The grid host's cell size in device pixels, noted by the render path under `--e2e` (0 until
+/// the first frame), so `dpi.state` answers the exact cell and not a share of the leftover pixels.
+static CELL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_cell(w: u32, h: u32) {
+    CELL.store((u64::from(w) << 32) | u64::from(h), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The noted cell size (width, height), None before a frame was drawn.
+pub fn cell() -> Option<(u32, u32)> {
+    let v = CELL.load(std::sync::atomic::Ordering::Relaxed);
+    (v != 0).then_some(((v >> 32) as u32, v as u32))
+}
+
 /// Hands one request to something that will answer it. Production posts it to the UI thread; the
 /// unit tests pass their own, because a unit test has no event loop.
 type Dispatch = Arc<dyn Fn(Request, Responder) + Send + Sync>;

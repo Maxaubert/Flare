@@ -7,6 +7,18 @@ export component CopiedBadge inherits Rectangle {
     // 0 gone (nothing in the tree), 1 shown, 2 leaving (fades to nothing over 200 ms).
     in property <int> phase;
     in property <string> text: "Copied";
+    // The pill's box, for ui.rect: the same formulas the pill uses, from a hidden twin of its word.
+    out property <length> pill-w: Px.snap(twin.preferred-width + 28px + 2 * Px.hair());
+    out property <length> pill-h: Px.snap(18px + 12px + 2 * Px.hair());
+    out property <length> pill-x: Px.snap((root.width - root.pill-w) / 2);
+    out property <length> pill-y: Px.snap(root.height - 24px - root.pill-h);
+    twin := Text {
+        visible: false;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+    }
 
     if root.phase != 0 : pill := Rectangle {
         // The width comes from the measured word, which sits at a constant x, so there is no loop.

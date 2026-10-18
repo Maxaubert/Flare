@@ -305,6 +305,27 @@ export component AppWindow inherits Window {
     out property <length> help-sheet-w: help-panel.sheet-w;
     in-out property <length> help-viewport-y <=> help-panel.viewport-y;
     out property <length> title-buttons-w: top-buttons.width;
+    // The find bar, the badge and the start screen in the window, for ui.rect.
+    out property <length> find-bar-x: find.bar-x;
+    out property <length> find-bar-y: find.bar-y;
+    out property <length> find-bar-w: find.bar-w;
+    out property <length> find-bar-h: find.bar-h;
+    out property <length> badge-x: badge.pill-x;
+    out property <length> badge-y: badge.pill-y;
+    out property <length> badge-w: badge.pill-w;
+    out property <length> badge-h: badge.pill-h;
+    out property <length> start-x: start-screen.absolute-position.x;
+    out property <length> start-y: start-screen.absolute-position.y;
+    out property <length> start-w: start-screen.width;
+    out property <length> start-h: start-screen.height;
+    out property <length> menu-panel-x: menu.panel-x;
+    out property <length> menu-panel-y: menu.panel-y;
+    out property <length> menu-w: menu.panel-w;
+    out property <length> menu-h: menu.panel-h;
+    out property <length> dialog-box-x: dlg.box-x;
+    out property <length> dialog-box-y: dlg.box-y;
+    out property <length> dialog-box-w: dlg.box-w;
+    out property <length> dialog-box-h: dlg.box-h;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
@@ -575,7 +596,7 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                     }
-                    StartScreen {
+                    start-screen := StartScreen {
                         x: 0px;
                         y: 0px;
                         width: parent.width;
@@ -867,7 +888,7 @@ export component AppWindow inherits Window {
             abort => { root.update-abort(); }
             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
-        Dialog {
+        dlg := Dialog {
             x: 0px;
             y: 0px;
             width: root.width;
@@ -881,7 +902,7 @@ export component AppWindow inherits Window {
             confirm => { root.dialog-confirm(); }
         }
         // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
-        CopiedBadge {
+        badge := CopiedBadge {
             x: 0px;
             y: 0px;
             width: root.width;
