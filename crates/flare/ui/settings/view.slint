@@ -24,6 +24,11 @@ export global SettingsBridge {
     // so the new one with this id takes the keys back and Left and Right keep stepping.
     in-out property <string> slider-focus-id;
     in-out property <string> slider-focus-page;
+    // The theme card whose pencil opened the editor, and whether the keys are due back to it. Set when
+    // the editor closes and held for a moment (the wall is rebuilt by the close, perhaps more than once),
+    // then dropped by the timer next to the editor, so a later rebuild never takes the keys.
+    in-out property <string> pencil-id;
+    in-out property <bool> pencil-pending;
     in-out property <length> content-h;
     in-out property <bool> narrow;
     in-out property <string> find-text;
@@ -429,8 +434,14 @@ export component SettingsView inherits Rectangle {
                             toggle-aria: SettingsBridge.wall-toggle-aria;
                             toggle-title: SettingsBridge.wall-toggle-title;
                             still: SettingsBridge.still;
+                            pencil-id: SettingsBridge.pencil-id;
+                            pencil-pending: SettingsBridge.pencil-pending;
                             picked(id) => { SettingsBridge.wall-pick(id); }
-                            edit(id) => { SettingsBridge.wall-edit(id); }
+                            edit(id) => {
+                                SettingsBridge.pencil-id = id;
+                                SettingsBridge.pencil-pending = false;
+                                SettingsBridge.wall-edit(id);
+                            }
                             toggled => { SettingsBridge.wall-toggle(); }
                             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                         }

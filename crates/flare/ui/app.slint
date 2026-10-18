@@ -801,6 +801,11 @@ export component AppWindow inherits Window {
         }
         // The Settings overlays (M7 Task 41), above the page and below the dialog. Each is
         // pointer-transparent while closed. The Command help panel joins them in Task 43.
+        Timer {
+            interval: 600ms;
+            running: SettingsBridge.pencil-pending;
+            triggered => { SettingsBridge.pencil-pending = false; }
+        }
         ThemeEditor {
             x: 0px;
             y: 0px;
@@ -814,6 +819,9 @@ export component AppWindow inherits Window {
             well-swatch(k, x, y, w, h) => { SettingsBridge.editor-well-swatch(k, x, y, w, h); }
             save => { SettingsBridge.editor-save(); }
             cancel => { SettingsBridge.editor-cancel(); }
+            swatch-back: SettingsBridge.swatch-back;
+            swatch-back-taken => { SettingsBridge.swatch-back = ""; }
+            focus-restore => { SettingsBridge.pencil-pending = SettingsBridge.pencil-id != ""; }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
         AskThree {
@@ -874,7 +882,10 @@ export component AppWindow inherits Window {
             slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
             format-clicked => { SettingsBridge.picker-format-clicked(); }
             dropper-clicked => { SettingsBridge.picker-dropper(); }
-            escape-pressed => { SettingsBridge.swatch-back = SettingsBridge.picker-label; SettingsBridge.picker-escape(); }
+            escape-pressed => {
+                SettingsBridge.swatch-back = SettingsBridge.editor-open ? "editor:" + SettingsBridge.picker-label : SettingsBridge.picker-label;
+                SettingsBridge.picker-escape();
+            }
             outside-pressed => { SettingsBridge.picker-outside(); }
             focus-left => { SettingsBridge.picker-focus-left(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
