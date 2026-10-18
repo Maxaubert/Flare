@@ -162,11 +162,12 @@ component SideRow inherits Rectangle {
                     border-radius: 2px;
                     opacity: (root.tab.active || root.hov) ? 1 : 0;
                     background: xta.has-hover ? Theme.hover-hi : transparent;
+                    // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
                     Path {
-                        width: 10px;
-                        height: 10px;
-                        x: 4px;
-                        y: 4px;
+                        width: 10px + 2.4 * 10px / 24;
+                        height: 10px + 2.4 * 10px / 24;
+                        x: 4px - (2.4 * 10px / 24) / 2;
+                        y: 4px - (2.4 * 10px / 24) / 2;
                         viewbox-width: 24;
                         viewbox-height: 24;
                         commands: Glyphs.close;
@@ -259,18 +260,23 @@ export component TabSidebar inherits Rectangle {
                         padding-right: 10px;
                         spacing: 8px;
                         alignment: stretch;
-                        Path {
+                        // The 14 px slot; the path is grown by one stroke and moved back by half (see the close X).
+                        Rectangle {
                             width: 14px;
-                            height: 14px;
-                            y: (32px - 14px) / 2;
-                            viewbox-width: 24;
-                            viewbox-height: 24;
-                            commands: Glyphs.search;
-                            fill: transparent;
-                            stroke: Theme.dim;
-                            stroke-width: 1.8 * 14px / 24;
-                            stroke-line-cap: round;
-                            stroke-line-join: round;
+                            Path {
+                                width: 14px + 1.8 * 14px / 24;
+                                height: 14px + 1.8 * 14px / 24;
+                                x: -(1.8 * 14px / 24) / 2;
+                                y: (32px - 14px) / 2 - (1.8 * 14px / 24) / 2;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: Glyphs.search;
+                                fill: transparent;
+                                stroke: Theme.dim;
+                                stroke-width: 1.8 * 14px / 24;
+                                stroke-line-cap: round;
+                                stroke-line-join: round;
+                            }
                         }
                         Rectangle {
                             horizontal-stretch: 1;
@@ -364,18 +370,23 @@ export component TabSidebar inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         spacing: 8px;
-                        Path {
+                        // The 13 px slot; the path is grown by one stroke and moved back by half (see the close X).
+                        Rectangle {
                             width: 13px;
-                            height: 13px;
-                            y: (34px - 13px) / 2;
-                            viewbox-width: 24;
-                            viewbox-height: 24;
-                            commands: Glyphs.plus-sidebar;
-                            fill: transparent;
-                            stroke: Theme.text;
-                            stroke-width: 2.2 * 13px / 24;
-                            stroke-line-cap: round;
-                            stroke-line-join: round;
+                            Path {
+                                width: 13px + 2.2 * 13px / 24;
+                                height: 13px + 2.2 * 13px / 24;
+                                x: -(2.2 * 13px / 24) / 2;
+                                y: (34px - 13px) / 2 - (2.2 * 13px / 24) / 2;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: Glyphs.plus-sidebar;
+                                fill: transparent;
+                                stroke: Theme.text;
+                                stroke-width: 2.2 * 13px / 24;
+                                stroke-line-cap: round;
+                                stroke-line-join: round;
+                            }
                         }
                         Text {
                             text: "New tab";

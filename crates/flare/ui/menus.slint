@@ -35,9 +35,12 @@ component MenuItem inherits Rectangle {
         spacing: 8px;
         if root.item.icon != "": Rectangle {
             width: 13px;
+            // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
             Path {
-                width: 13px;
-                height: 13px;
+                width: 13px + 1.7 * 13px / 24;
+                height: 13px + 1.7 * 13px / 24;
+                x: (parent.width - 13px) / 2 - (1.7 * 13px / 24) / 2;
+                y: (parent.height - 13px) / 2 - (1.7 * 13px / 24) / 2;
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: root.item.icon;
@@ -78,8 +81,10 @@ component MenuItem inherits Rectangle {
                 border-radius: 4px;
                 background: tta.has-hover ? Theme.hover : transparent;
                 Path {
-                    width: 12px;
-                    height: 12px;
+                    width: 12px + 1.8 * 12px / 24;
+                    height: 12px + 1.8 * 12px / 24;
+                    x: (parent.width - 12px) / 2 - (1.8 * 12px / 24) / 2;
+                    y: (parent.height - 12px) / 2 - (1.8 * 12px / 24) / 2;
                     viewbox-width: 24;
                     viewbox-height: 24;
                     commands: root.item.trailing-icon;
@@ -323,8 +328,10 @@ export component OverflowList inherits Rectangle {
                 Rectangle {
                     width: 13px;
                     Path {
-                        width: 13px;
-                        height: 13px;
+                        width: 13px + 2 * 13px / 24;
+                        height: 13px + 2 * 13px / 24;
+                        x: (parent.width - 13px) / 2 - (2 * 13px / 24) / 2;
+                        y: (parent.height - 13px) / 2 - (2 * 13px / 24) / 2;
                         viewbox-width: 24;
                         viewbox-height: 24;
                         commands: Glyphs.search-small;
