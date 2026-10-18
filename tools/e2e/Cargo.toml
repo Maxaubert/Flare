@@ -5,15 +5,29 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "flare-e2e"
+path = "src/main.rs"
+
 [dependencies]
 tempfile.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+png.workspace = true
 windows-sys.workspace = true
+flare-e2e-proto = { path = "../../crates/flare-e2e-proto" }
 flare-win = { path = "../../crates/flare-win" }
 flare-agent = { path = "../../crates/flare-agent" }
 flare-update = { path = "../../crates/flare-update" }
+flare-diag = { path = "../../crates/flare-diag" }
+flare-render = { path = "../../crates/flare-render" }
+flare-tabs = { path = "../../crates/flare-tabs" }
+flare-settings = { path = "../../crates/flare-settings" }
 
 [lints]
 workspace = true

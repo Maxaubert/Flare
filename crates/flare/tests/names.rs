@@ -638,6 +638,8 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_UPDATE_NOTES",
     "FLARE_E2E_UPDATE_SOURCE",
     "FLARE_E2E_PICK_COLOUR",
+    // M10 Appendix F: reduced motion under --e2e (read in e2e.rs as a concatenated name).
+    "FLARE_E2E_REDUCED_MOTION",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
 ];

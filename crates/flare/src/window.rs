@@ -431,7 +431,7 @@ fn settings_deps(
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),
         e2e: e2e_on,
         clock: Rc::new(epoch_ms),
-        still: Rc::new(|| !flare_win::motion::animations_enabled()),
+        still: Rc::new(|| !crate::e2e::animations_enabled()),
     }
 }
 
@@ -451,6 +451,7 @@ pub fn run_window(
 ) -> Result<(), slint::PlatformError> {
     let sample = args.sample;
     let app = AppWindow::new()?;
+    crate::startup_trace::mark(crate::startup_trace::Phase::Component);
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
         RendererChoice::Software => GridPainter::Cpu,
@@ -501,13 +502,16 @@ pub fn run_window(
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
         move || {
+            crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
             let Some(app) = weak.upgrade() else { return };
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 app.set_grid_image(image);
+                crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
                 place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                 // No notifier means no AfterRendering: log the first frame from here.
                 if no_notifier.get() && first_software_frame.borrow_mut().fire() {
+                    crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
                     log::info!("first frame after {} ms", start.elapsed().as_millis());
                 }
             }
@@ -533,8 +537,10 @@ pub fn run_window(
                         *note.borrow_mut() = Some("Slint renderer has no wgpu device".to_string());
                         log::warn!("renderer: grid on the CPU (Slint renderer has no wgpu device)");
                     }
+                    crate::startup_trace::mark(crate::startup_trace::Phase::RenderSetup);
                 }
                 RenderingState::BeforeRendering => {
+                    crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
                     let Some(app) = weak.upgrade() else { return };
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
@@ -546,8 +552,10 @@ pub fn run_window(
                     }
                 }
                 RenderingState::AfterRendering => {
+                    crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
                     if first_frame {
                         first_frame = false;
+                        crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
                         log::info!("first frame after {} ms", start.elapsed().as_millis());
                     }
                 }
@@ -858,6 +866,7 @@ pub fn run_window(
             }
         }));
         stores = Some((tabs_store, window_store, prefs));
+        crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         ctl = Some(rc);
     }
 
@@ -1020,6 +1029,9 @@ pub fn run_window(
     }
     if args.e2e {
         apply_e2e_style(&app);
+        if let Some(rc) = &ctl {
+            crate::e2e_glue::install(&app, rc, args);
+        }
     }
     // The exe's own icon on the window (and again on every scale-factor change).
     crate::startup::apply_window_icon(hwnd_of(&app));

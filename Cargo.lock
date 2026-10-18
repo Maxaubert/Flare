@@ -1584,6 +1584,7 @@ dependencies = [
  "env_logger",
  "flare-agent",
  "flare-diag",
+ "flare-e2e-proto",
  "flare-help",
  "flare-render",
  "flare-settings",
@@ -1638,13 +1639,28 @@ name = "flare-e2e"
 version = "0.1.0"
 dependencies = [
  "flare-agent",
+ "flare-diag",
+ "flare-e2e-proto",
+ "flare-render",
+ "flare-settings",
+ "flare-tabs",
  "flare-update",
  "flare-win",
+ "png",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "flare-e2e-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

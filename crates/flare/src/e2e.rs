@@ -39,6 +39,19 @@ pub fn global() -> &'static E2eFlag {
     FLAG.get_or_init(|| E2eFlag::new(false))
 }
 
+/// Whether the window's animations run. FLARE_E2E_REDUCED_MOTION=1 turns them off under --e2e
+/// only; otherwise the OS setting decides, as before.
+pub fn animations_enabled() -> bool {
+    if global()
+        .env(&["FLARE_E2E", "_REDUCED_MOTION"].concat())
+        .as_deref()
+        == Some("1")
+    {
+        return false;
+    }
+    flare_win::motion::animations_enabled()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

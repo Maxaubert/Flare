@@ -11,6 +11,9 @@ mod config;
 mod diag_ctl;
 mod drop_flow;
 mod e2e;
+mod e2e_glue;
+mod e2e_hook;
+mod e2e_probes;
 mod font_ctl;
 mod headless;
 mod help_ctl;
@@ -31,11 +34,13 @@ mod settings_scene;
 mod ship_ctl;
 mod sidebar_ui;
 mod startup;
+mod startup_trace;
 mod tab_host;
 mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
+mod timer_registry;
 mod update_ctl;
 mod window;
 
@@ -51,6 +56,7 @@ slint::include_modules!();
 fn main() {
     // Velopack's hooks may end the process here, before anything else starts.
     ship_ctl::bootstrap();
+    startup_trace::mark(startup_trace::Phase::Main);
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -64,6 +70,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    startup_trace::mark(startup_trace::Phase::Args);
 
     if args.probe_backend
         || args.screenshot.is_some()
@@ -190,6 +198,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    startup_trace::mark(startup_trace::Phase::Backend);
     log::info!(
         "renderer: {:?} (fallback: {:?})",
         outcome.effective,

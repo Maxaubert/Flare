@@ -4,3 +4,5 @@ linker = "rust-lld.exe"
 
 [alias]
 diag = "run -q -p flare-diag --bin diag --"
+e2e = "run -p flare-e2e --release --"
+perf = "run -p flare-e2e --release -- perf"

@@ -698,7 +698,7 @@ impl AppCtl {
             marks_rainbow,
             _look_subs: look_subs,
             clock: MarkClock::new(),
-            animations: Rc::new(flare_win::motion::animations_enabled),
+            animations: Rc::new(crate::e2e::animations_enabled),
             minimised: false,
             skeleton: Rc::new(Cell::new(false)),
             skel: Skel::Gone,
