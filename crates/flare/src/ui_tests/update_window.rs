@@ -474,3 +474,317 @@ fn closer_to_dot_than_surface(p: [u8; 4]) -> bool {
     let d = |q: [u8; 4]| -> u32 { (0..3).map(|i| u32::from(p[i].abs_diff(q[i]))).sum() };
     d(ACCENT_HI) < d(SIDE_FLAT)
 }
+
+// ---- Task 33: the window at all eight display scalings -----------------------------------------------
+
+mod scales {
+    use flare_theme::ansi::contrast_ratio;
+    use flare_theme::edges::DEFAULT_WINDOW_EDGES;
+    use flare_theme::look::{AppliedLook, LookInput, apply_look};
+    use flare_update::geom;
+    use slint::ComponentHandle;
+
+    use super::{
+        ACCENT_SOLID, SIDE_FLAT, harness, harness_sized, open, section, set_running, set_sections,
+        settle,
+    };
+    use crate::chrome_apply::colour;
+    use crate::ui_harness::{Frame, Harness, SCALES};
+    use crate::{Theme, UpdateWindowPreview};
+
+    fn on_grid(v: f32, s: f32) -> bool {
+        let d = v * s;
+        (d - d.round()).abs() < 1e-3
+    }
+
+    #[test]
+    fn the_window_box_is_centred_to_the_pixel() {
+        for s in SCALES {
+            for win_w in [1000_u32, 700, 460] {
+                let h = harness_sized(s, win_w, 640);
+                open(&h);
+                let centred = (win_w as f32 - h.comp.get_box_w()) / 2.0;
+                assert!(
+                    (h.comp.get_box_x() - centred).abs() * s <= 1.0,
+                    "scale {s} width {win_w}: box-x {} vs {centred}",
+                    h.comp.get_box_x()
+                );
+                for v in [h.comp.get_box_x(), h.comp.get_box_y(), h.comp.get_box_w()] {
+                    assert!(
+                        on_grid(v, s),
+                        "scale {s} width {win_w}: {v} is off the grid"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_fits_the_smallest_window() {
+        for s in SCALES {
+            let h = harness_sized(s, 1000, 420);
+            h.comp.set_notes_max_h(geom::notes_max_h(420.0));
+            let entries: Vec<String> = (0..25).map(|i| format!("Entry number {i}")).collect();
+            let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+            set_sections(&h, vec![section("Bug fixes", &refs)]);
+            open(&h);
+            assert!(
+                h.comp.get_box_y() >= 0.0,
+                "scale {s}: box-y {}",
+                h.comp.get_box_y()
+            );
+            let floor = 420.0 * s - (24.0 * s).round();
+            for (name, y, bh) in [
+                ("install", h.comp.get_install_y(), h.comp.get_install_h()),
+                ("cancel", h.comp.get_cancel_y(), h.comp.get_cancel_h()),
+            ] {
+                assert!(
+                    (y + bh) * s <= floor + 0.5,
+                    "scale {s}: the {name} button ends at {} device px, floor {floor}",
+                    (y + bh) * s
+                );
+                assert!(y >= 0.0, "scale {s}: {name} above the window");
+            }
+            assert!(
+                h.comp.get_install_x() + h.comp.get_install_w() <= 1000.0,
+                "scale {s}: Install is off the right edge"
+            );
+            assert!(h.comp.get_cancel_x() >= 0.0, "scale {s}");
+            // The notes list scrolls inside its cap.
+            assert!(
+                h.comp.get_notes_content_h() > h.comp.get_notes_h(),
+                "scale {s}: {} vs {}",
+                h.comp.get_notes_content_h(),
+                h.comp.get_notes_h()
+            );
+            assert!(
+                (h.comp.get_notes_h() - geom::notes_max_h(420.0)).abs() < 0.01,
+                "scale {s}: {}",
+                h.comp.get_notes_h()
+            );
+            // Both buttons are drawn on the frame.
+            let f = h.render();
+            for (x, y, w, bh) in [
+                (
+                    h.comp.get_install_x(),
+                    h.comp.get_install_y(),
+                    h.comp.get_install_w(),
+                    h.comp.get_install_h(),
+                ),
+                (
+                    h.comp.get_cancel_x(),
+                    h.comp.get_cancel_y(),
+                    h.comp.get_cancel_w(),
+                    h.comp.get_cancel_h(),
+                ),
+            ] {
+                assert!(((y + bh) * s).round() as u32 <= f.h, "scale {s}");
+                assert!(((x + w) * s).round() as u32 <= f.w, "scale {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_progress_fill_ends_on_a_device_pixel_and_monotonic() {
+        for s in SCALES {
+            let h = harness(s);
+            open(&h);
+            let mut last = -1.0_f32;
+            for pct in [0, 25, 50, 75, 100] {
+                set_running(&h, pct);
+                let w = h.comp.get_fill_w();
+                assert!(on_grid(w, s), "scale {s} pct {pct}: {w}");
+                assert!(w >= last, "scale {s}: {w} after {last}");
+                assert!(w <= h.comp.get_track_w(), "scale {s} pct {pct}");
+                last = w;
+                // The drawn fill ends exactly where the property says.
+                let f = h.render();
+                let y = ((h.comp.get_track_y() + 3.0) * s).round() as u32;
+                let x0 = (h.comp.get_track_x() * s).round() as u32;
+                let drawn = f.run_len_h(y, x0 + (4.0 * s).round() as u32, |p| {
+                    Frame::near(p, ACCENT_SOLID, 2)
+                });
+                if pct == 0 {
+                    assert_eq!(h.comp.get_fill_w(), 0.0, "scale {s}");
+                } else if pct < 100 {
+                    // The fill's right end is a 3 css px round cap, so its last drawn column on the
+                    // middle row is the property's end to within one anti-aliased device pixel.
+                    let end = (x0 + (w * s).round() as u32) as i64;
+                    let got = (x0 + (4.0 * s).round() as u32 + drawn) as i64;
+                    assert!(
+                        (got - end).abs() <= 1,
+                        "scale {s} pct {pct}: {got} vs {end}"
+                    );
+                }
+            }
+            assert_eq!(h.comp.get_fill_w(), h.comp.get_track_w(), "scale {s}");
+        }
+    }
+
+    #[test]
+    fn the_box_height_is_identical_idle_running_and_with_a_notice() {
+        for s in SCALES {
+            let h = harness(s);
+            open(&h);
+            let idle = h.comp.get_box_h();
+            set_running(&h, 40);
+            assert_eq!(h.comp.get_box_h(), idle, "scale {s} running");
+            h.comp.set_running(false);
+            h.comp.set_cancel_label("Close".into());
+            h.comp
+                .set_status("The update could not be installed".into());
+            h.comp.set_pct_text("".into());
+            h.advance(300);
+            settle(&h);
+            assert_eq!(h.comp.get_box_h(), idle, "scale {s} with a notice");
+            assert!(on_grid(idle, s), "scale {s}: box height {idle}");
+        }
+    }
+
+    #[test]
+    fn moving_between_scales_relays_out() {
+        use slint::PhysicalSize;
+        use slint::platform::WindowEvent;
+        let rects = |h: &Harness<UpdateWindowPreview>| {
+            [
+                h.comp.get_box_x(),
+                h.comp.get_box_y(),
+                h.comp.get_box_w(),
+                h.comp.get_box_h(),
+                h.comp.get_track_x(),
+                h.comp.get_track_y(),
+                h.comp.get_track_w(),
+                h.comp.get_install_x(),
+                h.comp.get_install_y(),
+                h.comp.get_cancel_x(),
+                h.comp.get_cancel_w(),
+            ]
+        };
+        let h = harness(1.0);
+        open(&h);
+        let relayout = |scale: f32| {
+            let w = h.comp.window();
+            w.dispatch_event(WindowEvent::ScaleFactorChanged {
+                scale_factor: scale,
+            });
+            w.set_size(PhysicalSize::new(
+                (1000.0 * scale).round() as u32,
+                (640.0 * scale).round() as u32,
+            ));
+            h.advance(0);
+            h.advance(0);
+        };
+        let fresh = |scale: f32| {
+            let f = harness(scale);
+            open(&f);
+            rects(&f)
+        };
+        relayout(2.25);
+        assert_eq!(rects(&h), fresh(2.25), "1.0 -> 2.25");
+        relayout(1.25);
+        assert_eq!(rects(&h), fresh(1.25), "2.25 -> 1.25");
+    }
+
+    fn look(id: &str, see_through: u8, glass_possible: bool) -> AppliedLook {
+        apply_look(&LookInput {
+            theme_id: id,
+            custom: None,
+            draft: None,
+            background: None,
+            accent: None,
+            secondary: None,
+            edges: DEFAULT_WINDOW_EDGES,
+            see_through,
+            glass_possible,
+        })
+    }
+
+    fn token(l: &AppliedLook, name: &str) -> String {
+        l.chrome.vars[name].clone()
+    }
+
+    /// Writes the tokens the window reads into the preview's Theme.
+    fn paint(h: &Harness<UpdateWindowPreview>, l: &AppliedLook) {
+        let t = h.comp.global::<Theme>();
+        t.set_light(l.light);
+        t.set_ground(colour(&token(l, "--p-bg")));
+        t.set_side_flat(colour(&token(l, "--p-side-flat")));
+        t.set_text(colour(&token(l, "--p-text")));
+        t.set_text_soft(colour(&token(l, "--p-text-soft")));
+        t.set_dim(colour(&token(l, "--p-dim")));
+        t.set_accent_hi(colour(&token(l, "--p-accent-hi")));
+        t.set_accent_solid(colour(&token(l, "--p-accent-solid")));
+        t.set_divider(colour(&token(l, "--p-divider")));
+        h.advance(0);
+    }
+
+    #[test]
+    fn the_look_on_the_dark_and_the_light_theme_keeps_contrast() {
+        for id in ["pt-default", "paper"] {
+            let l = look(id, 0, false);
+            let h = harness(1.0);
+            paint(&h, &l);
+            open(&h);
+            // The box really is the theme's side-flat, so the ratios below are the drawn ones.
+            let f = h.render();
+            let side = token(&l, "--p-side-flat");
+            let probe = f.px(
+                (h.comp.get_box_x() + h.comp.get_box_w() - 6.0) as u32,
+                (h.comp.get_box_y() + 30.0) as u32,
+            );
+            let c = colour(&side);
+            assert!(
+                Frame::near(probe, [c.red(), c.green(), c.blue(), 255], 2),
+                "{id}: the box is {probe:?}, not {side}"
+            );
+            let notes = contrast_ratio(&token(&l, "--p-text-soft"), &side);
+            assert!(notes >= 4.5, "{id}: notes text {notes:.2}");
+            let status = contrast_ratio(&token(&l, "--p-text-soft"), &side);
+            assert!(status >= 4.5, "{id}: status {status:.2}");
+            let title = contrast_ratio(&token(&l, "--p-text"), &side);
+            assert!(title >= 4.5, "{id}: title {title:.2}");
+            let dot = contrast_ratio(&token(&l, "--p-accent-hi"), &side);
+            assert!(dot >= 3.0, "{id}: the dot {dot:.2}");
+        }
+    }
+
+    #[test]
+    fn a_translucent_window_does_not_make_the_window_translucent() {
+        let l = look("pt-default", 40, true);
+        let c = colour(&token(&l, "--p-side-flat"));
+        for s in [1.0_f32, 1.5, 2.25] {
+            let h = harness(s);
+            paint(&h, &l);
+            open(&h);
+            let f = h.render();
+            let x = ((h.comp.get_box_x() + h.comp.get_box_w() - 6.0) * s) as u32;
+            let y = ((h.comp.get_box_y() + 30.0) * s) as u32;
+            let p = f.px(x, y);
+            assert_eq!(p[3], 255, "scale {s}: the box is opaque");
+            assert!(
+                Frame::near(p, [c.red(), c.green(), c.blue(), 255], 2),
+                "scale {s}: {p:?}"
+            );
+            let _ = SIDE_FLAT;
+        }
+    }
+
+    #[test]
+    fn gpu_and_software_agree_within_two_levels_on_the_window_fill() {
+        // See the chip's twin: the harness has no GPU painter, so this reads the software frame twice.
+        eprintln!(
+            "note: no offscreen GPU painter in the harness; the GPU pass of this test is skipped"
+        );
+        for s in SCALES {
+            let h = harness(s);
+            open(&h);
+            set_running(&h, 100);
+            let y = ((h.comp.get_track_y() + 3.0) * s).round() as u32;
+            let x = ((h.comp.get_track_x() + 100.0) * s).round() as u32;
+            let a = h.render().px(x, y);
+            let b = h.render().px(x, y);
+            assert!(Frame::near(a, b, 2), "scale {s}");
+            assert!(Frame::near(a, ACCENT_SOLID, 2), "scale {s}: {a:?}");
+        }
+    }
+}
