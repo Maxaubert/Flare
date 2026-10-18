@@ -65,7 +65,7 @@ fn hook_line_is_the_plugin_frame_byte_for_byte() {
 
 #[test]
 fn fake_claude_writes_interactive_transcripts_the_resume_reader_accepts() {
-    let world = World;
+    let world = World::new();
     let mut fake = FakeClaude::new(&world);
     let cwd = r"C:\Users\me\repo";
     let mine_id = "5a1d0c2e-1111-4222-8333-94445555a666";
