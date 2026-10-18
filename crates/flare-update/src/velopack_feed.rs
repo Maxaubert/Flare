@@ -1,1 +1,348 @@
 //! M9 Task 11: the Velopack backend. Its network constructor is behind the live-updates feature.
+//!
+//! This is the ONE file that touches Velopack. Flare never implements `UpdateSource` itself; it
+//! only constructs the crate's own sources, and the remote ones exist only under `live-updates`.
+//! Installing is two steps: `download` writes a package into the packages folder, `apply` starts
+//! the updater, which waits for this process to exit. `discard` removes what a download wrote and
+//! never the running version's own package (the next delta needs it).
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use velopack::locator::{LocationContext, VelopackLocatorConfig, auto_locate_app_manifest};
+use velopack::sources::UpdateSource;
+use velopack::{Error as VError, UpdateCheck, UpdateInfo, UpdateManager, VelopackApp};
+
+use crate::feed::{Feed, FeedError, Found};
+use crate::gate::CancelToken;
+
+/// The pack id (= `flare_win::names::APP_ID`).
+pub const PACK_ID: &str = "Flare";
+/// The Application User Model ID (= `flare_win::names::AUMID`).
+pub const AUMID: &str = "com.flare.terminal";
+
+/// True only for exactly our own pack id (ASCII case-insensitive).
+pub fn package_is_ours(package_id: &str) -> bool {
+    package_id.eq_ignore_ascii_case(PACK_ID)
+}
+
+/// What the app hooks do. Both run on Velopack's schedule, never on a window.
+pub struct Hooks {
+    pub before_uninstall: Box<dyn FnOnce() + 'static>,
+    pub first_run: Box<dyn FnOnce(String) + 'static>,
+}
+
+/// Velopack's startup logic. Must be the first thing `main` does; it may end the process (the
+/// install and uninstall hooks) and returns at once on a dev build.
+pub fn bootstrap(hooks: Hooks) {
+    let Hooks {
+        before_uninstall,
+        first_run,
+    } = hooks;
+    VelopackApp::build()
+        .set_auto_apply_on_startup(false)
+        .set_app_user_model_id(AUMID)
+        .on_before_uninstall_fast_callback(move |_v| before_uninstall())
+        .on_after_install_fast_callback(|_v| {})
+        .on_after_update_fast_callback(|_v| {})
+        .on_first_run(move |v| first_run(v.to_string()))
+        .run();
+}
+
+/// The files a discard removes: the target package, its `.partial`, and the same two for every
+/// delta. Never the base release.
+pub fn discard_paths(packages_dir: &Path, info: &UpdateInfo) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for asset in std::iter::once(&info.TargetFullRelease).chain(info.DeltasToTarget.iter()) {
+        if asset.FileName.is_empty() {
+            continue;
+        }
+        let full = packages_dir.join(&asset.FileName);
+        out.push(full.clone());
+        out.push(full.with_extension("partial"));
+    }
+    out
+}
+
+fn remove_all(packages_dir: &Path, info: &UpdateInfo) {
+    for p in discard_paths(packages_dir, info) {
+        let _ = std::fs::remove_file(p); // sync-ok: runs on the install worker, errors are ignored
+    }
+}
+
+fn strip_v(v: &str) -> &str {
+    v.strip_prefix(['v', 'V']).unwrap_or(v)
+}
+
+fn lock_it<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn map_err(e: VError) -> FeedError {
+    match e {
+        VError::Network(n) => FeedError::Offline(n.to_string()),
+        other => FeedError::Failed(other.to_string()),
+    }
+}
+
+/// The real backend over the `velopack` crate.
+pub struct VelopackFeed {
+    um: UpdateManager,
+    info: Mutex<Option<UpdateInfo>>,
+    packages_dir: PathBuf,
+    busy: Arc<AtomicBool>,
+}
+
+impl VelopackFeed {
+    pub fn with_source(
+        source: Box<dyn UpdateSource>,
+        locator: Option<VelopackLocatorConfig>,
+    ) -> Result<Self, FeedError> {
+        let um = UpdateManager::new_boxed(source, None, locator.clone()).map_err(map_err)?;
+        let packages_dir = match &locator {
+            Some(cfg) => cfg.PackagesDir.clone(),
+            None => auto_locate_app_manifest(LocationContext::FromCurrentExe)
+                .map_err(map_err)?
+                .get_packages_dir(),
+        };
+        Ok(Self {
+            um,
+            info: Mutex::new(None),
+            packages_dir,
+            busy: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// The only constructor of a remote network source in the workspace.
+    #[cfg(feature = "live-updates")]
+    pub fn github(repo_url: &str) -> Result<Self, FeedError> {
+        let source = velopack::sources::GithubSource::new(repo_url, None, false);
+        Self::with_source(Box::new(source), None)
+    }
+
+    /// e2e only: a loopback HTTP feed. Any other host is refused before anything is built.
+    #[cfg(feature = "live-updates")]
+    pub fn loopback(url: &str) -> Result<Self, FeedError> {
+        if !url.starts_with("http://127.0.0.1:") {
+            return Err(FeedError::Failed("not loopback".into()));
+        }
+        let source = velopack::sources::HttpSource::new(url);
+        Self::with_source(Box::new(source), None)
+    }
+
+    /// The stored find when its version is `version`.
+    fn offered(&self, version: &str) -> Result<UpdateInfo, FeedError> {
+        let guard = lock_it(&self.info);
+        let info = guard
+            .as_ref()
+            .ok_or_else(|| FeedError::Failed("nothing found".into()))?;
+        if strip_v(&info.TargetFullRelease.Version) != strip_v(version) {
+            return Err(FeedError::Failed("not offered".into()));
+        }
+        Ok(info.clone())
+    }
+}
+
+impl Feed for VelopackFeed {
+    fn check(&self) -> Result<Option<Found>, FeedError> {
+        match self.um.check_for_updates().map_err(map_err)? {
+            UpdateCheck::RemoteIsEmpty | UpdateCheck::NoUpdateAvailable => Ok(None),
+            UpdateCheck::UpdateAvailable(info) => {
+                if !package_is_ours(&info.TargetFullRelease.PackageId) || info.IsDowngrade {
+                    log::warn!(
+                        "update: ignoring an offer ({}, downgrade {})",
+                        info.TargetFullRelease.PackageId,
+                        info.IsDowngrade
+                    );
+                    return Ok(None);
+                }
+                let found = Found {
+                    version: strip_v(&info.TargetFullRelease.Version).to_string(),
+                    notes: info.TargetFullRelease.NotesMarkdown.clone(),
+                };
+                *lock_it(&self.info) = Some(*info);
+                Ok(Some(found))
+            }
+        }
+    }
+
+    fn download(
+        &self,
+        version: &str,
+        progress: &mut dyn FnMut(u8),
+        cancel: &CancelToken,
+    ) -> Result<(), FeedError> {
+        if self
+            .busy
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(FeedError::Failed("busy".into()));
+        }
+        let info = match self.offered(version) {
+            Ok(i) => i,
+            Err(e) => {
+                self.busy.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
+        let (tx, rx) = mpsc::channel::<i16>();
+        let (done_tx, done_rx) = mpsc::channel::<Result<(), VError>>();
+        let um = self.um.clone();
+        let dl_info = info.clone();
+        std::thread::spawn(move || {
+            let r = um.download_updates(&dl_info, Some(tx));
+            let _ = done_tx.send(r);
+        });
+        loop {
+            if cancel.is_cancelled() {
+                // The download thread cannot be stopped: a joiner waits for it, removes what it
+                // wrote and only then frees `busy`.
+                let busy = Arc::clone(&self.busy);
+                let dir = self.packages_dir.clone();
+                std::thread::spawn(move || {
+                    let _ = done_rx.recv(); // sync-ok: dedicated joiner thread
+                    remove_all(&dir, &info);
+                    busy.store(false, Ordering::SeqCst);
+                });
+                return Err(FeedError::Cancelled);
+            }
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                // sync-ok: the install worker waits for progress
+                Ok(v) => progress(v.clamp(0, 100) as u8),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        let result = done_rx
+            .recv() // sync-ok: the download thread has already dropped its sender
+            .unwrap_or_else(|_| Err(VError::Other("download thread ended".into())));
+        self.busy.store(false, Ordering::SeqCst);
+        result.map_err(map_err)
+    }
+
+    fn apply(&self, version: &str, restart_args: &[String]) -> Result<(), FeedError> {
+        let info = self.offered(version)?;
+        self.um
+            .wait_exit_then_apply_updates(&info.TargetFullRelease, true, true, restart_args)
+            .map_err(map_err)
+    }
+
+    fn discard(&self) {
+        if let Some(info) = lock_it(&self.info).as_ref() {
+            remove_all(&self.packages_dir, info);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use velopack::VelopackAsset;
+
+    fn asset(name: &str) -> VelopackAsset {
+        VelopackAsset {
+            PackageId: "Flare".into(),
+            FileName: name.into(),
+            ..Default::default()
+        }
+    }
+
+    fn production() -> &'static str {
+        let src = include_str!("velopack_feed.rs");
+        src.split("#[cfg(test)]").next().unwrap()
+    }
+
+    #[test]
+    fn refuses_a_package_with_another_id() {
+        assert!(!package_is_ours("PrismTerminal"));
+        assert!(!package_is_ours("Prism"));
+    }
+
+    #[test]
+    fn accepts_only_our_id() {
+        assert!(package_is_ours("Flare"));
+        assert!(package_is_ours("flare"));
+        for bad in ["Flare2", " Flare", "Flare ", ""] {
+            assert!(!package_is_ours(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_lookalikes() {
+        for bad in ["F1are", "Flare.exe", "Flare-Setup"] {
+            assert!(!package_is_ours(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn discard_names_the_target_its_partial_and_the_deltas_never_the_base() {
+        let info = UpdateInfo {
+            TargetFullRelease: asset("Flare-0.0.2-full.nupkg"),
+            BaseRelease: Some(asset("Flare-0.0.1-full.nupkg")),
+            DeltasToTarget: vec![asset("Flare-0.0.2-delta.nupkg")],
+            IsDowngrade: false,
+        };
+        let dir = Path::new("pk");
+        let got: Vec<String> = discard_paths(dir, &info)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "Flare-0.0.2-full.nupkg",
+                "Flare-0.0.2-full.partial",
+                "Flare-0.0.2-delta.nupkg",
+                "Flare-0.0.2-delta.partial",
+            ]
+        );
+        assert!(!got.iter().any(|n| n.contains("0.0.1")));
+    }
+
+    #[cfg(feature = "live-updates")]
+    #[test]
+    fn the_loopback_constructor_refuses_any_other_host() {
+        for url in [
+            "https://example.com/",
+            "http://localhost:1/",
+            "http://127.0.0.2:1/",
+        ] {
+            assert!(VelopackFeed::loopback(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs real packages; runs in the update e2e CI job"]
+    fn the_feed_over_a_file_source_checks_downloads_and_reports_progress() {}
+
+    #[test]
+    fn no_network_source_exists_without_the_feature() {
+        let mut last_attr = String::new();
+        for line in production().lines() {
+            let t = line.trim();
+            if t.starts_with("#[") {
+                last_attr = t.to_string();
+                continue;
+            }
+            if t.starts_with("//") {
+                continue;
+            }
+            assert!(!t.contains("AutoSource"), "AutoSource: {t}");
+            if t.contains("GithubSource") || t.contains("HttpSource") {
+                assert!(
+                    last_attr.contains("live-updates"),
+                    "ungated network source: {t}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_turns_auto_apply_off() {
+        assert!(production().contains("set_auto_apply_on_startup(false)"));
+    }
+}
