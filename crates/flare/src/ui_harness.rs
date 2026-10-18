@@ -172,6 +172,13 @@ impl<C: ComponentHandle> Harness<C> {
         }
     }
 
+    /// The window becomes the active one, as when a person is using it (a field draws its selection
+    /// and its caret only then).
+    pub fn activate(&self) {
+        self.win
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+    }
+
     pub fn advance(&self, ms: u64) {
         CLOCK_MS.with(|c| c.set(c.get() + ms));
         slint::platform::update_timers_and_animations();

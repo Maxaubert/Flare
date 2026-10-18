@@ -874,6 +874,10 @@ impl AppCtl {
 
     /// F1, the title button and the terminal menu row.
     fn help_toggle(&mut self) {
+        // A question is up: the popup waits for the answer.
+        if self.ask.is_some() {
+            return;
+        }
         let Some(h) = self.help.clone() else { return };
         *self.help_front.borrow_mut() = self.front_handle().and_then(|t| t.shell_id());
         if let Ok(mut h) = h.try_borrow_mut() {
@@ -3054,6 +3058,14 @@ impl AppCtl {
         self.clear_tip();
         self.close_menu_quietly();
         self.close_overflow_quietly();
+        // A question is asked over nothing: the Command help popup is put away first, so it is never
+        // underneath it and its field does not hold the keys the question needs.
+        if self.ask.is_some()
+            && let Some(h) = self.help.clone()
+            && let Ok(mut h) = h.try_borrow_mut()
+        {
+            h.close();
+        }
         if let Some(app) = self.app() {
             match &self.ask {
                 Some(a) => {
@@ -5493,6 +5505,23 @@ mod tests {
             c.set_working(&id, Some(0));
         }
         f.clock.set(5_000);
+    }
+
+    #[test]
+    fn the_close_question_puts_the_help_panel_away_and_f1_waits() {
+        let f = fx();
+        with_a_working_agent(&f);
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(help_open(&f));
+        let id = f.ctl.borrow().front_id().expect("a tab in front");
+        f.ctl.borrow_mut().request_close(&id);
+        assert!(f.h.comp.get_dialog_open(), "the close question is up");
+        assert!(
+            !help_open(&f),
+            "the panel is put away, so the question is never underneath it"
+        );
+        f.key(f1());
+        assert!(!help_open(&f), "F1 does not open it over a question");
     }
 
     #[test]

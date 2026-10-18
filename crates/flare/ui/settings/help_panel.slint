@@ -339,6 +339,8 @@ export component HelpPanel inherits Rectangle {
             root.shown = true;
             focus-timer.running = true;
         } else {
+            // Closed before the field took the keys: it must not take them from whoever has them now.
+            focus-timer.running = false;
             hide-timer.interval = HelpBridge.still ? 1ms : 220ms;
             hide-timer.running = true;
         }
@@ -380,8 +382,9 @@ export component HelpPanel inherits Rectangle {
         accessible-label: "Command help";
 
         // Out, the panel takes no keys and no clicks; open, it handles the list keys itself.
+        // Never nabled: false: a disabled FocusScope ignores the focus-out, so it would go on saying it
+        // has the keys after the shell took them. The handlers below check interactive themselves.
         keys := FocusScope {
-            enabled: root.interactive;
             capture-key-pressed(e) => {
                 if (!root.interactive || e.modifiers.control || e.modifiers.alt || e.modifiers.meta) {
                     return EventResult.reject;
@@ -720,13 +723,15 @@ export component HelpPanel inherits Rectangle {
                 x: -4px;
                 width: 8px;
                 height: parent.height;
-                enabled: root.interactive;
                 accessible-role: slider;
                 accessible-label: "Panel width";
                 accessible-value: round(root.w / 1px);
                 accessible-value-minimum: 420;
                 accessible-value-maximum: 1100;
                 key-pressed(e) => {
+                    if (!root.interactive) {
+                        return EventResult.reject;
+                    }
                     if (e.text == Key.LeftArrow) {
                         HelpBridge.grip-key("Left", e.modifiers.shift);
                         return EventResult.accept;
@@ -795,4 +800,11 @@ export component HelpPanelPreview inherits Window {
         width: parent.width;
         height: parent.height - 36px;
     }
+    // A stand-in for the shell: it takes the keys, as the host does when the panel closes.
+    shell-keys := FocusScope {
+        width: 0px;
+        height: 0px;
+    }
+    out property <bool> panel-focused: panel.focused;
+    public function focus-shell() { shell-keys.focus(); }
 }

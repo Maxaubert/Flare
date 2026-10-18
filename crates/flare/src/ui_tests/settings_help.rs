@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use slint::platform::Key;
+use slint::platform::{Key, PointerEventButton};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::ui_harness::{Frame, Harness, SCALES};
@@ -553,6 +553,61 @@ fn a_drag_across_a_row_is_a_selection_not_a_click_for_the_host() {
         l.clicked[0].1 > 4.0,
         "travel {} tells the host it was a drag",
         l.clicked[0].1
+    );
+}
+
+#[test]
+fn a_drag_in_the_command_selects_its_text() {
+    let h = harness(1.0);
+    let _log = wire(&h);
+    open_with(&h, three_rows());
+    // A window a person is using is active, which is when a field draws its selection.
+    h.activate();
+    let before = h.render();
+    // A list that scrolls holds a press back for a moment to see if it becomes a drag, so a person's
+    // drag (which takes time) selects and an instant one does not: press, wait, then move.
+    h.move_to(665.0, 190.0);
+    h.press(665.0, 190.0, PointerEventButton::Left);
+    h.advance(150);
+    for x in [680.0, 700.0, 720.0, 740.0] {
+        h.move_to(x, 190.0);
+    }
+    h.release(740.0, 190.0, PointerEventButton::Left);
+    let after = h.render();
+    let (x0, y0, x1, y1) = (h.phys(650.0), h.phys(176.0), h.phys(760.0), h.phys(204.0));
+    let mut changed = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if before.px(x, y) != after.px(x, y) {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed > 100,
+        "{changed} pixels changed where a selection should be drawn"
+    );
+}
+
+#[test]
+fn the_panel_lets_go_of_the_keys_after_its_edge_held_them_and_it_closed() {
+    let h = harness(1.0);
+    let _log = wire(&h);
+    open_with(&h, three_rows());
+    h.activate();
+    // A press on the left edge gives the edge the keys; then the panel closes and the shell takes them.
+    let edge = h.comp.get_sheet_x();
+    h.click(edge, 300.0);
+    assert!(h.comp.get_panel_focused(), "the edge holds the keys");
+    h.comp.global::<HelpBridge>().set_open(false);
+    h.advance(300);
+    h.comp.invoke_focus_shell();
+    h.comp.global::<HelpBridge>().set_open(true);
+    h.advance(300);
+    h.comp.invoke_focus_shell();
+    assert!(
+        !h.comp.get_panel_focused(),
+        "the shell has the keys, so the panel does not claim them"
     );
 }
 
