@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::pixels::{contrast, lum, Rgb};
-use crate::world::{prompt_timeout, rows_text, wait_for_prompt, Shell};
+use crate::world::{mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// `ctx.ok` with the condition worked out first, so a condition may borrow the context itself
 /// (`check!(ctx, opened(ctx, app), "...")`).
@@ -134,12 +134,37 @@ fn wheel(app: &mut App, x: f64, y: f64, dy: f32) {
 }
 
 fn drag(app: &mut App, from: (f64, f64), to: (f64, f64), steps: u32) {
-    let _ = app.session.call(&Request::Drag {
-        from: (from.0 as f32, from.1 as f32),
-        to: (to.0 as f32, to.1 as f32),
-        steps,
-        button: Button::Left,
-    });
+    // The list is a Flickable: it holds a press back (100 ms) to see whether it becomes a scroll,
+    // so a drag that takes no time never reaches the text under it. A person's drag takes time:
+    // press, hold a moment, then move.
+    let at = |x: f64, y: f64, action: PointerAction| Request::Pointer {
+        x: x as f32,
+        y: y as f32,
+        action,
+    };
+    let _ = app.session.call(&at(from.0, from.1, PointerAction::Move));
+    let _ = app.session.call(&at(
+        from.0,
+        from.1,
+        PointerAction::Down {
+            button: Button::Left,
+        },
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(150)); // e2e pacing: a held press
+    let steps = steps.max(1);
+    for i in 1..=steps {
+        let f = f64::from(i) / f64::from(steps);
+        let (x, y) = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+        let _ = app.session.call(&at(x, y, PointerAction::Move));
+        std::thread::sleep(std::time::Duration::from_millis(15)); // e2e pacing: a moving hand
+    }
+    let _ = app.session.call(&at(
+        to.0,
+        to.1,
+        PointerAction::Up {
+            button: Button::Left,
+        },
+    ));
 }
 
 /// The panel opened (the flag is on at once; the slide is `slid`).
@@ -1381,6 +1406,8 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     let _ = app.session.key("F1");
     // PT: run.mjs:4981
     check!(ctx, opened(ctx, app), "the panel is out again");
+    // The field takes the keys 60 ms into the slide: a tab opened before that would be undone by it.
+    slid(ctx, app);
     let _ = app.session.key("Ctrl+T");
     // PT: run.mjs:4983
     check!(
@@ -1400,6 +1427,15 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     );
     let field_had_it = field_focused(app);
     if prompt {
+        // A fresh PowerShell takes a burst of typed characters for a paste and keeps the Enter as a
+        // line break: the same mute line the first shell gets quiets it here too.
+        mute_psreadline_paste(app);
+        wait_for_prompt(
+            app,
+            &front,
+            Shell::PowerShell,
+            prompt_timeout(Shell::PowerShell),
+        );
         type_line(app, "echo kb-$(1+1)");
     }
     let landed = prompt
@@ -1466,6 +1502,8 @@ fn help_b(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(), String> 
     }
     // PT: run.mjs:5000
     check!(ctx, opened(ctx, app), "which opens it");
+    // The X is where the slide ends: wait for it, or the press lands on a moving button.
+    slid(ctx, app);
     if let Some(r) = rect_of(&hs(app)["close"]) {
         click_rect(app, r);
     }
