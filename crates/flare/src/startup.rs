@@ -484,7 +484,8 @@ pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLoo
 /// The licence file; its `Copyright` line is the About page's copyright (decision: read, never typed).
 pub const LICENCE: &str = include_str!("../../../LICENSE");
 
-/// The import's ceiling: one bounded wait before the first paint (decision D14).
+/// The whole import's ceiling, shared by every Prism profile: one bounded wait before the first paint
+/// (decision D14, M10 Task 53).
 pub const IMPORT_CEILING: Duration = Duration::from_millis(1500);
 
 /// Where the first-run import reads from, or why it does not run this start.
@@ -518,7 +519,7 @@ pub fn import_plan(args: &Args, e2e_seam: Option<&str>, appdata: Option<&str>) -
 }
 
 /// Runs the once-only import when the plan says so and the settings file does not record it yet.
-/// Called before anything reads a setting; it waits at most `IMPORT_CEILING`. None when nothing ran.
+/// Called before anything reads a setting; the whole import waits at most `IMPORT_CEILING`. None when nothing ran.
 pub fn import_at_start(
     prefs: &PrefStore,
     plan: &ImportPlan,
