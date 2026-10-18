@@ -303,8 +303,8 @@ pub fn effective_ground(ground: &Rgba, alpha: f64, assumed_desktop: &Rgba) -> Rg
 }
 
 /// The sixteen for a see-through window without acrylic (alpha below 1): on a LIGHT ground each is walked
-/// to the 3:1 ANSI floor against the effective ground (Task 57, DIFF-12 PROPOSED: readability beyond Prism
-/// Terminal, which floors against the theme ground only). A solid window (alpha 1) and a dark ground come
+/// to the 3:1 ANSI floor against the effective ground (Task 57, DIFF-12 PROPOSED: readability beyond
+/// Prism Terminal, which floors against the theme ground only). A solid window (alpha 1) and a dark ground come
 /// back unchanged.
 pub fn lift_ansi_for_see_through(
     ansi: &[Option<String>; 16],

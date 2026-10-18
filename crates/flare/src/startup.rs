@@ -484,7 +484,7 @@ pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLoo
 /// The licence file; its `Copyright` line is the About page's copyright (decision: read, never typed).
 pub const LICENCE: &str = include_str!("../../../LICENSE");
 
-/// The whole import's ceiling, shared by every Prism profile: one bounded wait before the first paint
+/// The whole import's ceiling, shared by every Prism Terminal profile: one bounded wait before the first paint
 /// (decision D14, M10 Task 53).
 pub const IMPORT_CEILING: Duration = Duration::from_millis(1500);
 

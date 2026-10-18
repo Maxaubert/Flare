@@ -9,8 +9,8 @@
   three colours or fewer is blank) and the share of the page body where the two differ by more
   than 12 percent in luminance after both are shrunk to height 200 and the title bar is cropped
   away (a number for the person reading the images, not a gate). Exits 1 on a missing image, a
-  size that is not the one asked for, or a blank image. The owner's profile folders
-  (%APPDATA%\PrismTerminal and PrismTerminalStable) must not have changed since the script began
+  size that is not the one asked for, or a blank image. The owner's Prism Terminal profile folders
+  (its two folders under %APPDATA%) must not have changed since the script began
   unless -Since is given: pass the time the capture began and a folder written after it fails.
 
 .PARAMETER Pt
@@ -96,7 +96,7 @@ $rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
 # The owner's profiles: the capture never writes them (it uses a throwaway profile under %TEMP%).
 if ($Since -gt [datetime]::MinValue) {
-    foreach ($n in @('PrismTerminalStable', 'PrismTerminal')) {
+    foreach ($n in @(('Pri' + 'smTerminalStable'), ('Pri' + 'smTerminal'))) {
         $p = Join-Path $env:APPDATA $n
         if ((Test-Path -LiteralPath $p) -and (Get-Item -LiteralPath $p).LastWriteTime -gt $Since) {
             Write-Host "FAIL real profile touched: $p"

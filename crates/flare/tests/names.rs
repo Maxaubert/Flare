@@ -640,6 +640,12 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_PICK_COLOUR",
     // M10 Appendix F: reduced motion under --e2e (read in e2e.rs as a concatenated name).
     "FLARE_E2E_REDUCED_MOTION",
+    // M10 Appendix F: the ScaleFactorChanged fallback for DPI changes (e2e_glue.rs, the lifecycle scenario).
+    "FLARE_E2E_DPI_MODE",
+    // M10 Appendix F: harness-only, set by the runner for a packaged build (tools/e2e).
+    "FLARE_E2E_PACKAGED",
+    // M10 Appendix F: harness-only, which renderers hookSmoke runs (software, gpu).
+    "FLARE_E2E_HOOKSMOKE_RENDERERS",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
 ];
