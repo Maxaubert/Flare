@@ -744,6 +744,15 @@ fn pid_has_children(parents: &[u32]) -> Vec<u32> {
         .collect()
 }
 
+/// The children of `parents` as `pid:command line`, for a failure message.
+fn describe_children(parents: &[u32]) -> Vec<String> {
+    let rows = flare_win::procs::snapshot_processes(&[], &|_| true).unwrap_or_default();
+    rows.into_iter()
+        .filter(|e| parents.contains(&e.ppid))
+        .map(|e| format!("{}:{}", e.pid, e.cmd))
+        .collect()
+}
+
 #[test]
 fn quit_waits_for_every_agent_shell() {
     let _s = serial();
@@ -779,16 +788,29 @@ fn quit_waits_for_every_agent_shell() {
     }
     let shells: Vec<u32> = live.mgr.live_pids().into_iter().map(|(_, p)| p).collect();
     assert_eq!(shells.len(), 3);
+    // AGENT-UP is echoed before `ping` starts, so wait until EVERY shell has its child.
+    let every_shell_has_a_child = || {
+        let kids = flare_win::procs::snapshot_processes(&[], &|_| false).unwrap_or_default();
+        shells.iter().all(|s| kids.iter().any(|e| e.ppid == *s))
+    };
     assert!(
-        !pid_has_children(&shells).is_empty(),
-        "the shells have no children to lose"
+        wait_until(10_000, every_shell_has_a_child),
+        "the shells have no children to lose: {:?}",
+        pid_has_children(&shells)
     );
 
     live.mgr.kill_all();
+    // A generous cap, not a sleep: it returns the moment the last shell is gone. Measured under
+    // a CPU hog, one run in 50 took over 10 s to kill two ConPTY shells.
     assert!(
-        live.mgr.shells_gone(Duration::from_secs(10)),
-        "{} shells still dying",
-        live.mgr.shells_dying()
+        live.mgr.shells_gone(Duration::from_secs(30)),
+        "{} shells still dying; alive {:?}; children {:?}",
+        live.mgr.shells_dying(),
+        shells
+            .iter()
+            .filter(|p| process_alive(**p))
+            .collect::<Vec<_>>(),
+        describe_children(&shells)
     );
     assert!(
         wait_until(5_000, || shells.iter().all(|p| !process_alive(*p))),
@@ -797,7 +819,7 @@ fn quit_waits_for_every_agent_shell() {
     assert!(
         wait_until(5_000, || pid_has_children(&shells).is_empty()),
         "children of the dead shells remain: {:?}",
-        pid_has_children(&shells)
+        describe_children(&shells)
     );
 }
 
