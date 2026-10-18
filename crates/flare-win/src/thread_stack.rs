@@ -8,6 +8,9 @@
 #![cfg(target_arch = "x86_64")]
 
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
 use windows_sys::Win32::System::LibraryLoader::{
@@ -82,21 +85,36 @@ pub const MAX_FRAMES: usize = 48;
 
 /// An open handle to one thread, ready to be sampled from another.
 pub struct ThreadSampler {
-    handle: HANDLE,
+    h: Arc<Handle>,
+    /// Set once a walk outlived [`SAMPLE_LIMIT`]: no sample is ever taken again.
+    broken: AtomicBool,
 }
 
+/// An owned thread handle, shared with a sample's helper thread; closed when the last goes.
+struct Handle(HANDLE);
+
 // SAFETY: a thread HANDLE is a process-wide kernel handle; the calls used are thread-safe.
-unsafe impl Send for ThreadSampler {}
-// SAFETY: as above; the sampler holds no state besides the handle.
-unsafe impl Sync for ThreadSampler {}
+unsafe impl Send for Handle {}
+// SAFETY: as above; the value holds nothing but the handle.
+unsafe impl Sync for Handle {}
 
-/// Resumes the thread on drop, so every exit path (a panic included) resumes it.
-struct ResumeGuard(HANDLE);
+/// Resumes the thread on drop, so every exit path (a panic included) resumes it, unless the
+/// caller already resumed it after the time limit (the state says who did).
+struct ResumeGuard<'a> {
+    h: HANDLE,
+    state: &'a AtomicU8,
+}
 
-impl Drop for ResumeGuard {
+impl Drop for ResumeGuard<'_> {
     fn drop(&mut self) {
-        // SAFETY: the handle is open and was suspended by this guard's creator.
-        unsafe { ResumeThread(self.0) };
+        if self
+            .state
+            .compare_exchange(SUSPENDED, RESUMED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // SAFETY: the handle is open and was suspended by this guard's creator.
+            unsafe { ResumeThread(self.h) };
+        }
     }
 }
 
@@ -114,74 +132,159 @@ impl ThreadSampler {
         if handle.is_null() {
             return Err("OpenThread failed".to_owned());
         }
-        Ok(Self { handle })
+        Ok(Self::from_raw_handle(handle))
     }
 
     /// A sampler over an already open handle (the sampler closes it). For tests of the failure path.
     #[doc(hidden)]
     pub fn from_raw_handle(handle: HANDLE) -> Self {
-        Self { handle }
+        Self {
+            h: Arc::new(Handle(handle)),
+            broken: AtomicBool::new(false),
+        }
     }
 
     /// The instruction addresses of the thread's stack, innermost first, or `None` when it
-    /// cannot be suspended or read (a dead thread, a handle without the right).
+    /// cannot be suspended or read (a dead thread, a handle without the right), or when a walk
+    /// ever took longer than [`SAMPLE_LIMIT`] (the sampler is then off for good).
     pub fn raw_frames(&self) -> Option<([u64; MAX_FRAMES], usize)> {
-        let mut frames = [0u64; MAX_FRAMES];
-        let mut n = 0usize;
-        // Built BEFORE the suspend so nothing is set up inside it.
-        let mut ctx = Context::zeroed();
-        ctx.set_flags(CONTEXT_FULL_AMD64);
-        // SAFETY: the handle is open. u32::MAX is the documented failure value.
-        if unsafe { SuspendThread(self.handle) } == u32::MAX {
+        self.raw_frames_walking(SAMPLE_LIMIT, pdata_walk)
+    }
+
+    /// The sample with the walk run on a helper thread, `limit` long at most. The walk's lookup
+    /// (`RtlLookupFunctionEntry`) takes ntdll's function-table locks; if the suspended thread
+    /// holds one, the walk would wait forever and the thread would never run again. Past the
+    /// limit the CALLER resumes the thread (exactly one `ResumeThread` happens, whoever wins),
+    /// marks the sampler broken and answers `None`; the helper finishes once the lock is free.
+    fn raw_frames_walking<F>(&self, limit: Duration, walk: F) -> Option<([u64; MAX_FRAMES], usize)>
+    where
+        F: FnOnce(&mut Context, &mut [u64; MAX_FRAMES]) -> usize + Send + 'static,
+    {
+        if self.broken.load(Ordering::SeqCst) {
             return None;
         }
-        let _resume = ResumeGuard(self.handle);
-        // ---- nothing below allocates, locks, logs or formats until the guard drops ----
-        // SAFETY: ctx is a valid CONTEXT for the thread's architecture.
-        if unsafe { GetThreadContext(self.handle, &mut ctx) } == 0 {
+        let state = Arc::new(AtomicU8::new(START));
+        let abandon = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (h, st, ab) = (self.h.clone(), state.clone(), abandon.clone());
+        let spawned = std::thread::Builder::new()
+            .name("flare-stack".into())
+            .spawn(move || {
+                let _ = tx.send(walk_suspended(&h, &st, &ab, walk));
+            });
+        if spawned.is_err() {
             return None;
         }
-        while n < MAX_FRAMES {
-            let rip = ctx.rip();
-            if rip == 0 {
-                break;
-            }
-            frames[n] = rip;
-            n += 1;
-            let mut base = 0u64;
-            // SAFETY: a null history table is allowed; the call only reads the .pdata tables.
-            let entry = unsafe { RtlLookupFunctionEntry(rip, &mut base, null_mut()) };
-            if entry.is_null() {
-                break;
-            }
-            let before = ctx.rsp();
-            let mut handler_data = null_mut();
-            let mut establisher = 0u64;
-            // SAFETY: entry and base came from the lookup above; ctx belongs to the suspended thread.
-            unsafe {
-                RtlVirtualUnwind(
-                    UNW_FLAG_NHANDLER,
-                    base,
-                    rip,
-                    entry,
-                    &mut ctx,
-                    &mut handler_data,
-                    &mut establisher,
-                    null_mut(),
-                );
-            }
-            if ctx.rsp() <= before {
-                break;
+        // The watchdog thread waits for its own helper, never the UI thread.
+        let answer = rx.recv_timeout(limit); // sync-ok: the watchdog thread, bounded by `limit`
+        match answer {
+            Ok(r) => r,
+            Err(_) => {
+                self.broken.store(true, Ordering::SeqCst);
+                abandon.store(true, Ordering::SeqCst);
+                // The helper leaves START at once: nothing it does before or in SuspendThread
+                // waits on the sampled thread.
+                while state.load(Ordering::SeqCst) == START {
+                    std::thread::sleep(Duration::from_millis(1)); // sync-ok: the watchdog thread
+                }
+                if state
+                    .compare_exchange(SUSPENDED, RESUMED, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    // SAFETY: the handle is open; the helper suspended it and has not resumed it.
+                    unsafe { ResumeThread(self.h.0) };
+                }
+                None
             }
         }
-        Some((frames, n))
     }
 }
 
-impl Drop for ThreadSampler {
+/// The longest a sample may hold the sampled thread.
+pub const SAMPLE_LIMIT: Duration = Duration::from_millis(500);
+
+const START: u8 = 0;
+const SUSPENDED: u8 = 1;
+const RESUMED: u8 = 2;
+const SKIPPED: u8 = 3;
+
+/// The helper's half: suspend, read the context, walk, resume (unless the caller already did).
+fn walk_suspended<F>(
+    h: &Handle,
+    state: &AtomicU8,
+    abandon: &AtomicBool,
+    walk: F,
+) -> Option<([u64; MAX_FRAMES], usize)>
+where
+    F: FnOnce(&mut Context, &mut [u64; MAX_FRAMES]) -> usize,
+{
+    let mut frames = [0u64; MAX_FRAMES];
+    // Built BEFORE the suspend so nothing is set up inside it.
+    let mut ctx = Context::zeroed();
+    ctx.set_flags(CONTEXT_FULL_AMD64);
+    if abandon.load(Ordering::SeqCst) {
+        state.store(SKIPPED, Ordering::SeqCst);
+        return None;
+    }
+    // SAFETY: the handle is open. u32::MAX is the documented failure value.
+    if unsafe { SuspendThread(h.0) } == u32::MAX {
+        state.store(SKIPPED, Ordering::SeqCst);
+        return None;
+    }
+    state.store(SUSPENDED, Ordering::SeqCst);
+    let _resume = ResumeGuard { h: h.0, state };
+    // ---- nothing below allocates, logs or formats until the guard drops ----
+    // SAFETY: ctx is a valid CONTEXT for the thread's architecture.
+    if unsafe { GetThreadContext(h.0, &mut ctx) } == 0 {
+        return None;
+    }
+    let n = walk(&mut ctx, &mut frames);
+    Some((frames, n))
+}
+
+/// The `.pdata` walk over a context read from the suspended thread.
+fn pdata_walk(ctx: &mut Context, frames: &mut [u64; MAX_FRAMES]) -> usize {
+    let mut n = 0usize;
+    while n < MAX_FRAMES {
+        let rip = ctx.rip();
+        if rip == 0 {
+            break;
+        }
+        frames[n] = rip;
+        n += 1;
+        let mut base = 0u64;
+        // SAFETY: a null history table is allowed; the call only reads the .pdata tables.
+        let entry = unsafe { RtlLookupFunctionEntry(rip, &mut base, null_mut()) };
+        if entry.is_null() {
+            break;
+        }
+        let before = ctx.rsp();
+        let mut handler_data = null_mut();
+        let mut establisher = 0u64;
+        // SAFETY: entry and base came from the lookup above; ctx belongs to the suspended thread.
+        unsafe {
+            RtlVirtualUnwind(
+                UNW_FLAG_NHANDLER,
+                base,
+                rip,
+                entry,
+                ctx,
+                &mut handler_data,
+                &mut establisher,
+                null_mut(),
+            );
+        }
+        if ctx.rsp() <= before {
+            break;
+        }
+    }
+    n
+}
+
+impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: the handle is owned by this value.
-        unsafe { CloseHandle(self.handle) };
+        // SAFETY: the handle is owned by this value and closed once.
+        unsafe { CloseHandle(self.0) };
     }
 }
 
@@ -301,6 +404,53 @@ mod tests {
             described.iter().any(|d| d.starts_with(&name)),
             "no frame names {name}: {described:?}"
         );
+    }
+
+    /// Review fix: `RtlLookupFunctionEntry` takes ntdll's function-table locks. A UI thread
+    /// suspended while it holds one (a DLL load, an unwind) would make the walk wait forever, and
+    /// the UI thread would never be resumed. The walk here blocks on a lock the suspended thread
+    /// holds; the sample must give up, resume the thread, and never sample again.
+    #[test]
+    fn a_walk_that_blocks_while_the_thread_is_suspended_is_rescued() {
+        let lock = Arc::new(Mutex::new(()));
+        let counter = Arc::new(AtomicU64::new(0));
+        let (held_tx, held_rx) = mpsc::channel();
+        let (l2, c2) = (lock.clone(), counter.clone());
+        let (sampler, stop, h) = spawn_sampled(move |stop| {
+            let g = l2.lock().unwrap();
+            held_tx.send(()).unwrap();
+            // Holds the lock until it has run 50 more steps (it cannot while suspended).
+            while c2.load(Ordering::Relaxed) < 50 {
+                c2.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            drop(g);
+            while !stop.load(Ordering::Relaxed) {
+                c2.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        held_rx.recv().unwrap();
+        let l3 = lock.clone();
+        let t = Instant::now();
+        let got = sampler.raw_frames_walking(Duration::from_millis(200), move |_, _| {
+            let _g = l3.lock().unwrap_or_else(|e| e.into_inner());
+            0
+        });
+        assert!(got.is_none());
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        let t = Instant::now();
+        while counter.load(Ordering::Relaxed) < 60 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            counter.load(Ordering::Relaxed) >= 60,
+            "the thread was left suspended"
+        );
+        // A sampler that once hung is off for good.
+        assert!(sampler.raw_frames().is_none());
+        stop.store(true, Ordering::Relaxed);
+        h.join().unwrap();
     }
 
     #[test]
