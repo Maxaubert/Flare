@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use flare_e2e_proto::{PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::pixels::{Rgb, contrast};
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::pixels::{contrast, Rgb};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// A css rectangle: x, y, width, height.
 type R = (f64, f64, f64, f64);
@@ -538,8 +538,8 @@ fn walk_well(ctx: &mut Ctx, app: &mut App, label: &str, to: i64) -> Option<i64> 
     }
     let got = walk_alpha(ctx, app, to);
     press(app, "Tab"); // stays inside, keeps the colour
-    // A press outside the popover, on the editor's own title (not its scrim, which cancels the
-    // editor), keeps the colour and closes it.
+                       // A press outside the popover, on the editor's own title (not its scrim, which cancels the
+                       // editor), keeps the colour and closes it.
     let b = rect_of(&editor(app)["box"]).unwrap_or((400.0, 200.0, 600.0, 400.0));
     click_at(app, ((b.0 + 60.0) as f32, (b.1 + 30.0) as f32));
     wait_picker(ctx, app, false, &format!("the {label} picker to close"));
@@ -825,7 +825,10 @@ pub fn colour_picker(ctx: &mut Ctx) -> Result<(), String> {
     let shut = ctx.until("Escape to close Command help", 4_000, &mut || {
         probe(&mut app, "picker.layers", Value::Null)["help_open"] == json!(false)
     });
-    ctx.ok(shut, "Escape closes Command help opened over the Settings page");
+    ctx.ok(
+        shut,
+        "Escape closes Command help opened over the Settings page",
+    );
     open_swatch(ctx, &mut app, ID);
     // Where PT clicks the chip with no pointer press, Flare's chip answers a click, which is also a
     // press outside the picker; either way the picker must be gone and the window open.

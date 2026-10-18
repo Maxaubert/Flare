@@ -311,7 +311,10 @@ mod tests {
         write_stand_in_profile(
             appdata.path(),
             "PrismTerminal",
-            &[("prism.term.opacity", "60"), ("prism.term.theme", "dracula")],
+            &[
+                ("prism.term.opacity", "60"),
+                ("prism.term.theme", "dracula"),
+            ],
         )
         .unwrap();
         let t = tempfile::tempdir().unwrap();

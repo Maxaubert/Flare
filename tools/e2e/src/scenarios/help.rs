@@ -11,11 +11,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{Button, PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::pixels::{Rgb, contrast, lum};
-use crate::world::{Shell, prompt_timeout, rows_text, wait_for_prompt};
+use crate::pixels::{contrast, lum, Rgb};
+use crate::world::{prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// `ctx.ok` with the condition worked out first, so a condition may borrow the context itself
 /// (`check!(ctx, opened(ctx, app), "...")`).
@@ -1657,11 +1657,9 @@ fn switch_checks(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     check!(
         ctx,
         flipped == Some(false)
-            && ctx.until(
-                "the ? to leave the title bar",
-                4_000,
-                &mut || hs(app)["button"] == json!(false)
-            ),
+            && ctx.until("the ? to leave the title bar", 4_000, &mut || hs(app)
+                ["button"]
+                == json!(false)),
         "switched off, the ? leaves the title bar",
     );
     let _ = app.session.key("Ctrl+1");

@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{Button, PointerAction, Reply, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::session::AppState;
-use crate::until::{SystemClock, wait_on};
-use crate::world::{Shell, prompt_timeout, rows_text, wait_for_prompt};
+use crate::until::{wait_on, SystemClock};
+use crate::world::{prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// The link blue of the default theme (PT's `LINK_BLUE`; Flare's `links::LINK_BLUE`).
 const LINK_BLUE: &str = "#79a7d8";

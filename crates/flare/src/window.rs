@@ -560,7 +560,11 @@ pub fn run_window(
                     }
                     crate::startup_trace::mark(crate::startup_trace::Phase::RenderSetup);
                     if let Some(app) = weak.upgrade() {
-                        tell_renderer(effective, note.borrow().as_deref(), app.window().scale_factor());
+                        tell_renderer(
+                            effective,
+                            note.borrow().as_deref(),
+                            app.window().scale_factor(),
+                        );
                     }
                 }
                 RenderingState::BeforeRendering => {
@@ -1063,7 +1067,11 @@ pub fn run_window(
     }
     if args.e2e {
         apply_e2e_style(&app);
-        tell_renderer(effective, note.borrow().as_deref(), app.window().scale_factor());
+        tell_renderer(
+            effective,
+            note.borrow().as_deref(),
+            app.window().scale_factor(),
+        );
         if let (Some(rc), Some(kp)) = (&ctl, &key_path) {
             crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
         }

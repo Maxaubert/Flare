@@ -21,14 +21,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use flare_e2e_proto::{PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::help::Img;
 use crate::ctx::{App, Ctx, Launch};
-use crate::pixels::{Rgb, contrast, lum};
+use crate::pixels::{contrast, lum, Rgb};
 use crate::standins::agent_cmd::{FakeClaude, Step};
 use crate::standins::hooklines::hook_line;
-use crate::world::{Shell, prompt_timeout, rows_text, wait_for_prompt};
+use crate::world::{prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// `FLARE_E2E_UPDATE_OFFER`: a real-shaped offer whose installer the app refuses before a byte is sent.
 const OFFER_VAR: &str = concat!("FLARE_E2E", "_UPDATE_OFFER");

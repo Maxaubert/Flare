@@ -342,10 +342,7 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
     let opened = ctx.until("the tab-open crumb of Ctrl+T", 10_000, &mut || {
         tab_open_crumbs(profile) > opens_before
     });
-    ctx.ok(
-        opened,
-        "and the tab that opened is a crumb, from the app",
-    );
+    ctx.ok(opened, "and the tab that opened is a crumb, from the app");
 
     // PT: run.mjs:5256-5264 QUIET IS QUIET: once both shells are at their prompts, an idle 3 s
     // writes nothing.

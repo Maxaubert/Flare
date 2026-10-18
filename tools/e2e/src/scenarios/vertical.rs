@@ -15,11 +15,11 @@
 use std::path::Path;
 
 use flare_e2e_proto::{Button, PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::pixels::{Rgb, bbox_where};
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::pixels::{bbox_where, Rgb};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// 225 percent (96 is 100 percent).
 const DPI_225: u32 = 216;

@@ -8,12 +8,12 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::standins::agent_cmd::{FakeClaude, Step};
 use crate::standins::hooklines::hook_line;
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// The idle title Claude sets (U+2733, the sparkle) and the working one (U+25D0, the half circle).
 const IDLE_TITLE: &str = "\u{2733} Claude Code";

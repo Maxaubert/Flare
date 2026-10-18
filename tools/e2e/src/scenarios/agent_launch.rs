@@ -20,13 +20,13 @@
 use std::path::Path;
 
 use flare_e2e_proto::{Reply, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::standins::agent_cmd::{FakeClaude, Step};
 use crate::standins::sonara::{Post, SonaraStandIn};
-use crate::until::{SystemClock, wait_on};
-use crate::world::{Shell, mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt};
+use crate::until::{wait_on, SystemClock};
+use crate::world::{mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// The session id every restored folder's transcript carries (PT's `5a1d0c2e-...`).
 const SESSION: &str = "5a1d0c2e-1111-4222-8333-94445555a666";
@@ -376,7 +376,9 @@ pub fn launch_skeleton(ctx: &mut Ctx) -> Result<(), String> {
 fn launch_skeleton_checks(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // DROPPED: "the first frame already holds the three tabs, and no start screen". No probe reads the
     // first painted frame; the restored tab rows are checked from the first answer on.
-    ctx.skip("DROPPED: the first frame holds the three tabs (no probe reads the first painted frame)");
+    ctx.skip(
+        "DROPPED: the first frame holds the three tabs (no probe reads the first painted frame)",
+    );
     ctx.until("the three restored tabs", 15_000, &mut || {
         tab_count(app) == 3
     });
@@ -385,10 +387,15 @@ fn launch_skeleton_checks(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // While it comes back: every tab shows the loading ring.
     let (rings, _) = look(app, &front);
     ctx.shot(app, "launch-skeleton");
-    ctx.ok(rings == 3, format!("every tab shows the loading ring ({rings})"));
+    ctx.ok(
+        rings == 3,
+        format!("every tab shows the loading ring ({rings})"),
+    );
     // DROPPED: "the tab in front wears the skeleton while its conversation comes back". The
     // skeleton's flag is an input property of the window that no probe reads back.
-    ctx.skip("DROPPED: the front tab wears the skeleton (the skeleton's flag is not read by any probe)");
+    ctx.skip(
+        "DROPPED: the front tab wears the skeleton (the skeleton's flag is not read by any probe)",
+    );
     // DROPPED: "each at the tab's end, where the Ring goes". The ring's place is laid out by the tab
     // itself; the tab rows do not report it.
     ctx.skip("DROPPED: each ring sits at the tab's end (a layout fact the tab rows do not report)");
@@ -438,8 +445,14 @@ fn launch_skeleton_checks(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         .map(|t| t["mark"]["state"].as_str().unwrap_or("").to_string())
         .collect();
     ctx.ok(
-        !marks.is_empty() && marks.iter().all(|m| !matches!(m.as_str(), "finished" | "question" | "failed")),
-        format!("restored, no tab says it finished, asks or failed ({})", marks.join(", ")),
+        !marks.is_empty()
+            && marks
+                .iter()
+                .all(|m| !matches!(m.as_str(), "finished" | "question" | "failed")),
+        format!(
+            "restored, no tab says it finished, asks or failed ({})",
+            marks.join(", ")
+        ),
     );
     Ok(())
 }
@@ -562,18 +575,14 @@ fn image_paste_checks(ctx: &mut Ctx, app: &mut App, plain: &Path) -> Result<(), 
 
     // A plain program: ^V.
     type_line(app, &run_script_line(plain, "P"));
-    let plain_up = wait(15_000, &mut || {
-        front_text(app).contains("READY P")
-    });
+    let plain_up = wait(15_000, &mut || front_text(app).contains("READY P"));
     ctx.ok(plain_up, "the plain probe is running");
     if !plain_up {
         return Err("the plain probe never started".into());
     }
     let clip = put_image(app);
     let _ = app.session.key("Ctrl+V");
-    let pasted = wait(5_000, &mut || {
-        has_token(&front_text(app), "IN P 16")
-    });
+    let pasted = wait(5_000, &mut || has_token(&front_text(app), "IN P 16"));
     ctx.ok(
         pasted,
         format!("an image on Ctrl+V sends ^V to a program that is no agent (clipboard: {clip})"),
@@ -582,9 +591,7 @@ fn image_paste_checks(ctx: &mut Ctx, app: &mut App, plain: &Path) -> Result<(), 
 
     // Claude, as the poll sees it: ESC v, and only that.
     type_line(app, "claude C");
-    let claude_up = wait(15_000, &mut || {
-        front_text(app).contains("READY C")
-    });
+    let claude_up = wait(15_000, &mut || front_text(app).contains("READY C"));
     ctx.ok(claude_up, "the stand-in for Claude is running");
     if !claude_up {
         return Err("the stand-in for Claude never started".into());
@@ -593,9 +600,7 @@ fn image_paste_checks(ctx: &mut Ctx, app: &mut App, plain: &Path) -> Result<(), 
     ctx.ok(present, "and the poll calls it an agent");
     let clip = put_image(app);
     let _ = app.session.key("Ctrl+V");
-    let alt_v = wait(5_000, &mut || {
-        has_token(&front_text(app), "IN C 1b 76")
-    });
+    let alt_v = wait(5_000, &mut || has_token(&front_text(app), "IN C 1b 76"));
     ctx.ok(
         alt_v,
         format!("an image on Ctrl+V sends Alt+V (ESC v) to Claude (clipboard: {clip})"),
@@ -614,14 +619,18 @@ fn image_paste_checks(ctx: &mut Ctx, app: &mut App, plain: &Path) -> Result<(), 
         "Ctrl+D and Ctrl+C never reach an idle agent (keep agent sessions open)",
     );
     let _ = app.session.key("Shift+Enter");
-    let newline = wait(5_000, &mut || {
-        has_token(&front_text(app), "IN C 0a")
-    });
-    ctx.ok(newline, "Shift+Enter is Ctrl+J, Claude's own newline (#175)");
+    let newline = wait(5_000, &mut || has_token(&front_text(app), "IN C 0a"));
+    ctx.ok(
+        newline,
+        "Shift+Enter is Ctrl+J, Claude's own newline (#175)",
+    );
     // xterm sent a CR on Enter's keypress too, so Claude submitted (2026-10-11).
     quiet(ctx, 500);
     let no_enter = !has_token(&front_text(app), "IN C 0d");
-    ctx.ok(no_enter, "and no Enter with it: the newline does not submit");
+    ctx.ok(
+        no_enter,
+        "and no Enter with it: the newline does not submit",
+    );
     let _ = app.session.type_text("q");
     let left = wait(45_000, &mut || !any_agent_present(app));
     ctx.ok(left, "the poll sees the agent leave");
@@ -629,23 +638,15 @@ fn image_paste_checks(ctx: &mut Ctx, app: &mut App, plain: &Path) -> Result<(), 
     // #175: Claude's TITLE arms Shift+Enter before any poll could. The plain probe is no agent to the
     // poll, so only the title can have armed it.
     type_line(app, &run_script_line(plain, "T"));
-    let titled_up = wait(15_000, &mut || {
-        front_text(app).contains("READY T")
-    });
+    let titled_up = wait(15_000, &mut || front_text(app).contains("READY T"));
     ctx.ok(titled_up, "a plain probe again");
     let _ = app.session.key("Shift+Enter");
-    let cr = wait(5_000, &mut || {
-        has_token(&front_text(app), "IN T 0d")
-    });
+    let cr = wait(5_000, &mut || has_token(&front_text(app), "IN T 0d"));
     ctx.ok(cr, "with no agent, Shift+Enter is Enter (CR)");
     let _ = app.session.type_text("t");
-    wait(5_000, &mut || {
-        front_text(app).contains("TITLED")
-    });
+    wait(5_000, &mut || front_text(app).contains("TITLED"));
     let _ = app.session.key("Shift+Enter");
-    let armed = wait(1_000, &mut || {
-        has_token(&front_text(app), "IN T 0a")
-    });
+    let armed = wait(1_000, &mut || has_token(&front_text(app), "IN T 0a"));
     ctx.ok(
         armed,
         "once it titles itself \"\u{2733} Claude Code\", Shift+Enter is Ctrl+J within 1 s",

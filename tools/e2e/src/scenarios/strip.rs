@@ -8,11 +8,11 @@
 use std::path::Path;
 
 use flare_e2e_proto::{Button, PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::pixels::{Rgb, bbox_where};
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::pixels::{bbox_where, Rgb};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// 225 percent (96 is 100 percent): the scale the pixel checks run at.
 const DPI_225: u32 = 216;
@@ -72,7 +72,11 @@ fn ui_rect(app: &mut App, name: &str) -> Option<(f32, f32, f32, f32)> {
 /// The window's scale (1.0 is 100 percent).
 fn scale(app: &mut App) -> f32 {
     let k = app.session.state().map(|s| s.scale).unwrap_or(1.0);
-    if k > 0.0 { k } else { 1.0 }
+    if k > 0.0 {
+        k
+    } else {
+        1.0
+    }
 }
 
 fn strip_state(app: &mut App) -> Value {

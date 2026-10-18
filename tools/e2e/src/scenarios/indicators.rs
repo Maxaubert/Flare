@@ -13,10 +13,10 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// The title PT types for an idle Claude (a black four-pointed star, then the name).
 const IDLE: &str = "$Host.UI.RawUI.WindowTitle = [char]0x2733 + ' Claude Code'";

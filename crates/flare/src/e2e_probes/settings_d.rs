@@ -11,7 +11,7 @@
 
 use flare_theme::edges::WindowEdges;
 use flare_win::window_edge::edge_for;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use slint::ComponentHandle;
 
 use super::{ProbeCtx, ProbeRegistry};

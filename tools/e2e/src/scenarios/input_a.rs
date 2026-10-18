@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{PointerAction, Reply, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
-use crate::until::{SystemClock, wait_on};
-use crate::world::{Shell, mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt};
+use crate::until::{wait_on, SystemClock};
+use crate::world::{mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// The stand-in that asks for the mouse (PT mouseReport's probe, in PowerShell). It turns on VT
 /// input so a mouse report reaches its key reads as the `ESC [ <` sequence, as Claude's own runtime

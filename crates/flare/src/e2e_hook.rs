@@ -92,7 +92,10 @@ pub fn hello_info() -> (String, f32) {
 static CELL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn set_cell(w: u32, h: u32) {
-    CELL.store((u64::from(w) << 32) | u64::from(h), std::sync::atomic::Ordering::Relaxed);
+    CELL.store(
+        (u64::from(w) << 32) | u64::from(h),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// The noted cell size (width, height), None before a frame was drawn.

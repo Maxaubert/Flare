@@ -15,12 +15,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::standins::hooklines::hook_line;
-use crate::until::{SystemClock, wait_on};
-use crate::world::{Shell, prompt_timeout, wait_for_prompt};
+use crate::until::{wait_on, SystemClock};
+use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// The seam that asks the app for the Claude plugin under `--e2e` (never written as one literal).
 const PLUGIN_SEAM: &str = concat!("FLARE_E2E", "_PLUGIN");

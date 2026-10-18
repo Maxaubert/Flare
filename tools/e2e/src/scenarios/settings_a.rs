@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use flare_e2e_proto::Request;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 

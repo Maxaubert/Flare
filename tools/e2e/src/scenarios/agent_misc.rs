@@ -10,14 +10,14 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use flare_diag::reader::{Line, read_lines};
+use flare_diag::reader::{read_lines, Line};
 use flare_e2e_proto::{PointerAction, Request};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
 use crate::standins::hooklines::hook_line;
-use crate::until::{SystemClock, wait_on};
-use crate::world::{Shell, prompt_timeout, wait_for_agent_verdict, wait_for_prompt};
+use crate::until::{wait_on, SystemClock};
+use crate::world::{prompt_timeout, wait_for_agent_verdict, wait_for_prompt, Shell};
 
 /// The marker the screen and the title carry: it must never reach the log.
 const SECRET: &str = "SECRET-7Q";
@@ -520,7 +520,9 @@ fn agent_diag_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // Finished on a background tab, then looked at.
     at(app, 0, &later(&say("done")));
     tab_click(app, 1);
-    let fin = ctx.until("tab 0 finished", 10_000, &mut || state(app, 0) == "finished");
+    let fin = ctx.until("tab 0 finished", 10_000, &mut || {
+        state(app, 0) == "finished"
+    });
     ctx.ok(fin, "a Stop on a background tab is Finished");
     look(app, 0);
     let cleared = ctx.until("tab 0 cleared", 4_000, &mut || state(app, 0) == "none");
