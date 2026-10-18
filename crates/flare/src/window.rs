@@ -1484,6 +1484,20 @@ fn place_ime(
             e.mode().alt_screen,
         )
     });
+    let stops: Vec<(CaretPos, i64)> = handle
+        .take_cursor_stops()
+        .into_iter()
+        .map(|s| {
+            (
+                CaretPos {
+                    line: i64::from(s.line),
+                    x: s.col as i64,
+                },
+                s.at_ms,
+            )
+        })
+        .collect();
+    caret.borrow_mut().on_stops(&stops);
     let held = caret
         .borrow_mut()
         .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
@@ -1498,6 +1512,7 @@ fn place_ime(
         &host.metrics(),
         origin,
     );
+    crate::ime::record_area(area);
     let _ = app.window().with_winit_window(|w| {
         w.set_ime_cursor_area(
             PhysicalPosition::new(area.x, area.y),

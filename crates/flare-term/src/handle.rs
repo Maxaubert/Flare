@@ -22,6 +22,24 @@ const SLICE: usize = 64 * 1024;
 /// The rows a copy worker reads under one hold of the emulator lock (the lock is let go between them).
 pub const CHUNK_ROWS: usize = 250;
 
+/// Where the cursor stood when one parsed slice of output ended (screen row, column, wall-clock ms).
+/// A frame may show only the last of several such stops; the caret hold needs each of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorStop {
+    pub line: i32,
+    pub col: usize,
+    pub at_ms: i64,
+}
+
+/// The most stops kept between two frames.
+const STOPS_KEPT: usize = 64;
+
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -51,6 +69,8 @@ struct Shared {
     t0: Instant,
     reveal: Mutex<Option<RevealState>>,
     clock: Mutex<Option<Clock>>,
+    /// Where the cursor stood at the end of each parsed slice, for the IME caret hold.
+    cursor_log: Mutex<Vec<CursorStop>>,
 }
 
 impl Shared {
@@ -194,7 +214,23 @@ impl SessionSink for Sink {
 
 fn feed_slices(sh: &Shared, bytes: &[u8]) {
     for slice in bytes.chunks(SLICE) {
-        let evs = sh.emu.lock().feed(slice);
+        let (evs, stop) = {
+            let mut e = sh.emu.lock();
+            let evs = e.feed(slice);
+            let stop = (!e.mode().alt_screen).then(|| e.cursor());
+            (evs, stop)
+        };
+        if let Some((line, col)) = stop {
+            let mut log = lk(&sh.cursor_log);
+            if log.len() >= STOPS_KEPT {
+                log.remove(0);
+            }
+            log.push(CursorStop {
+                line,
+                col,
+                at_ms: epoch_ms(),
+            });
+        }
         sh.handle(evs);
     }
 }
@@ -261,6 +297,7 @@ impl TermHandle {
             t0: Instant::now(),
             reveal: Mutex::new(None),
             clock: Mutex::new(None),
+            cursor_log: Mutex::new(Vec::new()),
         });
         Arc::new(Self { sh, emu })
     }
@@ -496,6 +533,11 @@ impl TermHandle {
         let r = f(&mut self.emu.lock());
         self.sh.wake();
         r
+    }
+
+    /// The cursor stops since the last call, oldest first (the IME caret hold reads them each frame).
+    pub fn take_cursor_stops(&self) -> Vec<CursorStop> {
+        std::mem::take(&mut *lk(&self.sh.cursor_log))
     }
 
     /// Read only: no dirty flag, no wake.
@@ -859,6 +901,20 @@ mod tests {
         assert!(t.h.send_key(&key_a()));
         wait_until("the key", || t.fake().written().ends_with(b"a"));
         assert!(t.h.last_typed().is_some());
+    }
+
+    #[test]
+    fn every_parsed_slice_leaves_a_cursor_stop() {
+        let t = T::started();
+        let _ = t.h.take_cursor_stops();
+        t.fake().feed(b"\x1b[10;3Hinput");
+        wait_until("the first slice", || t.text().contains("input"));
+        t.fake().feed(b"\x1b[2;1Hstream");
+        wait_until("the second slice", || t.text().contains("stream"));
+        let stops = t.h.take_cursor_stops();
+        assert!(stops.iter().any(|s| s.line == 9), "{stops:?}");
+        assert_eq!(stops.last().map(|s| s.line), Some(1), "{stops:?}");
+        assert!(t.h.take_cursor_stops().is_empty());
     }
 
     #[test]

@@ -10,6 +10,8 @@ use super::{ProbeCtx, ProbeRegistry};
 pub fn register(r: &mut ProbeRegistry) {
     r.add("term.mouse", term_mouse);
     r.add("scrollbar.rect", scrollbar_rect);
+    r.add("ime.rect", ime_rect);
+    r.add("pointer.shape", pointer_shape);
 }
 
 /// The name a mouse-reporting mode goes by in the answer.
@@ -53,9 +55,39 @@ fn scrollbar_rect(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(scrollbar_answer())
 }
 
+/// The input method's rectangle in window device pixels, as last handed to the window.
+fn ime_rect(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let a = crate::ime::last_area().ok_or("ime.rect: no frame has placed the rectangle yet")?;
+    Ok(json!({ "x": a.x, "y": a.y, "w": a.w, "h": a.h }))
+}
+
+/// The name of a mouse cursor from its debug text: text, pointer or default.
+fn shape_name(debug: &str) -> &'static str {
+    if debug.contains("Text") {
+        "text"
+    } else if debug.contains("Pointer") {
+        "pointer"
+    } else {
+        "default"
+    }
+}
+
+/// The pointer shape the grid shows now.
+fn pointer_shape(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let shape = shape_name(&format!("{:?}", ctx.app.get_grid_cursor()));
+    Ok(json!({ "shape": shape }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cursor_debug_text_names_its_shape() {
+        assert_eq!(shape_name("BuiltIn(Text)"), "text");
+        assert_eq!(shape_name("BuiltIn(Pointer)"), "pointer");
+        assert_eq!(shape_name("BuiltIn(Default)"), "default");
+    }
 
     #[test]
     fn every_mouse_mode_has_its_name_and_only_none_is_off() {
@@ -87,5 +119,7 @@ mod tests {
         let names = r.names();
         assert!(names.contains(&"term.mouse"));
         assert!(names.contains(&"scrollbar.rect"));
+        assert!(names.contains(&"ime.rect"));
+        assert!(names.contains(&"pointer.shape"));
     }
 }

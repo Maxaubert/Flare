@@ -495,9 +495,17 @@ fn mouse_report_run(ctx: &mut Ctx, app: &mut App, stand_in: &Path) -> Result<(),
     ctx.ok(mouse_on(app), format!("xterm took the mouse mode ({mode})"));
     // PT: run.mjs:1310. The pointer shape is set on the window (`appctl.rs` set_cursor) and no
     // probe reports it yet.
+    let (px, py) = grid_centre(app);
+    let _ = app.session.call(&Request::Pointer {
+        x: px,
+        y: py,
+        action: PointerAction::Move,
+    });
+    pause(200);
+    let shape = probe(app, "pointer.shape", Value::Null);
     ctx.ok(
-        false,
-        "so the pointer is not the text caret: the window exports no pointer shape to a probe yet",
+        shape["shape"].as_str().is_some_and(|s| s != "text"),
+        format!("so the pointer is not the text caret ({shape})"),
     );
     // PT: run.mjs:1311-1312
     app.session.type_text("k")?;
