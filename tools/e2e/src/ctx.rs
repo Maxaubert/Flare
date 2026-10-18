@@ -269,6 +269,7 @@ impl Ctx {
         let child = Child::launch(&exe, &refs, &env, &profile);
         let mut session = Session::connect(&profile, CONNECT_WAIT)?;
         session.hello()?;
+        assert_parked(&mut session)?;
         if let Some(dpi) = opts.scale_dpi {
             session.call(&Request::DpiChange {
                 dpi,
@@ -284,10 +285,65 @@ impl Ctx {
     }
 }
 
+/// How long a launch waits for the window to be styled and parked (the app does it by timer, as
+/// soon as the native window exists).
+const PARK_WAIT_MS: u64 = 10_000;
+
+/// Pure: what the `window.park` answer says is wrong. A reply that is not the expected shape is a
+/// problem too, so a probe that stops answering can never pass.
+pub fn park_problems(v: &serde_json::Value) -> Vec<String> {
+    match v.get("problems").and_then(|p| p.as_array()) {
+        Some(list) => list
+            .iter()
+            .map(|p| p.as_str().unwrap_or("?").to_string())
+            .collect(),
+        None => vec![format!("window.park gave no problems list: {v}")],
+    }
+}
+
+/// The hard safety line of every launch: the window is off every monitor, a no-activate tool
+/// window, off the taskbar and not in the foreground. Fails the launch when it never holds.
+fn assert_parked(session: &mut Session) -> Result<(), String> {
+    let mut last = vec!["the window never answered window.park".to_string()];
+    let held = wait_on(&mut SystemClock::new(), PARK_WAIT_MS, &mut || match session
+        .probe_str("window.park")
+    {
+        Ok(v) => {
+            last = park_problems(&v);
+            last.is_empty()
+        }
+        Err(e) => {
+            last = vec![e];
+            false
+        }
+    });
+    if held {
+        Ok(())
+    } else {
+        Err(format!("the --e2e window is not safe: {}", last.join("; ")))
+    }
+}
+
 /// One row of the scenario table: its name, its group, its body and its time limit in seconds.
 pub struct Scenario {
     pub name: &'static str,
     pub group: &'static str,
     pub run: fn(&mut Ctx) -> Result<(), String>,
     pub limit_secs: u64,
+}
+
+#[cfg(test)]
+mod park_tests {
+    use super::*;
+
+    #[test]
+    fn a_clean_answer_has_no_problems_and_a_bad_shape_always_has() {
+        assert!(park_problems(&json!({"problems": []})).is_empty());
+        assert_eq!(
+            park_problems(&json!({"problems": ["WS_EX_NOACTIVATE is not set"]})),
+            vec!["WS_EX_NOACTIVATE is not set".to_string()]
+        );
+        assert_eq!(park_problems(&json!(null)).len(), 1);
+        assert_eq!(park_problems(&json!({"rect": [0, 0, 1, 1]})).len(), 1);
+    }
 }

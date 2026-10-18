@@ -301,6 +301,12 @@ pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
         .flatten()
 }
 
+/// Where the window is put before its first show: the parking spot under `--e2e`, else nowhere
+/// in particular (the saved or default place applies).
+pub fn e2e_first_position(e2e: bool) -> Option<(i32, i32)> {
+    e2e.then(flare_win::window_park::parked_origin)
+}
+
 /// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
 fn apply_e2e_style_to(hwnd: isize) {
     let hwnd = hwnd as *mut std::ffi::c_void;
@@ -1113,6 +1119,12 @@ pub fn run_window(
             rc
         }
     };
+    // An `--e2e` window is placed on the parking spot BEFORE it first shows, so it is never on a
+    // monitor, not even for the few ticks until its handle exists and the timer styles it.
+    if let Some((x, y)) = e2e_first_position(args.e2e) {
+        app.window()
+            .set_position(slint::PhysicalPosition::new(x, y));
+    }
     app.show()?;
     // The watchdog: the UI thread beats every 50 ms, and the hung-window poll looks at this window.
     let beat_timer = crate::diag_ctl::beat_timer();
@@ -1710,6 +1722,18 @@ mod tests {
         assert_eq!(poll_handle(2, 3, Some(77)), HandlePoll::Found(77));
         // The wait is long enough for a slow start and short enough to give up.
         assert!(E2E_HANDLE_POLL_MS * u64::from(E2E_HANDLE_POLLS) >= 5_000);
+    }
+
+    #[test]
+    fn the_e2e_window_is_placed_off_screen_before_its_first_show() {
+        assert_eq!(e2e_first_position(true), Some((-32000, -32000)));
+        assert_eq!(e2e_first_position(false), None);
+        let src = include_str!("window.rs").replace("\r\n", "\n");
+        let set = src.find("e2e_first_position(args.e2e)").expect("used");
+        let show = src
+            .find("    app.show()?;\n    // The watchdog")
+            .expect("show");
+        assert!(set < show, "the position is set before show()");
     }
 
     fn h(cwd: &str) -> Handoff {
