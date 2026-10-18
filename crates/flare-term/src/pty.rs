@@ -235,6 +235,64 @@ fn kill_descendants(root: u32) {
     }
 }
 
+/// One job object for the whole process, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: every shell the process
+/// starts joins it, so when the process ends (a panic that aborts, a timeout kill, a crash) Windows
+/// ends the shells and their children with it. Nothing outlives its owner.
+fn join_kill_on_close_job(pid: u32) {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+    // The handle is kept for the life of the process on purpose; closing it is what kills the members.
+    static JOB: OnceLock<usize> = OnceLock::new();
+    if pid == 0 {
+        return;
+    }
+    let job = *JOB.get_or_init(|| {
+        // SAFETY: null attributes and name are valid; a null result means failure and is checked.
+        let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if h.is_null() {
+            return 0;
+        }
+        // SAFETY: plain data, zero is a valid initial state.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `info` is a live struct of the size passed.
+        let ok = unsafe {
+            SetInformationJobObject(
+                h,
+                JobObjectExtendedLimitInformation,
+                (&raw const info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if ok == 0 {
+            // SAFETY: `h` is ours and closed once.
+            unsafe { CloseHandle(h) };
+            return 0;
+        }
+        h as usize
+    });
+    if job == 0 {
+        return;
+    }
+    // SAFETY: plain values in; a null handle means failure and is checked.
+    let p: HANDLE = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: both handles are live; failure (already in a non-nestable job) leaves the old behaviour.
+    unsafe {
+        AssignProcessToJobObject(job as HANDLE, p);
+        CloseHandle(p);
+    }
+}
 impl Drop for PortablePty {
     fn drop(&mut self) {
         // End the shell so the waiter returns, then close the pseudo console, which is what finally
@@ -441,5 +499,91 @@ mod tests {
         let (buf, _w, _h) = pump(g.0.as_mut().unwrap());
         assert!(wait_for(&buf, "Microsoft Windows", 1));
         assert!(g.0.as_mut().unwrap().resize(100, 30).is_ok());
+    }
+
+    fn alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: plain values; null checked; handle closed once.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(h, &mut code);
+            CloseHandle(h);
+            ok != 0 && code == 259
+        }
+    }
+
+    /// Helper half: only runs when the parent test sets the variable. Starts shells, writes their
+    /// pids, then dies without any destructor, the way a crash or a timeout kill does.
+    #[test]
+    fn job_helper_spawns_shells_then_aborts() {
+        let Ok(out) = std::env::var("FLARE_JOB_HELPER_OUT") else {
+            return;
+        };
+        let mut pids = Vec::new();
+        for i in 0..3 {
+            let marker = format!("flare-job-marker-{}-{i}", std::process::id());
+            let p = PortableSpawner
+                .spawn(&SpawnSpec {
+                    exe: "pwsh.exe".into(),
+                    args: [
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NoExit",
+                        "-Command",
+                        &format!("$m = '{marker}'"),
+                    ]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                    ..cmd_spec(&[], &temp_cwd(), std_env())
+                })
+                .unwrap();
+            pids.push(p.pid());
+            std::mem::forget(p);
+        }
+        let text: Vec<String> = pids.iter().map(u32::to_string).collect();
+        std::fs::write(&out, text.join(" ")).unwrap();
+        std::process::abort();
+    }
+
+    #[test]
+    fn shells_die_with_the_process_that_started_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("pids.txt");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pty::tests::job_helper_spawns_shells_then_aborts",
+                "--nocapture",
+            ])
+            .env("FLARE_JOB_HELPER_OUT", &out)
+            .status()
+            .unwrap();
+        assert!(!status.success(), "the helper aborts");
+        let pids: Vec<u32> = std::fs::read_to_string(&out)
+            .expect("helper wrote its pids")
+            .split_whitespace()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 3);
+        let end = Instant::now() + Duration::from_secs(10);
+        while pids.iter().any(|p| alive(*p)) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let left: Vec<u32> = pids.iter().copied().filter(|p| alive(*p)).collect();
+        for p in &left {
+            // Do not leave the orphan this very test proves.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &p.to_string()])
+                .output();
+        }
+        assert!(left.is_empty(), "shells outlived their owner: {left:?}");
     }
 }
