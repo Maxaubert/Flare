@@ -3312,6 +3312,14 @@ pub fn system_menu_requests() -> u32 {
 }
 
 impl AppCtl {
+    /// The page the Settings tab holds (kept while its tab stays open); `None` before the Settings
+    /// controller exists or while it is borrowed. The `settings.state` probe reads it (Task 21).
+    pub fn settings_page(&self) -> Option<&'static str> {
+        self.settings
+            .as_ref()
+            .and_then(|s| s.try_borrow().ok().map(|c| c.current_page()))
+    }
+
     /// Alt+Space: counts the request; outside `--e2e` the system menu shows at the window's
     /// top-left (the e2e never opens a native menu: it would take the foreground).
     pub fn open_system_menu(&mut self) {
