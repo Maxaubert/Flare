@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use flare_e2e::ctx::{Ctx, close_child, shot_file};
-use flare_e2e::proc::{Child, pid_alive};
-use flare_e2e::report::{Row, table};
-use flare_e2e::runner::{Outcome, select, supervise};
+use flare_e2e::ctx::{close_child, shot_file, Ctx};
+use flare_e2e::proc::{pid_alive, Child};
+use flare_e2e::report::{table, Row};
+use flare_e2e::runner::{select, supervise, Outcome};
 use flare_e2e::scenarios::ALL;
-use flare_e2e::until::{Clock, wait_on};
+use flare_e2e::until::{wait_on, Clock};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 

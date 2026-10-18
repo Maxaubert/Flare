@@ -12,9 +12,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::ctx::{Ctx, DEFAULT_EXE, Scenario};
+use crate::ctx::{Ctx, Scenario, DEFAULT_EXE};
 use crate::proc::reap_by_profile;
 use crate::report::{self, Row};
 use crate::scenarios::ALL;
@@ -119,7 +119,11 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
         "{}",
         json!({"done": true, "checks": ctx.checks, "fails": ctx.fails.len(), "skips": ctx.skips})
     );
-    if ctx.fails.is_empty() { 0 } else { 1 }
+    if ctx.fails.is_empty() {
+        0
+    } else {
+        1
+    }
 }
 
 /// How a supervised child ended.

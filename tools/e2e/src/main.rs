@@ -1,7 +1,7 @@
 //! The `flare-e2e` driver. `flare-e2e [filter...] [--list] [--exe <path>] [--packaged] [--shots <dir>]
 //! [--keep] [perf [name...]]`; `--run-one <name>` is the per-scenario child the parent starts.
 
-use flare_e2e::runner::{Cli, run_all, run_one};
+use flare_e2e::runner::{run_all, run_one, Cli};
 use flare_e2e::scenarios::ALL;
 
 fn main() {
