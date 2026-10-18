@@ -150,7 +150,10 @@ fn drag(app: &mut App, from: (f64, f64), to: (f64, f64), steps: u32) {
             button: Button::Left,
         },
     ));
-    std::thread::sleep(std::time::Duration::from_millis(150)); // e2e pacing: a held press
+    // e2e pacing: a held press, in 50 ms steps (the runner's rule: no wait longer than one step).
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let steps = steps.max(1);
     for i in 1..=steps {
         let f = f64::from(i) / f64::from(steps);

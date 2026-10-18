@@ -267,7 +267,33 @@ fn fill_row_colour(ctx: &mut Ctx, app: &mut App, id: &str, text: &str) -> bool {
 }
 
 /// Clicks the Save changes button of the page in front (the first section that has one).
-fn click_save(app: &mut App) -> bool {
+fn click_save(ctx: &mut Ctx, app: &mut App) -> bool {
+    // The button sits at the wall; a row far down the page has scrolled it out of the pane, so the
+    // page is wheeled until the button is in view, as a person would.
+    let at = pane_point(app);
+    ctx.poll(8_000, &mut || {
+        let Some(save) = theme(app)["saves"]
+            .as_array()
+            .and_then(|s| s.first())
+            .cloned()
+        else {
+            return false;
+        };
+        if save["visible"] == json!(true) {
+            return true;
+        }
+        let y = save["point"]["y"].as_f64().unwrap_or(0.0);
+        let mid = rect(&ui_rect(app, "grid"))
+            .map(|(_, gy, _, gh)| gy + gh / 2.0)
+            .unwrap_or(300.0);
+        let dy = if y > mid { -160.0 } else { 160.0 };
+        let _ = app.session.call(&Request::Pointer {
+            x: at.0,
+            y: at.1,
+            action: PointerAction::Wheel { dx: 0.0, dy },
+        });
+        false
+    });
     let t = theme(app);
     let Some(save) = t["saves"].as_array().and_then(|s| s.first()).cloned() else {
         return false;
@@ -486,8 +512,15 @@ pub fn window_colours_save(ctx: &mut Ctx) -> Result<(), String> {
     );
 
     // PT: Save keeps it with Custom, and goes quiet.
-    let _ = click_save(&mut app);
+    let _ = click_save(ctx, &mut app);
     let kept = ctx.until("Save goes quiet", 4_000, &mut || !save_dirty(&mut app));
+    // The settings file is written a moment after the button goes quiet.
+    ctx.poll(4_000, &mut || {
+        stored_str(&app, "flare.term.theme") == "custom"
+            && stored_str(&app, "flare.window.secondary")
+                .to_lowercase()
+                .contains("2a2a2a")
+    });
     let secondary = stored_str(&app, "flare.window.secondary");
     let theme_id = stored_str(&app, "flare.term.theme");
     ctx.ok(
@@ -919,7 +952,7 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
         save_dirty(&mut app)
     });
     let _ = agent && agent_dirty;
-    let _ = click_save(&mut app);
+    let _ = click_save(ctx, &mut app);
     ctx.until("the page's Save goes quiet", 4_000, &mut || {
         !save_dirty(&mut app)
     });
@@ -1208,7 +1241,7 @@ pub fn review_settings(ctx: &mut Ctx) -> Result<(), String> {
     let _ = agent;
     // Flare keeps the one Save changes on the Appearance page.
     let _ = goto_page(ctx, &mut app, "appearance");
-    let _ = click_save(&mut app);
+    let _ = click_save(ctx, &mut app);
     ctx.until("the agent colour is saved", 4_000, &mut || {
         !save_dirty(&mut app)
     });
