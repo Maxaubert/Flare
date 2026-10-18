@@ -49,6 +49,7 @@ use crate::settings_scene;
 use crate::tab_host::TabHost;
 use crate::term_ui::{DecorInputs, PointerIn};
 use crate::theme_scene::{SAMPLE_STREAM, StreamSource, scene_font, scene_look};
+use crate::update_ctl::{PostEvents, UpdateCtl, UpdateDeps, UpdateMsg};
 use crate::{AppWindow, MarkMotion, SetKind, SettingsBridge};
 use flare_settings::pages::DEFAULT_PAGE;
 use flare_settings::window_colours::ACCENT;
@@ -265,7 +266,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 // ---- --scene: the window in one fixed state ----------------------------------------------------
 
 /// The scenes `--scene` takes, in the order the screenshot plan lists them.
-pub const SCENES: [&str; 37] = [
+pub const SCENES: [&str; 45] = [
     "strip-3",
     "strip-hover",
     "strip-many",
@@ -303,6 +304,14 @@ pub const SCENES: [&str; 37] = [
     "marks-close",
     "badge",
     "settings",
+    "update-chip",
+    "update-chip-notice",
+    "update-window",
+    "update-window-running",
+    "update-window-installing",
+    "update-window-notice",
+    "update-window-small",
+    "update-window-empty",
 ];
 
 /// The folder the scenes' tabs sit in. Inert: nothing is spawned in it and nothing is read from it.
@@ -447,10 +456,52 @@ pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         // The terminal scenes: one live tab in the Flare folder, its shell fed with the text.
         name if is_term_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         name if is_mark_scene(name) => marks_setup(name),
+        // The update scenes: one tab; the update controller is made over it when the scene stages.
+        name if is_update_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         _ => (saved(&three, 0), no_prefs),
     }
 }
 
+// ---- the update scenes (M9, Task 40) -------------------------------------------------------------
+
+/// The scenes that show the update chip, its notice and the update window.
+fn is_update_scene(name: &str) -> bool {
+    name.starts_with("update-")
+}
+
+/// The arguments a scene is drawn with: the window size a scene needs is part of the scene, not of
+/// the command line (sixteen tabs overflow a 700 px strip; the small update window is 420 high).
+pub(crate) fn scene_args(name: &str, args: &Args) -> Args {
+    let mut args = args.clone();
+    if name == "marks-overflow" {
+        args.size.0 = 700;
+    }
+    if name == "update-window-small" {
+        args.size = (1000, 420);
+    }
+    args
+}
+
+/// The version the update scenes run as: the offer is the next minor, `0.56.0`.
+const UPDATE_SCENE_CURRENT: &str = "0.55.6";
+
+/// A release body of `n` entries, each long enough to wrap in the window.
+fn update_scene_notes(n: usize) -> String {
+    let mut lines = vec!["## What's Changed".to_string()];
+    for i in 1..=n {
+        lines.push(format!(
+            "* Change number {i}: a title long enough that it wraps onto a second line in the window by @Maxaubert in https://github.com/Maxaubert/Flare/pull/{i}"
+        ));
+    }
+    lines.join("\n")
+}
+
+/// The scenes never wait: no install runs in them.
+struct SceneNoWait;
+
+impl flare_update::preview::Waiter for SceneNoWait {
+    fn wait(&self, _ms: u64) {}
+}
 // ---- the marks scenes (M6, Task 33) -----------------------------------------------------------
 
 /// The scenes that show the agent marks: the strip, the sidebar, the +N list, the tooltip, the
@@ -718,6 +769,8 @@ pub(crate) struct Scene {
     dir: PathBuf,
     /// The scene's own in-memory store (the Settings scene hands it to its controller).
     prefs: PrefStore,
+    /// The update controller of an update scene (kept: it owns the window's notes model).
+    update: RefCell<Option<Rc<RefCell<UpdateCtl>>>>,
     /// The shell the grid shows (the terminal scenes feed it and read its cells).
     front: Rc<RefCell<Option<Arc<TermHandle>>>>,
     /// Every fake shell the tabs spawned (the mark scenes feed them the agents' signals).
@@ -885,6 +938,7 @@ impl Scene {
             phys,
             dir,
             prefs,
+            update: RefCell::new(None),
             front,
             spawner,
         };
@@ -1422,6 +1476,97 @@ impl Scene {
         Ok(())
     }
 
+    /// The update scenes: the update controller over a fake engine, told an offer and then driven
+    /// through the window's own callbacks (the chip click, Install), exactly as a person would.
+    fn stage_update(&self, name: &str) -> Result<(), String> {
+        use flare_update::engine::{CondvarSleeper, Engine, Mode};
+        use flare_update::feed::FakeFeed;
+        use flare_update::types::Offer;
+
+        let post: Post = {
+            let queue = self.queue.clone();
+            Arc::new(move |m| {
+                queue
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push_back(m);
+            })
+        };
+        let engine = Engine::new(
+            Mode::Off,
+            Arc::new(FakeFeed::new()),
+            UPDATE_SCENE_CURRENT,
+            None,
+            Arc::new(PostEvents { post: post.clone() }),
+            Arc::new(CondvarSleeper::new()),
+            Arc::new(SceneNoWait),
+        );
+        let ctl = UpdateCtl::new(
+            &self.app,
+            UpdateDeps {
+                engine,
+                post,
+                current_version: UPDATE_SCENE_CURRENT.to_string(),
+                ask_install: Rc::new(|answer| answer(true)),
+                agree: Arc::new(|| {}),
+                // The install worker never runs: the scene tells the controller what it saw.
+                spawn: Rc::new(|_job| {}),
+                e2e_dir: None,
+                quit: Rc::new(|| {}),
+            },
+        );
+        let version = flare_update::preview::preview_version(UPDATE_SCENE_CURRENT);
+        let notes = match name {
+            "update-window-small" => update_scene_notes(25),
+            "update-window-empty" => String::new(),
+            _ => flare_update::preview::SAMPLE_NOTES.to_string(),
+        };
+        // The failure under the chip is a real offer's; every other scene shows the preview.
+        let mock = name != "update-chip-notice";
+        {
+            let mut c = ctl.borrow_mut();
+            let css = (
+                self.phys.0 as f32 / self.scale,
+                self.phys.1 as f32 / self.scale,
+            );
+            c.on_scale_or_size(css.0, css.1, self.scale);
+            c.on_msg(UpdateMsg::Offer(Offer {
+                version,
+                notes,
+                mock,
+                token: 1,
+            }));
+        }
+        match name {
+            "update-chip" => {}
+            "update-chip-notice" => {
+                let mut c = ctl.borrow_mut();
+                c.install_pressed();
+                c.hide();
+                c.on_msg(UpdateMsg::Settled(false));
+            }
+            "update-window" | "update-window-small" | "update-window-empty" => {
+                ctl.borrow_mut().chip_clicked();
+            }
+            "update-window-running" | "update-window-installing" | "update-window-notice" => {
+                let mut c = ctl.borrow_mut();
+                c.chip_clicked();
+                c.install_pressed();
+                match name {
+                    "update-window-running" => c.on_msg(UpdateMsg::Progress(42)),
+                    "update-window-installing" => c.on_msg(UpdateMsg::Progress(100)),
+                    _ => c.on_msg(UpdateMsg::Settled(false)),
+                }
+            }
+            _ => return Err(format!("no update scene '{name}'")),
+        }
+        *self.update.borrow_mut() = Some(ctl);
+        // The window fades in (200 ms) and the bar fills (300 ms): let both finish before the picture.
+        self.advance(600);
+        self.pump();
+        Ok(())
+    }
+
     fn stage(&self, name: &str) -> Result<(), String> {
         // The first paint lays the window out, so the pointer and the focus find their targets.
         self.render();
@@ -1430,6 +1575,9 @@ impl Scene {
         }
         if is_mark_scene(name) {
             return self.stage_marks(name);
+        }
+        if is_update_scene(name) {
+            return self.stage_update(name);
         }
         match name {
             "strip-hover" => {
@@ -1503,11 +1651,7 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
     if name == "badge" {
         return write_badge_sheet(path);
     }
-    let mut args = args.clone();
-    if name == "marks-overflow" {
-        // Sixteen tabs overflow a 700 px strip (the others are 1000 px wide).
-        args.size.0 = 700;
-    }
+    let args = scene_args(name, args);
     let (saved, prep) = setup(name);
     let scene = Scene::build_with(
         &args,
@@ -1905,5 +2049,142 @@ mod tests {
     fn the_many_scene_reads_a_thousand_plus() {
         let scene = staged("term-find-many");
         assert_eq!(scene.app.get_find_readout().as_str(), "1000+");
+    }
+
+    // ---- the update scenes (M9, Task 40) ----------------------------------------------------
+
+    const UPDATE_SCENES: [&str; 8] = [
+        "update-chip",
+        "update-chip-notice",
+        "update-window",
+        "update-window-running",
+        "update-window-installing",
+        "update-window-notice",
+        "update-window-small",
+        "update-window-empty",
+    ];
+
+    /// The update scene at `scale`, sized as `run_scene` sizes it, staged and drawn.
+    fn staged_update(name: &str, scale: f32) -> (Scene, Vec<u8>) {
+        let argv: Vec<String> = [
+            "--scene",
+            name,
+            "--scale",
+            &scale.to_string(),
+            "--renderer",
+            "software",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let args = scene_args(name, &parse_args(&argv, None).expect("the arguments parse"));
+        let (saved, prep) = setup(name);
+        let scene = Scene::build_with(&args, saved, prep, false, false).expect("the scene builds");
+        scene.stage(name).expect("the scene stages");
+        let pixels = scene.render();
+        (scene, pixels)
+    }
+
+    #[test]
+    fn the_scene_list_names_the_eight_update_scenes_once_each() {
+        for name in UPDATE_SCENES {
+            assert_eq!(
+                SCENES.iter().filter(|s| **s == name).count(),
+                1,
+                "{name} is listed once"
+            );
+            assert!(is_update_scene(name));
+        }
+        assert!(!is_update_scene("settings"));
+        let mut all: Vec<&str> = SCENES.to_vec();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), SCENES.len(), "no scene name repeats");
+    }
+
+    #[test]
+    fn the_small_update_scene_is_1000_by_420_and_the_others_keep_the_default() {
+        let args = parse_args(
+            &["--scene".to_string(), "update-window-small".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(scene_args("update-window-small", &args).size, (1000, 420));
+        assert_eq!(scene_args("update-window", &args).size, (1000, 640));
+    }
+
+    #[test]
+    fn every_update_scene_shows_its_state_at_every_scaling() {
+        for scale in MARK_BAR_SCALES {
+            for name in UPDATE_SCENES {
+                let (scene, pixels) = staged_update(name, scale);
+                let app = &scene.app;
+                assert_eq!(
+                    pixels.len(),
+                    (scene.phys.0 * scene.phys.1 * 4) as usize,
+                    "{name} at {scale}"
+                );
+                assert!(
+                    pixels.chunks(4).any(|p| p[..3] != pixels[..3]),
+                    "{name} at {scale} is not one flat colour"
+                );
+                assert!(app.get_update_chip_shown(), "{name}: the chip is up");
+                let open = app.get_update_open();
+                let notice = app.get_update_notice().to_string();
+                match name {
+                    "update-chip" => {
+                        assert!(!open && notice.is_empty());
+                        assert!(app.get_update_chip_label().starts_with("Update "));
+                    }
+                    "update-chip-notice" => {
+                        assert!(!open, "the window is away");
+                        assert_eq!(notice, flare_update::flow::INSTALL_FAILED);
+                    }
+                    "update-window" => {
+                        assert!(open && !app.get_update_running());
+                        assert!(app.get_update_sections().row_count() >= 3);
+                    }
+                    "update-window-running" => {
+                        assert!(open && app.get_update_running());
+                        assert_eq!(app.get_update_pct(), 42);
+                    }
+                    "update-window-installing" => {
+                        assert!(open && app.get_update_running());
+                        assert_eq!(app.get_update_pct(), 100);
+                    }
+                    "update-window-notice" => {
+                        assert!(open && !app.get_update_running());
+                        assert_eq!(app.get_update_status(), flare_update::flow::PREVIEW_DONE);
+                        assert_eq!(app.get_update_cancel_label(), "Close");
+                    }
+                    "update-window-small" => {
+                        assert!(open);
+                        assert_eq!(
+                            scene.phys,
+                            (
+                                (1000.0 * scale).round() as u32,
+                                (420.0 * scale).round() as u32
+                            )
+                        );
+                        let entries: usize = app
+                            .get_update_sections()
+                            .iter()
+                            .map(|s| s.entries.row_count())
+                            .sum();
+                        assert_eq!(entries, 20, "the cap");
+                        assert_eq!(app.get_update_more().as_str(), "+ 5 more");
+                    }
+                    "update-window-empty" => {
+                        assert!(open);
+                        assert_eq!(app.get_update_sections().row_count(), 0);
+                        assert_eq!(
+                            app.get_update_empty_note().as_str(),
+                            flare_update::notes::NO_NOTES
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
     }
 }
