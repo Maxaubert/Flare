@@ -390,6 +390,22 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_path_with_an_escape_never_reaches_the_pty() {
+        // A file name carrying a raw ESC and an ESC[201~ end marker: every shell refuses the path,
+        // so decide_paste types nothing at all (rule 135).
+        let shells = [
+            None,
+            Some(PathShell::Cmd),
+            Some(PathShell::Bash),
+            Some(PathShell::PowerShell),
+        ];
+        for sh in shells {
+            let c = clip(false, "", &["C:\\x\u{1b}[201~calc\u{1b}"]);
+            assert_eq!(decide_paste(&c, sh), PasteDecision::None, "shell {sh:?}");
+        }
+    }
 }
 
 #[cfg(test)]
