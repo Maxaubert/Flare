@@ -222,3 +222,41 @@ fn skip_prints_skip_and_counts_separately() {
     assert_eq!(ctx.checks, 1, "a skip is not a check");
     assert!(ctx.fails.is_empty(), "and it is never a fail");
 }
+
+#[test]
+fn a_timeout_followed_by_its_check_is_one_failure_with_both_texts() {
+    let mut ctx = Ctx::new("twice");
+    let hit = ctx.until("a thing that never comes", 50, &mut || false);
+    assert!(!hit);
+    ctx.ok(hit, "the thing came");
+    assert_eq!(ctx.fails.len(), 1, "{:?}", ctx.fails);
+    assert_eq!(ctx.checks, 1, "one check, not two");
+    assert!(ctx.fails[0].contains("the thing came"), "{:?}", ctx.fails);
+    assert!(
+        ctx.fails[0].contains("timed out waiting for a thing that never comes"),
+        "{:?}",
+        ctx.fails
+    );
+    // An unrelated failure afterwards is its own.
+    ctx.ok(false, "another");
+    assert_eq!(ctx.fails.len(), 2);
+    assert_eq!(ctx.checks, 2);
+}
+
+#[test]
+fn a_returned_error_is_kept_after_an_earlier_failure_and_never_said_twice() {
+    let mut ctx = Ctx::new("err");
+    ctx.ok(false, "an early check failed");
+    flare_e2e::runner::keep_error(&mut ctx, "the app did not start");
+    assert!(ctx.fails.iter().any(|f| f == "the app did not start"));
+    flare_e2e::runner::keep_error(&mut ctx, "the app did not start");
+    assert_eq!(ctx.fails.len(), 2, "recorded once: {:?}", ctx.fails);
+}
+
+#[test]
+fn a_bare_timeout_is_still_one_failure() {
+    let mut ctx = Ctx::new("bare");
+    assert!(!ctx.until("nothing", 50, &mut || false));
+    ctx.ok(true, "a pass");
+    assert_eq!(ctx.fails.len(), 1);
+}

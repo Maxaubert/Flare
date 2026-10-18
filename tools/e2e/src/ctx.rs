@@ -40,6 +40,8 @@ pub struct Ctx {
     pub fails: Vec<String>,
     /// True in a `--run-one` child: every check, skip and the world root print as JSON lines.
     pub json: bool,
+    /// True right after `until` timed out: the very next failing `ok` is the same failure said again.
+    timed_out: bool,
 }
 
 /// What to start: the app's own arguments, its environment on top of the sandbox's, the folders
@@ -144,13 +146,28 @@ impl Ctx {
             skips: 0,
             fails: Vec::new(),
             json: false,
+            timed_out: false,
         }
     }
 
-    /// Prints a pass or a FAIL line and counts it.
+    /// Prints a pass or a FAIL line and counts it. A failing check straight after a timed-out
+    /// `until` is that same failure: it is printed, folded into the timeout's entry (which then
+    /// carries both texts) and not counted again.
     pub fn ok(&mut self, cond: bool, msg: impl AsRef<str>) {
-        self.checks += 1;
         let msg = msg.as_ref();
+        let folded = std::mem::take(&mut self.timed_out) && !cond;
+        if folded {
+            if self.json {
+                println!("{}", json!({"pass": false, "msg": msg}));
+            } else {
+                println!("  FAIL  {msg}");
+            }
+            if let Some(last) = self.fails.last_mut() {
+                *last = format!("{msg} ({last})");
+            }
+            return;
+        }
+        self.checks += 1;
         if self.json {
             println!("{}", json!({"pass": cond, "msg": msg}));
         } else if cond {
@@ -188,6 +205,7 @@ impl Ctx {
             return true;
         }
         self.ok(false, format!("timed out waiting for {what}"));
+        self.timed_out = true;
         false
     }
 

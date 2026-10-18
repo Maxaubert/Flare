@@ -94,6 +94,14 @@ pub fn exe_path(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_EXE))
 }
 
+/// A scenario's returned `Err` is always kept as a failure, even after earlier failures; only one
+/// the context already recorded (`not_ported` records its own text) is not said twice.
+pub fn keep_error(ctx: &mut Ctx, e: &str) {
+    if !ctx.fails.iter().any(|f| f.contains(e)) {
+        ctx.ok(false, e);
+    }
+}
+
 /// The child: runs one scenario in this process and prints its JSON lines. Exit 0 when it passed.
 pub fn run_one(name: &str, cli: &Cli) -> i32 {
     let Some(s) = ALL.iter().find(|s| s.name == name) else {
@@ -111,9 +119,7 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
         ctx.shots = dir.clone();
     }
     if let Err(e) = (s.run)(&mut ctx) {
-        if ctx.fails.is_empty() {
-            ctx.ok(false, &e);
-        }
+        keep_error(&mut ctx, &e);
     }
     println!(
         "{}",
