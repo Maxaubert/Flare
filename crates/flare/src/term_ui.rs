@@ -12,6 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -44,7 +45,8 @@ use flare_win::dblclick::DoubleClick;
 
 use crate::badge::{BadgeClock, BadgePhase};
 use crate::clip_flow::{
-    AppCopyAdapter, PasteAction, PasteMode, PasteReq, copy_async, paste_action, read_async,
+    AppCopyAdapter, PasteAction, PasteMode, PasteReq, copy_async, is_small_copy, paste_action,
+    read_async,
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
@@ -238,6 +240,10 @@ pub struct TermUi {
     ask_pending: bool,
     recheck: bool,
     stale: HashSet<String>,
+    /// Counts the big copies started; a finished read whose number is no longer the last is dropped.
+    copy_gen: Arc<AtomicU64>,
+    /// True from a big copy's start until the UI has its answer: Ctrl+C in between is still a copy.
+    copy_pending: Arc<AtomicBool>,
 }
 
 fn mods(e: &PointerIn) -> MouseMods {
@@ -303,6 +309,8 @@ impl TermUi {
             ask_pending: false,
             recheck: false,
             stale: HashSet::new(),
+            copy_gen: Arc::new(AtomicU64::new(0)),
+            copy_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -382,6 +390,37 @@ impl TermUi {
         );
     }
 
+    /// Ctrl+C with a selection. A small one is read and cleared here, as before. A big one is read
+    /// on a worker in chunks and written there; its selection stands until the copy is read, and
+    /// `copy_pending` keeps Ctrl+C a copy (not the interrupt) until the UI has the answer. A newer
+    /// copy drops the older one's answer.
+    fn copy_selection(&self, tab: &TabInfo) {
+        let rows = tab.handle.with_emu_quiet(|em| em.sel_row_count());
+        if is_small_copy(rows) {
+            let text = tab.handle.with_emu_quiet(|em| em.sel_text());
+            tab.handle.with_emu(|em| em.sel_clear());
+            self.copy(text, COPY_MAX);
+            return;
+        }
+        let mine = self.copy_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.copy_pending.store(true, Ordering::SeqCst);
+        let latest = Arc::clone(&self.copy_gen);
+        let post = Arc::clone(&self.deps.post);
+        let clip = Arc::clone(&self.deps.clipboard);
+        let handle = Arc::clone(tab.handle);
+        tab.handle.selection_text_async(Box::new(move |text| {
+            if latest.load(Ordering::SeqCst) != mine {
+                return;
+            }
+            let Some(text) = text else {
+                // The selection changed while it was read: nothing is copied and no badge shows.
+                post(TermMsg::Copied(false));
+                return;
+            };
+            handle.with_emu(|em| em.sel_clear());
+            copy_async(clip, text, COPY_MAX, move |ok| post(TermMsg::Copied(ok)));
+        }));
+    }
     fn read_clipboard(&self, tab: &str, mode: PasteMode) {
         let post = Arc::clone(&self.deps.post);
         read_async(
@@ -754,9 +793,7 @@ impl TermUi {
     pub fn on_key(&mut self, tab: &TabInfo, ev: &KeyEvent, action: TermKeyAction) -> KeyDone {
         match action {
             TermKeyAction::Copy => {
-                let text = tab.handle.with_emu_quiet(|em| em.sel_text());
-                tab.handle.with_emu(|em| em.sel_clear());
-                self.copy(text, COPY_MAX);
+                self.copy_selection(tab);
                 KeyDone::Handled
             }
             TermKeyAction::Deleted => KeyDone::Handled,
@@ -808,7 +845,8 @@ impl TermUi {
     }
 
     pub fn has_selection(&self, tab: &TabInfo) -> bool {
-        tab.handle.with_emu_quiet(|em| em.has_selection())
+        self.copy_pending.load(Ordering::SeqCst)
+            || tab.handle.with_emu_quiet(|em| em.has_selection())
     }
 
     // ---- find ----
@@ -932,6 +970,7 @@ impl TermUi {
                 }
             }
             TermMsg::Copied(ok) => {
+                self.copy_pending.store(false, Ordering::SeqCst);
                 if ok {
                     self.badge.borrow_mut().copied(now);
                     self.redraw();
@@ -1211,6 +1250,7 @@ mod tests {
     use flare_term::handle::StartOptions;
     use flare_term::keys::{KeyState, term_key_action};
     use flare_term::path_open::FsStat;
+    use flare_term::sel_machine::{Anchor, SelSpec};
     use flare_term::session::{SessionManager, SessionOptions};
     use flare_win::clipboard_port::MemoryClipboard;
     use flare_win::dblclick::FALLBACK;
@@ -1717,6 +1757,92 @@ mod tests {
         assert!(!r.written().contains(&3));
     }
 
+    /// Selects every row of history and screen, from the first cell to the last.
+    fn select_everything(r: &Rig) {
+        r.handle.with_emu(|e| {
+            let total = e.history_size() + e.rows();
+            e.sel_apply(SelOut::Set(SelSpec {
+                block: false,
+                start: Anchor { row: 0, b: 0 },
+                end: Anchor {
+                    row: total - 1,
+                    b: COLS,
+                },
+            }));
+        });
+    }
+
+    #[test]
+    fn a_big_copy_is_read_on_a_worker_and_the_badge_waits_for_the_clipboard() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        let want = r.text();
+        r.key(ctrl("c", "KeyC"));
+        // Nothing shows until the UI has the answer from the worker.
+        assert_eq!(r.badge(), BadgePhase::Gone);
+        until("the copy", || {
+            r.pump();
+            r.clip.read_text().is_some()
+        });
+        assert_eq!(r.clip.read_text(), Some(want));
+        assert!(!r.has_sel());
+        assert_eq!(r.badge(), BadgePhase::Shown);
+    }
+
+    #[test]
+    fn a_big_copy_that_the_clipboard_refuses_raises_no_badge() {
+        let mut r = Rig::with_port(1.0, Arc::new(Refusing));
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        r.key(ctrl("c", "KeyC"));
+        until("the answer", || {
+            r.pump();
+            !r.ui.copy_pending.load(Ordering::SeqCst)
+        });
+        assert_eq!(r.badge(), BadgePhase::Gone);
+    }
+
+    #[test]
+    fn ctrl_c_with_a_selection_in_flight_is_not_the_interrupt() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        r.key(ctrl("c", "KeyC"));
+        let (a, d) = r.key(ctrl("c", "KeyC"));
+        assert_eq!((a, d), (TermKeyAction::Copy, KeyDone::Handled));
+    }
+
+    #[test]
+    fn a_second_copy_supersedes_an_unfinished_first() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        let want = r.text();
+        r.key(ctrl("c", "KeyC"));
+        r.key(ctrl("c", "KeyC"));
+        until("the copy", || {
+            r.pump();
+            r.clip.read_text().is_some()
+        });
+        assert_eq!(r.clip.read_text(), Some(want));
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn pressing_ctrl_c_on_10000_lines_costs_the_ui_thread_under_2_ms() {
+        let mut r = Rig::new(1.0);
+        r.feed(
+            &(0..10_000)
+                .map(|i| format!("line {i}\r\n"))
+                .collect::<String>(),
+        );
+        select_everything(&r);
+        let started = Instant::now();
+        r.key(ctrl("c", "KeyC"));
+        let cost = started.elapsed();
+        assert!(cost < Duration::from_millis(2), "the key cost {cost:?}");
+    }
     #[test]
     fn ctrl_c_without_a_selection_is_the_interrupt() {
         let mut r = Rig::new(1.0);

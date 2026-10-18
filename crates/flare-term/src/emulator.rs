@@ -20,7 +20,7 @@ use flare_shells::cwd::{has_control, parse_osc9};
 
 use crate::alt_click::{MoveRow, MoveScreen, move_to_cell_sequence};
 use crate::cells::{
-    BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
+    BufferLike, CellInfo, LineLike, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
 use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
@@ -134,6 +134,9 @@ pub struct Emulator {
     links: LinkScanner,
     /// The marks of the last `link_marks` call; None before the first scan.
     link_last: Option<Vec<LinkMark>>,
+    /// Bumped on every change of the selection (a copy in flight reads it). A redraw or a scroll that
+    /// moves the selection does not bump it.
+    sel_gen: u64,
 }
 
 /// What the find bar shows: the counted matches (at most `HIGHLIGHT_LIMIT`), the active match
@@ -188,6 +191,7 @@ impl Emulator {
             search: None,
             links: LinkScanner::new(),
             link_last: None,
+            sel_gen: 0,
         }
     }
 
@@ -209,6 +213,7 @@ impl Emulator {
     /// Scans the chunk, then feeds `vte` in slices that end at each scanner event, acting on the
     /// event between slices. Returns the events in stream order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermEvent> {
+        let had_sel = self.term.selection.is_some();
         let scanned = self.scanner.scan(bytes);
         let mut out = Vec::new();
         let mut at = 0;
@@ -258,6 +263,9 @@ impl Emulator {
             self.processor.advance(&mut self.term, &bytes[at..]);
         }
         self.drain(&mut out);
+        if had_sel != self.term.selection.is_some() {
+            self.sel_changed();
+        }
         out
     }
 
@@ -704,6 +712,9 @@ impl Emulator {
 
     /// Applies a machine output. Marks nothing dirty by itself (the handle does).
     pub fn sel_apply(&mut self, out: SelOut) {
+        if !matches!(out, SelOut::Nothing) {
+            self.sel_changed();
+        }
         match out {
             SelOut::Nothing => {}
             SelOut::Clear => self.term.selection = None,
@@ -776,6 +787,58 @@ impl Emulator {
         selection_text(&TermBuf::all(&self.term), self.cols(), s, e, block)
     }
 
+    /// The generation of the selection: it changes when the selection is made, moved by the user,
+    /// cleared or dropped by the terminal. A redraw that keeps it does not change it.
+    pub fn sel_generation(&self) -> u64 {
+        self.sel_gen
+    }
+
+    fn sel_changed(&mut self) {
+        self.sel_gen = self.sel_gen.wrapping_add(1);
+    }
+
+    /// The rows the selection covers, from its first row now.
+    pub fn sel_row_count(&self) -> usize {
+        self.sel_bounds()
+            .map_or(0, |(s, e, _)| e.0.saturating_sub(s.0) + 1)
+    }
+
+    /// The text of the selection rows `rel` (counted from its first row now), cut so that the pieces
+    /// for consecutive ranges concatenate to `sel_text()`. A piece that starts below the first row
+    /// begins with the line break that sel_text() puts there. The flag: the piece's last row soft-wraps
+    /// into the row after it.
+    pub fn sel_text_rows(&self, rel: std::ops::Range<usize>) -> (String, bool) {
+        let Some((s, e, block)) = self.sel_bounds() else {
+            return (String::new(), false);
+        };
+        if block && s.1.min(e.1) == s.1.max(e.1) {
+            return (String::new(), false);
+        }
+        let total = e.0.saturating_sub(s.0) + 1;
+        let lo = rel.start.min(total);
+        let hi = rel.end.min(total);
+        if lo >= hi {
+            return (String::new(), false);
+        }
+        let (a, c) = (s.0 + lo, s.0 + hi - 1);
+        let cols = self.cols();
+        let buf = TermBuf::all(&self.term);
+        let wrapped = |y: usize| buf.line(y).is_some_and(LineLike::is_wrapped);
+        let mut out = String::new();
+        if lo > 0 && (block || !wrapped(a)) {
+            out.push_str("\r\n");
+        }
+        let text = if block {
+            selection_text(&buf, cols, (a, s.1), (c, e.1), true)
+        } else {
+            let start = (a, if lo == 0 { s.1 } else { 0 });
+            let end = (c, if hi == total { e.1 } else { cols });
+            selection_text(&buf, cols, start, end, false)
+        };
+        out.push_str(&text);
+        (out, wrapped(c + 1))
+    }
+
     /// The selection's pieces on viewport rows.
     pub fn sel_spans(&self) -> Vec<RowSpan> {
         let Some((s, e, block)) = self.sel_bounds() else {
@@ -809,6 +872,7 @@ impl Emulator {
     }
 
     pub fn sel_clear(&mut self) {
+        self.sel_changed();
         self.term.selection = None;
     }
 
@@ -2155,6 +2219,76 @@ mod tests {
         assert_eq!(got.replace("\r\n", "\n"), want.replace("\r\n", "\n"));
     }
 
+    /// Chunked reads (random sizes, wrapped and block selections over history and screen) join to
+    /// exactly `sel_text()`.
+    #[test]
+    fn chunked_text_equals_sel_text() {
+        let mut e = Emulator::new(16, 6);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |m: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m as u64) as usize
+        };
+        for i in 0..120 {
+            let n = next(40);
+            let body: String = (0..n)
+                .map(|k| (b'a' + ((i + k) % 26) as u8) as char)
+                .collect();
+            e.feed(format!("{i:03} {body}\r\n").as_bytes());
+        }
+        let total = e.history_size() + e.rows();
+        for case in 0..200 {
+            let block = next(2) == 0;
+            let (mut r0, mut r1) = (next(total), next(total));
+            if r1 < r0 {
+                std::mem::swap(&mut r0, &mut r1);
+            }
+            e.sel_apply(sel(block, r0, next(17), r1, next(17)));
+            let want = e.sel_text();
+            let chunk = 1 + next(300);
+            let rows = e.sel_row_count();
+            let mut got = String::new();
+            let mut from = 0;
+            while from < rows {
+                let end = (from + chunk).min(rows);
+                got.push_str(&e.sel_text_rows(from..end).0);
+                from = end;
+            }
+            assert_eq!(got, want, "case {case} (block {block}, chunk {chunk})");
+        }
+    }
+
+    #[test]
+    fn the_selection_generation_moves_on_a_change_and_not_on_output() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        let g0 = e.sel_generation();
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        let g1 = e.sel_generation();
+        assert_ne!(g0, g1, "a new selection is a change");
+        e.feed(b"\r\nmore output below");
+        assert_eq!(
+            e.sel_generation(),
+            g1,
+            "output that keeps the selection is not"
+        );
+        e.sel_clear();
+        assert_ne!(e.sel_generation(), g1, "a clear is a change");
+        assert_eq!(e.sel_row_count(), 0);
+    }
+
+    #[test]
+    fn sel_row_count_follows_the_selection() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"aaaa\r\nbbbb\r\ncccc");
+        assert_eq!(e.sel_row_count(), 0);
+        e.sel_apply(sel(false, 0, 2, 2, 3));
+        assert_eq!(e.sel_row_count(), 3);
+        assert_eq!(e.sel_text_rows(1..2).0, "\r\nbbbb");
+        assert_eq!(e.sel_text_rows(5..9).0, "");
+    }
     #[test]
     fn a_block_selection_is_rectangular() {
         let mut e = Emulator::new(20, 3);

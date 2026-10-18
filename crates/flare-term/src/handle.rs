@@ -19,6 +19,8 @@ use std::time::Instant;
 
 /// The largest slice of output parsed under one hold of the emulator lock.
 const SLICE: usize = 64 * 1024;
+/// The rows a copy worker reads under one hold of the emulator lock (the lock is let go between them).
+pub const CHUNK_ROWS: usize = 250;
 
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -501,6 +503,34 @@ impl TermHandle {
         f(&self.emu.lock())
     }
 
+    /// Reads the selection on a worker, `CHUNK_ROWS` rows per hold of the emulator lock, so the UI's
+    /// snapshot and the pty reader wait at most one chunk. `done(Some(text))` carries the text
+    /// the selection covers when the read ends; `done(None)` when the selection changed meanwhile
+    /// (nothing is copied). The selection's generation is taken here, before the worker starts.
+    pub fn selection_text_async(&self, done: Box<dyn FnOnce(Option<String>) + Send>) {
+        let emu = Arc::clone(&self.emu);
+        let generation = emu.lock().sel_generation();
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let mut from = 0usize;
+            let text = loop {
+                let g = emu.lock();
+                if g.sel_generation() != generation {
+                    break None;
+                }
+                let total = g.sel_row_count();
+                if from >= total {
+                    break Some(out);
+                }
+                let (piece, _) = g.sel_text_rows(from..(from + CHUNK_ROWS).min(total));
+                drop(g);
+                out.push_str(&piece);
+                from += CHUNK_ROWS;
+            };
+            done(text);
+        });
+    }
+
     /// One frame's decoration (Task 16d). Locks the emulator (the link scan may run) and does not
     /// mark the view dirty; a frame calls it right after `snapshot`.
     pub fn decor(&self, req: &mut DecorReq) -> Decor {
@@ -516,6 +546,7 @@ impl TermHandle {
 mod tests {
     use super::*;
     use crate::fake::{FakeShells, FakeSpawner, FakeState};
+    use crate::sel_machine::{Anchor, SelOut, SelSpec};
     use crate::session::SessionOptions;
     use flare_render::color::Color;
     use std::sync::atomic::AtomicUsize;
@@ -936,6 +967,81 @@ mod tests {
         assert!(!t.h.is_dirty());
     }
 
+    /// Fills the history with `n` numbered rows and selects all of them.
+    fn select_all_rows(t: &T, n: usize) {
+        t.h.with_emu(|e| {
+            for i in 0..n {
+                e.feed(format!("row {i:05}\r\n").as_bytes());
+            }
+            let total = e.history_size() + e.rows();
+            e.sel_apply(SelOut::Set(SelSpec {
+                block: false,
+                start: Anchor { row: 0, b: 0 },
+                end: Anchor {
+                    row: total - 1,
+                    b: 80,
+                },
+            }));
+        });
+    }
+
+    fn read_async(t: &T) -> Option<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        rx.recv_timeout(Duration::from_secs(20)).expect("done")
+    }
+
+    #[test]
+    fn a_big_copy_delivers_the_exact_text_later() {
+        let t = T::started();
+        select_all_rows(&t, 600);
+        let want = t.h.with_emu_quiet(|e| e.sel_text());
+        assert_eq!(read_async(&t), Some(want));
+    }
+
+    #[test]
+    fn a_selection_changed_mid_read_copies_nothing() {
+        // 10,000 rows take many chunks; the change lands while the worker is still reading.
+        let t = T::started();
+        select_all_rows(&t, 10_000);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        t.h.with_emu(|e| e.sel_clear());
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(20)).expect("done"),
+            None
+        );
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn the_ui_snapshot_never_waits_more_than_5_ms_for_a_copy() {
+        let t = T::started();
+        select_all_rows(&t, 10_000);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        let mut longest = Duration::ZERO;
+        let text = loop {
+            let started = Instant::now();
+            let _ = t.h.snapshot();
+            longest = longest.max(started.elapsed());
+            if let Ok(text) = rx.try_recv() {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(text.is_some());
+        assert!(
+            longest < Duration::from_millis(5),
+            "the longest snapshot wait was {longest:?}"
+        );
+    }
     #[test]
     fn with_emu_marks_dirty_and_wakes() {
         let t = T::started();
