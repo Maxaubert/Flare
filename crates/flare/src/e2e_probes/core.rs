@@ -481,10 +481,18 @@ fn open_log(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(json!({ "calls": rows }))
 }
 
-/// Flare does not flash the taskbar button (the badge overlay is the only taskbar signal), so
-/// there is nothing to count: the count is a real zero, kept as a probe so a scenario can pin it.
+/// How many times a bell asked the taskbar button to flash under `--e2e` (the real flash is never
+/// made there: the window is parked and has no button).
+static FLASHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A bell flashed the taskbar button of a window nobody is looking at.
+pub fn record_flash() {
+    FLASHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `flash.count`: how many flashes the bells asked for.
 fn flash_count(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
-    Ok(json!({ "count": 0 }))
+    Ok(json!({ "count": FLASHES.load(std::sync::atomic::Ordering::SeqCst) }))
 }
 
 fn startup_trace(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {

@@ -15,12 +15,20 @@ use super::{ProbeCtx, ProbeRegistry};
 static OPENED_URLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Records one address the app would have opened. The window's opener calls it under `--e2e`.
-#[allow(dead_code)] // called by the window's URL opener under --e2e (the orchestrator's pre-wired seam)
 pub fn record_url(url: &str) {
     OPENED_URLS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(url.to_string());
+}
+
+/// Every address recorded so far (what the url.log probe answers).
+#[cfg(test)]
+pub fn recorded_urls() -> Vec<String> {
+    OPENED_URLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Adds this file's probes to `r`.

@@ -390,6 +390,9 @@ pub struct AppCtl {
     agent_view: Rc<dyn AgentView>,
     /// The window has the keyboard focus (a look needs it).
     focused: bool,
+    /// Asks the taskbar to flash its button (a bell rang). The window decides whether anyone is
+    /// looking: the real one flashes only while the window is not in front.
+    flash: Rc<dyn Fn()>,
     /// What the hub was last told is being looked at.
     looked: Option<(Option<String>, bool)>,
     /// The taskbar overlay, made once the window has a handle.
@@ -514,6 +517,8 @@ impl Backends {
                     log.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(url.to_string());
+                    // The test hook's url.log probe answers from its own list: both see the open.
+                    crate::e2e_probes::input_b::record_url(url);
                 })
             }
             None => Rc::new(|url: &str| {
@@ -715,6 +720,7 @@ impl AppCtl {
             skel_resumed: false,
             agent_view,
             focused: true,
+            flash: Rc::new(|| {}),
             looked: None,
             badge: None,
             restoring: HashMap::new(),
@@ -1436,6 +1442,11 @@ impl AppCtl {
         }
         self.hub.set_looking(now.0.as_deref(), now.1);
         self.looked = Some(now);
+    }
+
+    /// Where a bell's flash goes (the window sets it once it has a handle).
+    pub fn set_flash(&mut self, flash: Rc<dyn Fn()>) {
+        self.flash = flash;
     }
 
     /// The window gained or lost the keyboard focus. Coming back is a look.
@@ -3224,6 +3235,8 @@ impl AppCtl {
                         .on_term_event(&id, &TermEvent::ClipboardWrite(text));
                     terminal_news = true;
                 }
+                // The handle lets one bell through a second per tab: the button flashes, no sound.
+                HostEvent::Bell { .. } => (self.flash)(),
                 _ => {}
             }
         }
@@ -4405,6 +4418,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bell_asks_the_taskbar_to_flash_and_a_burst_asks_once() {
+        let (f, _h, fake) = live(Opts::default());
+        let count = Rc::new(std::cell::Cell::new(0_u32));
+        {
+            let c = Rc::clone(&count);
+            f.ctl
+                .borrow_mut()
+                .set_flash(Rc::new(move || c.set(c.get() + 1)));
+        }
+        fake.feed(b"\x07");
+        f.pump_until("the flash", |_| count.get() == 1);
+        // Ten more at once: the handle's one-a-second gate lets none of them through.
+        fake.feed(&[7_u8; 10]);
+        for _ in 0..20 {
+            f.pump();
+        }
+        assert_eq!(count.get(), 1, "a burst is one flash");
+    }
+
+    #[test]
     fn clipboard_writes_from_osc_52_reach_the_port() {
         let (f, _h, fake) = live(Opts::default());
         fake.feed(b"\x1b]52;c;T1NDNTIgw6Y=\x07");
@@ -4424,6 +4457,12 @@ mod tests {
         open("https://example.com/x");
         let urls = b.urls.as_ref().unwrap().lock().unwrap().clone();
         assert_eq!(urls, ["https://example.com/x"]);
+        // The test hook's url.log probe reads the same opens.
+        assert!(
+            crate::e2e_probes::input_b::recorded_urls()
+                .contains(&"https://example.com/x".to_string()),
+            "the probe sees what the opener recorded"
+        );
         // A click on a printed url reaches the recorder, never the desktop.
         let (f, h, _) = live(Opts::default());
         feed(&h, "see https://example.com/x now");

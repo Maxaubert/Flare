@@ -1193,6 +1193,24 @@ pub fn run_window(
     if let Some(hwnd) = hwnd_of(&app) {
         crate::diag_ctl::set_window(hwnd);
     }
+    // A bell flashes the taskbar button while the window is not in front (no sound). Under --e2e the
+    // window is parked and has no button, so the flash is only counted.
+    if let Some(rc) = &ctl {
+        let weak = app.as_weak();
+        let e2e = args.e2e;
+        rc.borrow_mut().set_flash(Rc::new(move || {
+            let Some(hwnd) = weak.upgrade().and_then(|a| hwnd_of(&a)) else {
+                return;
+            };
+            if e2e {
+                if !flare_win::taskbar_flash::is_foreground(hwnd) {
+                    crate::e2e_probes::core::record_flash();
+                }
+            } else {
+                flare_win::taskbar_flash::flash_unless_foreground(hwnd);
+            }
+        }));
+    }
     // The handle does not exist before the event loop runs: style and park when it appears.
     let park_timer = args.e2e.then(|| park_e2e_window_when_ready(&app));
     if args.e2e {
