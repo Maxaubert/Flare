@@ -205,8 +205,13 @@ fn smoke_one(ctx: &mut Ctx, renderer: &'static str) -> Result<(), String> {
     );
 
     let _ = app.session.call(&Request::Frames { reset: true });
+    // The second launch of this scenario shares the profile, so it restores the first launch's tab:
+    // the key is proven by one more tab than before it, not by an absolute count.
+    let before = tab_count(&mut app);
     app.session.key("Ctrl+T")?;
-    let opened = ctx.until("the Ctrl+T tab", 15_000, &mut || tab_count(&mut app) == 1);
+    let opened = ctx.until("the Ctrl+T tab", 15_000, &mut || {
+        tab_count(&mut app) == before + 1
+    });
     ctx.ok(opened, format!("[{renderer}] Key Ctrl+T opens a tab"));
     let mut frames = 0;
     ctx.until("a frame to be counted", 3_000, &mut || {
