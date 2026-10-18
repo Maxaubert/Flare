@@ -34,11 +34,13 @@ component StartRow inherits Rectangle {
         // its top).
         Rectangle {
             width: 16px;
+            // Slint fits a stroked path into its box less the stroke: the box is the glyph grown by one stroke, moved
+            // back by half of it, so the 24 units cover the 16 px the svg covers and the centre stays put (Task 52).
             Path {
-                x: 0;
-                y: Px.snap((parent.height - 16px) / 2);
-                width: 16px;
-                height: 16px;
+                x: 0 - self.stroke-width / 2;
+                y: Px.snap((parent.height - 16px) / 2) - self.stroke-width / 2;
+                width: 16px + self.stroke-width;
+                height: 16px + self.stroke-width;
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: root.glyph;
