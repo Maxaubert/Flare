@@ -8,10 +8,9 @@ use std::time::Duration;
 use flare_e2e_proto::Request;
 use serde_json::json;
 
-use crate::proc::{Child, reap_by_profile};
-use crate::sandbox::Sandbox;
+use crate::proc::{reap_by_profile, Child};
 use crate::session::{Hello, Session};
-use crate::until::{SystemClock, wait_on};
+use crate::until::{wait_on, SystemClock};
 use crate::world::World;
 
 /// The release build the driver runs when no `--exe` is given.
@@ -28,7 +27,8 @@ const SETTLE_MAX_MS: u64 = 50;
 /// What a scenario gets: its name, its counters and its output mode.
 pub struct Ctx {
     pub name: &'static str,
-    pub world: World,
+    /// The scenario's world, made by the first `launch`.
+    pub world: Option<World>,
     /// Where `shot` writes `<scenario>-<name>.png`.
     pub shots: PathBuf,
     /// The app binary `launch` starts (unless `Launch.packaged`).
@@ -40,7 +40,6 @@ pub struct Ctx {
     pub fails: Vec<String>,
     /// True in a `--run-one` child: every check, skip and the world root print as JSON lines.
     pub json: bool,
-    sandbox: Option<Sandbox>,
 }
 
 /// What to start: the app's own arguments, its environment on top of the sandbox's, the folders
@@ -137,7 +136,7 @@ impl Ctx {
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
-            world: World,
+            world: None,
             shots: PathBuf::from(".e2e-shots"),
             exe: PathBuf::from(DEFAULT_EXE),
             packaged: false,
@@ -145,7 +144,6 @@ impl Ctx {
             skips: 0,
             fails: Vec::new(),
             json: false,
-            sandbox: None,
         }
     }
 
@@ -212,18 +210,18 @@ impl Ctx {
     /// waits for `Hello`, and sets the scale when asked.
     pub fn launch(&mut self, opts: Launch) -> Result<App, String> {
         let packaged = opts.packaged || self.packaged;
-        if self.sandbox.is_none() {
-            let sb = Sandbox::new();
+        if self.world.is_none() {
+            let w = World::new();
             if self.json {
-                println!("{}", json!({"world": sb.root.to_string_lossy()}));
+                println!("{}", json!({"world": w.root.to_string_lossy()}));
             }
-            self.sandbox = Some(sb);
+            self.world = Some(w);
         }
-        let sb = self.sandbox.as_ref().expect("sandbox was just created");
-        let mut env = sb.env();
+        let w = self.world.as_ref().expect("world was just created");
+        let mut env = w.env();
         env.extend(opts.env.iter().cloned());
         packaged_guard(packaged, &env)?;
-        let profile = sb.profile.clone();
+        let profile = w.profile.clone();
         let exe = if packaged {
             installed_exe()?
         } else {
