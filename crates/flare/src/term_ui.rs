@@ -828,26 +828,19 @@ impl TermUi {
         self.redraw();
     }
 
-    fn apply_scroll(handle: &TermHandle, res: Option<(find::FindMatch, Option<i32>)>) {
-        if let Some((_, Some(s))) = res {
-            handle.scroll_view(-s);
-        }
-    }
-
+    /// Typing starts a search from the active match; the tick walks it a slice at a time and the
+    /// match lands when it is found (the bar keeps its text until then).
     pub fn find_edited(&mut self, tab: &TabInfo, q: &str) {
         if !self.find.open || self.find.tab.as_deref() != Some(tab.id) {
             return;
         }
         self.find.query = q.to_string();
-        let res = tab.handle.with_emu(|em| {
+        tab.handle.with_emu(|em| {
             em.find_set(q);
-            if q.is_empty() {
-                None
-            } else {
-                em.find_next(q, true)
+            if !q.is_empty() {
+                em.find_start(q, find::Dir::Next, true);
             }
         });
-        Self::apply_scroll(tab.handle, res);
     }
 
     pub fn find_next(&mut self, tab: &TabInfo) {
@@ -855,8 +848,8 @@ impl TermUi {
             return;
         }
         let q = self.find.query.clone();
-        let res = tab.handle.with_emu(|em| em.find_next(&q, false));
-        Self::apply_scroll(tab.handle, res);
+        tab.handle
+            .with_emu(|em| em.find_start(&q, find::Dir::Next, false));
     }
 
     pub fn find_prev(&mut self, tab: &TabInfo) {
@@ -864,8 +857,8 @@ impl TermUi {
             return;
         }
         let q = self.find.query.clone();
-        let res = tab.handle.with_emu(|em| em.find_prev(&q));
-        Self::apply_scroll(tab.handle, res);
+        tab.handle
+            .with_emu(|em| em.find_start(&q, find::Dir::Prev, false));
     }
 
     /// Closing clears the highlights and keeps the selection.
@@ -889,10 +882,12 @@ impl TermUi {
             .handle
             .as_ref()
             .map(|h| h.with_emu_quiet(|em| em.find_view()));
+        let searching = view.as_ref().is_some_and(|v| v.searching);
         let (count, index, done) = view.map_or((0, None, true), |v| (v.count, v.index, v.done));
-        // While a new query is still being counted and nothing is found yet, the readout stays
-        // empty rather than saying "none" (Prism Terminal's search answers in one pass).
-        let counting = count == 0 && !done;
+        // While a new query is still being counted or searched and nothing is found yet, the
+        // readout stays empty rather than saying "none" (Prism Terminal's search answers in one
+        // pass). A search that lands moves the active match, and only then does the readout change.
+        let counting = count == 0 && (!done || searching);
         FindBarState {
             open: self.find.open,
             query: self.find.query.clone(),
@@ -1103,10 +1098,12 @@ impl TermUi {
         if self.find.open
             && let Some(h) = self.find.handle.clone()
         {
-            if !h.with_emu_quiet(|em| em.find_view().done) {
+            if h.with_emu_quiet(|em| em.find_busy()) {
                 let t0 = Instant::now();
                 let clock = move || t0.elapsed().as_secs_f64() * 1000.0;
-                h.with_emu(|em| em.find_step(&clock));
+                if let Some(scroll) = h.with_emu(|em| em.find_step(&clock)) {
+                    h.scroll_view(-scroll);
+                }
                 out.redraw = true;
                 due.push(now + 16);
             }
@@ -1585,10 +1582,10 @@ mod tests {
             f(&mut self.ui, &tab)
         }
 
-        /// Ticks until the find count has finished.
+        /// Ticks until the find count and any search have finished.
         fn settle_find(&mut self) {
             for _ in 0..3000 {
-                if self.handle.with_emu_quiet(|e| e.find_view().done) {
+                if self.handle.with_emu_quiet(|e| !e.find_busy()) {
                     return;
                 }
                 self.tick(10);
@@ -2177,10 +2174,12 @@ mod tests {
         let mut seen = Vec::new();
         for _ in 0..3 {
             r.with_tab(|ui, t| ui.find_next(t));
+            r.settle_find();
             seen.push(r.ui.find_state().readout);
         }
         assert_eq!(seen, ["2 of 3", "3 of 3", "1 of 3"]);
         r.with_tab(|ui, t| ui.find_prev(t));
+        r.settle_find();
         assert_eq!(r.ui.find_state().readout, "3 of 3");
     }
 
@@ -2193,10 +2192,32 @@ mod tests {
         let before = r.top();
         assert!(before > 0);
         r.find_edited("foo");
+        r.settle_find();
         assert_eq!(r.top(), before, "a match in view does not scroll");
         r.find_edited("needle");
+        r.settle_find();
         assert!(r.top() < before, "a match outside the view scrolls");
         assert!(r.top() == 0);
+    }
+
+    #[test]
+    fn the_readout_keeps_the_old_text_until_the_job_finishes_and_says_none_after() {
+        let mut r = Rig::new(1.0);
+        r.feed("foo x foo x foo");
+        r.with_tab(|ui, t| ui.toggle_find(t));
+        r.find_edited("foo");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "1 of 3");
+        // Enter starts a walk: the match has not landed, so the text stays.
+        r.with_tab(|ui, t| ui.find_next(t));
+        assert_eq!(r.ui.find_state().readout, "1 of 3");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "2 of 3");
+        // A query with no match: never "none" while the walk runs, "none" once it has finished.
+        r.find_edited("zzz");
+        assert_ne!(r.ui.find_state().readout, "none");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "none");
     }
 
     #[test]
@@ -2230,6 +2251,7 @@ mod tests {
         assert_eq!(r.ui.find_state().readout, "1 of 1000");
         // The last match lies beyond the thousand that are counted.
         r.with_tab(|ui, t| ui.find_prev(t));
+        r.settle_find();
         assert_eq!(r.ui.find_state().readout, "1000+");
     }
 
