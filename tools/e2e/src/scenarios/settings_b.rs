@@ -569,12 +569,7 @@ pub fn theme_editor_live(ctx: &mut Ctx) -> Result<(), String> {
     // PT: one tab (checked by start_appearance); the default theme is picked and its pencil opened.
     let _ = pick_card(&mut app, "pt-default");
     ctx.until("the default theme is the one in force", 3_000, &mut || {
-        hex6(
-            &colours(&mut app)["accent"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-        ) == "#fe8f34"
+        hex6(colours(&mut app)["accent"].as_str().unwrap_or("")) == "#fe8f34"
     });
     let accent = hex6(colours(&mut app)["accent"].as_str().unwrap_or(""));
     let ground = hex6(colours(&mut app)["ground"].as_str().unwrap_or(""));

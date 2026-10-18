@@ -86,6 +86,8 @@ impl PortablePty {
         cmd.cwd(&spec.cwd);
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         let pid = child.process_id().unwrap_or(0);
+        // Every shell joins the kill-on-close job: nothing outlives the process that started it.
+        join_kill_on_close_job(pid);
         let killer = child.clone_killer();
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
