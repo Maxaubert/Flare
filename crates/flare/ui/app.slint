@@ -100,6 +100,7 @@ component TitleButton inherits Rectangle {
 component TitleButtons inherits Rectangle {
     in property <bool> help-visible;
     in property <string> help-tip;
+    in property <string> settings-tip;
     callback help();
     callback settings();
     callback minimize();
@@ -128,10 +129,12 @@ component TitleButtons inherits Rectangle {
             alignment: center;
             TitleButton {
                 label: "Settings";
+                tip-text: root.settings-tip;
                 icon-size: 15px;
                 stroke-units: 1.7;
                 commands: Glyphs.cog;
                 clicked => { root.settings(); }
+                tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
             }
         }
         VerticalLayout {
@@ -508,6 +511,7 @@ export component AppWindow inherits Window {
                     top-buttons := TitleButtons {
                         help-visible: root.help-visible;
                         help-tip: "Command help (" + root.help-key + ")";
+                        settings-tip: "Settings (" + root.settings-key + ")";
                         help => { root.help-clicked(); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         settings => { root.settings-clicked(); }
@@ -558,6 +562,7 @@ export component AppWindow inherits Window {
                     x: parent.width - self.width;
                     help-visible: root.help-visible;
                     help-tip: "Command help (" + root.help-key + ")";
+                        settings-tip: "Settings (" + root.settings-key + ")";
                     help => { root.help-clicked(); }
                     tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     settings => { root.settings-clicked(); }

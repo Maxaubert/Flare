@@ -698,6 +698,23 @@ fn the_cog_and_ctrl_comma_toggle_settings() {
 }
 
 #[test]
+fn the_cog_has_a_tip_with_its_key_and_it_stays_inside_the_window() {
+    let f = Fx::new(Opts::default().saved(&["C:\\a"]));
+    f.restore();
+    let (cx, cy) = f.button_center(3);
+    f.h.move_to(cx, cy);
+    f.h.advance(0);
+    f.clock.set(f.clock.get() + 1_001);
+    f.ctl.borrow_mut().tick();
+    assert!(f.h.comp.get_tip_visible(), "hovering the cog shows its tip");
+    assert_eq!(f.h.comp.get_tip_text().as_str(), "Settings (Ctrl+,)");
+    assert!(
+        f.h.comp.get_tip_x() + f.h.comp.get_tip_w() <= 1000.0,
+        "the tip stays inside the window"
+    );
+}
+
+#[test]
 fn closing_the_last_tab_lands_on_the_start_screen() {
     let f = Fx::with_prefs(Opts::default().saved(&["C:\\p1"]), |p| {
         remember_root(p, "C:\\p1");
