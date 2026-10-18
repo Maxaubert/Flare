@@ -10,6 +10,7 @@ import { Dialog, DialogPreview } from "dialog.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "types.slint";
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
+import { TermScrollbar } from "scrollbar.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
 import { SettingsView, SettingsBridge } from "settings/view.slint";
@@ -24,6 +25,7 @@ export { MarkMotion, MarkPreview } from "tabmark.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
 export { BadgePreview } from "badge.slint";
+export { ScrollbarPreview } from "scrollbar.slint";
 export { TabStripPreview } from "tabs.slint";
 export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
@@ -359,6 +361,17 @@ export component AppWindow inherits Window {
     callback find-prev();
     callback find-close();
     in property <int> copied-phase;
+    // The terminal's scrollbar (M10 D11): the thumb as fractions of the track, set by scrollbar.rs.
+    in property <bool> scroll-on: false;
+    in property <float> scroll-top: 0;
+    in property <float> scroll-len: 1;
+    in property <bool> scroll-back: false;
+    out property <length> scroll-strip-x: scroll-bar.strip-x;
+    out property <length> scroll-strip-w: scroll-bar.strip-w;
+    out property <length> scroll-thumb-x: scroll-bar.thumb-x;
+    out property <length> scroll-thumb-y: scroll-bar.thumb-y;
+    out property <length> scroll-thumb-w: scroll-bar.thumb-w;
+    out property <length> scroll-thumb-h: scroll-bar.thumb-h;
     // The grid area's origin in the window.
     out property <length> grid-left: grid-box.absolute-position.x;
     out property <length> grid-top: grid-box.absolute-position.y;
@@ -617,6 +630,16 @@ export component AppWindow inherits Window {
                                     self.mouse-x, self.mouse-y,
                                     e.modifiers.control, e.modifiers.shift, e.modifiers.alt);
                             }
+                        }
+                        scroll-bar := TermScrollbar {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            on: root.scroll-on;
+                            top: root.scroll-top;
+                            len: root.scroll-len;
+                            back: root.scroll-back;
                         }
                     }
                     settings-view := SettingsView {

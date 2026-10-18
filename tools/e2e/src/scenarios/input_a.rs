@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use flare_e2e_proto::{PointerAction, Reply, Request};
 use serde_json::{json, Value};
 
+use super::driver::pick_theme;
 use crate::ctx::{App, Ctx, Launch};
 use crate::until::{wait_on, SystemClock};
 use crate::world::{mute_psreadline_paste, prompt_timeout, rows_text, wait_for_prompt, Shell};
@@ -707,7 +708,7 @@ fn scrollbar_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         format!("no native gutter or steppers beside it ({gutter:?}px)"),
     );
     // PT: run.mjs:1671
-    let width = dark["slider"]["w"].as_i64();
+    let width = dark["slider"]["w"].as_f64().map(|w| w.round() as i64);
     ctx.ok(
         width == Some(6),
         format!("the slider is 6px wide ({width:?})"),
@@ -718,15 +719,40 @@ fn scrollbar_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         matches!(thumb, Some((t, g)) if t - g > 25.0),
         format!("on a dark theme it is lighter than the ground ({thumb:?})"),
     );
-    // PT: run.mjs:1673-1680 picks the light theme in Settings (Task 33's settings group owns that
-    // path). Until that is reachable from this group, the two light checks read as failures.
+    // PT: run.mjs:1673-1680 picks the light theme (Fawn) on the Settings wall by pointer, comes
+    // back to the shell and measures again.
+    let picked = pick_theme(ctx, app, "fawn");
+    let first = app
+        .session
+        .state()
+        .ok()
+        .and_then(|s| s.tabs.first().map(|t| t.id.clone()))
+        .unwrap_or_default();
+    if let Some(r) = css_rect(&probe(app, "ui.rect", json!({ "name": "tab:0" }))) {
+        let _ = app
+            .session
+            .click((r.0 + r.2 / 2.0) as f32, (r.1 + r.3 / 2.0) as f32);
+    }
+    wait_for("the shell tab in front", 5_000, &mut || {
+        front_id(app) == first
+    });
+    pause(400);
+    let light = if picked {
+        measure_bar(app)
+    } else {
+        Value::Null
+    };
+    // PT: run.mjs:1676
+    let light_w = light["slider"]["w"].as_f64().map(|w| w.round() as i64);
     ctx.ok(
-        false,
-        "still 6px on a light theme: the light theme pick is not automated in this group (the Settings card helpers are private to settings_c and settings_d), and there is no bar to measure",
+        light_w == Some(6),
+        format!("still 6px on a light theme ({light_w:?})"),
     );
+    // PT: run.mjs:1677
+    let thumb = slider_pixels(ctx, app, &light);
     ctx.ok(
-        false,
-        "on a light theme it is darker than the ground: the light theme pick is not automated in this group (see the 6px check above)",
+        matches!(thumb, Some((t, g)) if g - t > 25.0),
+        format!("on a light theme it is darker than the ground ({thumb:?})"),
     );
     Ok(())
 }

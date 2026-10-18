@@ -3,6 +3,7 @@
 
 use flare_term::click_caret::MouseTracking;
 use serde_json::{Value, json};
+use slint::ComponentHandle;
 
 use super::{ProbeCtx, ProbeRegistry};
 
@@ -44,17 +45,32 @@ fn term_mouse(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(mouse_answer(mode.mouse, mode.sgr_mouse))
 }
 
-/// The scrollbar beside the grid. The grid is painted by the app, not a native control, and the
-/// window draws no scrollbar, so the answer has no slider and no gutter to measure.
-fn scrollbar_answer() -> Value {
-    json!({ "gutter": 0, "slider": null, "native": false })
+/// What the scrollbar probe answers: no native gutter or steppers, and `slider` is the thumb's
+/// `(x, y, w, h)` in css px (with its device-pixel twin) while the shell has history, else null.
+fn scrollbar_answer(thumb: Option<(f32, f32, f32, f32)>, k: f32) -> Value {
+    let d = |v: f32| (v * k).round() as i64;
+    let slider = thumb.map(|(x, y, w, h)| {
+        json!({
+            "x": x, "y": y, "w": w, "h": h,
+            "dx": d(x), "dy": d(y), "dw": d(w), "dh": d(h),
+        })
+    });
+    json!({ "gutter": 0, "slider": slider, "native": false })
 }
 
-/// The scrollbar's rectangle, or `slider: null` when the window draws none.
-fn scrollbar_rect(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
-    Ok(scrollbar_answer())
+/// The scrollbar beside the grid: the app draws a 6 px strip over the grid's right edge.
+fn scrollbar_rect(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let a = ctx.app;
+    let thumb = a.get_scroll_on().then(|| {
+        (
+            a.get_scroll_thumb_x(),
+            a.get_scroll_thumb_y(),
+            a.get_scroll_thumb_w(),
+            a.get_scroll_thumb_h(),
+        )
+    });
+    Ok(scrollbar_answer(thumb, a.window().scale_factor()))
 }
-
 /// The input method's rectangle in window device pixels, as last handed to the window.
 fn ime_rect(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let a = crate::ime::last_area().ok_or("ime.rect: no frame has placed the rectangle yet")?;
@@ -105,13 +121,14 @@ mod tests {
     }
 
     #[test]
-    fn the_window_draws_no_scrollbar_so_there_is_no_slider() {
-        let a = scrollbar_answer();
-        assert!(a["slider"].is_null(), "a slider would be measured: {a}");
+    fn a_shell_with_history_answers_a_six_px_slider_and_none_answers_null() {
+        let a = scrollbar_answer(Some((394.0, 10.0, 6.0, 80.0)), 2.25);
+        assert_eq!(a["slider"]["w"].as_f64(), Some(6.0));
+        assert_eq!(a["slider"]["dw"], 14);
         assert_eq!(a["gutter"], 0);
         assert_eq!(a["native"], false);
+        assert!(scrollbar_answer(None, 1.0)["slider"].is_null());
     }
-
     #[test]
     fn the_probes_are_registered_once() {
         let mut r = ProbeRegistry::new();

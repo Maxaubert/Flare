@@ -243,7 +243,7 @@ fn repaint_due(dirty: bool) -> bool {
 
 type CtlRc = Rc<RefCell<AppCtl>>;
 /// The shell the grid shows now: kept by the `set_grid_source` dependency, read by the filter.
-type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
+pub(crate) type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
 
 thread_local! {
     /// The controller the worker threads' messages land on. Filled at startup, emptied at exit.
@@ -652,6 +652,7 @@ pub fn run_window(
                 note_cell_for_e2e(&host.borrow());
                 crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
                 place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
+                crate::scrollbar::place(&app, &front);
                 // No notifier means no AfterRendering: log the first frame from here.
                 if no_notifier.get() && first_software_frame.borrow_mut().fire() {
                     crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
@@ -698,6 +699,7 @@ pub fn run_window(
                             app.set_grid_image(image);
                             note_cell_for_e2e(&host.borrow());
                             place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
+                            crate::scrollbar::place(&app, &front);
                             app.window().request_redraw();
                         }
                     }

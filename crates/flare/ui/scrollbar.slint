@@ -1,0 +1,67 @@
+// The terminal's scrollbar (M10 D11, parity M1 line 36): a 6 px strip on the grid's right edge with
+// no gutter and no steppers, a thumb with a 3 px radius, the text ink at 40 percent (65 percent while
+// the view is scrolled back). It is drawn over the grid and never takes the pointer. Edges sit on
+// whole device pixels so the width reads the same at every display scaling.
+
+import { Theme, Px } from "theme.slint";
+
+export component TermScrollbar inherits Rectangle {
+    // True when the shell has history to scroll through.
+    in property <bool> on: false;
+    // The thumb's top and length as fractions of the track (0 to 1).
+    in property <float> top: 0;
+    in property <float> len: 1;
+    // True while the view is scrolled back from the live bottom.
+    in property <bool> back: false;
+
+    // The strip and the thumb in the window, for ui.rect and the probe.
+    out property <length> strip-x: strip.absolute-position.x;
+    out property <length> strip-w: strip.width;
+    out property <length> thumb-x: thumb.absolute-position.x;
+    out property <length> thumb-y: thumb.absolute-position.y;
+    out property <length> thumb-w: thumb.width;
+    out property <length> thumb-h: thumb.height;
+
+    strip := Rectangle {
+        x: root.width - self.width;
+        y: 0px;
+        width: Px.snap(6px);
+        height: root.height;
+        visible: root.on;
+
+        thumb := Rectangle {
+            x: 0px;
+            y: Px.snap(root.top * parent.height);
+            width: parent.width;
+            height: Px.snap(root.len * parent.height);
+            border-radius: self.width / 2;
+            background: Theme.text.with-alpha(root.back ? 0.65 : 0.4);
+        }
+    }
+}
+
+// The scrollbar alone over the ground, for the component tests.
+export component ScrollbarPreview inherits Window {
+    preferred-width: 400px;
+    preferred-height: 300px;
+    background: Theme.ground;
+
+    in property <bool> on: true;
+    in property <float> top: 0.25;
+    in property <float> len: 0.5;
+    in property <bool> back: false;
+    out property <float> win-scale: 1px / 1phx;
+    out property <length> thumb-w: bar.thumb-w;
+    out property <length> thumb-x: bar.thumb-x;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    bar := TermScrollbar {
+        width: root.width;
+        height: root.height;
+        on: root.on;
+        top: root.top;
+        len: root.len;
+        back: root.back;
+    }
+}

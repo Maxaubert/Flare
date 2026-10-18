@@ -456,8 +456,15 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             k,
         )),
         "start" => Err("ui.rect start: the start page is not showing".into()),
-        // The grid paints its own scrollbar-less view: there is no scrollbar rectangle to give.
-        "scrollbar" => Err("ui.rect scrollbar: this window draws no scrollbar".into()),
+        // The strip the terminal's scrollbar sits in: 6 css px wide on the grid's right edge.
+        "scrollbar" if a.get_scroll_on() => Ok(rect_json(
+            a.get_scroll_strip_x(),
+            a.get_grid_top(),
+            a.get_scroll_strip_w(),
+            a.get_grid_phys_height() as f32 / k,
+            k,
+        )),
+        "scrollbar" => Err("ui.rect scrollbar: the shell has no history to scroll".into()),
         "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }

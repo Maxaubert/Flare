@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod closeask;
 pub mod diag;
 pub mod dpi;
+mod driver;
 pub mod help;
 pub mod indicators;
 pub mod input_a;

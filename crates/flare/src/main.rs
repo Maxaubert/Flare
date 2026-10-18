@@ -28,6 +28,7 @@ mod memory;
 mod menus_ui;
 mod openers;
 mod picker_ctl;
+mod scrollbar;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
