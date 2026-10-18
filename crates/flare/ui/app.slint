@@ -16,6 +16,7 @@ import { SettingsView, SettingsBridge } from "settings/view.slint";
 import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
+import { HelpPanel } from "settings/help_panel.slint";
 
 export { Theme, Px, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview } from "tabmark.slint";
@@ -51,7 +52,10 @@ component TitleButton inherits Rectangle {
     in property <float> stroke-units: 1.8;
     in property <bool> danger: false;
     in property <string> label;
+    // A tooltip, when the button has one (the Command help button).
+    in property <string> tip-text;
     callback clicked();
+    callback tip(string, length, length, length, length);
     width: 32px;
     height: 28px;
     border-radius: Theme.radius-button;
@@ -73,22 +77,49 @@ component TitleButton inherits Rectangle {
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (root.tip-text != "") {
+                if (self.has-hover) {
+                    root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
     }
 }
 
-// The four window buttons (settings, minimise, maximise, close), `Px.snap`ped wide so the
-// strip beside them starts and ends on whole device pixels.
+// The window buttons (command help while it is on, settings, minimise, maximise, close),
+// `Px.snap`ped wide so the strip beside them starts and ends on whole device pixels. This width
+// is the one source of truth for the strip's reserved space: 154 with four buttons, 190 with the
+// Command help button before them (32 per button, 4 between, 8 and 6 at the ends).
 component TitleButtons inherits Rectangle {
+    in property <bool> help-visible;
+    in property <string> help-tip;
+    callback help();
     callback settings();
     callback minimize();
     callback maximize();
     callback close();
-    width: Px.snap(154px);
+    callback tip(string, length, length, length, length);
+    width: Px.snap(root.help-visible ? 190px : 154px);
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 6px;
         spacing: 4px;
         alignment: end;
+        if root.help-visible: VerticalLayout {
+            alignment: center;
+            TitleButton {
+                label: "Command help";
+                tip-text: root.help-tip;
+                icon-size: 15px;
+                stroke-units: 1.8;
+                commands: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M9.4 9.3a2.7 2.7 0 1 1 4 2.4c-.9.5-1.4 1.1-1.4 2.1 M12 17.2v.01";
+                clicked => { root.help(); }
+                tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+            }
+        }
         VerticalLayout {
             alignment: center;
             TitleButton {
@@ -177,6 +208,12 @@ export component AppWindow inherits Window {
     in property <string> find-tab-key;
     in property <string> new-key;
     in property <string> settings-key;
+    // Command help (M7 Task 43): the title button, its key label and which of the panel and the
+    // find bar was opened last (that one is on top in the corner).
+    in property <bool> help-visible;
+    in property <string> help-key;
+    in property <bool> help-on-top;
+    callback help-clicked();
     out property <int> strip-phys-width: strip.strip-phys-width;
     // ---- sidebar ----
     in property <bool> sidebar-collapsed;
@@ -227,7 +264,11 @@ export component AppWindow inherits Window {
     in-out property <string> find-query;
     in property <string> find-readout;
     in property <bool> find-can-step;
-    out property <bool> find-input-focused: find.input-has-focus;
+    // A Slint text field has the keys: the find box or the Command help panel.
+    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused;
+    out property <length> help-sheet-w: help-panel.sheet-w;
+    in-out property <length> help-viewport-y <=> help-panel.viewport-y;
+    out property <length> title-buttons-w: top-buttons.width;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
@@ -370,7 +411,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    TitleButtons {
+                    top-buttons := TitleButtons {
+                        help-visible: root.help-visible;
+                        help-tip: "Command help (" + root.help-key + ")";
+                        help => { root.help-clicked(); }
+                        tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         settings => { root.settings-clicked(); }
                         minimize => { root.minimize-clicked(); }
                         maximize => { root.maximize-clicked(); }
@@ -404,6 +449,10 @@ export component AppWindow inherits Window {
                 }
                 TitleButtons {
                     x: parent.width - self.width;
+                    help-visible: root.help-visible;
+                    help-tip: "Command help (" + root.help-key + ")";
+                    help => { root.help-clicked(); }
+                    tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     settings => { root.settings-clicked(); }
                     minimize => { root.minimize-clicked(); }
                     maximize => { root.maximize-clicked(); }
@@ -457,20 +506,6 @@ export component AppWindow inherits Window {
                                     e.modifiers.control, e.modifiers.shift, e.modifiers.alt);
                             }
                         }
-                        find := FindBar {
-                            x: 0px;
-                            y: 0px;
-                            width: parent.width;
-                            height: parent.height;
-                            open: root.find-open;
-                            query <=> root.find-query;
-                            readout: root.find-readout;
-                            can-step: root.find-can-step;
-                            query-edited(q) => { root.find-edited(q); }
-                            next => { root.find-next(); }
-                            previous => { root.find-prev(); }
-                            close => { root.find-close(); }
-                        }
                     }
                     settings-view := SettingsView {
                         visible: root.front-kind == 1;
@@ -495,6 +530,34 @@ export component AppWindow inherits Window {
                         settings => { root.start-settings(); }
                         github => { root.start-github(); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                    }
+
+                    // Command help (M7 Task 43) and the find bar share the top right of the page by
+                    // stacking only: the one opened last is on top. The bar sits over the grid's area
+                    // alone, so it is drawn here, after the panel, and the panel's z lifts above it
+                    // when the panel was opened later.
+                    help-panel := HelpPanel {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        z: root.help-on-top ? 3 : 1;
+                    }
+                    find := FindBar {
+                        x: 0px;
+                        y: 0px;
+                        width: root.grid-frozen-width > 0px ? root.grid-frozen-width : parent.width;
+                        height: parent.height;
+                        z: 2;
+                        visible: root.front-kind == 0;
+                        open: root.find-open;
+                        query <=> root.find-query;
+                        readout: root.find-readout;
+                        can-step: root.find-can-step;
+                        query-edited(q) => { root.find-edited(q); }
+                        next => { root.find-next(); }
+                        previous => { root.find-prev(); }
+                        close => { root.find-close(); }
                     }
 
                     if root.overlay-visible: Rectangle {

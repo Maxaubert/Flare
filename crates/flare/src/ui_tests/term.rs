@@ -1159,12 +1159,15 @@ mod flow {
             self.clip.read_text()
         }
 
+        /// The rows of the terminal menu except the last, Command help (M7 Task 43): that row is
+        /// pinned by the help tests (`help_ctl`, `appctl`), these assert the M5 rows around it.
         fn menu_labels(&self) -> Vec<String> {
             self.h
                 .comp
                 .get_menu_rows()
                 .iter()
                 .map(|r| r.label.to_string())
+                .filter(|l| l != "Command help")
                 .collect()
         }
     }

@@ -315,6 +315,8 @@ export component HelpPanel inherits Rectangle {
     out property <length> chip-h: chip-row.height;
     in-out property <length> row0-h;
     out property <length> footer-y: foot.y;
+    // One of the panel's own controls has the keyboard: the window leaves non-chord keys to Slint.
+    out property <bool> focused: input.has-focus || keys.has-focus || grip.has-focus;
     in-out property <length> viewport-y <=> flick.content-y;
 
     // The panel sits flush to the right edge of the container and takes no part in its layout.
