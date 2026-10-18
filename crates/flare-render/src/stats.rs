@@ -51,6 +51,37 @@ impl FrameStats {
         Some(sorted[idx])
     }
 
+    /// How many samples the window holds.
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// Drops every sample.
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    /// Nearest-rank percentile (`p` in 0..=100) over a sorted copy of the window.
+    pub fn percentile(&self, p: f64) -> Option<f64> {
+        let n = self.samples.len();
+        if n == 0 {
+            return None;
+        }
+        let mut sorted: Vec<f64> = self.samples.iter().copied().collect();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let rank = ((p.clamp(0.0, 100.0) * n as f64) / 100.0 - 1e-9).ceil() as usize;
+        Some(sorted[rank.clamp(1, n) - 1])
+    }
+
+    /// How many samples are above `ms`.
+    pub fn over(&self, ms: f64) -> usize {
+        self.samples.iter().filter(|s| **s > ms).count()
+    }
+
     /// One line, for logs and the overlay: `last 1.20 ms, avg 1.10 ms, p95 1.90 ms, max 2.00 ms (n=20)`,
     /// or `no frames` when the window is empty.
     pub fn summary(&self) -> String {
@@ -109,6 +140,34 @@ mod tests {
         let mut one = FrameStats::new(100);
         one.push_ms(5.0);
         assert_eq!(one.p95(), Some(5.0));
+    }
+
+    #[test]
+    fn frame_stats_percentiles_match_a_known_series() {
+        let mut s = FrameStats::new(200);
+        for i in 1..=100 {
+            s.push_ms(f64::from(i));
+        }
+        assert_eq!(s.percentile(50.0), Some(50.0));
+        assert_eq!(s.percentile(95.0), Some(95.0));
+        assert_eq!(s.percentile(99.0), Some(99.0));
+        assert_eq!(s.max(), Some(100.0));
+        assert_eq!(s.over(33.0), 67);
+        assert_eq!(s.len(), 100);
+        assert_eq!(FrameStats::new(5).percentile(50.0), None);
+        s.clear();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn the_ring_keeps_only_the_last_200000() {
+        let mut s = FrameStats::new(200_000);
+        for i in 0..200_005 {
+            s.push_ms(f64::from(i));
+        }
+        assert_eq!(s.len(), 200_000);
+        assert_eq!(s.percentile(0.0), Some(5.0));
+        assert_eq!(s.max(), Some(200_004.0));
     }
 
     #[test]

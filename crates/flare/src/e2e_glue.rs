@@ -9,9 +9,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use flare_e2e_proto::{Button, PointerAction, Reply, Request};
+use flare_e2e_proto::{Button, PointerAction, Reply, Request, SnapMode};
+use flare_render::stats::FrameStats;
 use flare_term::keys::KeyEvent;
 use flare_win::clipboard_port::ClipboardPort;
 use slint::platform::{PointerEventButton, WindowEvent};
@@ -31,13 +32,506 @@ pub enum RenderPhase {
     After,
 }
 
-/// Called by the render path around every frame. Returns at once unless `--e2e` is on (Task 1
-/// pre-wires the call; Task 10 adds the snapshot and frame bookkeeping).
+/// Called by the render path around every frame. Returns at once unless `--e2e` is on. Records the
+/// frame series and runs the armed latency and prompt watchers (Task 10).
 pub fn on_render(phase: RenderPhase) {
     if !crate::e2e::global().on() {
         return;
     }
-    let _ = phase;
+    let now = Instant::now();
+    let mut to_press: Vec<String> = Vec::new();
+    let mut env: Option<Rc<dyn FrameEnv>> = None;
+    FRAMES.with(|f| {
+        let Ok(mut st) = f.try_borrow_mut() else {
+            return;
+        };
+        match phase {
+            RenderPhase::Before => st.rec.before(now),
+            RenderPhase::After => {
+                env = st.env.clone();
+                if let Some(e) = env.clone() {
+                    let age = crate::startup_trace::since_process_start().as_secs_f64() * 1000.0;
+                    to_press = st.after(now, age, e.as_ref());
+                } else {
+                    st.rec.after(now);
+                }
+            }
+        }
+    });
+    // The key goes in from the event loop, never from inside a render callback.
+    for chord in to_press {
+        if let Some(e) = env.clone() {
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Err(m) = e.press_down(&chord) {
+                    log::warn!("e2e: the prompt key was not injected: {m}");
+                }
+            });
+        }
+    }
+}
+
+thread_local! {
+    /// Everything the render hook keeps; UI thread only, and only filled under `--e2e`.
+    static FRAMES: RefCell<FrameState> = RefCell::new(FrameState::new());
+}
+
+// ---- frames, snapshots, latency (Task 10) --------------------------------------------------
+
+fn ms_between(later: Instant, earlier: Instant) -> f64 {
+    later.saturating_duration_since(earlier).as_secs_f64() * 1000.0
+}
+
+/// The frame series: the gap between frames and the time each frame took.
+pub struct FrameRecorder {
+    gaps: FrameStats,
+    renders: FrameStats,
+    before: Option<Instant>,
+    last_after: Option<Instant>,
+    on: bool,
+}
+
+impl Default for FrameRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameRecorder {
+    pub fn new() -> Self {
+        Self {
+            gaps: FrameStats::new(200_000),
+            renders: FrameStats::new(200_000),
+            before: None,
+            last_after: None,
+            on: false,
+        }
+    }
+
+    /// Recording starts at the first `Frames` or `Latency` request.
+    pub fn start(&mut self) {
+        self.on = true;
+    }
+
+    pub fn reset(&mut self) {
+        self.gaps.clear();
+        self.renders.clear();
+        self.before = None;
+        self.last_after = None;
+    }
+
+    pub fn before(&mut self, now: Instant) {
+        if self.on {
+            self.before = Some(now);
+        }
+    }
+
+    pub fn after(&mut self, now: Instant) {
+        if !self.on {
+            return;
+        }
+        if let Some(b) = self.before.take() {
+            self.renders.push_ms(ms_between(now, b));
+        }
+        if let Some(p) = self.last_after {
+            self.gaps.push_ms(ms_between(now, p));
+        }
+        self.last_after = Some(now);
+    }
+
+    /// The statistics of everything since the last reset.
+    pub fn reply(&self) -> Reply {
+        let z = |v: Option<f64>| v.unwrap_or(0.0);
+        Reply::Frames {
+            count: u32::try_from(self.renders.len()).unwrap_or(u32::MAX),
+            mean_ms: z(self.gaps.avg()),
+            p50_ms: z(self.gaps.percentile(50.0)),
+            p95_ms: z(self.gaps.percentile(95.0)),
+            p99_ms: z(self.gaps.percentile(99.0)),
+            max_ms: z(self.gaps.max()),
+            over_33: u32::try_from(self.gaps.over(33.0)).unwrap_or(u32::MAX),
+            render_p95_ms: z(self.renders.percentile(95.0)),
+        }
+    }
+}
+
+/// What a frame shows of one tab: every screen row, and the row the cursor is on (trimmed).
+#[derive(Debug, Clone, Default)]
+pub struct FrameView {
+    pub text: String,
+    pub cursor_row: String,
+}
+
+/// What the render hook needs from the running app; a fake stands in for it in the tests.
+pub trait FrameEnv {
+    fn view(&self, tab: Option<&str>) -> Result<FrameView, String>;
+    fn press_down(&self, chord: &str) -> Result<(), String>;
+}
+
+/// A key-to-frame measurement: done at the first frame that holds the text.
+#[derive(Debug, Clone)]
+pub struct LatencyWatch {
+    t0: Instant,
+    expect: String,
+    deadline: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LatencyStep {
+    Waiting,
+    Done(f64),
+    TimedOut,
+}
+
+impl LatencyWatch {
+    pub fn new(t0: Instant, expect: &str, timeout_ms: u64) -> Self {
+        Self {
+            t0,
+            expect: expect.to_string(),
+            deadline: t0 + Duration::from_millis(timeout_ms),
+        }
+    }
+
+    pub fn frame(&self, now: Instant, text: &str) -> LatencyStep {
+        if text.contains(&self.expect) {
+            LatencyStep::Done(ms_between(now, self.t0))
+        } else if now >= self.deadline {
+            LatencyStep::TimedOut
+        } else {
+            LatencyStep::Waiting
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PromptStep {
+    Waiting,
+    /// The prompt is up: inject the key now.
+    Inject,
+    Done {
+        prompt_ms: f64,
+        usable_ms: f64,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum PromptStage {
+    WaitPrompt,
+    WaitEcho { row: String, prompt_ms: f64 },
+}
+
+/// B1: waits for the prompt, asks for the key once, then waits for its echo.
+#[derive(Debug, Clone)]
+pub struct PromptWatch {
+    suffix: String,
+    echo: Option<String>,
+    stage: PromptStage,
+}
+
+impl PromptWatch {
+    /// `echo` is the text the key types (None: any change of the row counts).
+    pub fn new(prompt_suffix: &str, echo: Option<String>) -> Self {
+        Self {
+            // The cursor row comes back trimmed at the right.
+            suffix: prompt_suffix.trim_end().to_string(),
+            echo,
+            stage: PromptStage::WaitPrompt,
+        }
+    }
+
+    /// One finished frame: the cursor row and the process age in ms.
+    pub fn frame(&mut self, row: &str, age_ms: f64) -> PromptStep {
+        match &self.stage {
+            PromptStage::WaitPrompt => {
+                if row.ends_with(&self.suffix) {
+                    self.stage = PromptStage::WaitEcho {
+                        row: row.to_string(),
+                        prompt_ms: age_ms,
+                    };
+                    PromptStep::Inject
+                } else {
+                    PromptStep::Waiting
+                }
+            }
+            PromptStage::WaitEcho {
+                row: before,
+                prompt_ms,
+            } => {
+                let echoed = row != before && self.echo.as_ref().is_none_or(|e| row.ends_with(e));
+                if echoed {
+                    PromptStep::Done {
+                        prompt_ms: *prompt_ms,
+                        usable_ms: age_ms,
+                    }
+                } else {
+                    PromptStep::Waiting
+                }
+            }
+        }
+    }
+}
+
+struct PendingLatency {
+    watch: LatencyWatch,
+    tab: Option<String>,
+    resp: Responder,
+    seq: u64,
+}
+
+/// What the render hook keeps between frames.
+pub struct FrameState {
+    rec: FrameRecorder,
+    latency: Option<PendingLatency>,
+    prompt: Option<(PromptWatch, String)>,
+    seq: u64,
+    snap: Option<Snap>,
+    marks: (Option<f64>, Option<f64>),
+    env: Option<Rc<dyn FrameEnv>>,
+}
+
+impl Default for FrameState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameState {
+    pub fn new() -> Self {
+        Self {
+            rec: FrameRecorder::new(),
+            latency: None,
+            prompt: None,
+            seq: 0,
+            snap: None,
+            marks: (None, None),
+            env: None,
+        }
+    }
+
+    /// `Frames { reset }`.
+    pub fn frames_request(&mut self, reset: bool) -> Reply {
+        self.rec.start();
+        if reset {
+            self.rec.reset();
+            Reply::Ok
+        } else {
+            self.rec.reply()
+        }
+    }
+
+    /// Arms a latency measurement; one already waiting is answered with an error.
+    fn arm_latency(&mut self, watch: LatencyWatch, tab: Option<String>, resp: Responder) -> u64 {
+        self.rec.start();
+        if let Some(old) = self.latency.take() {
+            old.resp.reply(err("superseded by a newer Latency request"));
+        }
+        self.seq += 1;
+        self.latency = Some(PendingLatency {
+            watch,
+            tab,
+            resp,
+            seq: self.seq,
+        });
+        self.seq
+    }
+
+    /// The timeout timer: answers the measurement `seq` with an error if it is still waiting.
+    fn latency_timed_out(&mut self, seq: u64) {
+        if self.latency.as_ref().is_some_and(|p| p.seq == seq)
+            && let Some(p) = self.latency.take()
+        {
+            p.resp.reply(err("latency: the text never reached a frame"));
+        }
+    }
+
+    /// One finished frame. Returns the keys to inject (from the event loop).
+    pub fn after(&mut self, now: Instant, age_ms: f64, env: &dyn FrameEnv) -> Vec<String> {
+        self.rec.after(now);
+        if let Some(p) = self.latency.take() {
+            match env.view(p.tab.as_deref()) {
+                Err(m) => p.resp.reply(err(m)),
+                Ok(v) => match p.watch.frame(now, &v.text) {
+                    LatencyStep::Done(ms) => p.resp.reply(Reply::Latency { ms }),
+                    LatencyStep::TimedOut => {
+                        p.resp.reply(err("latency: the text never reached a frame"))
+                    }
+                    LatencyStep::Waiting => self.latency = Some(p),
+                },
+            }
+        }
+        let mut press = Vec::new();
+        if let Some((watch, chord)) = self.prompt.as_mut() {
+            let row = env.view(None).map(|v| v.cursor_row).unwrap_or_default();
+            match watch.frame(&row, age_ms) {
+                PromptStep::Waiting => {}
+                PromptStep::Inject => {
+                    self.marks.0 = Some(age_ms);
+                    press.push(chord.clone());
+                }
+                PromptStep::Done {
+                    prompt_ms,
+                    usable_ms,
+                } => {
+                    self.marks = (Some(prompt_ms), Some(usable_ms));
+                    self.prompt = None;
+                }
+            }
+        }
+        press
+    }
+}
+
+/// `prompt_ms` and `usable_ms` of the last `KeyAtPrompt` (None until known), for `startup.trace`.
+#[allow(dead_code)] // Task 11's `startup.trace` probe reads it
+pub fn prompt_marks() -> (Option<f64>, Option<f64>) {
+    FRAMES.with(|f| f.try_borrow().map(|s| s.marks).unwrap_or((None, None)))
+}
+
+/// A window's pixels, straight RGBA8, device pixels.
+#[derive(Debug, Clone)]
+pub struct Snap {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Snap {
+    /// True for a buffer with no pixels or one value in every pixel.
+    pub fn is_blank(&self) -> bool {
+        let (pixels, _) = self.rgba.as_chunks::<4>();
+        match pixels.first() {
+            None => true,
+            Some(first) => pixels.iter().all(|p| p == first),
+        }
+    }
+
+    pub fn px(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.w || y >= self.h {
+            return None;
+        }
+        let i = (y as usize * self.w as usize + x as usize) * 4;
+        self.rgba.get(i..i + 4).map(|p| [p[0], p[1], p[2], p[3]])
+    }
+}
+
+/// What `Auto` does with Slint's own snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapPick {
+    UseSlint,
+    PrintWindow,
+}
+
+/// The `Auto` chooser: Slint's snapshot unless it failed or came back all one value.
+pub fn pick_snapshot(slint: &Result<Snap, String>) -> SnapPick {
+    match slint {
+        Ok(s) if !s.is_blank() => SnapPick::UseSlint,
+        _ => SnapPick::PrintWindow,
+    }
+}
+
+/// A PNG of the pixels.
+pub fn encode_png(s: &Snap) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, s.w, s.h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().map_err(|e| e.to_string())?;
+        w.write_image_data(&s.rgba).map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn PrintWindow(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        flags: u32,
+    ) -> i32;
+}
+
+/// `PrintWindow` with `PW_RENDERFULLCONTENT` into a 32-bit DIB: works for a swapchain while the
+/// window is parked off every monitor.
+fn print_window_snapshot(hwnd: isize) -> Result<Snap, String> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+        DeleteDC, DeleteObject, SelectObject,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    const PW_RENDERFULLCONTENT: u32 = 2;
+    let h = hwnd as HWND;
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: a window of this process and a valid out pointer.
+    if unsafe { GetWindowRect(h, &mut r) } == 0 {
+        return Err("PrintWindow: no window rectangle".into());
+    }
+    let (w, hh) = (r.right - r.left, r.bottom - r.top);
+    if w <= 0 || hh <= 0 {
+        return Err("PrintWindow: the window is empty".into());
+    }
+    // SAFETY: plain GDI calls; every object made here is released before returning, and the DIB's
+    // memory is only read while the bitmap is alive.
+    unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        if dc.is_null() {
+            return Err("PrintWindow: no device context".into());
+        }
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -hh,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        if bmp.is_null() || bits.is_null() {
+            DeleteDC(dc);
+            return Err("PrintWindow: no bitmap".into());
+        }
+        let old = SelectObject(dc, bmp);
+        let ok = PrintWindow(h, dc, PW_RENDERFULLCONTENT);
+        let n = w as usize * hh as usize * 4;
+        let src = std::slice::from_raw_parts(bits as *const u8, n);
+        let mut rgba = Vec::with_capacity(n);
+        for p in src.as_chunks::<4>().0 {
+            rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
+        }
+        SelectObject(dc, old);
+        DeleteObject(bmp);
+        DeleteDC(dc);
+        if ok == 0 {
+            return Err("PrintWindow failed".into());
+        }
+        Ok(Snap {
+            w: w as u32,
+            h: hh as u32,
+            rgba,
+        })
+    }
+}
+
+/// Slint's own snapshot of the window.
+fn slint_snapshot(window: &slint::Window) -> Result<Snap, String> {
+    let buf = window.take_snapshot().map_err(|e| e.to_string())?;
+    Ok(Snap {
+        w: buf.width(),
+        h: buf.height(),
+        rgba: buf.as_bytes().to_vec(),
+    })
 }
 
 thread_local! {
@@ -538,6 +1032,57 @@ impl GlueCtx {
         apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
         Ok(())
     }
+    /// `Snapshot`: Slint's own snapshot first, then `PrintWindow`; the PNG is in device pixels.
+    fn snapshot(&self, path: &str, mode: Option<SnapMode>) -> Reply {
+        let Some(app) = self.app.upgrade() else {
+            return err("the window is gone");
+        };
+        let via_print = || -> Result<Snap, String> {
+            let hwnd = crate::window::hwnd_of(&app).ok_or("the window has no handle")?;
+            print_window_snapshot(hwnd)
+        };
+        let snap = match mode.unwrap_or(SnapMode::Auto) {
+            SnapMode::Slint => slint_snapshot(app.window()),
+            SnapMode::PrintWindow => via_print(),
+            SnapMode::Auto => {
+                let first = slint_snapshot(app.window());
+                match pick_snapshot(&first) {
+                    SnapPick::UseSlint => {
+                        log::info!("e2e: snapshot mode auto used the Slint snapshot");
+                        first
+                    }
+                    SnapPick::PrintWindow => {
+                        log::info!("e2e: snapshot mode auto fell back to PrintWindow");
+                        via_print()
+                    }
+                }
+            }
+        };
+        let snap = match snap {
+            Ok(s) => s,
+            Err(m) => return err(m),
+        };
+        let png = match encode_png(&snap) {
+            Ok(p) => p,
+            Err(m) => return err(m),
+        };
+        // sync-ok: e2e only, a screenshot written for the harness
+        if let Err(e) = std::fs::write(path, png) {
+            return err(format!("cannot write {path}: {e}"));
+        }
+        let reply = Reply::Png {
+            path: path.to_string(),
+            w: snap.w,
+            h: snap.h,
+        };
+        FRAMES.with(|f| {
+            if let Ok(mut st) = f.try_borrow_mut() {
+                st.snap = Some(snap);
+            }
+        });
+        reply
+    }
+
     fn clip_set(&self, text: Option<&str>, png: Option<&str>) -> Result<(), String> {
         if !crate::e2e::global().on() {
             return Err("the real clipboard is never written".into());
@@ -549,6 +1094,113 @@ impl GlueCtx {
         let text = text.ok_or("ClipSet needs text")?;
         port.write_text(text, usize::MAX)
     }
+}
+
+impl FrameEnv for GlueCtx {
+    fn view(&self, tab: Option<&str>) -> Result<FrameView, String> {
+        if tab.is_some() {
+            return Err("only the front tab can be read by Latency for now".into());
+        }
+        let handle = self.kp.front.borrow().clone().ok_or("no tab is in front")?;
+        Ok(handle.with_emu_quiet(|e| {
+            let text = (0..e.rows() as i32)
+                .map(|l| e.row_text(l))
+                .collect::<Vec<_>>()
+                .join("\n");
+            FrameView {
+                text,
+                cursor_row: e.row_text(e.cursor().0),
+            }
+        }))
+    }
+
+    fn press_down(&self, chord: &str) -> Result<(), String> {
+        event_from_chord(chord, true).and_then(|e| self.key(&e))
+    }
+}
+
+impl GlueCtx {
+    /// `Latency`: the key goes in now, the answer comes from the first frame holding `expect`.
+    fn latency(
+        &self,
+        chord: &str,
+        expect: &str,
+        tab: Option<String>,
+        timeout_ms: u64,
+        resp: Responder,
+    ) {
+        FRAMES.with(|f| {
+            if let Ok(mut st) = f.try_borrow_mut() {
+                st.rec.start();
+            }
+        });
+        let t0 = Instant::now();
+        if let Err(m) = event_from_chord(chord, true).and_then(|e| self.key(&e)) {
+            resp.reply(err(m));
+            return;
+        }
+        let seq = FRAMES.with(|f| {
+            f.try_borrow_mut()
+                .ok()
+                .map(|mut st| st.arm_latency(LatencyWatch::new(t0, expect, timeout_ms), tab, resp))
+        });
+        if let Some(seq) = seq {
+            slint::Timer::single_shot(Duration::from_millis(timeout_ms), move || {
+                FRAMES.with(|f| {
+                    if let Ok(mut st) = f.try_borrow_mut() {
+                        st.latency_timed_out(seq);
+                    }
+                });
+            });
+        }
+        self.redraw();
+    }
+
+    /// `KeyAtPrompt`: replies at once; the render hook injects the key when the prompt shows.
+    fn key_at_prompt(&self, chord: &str, prompt_suffix: &str) -> Result<(), String> {
+        let ev = event_from_chord(chord, true)?;
+        FRAMES.with(|f| {
+            let mut st = f.try_borrow_mut().map_err(|_| "the frame state is busy")?;
+            st.rec.start();
+            st.marks = (None, None);
+            st.prompt = Some((PromptWatch::new(prompt_suffix, ev.text), chord.to_string()));
+            Ok::<(), &str>(())
+        })?;
+        self.redraw();
+        Ok(())
+    }
+
+    /// Asks for a frame, so a watcher on an idle window gets one to look at.
+    fn redraw(&self) {
+        if let Some(app) = self.app.upgrade() {
+            app.window().request_redraw();
+        }
+    }
+}
+
+/// `Pixel`: a pixel of the last snapshot.
+fn pixel_reply(x: u32, y: u32) -> Reply {
+    FRAMES.with(|f| match f.try_borrow() {
+        Ok(st) => match st.snap.as_ref() {
+            None => err("no snapshot has been taken"),
+            Some(s) => match s.px(x, y) {
+                Some(rgba) => Reply::Pixel { rgba },
+                None => err(format!(
+                    "({x}, {y}) is outside the {}x{} snapshot",
+                    s.w, s.h
+                )),
+            },
+        },
+        Err(_) => err("the frame state is busy"),
+    })
+}
+
+/// `Frames`.
+fn frames_reply(reset: bool) -> Reply {
+    FRAMES.with(|f| match f.try_borrow_mut() {
+        Ok(mut st) => st.frames_request(reset),
+        Err(_) => err("the frame state is busy"),
+    })
 }
 
 /// Holds the UI thread for `ms`, after the reply went out (the client's call returns at once and
@@ -724,11 +1376,31 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         // Tasks 9 to 11 replace these.
         Request::Hello => Err("Hello is answered by the server".into()),
         Request::DpiChange { dpi, x, y } => ctx.dpi_change(dpi, x.zip(y)),
-        Request::Snapshot { .. }
-        | Request::Pixel { .. }
-        | Request::Frames { .. }
-        | Request::Latency { .. }
-        | Request::KeyAtPrompt { .. } => Err("not built yet (Task 10)".into()),
+        Request::Snapshot { path, mode } => {
+            resp.reply(ctx.snapshot(&path, mode));
+            return;
+        }
+        Request::Pixel { x, y } => {
+            resp.reply(pixel_reply(x, y));
+            return;
+        }
+        Request::Frames { reset } => {
+            resp.reply(frames_reply(reset));
+            return;
+        }
+        Request::Latency {
+            chord,
+            expect,
+            tab,
+            timeout_ms,
+        } => {
+            ctx.latency(&chord, &expect, tab, timeout_ms, resp);
+            return;
+        }
+        Request::KeyAtPrompt {
+            chord,
+            prompt_suffix,
+        } => ctx.key_at_prompt(&chord, &prompt_suffix),
         Request::Probe { name, .. } => Err(format!("probe {name:?} is not built yet (Task 11)")),
     };
     resp.reply(match result {
@@ -760,12 +1432,14 @@ pub fn install(
         }
         Err(e) => log::warn!("e2e: the test hook did not start: {e:?}"),
     }
-    let ctx = GlueCtx {
+    let ctx = Rc::new(GlueCtx {
         app: app.as_weak(),
         ctl: Rc::downgrade(ctl),
         kp: kp.clone(),
         clip,
-    };
+    });
+    let env: Rc<dyn FrameEnv> = ctx.clone();
+    FRAMES.with(|f| f.borrow_mut().env = Some(env));
     crate::e2e_hook::register_ui_handler(Rc::new(move |req, resp| handle(&ctx, req, resp)));
     crate::e2e_probes::register_all(&mut crate::e2e_probes::ProbeRegistry);
 }
@@ -1105,5 +1779,199 @@ mod tests {
         assert_eq!(DpiMode::from_env_value(Some("nonsense")), DpiMode::Message);
         assert_eq!(DpiMode::from_env_value(Some("event")), DpiMode::Event);
         assert_eq!(DpiMode::from_env_value(Some("EVENT")), DpiMode::Event);
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use crate::e2e_hook::responder;
+    use std::cell::Cell;
+
+    struct FakeEnv {
+        view: RefCell<Result<FrameView, String>>,
+        pressed: Cell<u32>,
+    }
+
+    impl FakeEnv {
+        fn showing(text: &str, row: &str) -> Self {
+            Self {
+                view: RefCell::new(Ok(FrameView {
+                    text: text.into(),
+                    cursor_row: row.into(),
+                })),
+                pressed: Cell::new(0),
+            }
+        }
+
+        fn show(&self, text: &str, row: &str) {
+            *self.view.borrow_mut() = Ok(FrameView {
+                text: text.into(),
+                cursor_row: row.into(),
+            });
+        }
+    }
+
+    impl FrameEnv for FakeEnv {
+        fn view(&self, _tab: Option<&str>) -> Result<FrameView, String> {
+            self.view.borrow().clone()
+        }
+        fn press_down(&self, _chord: &str) -> Result<(), String> {
+            self.pressed.set(self.pressed.get() + 1);
+            Ok(())
+        }
+    }
+
+    fn at(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_blank_snapshot_falls_back_to_print_window() {
+        let blank = Snap {
+            w: 2,
+            h: 2,
+            rgba: vec![7; 16],
+        };
+        assert_eq!(pick_snapshot(&Ok(blank)), SnapPick::PrintWindow);
+        assert_eq!(pick_snapshot(&Err("no".into())), SnapPick::PrintWindow);
+        let empty = Snap {
+            w: 0,
+            h: 0,
+            rgba: vec![],
+        };
+        assert_eq!(pick_snapshot(&Ok(empty)), SnapPick::PrintWindow);
+        let mut varied = vec![7u8; 16];
+        varied[12] = 9;
+        let ok = Snap {
+            w: 2,
+            h: 2,
+            rgba: varied,
+        };
+        assert_eq!(pick_snapshot(&Ok(ok)), SnapPick::UseSlint);
+    }
+
+    slint::slint! {
+        export component SnapWin inherits Window {
+            width: 200px;
+            height: 100px;
+            background: #102030;
+            Rectangle { x: 10px; y: 10px; width: 40px; height: 20px; background: #ff0000; }
+        }
+    }
+
+    #[test]
+    fn a_snapshot_is_device_pixels() {
+        for s in [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            let h = crate::ui_harness::Harness::new(s, 200, 100, || SnapWin::new().unwrap());
+            let frame = h.render();
+            let snap = Snap {
+                w: frame.w,
+                h: frame.h,
+                rgba: frame.rgba.clone(),
+            };
+            let bytes = encode_png(&snap).expect("encodes");
+            let dec = png::Decoder::new(std::io::Cursor::new(bytes));
+            let reader = dec.read_info().expect("a png");
+            let info = reader.info();
+            assert_eq!(info.width, (200.0 * s).round() as u32, "width at {s}");
+            assert_eq!(info.height, (100.0 * s).round() as u32, "height at {s}");
+            assert!(!snap.is_blank(), "something is drawn at {s}");
+        }
+    }
+
+    #[test]
+    fn latency_completes_on_the_first_frame_that_holds_the_text() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("$ ", "$");
+        let mut st = FrameState::new();
+        let (resp, rx) = responder();
+        st.arm_latency(LatencyWatch::new(base, "w", 500), None, resp);
+        assert!(st.after(at(base, 5), 0.0, &env).is_empty());
+        assert!(rx.try_recv().is_err(), "no answer before the text shows");
+        env.show("$ w", "$ w");
+        st.after(at(base, 12), 0.0, &env);
+        match rx.try_recv() {
+            Ok(Reply::Latency { ms }) => assert!((ms - 12.0).abs() < 0.5, "{ms}"),
+            other => panic!("expected a latency, got {other:?}"),
+        }
+        env.show("$ ww", "$ ww");
+        st.after(at(base, 20), 0.0, &env);
+        assert!(rx.try_recv().is_err(), "answered once");
+    }
+
+    #[test]
+    fn latency_times_out_with_an_error() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("$ ", "$");
+        let mut st = FrameState::new();
+        let (resp, rx) = responder();
+        let seq = st.arm_latency(LatencyWatch::new(base, "zzz", 50), None, resp);
+        st.after(at(base, 60), 0.0, &env);
+        assert!(matches!(rx.try_recv(), Ok(Reply::Err { .. })));
+        // The timer path answers too, once, and a stale timer does nothing.
+        let (resp2, rx2) = responder();
+        let seq2 = st.arm_latency(LatencyWatch::new(base, "zzz", 50), None, resp2);
+        st.latency_timed_out(seq);
+        assert!(rx2.try_recv().is_err(), "a stale timer does not answer");
+        st.latency_timed_out(seq2);
+        assert!(matches!(rx2.try_recv(), Ok(Reply::Err { .. })));
+    }
+
+    #[test]
+    fn frames_reset_replies_ok_and_clears() {
+        let base = Instant::now();
+        let mut st = FrameState::new();
+        assert_eq!(st.frames_request(true), Reply::Ok);
+        for i in 0..5u64 {
+            st.rec.before(at(base, i * 16));
+            st.rec.after(at(base, i * 16 + 2));
+        }
+        match st.frames_request(false) {
+            Reply::Frames {
+                count,
+                max_ms,
+                render_p95_ms,
+                ..
+            } => {
+                assert_eq!(count, 5);
+                assert!((max_ms - 16.0).abs() < 0.5, "{max_ms}");
+                assert!((render_p95_ms - 2.0).abs() < 0.5, "{render_p95_ms}");
+            }
+            other => panic!("expected frames, got {other:?}"),
+        }
+        assert_eq!(st.frames_request(true), Reply::Ok);
+        assert!(matches!(
+            st.frames_request(false),
+            Reply::Frames { count: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn key_at_prompt_waits_for_the_suffix_then_injects_once() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.prompt = Some((PromptWatch::new("> ", Some("a".into())), "KeyA".into()));
+        assert!(st.after(at(base, 1), 100.0, &env).is_empty());
+        env.show("PS C:\\>", "PS C:\\>");
+        assert_eq!(st.after(at(base, 2), 250.0, &env), vec!["KeyA".to_string()]);
+        assert_eq!(st.marks.0, Some(250.0));
+        // Still the same prompt row: no second injection.
+        assert!(st.after(at(base, 3), 260.0, &env).is_empty());
+        assert!(st.after(at(base, 4), 270.0, &env).is_empty());
+    }
+
+    #[test]
+    fn usable_is_prompt_plus_the_echo_frame() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "PS C:\\>");
+        let mut st = FrameState::new();
+        st.prompt = Some((PromptWatch::new("> ", Some("a".into())), "KeyA".into()));
+        st.after(at(base, 1), 250.0, &env);
+        env.show("PS C:\\> a", "PS C:\\> a");
+        assert!(st.after(at(base, 2), 262.5, &env).is_empty());
+        assert_eq!(st.marks, (Some(250.0), Some(262.5)));
+        assert!(st.prompt.is_none(), "the watcher is one-shot");
     }
 }
