@@ -7,7 +7,7 @@
 //! come back are carried out here. The colour picker and the eyedropper are Task 42's: the places
 //! it hooks in are marked `// picker:`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -152,6 +152,9 @@ pub struct SettingsCtl {
     flash: Option<FlashRun>,
     watch: Option<FlashWatch>,
     marked_until: Option<u64>,
+    /// The diagnostics flag as `diag.json` held it when Settings last showed (or the switch last
+    /// wrote it). A rebuild runs per wall frame and per slider step, so it never reads the file.
+    diag_verbose: Cell<Option<bool>>,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -446,6 +449,7 @@ impl SettingsCtl {
             flash: None,
             watch: None,
             marked_until: None,
+            diag_verbose: Cell::new(None),
             pending_pick: RefCell::new(None),
             picker: PickerCtl::default(),
             picker_timer: slint::Timer::default(),
@@ -658,6 +662,7 @@ impl SettingsCtl {
     /// Settings came to the front: rebuild, recall a kept picker, focus nothing.
     pub fn show(&mut self) {
         self.visible = true;
+        self.diag_verbose.set(None);
         self.ask_verb();
         self.rebuild();
         self.picker_do(|p, ctx| p.recall(ctx));
@@ -780,8 +785,13 @@ impl SettingsCtl {
     }
 
     fn page_model(&self) -> PageModel {
+        let verbose = self.diag_verbose.get().unwrap_or_else(|| {
+            let v = self.deps.diag.verbose();
+            self.diag_verbose.set(Some(v));
+            v
+        });
         let diag = DiagInfo {
-            verbose: self.deps.diag.verbose(),
+            verbose,
             dir: self.deps.diag.dir().to_string_lossy().into_owned(),
         };
         let env = PageEnv {
@@ -1148,6 +1158,10 @@ impl SettingsCtl {
 
     /// Carries out one control event: the store writes, then the effects.
     pub fn event(&mut self, ev: Event) {
+        if matches!(&ev, Event::Switch { row, .. } if row == "diag-verbose") {
+            // The switch writes the file; the rebuild that follows shows what it now holds.
+            self.diag_verbose.set(None);
+        }
         let effects = {
             let ctx = Ctx {
                 prefs: &self.deps.prefs,
@@ -2369,6 +2383,34 @@ mod tests {
         f.page("diagnostics");
         f.b().invoke_row_button("diag-folder".into(), "open".into());
         assert_eq!(f.opened.borrow().as_slice(), &[PathBuf::from("C:/logs")]);
+    }
+
+    #[test]
+    fn the_diagnostics_flag_file_is_read_when_settings_shows_not_on_every_rebuild() {
+        let f = fx();
+        let at_show = f.diag.reads();
+        // The wall's opening rebuilds every 16 ms and a slider rebuilds per step: no file read.
+        for _ in 0..10 {
+            f.ctl.borrow_mut().rebuild();
+        }
+        assert_eq!(f.diag.reads(), at_show, "a rebuild reads no file");
+        f.page("diagnostics");
+        assert!(!f.row("diag-verbose").unwrap().on);
+        f.b().invoke_row_switch("diag-verbose".into(), true);
+        assert!(
+            f.row("diag-verbose").unwrap().on,
+            "the switch shows what was stored"
+        );
+        let after_switch = f.diag.reads();
+        f.ctl.borrow_mut().rebuild();
+        assert_eq!(f.diag.reads(), after_switch);
+        f.ctl.borrow_mut().hide();
+        f.ctl.borrow_mut().show();
+        assert_eq!(
+            f.diag.reads(),
+            after_switch + 1,
+            "showing Settings reads it again"
+        );
     }
 
     // ---- Find a setting --------------------------------------------------------------------------

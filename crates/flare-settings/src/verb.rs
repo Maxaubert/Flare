@@ -29,6 +29,7 @@ pub trait DiagControlApi {
 pub struct FakeDiag {
     verbose: Cell<bool>,
     marks: Cell<usize>,
+    reads: Cell<usize>,
     dir: PathBuf,
     refuse: Cell<bool>,
 }
@@ -39,6 +40,7 @@ impl FakeDiag {
         Self {
             verbose: Cell::new(verbose),
             marks: Cell::new(0),
+            reads: Cell::new(0),
             dir: dir.into(),
             refuse: Cell::new(false),
         }
@@ -49,6 +51,11 @@ impl FakeDiag {
         self.refuse.set(true);
     }
 
+    /// How many times `verbose` was read (the real one reads a file).
+    pub fn reads(&self) -> usize {
+        self.reads.get()
+    }
+
     /// How many times `mark` ran.
     pub fn marks(&self) -> usize {
         self.marks.get()
@@ -57,6 +64,7 @@ impl FakeDiag {
 
 impl DiagControlApi for FakeDiag {
     fn verbose(&self) -> bool {
+        self.reads.set(self.reads.get() + 1);
         self.verbose.get()
     }
 
