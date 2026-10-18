@@ -80,10 +80,12 @@ fn term_links(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .try_borrow()
         .map_err(|_| "the controller is busy")?
         .decor_inputs();
-    let ink = inputs
-        .try_borrow()
-        .map_err(|_| "the decoration inputs are busy")?
-        .ink;
+    let ink = crate::term_ui::effective_ink(
+        inputs
+            .try_borrow()
+            .map_err(|_| "the decoration inputs are busy")?
+            .ink,
+    );
     Ok(h.with_emu_quiet(|e| {
         let (rows, cols) = (e.rows(), e.cols());
         let top = e.viewport_top();
@@ -167,6 +169,15 @@ mod tests {
             }),
             ("osc8", "https://example.com/osc8".to_string())
         );
+    }
+
+    #[test]
+    fn a_light_theme_link_reports_the_ink_it_wears_not_the_default_blue() {
+        // The paper theme's link: the decoration takes the worn theme link when the controller gives no ink.
+        crate::term_ui::set_worn_link(&flare_theme::links::link_colour("#f6f4ee", "#24292e"));
+        let hex = ink_of(crate::term_ui::effective_ink(None));
+        assert_ne!(hex, "#79a7d8", "the probe must report the worn link");
+        assert!(flare_theme::ansi::contrast_ratio(&hex, "#f6f4ee") >= 4.5);
     }
 
     #[test]

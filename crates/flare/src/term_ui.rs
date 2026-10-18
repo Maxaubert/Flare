@@ -162,6 +162,12 @@ fn worn_ink() -> Option<DecorInk> {
     })
 }
 
+/// The ink the decoration paints with: the controller's explicit ink, else the worn theme's. The
+/// e2e probes read this too, so they report the colour the links really wear.
+pub fn effective_ink(ink: Option<DecorInk>) -> Option<DecorInk> {
+    ink.or_else(worn_ink)
+}
+
 /// What the frame decoration needs from the controller (shared with `LiveSource::decor`).
 pub struct DecorInputs {
     pub hover: Option<(usize, usize)>,
@@ -198,7 +204,7 @@ impl DecorInputs {
             ink_key: self.ink_key,
             hover: self.hover,
             find_open: self.find_open,
-            ink: self.ink.or_else(worn_ink),
+            ink: effective_ink(self.ink),
         };
         handle.decor(&mut req)
     }
