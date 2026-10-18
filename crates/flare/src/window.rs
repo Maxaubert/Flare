@@ -442,6 +442,24 @@ fn epoch_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Hands the probes the renderer the run really got (`Hello` and `app.state` report it).
+fn tell_renderer(effective: RendererChoice, fallback: Option<&str>, scale: f32) {
+    let word = match (effective, fallback) {
+        (_, Some(why)) => format!("software (fallback: {why})"),
+        (RendererChoice::Gpu, None) => "gpu".to_string(),
+        (RendererChoice::Software, None) => "software".to_string(),
+    };
+    crate::e2e_hook::set_hello_info(&word, scale);
+}
+
+/// Under `--e2e`, hands the probes the grid host's cell size after each frame.
+fn note_cell_for_e2e(host: &GridHost) {
+    if crate::e2e::global().on() {
+        let m = host.metrics();
+        crate::e2e_hook::set_cell(m.cell_w, m.cell_h);
+    }
+}
+
 /// Runs the window until it closes. `start` is main's start time, for the first-frame log.
 /// `args.sample` keeps M1's sample grid instead of the tabs; then `instance` is `None`.
 pub fn run_window(
@@ -508,6 +526,7 @@ pub fn run_window(
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 app.set_grid_image(image);
+                note_cell_for_e2e(&host.borrow());
                 crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
                 place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                 // No notifier means no AfterRendering: log the first frame from here.
@@ -539,6 +558,9 @@ pub fn run_window(
                         log::warn!("renderer: grid on the CPU (Slint renderer has no wgpu device)");
                     }
                     crate::startup_trace::mark(crate::startup_trace::Phase::RenderSetup);
+                    if let Some(app) = weak.upgrade() {
+                        tell_renderer(effective, note.borrow().as_deref(), app.window().scale_factor());
+                    }
                 }
                 RenderingState::BeforeRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
@@ -547,6 +569,7 @@ pub fn run_window(
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
                             app.set_grid_image(image);
+                            note_cell_for_e2e(&host.borrow());
                             place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                             app.window().request_redraw();
                         }
@@ -1034,6 +1057,7 @@ pub fn run_window(
     }
     if args.e2e {
         apply_e2e_style(&app);
+        tell_renderer(effective, note.borrow().as_deref(), app.window().scale_factor());
         if let (Some(rc), Some(kp)) = (&ctl, &key_path) {
             crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
         }
@@ -1054,8 +1078,6 @@ pub fn run_window(
         c.start_agent_poll();
         if !args.e2e
             && let Some(hwnd) = hwnd_of(&app)
-        // The frameless window gets a system menu for Alt+Space (no caption is added).
-        flare_win::sysmenu::ensure_sysmenu_style(hwnd);
         {
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
