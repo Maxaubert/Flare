@@ -50,6 +50,11 @@ pub trait LookMaterial {
     fn set_glass(&mut self, on: bool, now: Instant);
     /// What the material wears now: false when the OS refused the backdrop or full screen holds it off.
     fn glass_on(&self) -> bool;
+    /// The backdrop comes off before the window goes full screen (D7).
+    fn before_fullscreen(&mut self);
+    /// The window was maximised, restored, moved or went full screen: the edge goes flat and a held-off
+    /// backdrop comes back.
+    fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant);
 }
 
 /// The window material shared with the window's own timer and state callbacks.
@@ -76,6 +81,20 @@ impl LookMaterial for SharedMaterial {
     }
     fn glass_on(&self) -> bool {
         self.borrow().as_ref().is_some_and(WindowMaterial::glass_on)
+    }
+    fn before_fullscreen(&mut self) {
+        if let Ok(mut m) = self.try_borrow_mut()
+            && let Some(m) = m.as_mut()
+        {
+            m.before_fullscreen();
+        }
+    }
+    fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
+        if let Ok(mut m) = self.try_borrow_mut()
+            && let Some(m) = m.as_mut()
+        {
+            m.on_window_state(maximised, fullscreen, now);
+        }
     }
 }
 
@@ -440,17 +459,15 @@ impl LookCtl {
 
     /// Before the window goes full screen: the UI turns solid FIRST, then the backdrop comes off (D7).
     pub fn before_fullscreen(&mut self) {
-        let Some(shared) = self.shared.clone() else {
+        if self.material.is_none() {
             return;
-        };
+        }
         if self.was_glass {
             let opaque = self.opaque_look();
             self.ui.apply(&opaque);
             self.was_glass = false;
         }
-        if let Ok(mut m) = shared.try_borrow_mut()
-            && let Some(m) = m.as_mut()
-        {
+        if let Some(m) = self.material.as_mut() {
             m.before_fullscreen();
         }
     }
@@ -458,19 +475,18 @@ impl LookCtl {
     /// The window was maximised, restored, moved or went full screen. Going full screen turns the UI
     /// solid before the backdrop leaves; when the backdrop comes back the UI follows it.
     pub fn window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
-        let Some(shared) = self.shared.clone() else {
+        if self.material.is_none() {
             return;
-        };
+        }
         if fullscreen && self.was_glass {
             let opaque = self.opaque_look();
             self.ui.apply(&opaque);
             self.was_glass = false;
         }
         let after = {
-            let Ok(mut m) = shared.try_borrow_mut() else {
+            let Some(m) = self.material.as_mut() else {
                 return;
             };
-            let Some(m) = m.as_mut() else { return };
             m.on_window_state(maximised, fullscreen, now);
             m.glass_on()
         };
@@ -591,6 +607,8 @@ mod tests {
         chrome_calls: Rc<Cell<usize>>,
         on: bool,
         refuse: bool,
+        wanted: bool,
+        flat: Rc<Cell<bool>>,
     }
     impl LookMaterial for FakeMat {
         fn attached(&self) -> bool {
@@ -604,10 +622,23 @@ mod tests {
         }
         fn set_glass(&mut self, on: bool, _now: Instant) {
             self.log.borrow_mut().push("material");
+            self.wanted = on;
             self.on = on && !self.refuse;
         }
         fn glass_on(&self) -> bool {
             self.on
+        }
+        fn before_fullscreen(&mut self) {
+            self.on = false;
+        }
+        fn on_window_state(&mut self, maximised: bool, fullscreen: bool, _now: Instant) {
+            self.flat.set(maximised || fullscreen);
+            self.log.borrow_mut().push(if fullscreen {
+                "state:full"
+            } else {
+                "state:windowed"
+            });
+            self.on = self.wanted && !fullscreen && !self.refuse;
         }
     }
 
@@ -639,6 +670,8 @@ mod tests {
             chrome_calls: Rc::new(Cell::new(0)),
             on: false,
             refuse: false,
+            wanted: false,
+            flat: Rc::new(Cell::new(false)),
         })
     }
 
@@ -771,6 +804,8 @@ mod tests {
             chrome_calls: Rc::new(Cell::new(0)),
             on: false,
             refuse: true,
+            wanted: false,
+            flat: Rc::new(Cell::new(false)),
         }));
         store.set_see_through(40);
         c.apply_now();
@@ -783,6 +818,49 @@ mod tests {
         c.apply_now();
         assert!(log.borrow().is_empty(), "{:?}", log.borrow());
         assert_eq!(grounds.borrow().last().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn full_screen_reaches_the_page_and_the_edge_goes_flat() {
+        let prefs = PrefStore::memory();
+        let store = LookStore::new(prefs);
+        let grounds = Rc::new(RefCell::new(Vec::new()));
+        let mut c = LookCtl::with_parts(
+            Box::new(GroundUi(grounds.clone())),
+            store.clone(),
+            true,
+            LookOverrides::default(),
+            noop_scheduler(),
+        );
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let flat = Rc::new(Cell::new(false));
+        store.set_see_through(40);
+        c.attach_port(Box::new(FakeMat {
+            log: log.clone(),
+            supported: true,
+            chrome_calls: Rc::new(Cell::new(0)),
+            on: false,
+            refuse: false,
+            wanted: false,
+            flat: flat.clone(),
+        }));
+        assert!(c.was_glass);
+        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass worn");
+        let t0 = Instant::now();
+        // Entering full screen: the material hears it, the edge is flat, the page turns solid.
+        let before = grounds.borrow().len();
+        c.window_state(false, true, t0);
+        assert!(log.borrow().contains(&"state:full"), "{:?}", log.borrow());
+        assert!(flat.get(), "the edge is flat in full screen");
+        assert!(!c.was_glass);
+        assert!(grounds.borrow().len() > before, "the page was told");
+        assert_eq!(grounds.borrow().last().unwrap().len(), 7, "solid page");
+        // Leaving it: the material hears that too, the edge is back, glass returns to the page.
+        c.window_state(false, false, t0);
+        assert_eq!(log.borrow().last(), Some(&"state:windowed"));
+        assert!(!flat.get(), "the edge is drawn again");
+        assert!(c.was_glass);
+        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass back");
     }
 
     struct FakeTab {
