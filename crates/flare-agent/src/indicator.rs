@@ -995,6 +995,7 @@ mod tests {
                     signal: AgentSignal {
                         state,
                         kind: kind.map(str::to_string),
+                        session: None,
                     },
                 },
             );
@@ -1805,6 +1806,7 @@ mod tests {
                             _ => HookState::Failed,
                         },
                         kind: None,
+                        session: None,
                     },
                 }),
                 "key:submit" => None,

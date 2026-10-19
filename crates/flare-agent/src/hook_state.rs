@@ -301,6 +301,7 @@ mod tests {
         HookEvent::Signal(AgentSignal {
             state,
             kind: kind.map(str::to_owned),
+            session: None,
         })
     }
     fn working() -> HookEvent {
