@@ -309,7 +309,10 @@ fn finish(ctx: &mut Ctx, mut app: App, renderer: &str) {
     let left = child.wait_for(|| child.exited().is_some(), Duration::from_secs(10));
     ctx.ok(
         left && app.child.exited() == Some(0),
-        format!("[{renderer}] Quit ends the process with exit 0"),
+        format!(
+            "[{renderer}] Quit ends the process with exit 0 (left: {left}, code {:?})",
+            app.child.exited()
+        ),
     );
     if !left {
         app.close();

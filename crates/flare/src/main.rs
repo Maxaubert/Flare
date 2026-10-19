@@ -226,6 +226,23 @@ fn main() {
         eprintln!("flare: {e}");
         std::process::exit(1);
     }
+    end_process_clean();
+}
+
+/// Ends a quit that finished cleanly with exit code 0. By now the shells are gone, the settings are
+/// flushed and the instance lock is released. On the GPU renderer the DXGI/DirectComposition
+/// teardown that runs while the process exits rewrote the exit code to 2170 (the DXGI facility), so
+/// the process ends itself and skips that teardown.
+fn end_process_clean() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: the pseudo-handle of this process is always valid and nothing is left to run.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+    }
+    std::process::exit(0);
 }
 
 /// How long a second launch waits for the first instance to take its folders.
