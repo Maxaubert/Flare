@@ -31,8 +31,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, PeekMessageW,
-    PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+    PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
+    PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
 };
 
 /// The lock file's name, in the folder `KeyHook::start` is given (`%TEMP%` in the app).
@@ -269,6 +269,20 @@ unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe { CallNextHookEx(std::ptr::null_mut(), n, w, l) }
 }
 
+/// What the thread does once it holds the lock.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum Mode {
+    Install,
+    WaitOnly,
+    FailInstall,
+}
+
+/// How long the lock wait sleeps between looks at `wanted`, so `stop` never waits out a whole poll.
+const WAIT_SLICE: Duration = Duration::from_millis(20);
+/// The lock poll (PT: 500 ms), made of `WAIT_SLICE`s.
+const WAIT_SLICES: u32 = 25;
+
 /// The running hook: a thread that takes the lock, installs the hook and pumps messages.
 pub struct KeyHook {
     thread: Option<JoinHandle<()>>,
@@ -281,16 +295,22 @@ impl KeyHook {
     /// Start the thread: take the lock (a 500 ms poll, `Waiting` while another copy holds it), install
     /// `WH_KEYBOARD_LL`, say `Ready` or `Failed`, then pump messages until stopped.
     pub fn start(lock_dir: PathBuf, tx: Sender<HookEvent>) -> Self {
-        Self::spawn(lock_dir, tx, true)
+        Self::spawn(lock_dir, tx, Mode::Install)
     }
 
     /// Test seam: take the lock like `start` but never install the hook (so a test can watch the wait).
     #[cfg(test)]
     fn start_waiting_only(lock_dir: PathBuf, tx: Sender<HookEvent>) -> Self {
-        Self::spawn(lock_dir, tx, false)
+        Self::spawn(lock_dir, tx, Mode::WaitOnly)
     }
 
-    fn spawn(lock_dir: PathBuf, tx: Sender<HookEvent>, install: bool) -> Self {
+    /// Test seam: take the lock and act as if `SetWindowsHookExW` failed (nothing is installed).
+    #[cfg(test)]
+    fn start_failing_install(lock_dir: PathBuf, tx: Sender<HookEvent>) -> Self {
+        Self::spawn(lock_dir, tx, Mode::FailInstall)
+    }
+
+    fn spawn(lock_dir: PathBuf, tx: Sender<HookEvent>, mode: Mode) -> Self {
         let tid = Arc::new(AtomicU32::new(0));
         let wanted = Arc::new(AtomicBool::new(true));
         let shared = Arc::new(Shared::default());
@@ -298,7 +318,7 @@ impl KeyHook {
             let (tid, wanted, shared) = (tid.clone(), wanted.clone(), shared.clone());
             std::thread::Builder::new()
                 .name("flare-keyhook".into())
-                .spawn(move || run(lock_dir, tx, install, &tid, &wanted, shared))
+                .spawn(move || run(lock_dir, tx, mode, &tid, &wanted, shared))
                 .ok()
         };
         KeyHook {
@@ -371,7 +391,7 @@ impl Drop for KeyHook {
 fn run(
     lock_dir: PathBuf,
     tx: Sender<HookEvent>,
-    install: bool,
+    mode: Mode,
     tid: &AtomicU32,
     wanted: &AtomicBool,
     shared: Arc<Shared>,
@@ -396,7 +416,13 @@ fn run(
                     told = true;
                     let _ = tx.send(HookEvent::Waiting);
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                // The 500 ms poll, in slices that look at `wanted`: a stop never waits out a whole poll.
+                for _ in 0..WAIT_SLICES {
+                    if !wanted.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(WAIT_SLICE);
+                }
             }
             Err(_) => {
                 let _ = tx.send(HookEvent::Failed);
@@ -405,9 +431,9 @@ fn run(
             }
         }
     };
-    if !wanted.load(Ordering::SeqCst) || !install {
-        // Stopped while waiting for the lock, or the test seam: nothing to install.
-        if install {
+    if !wanted.load(Ordering::SeqCst) || mode == Mode::WaitOnly {
+        // Stopped while waiting for the lock, or the wait-only test seam: nothing to install.
+        if mode != Mode::WaitOnly {
             drop(lock);
             tid.store(0, Ordering::SeqCst);
             return;
@@ -424,30 +450,31 @@ fn run(
         state: HookState::default(),
         tx: tx.clone(),
     });
-    // SAFETY: `hook_proc` has the HOOKPROC signature; the module handle is this process's own.
-    let hook = unsafe {
-        SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(hook_proc),
-            GetModuleHandleW(std::ptr::null()),
-            0,
-        )
+    let hook = if mode == Mode::Install {
+        install_hook()
+    } else {
+        // Only the FailInstall test seam gets here (WaitOnly returned above).
+        std::ptr::null_mut()
     };
     if hook.is_null() {
         // SAFETY: reads the calling thread's last error.
         log::warn!("keyboard hook failed: error {}", unsafe { GetLastError() });
+        // Failed is said once: the owner re-arms on it, so nothing trails it.
         let _ = tx.send(HookEvent::Failed);
-    } else {
-        let _ = tx.send(HookEvent::Ready);
-        // SAFETY: a plain message pump on this thread; a WM_QUIT (0) or an error (-1) ends it.
-        unsafe {
-            let mut m: MSG = std::mem::zeroed();
-            while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) > 0 {}
-        }
-        // SAFETY: `hook` is the live handle installed above.
-        unsafe {
-            UnhookWindowsHookEx(hook);
-        }
+        *lock_active() = None;
+        drop(lock);
+        tid.store(0, Ordering::SeqCst);
+        return;
+    }
+    let _ = tx.send(HookEvent::Ready);
+    // SAFETY: a plain message pump on this thread; a WM_QUIT (0) or an error (-1) ends it.
+    unsafe {
+        let mut m: MSG = std::mem::zeroed();
+        while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) > 0 {}
+    }
+    // SAFETY: `hook` is the live handle installed above.
+    unsafe {
+        UnhookWindowsHookEx(hook);
     }
     *lock_active() = None;
     drop(lock);
@@ -455,6 +482,18 @@ fn run(
     if wanted.load(Ordering::SeqCst) {
         // The pump ended while the owner still wants the hook: say so (it re-arms after 1000 ms).
         let _ = tx.send(HookEvent::Failed);
+    }
+}
+
+fn install_hook() -> HHOOK {
+    // SAFETY: `hook_proc` has the HOOKPROC signature; the module handle is this process's own.
+    unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(hook_proc),
+            GetModuleHandleW(std::ptr::null()),
+            0,
+        )
     }
 }
 
@@ -738,38 +777,123 @@ mod tests {
         assert_eq!(LOCK_NAME, "Flare-dictation-key.lock");
     }
 
+    /// Wait until the hook thread holds the lock (our own probe fails busy), up to 5 s.
+    fn wait_until_held(dir: &Path) {
+        for _ in 0..500 {
+            let probe = take_lock(dir);
+            if matches!(&probe, Err(e) if is_busy(e)) {
+                return;
+            }
+            // We got it ourselves: let go at once so the hook can have it, then look again.
+            drop(probe);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the hook never took the lock");
+    }
+
     #[test]
     fn stop_lets_the_lock_go() {
         let dir = tempfile::tempdir().unwrap();
-        let held = take_lock(dir.path()).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        // Another copy owns the key: this hook waits and never installs anything.
+        let (tx, _rx) = std::sync::mpsc::channel();
+        // No other holder: this hook takes the lock and sits in its install=false loop.
         let hook = KeyHook::start_waiting_only(dir.path().to_path_buf(), tx);
-        assert_eq!(
-            rx.recv_timeout(std::time::Duration::from_secs(5)),
-            Ok(HookEvent::Waiting)
+        wait_until_held(dir.path());
+        assert!(
+            take_lock(dir.path()).is_err(),
+            "the hook holds the lock while it runs"
         );
         hook.stop();
-        drop(held);
-        assert!(take_lock(dir.path()).is_ok());
+        assert!(take_lock(dir.path()).is_ok(), "stop let the lock go");
+    }
+
+    #[test]
+    fn stop_does_not_wait_out_the_lock_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = take_lock(dir.path()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let hook = KeyHook::start_waiting_only(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Waiting)
+        );
+        // Waiting is sent right before the poll sleeps: a stop now used to wait out up to 500 ms.
+        let t = std::time::Instant::now();
+        hook.stop();
+        assert!(
+            t.elapsed() < Duration::from_millis(250),
+            "stop took {:?} while the hook waited for the lock",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_failed_install_says_failed_once_and_lets_the_lock_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let hook = KeyHook::start_failing_install(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Failed)
+        );
+        assert!(
+            rx.recv_timeout(Duration::from_millis(700)).is_err(),
+            "Failed must not be said a second time"
+        );
+        assert!(!hook.alive(), "the thread ended");
+        assert!(take_lock(dir.path()).is_ok(), "the lock was let go");
+        hook.stop();
     }
 
     #[test]
     #[ignore = "by hand: SendInput reaches the desktop in front (docs/dictation-by-hand.md)"]
-    fn the_hook_reports_a_binding_key_sent_through_sendinput() {
+    fn reports_the_binding_key_down_and_up_and_stops_when_told() {
+        // PT: the real hook on F24 (0x87), a key no application uses; nothing is typed anywhere.
         let dir = tempfile::tempdir().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let hook = KeyHook::start(dir.path().to_path_buf(), tx);
-        hook.keys(vec![0x91]);
+        hook.keys(vec![0x87]);
         assert_eq!(
-            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            rx.recv_timeout(Duration::from_secs(5)),
             Ok(HookEvent::Ready)
         );
-        send_key(0x91, false);
-        send_key(0x91, true);
-        let down = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(matches!(down, HookEvent::Key { down: true, .. }));
+        send_key(0x87, false);
+        send_key(0x87, true);
+        std::thread::sleep(Duration::from_millis(400));
         hook.stop();
+        // `front` depends on where the suite runs from: not this test's business.
+        let seen: Vec<(bool, String)> = rx
+            .try_iter()
+            .map(|e| match e {
+                HookEvent::Key { down, code, .. } => (down, code),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![(true, "F24".to_string()), (false, "F24".to_string())]
+        );
+    }
+
+    #[test]
+    #[ignore = "by hand: installs the real hook (docs/dictation-by-hand.md)"]
+    fn hooks_again_after_it_was_turned_off_the_lock_was_let_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let first = KeyHook::start(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Ready)
+        );
+        first.stop();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let again = KeyHook::start(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Ready),
+            "Ready, not Waiting"
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+        again.stop();
     }
 
     #[test]
@@ -778,17 +902,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let hook = KeyHook::start(dir.path().to_path_buf(), tx);
-        hook.keys(vec![0x91]);
+        hook.keys(vec![0x87]);
         assert_eq!(
-            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            rx.recv_timeout(Duration::from_secs(5)),
             Ok(HookEvent::Ready)
         );
-        send_key(0x91, false);
+        send_key(0x87, false);
         send_key(0x41, false);
         send_key(0x41, true);
-        send_key(0x91, true);
+        send_key(0x87, true);
         let mut seen = Vec::new();
-        while let Ok(e) = rx.recv_timeout(std::time::Duration::from_secs(1)) {
+        while let Ok(e) = rx.recv_timeout(Duration::from_secs(1)) {
             seen.push(e);
         }
         assert!(seen.contains(&HookEvent::Other));
