@@ -127,6 +127,10 @@ pub trait ThemePushTarget {
     fn colours_are(&self, _fg: &str, _bg: &str) -> bool {
         false
     }
+    /// What tells one tab from another across tab lists (a list wraps its tabs anew each time).
+    fn identity(&self) -> usize {
+        self as *const Self as *const () as usize
+    }
 }
 
 impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
@@ -150,6 +154,9 @@ impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
     }
     fn colours_are(&self, fg: &str, bg: &str) -> bool {
         flare_term::handle::TermHandle::colours_are(self, fg, bg)
+    }
+    fn identity(&self) -> usize {
+        Arc::as_ptr(self) as usize
     }
 }
 
@@ -550,6 +557,21 @@ impl LookCtl {
             tab.set_reports(state);
             let Some(sent) = send else { continue };
             tab.write_report(&flare_term::replies::dsr_theme_reply(sent));
+            // Several switches in a row give one nudge (PT termReplyHandlers.ts): the pending one
+            // goes, and a tab standing one column narrower gets its full width back first.
+            let mut full = None;
+            self.nudges.retain(|n| {
+                if n.target.identity() != tab.identity() {
+                    return true;
+                }
+                if let NudgeStage::Back(_) = n.stage {
+                    full = Some((n.cols, n.rows));
+                }
+                false
+            });
+            if let Some((cols, rows)) = full {
+                tab.resize(cols, rows);
+            }
             self.nudges.push(Nudge {
                 target: Rc::clone(tab),
                 cols: 0,
@@ -1033,6 +1055,71 @@ mod tests {
         let all: String = tab.written.borrow().concat();
         assert_eq!(all, "\x1b[?997;2n");
         assert!(!all.contains(['\r', '\n', '\x07']));
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+    }
+
+    #[test]
+    fn several_switches_in_a_row_give_one_nudge() {
+        // PT termReplyHandlers.ts: a push clears the pending nudge and schedules one anew.
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        c.push_theme(&tab_set(&[&tab]), Mode::Dark, t1);
+        c.tick(t0 + Duration::from_millis(250));
+        assert!(
+            tab.resizes.borrow().is_empty(),
+            "the first nudge was replaced"
+        );
+        c.tick(t1 + Duration::from_millis(250));
+        c.tick(t1 + Duration::from_millis(330));
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn a_switch_during_the_hold_leaves_the_tab_at_its_full_width() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        let narrow = t0 + Duration::from_millis(250);
+        c.tick(narrow);
+        assert_eq!(tab.size(), (79, 24));
+        // A second switch while the tab stands one column narrower.
+        let t1 = narrow + Duration::from_millis(40);
+        c.push_theme(&tab_set(&[&tab]), Mode::Dark, t1);
+        let mut t = t1;
+        while let Some(at) = c.next_deadline() {
+            t = at.max(t);
+            c.tick(t);
+        }
+        assert_eq!(tab.size(), (80, 24), "never left a column narrower");
+        let resizes = tab.resizes.borrow();
+        assert_eq!(resizes.last(), Some(&(80, 24)));
+        assert!(resizes.iter().all(|&(cols, _)| cols >= 79), "{resizes:?}");
+    }
+
+    #[test]
+    fn two_switches_closer_than_the_hold_leave_the_tab_at_its_full_width() {
+        // Two nudges of one tab, the second narrowing while the first holds, would each restore the
+        // width it found: the first 80, the second 79, and the tab would stay a column narrower.
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        c.push_theme(
+            &tab_set(&[&tab]),
+            Mode::Dark,
+            t0 + Duration::from_millis(50),
+        );
+        let mut t = t0;
+        while let Some(at) = c.next_deadline() {
+            t = at.max(t);
+            c.tick(t);
+        }
+        assert_eq!(tab.size(), (80, 24), "{:?}", tab.resizes.borrow());
         assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
     }
 
