@@ -285,10 +285,67 @@ export component MarkPreview inherits Window {
         ink: root.ink;
     }
 }
-// Stub until the mark lands (M8 Task 23).
-export component DictationTabMark inherits Rectangle {}
 
+// The dictation mark (M8 Task 23): a 13 px microphone in accent-hi at a tab's end while dictation is listening or
+// transcribing into that tab (PT DictationTabMark.tsx). It sits in a 16 px end box, centred by its parent, and is
+// absent from the tree while idle. The paste target's tab wears it even with another tab in front.
+export component DictationTabMark inherits Rectangle {
+    // Dictation is listening or transcribing into this tab.
+    in property <bool> active: false;
+    // True while listening, false while transcribing (the accessible name).
+    in property <bool> listening: true;
+    width: 16px;
+    height: 16px;
+
+    if root.active : Path {
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        width: 13px;
+        height: 13px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M9 2a3 3 0 0 1 6 0v8a3 3 0 0 1-6 0z M5 10a7 7 0 0 0 14 0 M12 17v4 M8 21h8";
+        fill: transparent;
+        stroke: Theme.accent-hi;
+        stroke-width: 2px * 13 / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        accessible-role: image;
+        accessible-label: root.listening ? "Listening" : "Transcribing";
+    }
+}
+
+// The dictation mark on a target tab, with another tab in front, in a 400 x 36 window (the component tests).
 export component DictationTabMarkPreview inherits Window {
     preferred-width: 400px;
     preferred-height: 36px;
+    background: Theme.ground;
+
+    in-out property <bool> active;
+    in-out property <bool> listening: true;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    // The paste target's tab (0 to 250) and the tab in front (250 to 400).
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 250px;
+        height: 36px;
+        background: Theme.tabs;
+        DictationTabMark {
+            x: 228px;
+            y: 10px;
+            active: root.active;
+            listening: root.listening;
+        }
+    }
+    Rectangle {
+        x: 250px;
+        y: 0px;
+        width: 150px;
+        height: 36px;
+        background: Theme.control;
+    }
 }

@@ -1,7 +1,162 @@
-// The dictation pill and its tab mark (M8 Task 23).
-export component DictationPill {}
-// Stub until the pill lands (M8 Task 23).
+// The dictation pill (M8 Task 23): one capsule at the bottom centre of the terminal area, over the session being
+// dictated into (PT DictationPill.tsx). It is absolutely placed in its parent's box and never takes layout, so the
+// shell's rows do not move. It is in the tree only while it has something to say (phase 0 mounts nothing).
+// Positions snap to device pixels. Pointer-transparent: no touch area here.
+import { Theme, Px, Motion } from "theme.slint";
+import { MarkMotion } from "tabmark.slint";
+
+export component DictationPill inherits Rectangle {
+    // 0 nothing (no pill in the tree), 1 listening, 2 transcribing, 3 a message.
+    in property <int> phase;
+    in property <bool> starting;
+    in property <string> live-text;
+    in property <string> message;
+    // The meter, 0 to 1, from the level callback.
+    in property <float> level;
+    // The smoothed level: fast up, slow down (PT: shown = level > shown ? level : shown*0.82 + level*0.18).
+    in-out property <float> shown: 0;
+    changed level => {
+        root.shown = root.level > root.shown ? root.level : root.shown * 0.82 + root.level * 0.18;
+    }
+
+    pure function bar(k: float) -> float {
+        return max(0.12, min(1.0, root.shown * k * 1.25));
+    }
+    // The five bars' heights as fractions of 16 px (PT BARS [0.55, 0.85, 1, 0.8, 0.5]).
+    out property <[float]> bars: [root.bar(0.55), root.bar(0.85), root.bar(1.0), root.bar(0.8), root.bar(0.5)];
+
+    property <string> label: root.phase == 1 ? "Listening…"
+        : root.phase == 2 ? (root.starting ? "Starting speech engine…" : "Transcribing…")
+        : root.message;
+    // The dim words: the live text, or "Starting speech engine" while listening with no words yet.
+    property <string> dim-text: root.phase == 1
+        ? (root.live-text != "" ? root.live-text : (root.starting ? "Starting speech engine" : ""))
+        : "";
+
+    if root.phase != 0 : box := Rectangle {
+        property <length> edge: Px.hair();
+        property <length> icon-w: root.phase == 1 ? 27px : (root.phase == 2 ? 14px : 0px);
+        property <length> gap: 10px;
+        property <length> text-x: edge + 12px + (icon-w > 0px ? icon-w + gap : 0px);
+        property <bool> has-dim: root.dim-text != "";
+        property <length> used: text-x + label-t.preferred-width
+            + (has-dim ? gap + dim-t.preferred-width : 0px) + 16px + edge;
+        width: min(680px, Px.snap(used), root.width - 48px);
+        height: Px.snap(18px + 12px + 2 * edge);
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap(root.height - 16px - self.height);
+        border-radius: self.height / 2;
+        background: Theme.side-flat;
+        border-width: edge;
+        border-color: Theme.divider;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: black.with-alpha(0.35);
+        drop-shadow-offset-y: 6px;
+        accessible-role: text;
+        accessible-label: root.label;
+
+        // Listening: five 3 px bars, 16 px tall at most, centred on the line.
+        if root.phase == 1 : Rectangle {
+            x: box.edge + 12px;
+            y: box.edge + 6px;
+            width: 27px;
+            height: 18px;
+            for i in 5 : Rectangle {
+                x: i * 6px;
+                width: 3px;
+                height: Px.snap(16px * root.bars[i]);
+                y: Px.snap((parent.height - self.height) / 2);
+                border-radius: 1.5px;
+                background: Theme.accent-hi;
+                animate height { duration: Motion.d(70ms); easing: linear; }
+            }
+        }
+        // Transcribing: a 14 px spinner (the top quarter turning).
+        if root.phase == 2 : Path {
+            x: box.edge + 12px;
+            y: box.edge + 6px + 2px;
+            width: 14px;
+            height: 14px;
+            viewbox-width: 14;
+            viewbox-height: 14;
+            commands: "M" + (7 + 6 * cos(MarkMotion.spin - 135deg)) + " " + (7 + 6 * sin(MarkMotion.spin - 135deg))
+                + "A6 6 0 0 1 " + (7 + 6 * cos(MarkMotion.spin - 45deg)) + " " + (7 + 6 * sin(MarkMotion.spin - 45deg));
+            fill: transparent;
+            stroke: Theme.accent-hi;
+            stroke-width: 2px;
+            stroke-line-cap: butt;
+        }
+
+        label-t := Text {
+            x: box.text-x;
+            y: box.edge + 6px;
+            width: self.preferred-width;
+            height: 18px;
+            vertical-alignment: center;
+            text: root.label;
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: Theme.text;
+            wrap: no-wrap;
+        }
+
+        // The newest words: the line is clipped from the left, so what was said last is what shows.
+        dim-holder := Rectangle {
+            visible: box.has-dim;
+            x: box.text-x + label-t.preferred-width + box.gap;
+            y: box.edge + 6px;
+            height: 18px;
+            width: max(0px, box.width - self.x - 16px - box.edge);
+            clip: true;
+            dim-t := Text {
+                width: self.preferred-width;
+                x: parent.width - self.width;
+                height: parent.height;
+                vertical-alignment: center;
+                text: root.dim-text;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                color: Theme.dim;
+                wrap: no-wrap;
+            }
+        }
+    }
+}
+
+// The pill alone in a 400 x 300 window, with grid rows behind it, for the component tests and the screenshots.
 export component DictationPillPreview inherits Window {
     preferred-width: 400px;
     preferred-height: 300px;
+    background: Theme.ground;
+
+    in-out property <int> phase;
+    in-out property <bool> starting;
+    in-out property <string> live-text;
+    in-out property <string> message;
+    in-out property <float> level;
+    out property <float> shown: pill.shown;
+    out property <[float]> bars: pill.bars;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    // Six grid rows the pill must never move.
+    for i in 6 : Rectangle {
+        x: 0px;
+        y: 40px * i + 20px;
+        width: root.width;
+        height: 2px;
+        background: Theme.track;
+    }
+
+    pill := DictationPill {
+        width: root.width;
+        height: root.height;
+        phase: root.phase;
+        starting: root.starting;
+        live-text: root.live-text;
+        message: root.message;
+        level: root.level;
+    }
 }
