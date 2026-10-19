@@ -33,6 +33,14 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("startup.trace", startup_trace);
     r.add("dpi.state", dpi_state);
     r.add("probe.names", probe_names);
+    r.add("memory.breakdown", memory_breakdown);
+}
+
+/// Where the private working set goes (Task 66): the parts the app can count, and the rest.
+fn memory_breakdown(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    crate::memory::breakdown()
+        .map(|b| b.to_json())
+        .ok_or_else(|| "memory.breakdown: the window has not set a source yet".to_string())
 }
 
 fn hex(r: u8, g: u8, b: u8) -> String {

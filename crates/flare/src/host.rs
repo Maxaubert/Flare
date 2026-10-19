@@ -205,6 +205,20 @@ impl GridHost {
         self.painter
     }
 
+    /// Adds what the grid host holds to a memory breakdown (the painters, the glyph source).
+    pub fn fill_breakdown(&self, b: &mut crate::memory::Breakdown) {
+        if let Some(gpu) = &self.gpu {
+            let m = gpu.memory();
+            b.atlas_cpu += m.atlas_cpu;
+            b.atlas_gpu += m.atlas_gpu;
+            b.grid_texture += m.grid_texture;
+        }
+        b.cpu_frame_buffer += self.cpu_image.data.capacity() + self.grid_buf.bytes();
+        let g = self.glyphs.memory();
+        b.glyph_cache += g.caches;
+        b.font_database += g.fonts;
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty || self.source.dirty()
     }
@@ -694,6 +708,32 @@ mod tests {
         assert_eq!(h.painter(), GridPainter::Gpu);
     }
 
+    #[test]
+    fn the_breakdown_counts_the_cpu_frame_buffer_and_no_gpu_parts_on_the_cpu_painter() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        h.render();
+        let mut b = crate::memory::Breakdown::default();
+        h.fill_breakdown(&mut b);
+        assert!(b.cpu_frame_buffer >= 200 * 100 * 4);
+        assert_eq!((b.atlas_gpu, b.grid_texture), (0, 0));
+    }
+
+    #[test]
+    fn the_breakdown_counts_the_grid_texture_and_the_atlas_on_the_gpu_painter() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        h.resize(200, 100, 1.0);
+        h.render_rgba().expect("image");
+        let mut b = crate::memory::Breakdown::default();
+        h.fill_breakdown(&mut b);
+        assert_eq!(b.grid_texture, 200 * 100 * 4);
+        assert_eq!(b.atlas_gpu, 2048 * 2048 * 4);
+    }
     #[test]
     fn reattach_after_teardown_restores_the_gpu() {
         let Ok((device, queue, _)) = headless_device() else {

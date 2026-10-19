@@ -565,6 +565,11 @@ impl TermHandle {
         std::mem::take(&mut *lk(&self.sh.cursor_log))
     }
 
+    /// Bytes this tab's scrollback holds (see `Emulator::scrollback_bytes`).
+    pub fn scrollback_bytes(&self) -> usize {
+        self.emu.lock().scrollback_bytes()
+    }
+
     /// Read only: no dirty flag, no wake.
     pub fn with_emu_quiet<R>(&self, f: impl FnOnce(&Emulator) -> R) -> R {
         f(&self.emu.lock())

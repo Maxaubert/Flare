@@ -82,6 +82,11 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// Bytes the cell storage holds.
+    pub fn bytes(&self) -> usize {
+        self.cells.capacity() * size_of::<Cell>()
+    }
+
     /// Creates a grid of default cells. `cols` and `rows` are clamped to at least 1.
     pub fn new(cols: usize, rows: usize) -> Self {
         let cols = cols.max(1);

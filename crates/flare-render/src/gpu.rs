@@ -90,6 +90,19 @@ pub struct GpuPainter {
     straight_target: Option<wgpu::Texture>,
 }
 
+/// Bytes the GPU painter holds, for the memory breakdown (M10 Task 66).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuMemory {
+    /// The glyph atlas on the CPU side (slot table, uploads waiting).
+    pub atlas_cpu: usize,
+    /// The glyph atlas texture.
+    pub atlas_gpu: usize,
+    /// The grid texture (and the straight-alpha copy under glass).
+    pub grid_texture: usize,
+    /// The instance buffers.
+    pub buffers: usize,
+}
+
 /// The un-premultiply pass: one fullscreen triangle reading the painted grid texel for texel.
 fn straight_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -512,6 +525,20 @@ impl GpuPainter {
         }
         self.queue.submit(Some(encoder.finish()));
         target
+    }
+
+    /// What this painter holds (a texture counts width x height x 4).
+    pub fn memory(&self) -> GpuMemory {
+        let tex = |t: &Option<wgpu::Texture>| {
+            t.as_ref()
+                .map_or(0, |t| t.width() as usize * t.height() as usize * 4)
+        };
+        GpuMemory {
+            atlas_cpu: self.atlas.cpu_bytes(),
+            atlas_gpu: GlyphAtlas::gpu_bytes(),
+            grid_texture: tex(&self.target) + tex(&self.straight_target),
+            buffers: (self.rect_buf.cap + self.glyph_buf.cap) as usize,
+        }
     }
 
     /// The font scale changed, so every cached bitmap is wrong.

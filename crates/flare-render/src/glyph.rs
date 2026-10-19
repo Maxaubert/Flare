@@ -31,6 +31,15 @@ pub struct GlyphBitmap {
     pub data: Vec<u8>,
 }
 
+/// Bytes a glyph source holds, for the memory breakdown (M10 Task 66).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlyphMemory {
+    /// The face files the font database holds (memory mapped: they are mostly not private).
+    pub fonts: usize,
+    /// Bitmaps and shaping caches on the heap.
+    pub caches: usize,
+}
+
 /// The one interface both painters get glyph bitmaps through.
 pub trait GlyphSource {
     /// None for clusters with nothing to draw (space) or that no font can draw.
@@ -41,6 +50,10 @@ pub trait GlyphSource {
     /// Changes the face (first installed of `families`, else a monospace face) and the base size
     /// in logical pixels. Default: nothing to change.
     fn set_font(&mut self, _families: &[&str], _base_px: f32) {}
+    /// What this source holds. Default: nothing counted.
+    fn memory(&self) -> GlyphMemory {
+        GlyphMemory::default()
+    }
 }
 
 /// Deterministic test source: every cluster that is not empty and not all spaces is a solid `w x h`

@@ -3242,6 +3242,11 @@ impl AppCtl {
     /// The waker: drain what the shells reported. A folder report that is a share or holds a
     /// control character is never adopted (a program must not steer a tab to SMB), and a shell
     /// that exited closes its tab unasked.
+    /// Each live tab's scrollback bytes (the memory breakdown).
+    pub fn scrollbacks(&self) -> Vec<(String, usize)> {
+        self.deps.host.scrollbacks()
+    }
+
     pub fn host_wake(&mut self) {
         flare_term::session::trace_key("wake");
         let events = self.deps.host.drain_events();

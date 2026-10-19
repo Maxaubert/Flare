@@ -653,8 +653,11 @@ pub fn run_window(
         move || {
             let Some(app) = weak.upgrade() else { return };
             let host = host.borrow();
-            let memory =
+            let mut memory =
                 process_memory().map_or_else(|| "unavailable".to_string(), |m| m.summary());
+            if let Some(b) = crate::memory::breakdown() {
+                memory = format!("{memory}\nparts: {}", b.line());
+            }
             let text = overlay_text(
                 effective,
                 note.borrow().as_deref(),
@@ -1089,6 +1092,27 @@ pub fn run_window(
         }));
         stores = Some((tabs_store, window_store, prefs));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
+        // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
+        // tab's scrollback.
+        {
+            let host = host.clone();
+            let weak = Rc::downgrade(&rc);
+            crate::memory::set_breakdown_source(Rc::new(move || {
+                let mut b = crate::memory::Breakdown::default();
+                if let Ok(h) = host.try_borrow() {
+                    h.fill_breakdown(&mut b);
+                }
+                if let Some(c) = weak.upgrade()
+                    && let Ok(c) = c.try_borrow()
+                {
+                    b.scrollback = c.scrollbacks();
+                }
+                b.help_index = flare_help::search::index_bytes();
+                b.settings_catalogue = flare_settings::rows::all_rows().count()
+                    * size_of::<flare_settings::rows::RowDef>();
+                b
+            }));
+        }
         ctl = Some(rc);
     }
 

@@ -311,6 +311,14 @@ impl TabHost {
         self.order.clone()
     }
 
+    /// Each live tab's scrollback bytes, in spawn order (the memory breakdown).
+    pub fn scrollbacks(&self) -> Vec<(String, usize)> {
+        self.order
+            .iter()
+            .filter_map(|id| Some((id.clone(), self.handles.get(id)?.scrollback_bytes())))
+            .collect()
+    }
+
     /// Kills every handle and every spare, then waits (3 s cap) for the shells to be gone.
     pub fn shutdown(&mut self) -> bool {
         for h in self.handles.values() {

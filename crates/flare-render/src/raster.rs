@@ -5,7 +5,7 @@ use crate::blend::blend_premul;
 use crate::font_catalog::{
     FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
 };
-use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphSource};
+use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
 use crate::metrics::{BASE_FONT_PX, FontUnits, font_px_for};
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
@@ -32,6 +32,8 @@ pub struct Rasterizer {
     tried_fallbacks: Vec<&'static str>,
     /// The ones that were kept, so a rebuilt database brings them back.
     kept_fallbacks: Vec<&'static str>,
+    /// (faces, bytes) of the last `font_bytes` count.
+    font_bytes: std::cell::Cell<Option<(usize, usize)>>,
 }
 
 impl Rasterizer {
@@ -61,7 +63,37 @@ impl Rasterizer {
             cache: HashMap::new(),
             tried_fallbacks: Vec::new(),
             kept_fallbacks: Vec::new(),
+            font_bytes: std::cell::Cell::new(None),
         }
+    }
+
+    /// Bytes of the distinct face files the database holds, read once per database change.
+    fn font_bytes(&self) -> usize {
+        let faces = self.fs.db().len();
+        if let Some((n, bytes)) = self.font_bytes.get()
+            && n == faces
+        {
+            return bytes;
+        }
+        let mut seen: Vec<&std::path::Path> = Vec::new();
+        let mut total = 0usize;
+        for face in self.fs.db().faces() {
+            match &face.source {
+                cosmic_text::fontdb::Source::File(p)
+                | cosmic_text::fontdb::Source::SharedFile(p, _) => {
+                    if !seen.contains(&p.as_path()) {
+                        seen.push(p.as_path());
+                        // sync-ok: read once per database change, for the memory overlay only
+                        total += std::fs::metadata(p).map_or(0, |m| m.len() as usize);
+                    }
+                }
+                cosmic_text::fontdb::Source::Binary(data) => {
+                    total += data.as_ref().as_ref().len();
+                }
+            }
+        }
+        self.font_bytes.set(Some((faces, total)));
+        total
     }
 
     /// How many faces the font database holds.
@@ -214,6 +246,19 @@ impl GlyphSource for Rasterizer {
     fn set_scale(&mut self, scale: f32) {
         self.scale = scale;
         self.cache.clear();
+    }
+
+    fn memory(&self) -> GlyphMemory {
+        let caches = self
+            .cache
+            .iter()
+            .map(|(k, v)| k.text.capacity() + v.as_ref().map_or(0, |b| b.data.capacity()))
+            .sum::<usize>()
+            + self.cache.capacity() * size_of::<(GlyphKey, Option<GlyphBitmap>)>();
+        GlyphMemory {
+            fonts: self.font_bytes(),
+            caches,
+        }
     }
 
     fn set_font(&mut self, families: &[&str], base_px: f32) {

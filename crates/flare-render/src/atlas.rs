@@ -157,6 +157,19 @@ impl GlyphAtlas {
         Ok(Some(slot))
     }
 
+    /// Bytes the CPU side holds: the slot table and the uploads not yet taken.
+    pub fn cpu_bytes(&self) -> usize {
+        let per_slot = size_of::<GlyphKey>() + size_of::<Option<AtlasSlot>>();
+        let keys: usize = self.slots.keys().map(|k| k.text.capacity()).sum();
+        let pending: usize = self.pending.iter().map(|u| u.rgba.capacity()).sum();
+        self.slots.capacity() * per_slot + keys + pending
+    }
+
+    /// Bytes of the atlas texture on the GPU (RGBA, one page).
+    pub const fn gpu_bytes() -> usize {
+        Self::SIZE as usize * Self::SIZE as usize * 4
+    }
+
     pub fn take_uploads(&mut self) -> Vec<Upload> {
         std::mem::take(&mut self.pending)
     }
@@ -276,6 +289,16 @@ mod tests {
         assert_eq!(atlas.take_uploads().len(), 1);
     }
 
+    #[test]
+    fn the_atlas_counts_its_bytes() {
+        let mut atlas = GlyphAtlas::new();
+        let before = atlas.cpu_bytes();
+        let mut fake = FakeGlyphs::new(6, 9);
+        atlas.get(&key("a"), &mut fake).unwrap();
+        // The slot table and the upload waiting both count.
+        assert!(atlas.cpu_bytes() > before + 6 * 9 * 4);
+        assert_eq!(GlyphAtlas::gpu_bytes(), 2048 * 2048 * 4);
+    }
     #[test]
     fn space_is_ok_none() {
         let mut atlas = GlyphAtlas::new();

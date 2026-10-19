@@ -78,6 +78,7 @@ pub fn total_mb(rows: &[(u32, f64)]) -> f64 {
 pub fn measures(o: &PerfOpts, renderer: &'static str) -> Result<Vec<Measure>, String> {
     let mut totals = Vec::new();
     let mut last_rows = Vec::new();
+    let mut last_breakdown = Value::Null;
     for _ in 0..SESSIONS {
         let mut run = launch_ready(o, renderer, None)?;
         pause(SETTLE_MS);
@@ -85,6 +86,12 @@ pub fn measures(o: &PerfOpts, renderer: &'static str) -> Result<Vec<Measure>, St
         let pids = app_tree(&table, run.app.child.pid());
         let rows = query(&pids)?;
         totals.push(total_mb(&rows));
+        // Where the app says the bytes are (Task 66): the last session's table goes in the detail.
+        last_breakdown = run
+            .app
+            .session
+            .probe("memory.breakdown", json!({}))
+            .unwrap_or(Value::Null);
         last_rows = rows
             .iter()
             .map(|(pid, bytes)| {
@@ -103,6 +110,6 @@ pub fn measures(o: &PerfOpts, renderer: &'static str) -> Result<Vec<Measure>, St
         renderer,
         value: median(&totals),
         unit: "MB",
-        detail: json!({ "sessions_mb": totals, "processes": last_rows }),
+        detail: json!({ "sessions_mb": totals, "processes": last_rows, "breakdown": last_breakdown }),
     }])
 }

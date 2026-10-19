@@ -418,6 +418,11 @@ impl Emulator {
         self.term.grid().history_size()
     }
 
+    /// Bytes the scrollback holds: `history_size * cols * size_of::<Cell>()` (M10 Task 66).
+    pub fn scrollback_bytes(&self) -> usize {
+        self.history_size() * self.cols() * size_of::<alacritty_terminal::term::cell::Cell>()
+    }
+
     pub fn display_offset(&self) -> usize {
         self.term.grid().display_offset()
     }
@@ -1592,6 +1597,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scrollback_bytes_follow_the_history_and_the_width() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(e.scrollback_bytes(), 0);
+        for i in 0..100 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let cell = size_of::<alacritty_terminal::term::cell::Cell>();
+        assert_eq!(e.scrollback_bytes(), e.history_size() * 80 * cell);
+        assert!(e.history_size() >= 70);
+    }
     #[test]
     fn scrollback_is_ten_thousand_lines() {
         let mut e = Emulator::new(80, 24);
