@@ -343,6 +343,22 @@ fn pick_card(app: &mut App, id: &str) -> bool {
     if !in_view {
         return false;
     }
+    // The pane scrolls with easing: click only once the card has stopped moving.
+    let mut last = f64::NAN;
+    let mut still = 0;
+    wait_for(4_000, &mut || {
+        let y = wall_cards(app)
+            .into_iter()
+            .find(|c| c.0 == id)
+            .map_or(f64::NAN, |c| c.1 .1);
+        still = if (y - last).abs() < 0.01 {
+            still + 1
+        } else {
+            0
+        };
+        last = y;
+        still >= 4
+    });
     let Some(c) = wall_cards(app).into_iter().find(|c| c.0 == id) else {
         return false;
     };
