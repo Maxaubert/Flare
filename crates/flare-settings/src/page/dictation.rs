@@ -271,10 +271,17 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
         name: name.clone(),
         face: String::new(),
     }));
+    // A saved microphone that is not listed (unplugged, or the listing has not arrived) reads as System default,
+    // as PT's MicField does: the select draws only the option whose id equals the value.
+    let mic_value = if mic_options.iter().any(|o| o.id == p.mic) {
+        p.mic.clone()
+    } else {
+        String::new()
+    };
     let mic = plain_row(
         def("dictation-mic"),
         Control::Mic {
-            value: p.mic.clone(),
+            value: mic_value,
             options: mic_options,
             testing: d.mic_testing,
             level: d.mic_level,
@@ -676,6 +683,34 @@ mod tests {
             ));
             // The stored choice is not touched by the page, so a Whisper model brings it back.
             assert_eq!(d.prefs.language, "de");
+        });
+    }
+
+    #[test]
+    fn a_saved_microphone_that_is_not_listed_reads_as_system_default() {
+        with_env(false, |env| {
+            let mic_value = |d: &DictationData| {
+                let s = sections(env, d);
+                let r = rows(&s)
+                    .into_iter()
+                    .find(|r| r.id == "dictation-mic")
+                    .expect("mic row")
+                    .clone();
+                match r.control {
+                    Control::Mic { value, .. } => value,
+                    other => panic!("not a mic: {other:?}"),
+                }
+            };
+            let mut d = data(true);
+            d.prefs.mic = "mic-1".to_string();
+            assert_eq!(mic_value(&d), "mic-1", "listed: shown");
+            d.prefs.mic = "gone".to_string();
+            assert_eq!(mic_value(&d), "", "replugged under a new id");
+            d.mics.clear();
+            d.prefs.mic = "mic-1".to_string();
+            assert_eq!(mic_value(&d), "", "the listing has not arrived");
+            d.prefs.mic.clear();
+            assert_eq!(mic_value(&d), "");
         });
     }
 

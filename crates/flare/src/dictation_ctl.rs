@@ -1632,9 +1632,6 @@ thread_local! {
     static TEST_MIC: RefCell<Option<MicSource>> = const { RefCell::new(None) };
 }
 
-/// How many times the page has opened a microphone (the tests hold it at what the presses made).
-pub static MIC_OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 /// A download or removal under way, or its last failure; written by workers, read when the page is built.
 #[derive(Clone, Debug, Default)]
 struct Run {
@@ -1792,18 +1789,22 @@ pub fn gpu_fell_back() -> bool {
 
 /// A press anywhere in the window (PT: `pointerdown` in the capture phase, but not on the field itself).
 pub fn on_press() {
-    PAGE.with(|p| {
+    let was = PAGE.with(|p| {
         let mut p = p.borrow_mut();
-        if p.capturing {
+        let was = p.capturing;
+        if was {
             p.capturing = false;
             p.bare = None;
             p.held.clear();
-            // The field's own click, which follows this press, must not wait again.
-            p.press_cancelled = true;
-        } else {
-            p.press_cancelled = false;
         }
+        // The field's own click, which follows this press, must not wait again.
+        p.press_cancelled = was;
+        was
     });
+    // A press on the heading or on empty space rebuilds nothing by itself: draw the field idle.
+    if was {
+        page_changed();
+    }
 }
 
 fn cancel_capture() {
@@ -2178,7 +2179,6 @@ fn start_test() {
         p.test_peak = Some(Arc::clone(&peak));
         (p.test_epoch, peak)
     });
-    MIC_OPENS.fetch_add(1, O::SeqCst);
     let on_frame: FrameFn = Box::new(move |samples: &[f32]| {
         let l = flare_dictation::wav::level(samples);
         let mut cur = peak.load(O::Relaxed);
@@ -3781,8 +3781,13 @@ mod page_tests {
     fn a_press_outside_and_a_blur_cancel_capture_and_the_fields_own_click_does_not_reopen_it() {
         let p = page(["a", "b", "c"]);
         start_capture_field();
+        let drawn = p.refreshes.get();
         on_press();
         assert!(!page_snap().capturing, "a press elsewhere ends the capture");
+        assert!(
+            p.refreshes.get() > drawn,
+            "the field is drawn again, not left saying Press a key"
+        );
         // The press was on the field itself: its click follows and must not wait again.
         assert!(page_button("dictation-hotkey", "capture"));
         assert!(!page_snap().capturing);
@@ -3792,6 +3797,10 @@ mod page_tests {
         assert!(page_snap().capturing);
         on_blur();
         assert!(!page_snap().capturing, "a window blur ends it too");
+        // A press while nothing waits draws nothing.
+        let drawn = p.refreshes.get();
+        on_press();
+        assert_eq!(p.refreshes.get(), drawn);
         assert!(p.prefs.get(prefs::KEYS[2]).is_none());
     }
 
@@ -3983,20 +3992,23 @@ mod page_tests {
         let p = page(["a", "b", "c"]);
         let dir = tempfile::tempdir().unwrap();
         TEST_MIC.with(|m| *m.borrow_mut() = Some(MicSource::File(silent_wav(dir.path()))));
-        let before = MIC_OPENS.load(Ordering::SeqCst);
+        let before = mic::opens_on_this_thread();
         let _ = page_snap();
+        let _ = page_mics();
+        page_shown();
+        page_left();
         assert!(page_button("dictation-hotkey", "capture"));
         assert!(page_button("dictation-hotkey", "capture"));
         assert!(page_choose("dictation-mic", "x"));
         assert!(page_switch("dictation-enabled", true));
         assert_eq!(
-            MIC_OPENS.load(Ordering::SeqCst),
+            mic::opens_on_this_thread(),
             before,
             "nothing opened a microphone"
         );
         // 3. The Test button opens it, once, and Stop lets go.
         assert!(page_button("dictation-mic", "test"));
-        assert_eq!(MIC_OPENS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(mic::opens_on_this_thread(), before + 1);
         assert!(page_snap().mic_testing);
         assert!(
             crate::timer_registry::running(TEST_TICK) && crate::timer_registry::running(TEST_STOP)
@@ -4007,7 +4019,7 @@ mod page_tests {
             !crate::timer_registry::running(TEST_TICK),
             "the meter timer is gone"
         );
-        assert_eq!(MIC_OPENS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(mic::opens_on_this_thread(), before + 1);
         let _ = &p;
     }
 

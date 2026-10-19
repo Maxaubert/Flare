@@ -354,7 +354,9 @@ fn model_buttons(buttons: &[flare_settings::page::Button], failed: bool) -> Mode
                 } else {
                     b.label.as_str().into()
                 },
-                label_alt: b.alt.clone().unwrap_or_default().into(),
+                // Never the tooltip: SetRowButton sizes itself by the wider of label and label_alt, and the
+                // tip (GPU_OFF_TITLE) is a sentence. It reaches the view through `button_title`.
+                label_alt: SharedString::new(),
                 off: b.off,
                 alt: false,
             })
@@ -3069,6 +3071,35 @@ mod tests {
     }
 
     #[test]
+    fn the_gpu_disable_button_is_as_wide_as_its_word_and_the_tip_is_a_title() {
+        use flare_settings::page::Button;
+        use flare_settings::page::dictation::{GpuRow, ModelState};
+        let tip = "Turns GPU acceleration off and frees 675 MB of disk space.";
+        let g = GpuRow {
+            state: ModelState::Installed,
+            failure: None,
+            badge: Some("Enabled"),
+            sub: String::new(),
+            buttons: vec![Button {
+                id: "disable",
+                label: "Disable".to_string(),
+                alt: Some(tip.to_string()),
+                off: false,
+            }],
+            title: tip.to_string(),
+            off: false,
+        };
+        let row = to_slint_gpu(&g, 0.0, 64.0);
+        let b = row.buttons.row_data(0).unwrap();
+        assert_eq!(b.label, "Disable");
+        assert_eq!(
+            b.label_alt, "",
+            "a sentence in label_alt would size the button"
+        );
+        assert_eq!(row.button_title, tip, "the tip still arrives as the title");
+    }
+
+    #[test]
     fn a_failed_download_says_why_and_offers_retry() {
         let (f, _dir, _calls) = fx_dict(1.0, ["fail", "b", "c"]);
         switch_dictation_on(&f);
@@ -3090,21 +3121,42 @@ mod tests {
         let (f, dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
         crate::dictation_ctl::fixture::silent_mic(dir.path());
         switch_dictation_on(&f);
-        let before = crate::dictation_ctl::MIC_OPENS.load(std::sync::atomic::Ordering::SeqCst);
+        let before = flare_dictation::mic::opens_on_this_thread();
         assert_eq!(f.b().get_dict_level(), 0.0);
         f.b()
             .invoke_row_button("dictation-mic".into(), "test".into());
         assert!(f.row("dictation-mic").unwrap().testing);
-        assert_eq!(
-            crate::dictation_ctl::MIC_OPENS.load(std::sync::atomic::Ordering::SeqCst),
-            before + 1
-        );
+        assert_eq!(flare_dictation::mic::opens_on_this_thread(), before + 1);
         // Leaving the page lets the microphone go.
         f.b().invoke_page_chosen("terminal".into());
         f.page("dictation");
         assert!(!f.row("dictation-mic").unwrap().testing);
         assert!(!crate::timer_registry::running("dictation.mic-test"));
         assert_eq!(f.b().get_dict_level(), 0.0);
+    }
+
+    #[test]
+    fn building_and_showing_the_page_opens_no_microphone() {
+        let (f, dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        crate::dictation_ctl::fixture::silent_mic(dir.path());
+        let before = flare_dictation::mic::opens_on_this_thread();
+        // The whole page, built with dictation off and on, listed, shown, left and shown again.
+        switch_dictation_on(&f);
+        let _ = crate::dictation_ctl::page_mics();
+        crate::dictation_ctl::page_shown();
+        f.b().invoke_page_chosen("terminal".into());
+        f.page("dictation");
+        crate::dictation_ctl::page_shown();
+        assert!(f.row("dictation-mic").is_some());
+        assert_eq!(
+            flare_dictation::mic::opens_on_this_thread(),
+            before,
+            "page_data, page_shown and page_mics open nothing"
+        );
+        // Only the Test button does, once.
+        f.b()
+            .invoke_row_button("dictation-mic".into(), "test".into());
+        assert_eq!(flare_dictation::mic::opens_on_this_thread(), before + 1);
     }
 
     #[test]
