@@ -82,6 +82,8 @@ pub struct Regions {
     /// Bytes the process heaps hold allocated and committed (the Rust allocator lives here).
     pub heap_allocated: usize,
     pub heap_committed: usize,
+    /// The largest private allocations by resident bytes: (base address, bytes, is a process heap).
+    pub largest_private: Vec<(usize, usize, bool)>,
 }
 
 /// Walks this process's private pages (UI thread, a few ms; only when the overlay or a probe asks).
@@ -95,6 +97,7 @@ pub fn regions() -> Option<Regions> {
     let mut out = Regions::default();
     let mut images: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut names: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    let mut allocs: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut i = 0;
     while i < pages.len() {
         // SAFETY: `info` is a zeroed plain-data struct and VirtualQuery only writes into it.
@@ -137,24 +140,33 @@ pub fn regions() -> Option<Regions> {
             out.mapped += bytes;
         } else {
             out.private += bytes;
+            *allocs.entry(info.AllocationBase as usize).or_default() += bytes;
         }
     }
     let mut image: Vec<(String, usize)> = images.into_iter().collect();
     image.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
     out.image = image;
-    let (a, c) = heaps();
+    let (a, c, handles) = heaps();
     out.heap_allocated = a;
     out.heap_committed = c;
+    let mut big: Vec<(usize, usize, bool)> = allocs
+        .into_iter()
+        .map(|(base, bytes)| (base, bytes, handles.iter().any(|h| h & !0xffff == base)))
+        .collect();
+    big.sort_by_key(|(_, b, _)| std::cmp::Reverse(*b));
+    big.truncate(10);
+    out.largest_private = big;
     Some(out)
 }
 
-/// (allocated, committed) bytes summed over this process's heaps.
-fn heaps() -> (usize, usize) {
+/// (allocated, committed) bytes summed over this process's heaps, and their handles.
+fn heaps() -> (usize, usize, Vec<usize>) {
     use windows_sys::Win32::System::Memory::{GetProcessHeaps, HEAP_SUMMARY, HeapSummary};
     let mut handles = vec![std::ptr::null_mut(); 64];
     // SAFETY: `handles` has room for the 64 handles asked for.
     let n = unsafe { GetProcessHeaps(handles.len() as u32, handles.as_mut_ptr()) } as usize;
     let (mut allocated, mut committed) = (0usize, 0usize);
+    let mut out = Vec::new();
     for h in handles.iter().take(n.min(64)) {
         // SAFETY: a zeroed HEAP_SUMMARY with `cb` set is what HeapSummary expects; `h` came from
         // GetProcessHeaps.
@@ -164,10 +176,11 @@ fn heaps() -> (usize, usize) {
             if HeapSummary(*h, 0, &mut s) != 0 {
                 allocated += s.cbAllocated;
                 committed += s.cbCommitted;
+                out.push(*h as usize);
             }
         }
     }
-    (allocated, committed)
+    (allocated, committed, out)
 }
 /// Where the private working set goes, counted from the owners (M10 Task 66, step 1). A part the
 /// app cannot count (the graphics driver, Slint, the allocator) shows up as `unaccounted`.
@@ -264,6 +277,7 @@ impl Breakdown {
                 "private": r.private,
                 "heap_allocated": r.heap_allocated,
                 "heap_committed": r.heap_committed,
+                "largest_private": r.largest_private.iter().map(|(a, b, h)| serde_json::json!({"base": format!("{a:#x}"), "bytes": b, "heap": h})).collect::<Vec<_>>(),
             })),
             "accounted": self.accounted(),
             "unaccounted": self.unaccounted(),
