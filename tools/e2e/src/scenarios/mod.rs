@@ -3,9 +3,11 @@
 pub mod agent_hooks;
 pub mod agent_launch;
 pub mod agent_misc;
+pub mod anywhere;
 pub mod chrome;
 pub mod closeask;
 pub mod diag;
+pub mod dictation;
 pub mod dpi;
 mod driver;
 pub mod help;
@@ -443,6 +445,24 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
+        name: "dictation",
+        group: "dictation",
+        run: dictation::dictation,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "dictationPage",
+        group: "dictation",
+        run: dictation::dictation_page,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "dictationParakeet",
+        group: "dictation",
+        run: dictation::dictation_parakeet,
+        limit_secs: 240,
+    },
+    Scenario {
         name: "exitClosesTab",
         group: "lifecycle",
         run: lifecycle::exit_closes_tab,
@@ -453,6 +473,18 @@ pub const ALL: &[Scenario] = &[
         group: "lifecycle",
         run: lifecycle::prompt_layout,
         limit_secs: 180,
+    },
+    Scenario {
+        name: "dictateAnywhere",
+        group: "anywhere",
+        run: anywhere::dictate_anywhere,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "dictateTwoCopies",
+        group: "anywhere",
+        run: anywhere::dictate_two_copies,
+        limit_secs: 240,
     },
     Scenario {
         name: "dpiMatrix",

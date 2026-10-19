@@ -438,6 +438,11 @@ impl AgentHub {
         self.settle(now);
     }
 
+    /// The Claude sessions dictated text may be sent to (M8 Task 11 fills it).
+    pub fn send_tabs(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     pub fn set_looking(&mut self, active: Option<&str>, focused: bool) {
         let now = self.now();
         self.ind.set_looking(now, active, focused);

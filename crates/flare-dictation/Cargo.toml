@@ -5,5 +5,39 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+flare-shells = { path = "../flare-shells" }
+flare-win = { path = "../flare-win" }
+flare-diag = { path = "../flare-diag" }
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+ureq.workspace = true
+zip.workspace = true
+libloading.workspace = true
+windows.workspace = true
+windows-sys.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "flare-parakeet-host"
+path = "src/bin/flare_parakeet_host.rs"
+
+[[bin]]
+name = "fake-whisper-server"
+path = "src/bin/fake_whisper_server.rs"
+
+[[bin]]
+name = "fake-parakeet-cli"
+path = "src/bin/fake_parakeet_cli.rs"
+
+[[bin]]
+name = "fake-parakeet-host"
+path = "src/bin/fake_parakeet_host.rs"
+
 [lints]
 workspace = true

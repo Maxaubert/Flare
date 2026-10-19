@@ -434,7 +434,7 @@ impl SettingsCtl {
         let find = FindState::new(
             settings_index(&IndexEnv {
                 nvidia: false,
-                dictation_wired: false,
+                dictation_wired: crate::dictation_ctl::wired(),
             }),
             page_names(),
         );
@@ -813,7 +813,7 @@ impl SettingsCtl {
             diag,
             diag_marked: self.marked(),
             nvidia: false,
-            dictation_wired: false,
+            dictation_wired: crate::dictation_ctl::wired(),
             theme_colours: (self.deps.theme_colours)(),
             agent_colours: (self.deps.agent_colours)(),
             agent_key_labels: (self.deps.agent_key_labels)(),

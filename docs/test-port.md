@@ -512,6 +512,8 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `dictationParakeet` | 11 | M8 | - | 0 | waits |
 | `exitClosesTab` | 3 | `scenarios/lifecycle.rs`, `exit_closes_tab` | 3 | 0 | ok |
 | `promptLayout` | 2 | `scenarios/lifecycle.rs`, `prompt_layout` | 2 | 0 | ok |
+| `dictateAnywhere` | 9 | M8 | - | 0 | waits |
+| `dictateTwoCopies` | 10 | M8 | - | 0 | waits |
 
 `settingsKeys` is judged by hand: the `reach` closure runs three walks (5 checks run, 3 DROPPED notes; 8 of 8 PT checks accounted).
 

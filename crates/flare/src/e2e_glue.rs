@@ -1588,6 +1588,9 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             resp.reply(ctx.probe(&name, &arg));
             return;
         }
+        Request::DictLine { line } => crate::dictation_ctl::e2e_line(&line),
+        Request::DictRoute { text, front } => crate::dictation_ctl::e2e_route(&text, front),
+        Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,

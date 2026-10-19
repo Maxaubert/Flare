@@ -521,7 +521,6 @@ fn settings_deps(
     glass: flare_settings::page::GlassSupport,
     verb: Arc<dyn flare_settings::verb::ExplorerVerb>,
 ) -> crate::settings_ctl::SettingsDeps {
-    use flare_settings::page::PlaceholderDictation;
     let look = LookStore::new(prefs.clone());
     let weak = app.as_weak();
     crate::settings_ctl::SettingsDeps {
@@ -531,7 +530,7 @@ fn settings_deps(
             flare_diag::control::DiagControl::with_log(&profile, flare_diag::writer::main()),
         )),
         verb,
-        dictation: Rc::new(PlaceholderDictation),
+        dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(move |default_dir, answer| {
             let parent = weak
                 .upgrade()
@@ -994,6 +993,7 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        crate::dictation_ctl::install(&app, &rc, args);
         // What this run is: installed or not, e2e or not (M9 Task 32). The verb and the update
         // engine follow from it.
         let ship = crate::ship_ctl::Ship::detect(
@@ -1384,6 +1384,8 @@ pub fn run_window(
         crate::startup_trace::after_first_frame("verb_reconcile", move || switch.reconcile());
     }
     let result = app.run();
+    // Dictation stops first: engine, host, hook and link are gone before the shells are killed.
+    crate::dictation_ctl::stop_all();
     if let Some((engine, _)) = &update_engine {
         engine.stop();
     }

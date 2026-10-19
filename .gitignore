@@ -2,3 +2,7 @@ target/
 .claude/
 
 .e2e-shots/
+
+# M8 dictation: the engine fetched at build time and the e2e fixture cache
+vendor/
+tools/e2e/.e2e-cache/

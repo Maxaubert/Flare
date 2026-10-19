@@ -148,6 +148,42 @@ pub enum Request {
     Quit {
         force: bool,
     },
+    /// M8: one keyboard-helper line in Prism Terminal's text form (`d 5B f 1234`, `u A2`, `o`, `p 1`,
+    /// `x`, `ready`, `failed`, `waiting`), parsed by `keyfeed::parse_helper_line` and fed to the service
+    /// as if the hook had printed it. The real hook is never installed under --e2e.
+    DictLine {
+        line: String,
+    },
+    /// M8: as if a recording begun with the window of process `front` in front heard `text`.
+    DictRoute {
+        text: String,
+        front: Option<u32>,
+    },
+    /// M8: what the window hands main as heard: the text, or a message that says why not.
+    DictRouted {
+        result: RouteResult,
+    },
+}
+
+/// The routed result of one dictation (M8): the heard text, or a message for the user.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteResult {
+    Text { text: String },
+    Message { message: String },
+}
+
+/// The dictation probes (M8 Task 27 fills them; the names are fixed here so the scenarios and the app agree).
+pub mod dict_probes {
+    pub const VIEW: &str = "dict.view";
+    pub const PILL: &str = "dict.pill";
+    pub const MARK: &str = "dict.mark";
+    pub const ROWS: &str = "dict.rows";
+    pub const ASK: &str = "dict.ask";
+    pub const LANG: &str = "dict.lang";
+    pub const WIDGET: &str = "dict.widget";
+    pub const ROLE: &str = "dict.role";
+    pub const ENGINE: &str = "dict.engine";
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -320,6 +356,25 @@ mod tests {
             Request::KeyAtPrompt {
                 chord: "Enter".into(),
                 prompt_suffix: "$ ".into(),
+            },
+            Request::DictLine {
+                line: "d 5B f 1234".into(),
+            },
+            Request::DictRoute {
+                text: "hello".into(),
+                front: Some(4242),
+            },
+            Request::DictRoute {
+                text: "hello".into(),
+                front: None,
+            },
+            Request::DictRouted {
+                result: RouteResult::Text { text: "hi".into() },
+            },
+            Request::DictRouted {
+                result: RouteResult::Message {
+                    message: "no".into(),
+                },
             },
             Request::BlockUi { ms: 50 },
             Request::Slow {

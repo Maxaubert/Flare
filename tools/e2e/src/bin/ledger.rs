@@ -85,6 +85,8 @@ const PT: &[(&str, u32)] = &[
     ("dictationParakeet", 11),
     ("exitClosesTab", 3),
     ("promptLayout", 2),
+    ("dictateAnywhere", 9),
+    ("dictateTwoCopies", 10),
 ];
 
 /// Where a scenario's port lives, as far as this ledger can tell.
@@ -289,7 +291,14 @@ pub fn ledger(dir: &Path) -> Vec<Row> {
                     0,
                 );
             }
-            if matches!(name, "dictation" | "dictationPage" | "dictationParakeet") {
+            if matches!(
+                name,
+                "dictation"
+                    | "dictationPage"
+                    | "dictationParakeet"
+                    | "dictateAnywhere"
+                    | "dictateTwoCopies"
+            ) {
                 return row(name, pt_ok, Port::Waits("M8"), 0, 0);
             }
             let Some((_, group, func)) = table.iter().find(|(n, _, _)| n == name) else {
@@ -389,9 +398,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pt_counts_are_the_74_scenarios_and_their_1094_calls() {
-        assert_eq!(PT.len(), 74);
-        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1094);
+    fn the_pt_counts_are_the_76_scenarios_and_their_1113_calls() {
+        // 74 scenarios and 1094 calls at v0.55.6, plus dictateAnywhere (9) and dictateTwoCopies (10) at e5848cb.
+        assert_eq!(PT.len(), 76);
+        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1113);
     }
 
     #[test]

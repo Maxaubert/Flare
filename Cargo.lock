@@ -1634,6 +1634,22 @@ dependencies = [
 [[package]]
 name = "flare-dictation"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flare-diag",
+ "flare-shells",
+ "flare-win",
+ "libloading",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
+ "windows",
+ "windows-sys 0.61.2",
+ "zip 9.0.0-pre3",
+]
 
 [[package]]
 name = "flare-e2e"
@@ -5799,7 +5815,7 @@ dependencies = [
  "waitpid-any",
  "windows",
  "xml",
- "zip",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -6987,6 +7003,20 @@ name = "zip"
 version = "8.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.0-pre3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e8082c6efe6dbccc7e8ea3ebf6afe46a04847f2e0bcf772c8aebc933dd2ccf"
 dependencies = [
  "crc32fast",
  "flate2",

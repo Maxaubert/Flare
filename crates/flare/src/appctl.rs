@@ -365,6 +365,8 @@ pub struct AppCtl {
     find_shown: bool,
     /// The agent indicator, the arm state, the poll and the question watches (Task 28).
     hub: AgentHub,
+    /// The dictation key path (M8): offered every key first.
+    dictation: crate::dictation_ctl::DictationKeys,
     /// The tabs the hub has been given a handle for; one that goes away is forgotten.
     hub_known: HashSet<String>,
     /// The hub's view of the host's handles, refreshed before every hub call.
@@ -726,6 +728,7 @@ impl AppCtl {
             skel_resumed: false,
             agent_view,
             focused: true,
+            dictation: crate::dictation_ctl::DictationKeys,
             flash: Rc::new(|| {}),
             looked: None,
             badge: None,
@@ -2703,6 +2706,10 @@ impl AppCtl {
 
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        // Dictation sees every key first (Prism Terminal's capture phase); a swallowed key goes nowhere else.
+        if self.dictation.feed_key(ev, false) {
+            return KeyOutcome::Consumed;
+        }
         if ev.pressed {
             flare_term::session::trace_key("key");
         }
@@ -2753,12 +2760,16 @@ impl AppCtl {
     }
 
     pub fn on_key_up(&mut self, ev: &KeyEvent) {
+        if self.dictation.feed_key(ev, true) {
+            return;
+        }
         chords::on_key_up(ev, &mut Target(self));
     }
 
     /// The window lost the keyboard: a Most recent walk ends, tips go, a right-click menu shuts
     /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
+        crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
         self.close_menu();

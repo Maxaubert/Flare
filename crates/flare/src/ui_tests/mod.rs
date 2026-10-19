@@ -3,6 +3,9 @@
 mod agent_flows;
 mod app;
 mod dialog;
+mod dictation_page;
+mod dictation_pill;
+mod dictation_widget;
 mod flows;
 mod icons_misc;
 mod icons_side;

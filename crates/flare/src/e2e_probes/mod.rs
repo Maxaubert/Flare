@@ -19,6 +19,7 @@ pub mod chrome;
 pub mod closeask;
 pub mod core;
 pub mod diag;
+pub mod dictation;
 pub mod dpi;
 pub mod help;
 pub mod indicators;
@@ -94,6 +95,7 @@ pub fn register_all(r: &mut ProbeRegistry) {
     closeask::register(r);
     core::register(r);
     diag::register(r);
+    dictation::register(r);
     dpi::register(r);
     help::register(r);
     indicators::register(r);
