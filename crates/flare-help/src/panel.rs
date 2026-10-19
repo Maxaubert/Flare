@@ -261,6 +261,11 @@ impl PanelState {
         };
     }
 
+    /// When the copied check was shown (the host's clock), while it still is.
+    pub fn copied_since(&self) -> Option<u64> {
+        self.copied.as_ref().map(|(_, _, at)| *at)
+    }
+
     /// The copied check leaves after `COPIED_MS`, with the message it came with.
     pub fn tick(&mut self, now_ms: u64) {
         if let Some((_, _, at)) = &self.copied

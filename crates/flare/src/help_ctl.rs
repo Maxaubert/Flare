@@ -410,10 +410,14 @@ impl HelpCtl {
             p.copy_result(key, text, ok, now);
         }
         self.fill();
+        self.arm_copy_timer(COPIED_MS);
+    }
+
+    fn arm_copy_timer(&mut self, ms: u64) {
         let me = self.me.clone();
         self.copy_timer.start(
             slint::TimerMode::SingleShot,
-            std::time::Duration::from_millis(COPIED_MS),
+            std::time::Duration::from_millis(ms),
             move || {
                 if let Some(rc) = me.upgrade()
                     && let Ok(mut c) = rc.try_borrow_mut()
@@ -430,6 +434,18 @@ impl HelpCtl {
             p.tick(now);
         }
         self.fill();
+        // The timer counts from the event loop's cached time, so it can fire a millisecond or so
+        // before the check is COPIED_MS old by the panel's own clock. The check would then stay
+        // for good (the e2e "the answer leaves by itself" timed out in a full run): ask again
+        // for the little that is left.
+        let left = self
+            .panel
+            .as_ref()
+            .and_then(|p| p.copied_since())
+            .map(|at| COPIED_MS.saturating_sub(now.saturating_sub(at)));
+        if let Some(ms) = left {
+            self.arm_copy_timer(ms.max(1));
+        }
     }
 
     // ---- reads for the tests ------------------------------------------------------------------------
@@ -666,6 +682,21 @@ mod tests {
         assert!(!r.copied);
         assert_eq!(f.bridge().get_said(), "");
         assert_eq!(f.copied.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_timer_that_fires_early_still_clears_the_check() {
+        let f = fx();
+        f.open();
+        let i = f.row_of("Set-Location ");
+        f.bridge().invoke_copy_clicked(i as i32);
+        // the timer fires when the panel's clock says 1 ms short of COPIED_MS
+        f.clock.set(f.clock.get() + COPIED_MS - 1);
+        f.h.advance(COPIED_MS + 10);
+        f.clock.set(f.clock.get() + 1);
+        f.h.advance(20);
+        let r = f.bridge().get_rows().row_data(i).unwrap();
+        assert!(!r.copied, "the check must leave, not stay for good");
     }
 
     #[test]

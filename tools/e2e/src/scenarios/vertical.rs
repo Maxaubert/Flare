@@ -702,6 +702,17 @@ fn mark_strip(ctx: &mut Ctx, app: &mut App) {
     };
     let six = ctx.until("six tabs", 30_000, &mut || tabs_of(app).len() == 6);
     if six {
+        // The Resize is asked for just before and lands a moment later: until it has, the tabs
+        // are as wide as the first window made them, and a click at tab 0's centre read now
+        // lands on tab 1 once the strip narrows (the e2e's own race, seen under load).
+        ctx.until("the strip to fit the resized window", 10_000, &mut || {
+            let t = tabs_of(app);
+            t.len() == 6
+                && t.last()
+                    .and_then(|l| rect_of(&l["rect"]))
+                    .is_some_and(|r| r.0 + r.2 <= 1100.0)
+        });
+        hold(ctx, 200);
         for i in [0usize, 2, 3, 4, 5] {
             front_tab(ctx, app, i);
             type_line(app, &say("working", ""));
