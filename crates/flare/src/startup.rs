@@ -1134,5 +1134,11 @@ mod m7_start_tests {
             import < at("app.show()?"),
             "the import precedes the first paint"
         );
+        // Parity line 21: the window is shown only once its state is applied (the look
+        // before the first paint), and maximised after it exists, never at creation.
+        assert!(
+            at("app.show()?") < at("app.window().set_maximized(true)"),
+            "maximised is applied after the window is shown"
+        );
     }
 }

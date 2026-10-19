@@ -347,3 +347,34 @@ fn double_click_on_the_empty_strip_maximises() {
     h.click(800.0, 18.0);
     assert_eq!(n.get(), 1);
 }
+
+/// Parity line 26: the buttons at the right end of the top row run Command help, Settings,
+/// Minimise, Maximise, Close, in that order, and no app menu sits in the window (PT TitleBar.tsx).
+/// A source scan of the Slint component, because the order is the declaration order.
+#[test]
+fn the_title_buttons_run_help_settings_minimise_maximise_close_and_no_menu() {
+    let src = include_str!("../../ui/app.slint");
+    let start = src
+        .find("component TitleButtons")
+        .expect("app.slint declares TitleButtons");
+    let body = &src[start..];
+    let at = |label: &str| {
+        body.find(&format!("label: \"{label}\""))
+            .unwrap_or_else(|| panic!("TitleButtons has a button labelled {label}"))
+    };
+    let order = [
+        at("Command help"),
+        at("Settings"),
+        at("Minimize"),
+        at("Maximize"),
+        at("Close"),
+    ];
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "the buttons run help, settings, minimise, maximise, close"
+    );
+    assert!(
+        !src.contains("MenuBar") && !src.contains("MenuItem"),
+        "no app menu"
+    );
+}

@@ -4676,6 +4676,39 @@ mod tests {
         assert_eq!(f.motion().1, want, "goes on from where it stood");
     }
 
+    /// Parity line 24: only the mark animation pauses while minimised; the agents keep their clocks
+    /// (PT: no background throttling, `marksPause.ts` pauses the marks alone).
+    #[test]
+    fn a_minimised_window_pauses_marks_only() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.ctl.borrow_mut().on_minimised(true);
+        assert!(f.ctl.borrow().marks_paused());
+        assert!(!f.clock_running(), "the mark clock stops while minimised");
+    }
+
+    #[test]
+    fn the_agents_keep_reporting_while_minimised() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        f.ctl.borrow_mut().on_minimised(true);
+        // The agents are not throttled: a state they report while the window is down still lands.
+        f.clock.set(2000);
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished while minimised", |f| f.row(0).mark_state == 3);
+        assert!(
+            !f.clock_running(),
+            "a finished mark is still, so no clock runs"
+        );
+    }
+
     #[test]
     fn animation_effects_off_stills_every_mark() {
         let f = fx();
