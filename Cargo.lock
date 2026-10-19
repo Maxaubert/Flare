@@ -1584,6 +1584,7 @@ dependencies = [
  "env_logger",
  "flare-agent",
  "flare-diag",
+ "flare-dictation",
  "flare-e2e-proto",
  "flare-help",
  "flare-render",
@@ -1648,7 +1649,7 @@ dependencies = [
  "ureq",
  "windows",
  "windows-sys 0.61.2",
- "zip 9.0.0-pre3",
+ "zip 9.0.0",
 ]
 
 [[package]]
@@ -7014,9 +7015,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.0-pre3"
+version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58e8082c6efe6dbccc7e8ea3ebf6afe46a04847f2e0bcf772c8aebc933dd2ccf"
+checksum = "711e8c9646791c49b7eb799a19c4ae70a9b8372ddc6a1fa4778defd1e2aa5d5e"
 dependencies = [
  "crc32fast",
  "flate2",
