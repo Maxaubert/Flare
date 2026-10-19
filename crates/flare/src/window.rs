@@ -550,7 +550,7 @@ fn settings_deps(
                 .join(", ")
         }),
         post,
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::app_facts::version().to_string(),
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),
         e2e: e2e_on,
         clock: Rc::new(epoch_ms),
@@ -818,7 +818,7 @@ pub fn run_window(
             ),
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
-            home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()),
+            home: crate::app_facts::home().to_string(),
             clock: Rc::new(epoch_ms),
             post: Arc::clone(&post),
             pick_folder: {
@@ -943,7 +943,7 @@ pub fn run_window(
                 crate::ship_ctl::choose_feed(&ship, &|suffix| crate::ship_ctl::e2e_var(suffix));
             let engine = crate::ship_ctl::build_engine(
                 &choice,
-                env!("CARGO_PKG_VERSION"),
+                crate::app_facts::version(),
                 args.user_data_dir.clone(),
                 Arc::new(crate::update_ctl::PostEvents {
                     post: Arc::clone(&post),
@@ -954,7 +954,7 @@ pub fn run_window(
                 &rc,
                 crate::appctl::UpdateParts {
                     engine: Arc::clone(&engine),
-                    current_version: env!("CARGO_PKG_VERSION").to_string(),
+                    current_version: crate::app_facts::version().to_string(),
                     e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
                     spawn: crate::update_ctl::std_spawn(),
                 },

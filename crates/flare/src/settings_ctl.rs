@@ -462,7 +462,7 @@ impl SettingsCtl {
             stale: true,
             ask_open: false,
             select_row: String::new(),
-            home: std::env::var("USERPROFILE").unwrap_or_default(),
+            home: crate::app_facts::home().to_string(),
             dirty,
             _subs: subs,
             flash_timer: slint::Timer::default(),

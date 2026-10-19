@@ -1270,7 +1270,7 @@ impl AppCtl {
         app.set_new_tab_title(
             format!("New tab ({new_key}). Right-click for recent folders").into(),
         );
-        app.set_version_text(format!("Version {}", env!("CARGO_PKG_VERSION")).into());
+        app.set_version_text(format!("Version {}", crate::app_facts::version()).into());
 
         if view.front_kind == 2 {
             let places: Vec<Place> =

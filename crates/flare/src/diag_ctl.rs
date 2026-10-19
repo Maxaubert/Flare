@@ -255,7 +255,7 @@ pub fn start(profile: &Path, facts: SystemFacts, backend: &str, e2e: bool) -> Di
     };
     flare_diag::writer::set_main(Some(log.clone()));
     let info = SessionInfo {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: crate::app_facts::version().to_owned(),
         runtime: facts.runtime,
         gpu: backend.to_owned(),
         windows: facts.windows,

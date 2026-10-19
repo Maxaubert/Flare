@@ -221,7 +221,7 @@ fn app_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     });
 
     Ok(json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::app_facts::version(),
         "renderer": renderer,
         "fallback_reason": fallback,
         "scale": k,

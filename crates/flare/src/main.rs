@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_hub;
+mod app_facts;
 mod appctl;
 mod backend;
 mod badge;

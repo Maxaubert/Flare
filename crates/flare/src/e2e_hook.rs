@@ -353,7 +353,7 @@ fn hello() -> Reply {
         .unwrap_or_else(|_| (String::new(), 1.0));
     Reply::Hello {
         proto: PROTO_VERSION,
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::app_facts::version().to_string(),
         renderer,
         scale,
         pid: std::process::id(),
