@@ -133,7 +133,7 @@ function machineInfo() {
   const j = ps(
     `$o=[ordered]@{ cpu=(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name); ` +
       `gpu=((Get-CimInstance Win32_VideoController | ForEach-Object Name) -join ' + '); ` +
-      `dpi=[int](${dpi}); windows=(Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version }; $o | ConvertTo-Json -Compress`
+      `dpi=[int]$(${dpi}); windows=$((Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version) }; $o | ConvertTo-Json -Compress`
   )
   const m = JSON.parse(j)
   return { cpu: String(m.cpu ?? '').trim(), gpu: String(m.gpu ?? ''), primary_scale: (m.dpi || 96) / 96, windows: String(m.windows ?? '') }
@@ -185,7 +185,8 @@ const PAGE_HOOK = ([promptSrc, shellId]) => {
   const tick = () => {
     // A fresh profile opens on the welcome screen: start the first terminal as soon as it shows.
     if (!document.querySelector('.xterm')) {
-      const b = [...document.querySelectorAll('button, [role=button], div')].find((e) => e.children.length === 0 && e.textContent?.trim() === 'New terminal')
+      // 0.58.0: the welcome button holds the label and a "Ctrl+T" hint, so match the text that starts with the label.
+      const b = [...document.querySelectorAll('button, [role=button]')].find((e) => (e.textContent ?? '').trim().startsWith('New terminal'))
       b?.click()
     }
     if (P.promptAt === null && re.test(rowsText().trimEnd())) {
@@ -261,7 +262,14 @@ async function withApp(o, shell, fn) {
 }
 
 async function waitPrompt(page, timeout = 60000) {
-  await page.waitForFunction(() => window.__perf?.promptAt != null, null, { timeout, polling: 20 })
+  try {
+    await page.waitForFunction(() => window.__perf?.promptAt != null, null, { timeout, polling: 20 })
+  } catch (e) {
+    const seen = await page
+      .evaluate(() => `xterm=${!!document.querySelector('.xterm')} rows=${JSON.stringify((document.querySelector('.xterm .xterm-rows')?.textContent ?? '').slice(0, 200))} body=${JSON.stringify(document.body.innerText.slice(0, 300))}`)
+      .catch((x) => `unreadable: ${x}`)
+    throw new Error(`no prompt in ${timeout} ms: ${seen}`, { cause: e })
+  }
 }
 
 async function focusTerm(page) {

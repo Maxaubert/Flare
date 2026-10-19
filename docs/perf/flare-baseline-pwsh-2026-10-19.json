@@ -1,0 +1,138 @@
+{
+  "taken": "2026-10-19",
+  "exe": "C:/Users/Admin/Documents/Claude/Github/Flare/.claude/targets/t1/release/flare.exe",
+  "runs": 7,
+  "scale_dpi": 216,
+  "shell": "pwsh",
+  "baseline": "docs/perf/pt-baseline-2026-10-19.json",
+  "values": {
+    "B1": {
+      "gpu": 1965.4728,
+      "software": 539.5435
+    }
+  },
+  "measures": [
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "gpu",
+      "value": 1965.4728,
+      "unit": "ms",
+      "detail": {
+        "shell": "pwsh",
+        "runs_ms": [
+          1973.5295,
+          1965.4728,
+          1936.55,
+          1975.0006,
+          1970.9324,
+          1953.7335,
+          1904.7909
+        ],
+        "prompt_median_ms": 1704.4804,
+        "echo_median_ms": 262.8085000000001,
+        "outside_median_ms": 1966.4583,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 16.1607
+          },
+          {
+            "name": "args",
+            "ms": 16.1917
+          },
+          {
+            "name": "backend",
+            "ms": 373.155
+          },
+          {
+            "name": "component",
+            "ms": 650.4588
+          },
+          {
+            "name": "profile",
+            "ms": 694.8688
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 1228.3839
+          },
+          {
+            "name": "render_setup",
+            "ms": 1198.8156
+          },
+          {
+            "name": "first_frame",
+            "ms": 1209.3769
+          },
+          {
+            "name": "first_prompt",
+            "ms": 1702.4029999999998
+          },
+          {
+            "name": "usable",
+            "ms": 1702.5313
+          }
+        ]
+      },
+      "rule": "reported, no bar",
+      "pt": 735.26,
+      "verdict": "unknown"
+    },
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "software",
+      "value": 539.5435,
+      "unit": "ms",
+      "detail": {
+        "shell": "pwsh",
+        "runs_ms": [
+          559.4993000000001,
+          522.2234,
+          539.5435,
+          553.0279,
+          537.5178000000001,
+          537.0934000000001,
+          571.5531000000001
+        ],
+        "prompt_median_ms": 517.6618,
+        "echo_median_ms": 30.434700000000078,
+        "outside_median_ms": 551.0228999999999,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 14.7986
+          },
+          {
+            "name": "args",
+            "ms": 14.8275
+          },
+          {
+            "name": "backend",
+            "ms": 19.1544
+          },
+          {
+            "name": "component",
+            "ms": 23.2176
+          },
+          {
+            "name": "profile",
+            "ms": 66.3641
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 152.8525
+          },
+          {
+            "name": "first_frame",
+            "ms": 124.3418
+          }
+        ]
+      },
+      "rule": "reported, no bar",
+      "pt": 735.26,
+      "verdict": "unknown"
+    }
+  ]
+}
