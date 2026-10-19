@@ -63,6 +63,8 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
+    // The GPU device is built on a worker thread while the rest of start-up runs (Task 64).
+    let prewarm = backend::prewarm_if_gpu(&argv, env_renderer.as_deref());
     let args = match config::parse_args(&argv, env_renderer.as_deref()) {
         Ok(args) => args,
         Err(message) => {
@@ -192,7 +194,7 @@ fn main() {
             }
         }
     };
-    let outcome = match backend::select_backend(args.renderer, args.e2e) {
+    let outcome = match backend::select_backend_with(args.renderer, args.e2e, prewarm) {
         Ok(outcome) => outcome,
         Err(e) => {
             attach_parent_console();

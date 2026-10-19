@@ -1596,6 +1596,7 @@ dependencies = [
  "flare-win",
  "log",
  "png",
+ "pollster",
  "raw-window-handle",
  "serde_json",
  "slint",

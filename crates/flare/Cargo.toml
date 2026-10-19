@@ -20,6 +20,7 @@ flare-help = { path = "../flare-help" }
 flare-e2e-proto = { path = "../flare-e2e-proto" }
 slint.workspace = true
 wgpu.workspace = true
+pollster.workspace = true
 png.workspace = true
 log.workspace = true
 env_logger.workspace = true
