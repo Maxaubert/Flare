@@ -47,6 +47,12 @@ seconds. The exit code is 1 when any assertion failed.
 - **Time limits.** Each scenario has a limit (180 s by default; `verticalTabs` and `indicatorStyles` 360 s,
   `linkPaintStall`, `helpPanel`, `updateWindow`, `dpiMatrix` and `monitorMove` 300 s). A timed-out child is
   killed and reported as one failure (`a_timed_out_child_is_killed_and_reported`).
+- **The display must be on for the GPU frame checks.** With the monitor asleep (no input for the power
+  plan's display timeout, 15 min here) Windows paces the GPU renderer's presents at about 4 per second, and
+  `dpiMatrix` and `monitorMove` fail their "no frame gap of 100 ms" checks on the `[gpu]` leg (gaps of
+  110 to 260 ms; the software leg and every other scenario are unaffected). It is the machine, not the app:
+  the same build passes once the display is awake (found 2026-10-19 by running the gate at the older commit
+  `39d8483`, which failed the same way). Wake the screen before a full run.
 - **Close races a timer.** `closeApp` waits up to 15 s for the app to exit, then kills it
   (`close_races_a_15_s_timer_then_kills`).
 - **One wait primitive.** `until(what, timeout, condition)` is the only wait with a timeout; there are no

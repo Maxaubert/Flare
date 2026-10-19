@@ -346,6 +346,15 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
     let mut per_page: Vec<(&str, Value)> = Vec::new();
     for tab in PAGES {
         goto_page(ctx, &mut app, tab);
+        if tab == "terminal" {
+            // The Shell section is drawn when the worker's shell list arrives, a moment after the
+            // page itself: read the rows once it is there (it never arriving still fails below).
+            ctx.until("the Shell section is drawn", 6_000, &mut || {
+                rows_now(&mut app)["rows"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|r| str_of(r, "id") == "term-shell"))
+            });
+        }
         let v = rows_now(&mut app);
         for r in v["rows"].as_array().cloned().unwrap_or_default() {
             let id = str_of(&r, "id").to_string();
