@@ -340,3 +340,63 @@ fn every_scale_keeps_the_box_centred() {
         assert!((mid - 500.0).abs() <= 1.0 / scale, "scale {scale}");
     }
 }
+
+#[test]
+fn ctrl_tab_passes_through_the_modal_and_is_not_trapped() {
+    let h = harness(1.0, 1000, 600);
+    open(&h);
+    // dialog.slint rejects a Tab with Ctrl held (the host's chord), so the focus stays on the
+    // primary button; a trapped Tab would have moved it to Cancel.
+    h.key_with(false, true, "\t");
+    h.key_text("\n");
+    assert_eq!(h.comp.get_confirms(), 1, "the focus never moved");
+    assert_eq!(h.comp.get_cancels(), 0);
+    // a plain Tab still is trapped
+    let h = harness(1.0, 1000, 600);
+    open(&h);
+    h.key_with(false, false, "\t");
+    h.key_text("\n");
+    assert_eq!(h.comp.get_cancels(), 1);
+}
+
+#[test]
+fn a_press_outside_lifts_the_drag_region_at_every_scale() {
+    // The title row's WindowMoveArea sits under the dialog; the scrim covers the whole window, so
+    // a press in the title band hits the scrim (cancels) and never starts a window move.
+    for scale in SCALES {
+        let h = harness(scale, 1000, 600);
+        open(&h);
+        h.click(500.0, 4.0);
+        assert_eq!(
+            h.comp.get_cancels(),
+            1,
+            "title band press cancels at {scale}"
+        );
+        assert_eq!(
+            h.comp.get_behind_clicks(),
+            0,
+            "nothing behind it at {scale}"
+        );
+    }
+    let app = include_str!("../../ui/app.slint").replace('\r', "");
+    let dlg = app
+        .find("dlg := Dialog {")
+        .expect("the dialog in app.slint");
+    let last_move = app.rfind("WindowMoveArea").expect("a move area");
+    assert!(
+        last_move < dlg,
+        "every drag region is declared below the dialog"
+    );
+    let tail = &app[dlg..];
+    assert!(
+        tail.contains("width: root.width;") && tail.contains("height: root.height;"),
+        "the dialog covers the whole window"
+    );
+    let dialog = include_str!("../../ui/dialog.slint").replace('\r', "");
+    assert!(
+        dialog.contains(
+            "scrim := TouchArea {\n        width: parent.width;\n        height: parent.height;"
+        ),
+        "the scrim fills the dialog"
+    );
+}
