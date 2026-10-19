@@ -341,6 +341,15 @@ mod tests {
     }
 
     #[test]
+    fn the_help_index_is_not_built_at_start() {
+        // The catalogue and its search index are built when the panel first opens (and dropped a
+        // minute after it closes), not by a warm-up at start: about 2 MB of idle memory.
+        let src = include_str!("window.rs");
+        assert!(!src.contains("help_warm_work"));
+        assert!(!src.contains("after_first_frame(\"help_index\""));
+    }
+
+    #[test]
     fn nothing_on_the_deferral_list_is_read_by_the_first_frame() {
         // The first frame is drawn by `render_now` and the rendering notifier. No deferred work may be
         // registered inside either, and the deferred names are registered before the event loop starts.
@@ -366,7 +375,7 @@ mod tests {
         let run_loop = src
             .find("let result = app.run();")
             .expect("the event loop starts");
-        for name in ["help_index", "verb_reconcile"] {
+        for name in ["verb_reconcile"] {
             let call = src
                 .find(&format!("after_first_frame(\"{name}\""))
                 .unwrap_or_else(|| panic!("window.rs defers {name}"));

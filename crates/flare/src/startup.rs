@@ -615,7 +615,7 @@ pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
 }
 
 /// The help warm-up's work: builds the help catalogue and runs one search, so the first query is quick.
-/// It runs on a worker once the first frame is up (`startup_trace::after_first_frame`, M10 Task 63).
+/// It runs on a worker when the panel opens (M10 Task 66); nothing builds it at start.
 pub fn help_warm_work() {
     let all = flare_help::entries::all_help();
     let _ = flare_help::search::search_help(all, "warm", &Default::default());

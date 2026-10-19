@@ -29,6 +29,10 @@ use crate::{AppWindow, HelpBridge, HelpChip, HelpRowData};
 const GRIP_STEP: f64 = 20.0;
 const GRIP_STEP_BIG: f64 = 80.0;
 
+/// How long the search index is kept after the panel closes (M10 Task 66): about 1 MB of idle
+/// memory for a panel that is mostly closed, built again by the next opening.
+pub const INDEX_KEEP_MS: u64 = 60_000;
+
 static OPEN_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// The next number in the order the panel and the find bar are opened in: the later one is on top.
@@ -51,6 +55,9 @@ pub struct HelpCtl {
     clock: Rc<dyn Fn() -> u64>,
     rows: Rc<VecModel<HelpRowData>>,
     copy_timer: slint::Timer,
+    /// When the panel last closed (by the panel's clock) while its index is still held.
+    closed_at: Option<u64>,
+    release_timer: slint::Timer,
 }
 
 impl HelpCtl {
@@ -77,6 +84,8 @@ impl HelpCtl {
             clock: Rc::new(move || started.elapsed().as_millis() as u64),
             rows: Rc::clone(&rows),
             copy_timer: slint::Timer::default(),
+            closed_at: None,
+            release_timer: slint::Timer::default(),
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -124,6 +133,8 @@ impl HelpCtl {
         }
         self.open = false;
         self.copy_timer.stop();
+        self.closed_at = Some(self.now());
+        self.arm_release_timer(INDEX_KEEP_MS);
         if let Some(app) = self.weak.upgrade() {
             app.global::<HelpBridge>().set_open(false);
             app.set_help_on_top(false);
@@ -176,6 +187,17 @@ impl HelpCtl {
             None => self.panel = Some(PanelState::new(shell)),
         }
         self.copy_timer.stop();
+        self.release_timer.stop();
+        self.closed_at = None;
+        // The search index is built on a worker now, so the first question is quick; it was not
+        // built at start, and it is dropped again a minute after the panel closes.
+        std::thread::Builder::new()
+            .name("flare-help-index".into())
+            .spawn(crate::startup::help_warm_work)
+            .map_or_else(
+                |e| log::warn!("could not start the help index worker: {e}"),
+                drop,
+            );
         self.open = true;
         self.opened_seq = next_open_seq();
         self.sync_width();
@@ -428,6 +450,41 @@ impl HelpCtl {
         );
     }
 
+    fn arm_release_timer(&mut self, ms: u64) {
+        let me = self.me.clone();
+        self.release_timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(ms),
+            move || {
+                if let Some(rc) = me.upgrade()
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.release_if_due();
+                }
+            },
+        );
+    }
+
+    /// Drops the search index when the panel has been closed for `INDEX_KEEP_MS` by the panel's
+    /// clock. True when it was dropped. A timer that fires a millisecond early asks again for what
+    /// is left.
+    pub fn release_if_due(&mut self) -> bool {
+        let Some(at) = self.closed_at else {
+            return false;
+        };
+        if self.open {
+            return false;
+        }
+        let age = self.now().saturating_sub(at);
+        if age < INDEX_KEEP_MS {
+            self.arm_release_timer((INDEX_KEEP_MS - age).max(1));
+            return false;
+        }
+        self.closed_at = None;
+        flare_help::search::release_index();
+        true
+    }
+
     fn tick(&mut self) {
         let now = self.now();
         if let Some(p) = self.panel.as_mut() {
@@ -587,6 +644,61 @@ mod tests {
         }
     }
 
+    /// Waits for the worker that warms the index (it was started by the opening).
+    fn wait_for_the_index() {
+        let until = Instant::now() + std::time::Duration::from_secs(20);
+        while flare_help::search::index_bytes() == 0 {
+            assert!(Instant::now() < until, "the index was never built");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_index_is_built_on_first_use() {
+        flare_help::search::release_index();
+        let f = fx();
+        // Nothing builds it before somebody asks for help.
+        assert_eq!(flare_help::search::index_bytes(), 0);
+        f.open();
+        wait_for_the_index();
+        assert!(flare_help::search::index_bytes() > 0);
+    }
+
+    #[test]
+    fn the_index_is_released_after_the_panel_has_been_closed_a_minute() {
+        let f = fx();
+        f.open();
+        wait_for_the_index();
+        f.clock.set(10_000);
+        f.ctl.borrow_mut().toggle();
+        assert!(!f.ctl.borrow().is_open());
+        // Just short of the minute: kept.
+        f.clock.set(10_000 + INDEX_KEEP_MS - 1);
+        assert!(!f.ctl.borrow_mut().release_if_due());
+        assert!(flare_help::search::index_bytes() > 0);
+        // A minute after the close: dropped.
+        f.clock.set(10_000 + INDEX_KEEP_MS);
+        assert!(f.ctl.borrow_mut().release_if_due());
+        assert_eq!(flare_help::search::index_bytes(), 0);
+        // Nothing more to release until the panel closes again.
+        assert!(!f.ctl.borrow_mut().release_if_due());
+    }
+
+    #[test]
+    fn an_open_panel_keeps_its_index() {
+        let f = fx();
+        f.open();
+        wait_for_the_index();
+        f.clock.set(10_000_000);
+        assert!(!f.ctl.borrow_mut().release_if_due());
+        assert!(flare_help::search::index_bytes() > 0);
+        // Opening again within the minute cancels the release.
+        f.ctl.borrow_mut().toggle();
+        f.clock.set(10_000_100);
+        f.open();
+        f.clock.set(10_000_100 + INDEX_KEEP_MS * 2);
+        assert!(!f.ctl.borrow_mut().release_if_due());
+    }
     #[test]
     fn opening_starts_on_the_front_tabs_shell_with_an_empty_question() {
         let f = fx();

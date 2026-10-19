@@ -1329,13 +1329,6 @@ pub fn run_window(
     }
     // The exe's own icon on the window (and again on every scale-factor change).
     crate::startup::apply_window_icon(hwnd_of(&app));
-    // Command help's catalogue and first search are built on a worker after the first paint (Task 44).
-    if stores
-        .as_ref()
-        .is_some_and(|(_, _, p)| flare_settings::help_prefs::help_enabled(p))
-    {
-        crate::startup_trace::after_first_frame("help_index", crate::startup::help_warm_work);
-    }
     // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
     // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
     // the badge's text can be read.
