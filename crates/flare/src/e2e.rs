@@ -120,10 +120,22 @@ mod tests {
     #[test]
     fn no_source_file_reads_an_e2e_variable_directly() {
         let needle = ["\"FLARE_E2E", "_"].concat();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            // sync-ok: test code only, never the app
-            let path = entry.unwrap().path();
+        // Every folder under src, the probes and the UI tests included.
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut files = Vec::new();
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                // sync-ok: test code only, never the app
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+        assert!(files.iter().any(|p| p.ends_with("e2e_probes/core.rs")));
+        for path in files {
             if path.extension().is_none_or(|e| e != "rs") || path.ends_with("e2e.rs") {
                 continue;
             }
