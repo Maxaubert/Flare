@@ -9,6 +9,7 @@ mod icons_side;
 mod icons_tabs;
 mod marks;
 mod menus;
+mod scrollbar;
 mod settings_about;
 mod settings_colour;
 mod settings_controls;
