@@ -84,6 +84,7 @@ export component ColourChip inherits Rectangle {
 // The row control: the code field and the swatch that opens the picker.
 export component ColourField inherits Rectangle {
     in property <string> label;
+    in property <string> sub;
     in property <string> text;
     in property <color> colour;
     in property <bool> wide;
@@ -173,6 +174,7 @@ export component ColourField inherits Rectangle {
                 opacity: root.show-upper ? 0 : 1;
                 accessible-role: text-input;
                 accessible-label: root.label;
+                accessible-description: root.sub;
                 edited => {
                     root.draft = true;
                     root.edited(self.text);
@@ -214,6 +216,7 @@ export component ColourField inherits Rectangle {
         clip: true;
         accessible-role: button;
         accessible-label: "Pick " + root.label;
+        accessible-description: root.sub;
         accessible-expanded: root.open;
         accessible-action-default => {
             PickerOpening.by-pointer = false;

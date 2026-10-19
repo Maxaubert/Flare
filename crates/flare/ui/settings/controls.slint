@@ -9,6 +9,8 @@ export component SetSwitch inherits Rectangle {
     in property <bool> on;
     in property <bool> disabled;
     in property <string> label;
+    // the row's subtext, read out as the switch's description
+    in property <string> sub;
     // focus that came from the keyboard: the row draws the hover fill, the switch draws no ring
     out property <bool> keyboard-focus: fs.has-focus && root.by-key;
     out property <length> knob-x: root.on ? 18px : 2px;
@@ -27,6 +29,7 @@ export component SetSwitch inherits Rectangle {
     background: root.on ? (ta.has-hover && !root.disabled ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg) : Theme.track;
     accessible-role: switch;
     accessible-label: root.label;
+    accessible-description: root.sub;
     accessible-checked: root.on;
     accessible-action-default => {
         if !root.disabled {
@@ -82,6 +85,7 @@ export component SetSegmented inherits Rectangle {
     in property <[SetOption]> options;
     in property <string> value;
     in property <string> label;
+    in property <string> sub;
     property <length> pad: 3px + Px.hair();
     out property <length> content-w: segs.preferred-width + 2 * root.pad;
     callback chosen(string);
@@ -94,6 +98,7 @@ export component SetSegmented inherits Rectangle {
     border-color: Theme.divider;
     accessible-role: groupbox;
     accessible-label: root.label;
+    accessible-description: root.sub;
 
     segs := HorizontalLayout {
         x: root.pad;

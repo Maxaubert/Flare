@@ -11,6 +11,7 @@ export component SetSlider inherits Rectangle {
     in property <string> text;
     in property <bool> disabled;
     in property <string> label;
+    in property <string> sub;
 
     // Positions are relative to the slider: the slider's own x is the parent's business.
     out property <length> track-x: 0px;
@@ -69,6 +70,7 @@ export component SetSlider inherits Rectangle {
 
     accessible-role: slider;
     accessible-label: root.label;
+    accessible-description: root.sub;
     accessible-value: root.text;
 
     // The track: a rounded base in the track colour and the part left of the thumb in the accent.

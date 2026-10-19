@@ -396,6 +396,45 @@ mod tests {
     }
 
     #[test]
+    fn the_three_colour_rows_say_what_they_follow_and_a_picked_one_says_it_is_yours() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        let rows = [
+            ("agent-color", "Agent working colour", "Follows the accent."),
+            (
+                "agent-done-color",
+                "Agent finished colour",
+                "Follows the theme green.",
+            ),
+            (
+                "agent-question-color",
+                "Agent question colour",
+                "Follows the theme.",
+            ),
+        ];
+        with_env(&prefs, &look, ["", "", ""], |env| {
+            let page = build(env);
+            for (id, label, sub) in rows {
+                let row = the_row(&page, id);
+                assert_eq!(row.label, label);
+                assert_eq!(row.sub, sub, "{id} follows");
+                assert!(!row.reset, "{id}: no Reset before a pick");
+            }
+        });
+        look.set_agent_colour(AgentColourState::Working, "#111111");
+        look.set_agent_colour(AgentColourState::Finished, "#222222");
+        look.set_agent_colour(AgentColourState::Question, "#333333");
+        with_env(&prefs, &look, ["#111111", "#222222", "#333333"], |env| {
+            let page = build(env);
+            for (id, _, _) in rows {
+                let row = the_row(&page, id);
+                assert_eq!(row.sub, "Your own colour.", "{id} is picked");
+                assert!(row.reset, "{id}: Reset once picked");
+            }
+        });
+    }
+
+    #[test]
     fn the_swatch_shows_the_colour_in_force() {
         let prefs = PrefStore::memory();
         let look = LookStore::new(PrefStore::memory());

@@ -12,6 +12,7 @@ export component SetSelect inherits Rectangle {
     in property <string> value;
     in property <bool> disabled;
     in property <string> label;
+    in property <string> sub;
     in property <bool> open;
     // its absolute x, y, width, height
     callback open-request(length, length, length, length);
@@ -27,6 +28,7 @@ export component SetSelect inherits Rectangle {
     opacity: root.disabled ? 0.5 : 1;
     accessible-role: combobox;
     accessible-label: root.label;
+    accessible-description: root.sub;
     accessible-expanded: root.open;
     accessible-action-default => {
         root.ask();
