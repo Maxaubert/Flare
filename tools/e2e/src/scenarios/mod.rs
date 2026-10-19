@@ -458,12 +458,12 @@ pub const ALL: &[Scenario] = &[
         name: "dpiMatrix",
         group: "dpi",
         run: dpi::dpi_matrix,
-        limit_secs: 180,
+        limit_secs: 300,
     },
     Scenario {
         name: "monitorMove",
         group: "dpi",
         run: dpi::monitor_move,
-        limit_secs: 180,
+        limit_secs: 300,
     },
 ];

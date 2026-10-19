@@ -271,7 +271,7 @@ fn quoted_path_typed(text: &str) -> bool {
 }
 
 /// The wall clock in ms since the epoch (the diag log's own clock).
-fn epoch_ms() -> i64 {
+pub(super) fn epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -279,7 +279,7 @@ fn epoch_ms() -> i64 {
 
 /// The longest stall in ms the diag log recorded at or after `from` (epoch ms): the `ms` of a
 /// `main-lag`, `frame-slow` or `ui-stack` line (M9 D12). 0 when there is none.
-fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 {
+pub(super) fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 {
     lines
         .iter()
         .filter(|l| l.ms >= from)

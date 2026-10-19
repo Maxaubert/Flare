@@ -184,6 +184,9 @@ export component AppWindow inherits Window {
     out property <int> grid-phys-width: round(grid-box.width / 1phx);
     out property <int> grid-phys-height: round(grid-box.height / 1phx);
     out property <float> scale: 1px / 1phx;
+    // The hairline the chrome draws, in device pixels (`Px.hair()`: the strip's bottom line, the
+    // tab separators and the sidebar's edge all use it). The DPI probe reads it.
+    out property <int> hair-phys: round(Px.hair() / 1phx);
 
     callback grid-resized(int, int, float);
 

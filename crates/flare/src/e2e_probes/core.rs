@@ -763,6 +763,8 @@ mod tests {
             "flash.count",
             "startup.trace",
             "dpi.state",
+            "dpi.hairlines",
+            "render.size",
             "probe.names",
         ] {
             assert!(names.contains(&want), "{want} is missing");
@@ -930,6 +932,44 @@ mod tests {
                 (640.0 * scale).round() as u64
             );
             assert!(d["grid_cols"].as_u64().unwrap() > 0);
+        }
+    }
+
+    #[test]
+    fn render_size_reports_the_surface_and_the_grid_texture_at_every_scale() {
+        for scale in SCALES {
+            let f = Fx::new(scale, 1);
+            let r = f.probe("render.size", Value::Null).unwrap();
+            assert_eq!(
+                r["surface_w"].as_u64().unwrap(),
+                (1000.0 * scale).round() as u64,
+                "surface_w at {scale}"
+            );
+            assert_eq!(
+                r["surface_h"].as_u64().unwrap(),
+                (640.0 * scale).round() as u64,
+                "surface_h at {scale}"
+            );
+            // The fixture's grid image is 8 by 8; the probe reads the image the window holds.
+            assert_eq!(r["grid_tex_w"], 8, "grid_tex_w at {scale}");
+            assert_eq!(r["grid_tex_h"], 8, "grid_tex_h at {scale}");
+            assert!(r["painter"].is_string(), "painter at {scale}");
+            assert_eq!(
+                r["grid_w"].as_u64().unwrap(),
+                f.h.comp.get_grid_phys_width() as u64
+            );
+        }
+    }
+
+    #[test]
+    fn dpi_hairlines_are_what_the_window_draws_at_every_scale() {
+        for scale in SCALES {
+            let f = Fx::new(scale, 1);
+            let h = f.probe("dpi.hairlines", Value::Null).unwrap();
+            let want = (scale.floor() as u64).max(1);
+            for key in ["strip_bottom_px", "tab_separator_px", "sidebar_edge_px"] {
+                assert_eq!(h[key].as_u64().unwrap(), want, "{key} at {scale}");
+            }
         }
     }
 
