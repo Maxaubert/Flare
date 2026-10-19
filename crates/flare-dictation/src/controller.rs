@@ -140,6 +140,8 @@ pub enum Event {
     Blur,
     /// The shell tab in front now (`None`: no shell with a live session).
     Front(Option<String>),
+    /// Words another copy routed back because this window was in front (N11): pasted as text plus one space\n    /// into the shell in front, never Enter. Nothing when no shell is in front.
+    PasteFront(String),
     /// This tab is gone.
     TabGone(String),
     /// The app is quitting.
@@ -262,7 +264,7 @@ impl Controller {
             prefs,
             role: Role::None,
             armed: false,
-            has_sink: true,
+            has_sink: false,
             front: None,
             view: View::idle(),
             message_until: None,
@@ -336,6 +338,14 @@ impl Controller {
                 }
             }
             Event::Front(f) => self.front = f,
+            Event::PasteFront(text) => {
+                if let Some(session) = self.front.clone() {
+                    fx.push(Effect::Paste {
+                        session,
+                        text: format!("{text} "),
+                    });
+                }
+            }
             Event::TabGone(id) => {
                 if let Some(r) = self.rec.as_mut() {
                     if r.target == Target::Session(id) {
@@ -814,6 +824,7 @@ mod tests {
                 now: 0.0,
                 all: Vec::new(),
             };
+            h.c.set_sink(true);
             h.ev(Event::Prefs(p));
             h.ev(Event::Front(Some(TAB.into())));
             h.all.clear();
@@ -1700,6 +1711,32 @@ mod tests {
         h.c.set_sink(false);
         assert!(h.ev(Event::Outside(OutsideAction::Start)).is_empty());
         assert!(!h.c.recording());
+    }
+
+    #[test]
+    fn a_host_that_sets_no_sink_never_starts_an_outside_recording() {
+        let p = prefs();
+        let mut c = Controller::new(p.clone());
+        c.on(Event::Prefs(p), 0.0);
+        assert!(c.on(Event::Outside(OutsideAction::Start), 0.0).is_empty());
+        assert!(!c.recording());
+    }
+
+    #[test]
+    fn routed_words_paste_into_the_front_session_with_one_space_and_no_newline() {
+        let mut h = H::new();
+        let fx = h.ev(Event::PasteFront("routed words".into()));
+        assert_eq!(pastes(&fx), vec![(TAB.into(), "routed words ".into())]);
+        assert!(!pastes(&fx)[0].1.contains('\n'));
+        h.ev(Event::Front(Some("tab-2".into())));
+        assert_eq!(pastes(&h.ev(Event::PasteFront("x".into())))[0].0, "tab-2");
+    }
+
+    #[test]
+    fn routed_words_with_no_shell_in_front_paste_nothing() {
+        let mut h = H::new();
+        h.ev(Event::Front(None));
+        assert!(h.ev(Event::PasteFront("lost".into())).is_empty());
     }
 
     #[test]
