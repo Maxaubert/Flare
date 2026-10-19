@@ -27,3 +27,7 @@ clock is only a cross-check. Known limits: the flood's 500 ms are the harness's 
 starts there, and the seconds are those 500 ms plus the app's own wait); a flood that ends inside
 them is flagged `short`. A GPU run on a PC without an adapter is reported and skipped. One Flare
 app runs at a time, always `--e2e` (offscreen, unfocusable).
+
+`FLARE_TRACE_FRAME=1` (with `RUST_LOG=info,flare_render::stats=trace`) logs the phases of every
+frame; what it showed for the flood is in `heavy-output.md`. A frame interval on a parked GPU window
+is DWM's 4 Hz cadence, not the app's (same file).
