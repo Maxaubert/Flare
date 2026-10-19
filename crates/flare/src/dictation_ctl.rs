@@ -27,7 +27,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -287,6 +288,9 @@ pub trait Parts {
     fn stop_engine(&mut self);
     fn pause_media(&mut self) -> Receiver<Token>;
     fn resume_media(&mut self, token: Token);
+    /// Plays a token's media again. Unlike `resume_media` it outlives the parts: a pause still in flight when
+    /// dictation goes off or the app quits is undone through it when it answers (parity 867).
+    fn media_resumer(&self) -> Arc<dyn Fn(Token) + Send + Sync>;
     fn cue(&mut self, cue: Cue);
     /// Starts the keyboard hook; its lines arrive on `tx`. Never called under `--e2e`.
     fn hook_start(&mut self, tx: Sender<HookEvent>);
@@ -349,29 +353,90 @@ pub struct DictDeps {
 // The link's half that lives on other threads
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// Reaches the UI thread from a link thread: posts a call and waits for its answer there.
+/// Reaches the UI thread from a link thread: posts a call and waits there (never the other way).
+///
+/// `gate` is closed by the UI thread BEFORE it joins the link threads (a switch-off, a role flip, a quit), so a
+/// thread waiting here lets go at once instead of holding the window for up to `UI_CALL_MS`.
 struct Bridge {
     post: Post,
     probe: Arc<dyn AgentProbe>,
+    gate: Arc<AtomicBool>,
+    wait: Duration,
 }
 
 /// How long a link thread waits for the UI thread before it gives up and answers nothing.
 const UI_CALL_MS: u64 = 3000;
+/// How often a waiting link thread looks at its gate.
+const UI_SLICE_MS: u64 = 20;
+
+/// A posted call that no one has taken yet.
+const CALL_PENDING: u8 = 0;
+/// The UI thread is running it (the caller then waits for its answer, however long the wait has been).
+const CALL_TAKEN: u8 = 1;
+/// The caller gave up first: the UI thread skips it, so nothing runs outside the window the caller meant.
+const CALL_CANCELLED: u8 = 2;
 
 impl Bridge {
+    fn new(post: Post, probe: Arc<dyn AgentProbe>, gate: Arc<AtomicBool>) -> Self {
+        Bridge {
+            post,
+            probe,
+            gate,
+            wait: Duration::from_millis(UI_CALL_MS),
+        }
+    }
+
     fn call<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Dict) -> T + Send + 'static,
     ) -> Option<T> {
+        if self.gate.load(Ordering::SeqCst) {
+            return None;
+        }
         let (tx, rx) = channel();
+        let state = Arc::new(AtomicU8::new(CALL_PENDING));
+        let theirs = Arc::clone(&state);
         (self.post)(DictMsg::Call(Box::new(move |d| {
-            let _ = tx.send(f(d));
+            // A call the caller already gave up on does not run: a late write of the words or of the Enter
+            // would land outside the check that was made right before it.
+            if theirs
+                .compare_exchange(CALL_PENDING, CALL_TAKEN, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let _ = tx.send(f(d));
+            }
         })));
-        // sync-ok: runs on a link or worker thread, never the UI thread, and gives up after UI_CALL_MS
-        rx.recv_timeout(Duration::from_millis(UI_CALL_MS)).ok()
+        let end = Instant::now() + self.wait;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            let slice = left.min(Duration::from_millis(UI_SLICE_MS));
+            // sync-ok: runs on a link or worker thread, never the UI thread, and gives up after the wait
+            match rx.recv_timeout(slice) {
+                Ok(v) => return Some(v),
+                Err(RecvTimeoutError::Disconnected) => return None,
+                Err(RecvTimeoutError::Timeout) => {
+                    if left > slice && !self.gate.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    if state
+                        .compare_exchange(
+                            CALL_PENDING,
+                            CALL_CANCELLED,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok()
+                    {
+                        return None;
+                    }
+                    // The UI thread has it in hand right now, so its answer is moments away.
+                    // sync-ok: runs on a link or worker thread; the UI thread is inside the call
+                    return rx.recv().ok();
+                }
+            }
+        }
     }
 }
-
 impl ClientHost for Bridge {
     fn tabs(&self) -> Vec<SendTab> {
         self.call(|d| d.host.send_tabs()).unwrap_or_default()
@@ -379,6 +444,19 @@ impl ClientHost for Bridge {
 
     fn agent_under(&self, id: &str) -> Option<String> {
         self.probe.agent_under(id)
+    }
+
+    fn pause(&self, ms: u64) {
+        // The wait before the Enter, in slices: a closed gate ends it (the Enter then finds no tab to go to).
+        let end = Instant::now() + Duration::from_millis(ms);
+        while !self.gate.load(Ordering::SeqCst) {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            // sync-ok: runs on the link's own handler thread or a send worker, never the UI thread
+            std::thread::sleep(left.min(Duration::from_millis(UI_SLICE_MS)));
+        }
     }
 
     fn write(&self, id: &str, data: &str) -> bool {
@@ -414,13 +492,22 @@ struct MicState {
     acc: Option<Arc<Mutex<Acc>>>,
 }
 
+/// A pause asked for and not answered yet.
+struct PendingPause {
+    /// Resume as soon as it answers.
+    resume_now: bool,
+    /// Set when dictation went off first: the waiting worker then undoes the pause itself (parity 867).
+    abandoned: Arc<AtomicBool>,
+}
+
 #[derive(Default)]
 struct MediaState {
     seq: u64,
-    /// Pauses asked for and not answered yet: seq to "resume as soon as it arrives".
-    pending: HashMap<u64, bool>,
+    pending: HashMap<u64, PendingPause>,
     /// The token of the pause that is in force.
     held: Option<Token>,
+    /// The workers waiting for a pause's answer (a quit waits for them).
+    waiters: Vec<std::thread::JoinHandle<()>>,
 }
 
 /// The state machines and their executor. See the module comment.
@@ -439,12 +526,35 @@ pub struct Dict {
     held: HashSet<String>,
     mic: MicState,
     media: MediaState,
+    /// Plays a token again after the parts are gone (a pause that answered late).
+    resumer: Option<Arc<dyn Fn(Token) + Send + Sync>>,
+    /// Closed before the link threads are joined; see [`Bridge`].
+    gate: Arc<AtomicBool>,
     partial_on: bool,
     view: DictView,
     level: f32,
     live_sent_ms: f64,
     widget: Option<OverlayState>,
     stopped: bool,
+}
+
+/// Prism Terminal's second lock against an Enter (`pasteSpokenText`, parity 576): every run of line breaks (CR, LF,
+/// U+2028, U+2029) becomes one space. An unbracketed paste would run a line at its first break.
+fn one_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_break = false;
+    for c in text.chars() {
+        if matches!(c, '\r' | '\n' | '\u{2028}' | '\u{2029}') {
+            if !in_break {
+                out.push(' ');
+            }
+            in_break = true;
+        } else {
+            in_break = false;
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The level reaches the widget at most this often (N20).
@@ -481,6 +591,8 @@ impl Dict {
             held: HashSet::new(),
             mic: MicState::default(),
             media: MediaState::default(),
+            resumer: None,
+            gate: Arc::new(AtomicBool::new(false)),
             partial_on: false,
             view: DictView::default(),
             level: 0.0,
@@ -559,7 +671,12 @@ impl Dict {
     }
 
     /// Drops the machinery.
-    fn tear_down(&mut self, _quit: bool) {
+    fn tear_down(&mut self, quit: bool) {
+        // First: the link threads stop waiting on this thread, so nothing below waits for them.
+        self.rotate_gate();
+        for p in self.media.pending.values() {
+            p.abandoned.store(true, Ordering::SeqCst);
+        }
         self.svc_on(SvcEvent::Stop);
         self.svc = None;
         self.ctl.set_sink(false);
@@ -570,7 +687,10 @@ impl Dict {
         self.widget = None;
         self.host.widget(None);
         self.close_mic();
-        self.media = MediaState::default();
+        // A pause that has not answered is undone by its own worker when it does (the media is not left paused).
+        let waiters = std::mem::take(&mut self.media.waiters);
+        self.media.pending.clear();
+        self.media.held = None;
         // The window reads the key itself again once no one else does.
         let fx = self.ctl_on(Event::Role(Role::None));
         self.run(fx);
@@ -579,6 +699,19 @@ impl Dict {
             p.shutdown();
             drop(p);
         }
+        if quit {
+            for w in waiters {
+                // sync-ok: quit only; a pause still in flight answers within the media layer's own 3 s limit,
+                // and the music is played again before the process goes
+                let _ = w.join();
+            }
+        }
+    }
+
+    /// Tells every thread that waits on the UI thread to let go, and hands out a fresh gate for the next ones.
+    fn rotate_gate(&mut self) {
+        self.gate.store(true, Ordering::SeqCst);
+        self.gate = Arc::new(AtomicBool::new(false));
     }
 
     /// Quit: the machinery stops before the shells are killed.
@@ -724,11 +857,12 @@ impl Dict {
 
     pub fn on_msg(&mut self, msg: DictMsg) {
         if self.stopped {
-            if let DictMsg::MicDone {
-                result: Ok(cap), ..
-            } = msg
-            {
-                drop(cap.stop());
+            match msg {
+                DictMsg::MicDone {
+                    result: Ok(cap), ..
+                } => drop(cap.stop()),
+                DictMsg::Media { token, .. } => self.resume_late(token),
+                _ => {}
             }
             return;
         }
@@ -1021,7 +1155,10 @@ impl Dict {
 
     fn paste(&mut self, session: &str, text: &str) {
         // Typed as text: the transcript's controls and escapes never reach the shell as keystrokes.
-        let clean = flare_shells::paste::sanitize_paste(text);
+        let clean = one_line(&flare_shells::paste::sanitize_paste(text));
+        if clean.is_empty() {
+            return;
+        }
         match self.host.paste(session, &clean) {
             PasteOutcome::Done => {}
             PasteOutcome::Gone => {
@@ -1043,18 +1180,38 @@ impl Dict {
         };
         self.media.seq += 1;
         let seq = self.media.seq;
-        self.media.pending.insert(seq, false);
+        let abandoned = Arc::new(AtomicBool::new(false));
+        self.media.pending.insert(
+            seq,
+            PendingPause {
+                resume_now: false,
+                abandoned: Arc::clone(&abandoned),
+            },
+        );
         let rx = p.pause_media();
+        let resumer = p.media_resumer();
+        self.resumer = Some(Arc::clone(&resumer));
         let post = Arc::clone(&self.post);
         let spawned = std::thread::Builder::new()
             .name("flare-dictation-media".into())
             .spawn(move || {
                 // sync-ok: a worker waits for the media worker's token (bounded by its own timeout)
                 let token = rx.recv().unwrap_or_default();
-                post(DictMsg::Media { seq, token });
+                if abandoned.load(Ordering::SeqCst) {
+                    // Dictation went off while the pause was in flight: undo it here, nobody else will.
+                    resumer(token);
+                } else {
+                    post(DictMsg::Media { seq, token });
+                }
             });
-        if spawned.is_err() {
-            self.media.pending.remove(&seq);
+        match spawned {
+            Ok(h) => {
+                self.media.waiters.retain(|w| !w.is_finished());
+                self.media.waiters.push(h);
+            }
+            Err(_) => {
+                self.media.pending.remove(&seq);
+            }
         }
     }
 
@@ -1066,24 +1223,33 @@ impl Dict {
             return;
         }
         // The pause has not answered yet: whatever it paused is resumed the moment it does.
-        if let Some(seq) = self.media.pending.keys().max().copied() {
-            self.media.pending.insert(seq, true);
+        if let Some((_, p)) = self.media.pending.iter_mut().max_by_key(|(seq, _)| **seq) {
+            p.resume_now = true;
         }
     }
 
     fn on_media(&mut self, seq: u64, token: Token) {
-        let Some(resume_now) = self.media.pending.remove(&seq) else {
+        let Some(pending) = self.media.pending.remove(&seq) else {
+            // Dictation went off after the worker posted: the parts are gone, the resumer is not.
+            self.resume_late(token);
             return;
         };
-        if resume_now {
-            if let Some(p) = self.parts.as_mut() {
-                p.resume_media(token);
+        if pending.resume_now {
+            match self.parts.as_mut() {
+                Some(p) => p.resume_media(token),
+                None => self.resume_late(token),
             }
         } else {
             self.media.held = Some(token);
         }
     }
 
+    /// Plays a token's media again with no parts to ask.
+    fn resume_late(&self, token: Token) {
+        if let Some(r) = &self.resumer {
+            r(token);
+        }
+    }
     // ---- the service's effects ----
 
     fn svc_on(&mut self, e: SvcEvent) {
@@ -1173,12 +1339,15 @@ impl Dict {
                     self.sync_flags();
                 }
                 SvcEffect::StartLinkService => {
+                    // A service closes the client first, and its threads may be waiting on this thread.
+                    self.rotate_gate();
                     if let Some(p) = self.parts.as_mut() {
                         p.link_service();
                     }
                 }
                 SvcEffect::StartLinkClient => self.start_link_client(),
                 SvcEffect::StopLinks => {
+                    self.rotate_gate();
                     if let Some(p) = self.parts.as_mut() {
                         p.links_stop();
                     }
@@ -1254,10 +1423,11 @@ impl Dict {
     /// Types into one of this copy's tabs through the checked send, on a worker (it asks Windows, and waits
     /// 300 ms before the Enter).
     fn send_local(&mut self, id: String, text: String) {
-        let handlers = dictation_answers(Arc::new(Bridge {
-            post: Arc::clone(&self.post),
-            probe: Arc::clone(&self.probe),
-        }));
+        let handlers = dictation_answers(Arc::new(Bridge::new(
+            Arc::clone(&self.post),
+            Arc::clone(&self.probe),
+            Arc::clone(&self.gate),
+        )));
         let post = Arc::clone(&self.post);
         let spawned = std::thread::Builder::new()
             .name("flare-dictation-send".into())
@@ -1295,10 +1465,13 @@ impl Dict {
     }
 
     fn start_link_client(&mut self) {
-        let handlers = dictation_answers(Arc::new(Bridge {
-            post: Arc::clone(&self.post),
-            probe: Arc::clone(&self.probe),
-        }));
+        // Starting a client closes the service's threads first, and they may be waiting on this thread.
+        self.rotate_gate();
+        let handlers = dictation_answers(Arc::new(Bridge::new(
+            Arc::clone(&self.post),
+            Arc::clone(&self.probe),
+            Arc::clone(&self.gate),
+        )));
         let post = Arc::clone(&self.post);
         if let Some(p) = self.parts.as_mut() {
             p.link_client(handlers, Box::new(move |on| post(DictMsg::LinkState(on))));
@@ -1693,6 +1866,11 @@ impl Parts for RealParts {
         self.media.resume(token);
     }
 
+    fn media_resumer(&self) -> Arc<dyn Fn(Token) + Send + Sync> {
+        let media = self.media.clone();
+        Arc::new(move |t| media.resume(t))
+    }
+
     fn cue(&mut self, cue: Cue) {
         flare_dictation::cues::play(cue);
     }
@@ -1934,6 +2112,11 @@ mod tests {
         transcribes: RefCell<Vec<(Vec<u8>, bool)>>,
         hook_tx: RefCell<Option<Sender<HookEvent>>>,
         made: Cell<u32>,
+        /// A media pause that does not answer until the test sends its token.
+        hold_pause: Cell<bool>,
+        pause_tx: RefCell<Option<Sender<Token>>>,
+        /// What the media resumer (which outlives the parts) was handed.
+        late: Arc<Mutex<Vec<String>>>,
     }
 
     struct FakeParts {
@@ -1974,8 +2157,16 @@ mod tests {
         fn pause_media(&mut self) -> Receiver<Token> {
             self.note("pause_media");
             let (tx, rx) = channel();
+            if self.s.hold_pause.get() {
+                *self.s.pause_tx.borrow_mut() = Some(tx);
+                return rx;
+            }
             let _ = tx.send(Token(vec!["m".into()]));
             rx
+        }
+        fn media_resumer(&self) -> Arc<dyn Fn(Token) + Send + Sync> {
+            let late = Arc::clone(&self.s.late);
+            Arc::new(move |t: Token| late.lock().unwrap().push(t.0.join("|")))
         }
         fn resume_media(&mut self, _t: Token) {
             self.note("resume_media");
@@ -2395,6 +2586,251 @@ mod tests {
         );
         assert!(r.host.pastes.borrow().is_empty());
         assert!(!r.d.has_parts());
+    }
+
+    /// Parity 576, Prism Terminal's second lock: a line break in dictated words is a space, never an Enter.
+    #[test]
+    fn a_line_break_in_the_words_reaches_the_shell_as_one_space() {
+        let mut r = Rig::on_with_model(false);
+        r.d.paste(
+            "t1",
+            "one\r\ntwo\nthree\u{2028}four\u{2029}\u{2029}\r\nfive ",
+        );
+        let pastes = r.host.pastes.borrow().clone();
+        assert_eq!(pastes.len(), 1);
+        assert_eq!(pastes[0].1, "one two three four five ");
+        // The words routed back over the link take the same road (the controller hands them to the same paste).
+        r.d.on_msg(DictMsg::PasteFront("back\nhere".into()));
+        let last = r.host.pastes.borrow().last().cloned().unwrap();
+        assert!(
+            !last.1.contains(['\n', '\r', '\u{2028}', '\u{2029}']),
+            "{last:?}"
+        );
+    }
+
+    fn pause_rig() -> Rig {
+        let mut r = Rig::new(false);
+        r.s.hold_pause.set(true);
+        r.set("flare.dictation.enabled", "1");
+        r.set("flare.dictation.model", "tiny");
+        r.set("flare.dictation.hotkey", r#"{"code":"AltRight"}"#);
+        r.set("flare.dictation.pauseMedia", "1");
+        r.d.apply_prefs();
+        r.at(1000.0);
+        r.key("AltRight", false);
+        r.at(1210.0);
+        r.d.on_timer(TimerKey::WindowKey);
+        assert_eq!(r.count("pause_media"), 1, "the pause is asked for");
+        r
+    }
+
+    fn answer_pause(r: &Rig) {
+        let tx =
+            r.s.pause_tx
+                .borrow_mut()
+                .take()
+                .expect("a pause is waiting");
+        let _ = tx.send(Token(vec!["m".into()]));
+    }
+
+    fn until_late(r: &Rig, want: &[&str]) {
+        for _ in 0..400 {
+            if r.s.late.lock().unwrap().len() >= want.len() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5)); // test: let the media worker answer
+        }
+        assert_eq!(*r.s.late.lock().unwrap(), want);
+    }
+
+    /// Parity 867: a pause that has not answered when dictation goes off still plays the music again.
+    #[test]
+    fn switching_off_before_the_pause_answers_still_plays_the_media_again() {
+        let mut r = pause_rig();
+        r.set("flare.dictation.enabled", "0");
+        r.d.apply_prefs();
+        assert!(!r.d.has_parts());
+        answer_pause(&r);
+        until_late(&r, &["m"]);
+        assert_eq!(
+            r.count("resume_media"),
+            0,
+            "the parts were gone: the late path did it"
+        );
+    }
+
+    #[test]
+    fn a_pause_answer_that_was_already_posted_when_it_goes_off_is_resumed_too() {
+        let mut r = pause_rig();
+        // The worker has posted the answer; the UI thread has not read it yet.
+        answer_pause(&r);
+        std::thread::sleep(Duration::from_millis(50)); // test: the media worker posts
+        r.set("flare.dictation.enabled", "0");
+        r.d.apply_prefs();
+        r.pump();
+        let n = r.s.late.lock().unwrap().len();
+        assert!(n >= 1, "the token is resumed, not dropped");
+    }
+
+    #[test]
+    fn quitting_before_the_pause_answers_waits_for_it_and_plays_the_media_again() {
+        let mut r = pause_rig();
+        let tx = r.s.pause_tx.borrow_mut().take().unwrap();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60)); // test: the pause answers during the quit
+            let _ = tx.send(Token(vec!["m".into()]));
+        });
+        r.d.stop();
+        assert_eq!(*r.s.late.lock().unwrap(), vec!["m".to_string()]);
+        t.join().unwrap();
+    }
+
+    // ---- the link threads and the UI thread ----
+
+    fn bridge(gate: &Arc<AtomicBool>, wait_ms: u64) -> (Bridge, Arc<Mutex<VecDeque<DictMsg>>>) {
+        let q: Arc<Mutex<VecDeque<DictMsg>>> = Arc::default();
+        let q2 = Arc::clone(&q);
+        let post: Post = Arc::new(move |m| q2.lock().unwrap().push_back(m));
+        (
+            Bridge {
+                post,
+                probe: Arc::new(FakeProbe),
+                gate: Arc::clone(gate),
+                wait: Duration::from_millis(wait_ms),
+            },
+            q,
+        )
+    }
+
+    #[test]
+    fn a_call_that_timed_out_never_runs_afterwards() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let (b, q) = bridge(&gate, 40);
+        let ran = Arc::new(AtomicBool::new(false));
+        let r2 = Arc::clone(&ran);
+        let got = b.call(move |_d| {
+            r2.store(true, Ordering::SeqCst);
+            1
+        });
+        assert_eq!(got, None, "nobody ran it in time");
+        // The UI thread comes round later: the queued call must be a no-op now.
+        let mut rig = Rig::new(false);
+        while let Some(m) = q.lock().unwrap().pop_front() {
+            rig.d.on_msg(m);
+        }
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a write of the words or of the Enter never lands outside its window"
+        );
+    }
+
+    #[test]
+    fn a_closed_gate_frees_a_waiting_link_thread_at_once() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let (b, q) = bridge(&gate, 3000);
+        let g2 = Arc::clone(&gate);
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30)); // test: the UI thread begins to close the link
+            g2.store(true, Ordering::SeqCst);
+        });
+        let began = Instant::now();
+        assert_eq!(b.call(|_d| 1), None);
+        assert!(
+            began.elapsed() < Duration::from_millis(1500),
+            "freed in {:?}, not the 3 s",
+            began.elapsed()
+        );
+        closer.join().unwrap();
+        // And a call made after the gate closed is not even posted.
+        assert_eq!(b.call(|_d| 2), None);
+        assert_eq!(q.lock().unwrap().len(), 1, "only the first was posted");
+    }
+
+    #[test]
+    fn a_call_the_ui_thread_took_is_answered_even_if_the_wait_ran_out() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let (b, q) = bridge(&gate, 200);
+        let mut rig = Rig::new(false);
+        let h = std::thread::spawn(move || {
+            b.call(|_d| {
+                std::thread::sleep(Duration::from_millis(400)); // test: slow inside, past the 200 ms wait
+                7
+            })
+        });
+        // The UI thread (this one) takes the call before the wait ends, then is slow inside it.
+        let m = loop {
+            if let Some(m) = q.lock().unwrap().pop_front() {
+                break m;
+            }
+            std::thread::sleep(Duration::from_millis(1)); // test: the call thread posts
+        };
+        if let DictMsg::Call(f) = m {
+            f(&mut rig.d);
+        }
+        assert_eq!(
+            h.join().unwrap(),
+            Some(7),
+            "a claimed call is never answered as lost"
+        );
+    }
+
+    #[test]
+    fn a_link_that_stops_or_flips_closes_the_gate_the_waiting_threads_hold() {
+        let mut r = Rig::on_with_model(false);
+        for fx in [
+            SvcEffect::StopLinks,
+            SvcEffect::StartLinkService,
+            SvcEffect::StartLinkClient,
+        ] {
+            let held = Arc::clone(&r.d.gate);
+            assert!(!held.load(Ordering::SeqCst));
+            r.d.run_svc(vec![fx]);
+            assert!(
+                held.load(Ordering::SeqCst),
+                "the old threads are told before anything joins them"
+            );
+            assert!(
+                !r.d.gate.load(Ordering::SeqCst),
+                "a fresh gate for the next"
+            );
+        }
+        let held = Arc::clone(&r.d.gate);
+        r.set("flare.dictation.enabled", "0");
+        r.d.apply_prefs();
+        assert!(held.load(Ordering::SeqCst), "switching off closes it first");
+    }
+
+    /// Parity 834: every dictation child, the link and the key hook stop BEFORE the shells are killed. Every route
+    /// out of the window (a close, a quit for an update, the end after the loop) ends in `AppCtl::finish`, which
+    /// kills and waits for the shells, so the stop belongs at its top. A source scan: the order is the rule.
+    #[test]
+    fn quit_stops_dictation_before_finish_kills_the_shells() {
+        let src = include_str!("appctl.rs");
+        let body = src
+            .split("    fn finish(&mut self) {")
+            .nth(1)
+            .and_then(|s| s.split("\n    }\n").next())
+            .expect("AppCtl::finish exists");
+        let stop = body
+            .find("crate::dictation_ctl::stop_all()")
+            .expect("finish stops dictation");
+        let shells = body.find("end_of_life(").expect("finish ends the shells");
+        assert!(stop < shells, "dictation stops first:\n{body}");
+        let ended = body.find("self.ended = true").expect("finish is once-only");
+        assert!(
+            ended < stop,
+            "after the once-only guard, so a second call stops nothing twice"
+        );
+        for route in ["fn quit_for_update(&mut self) {", "pub fn end(&mut self) {"] {
+            let r = src.split(route).nth(1).expect(route);
+            assert!(
+                r.split("\n    }\n")
+                    .next()
+                    .unwrap()
+                    .contains("self.finish()"),
+                "{route} goes through finish"
+            );
+        }
     }
 
     /// The window controller offers every key to dictation before anything else, and a swallowed key

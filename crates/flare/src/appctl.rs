@@ -3106,6 +3106,9 @@ impl AppCtl {
             return;
         }
         self.ended = true;
+        // Dictation first (parity 834): the engine's children, the link and the key hook stop before the shells are
+        // killed and waited for, so a picker never keeps swallowing digits while the window is already hidden.
+        crate::dictation_ctl::stop_all();
         self.save_window_now();
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
