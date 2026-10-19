@@ -54,16 +54,18 @@ pub fn motion_word(state: i32, kind: i32, rainbow: bool, still: bool) -> &'stati
     if still { "still" } else { moving }
 }
 
-/// The probe's answer: `{ tabs: [ { id, state, kind, motion, colour, rainbow } ] }`.
-pub fn answer(marks: &[MarkFacts], still: bool) -> Value {
+/// The probe's answer: `{ tabs: [ { id, state, kind, motion, colour, rainbow, paused } ] }`. `paused`\n/// is a mark that would move held by a minimised window (the mark clock stops until a restore).
+pub fn answer(marks: &[MarkFacts], still: bool, minimised: bool) -> Value {
     let tabs: Vec<Value> = marks
         .iter()
         .map(|m| {
+            let motion = motion_word(m.state, m.kind, m.rainbow, still);
             json!({
                 "id": m.id,
                 "state": state_word(m.state),
                 "kind": match m.kind { 1 => "ring", 2 => "line", 3 => "run", _ => "none" },
-                "motion": motion_word(m.state, m.kind, m.rainbow, still),
+                "motion": motion,
+                "paused": minimised && !still && !matches!(motion, "none" | "still"),
                 "colour": m.colour,
                 "rainbow": m.rainbow,
             })
@@ -72,8 +74,7 @@ pub fn answer(marks: &[MarkFacts], still: bool) -> Value {
     json!({ "tabs": tabs })
 }
 
-/// `marks.state`: see `answer`. Thickness and the pause after a minimise are not reported: the
-/// window keeps neither a line's pixel thickness nor the mark clock's pause where a probe reads them.
+/// `marks.state`: see `answer`. A line's pixel thickness is a snapshot fact, not reported.
 fn marks_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let marks: Vec<MarkFacts> = ctx
         .app
@@ -91,7 +92,12 @@ fn marks_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
             }
         })
         .collect();
-    Ok(answer(&marks, !crate::e2e::animations_enabled()))
+    let minimised = ctx
+        .ctl
+        .try_borrow()
+        .map_err(|_| "the controller is busy")?
+        .marks_paused();
+    Ok(answer(&marks, !crate::e2e::animations_enabled(), minimised))
 }
 
 #[cfg(test)]
@@ -146,14 +152,56 @@ mod tests {
                 colour: "#00ff00".into(),
             },
         ];
-        let v = answer(&marks, false);
+        let v = answer(&marks, false, false);
         assert_eq!(v["tabs"][0]["state"], "question");
         assert_eq!(v["tabs"][0]["kind"], "line");
         assert_eq!(v["tabs"][0]["motion"], "breathe");
         assert_eq!(v["tabs"][1]["motion"], "flow");
         assert_eq!(v["tabs"][1]["rainbow"], true);
         assert_eq!(v["tabs"][1]["colour"], "#00ff00");
-        let still = answer(&marks, true);
+        let still = answer(&marks, true, false);
         assert_eq!(still["tabs"][0]["motion"], "still");
+    }
+
+    #[test]
+    fn a_minimised_window_pauses_only_the_marks_that_move() {
+        let marks = [
+            MarkFacts {
+                id: "a".into(),
+                state: 1,
+                kind: 1,
+                rainbow: false,
+                colour: "#fff".into(),
+            },
+            MarkFacts {
+                id: "b".into(),
+                state: 0,
+                kind: 0,
+                rainbow: false,
+                colour: "#fff".into(),
+            },
+            MarkFacts {
+                id: "c".into(),
+                state: 3,
+                kind: 2,
+                rainbow: false,
+                colour: "#fff".into(),
+            },
+        ];
+        let up = answer(&marks, false, false);
+        assert!(
+            up["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["paused"] == false)
+        );
+        let down = answer(&marks, false, true);
+        assert_eq!(down["tabs"][0]["paused"], true, "a spinning ring is held");
+        assert_eq!(down["tabs"][1]["paused"], false, "no mark, nothing to hold");
+        assert_eq!(
+            down["tabs"][2]["paused"], false,
+            "a plain finished line never moved"
+        );
     }
 }

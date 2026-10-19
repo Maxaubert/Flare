@@ -105,6 +105,17 @@ pub fn keep_error(ctx: &mut Ctx, e: &str) {
     ctx.ok(false, e);
 }
 
+/// The failure a scenario that ran no check at all records: a scenario that only skips (or returns
+/// early) proves nothing, and used to pass (M10 D21).
+pub const NO_CHECKS: &str = "the scenario ran no checks (a skip is never a pass)";
+
+/// Fails a scenario that finished without one check.
+pub fn require_checks(ctx: &mut Ctx) {
+    if ctx.checks == 0 {
+        ctx.ok(false, NO_CHECKS);
+    }
+}
+
 /// The child: runs one scenario in this process and prints its JSON lines. Exit 0 when it passed.
 pub fn run_one(name: &str, cli: &Cli) -> i32 {
     let Some(s) = ALL.iter().find(|s| s.name == name) else {
@@ -122,7 +133,10 @@ pub fn run_one(name: &str, cli: &Cli) -> i32 {
         ctx.shots = dir.clone();
     }
     match (s.run)(&mut ctx) {
-        Ok(()) => ctx.finish(),
+        Ok(()) => {
+            ctx.finish();
+            require_checks(&mut ctx);
+        }
         Err(e) => keep_error(&mut ctx, &e),
     }
     println!(

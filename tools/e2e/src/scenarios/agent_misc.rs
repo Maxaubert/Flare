@@ -195,7 +195,7 @@ fn soft(timeout_ms: u64, f: &mut dyn FnMut() -> bool) -> bool {
 // ---------------------------------------------------------------- the saved preferences
 
 /// A saved preference as a string, `""` when it is not stored yet.
-fn stored(app: &App, key: &str) -> String {
+pub(super) fn stored(app: &App, key: &str) -> String {
     let text = std::fs::read_to_string(app.profile.join("settings.json")).unwrap_or_default();
     serde_json::from_str::<Value>(&text)
         .ok()
@@ -319,18 +319,18 @@ fn settings_front(app: &mut App) -> bool {
 }
 
 /// The value word of a pill row, lowercased, and whether it is one of `want`.
-fn row_is(app: &mut App, id: &str, want: &[&str]) -> bool {
+pub(super) fn row_is(app: &mut App, id: &str, want: &[&str]) -> bool {
     let v = row(app, id)["value"].as_str().unwrap_or("").to_lowercase();
     want.iter().any(|w| v == *w)
 }
 
 /// The switch row `id` as on or off (`None` when the row is not drawn).
-fn switch_on(app: &mut App, id: &str) -> Option<bool> {
+pub(super) fn switch_on(app: &mut App, id: &str) -> Option<bool> {
     row(app, id)["on"].as_bool()
 }
 
 /// Opens Settings from the cog, or brings it to the front; waits for it to be in front.
-fn open_settings(ctx: &mut Ctx, app: &mut App) -> bool {
+pub(super) fn open_settings(ctx: &mut Ctx, app: &mut App) -> bool {
     if settings_front(app) {
         return true;
     }
@@ -359,7 +359,7 @@ fn page_of(app: &mut App, id: &str) -> Option<String> {
 }
 
 /// Brings a settings row into view (its page first, then the wheel), as PT's `gotoPref`.
-fn goto_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
+pub(super) fn goto_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
     let Some(page) = page_of(app, id) else {
         return false;
     };
@@ -410,7 +410,7 @@ fn click_switch(app: &mut App, id: &str) -> bool {
 }
 
 /// Flips the switch `id` to `want` and waits for it to read so (PT's `.click()` on the switch).
-fn set_switch(ctx: &mut Ctx, app: &mut App, id: &str, want: bool) -> bool {
+pub(super) fn set_switch(ctx: &mut Ctx, app: &mut App, id: &str, want: bool) -> bool {
     if !goto_row(ctx, app, id) {
         return false;
     }
@@ -435,7 +435,7 @@ fn set_switch(ctx: &mut Ctx, app: &mut App, id: &str, want: bool) -> bool {
 
 /// Picks a segment of a pill row by clicking along the row from its right end until the row says
 /// `want` (PT's `setPref`). A pill is right-aligned, 16 px in from the row's edge.
-fn pick_seg(ctx: &mut Ctx, app: &mut App, id: &str, want: &[&str]) -> bool {
+pub(super) fn pick_seg(ctx: &mut Ctx, app: &mut App, id: &str, want: &[&str]) -> bool {
     if !goto_row(ctx, app, id) {
         return false;
     }

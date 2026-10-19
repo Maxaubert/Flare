@@ -37,7 +37,7 @@ pub fn state_word(mark: i32) -> &'static str {
 }
 
 /// The probe's answer. `polled` is the asked tab's flag, or every tab's when none was asked.
-pub fn answer(tabs: &[TabFacts], only: Option<&str>, badge: &str) -> Value {
+pub fn answer(tabs: &[TabFacts], only: Option<&str>, badge: &str, badge_px: u32) -> Value {
     let polled = match only {
         Some(id) => tabs.iter().any(|t| t.id == id && t.polled),
         None => !tabs.is_empty() && tabs.iter().all(|t| t.polled),
@@ -57,11 +57,12 @@ pub fn answer(tabs: &[TabFacts], only: Option<&str>, badge: &str) -> Value {
             })
         })
         .collect();
-    json!({ "tabs": rows, "badge": badge, "polled": polled })
+    json!({ "tabs": rows, "badge": badge, "badge_px": badge_px, "polled": polled })
 }
 
 /// `agent.state`: `{ tabs: [ { id, kind, present, state, question, failed_kind, tooltip, polled } ],
-/// badge, polled }`. `badge` is what the taskbar button was last told ("1 tab needs a look"), empty
+/// badge, badge_px, polled }`. `badge_px` is the width of the badge picture last handed to the
+/// taskbar (0 when clear). `badge` is what the taskbar button was last told ("1 tab needs a look"), empty
 /// when it is clear. `polled` says the process poll has answered for the tab asked (`{ tab }`), or
 /// for every tab.
 fn agent_state(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
@@ -91,7 +92,12 @@ fn agent_state(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             }
         })
         .collect();
-    Ok(answer(&tabs, only, &flare_win::taskbar::last_description()))
+    Ok(answer(
+        &tabs,
+        only,
+        &flare_win::taskbar::last_description(),
+        flare_win::taskbar::last_overlay_px(),
+    ))
 }
 
 #[cfg(test)]
@@ -121,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_question_tab_says_so_and_a_working_one_does_not() {
-        let a = answer(&[tab("a", 2, true), tab("b", 1, true)], None, "");
+        let a = answer(&[tab("a", 2, true), tab("b", 1, true)], None, "", 0);
         assert_eq!(a["tabs"][0]["state"], "question");
         assert_eq!(a["tabs"][0]["question"], true);
         assert_eq!(a["tabs"][1]["state"], "working");
@@ -133,21 +139,26 @@ mod tests {
         let mut t = tab("a", 4, true);
         t.failed_kind = Some("rate_limit".into());
         t.tooltip = "proj\nFailed: rate limit".into();
-        let a = answer(&[t], None, "1 tab needs a look");
+        let a = answer(&[t], None, "1 tab needs a look", 16);
         assert_eq!(a["tabs"][0]["failed_kind"], "rate_limit");
         assert_eq!(a["tabs"][0]["tooltip"], "proj\nFailed: rate limit");
         assert_eq!(a["badge"], "1 tab needs a look");
+        assert_eq!(a["badge_px"], 16);
     }
 
     #[test]
     fn polled_is_the_asked_tabs_flag_else_every_tabs() {
         let tabs = [tab("a", 0, true), tab("b", 0, false)];
-        assert_eq!(answer(&tabs, Some("a"), "")["polled"], true);
-        assert_eq!(answer(&tabs, Some("b"), "")["polled"], false);
-        assert_eq!(answer(&tabs, Some("zzz"), "")["polled"], false);
-        assert_eq!(answer(&tabs, None, "")["polled"], false);
-        assert_eq!(answer(&[tab("a", 0, true)], None, "")["polled"], true);
-        assert_eq!(answer(&[], None, "")["polled"], false, "no tab, no verdict");
+        assert_eq!(answer(&tabs, Some("a"), "", 0)["polled"], true);
+        assert_eq!(answer(&tabs, Some("b"), "", 0)["polled"], false);
+        assert_eq!(answer(&tabs, Some("zzz"), "", 0)["polled"], false);
+        assert_eq!(answer(&tabs, None, "", 0)["polled"], false);
+        assert_eq!(answer(&[tab("a", 0, true)], None, "", 0)["polled"], true);
+        assert_eq!(
+            answer(&[], None, "", 0)["polled"],
+            false,
+            "no tab, no verdict"
+        );
     }
 
     #[test]

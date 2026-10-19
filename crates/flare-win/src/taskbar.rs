@@ -440,6 +440,18 @@ std::thread_local! {
     static LAST_DESCRIPTION: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
+std::thread_local! {
+    /// The width in device pixels of the disc the shell last took on this thread; 0 once cleared.
+    static LAST_OVERLAY_PX: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The width of the overlay picture the shell last took on this thread (`badge_px` of the scale it
+/// was drawn at), 0 when the overlay is clear. The test hook reads it: the picture itself is never
+/// kept.
+pub fn last_overlay_px() -> u32 {
+    LAST_OVERLAY_PX.with(std::cell::Cell::get)
+}
+
 fn remember_description(text: &str) {
     LAST_DESCRIPTION.with(|d| *d.borrow_mut() = text.to_string());
 }
@@ -492,6 +504,7 @@ impl TaskbarBadge {
         let ok = self.shell.set_overlay(Some(&disc), &text);
         if ok {
             remember_description(&text);
+            LAST_OVERLAY_PX.with(|p| p.set(size));
             self.last = Some((count, size));
             self.cleared = false;
         }
@@ -505,6 +518,7 @@ impl TaskbarBadge {
         let ok = self.shell.set_overlay(None, "");
         if ok {
             remember_description("");
+            LAST_OVERLAY_PX.with(|p| p.set(0));
             self.last = None;
             self.cleared = true;
         }
@@ -688,6 +702,17 @@ mod tests {
         assert_eq!(last_description(), "2 tabs need a look");
         assert!(b.clear());
         assert_eq!(last_description(), "", "a cleared badge says nothing");
+    }
+
+    #[test]
+    fn the_last_overlay_width_is_the_disc_the_shell_was_last_given() {
+        let mut b = TaskbarBadge::with_shell(Box::new(RecordShell));
+        assert!(b.set(1, 1.0));
+        assert_eq!(last_overlay_px(), 16);
+        assert!(b.set(1, 2.25));
+        assert_eq!(last_overlay_px(), 36);
+        assert!(b.clear());
+        assert_eq!(last_overlay_px(), 0, "a cleared badge has no picture");
     }
 
     #[test]

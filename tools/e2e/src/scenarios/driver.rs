@@ -104,6 +104,28 @@ pub fn pick_theme(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
     }
     let wall = probe(app, "picker.wall", Value::Null);
     if wall["expanded"] == json!(false) {
+        // The toggle sits under the clipped cards: wheel it into the pane before it is clicked (a
+        // later card, such as Paper, needs the wall open, and the toggle may be below the fold).
+        ctx.until("the wall's toggle in view", 8_000, &mut || {
+            let wall = probe(app, "picker.wall", Value::Null);
+            if wall["toggle_visible"] == json!(true) {
+                return true;
+            }
+            let grid = ui_rect(app, "grid");
+            let mid = grid.map_or(300.0, |g| g.1 + g.3 / 2.0);
+            let (x, y) = grid.map_or((400.0, 300.0), centre);
+            let below = rect_of(&wall["toggle"]).is_none_or(|t| t.1 > mid);
+            let _ = app.session.call(&Request::Pointer {
+                x,
+                y,
+                action: PointerAction::Wheel {
+                    dx: 0.0,
+                    dy: if below { -160.0 } else { 160.0 },
+                },
+            });
+            false
+        });
+        let wall = probe(app, "picker.wall", Value::Null);
         if let Some(r) = rect_of(&wall["toggle"]) {
             let (x, y) = centre(r);
             let _ = app.session.click(x, y);

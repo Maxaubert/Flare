@@ -22,14 +22,14 @@ const WIDE: &str = "a-much-longer-folder-name";
 const LONG: &str = "a-folder-with-a-name-far-too-long-to-fit-on-any-tab";
 
 /// A decoded snapshot: device pixels, row-major.
-struct Snap {
-    w: u32,
-    h: u32,
+pub(super) struct Snap {
+    pub(super) w: u32,
+    pub(super) h: u32,
     px: Vec<Rgb>,
 }
 
 impl Snap {
-    fn at(&self, x: u32, y: u32) -> Rgb {
+    pub(super) fn at(&self, x: u32, y: u32) -> Rgb {
         let i = (y.min(self.h - 1) * self.w + x.min(self.w - 1)) as usize;
         self.px[i]
     }
@@ -170,7 +170,7 @@ fn say(state: &str, extra: &str) -> String {
 }
 
 /// Decodes the PNG a snapshot wrote into device pixels. None when the file is not a readable PNG.
-fn read_png(path: &Path) -> Option<Snap> {
+pub(super) fn read_png(path: &Path) -> Option<Snap> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = png::Decoder::new(std::io::BufReader::new(file))
         .read_info()
@@ -198,13 +198,13 @@ fn read_png(path: &Path) -> Option<Snap> {
 }
 
 /// A snapshot of the window, decoded. None when the snapshot failed.
-fn snap(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Snap> {
+pub(super) fn snap(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Snap> {
     let path = ctx.shot(app, name)?;
     read_png(&path)
 }
 
 /// The sum of the channel differences of two colours.
-fn dist(a: Rgb, b: Rgb) -> i32 {
+pub(super) fn dist(a: Rgb, b: Rgb) -> i32 {
     (0..3)
         .map(|i| (i32::from(a[i]) - i32::from(b[i])).abs())
         .sum()
@@ -249,6 +249,106 @@ fn launch_strip(
         scale_dpi: dpi,
         ..Launch::default()
     })
+}
+
+/// The six launch folders `mark_strip` expects, in strip order.
+pub(super) const MARK_FOLDERS: [&str; 6] =
+    ["FlareTerminal", "notes", "api", "web", "infra", "docs"];
+
+/// Clicks tab `i` and waits for it to be the tab in front, so the line typed next goes to its shell
+/// (a click answers before the window has moved the front, and the line landed on the old tab).
+fn focus_tab(ctx: &mut Ctx, app: &mut App, i: usize) {
+    let id = tabs_of(app)
+        .get(i)
+        .and_then(|t| t["id"].as_str())
+        .map(str::to_string);
+    // The strip slides its tabs into place for a moment after they open, and a click on where a
+    // tab is going lands on its neighbour: click again every quarter second until it is in front.
+    let mut polls = 0u32;
+    ctx.poll(6_000, &mut || {
+        let t = tabs_of(app);
+        let strip = t.get(i).is_some_and(|t| t["front"] == json!(true));
+        let typed = app.session.state().ok().and_then(|s| s.front) == id;
+        if strip && typed {
+            return true;
+        }
+        if polls.is_multiple_of(10) {
+            if let Some(tab) = t.get(i) {
+                click_at(app, centre(rect_of(tab)));
+            }
+        }
+        polls += 1;
+        false
+    });
+}
+
+/// PT's `markStrip` (run.mjs:1842-1845): six launch folders, each shell told a hook line so the tabs
+/// take the mockups' states (working, none, working, finished, question, failed). True when the six
+/// states hold, with the states read.
+pub(super) fn mark_strip(ctx: &mut Ctx, app: &mut App) -> (bool, Vec<String>) {
+    // PT: run.mjs:1842-1845 (markStrip, whose one check counts here too). Each shell takes a hook
+    // line typed into it; the endings land while the first tab is in front.
+    let six = ctx.until("six tabs", 30_000, &mut || tabs_of(app).len() == 6);
+    // The tabs open as their shells come up and the strip settles into the launch order a moment
+    // later; a line typed to "tab 0" before that lands on whichever folder sits there.
+    let in_order = six
+        && ctx.until("the tabs in launch order", 15_000, &mut || {
+            let names: Vec<String> = tabs_of(app)
+                .iter()
+                .map(|t| t["title"].as_str().unwrap_or("").to_string())
+                .collect();
+            names == MARK_FOLDERS
+        });
+    if in_order {
+        for i in [0usize, 2, 3, 4, 5] {
+            focus_tab(ctx, app, i);
+            type_line(app, &say("working", ""));
+        }
+        focus_tab(ctx, app, 3);
+        type_line(
+            app,
+            &format!("Start-Sleep -Milliseconds 9000; {}", say("done", "")),
+        );
+        focus_tab(ctx, app, 4);
+        type_line(
+            app,
+            &format!("Start-Sleep -Milliseconds 8000; {}", say("question", "")),
+        );
+        focus_tab(ctx, app, 5);
+        type_line(
+            app,
+            &format!(
+                "Start-Sleep -Milliseconds 7000; {}; {}",
+                say("failed", ";kind=rate_limit"),
+                say("failed", "")
+            ),
+        );
+        focus_tab(ctx, app, 0);
+    }
+    let want_states = [
+        "working", "none", "working", "finished", "question", "failed",
+    ];
+    let states = |app: &mut App| -> Vec<String> {
+        tabs_of(app)
+            .iter()
+            .map(|t| t["mark"]["state"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    let settled = ctx.until("the six tabs to take their states", 25_000, &mut || {
+        states(app) == want_states
+    });
+    // The titles ride along in the message: a line that landed on the wrong tab shows by name.
+    let got: Vec<String> = tabs_of(app)
+        .iter()
+        .map(|t| {
+            format!(
+                "{}={}",
+                t["title"].as_str().unwrap_or(""),
+                t["mark"]["state"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    (settled, got)
 }
 
 /// PT `tabDragFirst` (run.mjs:1767-1794): a tab dragged to the left edge is first, and dragged back
@@ -391,56 +491,7 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
         },
     );
 
-    // PT: run.mjs:1842-1845 (markStrip, whose one check counts here too). Each shell takes a hook
-    // line typed into it; the endings land while the first tab is in front.
-    let six = ctx.until("six tabs", 30_000, &mut || tabs_of(&mut app).len() == 6);
-    if six {
-        for i in [0usize, 2, 3, 4, 5] {
-            let t = tabs_of(&mut app);
-            click_at(&mut app, centre(rect_of(&t[i])));
-            type_line(&mut app, &say("working", ""));
-        }
-        let t = tabs_of(&mut app);
-        click_at(&mut app, centre(rect_of(&t[3])));
-        type_line(
-            &mut app,
-            &format!("Start-Sleep -Milliseconds 9000; {}", say("done", "")),
-        );
-        let t = tabs_of(&mut app);
-        click_at(&mut app, centre(rect_of(&t[4])));
-        type_line(
-            &mut app,
-            &format!("Start-Sleep -Milliseconds 8000; {}", say("question", "")),
-        );
-        let t = tabs_of(&mut app);
-        click_at(&mut app, centre(rect_of(&t[5])));
-        type_line(
-            &mut app,
-            &format!(
-                "Start-Sleep -Milliseconds 7000; {}; {}",
-                say("failed", ";kind=rate_limit"),
-                say("failed", "")
-            ),
-        );
-        let t = tabs_of(&mut app);
-        click_at(&mut app, centre(rect_of(&t[0])));
-    }
-    let want: Vec<String> = [
-        "working", "none", "working", "finished", "question", "failed",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let states = |app: &mut App| -> Vec<String> {
-        tabs_of(app)
-            .iter()
-            .map(|t| t["mark"]["state"].as_str().unwrap_or("").to_string())
-            .collect()
-    };
-    let settled = ctx.until("the six tabs to take their states", 25_000, &mut || {
-        states(&mut app) == want
-    });
-    let got = states(&mut app);
+    let (settled, got) = mark_strip(ctx, &mut app);
     ctx.ok(
         settled,
         format!("six tabs in the mockups' states ({got:?})"),

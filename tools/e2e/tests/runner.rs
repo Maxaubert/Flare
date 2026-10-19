@@ -352,3 +352,21 @@ fn a_returned_error_after_a_timeout_keeps_both_texts_in_one_failure() {
     assert!(ctx.fails[0].contains("could not reach the page"));
     assert!(ctx.fails[0].contains("timed out waiting for the page"));
 }
+
+#[test]
+fn a_scenario_that_ran_no_check_fails_and_skips_do_not_count() {
+    let mut ctx = Ctx::new("empty");
+    ctx.skip("everything dropped");
+    flare_e2e::runner::require_checks(&mut ctx);
+    assert_eq!(ctx.fails, vec![flare_e2e::runner::NO_CHECKS.to_string()]);
+    assert_eq!(ctx.skips, 1);
+}
+
+#[test]
+fn a_scenario_with_a_check_is_left_alone_by_the_empty_guard() {
+    let mut ctx = Ctx::new("one");
+    ctx.ok(true, "a check");
+    flare_e2e::runner::require_checks(&mut ctx);
+    assert!(ctx.fails.is_empty());
+    assert_eq!(ctx.checks, 1);
+}

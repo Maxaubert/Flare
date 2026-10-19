@@ -1597,6 +1597,11 @@ impl AppCtl {
         self.update_clock();
     }
 
+    /// Whether a minimised window holds the marks (what `marks.state` reports as `paused`).
+    pub fn marks_paused(&self) -> bool {
+        self.minimised
+    }
+
     /// Whether the mark clock's timer is running (it must not while no mark moves).
     pub fn mark_clock_running(&self) -> bool {
         self.clock.timer.running()
