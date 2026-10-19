@@ -1682,8 +1682,10 @@ dependencies = [
  "cosmic-text",
  "log",
  "pollster",
+ "tempfile",
  "unicode-width",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
