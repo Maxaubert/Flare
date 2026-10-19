@@ -467,6 +467,10 @@ impl Service {
         // The window says this as it loads: the part it may have missed, again.
         fx.push(SvcEffect::Role(self.role));
         let Some(keys) = keys else {
+            // Off means off: an answer still out (the tab list, a paste) acts on nothing.
+            self.asking = None;
+            self.pending_paste = None;
+            self.rec_front = None;
             // Off sends pick off, then unhooks and lets the lock go (N15).
             if self.picking.take().is_some() {
                 fx.push(SvcEffect::ClearTimer(TimerId::Pick));
@@ -1394,6 +1398,47 @@ mod tests {
             SvcEffect::SendLocal { .. } | SvcEffect::SendRemote { .. }
         )));
         assert!(!s.picking());
+    }
+
+    fn off_cfg() -> AnywhereConfig {
+        let mut off = cfg(f8(), DictMode::Hold);
+        off.on = false;
+        off
+    }
+
+    #[test]
+    fn switching_off_while_the_tab_list_is_gathered_opens_no_picker_after() {
+        let mut s = serving();
+        // Heard with another app in front and no copy to paste into: the list is being gathered.
+        let fx = hear(&mut s, None, "hi");
+        assert!(has(&fx, &SvcEffect::AskTabs));
+        s.on(SvcEvent::Config(off_cfg()), 21.0);
+        let fx = s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 22.0);
+        assert!(!s.picking());
+        assert!(!fx.iter().any(|e| matches!(
+            e,
+            SvcEffect::Widget(OverlayState::Pick { .. })
+                | SvcEffect::HookPick(true)
+                | SvcEffect::SetTimer(..)
+        )));
+    }
+
+    #[test]
+    fn switching_off_during_a_paste_round_trip_opens_no_picker_after() {
+        let mut s = serving();
+        let fx = hear(&mut s, Some(77), "hi");
+        assert!(matches!(fx[0], SvcEffect::PasteCopy { .. }));
+        s.on(SvcEvent::Config(off_cfg()), 21.0);
+        let fx = s.on(SvcEvent::Pasted(false), 22.0);
+        assert!(!s.picking());
+        assert!(!has(&fx, &SvcEffect::AskTabs));
+        assert!(!fx.iter().any(|e| matches!(
+            e,
+            SvcEffect::Widget(OverlayState::Pick { .. }) | SvcEffect::HookPick(true)
+        )));
+        let fx = s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 23.0);
+        assert!(!s.picking());
+        assert!(fx.is_empty());
     }
 
     #[test]
