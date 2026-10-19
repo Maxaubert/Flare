@@ -651,6 +651,8 @@ fn a_host_that_exits_mid_pass_answers_with_its_stderr_tail_and_the_next_pass_get
     });
     let r = ask(&w, pk(true));
     assert!(failed_detail(&r).contains("host crashed"), "got {r:?}");
+    // A host that is gone is not counted as running (PT's gone() clears it at once).
+    assert!(!w.engine.info().running);
     w.set(|k| k.host_cpu.clear());
     assert_eq!(host_seen(&ask(&w, pk(true))).n, 1);
     assert_eq!(w.host_calls().len(), 2);
@@ -818,8 +820,10 @@ fn the_real_host_answers_like_parakeet_cli() {
         assert!(p.exists(), "missing {}", p.display());
     }
     let wav = std::fs::read(&clip).expect("the clip");
+    let launches: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let answer = |host: Option<PathBuf>| {
         let (d, m) = (dir.clone(), model.clone());
+        let log = Arc::clone(&launches);
         let mut cfg = EngineConfig::new(
             Box::new(move || Some(d.clone())),
             Box::new(|| None),
@@ -829,6 +833,15 @@ fn the_real_host_answers_like_parakeet_cli() {
         cfg.has_nvidia = Box::new(|| false);
         cfg.idle = None;
         cfg.parakeet_host = host;
+        // Record every launch, so the proof can say WHICH program answered.
+        cfg.command = Some(Box::new(move |exe: &Path, args: &[String]| {
+            let name = exe
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            log.lock().unwrap().push(name);
+            (exe.to_path_buf(), args.to_vec())
+        }));
         let engine = Engine::start(cfg, Arc::new(Job::new().expect("a job")));
         let rx = engine.transcribe(TranscribeRequest {
             wav: wav.clone(),
@@ -839,7 +852,13 @@ fn the_real_host_answers_like_parakeet_cli() {
         get(&rx)
     };
     let by_cli = answer(None);
+    launches.lock().unwrap().clear();
     let by_host = answer(Some(PathBuf::from(REAL_HOST)));
+    // The native host answered: it was launched, and parakeet-cli never was (a host that never said
+    // ready would have been replaced by parakeet-cli, and the equality below would hold trivially).
+    let ran = launches.lock().unwrap().clone();
+    assert_eq!(ran.len(), 1, "launches: {ran:?}");
+    assert!(ran[0].contains("flare-parakeet-host"), "launches: {ran:?}");
     assert!(!text_of(&by_cli).is_empty(), "parakeet-cli heard nothing");
     assert_eq!(text_of(&by_host), text_of(&by_cli));
 }

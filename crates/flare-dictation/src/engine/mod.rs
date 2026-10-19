@@ -932,8 +932,9 @@ impl Inner {
             }
         };
         let answer = host.pass(wav, self.cfg.request_timeout);
-        if host.was_killed() {
-            // A pass that timed out ended the host: the next pass starts a fresh one.
+        if host.was_killed() || host.exited() {
+            // A pass that timed out, or a host that died, ended it: it is no longer running (PT's gone()),
+            // and the next pass starts a fresh one.
             self.kill_host(&host);
         }
         Some(answer)
