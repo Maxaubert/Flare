@@ -1876,7 +1876,9 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 }
                 if notches != 0 {
                     let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
-                    handle.wheel(notches, col, row);
+                    if handle.wheel(notches, col, row) {
+                        app.window().request_redraw();
+                    }
                 }
                 EventResult::PreventDefault
             }
@@ -1951,6 +1953,35 @@ mod tests {
         };
         assert_eq!(saved_position(&init, false), Some((120, 80)));
         assert_eq!(saved_position(&init, true), None);
+    }
+
+    /// A wheel scroll makes no output, so nothing else wakes the GPU path: the arm (and the e2e
+    /// mirror of it) asks for the redraw itself when the view moved (M10 Task 70, B5 counted no
+    /// GPU frame at all before this).
+    #[test]
+    fn a_wheel_that_moves_the_view_asks_for_a_redraw() {
+        let src = include_str!("window.rs").replace("\r\n", "\n");
+        let from = src
+            .find("WindowEvent::MouseWheel {")
+            .expect("the filter has a wheel arm");
+        let arm = &src[from..];
+        let arm = &arm[..arm
+            .find("_ => EventResult::Propagate")
+            .expect("the arm ends")];
+        let call = arm
+            .find("if handle.wheel(notches, col, row) {")
+            .expect("the wheel's answer is used");
+        assert!(
+            arm[call..].contains("app.window().request_redraw();"),
+            "the wheel arm asks for a redraw"
+        );
+        let glue = include_str!("e2e_glue.rs").replace("\r\n", "\n");
+        let from = glue.find("fn term_wheel(").expect("the e2e wheel");
+        let body = &glue[from..from + glue[from..].find("\n    }\n").expect("end")];
+        assert!(
+            body.contains("&& handle.wheel(") && body.contains("request_redraw()"),
+            "the e2e wheel asks for a redraw as the real one does"
+        );
     }
 
     #[test]

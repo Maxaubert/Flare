@@ -428,8 +428,10 @@ impl TermHandle {
         self.sh.dirty.store(true, Ordering::SeqCst);
     }
 
-    /// `notches` > 0 is wheel up. Never typing, never snaps the view.
-    pub fn wheel(&self, notches: i32, col: usize, row: usize) {
+    /// `notches` > 0 is wheel up. Never typing, never snaps the view. True when the view itself
+    /// moved: no output follows such a scroll, so the window must ask for the redraw (the GPU
+    /// path paints only on a request, M10 Task 70).
+    pub fn wheel(&self, notches: i32, col: usize, row: usize) -> bool {
         let m = self.mode();
         let ctx = WheelContext {
             mouse: m.mouse,
@@ -439,9 +441,15 @@ impl TermHandle {
             app_cursor: m.app_cursor,
         };
         match wheel_action(notches, &ctx, col, row) {
-            WheelAction::ScrollView(n) => self.scroll_view(n),
-            WheelAction::Bytes(b) => self.sh.mgr.write(&self.sh.id, &b),
-            WheelAction::None => {}
+            WheelAction::ScrollView(n) => {
+                self.scroll_view(n);
+                true
+            }
+            WheelAction::Bytes(b) => {
+                self.sh.mgr.write(&self.sh.id, &b);
+                false
+            }
+            WheelAction::None => false,
         }
     }
 
@@ -1020,6 +1028,19 @@ mod tests {
             t.fake().written().ends_with(b"\x1b[A\x1b[A\x1b[A")
         });
         assert!(t.h.last_typed().is_none());
+    }
+
+    #[test]
+    fn a_wheel_says_when_the_view_moved_so_the_window_can_redraw() {
+        let t = T::started();
+        feed_lines(&t, 100);
+        assert!(t.h.wheel(1, 0, 0), "a scroll of the view must be reported");
+        t.fake().feed(b"\x1b[?1049h");
+        wait_until("the alt screen", || t.h.mode().alt_screen);
+        assert!(
+            !t.h.wheel(1, 0, 0),
+            "arrows sent to the program are not a view change"
+        );
     }
 
     #[test]

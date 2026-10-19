@@ -1117,8 +1117,10 @@ impl GlueCtx {
         if on_settings || app.get_chrome_has_focus() || !in_rect((x, y), grid) {
             return;
         }
-        if let Some(handle) = self.kp.front.borrow().clone() {
-            handle.wheel(wheel_notches(dy), 0, 0);
+        if let Some(handle) = self.kp.front.borrow().clone()
+            && handle.wheel(wheel_notches(dy), 0, 0)
+        {
+            app.window().request_redraw();
         }
     }
 
