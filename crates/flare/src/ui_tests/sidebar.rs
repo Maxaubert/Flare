@@ -431,6 +431,45 @@ fn the_collapsed_corner_and_line_are_drawn_hairline_thin() {
     }
 }
 
+/// A frame caught while the panel slides: its edge must sit on a whole device pixel, or the
+/// panel's and the corner's antialiased edges meet in one pixel and show a seam (the e2e
+/// verticalTabs "corner keeps to the sidebar's edge" read 4 px short on such a frame).
+#[test]
+fn the_sliding_panel_keeps_to_whole_device_pixels() {
+    for scale in SCALES {
+        let h = harness(scale);
+        h.comp.set_collapsed(true);
+        h.advance(0);
+        h.advance(400);
+        assert!(
+            (h.comp.get_panel_left() + 230.0).abs() < 0.5,
+            "waits off the edge"
+        );
+        for reveal in [true, false] {
+            h.comp.set_revealed(reveal);
+            h.advance(0);
+            let _ = h.comp.get_panel_left();
+            let mut moving = 0;
+            for _ in 0..60 {
+                h.advance(5);
+                let dev_x = h.comp.get_panel_left() * scale;
+                assert!(
+                    (dev_x - dev_x.round()).abs() < 0.01,
+                    "scale {scale}: the panel is at device x {dev_x}"
+                );
+                let left = h.comp.get_panel_left();
+                if left > -229.0 && left < -1.0 {
+                    moving += 1;
+                }
+            }
+            assert!(
+                moving > 3,
+                "scale {scale}: the slide was seen ({moving} frames)"
+            );
+        }
+    }
+}
+
 #[test]
 fn hidden_rows_take_no_space() {
     let h = harness(1.0);

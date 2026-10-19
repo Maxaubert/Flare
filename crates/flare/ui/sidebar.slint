@@ -229,16 +229,25 @@ export component TabSidebar inherits Rectangle {
     }
 
     // Hidden, the panel waits side-width + CORNER_R off the edge, so its right edge and the cut travel together.
-    panel := Rectangle {
+    // The slide is eased by this helper and the panel takes it rounded to a whole device pixel: on a
+    // fractional x the panel's edge and the corner's edge each cover part of one pixel and leave a seam
+    // (the e2e verticalTabs corner read 4 px short on such a frame).
+    slide := Rectangle {
         x: (root.collapsed && !root.revealed) ? -(root.side-width + 10px) : 0px;
-        y: 0px;
-        width: root.side-width;
-        height: root.height;
-        background: Theme.secondary;
+        width: 0px;
+        height: 0px;
         animate x {
             duration: (root.collapsed || root.sliding) ? 240ms : 0ms;
             easing: cubic-bezier(0.16, 1, 0.3, 1);
         }
+    }
+
+    panel := Rectangle {
+        x: Px.snap(slide.x);
+        y: 0px;
+        width: root.side-width;
+        height: root.height;
+        background: Theme.secondary;
 
         VerticalLayout {
             padding: 0px;
