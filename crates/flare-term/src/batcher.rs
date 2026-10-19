@@ -65,6 +65,10 @@ pub struct OutputBatcher {
     max_bytes: usize,
     buf: Vec<u8>,
     first_at: Option<Instant>,
+    /// When the last batch left; an arrival more than one window after it is an isolated chunk.
+    last_take: Option<Instant>,
+    /// The batch in hand began as an isolated chunk: it is due at once (a keystroke's echo).
+    isolated: bool,
 }
 
 impl OutputBatcher {
@@ -74,13 +78,21 @@ impl OutputBatcher {
             max_bytes,
             buf: Vec::new(),
             first_at: None,
+            last_take: None,
+            isolated: false,
         }
     }
 
-    /// Appends; the first push after a take sets first_at = now.
+    /// Appends; the first push after a take sets first_at = now. A push that starts a batch more
+    /// than one window after the previous batch left is an isolated chunk (M10 Task 68): it is due
+    /// at once, so a typed key's echo does not wait for the window. A burst still coalesces: the
+    /// chunks after the first arrive within a window of the flush and wait for the next one.
     pub fn push(&mut self, data: &[u8], now: Instant) {
         if self.buf.is_empty() {
             self.first_at = Some(now);
+            self.isolated = self
+                .last_take
+                .is_some_and(|t| now.saturating_duration_since(t) > self.window);
         }
         self.buf.extend_from_slice(data);
     }
@@ -91,7 +103,7 @@ impl OutputBatcher {
         if self.buf.is_empty() {
             return None;
         }
-        if self.buf.len() >= self.max_bytes {
+        if self.isolated || self.buf.len() >= self.max_bytes {
             return Some(Duration::ZERO);
         }
         let elapsed = now.saturating_duration_since(first);
@@ -101,6 +113,7 @@ impl OutputBatcher {
     /// The whole buffer when due_in == Some(ZERO), else None. Resets.
     pub fn take_due(&mut self, now: Instant) -> Option<Vec<u8>> {
         if self.due_in(now) == Some(Duration::ZERO) {
+            self.last_take = Some(now);
             self.take()
         } else {
             None
@@ -109,11 +122,13 @@ impl OutputBatcher {
 
     /// Everything now (used on exit so the shell's last words are not left queued); None when empty. Resets.
     pub fn flush(&mut self) -> Option<Vec<u8>> {
+        self.last_take = Some(Instant::now());
         self.take()
     }
 
     fn take(&mut self) -> Option<Vec<u8>> {
         self.first_at = None;
+        self.isolated = false;
         if self.buf.is_empty() {
             None
         } else {
@@ -228,6 +243,42 @@ mod tests {
             Some(Duration::ZERO)
         );
         assert_eq!(BATCH_WINDOW, Duration::from_millis(8));
+    }
+
+    #[test]
+    fn an_isolated_chunk_flushes_immediately() {
+        let t0 = Instant::now();
+        let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+        // The first batch of a session coalesces as before, then leaves.
+        b.push(b"prompt", t0);
+        assert_eq!(b.take_due(t0), None);
+        assert!(b.take_due(t0 + BATCH_WINDOW).is_some());
+        // Much later one echo arrives alone: due at once.
+        let t1 = t0 + Duration::from_millis(500);
+        b.push(b"x", t1);
+        assert_eq!(b.due_in(t1), Some(Duration::ZERO));
+        assert_eq!(b.take_due(t1), Some(b"x".to_vec()));
+    }
+
+    #[test]
+    fn a_burst_still_coalesces_to_8_ms() {
+        let t0 = Instant::now();
+        let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+        b.push(b"a", t0);
+        assert!(b.take_due(t0 + BATCH_WINDOW).is_some());
+        // An isolated first chunk of a burst leaves at once, the rest wait one window.
+        let t1 = t0 + Duration::from_millis(500);
+        b.push(b"b", t1);
+        assert_eq!(b.take_due(t1), Some(b"b".to_vec()));
+        let t2 = t1 + Duration::from_millis(1);
+        b.push(b"c", t2);
+        b.push(b"d", t2 + Duration::from_millis(1));
+        assert_eq!(b.take_due(t2 + Duration::from_millis(2)), None);
+        assert_eq!(
+            b.take_due(t2 + BATCH_WINDOW),
+            Some(b"cd".to_vec()),
+            "chunks inside the window of a flush coalesce"
+        );
     }
 
     #[test]

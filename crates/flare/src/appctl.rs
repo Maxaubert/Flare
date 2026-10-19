@@ -2703,6 +2703,9 @@ impl AppCtl {
 
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        if ev.pressed {
+            flare_term::session::trace_key("key");
+        }
         // A right-click menu takes no keyboard (PT ContextMenu.tsx): Escape closes it and never
         // reaches the shell; every other key goes where it would without the menu.
         if ev.pressed && ev.key == "Escape" && self.menu.is_some() {
@@ -3240,6 +3243,7 @@ impl AppCtl {
     /// control character is never adopted (a program must not steer a tab to SMB), and a shell
     /// that exited closes its tab unasked.
     pub fn host_wake(&mut self) {
+        flare_term::session::trace_key("wake");
         let events = self.deps.host.drain_events();
         let mut changed = false;
         let mut terminal_news = false;
