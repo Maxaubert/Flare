@@ -79,6 +79,14 @@ fn the_pill_has_a_hairline_border_and_a_fill() {
     }
 }
 
+/// Parity line 48: the badge is neutral and flat, with no shadow (PT CopiedBadge.tsx).
+#[test]
+fn the_pill_casts_no_shadow() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/badge.slint");
+    let src = std::fs::read_to_string(path).expect("badge.slint"); // sync-ok: test code only
+    assert!(!src.contains("drop-shadow"), "the Copied badge is flat");
+}
+
 #[test]
 fn leaving_fades_out() {
     let h = badge(1.0);

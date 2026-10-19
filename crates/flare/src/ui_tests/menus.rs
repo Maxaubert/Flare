@@ -150,6 +150,40 @@ fn every_row_is_28_tall_including_the_last_and_the_border_closes_it() {
     }
 }
 
+/// Parity line 43: the panel is at least 156 wide and ends on a whole device pixel, and its
+/// metrics are the ones PT's ContextMenu sets (1 px divider border, 2 px radius, the shadow
+/// 0 10px 28px rgba(0,0,0,.5)). The metrics are read from menus.slint, the source they live in.
+#[test]
+fn the_menu_panel_has_156_min_width_1px_border_2px_radius_and_the_shadow() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, vec![row("A")], 20.0, 20.0);
+        let _ = h.render();
+        let w = h.comp.get_panel_w();
+        assert!(
+            w >= 156.0 - 0.01,
+            "a short menu is {w} css px wide at {scale}"
+        );
+        let dev = w * scale;
+        assert!(
+            (dev - dev.round()).abs() < 0.01,
+            "the panel is {dev} device px wide at {scale}"
+        );
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/menus.slint");
+    let src = std::fs::read_to_string(path).expect("menus.slint"); // sync-ok: test code only
+    for want in [
+        "min(max(156px",
+        "border-radius: 2px;",
+        "border-width: Px.hair();",
+        "drop-shadow-offset-y: 10px;",
+        "drop-shadow-blur: 28px;",
+        "drop-shadow-color: #00000080;",
+    ] {
+        assert!(src.contains(want), "menus.slint lost `{want}`");
+    }
+}
+
 #[test]
 fn a_pick_reports_the_row_and_asks_to_close() {
     let h = harness(1.0);

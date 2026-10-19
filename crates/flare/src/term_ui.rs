@@ -2559,6 +2559,14 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_copy_raises_no_badge() {
+        // Parity line 48: the badge is raised only by a successful copy.
+        let mut r = Rig::new(1.0);
+        r.ui.on_msg(None, TermMsg::Copied(false));
+        assert_eq!(r.badge(), BadgePhase::Gone);
+    }
+
+    #[test]
     fn no_blocking_clipboard_call_on_the_ui_thread() {
         let probe = Arc::new(Probe::default());
         let mut r = Rig::with_port(1.0, probe.clone());
