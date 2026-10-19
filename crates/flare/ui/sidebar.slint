@@ -1,7 +1,7 @@
 // The tab sidebar (Task 21): PT TabSidebar.tsx. One card per tab, an icon band at its left,
 // the name over its folder, the ring or X at its end; a find box above, a New tab button below,
 // a grip on its right edge. Every edge between surfaces is a whole device pixel (Px).
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { TabRow } from "types.slint";
 import { MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
@@ -132,7 +132,7 @@ component SideRow inherits Rectangle {
             width: root.end-w;
             height: 18px;
             clip: true;
-            animate width { duration: 150ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+            animate width { duration: Motion.d(150ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
 
             if root.tab.loading: LoadingRing {
                 x: 0px;
@@ -155,7 +155,7 @@ component SideRow inherits Rectangle {
                 width: root.x-w;
                 height: 18px;
                 clip: true;
-                animate width { duration: 150ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                animate width { duration: Motion.d(150ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
                 Rectangle {
                     width: 18px;
                     height: 18px;
@@ -225,7 +225,7 @@ export component TabSidebar inherits Rectangle {
     slot := Rectangle {
         width: root.slot-width;
         height: 0px;
-        animate width { duration: root.sliding ? 240ms : 0ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate width { duration: Motion.d(root.sliding ? 240ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
     }
 
     // Hidden, the panel waits side-width + CORNER_R off the edge, so its right edge and the cut travel together.
@@ -237,7 +237,7 @@ export component TabSidebar inherits Rectangle {
         width: 0px;
         height: 0px;
         animate x {
-            duration: (root.collapsed || root.sliding) ? 240ms : 0ms;
+            duration: Motion.d((root.collapsed || root.sliding) ? 240ms : 0ms);
             easing: cubic-bezier(0.16, 1, 0.3, 1);
         }
     }
@@ -479,7 +479,7 @@ export component TabSidebar inherits Rectangle {
                 width: Px.hair();
                 background: grip.pressed ? Theme.accent-hi
                     : (grip.has-hover ? Theme.accent-hi.with-alpha(0.6) : transparent);
-                animate background { duration: 150ms; }
+                animate background { duration: Motion.d(150ms); }
             }
         }
     }

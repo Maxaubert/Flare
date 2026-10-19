@@ -2,7 +2,7 @@
 // Tab edges come from Rust in DEVICE pixels (row.x, row.w) and are placed at `n * 1phx`, so every
 // edge, divider and rule is a whole number of device pixels at any display scaling.
 import { TabRow, StripGeom } from "types.slint";
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { MarkMotion, MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
 
@@ -58,7 +58,7 @@ export component TabEnd inherits Rectangle {
     property <bool> has-ring: root.loading || root.mark-state != 0;
     property <length> xw: root.has-ring ? ((root.row-hover || xta.has-hover) ? root.box : 0px) : root.box;
     animate xw {
-        duration: 150ms;
+        duration: Motion.d(150ms);
         easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
     width: root.has-ring ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.xw : root.box;
@@ -151,7 +151,7 @@ export component TabStrip inherits Rectangle {
         z: row.carried ? 5 : 0;
         background: row.active ? Theme.tab-active : (tab.hov ? Theme.hover : transparent);
         animate x {
-            duration: (root.carrying && !row.carried) ? 170ms : 0ms;
+            duration: Motion.d((root.carrying && !row.carried) ? 170ms : 0ms);
             easing: cubic-bezier(0.23, 1, 0.32, 1);
         }
 

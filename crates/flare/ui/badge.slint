@@ -1,7 +1,7 @@
 // The Copied badge (Milestone 5, Task 18): a neutral pill at the bottom centre of the window,
 // in the page only while it shows (Prism Terminal CopiedBadge.tsx, two-apps.md). No accent, no
 // shadow, pointer-transparent (no touch area here). Positions snap to device pixels.
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 
 export component CopiedBadge inherits Rectangle {
     // 0 gone (nothing in the tree), 1 shown, 2 leaving (fades to nothing over 200 ms).
@@ -31,7 +31,7 @@ export component CopiedBadge inherits Rectangle {
         border-width: Px.hair();
         border-color: Theme.divider;
         opacity: root.phase == 1 ? 1 : 0;
-        animate opacity { duration: 200ms; easing: ease-out; }
+        animate opacity { duration: Motion.d(200ms); easing: ease-out; }
 
         measure := Text {
             x: Px.hair() + 14px;

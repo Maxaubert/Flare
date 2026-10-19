@@ -2,7 +2,7 @@
 // Task 25 fills the window. Every colour comes from Theme (theme.slint); no hex literal lives here
 // except the notice's shadow, which Prism Terminal fixes the same way.
 // Source: PT core/renderer/components/UpdateChip.tsx (Appendix C of the plan).
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 import { NoteSection } from "types.slint";
 import { DialogButton } from "dialog.slint";
 
@@ -494,7 +494,7 @@ export component UpdateWindow inherits Rectangle {
             VerticalLayout {
                 spacing: 6px;
                 opacity: root.active ? 1 : 0;
-                animate opacity { duration: 200ms; }
+                animate opacity { duration: Motion.d(200ms); }
                 Rectangle {
                     height: max(18px, status-text.preferred-height);
                     status-text := Text {
@@ -530,7 +530,7 @@ export component UpdateWindow inherits Rectangle {
                         border-radius: 3px;
                         background: Theme.accent-solid;
                         width: root.running ? (root.pct >= 100 ? parent.width : min(parent.width, Px.snap(parent.width * root.pct / 100))) : 0px;
-                        animate width { duration: root.running ? 300ms : 0ms; easing: ease-out; }
+                        animate width { duration: Motion.d(root.running ? 300ms : 0ms); easing: ease-out; }
                     }
                 }
             }

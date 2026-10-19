@@ -5,7 +5,7 @@
 // Rust owns every rule (the wall order, the card positions, the clip heights, what a pick does);
 // this file draws what it is given and reports events back. Every edge snaps to a whole device pixel.
 // The wall's card is the same height at every scale: 124 px plus its two 1 device pixel borders.
-import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
 import { WallCard, EditorWell } from "types.slint";
 import { ColourField } from "colour.slint";
 
@@ -186,7 +186,7 @@ export component ThemeCard inherits Rectangle {
         border-radius: 6px;
         border-width: root.hair;
         border-color: root.card.on ? Theme.accent-hi : (root.key-focus ? SettingsInk.focus-edge : (ta.has-hover ? Theme.divider : Theme.line));
-        animate border-color { duration: 120ms; }
+        animate border-color { duration: Motion.d(120ms); }
     }
 
     fs := FocusScope {
@@ -307,7 +307,7 @@ export component ThemeWallView inherits Rectangle {
     property <length> shown-h: root.expanded ? root.full-h : root.clip-h;
     // Ease OPEN only: the duration is 240 ms exactly while the wall is (being) expanded.
     animate shown-h {
-        duration: root.expanded && !root.still ? 240ms : 0ms;
+        duration: Motion.d(root.expanded && !root.still ? 240ms : 0ms);
         easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
     out property <length> clip-now: root.shown-h;

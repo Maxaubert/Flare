@@ -1,7 +1,7 @@
 // The command help panel (M7 Task 39). Prism Terminal v0.55.6 core/renderer/components/HelpPanel.tsx.
 // Rust drives it through HelpBridge: the panel draws what it is handed and reports events back.
 // It shows and copies on request and nothing else (rule 82): the only outward effect is a callback.
-import { Theme, Px, SettingsInk, SettingsFixed } from "../theme.slint";
+import { Theme, Px, SettingsInk, SettingsFixed, Motion } from "../theme.slint";
 import { HelpRowData, HelpChip } from "types.slint";
 
 export global HelpBridge {
@@ -116,10 +116,10 @@ component HelpRow inherits Rectangle {
     body := Rectangle {
         y: root.risen ? 0px : 6px;
         opacity: root.risen ? 1 : 0;
-        animate y { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
-        animate opacity { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
+        animate y { duration: Motion.d(root.rise-time); delay: Motion.d(root.rise-delay); easing: ease-out; }
+        animate opacity { duration: Motion.d(root.rise-time); delay: Motion.d(root.rise-delay); easing: ease-out; }
         background: root.d.active ? SettingsInk.help-active : (root.hov ? SettingsInk.help-hover : (root.d.striped ? SettingsInk.help-stripe : transparent));
-        animate background { duration: root.still ? 0ms : 120ms; }
+        animate background { duration: Motion.d(root.still ? 0ms : 120ms); }
 
         ta := TouchArea {
             enabled: root.interactive;
@@ -274,7 +274,7 @@ component HelpRow inherits Rectangle {
                     stroke-line-cap: round;
                     stroke-line-join: round;
                     opacity: root.d.copied ? 0 : 1;
-                    animate opacity { duration: root.still ? 0ms : 200ms; easing: ease-out; }
+                    animate opacity { duration: Motion.d(root.still ? 0ms : 200ms); easing: ease-out; }
                 }
                 // The path is revealed left to right over 340 ms, 60 ms after the press.
                 check-clip := Rectangle {
@@ -283,7 +283,7 @@ component HelpRow inherits Rectangle {
                     width: 17px * root.check-t;
                     height: 17px;
                     clip: true;
-                    animate width { duration: root.still ? 0ms : (root.d.copied ? 340ms : 0ms); delay: root.still ? 0ms : (root.d.copied ? 60ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                    animate width { duration: Motion.d(root.still ? 0ms : (root.d.copied ? 340ms : 0ms)); delay: Motion.d(root.still ? 0ms : (root.d.copied ? 60ms : 0ms)); easing: cubic-bezier(0.16, 1, 0.3, 1); }
                     Path {
                         x: (0px) - (2.4 * 17px / 24) / 2;
                         y: (0px) - (2.4 * 17px / 24) / 2;
@@ -371,7 +371,7 @@ export component HelpPanel inherits Rectangle {
         height: parent.height;
         x: HelpBridge.open ? parent.width - self.width : parent.width - self.width + 1.04 * self.width;
         animate x {
-            duration: HelpBridge.still ? 0ms : (HelpBridge.open ? 460ms : 220ms);
+            duration: Motion.d(HelpBridge.still ? 0ms : (HelpBridge.open ? 460ms : 220ms));
             easing: HelpBridge.open ? cubic-bezier(0.16, 1, 0.3, 1) : cubic-bezier(0.4, 0, 0.6, 1);
         }
         background: Theme.side-flat;
@@ -494,7 +494,7 @@ export component HelpPanel inherits Rectangle {
                             border-width: Px.hair();
                             border-color: input.has-focus ? Theme.accent-hi : Theme.line;
                             background: SettingsInk.help-field;
-                            animate border-color { duration: HelpBridge.still ? 0ms : 120ms; }
+                            animate border-color { duration: Motion.d(HelpBridge.still ? 0ms : 120ms); }
                             // The 3 px focus glow.
                             Rectangle {
                                 x: -3px;

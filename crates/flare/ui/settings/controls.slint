@@ -1,7 +1,7 @@
 // The settings controls (M7 Task 31): the switch, the segmented pill, the Save button, the row
 // button and the Reset link (PT settings/fields.tsx). Controls are neutral: only Save when dirty
 // and an ON switch wear the accent (rule 78). Each control is its own FocusScope.
-import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
 import { SetOption } from "types.slint";
 
 // PT Switch: h-[20px] w-[36px], a 16 px knob at 2 px, moving 16 px over 150 ms.
@@ -45,7 +45,7 @@ export component SetSwitch inherits Rectangle {
         border-radius: SettingsShape.switch-knob / 2;
         background: root.on ? Theme.switch-knob : SettingsFixed.white;
         animate x {
-            duration: 150ms;
+            duration: Motion.d(150ms);
             easing: ease-out;
         }
     }
