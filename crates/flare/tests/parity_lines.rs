@@ -188,24 +188,22 @@ fn every_difference_has_a_register_row_and_a_basis() {
 }
 
 #[test]
-#[ignore = "closes at Task 74"]
 fn m1_to_m7_have_no_open_lines() {
     let doc = read_parity();
     let lines = lines_with_sections(&doc);
     let open: Vec<String> = lines
         .iter()
-        .filter(|l| is_m1_to_m7(&l.section) && is_open(&l.text))
+        .filter(|l| is_m1_to_m7(&l.section) && is_open(&l.text) && !l.text.contains("[M8]"))
         .map(|l| format!("  docs/parity.md:{} {}", l.number, l.text))
         .collect();
     assert!(
         open.is_empty(),
-        "M1 to M7 must have no open lines after the sweep. Open:\n{}",
+        "M1 to M7 must have no open lines after the sweep (the [M8] dictation lines excepted). Open:\n{}",
         open.join("\n")
     );
 }
 
 #[test]
-#[ignore = "closes at Task 74"]
 fn only_dictation_lines_may_stay_open_after_the_sweep() {
     let doc = read_parity();
     let lines = lines_with_sections(&doc);

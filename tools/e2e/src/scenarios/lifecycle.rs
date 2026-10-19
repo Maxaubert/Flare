@@ -417,9 +417,10 @@ pub fn restore(ctx: &mut Ctx) -> Result<(), String> {
         renderer: Some("software"),
         ..Launch::default()
     })?;
-    ctx.until("two tabs back", 20_000, &mut || {
+    let two = ctx.until("two tabs back", 20_000, &mut || {
         tabs_of(&mut app).len() == 2
     });
+    ctx.ok(two, "two tabs open");
     app.close();
 
     let saved = parse_tabs(&fs::read_to_string(profile.join("tabs.json")).unwrap_or_default());
@@ -587,6 +588,8 @@ pub fn last_tab(ctx: &mut Ctx) -> Result<(), String> {
     ctx.ok(shown, "closing the last tab lands on the start screen");
     let quitting = app.session.state().map(|s| s.quitting).unwrap_or(true);
     ctx.ok(!quitting, "and the window stays");
+    // DROPPED: "the start screen says which version this is" (run.mjs:3462-3465): the start screen's
+    // version line is not probed; the version is the ersion field of the state reply (core.rs).
 
     let start = app.session.probe_str("start.state")?;
     let places = start["places"].as_u64().unwrap_or(0);

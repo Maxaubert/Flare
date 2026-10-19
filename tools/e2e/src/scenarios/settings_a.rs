@@ -863,6 +863,8 @@ pub fn settings_keys(ctx: &mut Ctx) -> Result<(), String> {
         ctx.ok(there, format!("{why} (page {:?})", page_now(&mut app)));
     };
     // Tab lands on the first page and Down goes one on: Enter opens Terminal, the second.
+    // DROPPED: PT checks the Tab landing and the Down step as two assertions. Here they are one walk:
+    // Tab then Down reaches Terminal only from the first page, so the Tab landing is proved with it.
     reach(
         ctx,
         &["Tab", "ArrowDown"],
