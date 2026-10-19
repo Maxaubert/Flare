@@ -800,7 +800,10 @@ impl Shared {
         let rid = self.next_rid.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel();
         lock(&self.waits).insert((peer.id, rid), tx);
-        if peer.out.send(encode_to_client(&make(rid))).is_err() {
+        // A peer that hung up between being picked and now: its reader has cancelled the connection and
+        // clears the waiters after that, so a waiter added after the clear would be kept (and its asker
+        // held) for the whole timeout. Checked after the insert, the clear either sees this waiter or we do.
+        if peer.conn.cancelled() || peer.out.send(encode_to_client(&make(rid))).is_err() {
             lock(&self.waits).remove(&(peer.id, rid));
             return None;
         }
@@ -819,6 +822,7 @@ pub struct LinkService {
 }
 
 type OnError = Arc<dyn Fn(String) + Send + Sync>;
+type AcceptHook = Arc<dyn Fn() + Send + Sync>;
 
 /// A copy that was asked for its tabs: the peer's id, the copy, and the question's rid with its answer channel.
 type Asked = (u64, RemoteCopy, Option<(u64, Receiver<ToService>)>);
@@ -842,7 +846,34 @@ impl LinkService {
         on_error: impl Fn(String) + Send + Sync + 'static,
         proof_ms: u64,
     ) -> LinkService {
-        let on_error: OnError = Arc::new(on_error);
+        Self::start_inner(pipe, key, Arc::new(on_error), proof_ms, None)
+    }
+
+    /// `start` with a hook the acceptor runs between a connection completing and its peer being made (tests
+    /// hold a connection there to make the close race deterministic).
+    #[doc(hidden)]
+    pub fn start_with_accept_hook(
+        pipe: &str,
+        key: [u8; 32],
+        on_error: impl Fn(String) + Send + Sync + 'static,
+        hook: impl Fn() + Send + Sync + 'static,
+    ) -> LinkService {
+        Self::start_inner(
+            pipe,
+            key,
+            Arc::new(on_error),
+            PROOF_MS,
+            Some(Arc::new(hook)),
+        )
+    }
+
+    fn start_inner(
+        pipe: &str,
+        key: [u8; 32],
+        on_error: OnError,
+        proof_ms: u64,
+        hook: Option<AcceptHook>,
+    ) -> LinkService {
         let stop = Event::new();
         let stop_failed = stop.is_none();
         let shared = Shared::new(key, stop.unwrap_or(Event(0)), proof_ms);
@@ -868,7 +899,7 @@ impl LinkService {
         let sh = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("flare-link-accept".into())
-            .spawn(move || acceptor(sh, name, sd, first, on_error));
+            .spawn(move || acceptor(sh, name, sd, first, on_error, hook));
         Self {
             shared,
             acceptor: Mutex::new(spawned.ok()),
@@ -1000,17 +1031,23 @@ impl LinkService {
             .is_ok()
     }
 
+    fn cancel_peers(&self) {
+        for p in lock(&self.shared.peers).iter() {
+            p.conn.cancel();
+        }
+    }
+
     /// Hangs up on every copy and stops accepting. Waits for the link's own threads.
     pub fn close(&self) {
         if self.shared.stop.0 != 0 {
             self.shared.stop.set();
         }
-        for p in lock(&self.shared.peers).iter() {
-            p.conn.cancel();
-        }
+        self.cancel_peers();
         if let Some(a) = lock(&self.acceptor).take() {
             let _ = a.join();
         }
+        // A connection that completed while this ran may have become a peer after the first pass.
+        self.cancel_peers();
         let threads = std::mem::take(&mut *lock(&self.shared.threads));
         for t in threads {
             let _ = t.join();
@@ -1039,11 +1076,21 @@ fn wait_for<T>(
     }
 }
 
-fn acceptor(shared: Arc<Shared>, name: Vec<u16>, sd: Descriptor, first: usize, on_error: OnError) {
+fn acceptor(
+    shared: Arc<Shared>,
+    name: Vec<u16>,
+    sd: Descriptor,
+    first: usize,
+    on_error: OnError,
+    hook: Option<AcceptHook>,
+) {
     let mut handle = first as HANDLE;
     loop {
         match accept(handle, &shared.stop) {
             Accepted::Connected => {
+                if let Some(h) = &hook {
+                    h();
+                }
                 if let Some(conn) = Conn::new(handle) {
                     start_peer(&shared, conn);
                 }
@@ -1093,18 +1140,16 @@ fn start_peer(shared: &Arc<Shared>, conn: Arc<Conn>) {
         n: peer.nonce.clone(),
     }));
     lock(&shared.peers).push(Arc::clone(&peer));
+    // Once the service is closing, no new peer lives: `close` cancels what it sees, and a peer that was
+    // made after that is cancelled here (pushed first, so one of the two always sees it).
+    if shared.stop.wait(Some(0)) {
+        conn.cancel();
+    }
 
     let writer_conn = Arc::clone(&conn);
     let writer = std::thread::Builder::new()
         .name("flare-link-write".into())
-        .spawn(move || {
-            while let Ok(line) = lines.recv() {
-                if writer_conn.write(line.as_bytes()).is_err() {
-                    writer_conn.cancel();
-                    break;
-                }
-            }
-        });
+        .spawn(move || writer_loop(&writer_conn, &lines));
     let sh = Arc::clone(shared);
     let reader = std::thread::Builder::new()
         .name("flare-link-peer".into())
@@ -1113,6 +1158,24 @@ fn start_peer(shared: &Arc<Shared>, conn: Arc<Conn>) {
     reap(&mut threads);
     threads.extend(writer.ok());
     threads.extend(reader.ok());
+}
+
+/// The peer's writer: lines out, one at a time, until the channel closes or the connection ends.
+fn writer_loop(conn: &Conn, lines: &Receiver<String>) {
+    // Ends with the channel, or with the connection: senders outlive a peer that has gone (a question that
+    // picked it just before), so the channel alone may never close.
+    while !conn.cancelled() {
+        match lines.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => {
+                if conn.write(line.as_bytes()).is_err() {
+                    conn.cancel();
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 fn peer_loop(shared: &Arc<Shared>, peer: &Arc<Peer>) {
@@ -1371,5 +1434,57 @@ fn session(
         if conn.cancelled() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection with no pipe behind it: an event stands in for the handle, which is enough for everything
+    /// that does not do I/O (cancel, cancelled, drop).
+    fn dummy_conn() -> Arc<Conn> {
+        let ev = Event::new().expect("an event");
+        let h = ev.raw();
+        std::mem::forget(ev); // the Conn closes the handle
+        Conn::new(h).expect("a conn")
+    }
+
+    fn dummy_peer(id: u64) -> (Arc<Peer>, Receiver<String>) {
+        let (out, lines) = mpsc::channel();
+        let peer = Arc::new(Peer {
+            id,
+            conn: dummy_conn(),
+            nonce: fresh_nonce_hex(),
+            copy: Mutex::new(None),
+            out,
+        });
+        (peer, lines)
+    }
+
+    #[test]
+    fn a_question_for_a_peer_that_has_hung_up_is_not_kept() {
+        let shared = Shared::new([1u8; 32], Event::new().unwrap(), PROOF_MS);
+        let (peer, _lines) = dummy_peer(1);
+        peer.conn.cancel();
+        let asked = shared.ask(&peer, |rid| ToClient::TabsAsk { rid });
+        assert!(asked.is_none(), "asked a peer that had hung up");
+        assert!(lock(&shared.waits).is_empty(), "a waiter was left behind");
+    }
+
+    #[test]
+    fn the_writer_stops_when_its_connection_is_cancelled_even_if_the_channel_stays_open() {
+        let (peer, lines) = dummy_peer(2);
+        let conn = Arc::clone(&peer.conn);
+        let t = std::thread::spawn(move || writer_loop(&conn, &lines));
+        std::thread::sleep(Duration::from_millis(100));
+        peer.conn.cancel();
+        let end = Instant::now() + Duration::from_secs(3);
+        while !t.is_finished() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(t.is_finished(), "the writer outlived its connection");
+        drop(peer); // the sender lives until here
+        let _ = t.join();
     }
 }

@@ -679,3 +679,226 @@ fn close_leaves_no_peer_and_frees_the_name() {
     assert_eq!(*errors.lock().unwrap(), 0, "the name was not freed");
     again.close();
 }
+
+// ---- close, and the client's half of "authenticated both ways" ----
+
+#[test]
+fn close_does_not_wait_for_a_copy_that_connects_while_it_runs() {
+    let pipe = pipe_name();
+    let k = key();
+    // The acceptor is held after a connection completes, so close() runs first: the peer is made after the
+    // cancel loop, the very window a copy arriving during a quit falls in.
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = Mutex::new(go_rx);
+    let held_tx = Mutex::new(held_tx);
+    let svc = Arc::new(LinkService::start_with_accept_hook(
+        &pipe,
+        k,
+        |e| panic!("link error: {e}"),
+        move || {
+            let _ = held_tx.lock().unwrap().send(());
+            let _ = go_rx.lock().unwrap().recv();
+        },
+    ));
+    // A copy that proves itself and then stays connected, as a live copy does.
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let (stay_tx, stay_rx) = std::sync::mpsc::channel::<()>();
+    let p = pipe.clone();
+    let raw_copy = std::thread::spawn(move || {
+        let mut f = raw(&p);
+        let n = nonce_of(&read_nonce_line(&mut f));
+        let mine = "e".repeat(32);
+        let mac = to_hex(&hmac_sha256(&k, format!("client|{n}|{mine}").as_bytes()));
+        let hello = encode_to_service(&ToService::Hello {
+            pid: 21,
+            name: "Late".into(),
+            n: mine,
+            mac,
+        });
+        let _ = f.write_all(hello.as_bytes());
+        let _ = done_tx.send(());
+        let _ = stay_rx.recv_timeout(Duration::from_secs(20));
+    });
+    held_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the connection reached the acceptor");
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let s = Arc::clone(&svc);
+    let closer = std::thread::spawn(move || {
+        s.close();
+        let _ = closed_tx.send(());
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = go_tx.send(());
+    let _ = done_rx.recv_timeout(Duration::from_secs(5));
+    let finished = closed_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+    // Let the copy go either way, so a hang does not outlive the test.
+    let _ = stay_tx.send(());
+    let _ = raw_copy.join();
+    let _ = closer.join();
+    assert!(
+        finished,
+        "close() waited for a copy that connected during it"
+    );
+}
+
+/// What the raw service saw of its client.
+struct RawServer {
+    hello: Option<ToService>,
+    file: std::fs::File,
+}
+
+/// A service by hand: one instance of the pipe, byte mode, synchronous, connected to the first client.
+fn raw_service(pipe: &str) -> std::fs::File {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+    let name: Vec<u16> = pipe.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: a NUL-terminated name; default security; the handle is handed to a File that closes it; the
+    // connect is blocking (no OVERLAPPED) on a handle we own.
+    unsafe {
+        let h = CreateNamedPipeW(
+            name.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            std::ptr::null(),
+        );
+        assert_ne!(h, INVALID_HANDLE_VALUE, "the raw service's pipe");
+        ConnectNamedPipe(h, std::ptr::null_mut());
+        std::fs::File::from_raw_handle(h as _)
+    }
+}
+/// Starts a client against a raw service, sends it a nonce and reads the client's hello.
+fn raw_service_and_hello(
+    pipe: &str,
+    k: [u8; 32],
+) -> (
+    RawServer,
+    Arc<Handlers>,
+    LinkClient,
+    Arc<Mutex<bool>>,
+    String,
+) {
+    // The pipe must exist before the client's first try: its retry would find it anyway.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = pipe.to_string();
+    let server = std::thread::spawn(move || {
+        let f = raw_service(&p);
+        let _ = tx.send(());
+        f
+    });
+    let h = Handlers::new(Duration::ZERO);
+    let (client, trusted) = client_with_state(pipe, k, copy(5, "Flare"), Arc::clone(&h));
+    rx.recv_timeout(Duration::from_secs(5)).expect("connected");
+    let mut file = server.join().unwrap();
+    let mine = "f".repeat(32);
+    file.write_all(encode_to_client(&ToClient::Nonce { n: mine.clone() }).as_bytes())
+        .unwrap();
+    let line = read_nonce_line(&mut file);
+    let hello = parse_to_service(String::from_utf8_lossy(&line).trim());
+    assert!(matches!(hello, Some(ToService::Hello { .. })), "{line:?}");
+    (RawServer { hello, file }, h, client, trusted, mine)
+}
+
+fn asks() -> Vec<ToClient> {
+    vec![
+        ToClient::Paste {
+            text: "rm -rf".into(),
+        },
+        ToClient::Send {
+            rid: 1,
+            id: "p1".into(),
+            text: "rm -rf".into(),
+        },
+        ToClient::TabsAsk { rid: 2 },
+    ]
+}
+
+#[test]
+fn a_client_drops_a_service_that_asks_before_it_has_proved_itself() {
+    for ask in asks() {
+        let pipe = pipe_name();
+        let (mut srv, h, client, trusted, _) = raw_service_and_hello(&pipe, key());
+        srv.file
+            .write_all(encode_to_client(&ask).as_bytes())
+            .unwrap();
+        let rest = read_to_end_within(srv.file, 4000).expect("the client hung up");
+        assert!(
+            rest.is_empty(),
+            "the client answered an unproved service: {rest:?}"
+        );
+        assert!(!*trusted.lock().unwrap());
+        assert!(h.pasted.lock().unwrap().is_empty(), "pasted for {ask:?}");
+        assert!(h.sent.lock().unwrap().is_empty(), "typed for {ask:?}");
+        client.close();
+    }
+}
+
+#[test]
+fn a_client_drops_a_service_whose_proof_has_the_wrong_mac() {
+    let pipe = pipe_name();
+    let k = key();
+    let (mut srv, h, client, trusted, mine) = raw_service_and_hello(&pipe, k);
+    let Some(ToService::Hello { n, .. }) = srv.hello.clone() else {
+        panic!("a hello")
+    };
+    // Right shape, made with a key of the impostor's own, then a paste behind it.
+    let wrong = to_hex(&hmac_sha256(
+        &[9u8; 32],
+        format!("service|{n}|{mine}").as_bytes(),
+    ));
+    let mut out = encode_to_client(&ToClient::Proof { mac: wrong });
+    out.push_str(&encode_to_client(&ToClient::Paste {
+        text: "rm -rf".into(),
+    }));
+    srv.file.write_all(out.as_bytes()).unwrap();
+    let rest = read_to_end_within(srv.file, 4000).expect("the client hung up");
+    assert!(rest.is_empty(), "{rest:?}");
+    assert!(!*trusted.lock().unwrap());
+    assert!(h.pasted.lock().unwrap().is_empty());
+    client.close();
+}
+
+#[test]
+fn a_client_with_the_right_proof_does_answer_the_same_service() {
+    // The control for the two tests above: the raw service is good enough to be trusted when it holds the key.
+    let pipe = pipe_name();
+    let k = key();
+    let (mut srv, h, client, trusted, mine) = raw_service_and_hello(&pipe, k);
+    let Some(ToService::Hello { n, .. }) = srv.hello.clone() else {
+        panic!("a hello")
+    };
+    let proof = to_hex(&hmac_sha256(&k, format!("service|{n}|{mine}").as_bytes()));
+    let mut out = encode_to_client(&ToClient::Proof { mac: proof });
+    out.push_str(&encode_to_client(&ToClient::Paste {
+        text: "typed".into(),
+    }));
+    srv.file.write_all(out.as_bytes()).unwrap();
+    assert!(until(|| *trusted.lock().unwrap()));
+    assert!(until(|| h.pasted.lock().unwrap().len() == 1));
+    client.close();
+}
+
+#[test]
+fn a_client_hangs_up_on_a_service_that_never_proves_itself() {
+    let pipe = pipe_name();
+    let (srv, _h, client, trusted, _) = raw_service_and_hello(&pipe, key());
+    let started = Instant::now();
+    let rest = read_to_end_within(srv.file, 9000).expect("the client hung up");
+    assert!(rest.is_empty());
+    assert!(
+        started.elapsed() >= Duration::from_millis(PROOF_MS - 500),
+        "hung up early: {:?}",
+        started.elapsed()
+    );
+    assert!(!*trusted.lock().unwrap());
+    client.close();
+}
