@@ -1638,6 +1638,13 @@ impl Scene {
 /// argument error (exit 1) and nothing is created.
 pub fn run_scene(args: &Args) -> Result<(), String> {
     let name = args.scene.as_deref().unwrap_or_default();
+    // `--scene list` prints every scene name, one per line (the DPI matrix reads them from here).
+    if name == "list" {
+        for scene in SCENES {
+            println!("{scene}");
+        }
+        return Ok(());
+    }
     if !SCENES.contains(&name) {
         return Err(format!(
             "unknown scene '{name}': use one of {}",
