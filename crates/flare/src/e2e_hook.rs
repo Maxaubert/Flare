@@ -39,6 +39,22 @@ use windows_sys::Win32::System::Pipes::{
 /// test can lower it.
 pub static UI_REPLY_LIMIT: AtomicU64 = AtomicU64::new(10_000);
 
+/// How long past its own timeout the hook waits for a `Latency` answer: the app's timer answers
+/// with an error at `timeout_ms`, and that error must get through.
+pub const LATENCY_MARGIN_MS: u64 = 2_000;
+
+/// How long the server thread waits for the UI thread's answer to `req`. A `Latency` request waits
+/// for a frame that holds some text (a 100 MB flood takes tens of seconds), so it may wait as long
+/// as its own timeout; every other request keeps `base`.
+pub fn reply_limit(req: &Request, base: Duration) -> Duration {
+    match req {
+        Request::Latency { timeout_ms, .. } => base.max(Duration::from_millis(
+            timeout_ms.saturating_add(LATENCY_MARGIN_MS),
+        )),
+        _ => base,
+    }
+}
+
 const BUFFER: u32 = 64 * 1024;
 
 #[derive(Debug)]
@@ -377,8 +393,9 @@ fn handle_line(raw: usize, text: &str, dispatch: &Dispatch) -> bool {
         }
         other => {
             let (responder, rx) = responder();
+            let base = Duration::from_millis(UI_REPLY_LIMIT.load(Ordering::SeqCst));
+            let limit = reply_limit(&other, base);
             dispatch(other, responder);
-            let limit = Duration::from_millis(UI_REPLY_LIMIT.load(Ordering::SeqCst));
             let reply = match rx.recv_timeout(limit) {
                 // sync-ok: the hook thread waits for the UI thread's answer
                 Ok(r) => r,
@@ -526,6 +543,50 @@ mod tests {
         UI_REPLY_LIMIT.store(10_000, Ordering::SeqCst);
         assert!(matches!(reply, Reply::Err { .. }));
         assert!(started.elapsed() < Duration::from_secs(11));
+    }
+
+    fn latency(timeout_ms: u64) -> Request {
+        Request::Latency {
+            chord: "x".into(),
+            expect: "x".into(),
+            tab: None,
+            timeout_ms,
+        }
+    }
+
+    #[test]
+    fn a_latency_request_may_wait_as_long_as_its_own_timeout() {
+        let base = Duration::from_secs(10);
+        // A flood measure waits up to 120 s for its text; the hook must not cut it at 10 s.
+        assert_eq!(
+            reply_limit(&latency(120_000), base),
+            Duration::from_millis(120_000 + LATENCY_MARGIN_MS)
+        );
+        // A short timeout never lowers the base limit, and other requests keep it.
+        assert_eq!(reply_limit(&latency(100), base), base);
+        let probe = Request::Probe {
+            name: "x".into(),
+            arg: serde_json::Value::Null,
+        };
+        assert_eq!(reply_limit(&probe, base), base);
+    }
+
+    #[test]
+    fn a_slow_latency_answer_is_delivered_not_cut_off() {
+        let dir = profile();
+        // The UI answers the latency request after 400 ms, longer than the lowered base limit.
+        let slow: Dispatch = Arc::new(|_req, responder| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(400)); // sync-ok: test code only
+                responder.reply(Reply::Latency { ms: 400.0 });
+            });
+        });
+        let server = start_with_dispatch(true, dir.path(), slow).unwrap();
+        UI_REPLY_LIMIT.store(200, Ordering::SeqCst);
+        let (mut w, mut r) = connect(&server.pipe);
+        let reply = ask(&mut w, &mut r, &latency(5_000));
+        UI_REPLY_LIMIT.store(10_000, Ordering::SeqCst);
+        assert_eq!(reply, Reply::Latency { ms: 400.0 });
     }
 
     #[test]

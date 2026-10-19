@@ -1,0 +1,9 @@
+{
+  "B1": { "gpu_max_ms": 300, "software_max_ms": 300, "also": "<= pt" },
+  "B2": { "gpu": "<= pt / 3", "software": "<= pt" },
+  "B3": { "gpu": ">= pt * 2", "software": ">= pt", "gpu_max_frame_ms": 33 },
+  "B4": { "median": "<= pt", "p95_max_ms": 25 },
+  "B5": { "min_fps": 55, "max_frame_ms": 33 },
+  "B6": { "max_pct_of_core": 0.5, "rule": "<= pt", "agent_max_pct": 3.0 },
+  "B7": { "render_p95_max_ms": 8.3, "interval_max_ms": 33 }
+}

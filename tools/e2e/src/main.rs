@@ -19,8 +19,7 @@ fn main() {
         return;
     }
     if cli.perf {
-        println!("perf runs are not wired into the driver yet (M10 Tasks 60 to 69).");
-        std::process::exit(1);
+        std::process::exit(flare_e2e::perf::main(&cli));
     }
     let code = match &cli.run_one {
         Some(name) => run_one(name, &cli),

@@ -34,6 +34,18 @@ pub struct Cli {
     pub keep: bool,
     pub perf: bool,
     pub run_one: Option<String>,
+    /// `perf` only: `gpu`, `software` or `both`.
+    pub renderer: Option<String>,
+    /// `perf` only: launches that count for the start-up median.
+    pub runs: Option<usize>,
+    /// `perf` only: the display scaling in percent for the frame measure.
+    pub scale: Option<u32>,
+    /// `perf` only: `cmd` or `pwsh` for the start-up measure.
+    pub shell: Option<String>,
+    /// `perf` only: where the report goes.
+    pub out: Option<PathBuf>,
+    /// `perf` only: the Prism Terminal baseline.
+    pub baseline: Option<PathBuf>,
 }
 
 fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -58,6 +70,24 @@ impl Cli {
                 "--shots" => cli.shots = Some(PathBuf::from(value(&mut it, "--shots")?)),
                 "--run-one" => cli.run_one = Some(value(&mut it, "--run-one")?),
                 "perf" => cli.perf = true,
+                "--renderer" => cli.renderer = Some(value(&mut it, "--renderer")?),
+                "--shell" => cli.shell = Some(value(&mut it, "--shell")?),
+                "--out" => cli.out = Some(PathBuf::from(value(&mut it, "--out")?)),
+                "--baseline" => cli.baseline = Some(PathBuf::from(value(&mut it, "--baseline")?)),
+                "--runs" => {
+                    cli.runs = Some(
+                        value(&mut it, "--runs")?
+                            .parse()
+                            .map_err(|_| "--runs needs a whole number".to_string())?,
+                    );
+                }
+                "--scale" => {
+                    cli.scale = Some(
+                        value(&mut it, "--scale")?
+                            .parse()
+                            .map_err(|_| "--scale needs a whole percent".to_string())?,
+                    );
+                }
                 s if s.starts_with("--") => return Err(format!("unknown flag {s}")),
                 s => cli.filters.push(s.to_string()),
             }
