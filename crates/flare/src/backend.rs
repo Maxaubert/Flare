@@ -238,11 +238,26 @@ pub fn take(p: Prewarm) -> Result<Prepared, String> {
         .unwrap_or_else(|_| Err("the GPU prewarm thread panicked".into()))
 }
 
+/// The backends the prewarm instance starts. Without `WGPU_BACKEND` that is DX12 alone: the glass
+/// swapchain (`DxgiFromVisual`) is DX12-only, and an instance that also starts Vulkan loads the
+/// Vulkan and OpenGL driver stacks of every GPU in the PC (about 32 MB of private memory, M10 Task
+/// 66). A named choice is kept, without OpenGL as Slint's own `Automatic` path leaves it out
+/// (`mask_backends`); a choice that would leave nothing is kept whole.
+fn prewarm_backends(named: Option<wgpu::Backends>) -> wgpu::Backends {
+    match named {
+        None => wgpu::Backends::DX12,
+        Some(b) => {
+            let masked = b & !wgpu::Backends::GL;
+            if masked.is_empty() { b } else { masked }
+        }
+    }
+}
+
 /// Builds the instance, the high-performance adapter and the device the way Slint's `Automatic`
 /// path does, except that no window surface exists yet to ask the adapter about.
 fn build_prepared(plan: GlassPlan) -> Result<Prepared, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or_default(),
+        backends: prewarm_backends(wgpu::Backends::from_env()),
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
         backend_options: instance_options(plan),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
@@ -470,6 +485,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn the_prewarm_instance_starts_dx12_alone_unless_a_backend_is_named() {
+        // Slint's own device path avoids GL, and the glass swapchain is DX12-only: an instance
+        // that also starts Vulkan and OpenGL loads every GPU driver stack for nothing.
+        assert_eq!(prewarm_backends(None), wgpu::Backends::DX12);
+        // A named choice is kept, minus OpenGL; an OpenGL-only choice is kept whole.
+        let named = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+        assert_eq!(prewarm_backends(Some(named)), wgpu::Backends::VULKAN);
+        assert_eq!(
+            prewarm_backends(Some(wgpu::Backends::GL)),
+            wgpu::Backends::GL
+        );
+    }
     #[test]
     fn the_prewarmed_device_has_the_raised_limits() {
         match build_prepared(GlassPlan::NONE) {
