@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use flare_dictation::fetch_ureq as net;
 use flare_dictation::store::{
     Failure, Fetch, Item, ItemState, ItemStatus, Kind, Progress, Store, StoreConfig, Unzip,
     PACK_MARKER, STALE_PART_MS,
@@ -756,6 +757,54 @@ fn cancels_during_the_download_leaving_no_zip_behind() {
     assert!(fx.engines().is_empty());
 }
 
+#[test]
+fn the_real_fetch_obeys_cancel_and_remove_at_once_while_the_line_stalls() {
+    // Unlike the in-memory stand-in (which pings the sink itself), the real fetch is blocked in a read.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        use std::io::{Read, Write};
+        while let Ok((mut c, _)) = listener.accept() {
+            thread::spawn(move || {
+                let mut b = [0u8; 2048];
+                let _ = c.read(&mut b);
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 524288\r\nconnection: close\r\n\r\n",
+                );
+                let _ = c.write_all(&[0u8; 4096]);
+                thread::sleep(Duration::from_secs(30));
+            });
+        }
+    });
+    let fx = Fx::new();
+    let e = fx.model("base", &format!("http://127.0.0.1:{port}/slow"));
+    let s = Store::with_config(StoreConfig {
+        root: fx.root.clone(),
+        fetch: Box::new(net::UreqFetch::new()),
+        catalog: vec![e],
+        now: None,
+        unzip: None,
+    })
+    .unwrap();
+    let t = Instant::now();
+    let (seen, on) = recorder();
+    let p = s.download("base", on);
+    until(|| !seen.lock().unwrap().is_empty());
+    s.cancel("base");
+    assert_eq!(end(p), Err(Failure::Cancelled));
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+
+    let (seen, on) = recorder();
+    let p = s.download("base", on);
+    until(|| !seen.lock().unwrap().is_empty());
+    let t = Instant::now();
+    s.remove("base")
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(end(p), Err(Failure::Cancelled));
+    assert!(fx.models().is_empty());
+}
 #[test]
 fn cancels_during_the_unzip_the_signal_reaches_it_and_nothing_is_left_installed() {
     let fx = Fx::new();
