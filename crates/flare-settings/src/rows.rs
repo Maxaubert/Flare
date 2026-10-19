@@ -927,9 +927,9 @@ mod tests {
 
     #[test]
     fn every_row_key_is_stored_by_a_module() {
-        // The dictation keys belong to M8's module (the Dictation page is M8's); until then
-        // they are exempt, as the plan says.
+        // The dictation keys are read by flare-dictation's prefs module (M8 Task 7).
         let sources = [
+            include_str!("../../flare-dictation/src/prefs.rs"),
             include_str!("help_prefs.rs"),
             include_str!("term_prefs.rs"),
             include_str!("tab_layout.rs"),
@@ -943,9 +943,6 @@ mod tests {
         ];
         for r in all_rows() {
             for k in r.keys {
-                if k.starts_with("flare.dictation.") {
-                    continue;
-                }
                 let quoted = format!("\"{k}\"");
                 assert!(
                     sources.iter().any(|s| s.contains(&quoted)),

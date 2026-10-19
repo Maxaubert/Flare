@@ -7,7 +7,7 @@
 //! documented clamp or step (a number the module clamps, a font size off the menu, a hex8
 //! background written opaque, an indicator word that is an old name).
 //!
-//! Dictation keys have no owning module yet (M8 adds its readers), so they read back as stored.
+//! Dictation keys are read by `flare-dictation`'s `prefs` module (M8 Task 7), so they read back as stored.
 //! This file, `legacy.rs` and the test fixtures of `import/` are the only places in
 //! `crates/*/src` where the text of Prism Terminal's key prefix may be written.
 
@@ -320,6 +320,11 @@ pub const RULES: &[Rule] = &[
             charset: Charset::Id,
         },
     },
+    Rule {
+        from: "prism.dictation.anywhere",
+        to: "flare.dictation.anywhere",
+        check: Check::Bool01,
+    },
 ];
 
 /// The two legacy keys. Read by `legacy.rs` only, folded into `seeThrough` and the Custom, never written.
@@ -535,7 +540,7 @@ fn read_back(to: &str, s: &PrefStore) -> Option<String> {
         "flare.help.panelWidth" => Some(help_width(s).to_string()),
         "flare.recentRoots" => serde_json::to_string(&recent_roots(s)).ok(),
         "flare.pinnedRoots" => serde_json::to_string(&pinned_roots(s)).ok(),
-        // The dictation keys have no owning reader until M8: they read back as stored.
+        // The dictation keys are read by flare-dictation's prefs module: they read back as stored.
         _ => s.get(to),
     }
 }
@@ -617,7 +622,7 @@ mod tests {
     use super::*;
 
     /// The table as Appendix D lists its source keys, in order.
-    const APPENDIX_D: [&str; 42] = [
+    const APPENDIX_D: [&str; 43] = [
         "prism.term.theme",
         "prism.term.custom",
         "prism.term.font",
@@ -660,6 +665,7 @@ mod tests {
         "prism.dictation.pauseMedia",
         "prism.dictation.sounds",
         "prism.dictation.model",
+        "prism.dictation.anywhere",
     ];
 
     fn written(from: &str, raw: &str) -> Option<String> {
@@ -684,7 +690,7 @@ mod tests {
     #[test]
     fn the_rule_table_is_appendix_d() {
         let froms: Vec<&str> = RULES.iter().map(|r| r.from).collect();
-        assert_eq!(RULES.len(), 42);
+        assert_eq!(RULES.len(), 43);
         assert_eq!(froms, APPENDIX_D.to_vec());
     }
 
@@ -939,6 +945,20 @@ mod tests {
             map_one("prism.dictation.mic", "device-1"),
             Mapped::Dropped("device ids are Chromium's")
         );
+    }
+
+    #[test]
+    fn the_import_maps_anywhere() {
+        assert_eq!(
+            written("prism.dictation.anywhere", "0").as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            written("prism.dictation.anywhere", "1").as_deref(),
+            Some("1")
+        );
+        assert!(skipped("prism.dictation.anywhere", "yes"));
+        assert!(skipped("prism.dictation.anywhere", "true"));
     }
 
     #[test]
