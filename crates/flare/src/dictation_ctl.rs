@@ -701,8 +701,9 @@ impl Dict {
         }
         if quit {
             for w in waiters {
-                // sync-ok: quit only; a pause still in flight answers within the media layer's own 3 s limit,
-                // and the music is played again before the process goes
+                // A pause still in flight answers within the media layer's own 3 s limit, and the music is
+                // played again before the process goes.
+                // sync-ok: quit only
                 let _ = w.join();
             }
         }
