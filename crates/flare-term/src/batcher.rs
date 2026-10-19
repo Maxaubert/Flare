@@ -8,6 +8,57 @@ pub const BATCH_WINDOW: Duration = Duration::from_millis(8);
 /// A batch this full is due at once, whatever the time.
 pub const BATCH_MAX_BYTES: usize = 1024 * 1024;
 
+/// The pty reader's buffer at rest: one read takes at most this much.
+pub const READ_MIN: usize = 64 * 1024;
+/// The pty reader's buffer while output is sustained.
+pub const READ_MAX: usize = 1024 * 1024;
+/// Full reads in a row before the buffer doubles.
+const FULL_READS_TO_GROW: u32 = 2;
+
+/// Sizes the pty reader's buffer (M10 Task 67): 64 KiB at rest, doubling toward 1 MiB while reads keep
+/// filling it (a flood, so each read call moves more bytes), and back to 64 KiB at the first short
+/// read (so a quiet shell holds no big buffer). It changes how much is READ per call, never when the
+/// batcher flushes: the 8 ms window and the 1 MiB cap above stay as they were (rule 31).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadSizer {
+    cap: usize,
+    full_in_a_row: u32,
+}
+
+impl Default for ReadSizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReadSizer {
+    pub fn new() -> Self {
+        Self {
+            cap: READ_MIN,
+            full_in_a_row: 0,
+        }
+    }
+
+    /// The size the next read's buffer should have.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// Notes that a read of `n` bytes returned.
+    pub fn after_read(&mut self, n: usize) {
+        if n >= self.cap {
+            self.full_in_a_row += 1;
+            if self.full_in_a_row >= FULL_READS_TO_GROW {
+                self.cap = (self.cap * 2).min(READ_MAX);
+                self.full_in_a_row = 0;
+            }
+        } else {
+            self.cap = READ_MIN;
+            self.full_in_a_row = 0;
+        }
+    }
+}
+
 /// Holds pty output until it is due.
 pub struct OutputBatcher {
     window: Duration,
@@ -120,6 +171,63 @@ mod tests {
         b.push(b"abcd", t0);
         assert_eq!(b.due_in(t0), Some(Duration::ZERO));
         assert_eq!(b.take_due(t0), Some(b"abcd".to_vec()));
+    }
+
+    #[test]
+    fn the_read_buffer_grows_while_output_is_sustained_and_falls_back_at_once() {
+        let mut s = ReadSizer::new();
+        assert_eq!(s.cap(), READ_MIN);
+        // One full read is not yet a flood; two in a row are.
+        s.after_read(READ_MIN);
+        assert_eq!(s.cap(), READ_MIN);
+        s.after_read(READ_MIN);
+        assert_eq!(s.cap(), 2 * READ_MIN);
+        let mut seen = vec![s.cap()];
+        for _ in 0..20 {
+            let c = s.cap();
+            s.after_read(c);
+            if s.cap() != *seen.last().unwrap() {
+                seen.push(s.cap());
+            }
+        }
+        assert_eq!(seen, vec![128 * 1024, 256 * 1024, 512 * 1024, READ_MAX]);
+        // It never passes the cap, and one short read ends it.
+        s.after_read(READ_MAX);
+        s.after_read(READ_MAX);
+        assert_eq!(s.cap(), READ_MAX);
+        s.after_read(100);
+        assert_eq!(s.cap(), READ_MIN);
+    }
+
+    #[test]
+    fn the_flush_rule_still_holds() {
+        // Bigger reads change the size of a push, not the rule: a batch is due 8 ms after its first
+        // byte, or at once when a full mebibyte is waiting.
+        let t0 = Instant::now();
+        let mut b = OutputBatcher::new(BATCH_WINDOW, BATCH_MAX_BYTES);
+        b.push(&vec![b'x'; READ_MAX - 1], t0);
+        assert_eq!(
+            b.take_due(t0),
+            None,
+            "just under the cap waits for the window"
+        );
+        assert_eq!(
+            b.due_in(t0 + Duration::from_millis(3)),
+            Some(Duration::from_millis(5))
+        );
+        b.push(b"y", t0 + Duration::from_millis(3));
+        assert_eq!(
+            b.take_due(t0 + Duration::from_millis(3)).map(|v| v.len()),
+            Some(READ_MAX),
+            "a full mebibyte is due at once"
+        );
+        // A read of the largest size is itself a full batch.
+        b.push(&vec![b'z'; READ_MAX], t0 + Duration::from_millis(4));
+        assert_eq!(
+            b.due_in(t0 + Duration::from_millis(4)),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(BATCH_WINDOW, Duration::from_millis(8));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! banner until a tab adopts it. Nothing here waits on the caller's thread except `spawn` and
 //! `prewarm`, which say so.
 
-use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher};
+use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, ReadSizer};
 use crate::exit_poll::{ExitPoller, PollStep};
 use crate::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_shells::cwd::cd_command;
@@ -253,7 +253,8 @@ fn reader_loop(
     mut reader: Box<dyn Read + Send>,
     backlog_max: usize,
 ) {
-    let mut buf = vec![0u8; 64 * 1024];
+    let mut buf = vec![0u8; READ_MIN];
+    let mut sizer = ReadSizer::new();
     loop {
         let n = match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
@@ -275,6 +276,15 @@ fn reader_loop(
         drop(st);
         if was_empty || big {
             s.pump_cv.notify_one();
+        }
+        // Sustained output reads bigger pieces (up to 1 MiB); a short read goes back to 64 KiB. The
+        // bytes just read are already in the batcher, so the buffer may change size now.
+        sizer.after_read(n);
+        if sizer.cap() != buf.len() {
+            buf.resize(sizer.cap(), 0);
+            if buf.len() == READ_MIN {
+                buf.shrink_to_fit();
+            }
         }
     }
 }
