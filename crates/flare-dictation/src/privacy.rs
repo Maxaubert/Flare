@@ -124,11 +124,51 @@ mod tests {
     }
 
     #[test]
+    fn default_endpoints_are_the_console_ones() {
+        // PT's getUserMedia (no deviceId) records from Chromium's 'default', the console default, and the
+        // start cue plays on the console default speaker: both lookups name eConsole, never eCommunications.
+        let mic = code_of(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("mic.rs"),
+        );
+        let lookups: Vec<&str> = mic
+            .lines()
+            .filter(|l| l.contains("GetDefaultAudioEndpoint"))
+            .collect();
+        assert_eq!(
+            lookups.len(),
+            2,
+            "one capture lookup and one echo reference"
+        );
+        for l in lookups {
+            assert!(
+                l.contains(concat!("e", "Console")),
+                "not the console default: {l}"
+            );
+            assert!(
+                !l.contains(concat!("e", "Communications")),
+                "the communications default is not what PT or the cue uses: {l}"
+            );
+        }
+    }
+
+    #[test]
     fn no_audio_is_written_to_disk() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut scanned = vec![src.join("mic.rs"), src.join("controller.rs")];
-        files(&src.join("engine"), &["rs"], &mut scanned);
-        assert!(scanned.len() >= 3, "the engine files were not found");
+        let mut engine = Vec::new();
+        files(&src.join("engine"), &["rs"], &mut engine);
+        assert!(engine.len() >= 3, "the engine files were not found");
+        scanned.extend(engine);
+        // A scanned file that was renamed, moved or emptied must fail here, not pass an empty scan.
+        for f in &scanned {
+            let text = std::fs::read_to_string(f)
+                .unwrap_or_else(|e| panic!("{} cannot be scanned: {e}", f.display()));
+            assert!(!text.trim().is_empty(), "{} is empty", f.display());
+        }
+        // `write_all` is not listed: it is how audio reaches an engine's stdin and socket (not a file).
+        // What would make it a file sink is named instead, aliased forms included.
         let banned = [
             concat!("fs::", "write"),
             concat!("File::", "create"),
@@ -138,15 +178,16 @@ mod tests {
             concat!("create_", "new"),
             concat!("temp", "file"),
             concat!("fs::", "rename"),
-            concat!("write_", "all"),
+            concat!("fs::", "File"),
+            concat!("use std::", "fs::{"),
+            concat!("use std::", "fs::write"),
+            concat!("use std::", "fs::File"),
+            concat!("tokio::", "fs"),
+            concat!("Buf", "Writer"),
         ];
         for f in &scanned {
             let code = code_of(f);
             for b in banned {
-                // A child's stdin/stdout is not a file; `write_all` there is how audio reaches an engine.
-                if b == concat!("write_", "all") {
-                    continue;
-                }
                 assert!(!code.contains(b), "{} writes to disk ({b})", f.display());
             }
         }

@@ -13,8 +13,9 @@
 //!   "it says now it cant find the mic, but mics connected and should be the system default"). A
 //!   refusal is never retried, and neither is a failure when no device was chosen.
 //!
-//! `start_capture` waits for the capture thread to say whether the endpoint opened (bounded, a few
-//! hundred milliseconds in practice), so it belongs on a worker, never on the UI thread.
+//! `start_capture` waits for the capture thread to say whether the endpoint opened (bounded by
+//! `OPEN_TIMEOUT`), so it belongs on a worker. The UI thread calls `start_capture_async` instead: it
+//! returns at once and answers through a callback on its own worker (D1 runs the mic effect that way).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -150,6 +151,24 @@ pub fn start_capture(
     on_frame: FrameFn,
 ) -> Result<Box<dyn Capture>, CaptureFailure> {
     start_capture_from(&MicSource::Device, device, on_frame)
+}
+
+/// The answer to `start_capture_async`.
+pub type DoneFn = Box<dyn FnOnce(Result<Box<dyn Capture>, CaptureFailure>) + Send>;
+
+/// Opens the microphone on a worker and answers through `done`, so the caller (the UI thread) never waits
+/// on a slow or hung endpoint or on the fake's file read. `done` runs on the worker.
+pub fn start_capture_async(
+    source: MicSource,
+    device: Option<String>,
+    on_frame: FrameFn,
+    done: DoneFn,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("flare-mic-open".into())
+        .spawn(move || done(start_capture_from(&source, device.as_deref(), on_frame)));
+    // A thread that cannot even be created is dropped with its callback; nothing else can answer.
+    drop(spawned);
 }
 
 /// `start_capture` with the source named; `MicSource::File` never touches WASAPI.
@@ -308,7 +327,7 @@ mod wasapi {
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Media::Audio::{
-        eCapture, eCommunications, eRender, AudioCategory_Communications, AudioClientProperties,
+        eCapture, eConsole, eRender, AudioCategory_Communications, AudioClientProperties,
         IAcousticEchoCancellationControl, IAudioCaptureClient, IAudioClient, IAudioClient2,
         IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
@@ -443,11 +462,12 @@ mod wasapi {
         I32,
     }
 
-    /// The default speaker's id, only to NAME it as the echo reference (D7). Nothing is opened on it.
+    /// The default speaker's id, only to NAME it as the echo reference (D7). Nothing is opened on it. It is the
+    /// console default render device, the one the start cue (`PlaySoundW`) actually plays on.
     fn echo_reference_id(en: &IMMDeviceEnumerator) -> Option<Vec<u16>> {
         // SAFETY: reads an endpoint id string and frees it.
         unsafe {
-            let dev = en.GetDefaultAudioEndpoint(eRender, eCommunications).ok()?;
+            let dev = en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
             let id = dev.GetId().ok()?;
             let mut v: Vec<u16> = id.as_wide().to_vec();
             v.push(0);
@@ -456,7 +476,7 @@ mod wasapi {
         }
     }
 
-    fn open_endpoint(device: Option<&str>) -> Result<Opened, OpenError> {
+    fn open_endpoint(device: Option<&str>, stop: &AtomicBool) -> Result<Opened, OpenError> {
         let en = enumerator().map_err(|e| hr_of(&e))?;
         // SAFETY: standard shared-mode WASAPI capture set-up; every pointer comes from the API itself and
         // the mix format is freed after use.
@@ -468,7 +488,7 @@ mod wasapi {
                         .map_err(|_| OpenError::NotFound)?
                 }
                 None => en
-                    .GetDefaultAudioEndpoint(eCapture, eCommunications)
+                    .GetDefaultAudioEndpoint(eCapture, eConsole)
                     .map_err(|_| OpenError::NotFound)?,
             };
             let client: IAudioClient = dev.Activate(CLSCTX_ALL, None).map_err(|e| hr_of(&e))?;
@@ -519,6 +539,11 @@ mod wasapi {
                 echo_reference_id(&en),
             ) {
                 let _ = aec.SetEchoCancellationRenderEndpoint(PCWSTR(id.as_ptr()));
+            }
+            // An open that outlived its caller's wait (timeout) is told to stop: it must not start the mic.
+            if stop.load(Ordering::SeqCst) {
+                windows_sys::Win32::Foundation::CloseHandle(event.0);
+                return Err(OpenError::Other);
             }
             client.Start().map_err(|e| {
                 windows_sys::Win32::Foundation::CloseHandle(event.0);
@@ -593,7 +618,11 @@ mod wasapi {
         tx: std::sync::mpsc::Sender<Result<(), OpenError>>,
     ) {
         init_com();
-        let opened = match open_endpoint(device.as_deref()) {
+        if stop.load(Ordering::SeqCst) {
+            let _ = tx.send(Err(OpenError::Other));
+            return;
+        }
+        let opened = match open_endpoint(device.as_deref(), &stop) {
             Ok(o) => o,
             Err(e) => {
                 let _ = tx.send(Err(e));
@@ -870,5 +899,44 @@ mod tests {
         let (pcm, rate) = read_wav(&v).unwrap();
         assert_eq!(rate, 8000);
         assert_eq!(pcm, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn the_async_open_returns_at_once_and_answers_by_callback() {
+        // The callback waits for a gate the caller opens only AFTER `start_capture_async` has returned:
+        // a call that opened the endpoint inline would run the callback first and never see the gate.
+        let dir = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<(bool, Option<CaptureFailure>)>();
+        start_capture_async(
+            MicSource::File(dir.path().join("nope.wav")),
+            None,
+            Box::new(|_| {}),
+            Box::new(move |r| {
+                let gated = gate_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+                let _ = out_tx.send((gated, r.err()));
+            }),
+        );
+        gate_tx.send(()).unwrap();
+        let (gated, err) = out_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(gated, "the call blocked until the open finished");
+        assert_eq!(err, Some(CaptureFailure::NoDevice));
+    }
+
+    #[test]
+    fn the_async_open_hands_over_a_running_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.wav");
+        std::fs::write(&path, encode_wav(&[0.25; 320], 16_000)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        start_capture_async(
+            MicSource::File(path),
+            None,
+            Box::new(|_| {}),
+            Box::new(move |r| {
+                let _ = tx.send(r.is_ok());
+            }),
+        );
+        assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap());
     }
 }
