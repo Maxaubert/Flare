@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use flare_e2e_proto::{Button, PointerAction, Reply, Request};
 use serde_json::{json, Value};
 
+use super::driver::pick_theme;
 use crate::ctx::{App, Ctx, Launch};
 use crate::session::AppState;
 use crate::until::{wait_on, SystemClock};
@@ -181,63 +182,39 @@ fn frames_max(app: &mut App) -> f64 {
     }
 }
 
-/// True when every character of the first screen row holding `needle` (in tab `tab`) is drawn in
-/// the link colour. Reads one cell per character through `grid.cell`.
-fn link_coloured(app: &mut App, tab: &str, needle: &str) -> bool {
-    let grid = probe(app, "grid.text", json!({ "tab": tab }));
-    let Some(rows) = grid["rows"].as_array() else {
-        return false;
-    };
-    let Some((row, line)) = rows
-        .iter()
-        .enumerate()
-        .find_map(|(i, r)| r.as_str().filter(|t| t.contains(needle)).map(|t| (i, t)))
-    else {
-        return false;
-    };
-    let Some(start) = line.find(needle) else {
-        return false;
-    };
-    let col0 = line[..start].chars().count();
-    needle.chars().enumerate().all(|(i, _)| {
-        probe(
-            app,
-            "grid.cell",
-            json!({ "tab": tab, "row": row, "col": col0 + i }),
-        )["fg"]
-            .as_str()
-            .is_some_and(|fg| fg.eq_ignore_ascii_case(LINK_BLUE))
-    })
+/// The links the front tab's decoration paints, with the ink they wear (`term.links`). Flare paints
+/// a link as decoration over the cells (the cell's own colour stays), so this is where the link
+/// colour is read, not `grid.cell` (PT recoloured the cells' DOM spans).
+fn front_links(app: &mut App) -> (Vec<Value>, String) {
+    let v = probe(app, "term.links", Value::Null);
+    (
+        v["links"].as_array().cloned().unwrap_or_default(),
+        v["ink"].as_str().unwrap_or_default().to_string(),
+    )
 }
 
-/// The same as `link_coloured`, but true when ANY row holding `needle` is drawn in the link colour.
-fn any_row_coloured(app: &mut App, tab: &str, needle: &str) -> bool {
-    let grid = probe(app, "grid.text", json!({ "tab": tab }));
-    let rows: Vec<(usize, String)> = grid["rows"]
-        .as_array()
-        .map(|rs| {
-            rs.iter()
-                .enumerate()
-                .filter_map(|(i, r)| {
-                    r.as_str()
-                        .filter(|t| t.contains(needle))
-                        .map(|t| (i, t.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    rows.iter().any(|(row, line)| {
-        let col0 = line.find(needle).map_or(0, |s| line[..s].chars().count());
-        needle.chars().enumerate().all(|(i, _)| {
-            probe(
-                app,
-                "grid.cell",
-                json!({ "tab": tab, "row": row, "col": col0 + i }),
-            )["fg"]
+/// True when the front tab paints a link reading `needle` in the link colour.
+fn link_coloured(app: &mut App, needle: &str) -> bool {
+    let (links, ink) = front_links(app);
+    ink.eq_ignore_ascii_case(LINK_BLUE)
+        && links
+            .iter()
+            .any(|m| m["text"].as_str().is_some_and(|t| t.contains(needle)))
+}
+
+/// True when the front tab paints the web link of one of the first `within` lines of the output
+/// (`https://e.x/n<k>`, k <= within) in the link colour: the oldest lines, painted after the wheel
+/// brought them into view.
+fn oldest_lines_coloured(app: &mut App, within: u32) -> bool {
+    let (links, ink) = front_links(app);
+    ink.eq_ignore_ascii_case(LINK_BLUE)
+        && links.iter().any(|m| {
+            m["uri"]
                 .as_str()
-                .is_some_and(|fg| fg.eq_ignore_ascii_case(LINK_BLUE))
+                .and_then(|u| u.strip_prefix("https://e.x/n"))
+                .and_then(|k| k.parse::<u32>().ok())
+                .is_some_and(|k| k <= within)
         })
-    })
 }
 
 /// Waits for the front shell's prompt. True when it showed one.
@@ -293,6 +270,29 @@ fn quoted_path_typed(text: &str) -> bool {
     drive.is_some_and(|c| c.is_ascii_uppercase()) && !before[colon..].contains(['"', '\''])
 }
 
+/// The wall clock in ms since the epoch (the diag log's own clock).
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The longest stall in ms the diag log recorded at or after `from` (epoch ms): the `ms` of a
+/// `main-lag`, `frame-slow` or `ui-stack` line (M9 D12). 0 when there is none.
+fn worst_stall(lines: &[flare_diag::reader::Line], from: i64) -> u64 {
+    lines
+        .iter()
+        .filter(|l| l.ms >= from)
+        .filter(|l| {
+            matches!(
+                l.raw.get("k").and_then(Value::as_str),
+                Some("main-lag" | "frame-slow" | "ui-stack")
+            )
+        })
+        .filter_map(|l| l.raw.get("ms").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+}
 /// PT: run.mjs:3669-3762. Tab B prints 10,000 lines with a web link on each; tab A's found path
 /// wears the link colour; no frame gap of 200 ms or more while it lights up, and none on a theme
 /// switch; B's oldest lines are painted within 10 s of scrolling back to them.
@@ -318,7 +318,8 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let (bx, by) = centre_of(app, "tab:1").unwrap_or((0.0, 0.0));
     app.session.click(bx, by)?;
     let b = front_id(app);
-
+    // A tab that has not shown yet may still be starting its shell: typing before its prompt is lost.
+    let _ = wait_prompt(app);
     // Tab B: 10,000 lines, each with a path that names nothing and a web link (painted at once).
     type_line(
         app,
@@ -339,14 +340,14 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // Tab A finds a path.
     let (ax, ay) = centre_of(app, "tab:0").unwrap_or((0.0, 0.0));
     app.session.click(ax, ay)?;
-    let a = front_id(app);
+    let _ = wait_prompt(app);
     type_line(
         app,
         "cls; Set-Content found-167.txt x; Write-Host 'made found-167.txt here'",
     )?;
     // PT: run.mjs:3697
     ctx.ok(
-        wait(8_000, &mut || link_coloured(app, &a, "found-167.txt")),
+        wait(8_000, &mut || link_coloured(app, "found-167.txt")),
         "the path tab A printed wears the link colour",
     );
     pause(5_000);
@@ -357,14 +358,22 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         format!("and no task held the window 200 ms or more while it lit up (longest {after_find:.0} ms)"),
     );
 
-    // PT: run.mjs:3707-3712. A theme switch with 10,000 lines in tab B. Flare's hook cannot pick a
-    // theme yet (chrome.rs: picking a card is not probed), so this check fails on that missing seam
-    // and says so; it is not a window stall.
+    // PT: run.mjs:3707-3712. A full pass over B's 10,000 lines: a theme, and back, picked on the
+    // real Settings wall (driver::pick_theme). PT counts long tasks; Flare's counterpart is M9's
+    // stall lines in the diag log (`main-lag` for a UI thread held, `frame-slow` for a frame that
+    // took long, `ui-stack` for one held a long while). The frame gap is not read here: Settings
+    // hides the grid, so no frame is drawn for the while it is in front.
+    let profile = ctx.ensure_world().profile.clone();
+    let from = epoch_ms();
+    let picked = pick_theme(ctx, app, "fawn");
+    pause(2_000);
+    let back = pick_theme(ctx, app, "pt-default");
+    pause(3_000);
+    let worst = worst_stall(&flare_diag::reader::read_lines(&profile.join("logs")), from);
     ctx.ok(
-        false,
-        "a theme switch with 10,000 lines in a tab holds the window under 200 ms: NEEDS SEAM, the hook cannot pick a theme yet (chrome.rs notes picking a card is not probed)",
+        picked && back && worst < 200,
+        format!("a theme switch with 10,000 lines in a tab holds the window under 200 ms (longest {worst} ms)"),
     );
-
     // PT: run.mjs:3714-3715. Back to tab B, then the wheel over its 10,000 lines.
     let (bx, by) = centre_of(app, "tab:1").unwrap_or((0.0, 0.0));
     app.session.click(bx, by)?;
@@ -375,13 +384,13 @@ fn link_paint_stall_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             y: gy,
             action: PointerAction::Wheel {
                 dx: 0.0,
-                dy: -20_000.0,
+                dy: 20_000.0, // positive scrolls up (winit); PT wheels -y
             },
         })?;
     }
     // PT: run.mjs:3718-3728. B's oldest lines are painted by the backlog, a slice at a time.
     ctx.ok(
-        wait(10_000, &mut || any_row_coloured(app, &b, "https://e.x/n")),
+        wait(10_000, &mut || oldest_lines_coloured(app, 200)),
         "and B's oldest lines are painted within 10 s (the backlog finished)",
     );
     Ok(())
@@ -655,4 +664,36 @@ fn drop_and_menu_run(ctx: &mut Ctx, app: &mut App, file: &Path) -> Result<(), St
 fn tail(s: &str, n: usize) -> String {
     let count = s.chars().count();
     s.chars().skip(count.saturating_sub(n)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flare_diag::reader::Line;
+
+    fn line(ms: i64, k: &str, len: u64) -> Line {
+        let mut raw = serde_json::Map::new();
+        raw.insert("k".into(), json!(k));
+        raw.insert("ms".into(), json!(len));
+        Line { ms, raw }
+    }
+
+    #[test]
+    fn the_worst_stall_is_the_longest_stall_line_since_the_start() {
+        let lines = vec![
+            line(10, "main-lag", 900),
+            line(100, "frame-slow", 250),
+            line(120, "ui-stack", 2_100),
+            line(130, "work-slow", 5_000),
+            line(140, "crumb", 7_000),
+        ];
+        assert_eq!(
+            worst_stall(&lines, 50),
+            2_100,
+            "work-slow is not a UI stall"
+        );
+        assert_eq!(worst_stall(&lines, 110), 2_100);
+        assert_eq!(worst_stall(&lines, 121), 0);
+        assert_eq!(worst_stall(&[], 0), 0);
+    }
 }

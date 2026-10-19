@@ -955,6 +955,24 @@ pub fn pointer_events(x: f32, y: f32, action: &PointerAction) -> Vec<WindowEvent
     }
 }
 
+/// The notches an injected wheel of `dy` css px makes (positive is up, winit's convention): a notch
+/// is 40 px, at least one for any movement. The real window counts the cell height instead; the
+/// e2e only needs "far enough" and a stable sign.
+pub fn wheel_notches(dy: f32) -> i32 {
+    if dy == 0.0 {
+        return 0;
+    }
+    match (dy / 40.0).round() as i32 {
+        0 => dy.signum() as i32,
+        n => n.clamp(-4096, 4096),
+    }
+}
+
+/// Whether the point (css px) lies inside the rectangle (left, top, width, height).
+pub fn in_rect(p: (f32, f32), r: (f32, f32, f32, f32)) -> bool {
+    p.0 >= r.0 && p.0 <= r.0 + r.2 && p.1 >= r.1 && p.1 <= r.1 + r.3
+}
+
 /// Press at `from`, `steps` equal moves, release at `to`.
 pub fn drag_events(from: (f32, f32), to: (f32, f32), steps: u32, b: Button) -> Vec<WindowEvent> {
     let mut out = pointer_events(from.0, from.1, &PointerAction::Down { button: b });
@@ -1052,6 +1070,32 @@ impl GlueCtx {
             app.window().dispatch_event(e);
         }
         Ok(())
+    }
+
+    /// An injected Slint wheel never reaches winit's `MouseWheel`, where the real window scrolls the
+    /// terminal. Over the grid, the front tab gets the same call that handler makes.
+    fn term_wheel(&self, x: f32, y: f32, dy: f32) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let k = app.window().scale_factor().max(0.01);
+        let grid = (
+            app.get_grid_left(),
+            app.get_grid_top(),
+            app.get_grid_phys_width() as f32 / k,
+            app.get_grid_phys_height() as f32 / k,
+        );
+        let on_settings = self.ctl.upgrade().is_some_and(|rc| {
+            rc.try_borrow().is_ok_and(|c| {
+                c.model().state.active_id.as_deref() == Some(flare_tabs::tabs::SETTINGS_ID)
+            })
+        });
+        if on_settings || app.get_chrome_has_focus() || !in_rect((x, y), grid) {
+            return;
+        }
+        if let Some(handle) = self.kp.front.borrow().clone() {
+            handle.wheel(wheel_notches(dy), 0, 0);
+        }
     }
 
     /// One key through the path a real key takes; a key the app leaves to Slint reaches it too,
@@ -1443,7 +1487,13 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             ctx.key(&event_from_char(c, true))?;
             ctx.key(&event_from_char(c, false))
         }),
-        Request::Pointer { x, y, action } => ctx.dispatch(pointer_events(x, y, &action)),
+        Request::Pointer { x, y, action } => {
+            ctx.dispatch(pointer_events(x, y, &action)).map(|()| {
+                if let PointerAction::Wheel { dy, .. } = action {
+                    ctx.term_wheel(x, y, dy);
+                }
+            })
+        }
         Request::Drag {
             from,
             to,
@@ -1579,6 +1629,26 @@ mod tests {
             None
         );
         assert_eq!(cursor_forward(&WindowEvent::PointerExited, false), None);
+    }
+
+    #[test]
+    fn an_injected_wheel_is_whole_notches_up_for_positive_dy() {
+        assert_eq!(wheel_notches(0.0), 0);
+        assert_eq!(wheel_notches(1.0), 1);
+        assert_eq!(wheel_notches(-1.0), -1);
+        assert_eq!(wheel_notches(120.0), 3);
+        assert_eq!(wheel_notches(-120.0), -3);
+        assert_eq!(wheel_notches(20_000.0), 500);
+    }
+
+    #[test]
+    fn a_wheel_is_the_terminals_only_inside_the_grid() {
+        let grid = (100.0, 40.0, 800.0, 500.0);
+        assert!(in_rect((300.0, 200.0), grid));
+        assert!(!in_rect((99.0, 200.0), grid));
+        assert!(!in_rect((300.0, 39.0), grid));
+        assert!(!in_rect((901.0, 200.0), grid));
+        assert!(!in_rect((300.0, 541.0), grid));
     }
 
     #[test]
