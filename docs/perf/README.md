@@ -29,7 +29,10 @@ them is flagged `short`. A GPU run on a PC without an adapter is reported and sk
 app runs at a time, always `--e2e` (offscreen, unfocusable).
 
 `FLARE_TRACE_FRAME=1` (with `RUST_LOG=info,flare_render::stats=trace`) logs the phases of every
-frame; what it showed for the flood is in `heavy-output.md`. A frame interval on a parked GPU window
-is DWM's 4 Hz cadence, not the app's (same file).
+frame; what it showed for the flood is in `heavy-output.md`. If every GPU frame interval reads about
+250 ms, the PC's display path is in the 4 Hz state described in `../performance.md` (not the app, and
+not parking as such): the GPU rows of that run measure the machine, not Flare.
+
+The M10 verdict, every bar against Prism Terminal with the owner's choices for each miss: `../performance.md`.
 
 The memory diet (M10 Task 66): what the private working set holds, what each candidate saved or did not, and where B2 stands is in `memory.md`.
