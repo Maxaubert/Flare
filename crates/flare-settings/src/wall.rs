@@ -2,12 +2,39 @@
 //! Source: PT `core/renderer/settings/theme/ThemeWall.tsx` (the wall, `TermThemeCard`, `TWO_ROWS`) and
 //! `palette.ts` (`cardAnsi`); the order is M4's `flare_theme::order` (PT `themeOrder.ts`).
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use flare_theme::look::card_ansi;
 use flare_theme::order::wall_ids;
-use flare_theme::preset::{HOST_DEFAULT_THEME, find_preset, presets};
+use flare_theme::preset::{HOST_DEFAULT_THEME, Preset, find_preset, presets};
 use flare_theme::resolve::{TermTheme, resolve_custom_theme, resolve_preset};
 
 use crate::look::LookStore;
+
+/// Every preset id that `preset_look` has resolved, in order (tests only).
+#[cfg(test)]
+static RESOLVES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// A preset's resolved look, worked out once per preset (PT `palette.ts` `presetLook`, owner 2026-09-22):
+/// a preset never changes, and a resolve runs the legibility floors over its sixteen colours, so the wall
+/// must not pay that for every card on every change to the page.
+pub fn preset_look(p: &Preset) -> TermTheme {
+    static LOOKS: OnceLock<Mutex<HashMap<&'static str, TermTheme>>> = OnceLock::new();
+    let looks = LOOKS.get_or_init(Default::default);
+    let mut looks = looks.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = looks.get(p.id) {
+        return t.clone();
+    }
+    #[cfg(test)]
+    RESOLVES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(p.id);
+    let t = resolve_preset(p);
+    looks.insert(p.id, t.clone());
+    t
+}
 
 pub const CARD_W: f64 = 196.0;
 pub const GAP: f64 = 12.0;
@@ -82,7 +109,7 @@ pub fn wall_cards(look: &LookStore) -> Vec<CardData> {
                 return Some(card(id, "Custom", on, &t));
             }
             let p = find_preset(&id)?;
-            let t = resolve_preset(p);
+            let t = preset_look(p);
             Some(card(id, p.name, on, &t))
         })
         .collect()
@@ -313,6 +340,23 @@ mod tests {
         assert_eq!(custom.blue, "#4aa5f0");
         assert_eq!(custom.cyan, "#42b3c2");
         assert_eq!(custom.red, "#e05561");
+    }
+
+    #[test]
+    fn the_card_palette_is_computed_once_per_preset() {
+        let l = look();
+        let first = wall_cards(&l);
+        let second = wall_cards(&l);
+        assert_eq!(first, second, "a second read gives the same cards");
+        let resolves = RESOLVES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for p in presets() {
+            let n = resolves.iter().filter(|id| **id == p.id).count();
+            assert!(n <= 1, "preset {} was resolved {n} times", p.id);
+        }
+        for c in first.iter().filter(|c| c.id != "custom") {
+            let n = resolves.iter().filter(|id| **id == c.id.as_str()).count();
+            assert_eq!(n, 1, "the card {} is resolved once, not {n} times", c.id);
+        }
     }
 
     #[test]
