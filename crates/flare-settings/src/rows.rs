@@ -241,7 +241,7 @@ pub const MARK_OPTIONS: [RowDef; 1] = [RowDef {
 }];
 
 /// The dictation rows. The GPU row is offered only with an NVIDIA adapter.
-pub const DICTATION_OPTIONS: [RowDef; 9] = [
+pub const DICTATION_OPTIONS: [RowDef; 10] = [
     RowDef {
         id: "dictation-enabled",
         label: "Use dictation",
@@ -336,7 +336,7 @@ pub const DICTATION_OPTIONS: [RowDef; 9] = [
     RowDef {
         id: "dictation-model",
         label: "Speech models",
-        sub: "Shared by both apps on this PC.",
+        sub: "Downloaded once, kept on this PC.",
         section: "models",
         page: "dictation",
         icon: "download",
@@ -358,6 +358,19 @@ pub const DICTATION_OPTIONS: [RowDef; 9] = [
         kind: RowKind::Manager,
         source: Source::Dictation,
         only_nvidia: true,
+    },
+    RowDef {
+        id: "dictation-anywhere",
+        label: "Dictate from any app",
+        sub: "The key works with another app in front.",
+        section: "anywhere",
+        page: "dictation",
+        icon: "mic",
+        keywords: "global anywhere outside background other app widget overlay send session hotkey ctrl win",
+        keys: &["flare.dictation.anywhere"],
+        kind: RowKind::Switch,
+        source: Source::Dictation,
+        only_nvidia: false,
     },
 ];
 
@@ -584,7 +597,7 @@ pub const APP_OPTIONS: [RowDef; 12] = [
 ];
 
 /// The 39 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 39] = [
+pub const ROW_ORDER: [&str; 40] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -620,6 +633,7 @@ pub const ROW_ORDER: [&str; 39] = [
     "dictation-sounds",
     "dictation-model",
     "dictation-gpu",
+    "dictation-anywhere",
     "diag-verbose",
     "diag-folder",
     "diag-mark",
@@ -686,16 +700,16 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_name_the_39_rows_in_row_order() {
+    fn the_tables_name_the_40_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 39);
+        assert_eq!(ids.len(), 40);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 39);
+        assert_eq!(distinct.len(), 40);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -728,7 +742,7 @@ mod tests {
 
     #[test]
     fn dictation_has_one_key_per_option_under_flare_dictation_and_only_gpu_has_none() {
-        assert_eq!(DICTATION_OPTIONS.len(), 9);
+        assert_eq!(DICTATION_OPTIONS.len(), 10);
         let mut keys: Vec<&str> = Vec::new();
         for r in DICTATION_OPTIONS.iter() {
             if r.id == "dictation-gpu" {
@@ -792,13 +806,14 @@ mod tests {
                 "dictation-sounds=flare.dictation.sounds",
                 "dictation-model=flare.dictation.model",
                 "dictation-gpu=",
+                "dictation-anywhere=flare.dictation.anywhere",
                 "help-enabled=flare.help.enabled",
                 "diag-verbose=",
                 "diag-folder=",
                 "diag-mark=",
             ]
         );
-        assert_eq!(core.len(), 27);
+        assert_eq!(core.len(), 28);
 
         let app: Vec<String> = APP_OPTIONS.iter().map(store_line).collect();
         assert_eq!(

@@ -191,6 +191,7 @@ pub fn control_kind(c: &Control) -> SetKind {
         Control::Slider { .. } => SetKind::Slider,
         Control::Colour { .. } => SetKind::Colour,
         Control::Save { .. } => SetKind::Save,
+        Control::Key { .. } | Control::Mic { .. } => SetKind::None,
     }
 }
 
@@ -303,6 +304,8 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
             out.save_dirty = *dirty;
             out.save_title = title.as_str().into();
         }
+        // The key and microphone controls are drawn by M8 Task 25.
+        Control::Key { .. } | Control::Mic { .. } => {}
     }
     out
 }
@@ -334,6 +337,10 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                     ..block_row("about", SlintBlock::About, y, rl.h)
                 },
                 BlockModel::SlintBadge => block_row("slint", SlintBlock::Slint, y, rl.h),
+                // The model and GPU cards are drawn by M8 Task 25.
+                BlockModel::Model(_) | BlockModel::Gpu(_) => {
+                    block_row("model", SlintBlock::Note, y, rl.h)
+                }
                 BlockModel::Note(text) => SetRow {
                     note: text.as_str().into(),
                     ..block_row("note", SlintBlock::Note, y, rl.h)

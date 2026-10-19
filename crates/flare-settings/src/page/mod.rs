@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod appearance;
+pub mod dictation;
 pub mod misc;
 pub mod terminal;
 
@@ -55,6 +56,19 @@ pub enum Control {
         dirty: bool,
         title: String,
     },
+    /// The dictation key: the binding's text, or the prompt while the key is being captured.
+    Key {
+        text: String,
+        capturing: bool,
+    },
+    /// The microphone picker (`""` is the system default) and its test meter.
+    Mic {
+        value: String,
+        options: Vec<Opt>,
+        testing: bool,
+        level: f32,
+        problem: Option<String>,
+    },
 }
 
 /// A small text button beside a row's control (ROW_BUTTON, 32 high).
@@ -87,6 +101,10 @@ pub struct RowModel {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BlockModel {
     Row(RowModel),
+    /// One downloadable speech model in the Speech models card (M8 Task 24).
+    Model(dictation::ModelRow),
+    /// The NVIDIA GPU pack card (drawn only with an NVIDIA adapter).
+    Gpu(dictation::GpuRow),
     Wall,
     AboutCard {
         name: String,

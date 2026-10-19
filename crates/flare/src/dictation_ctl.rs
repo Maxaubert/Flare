@@ -113,10 +113,15 @@ pub fn armed() -> bool {
     ARMED.with(Cell::get)
 }
 
-/// Whether the Dictation page is wired (Settings' find index and the page env read it). Task 24 turns it on
-/// together with the page.
+/// The stored dictation preferences, as the Dictation page reads them (no key is reserved for the app here).
+pub fn stored_prefs(kv: &dyn Fn(&str) -> Option<String>) -> DictPrefs {
+    read_prefs(kv, &[])
+}
+
+/// Whether the Dictation page is wired (Settings' find index and the page env read it). M8 Task 24 turned it on
+/// together with the page model.
 pub fn wired() -> bool {
-    false
+    true
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

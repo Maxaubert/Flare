@@ -62,7 +62,7 @@ pub fn page_of_section(section_id: &str) -> Option<&'static str> {
         "shell" | "text" | "help" => Some("terminal"),
         "theme" => Some("appearance"),
         "marks" | "claude" | "colours" => Some("agents"),
-        "dictation" | "listening" | "while" | "models" | "gpu" => Some("dictation"),
+        "dictation" | "listening" | "while" | "models" | "gpu" | "anywhere" => Some("dictation"),
         "diagnostics" => Some("diagnostics"),
         _ => None,
     }

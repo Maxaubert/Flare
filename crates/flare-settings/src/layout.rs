@@ -243,6 +243,8 @@ fn child_of(
         BlockModel::AboutCard { .. } => (BlockKind::About, "", m.about_h),
         BlockModel::SlintBadge => (BlockKind::Slint, "", slint_badge_h),
         BlockModel::Note(_) => (BlockKind::Note, "", m.note_h),
+        // The model and GPU cards are placed by M8 Task 25 (their height is not final yet).
+        BlockModel::Model(_) | BlockModel::Gpu(_) => (BlockKind::Note, "", m.note_h),
     };
     Child {
         kind,
