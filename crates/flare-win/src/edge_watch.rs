@@ -289,4 +289,34 @@ mod tests {
     fn the_edge_every_ms_is_fifty() {
         assert_eq!(EDGE_EVERY_MS, 50);
     }
+
+    #[test]
+    fn a_watch_nobody_subscribes_to_reads_and_sends_nothing() {
+        // Only a subscriber (the UI asked through `set(true)`) turns the cursor reads on.
+        let reads = Rc::new(RefCell::new(0));
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let reads_src = reads.clone();
+        let mut watch = EdgeWatch::new(
+            Box::new(|| Some(CONTENT)),
+            Box::new(move || {
+                *reads_src.borrow_mut() += 1;
+                PointF { x: 500.0, y: 202.0 }
+            }),
+            {
+                let sent = sent.clone();
+                Box::new(move |near| sent.borrow_mut().push(near))
+            },
+        );
+        for _ in 0..5 {
+            watch.tick();
+        }
+        assert_eq!(*reads.borrow(), 0, "no subscriber, no cursor reads");
+        assert!(sent.borrow().is_empty());
+        watch.set(true);
+        watch.tick();
+        assert_eq!(*reads.borrow(), 1);
+        watch.set(false);
+        watch.tick();
+        assert_eq!(*reads.borrow(), 1, "off again, no more reads");
+    }
 }

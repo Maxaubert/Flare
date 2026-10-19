@@ -168,6 +168,70 @@ fn the_open_sidebar_cuts_the_terminals_corner_and_draws_its_edge() {
     }
 }
 
+/// A pixel the cut corner may show: the sidebar's fill, the page, or a mix of the two with the
+/// divider line (grey or red-grey, never the ground's black seam).
+fn seamless(p: [u8; 4]) -> bool {
+    let [r, g, b, _] = p;
+    // The divider ink is 39 grey; every blend of grey and red keeps green equal to blue.
+    g == b && g <= 40 && r >= 10
+}
+
+#[test]
+fn the_terminals_top_edge_is_drawn_once_along_the_page_at_every_scale() {
+    // PT TermEdge.tsx: a border-top in the divider ink under the bar, one draw (not two layers).
+    for s in SCALES {
+        let h = harness(s);
+        h.comp.set_layout_vertical(true);
+        h.comp.set_sidebar_width(220.0);
+        h.advance(0);
+        let f = h.render();
+        let top = h.phys(36.0);
+        for x in [h.phys(232.0), h.phys(400.0), h.phys(990.0)] {
+            // The edge row: the divider over the red page, one blend (G 18, not the double ~28).
+            assert!(
+                Frame::near(f.px(x, top), [255, 18, 18, 255], 2),
+                "scale {s}: edge at x {x} is {:?}",
+                f.px(x, top)
+            );
+            // The page starts under the edge's own device rows.
+            assert!(
+                is_red(f.px(x, top + hair(s))),
+                "scale {s}: page under the edge at x {x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_cut_corner_is_one_curve_with_no_seam_at_every_scale() {
+    // PT cornerShapes.ts: the page's mask and the corner piece are inverse masks of one path, so
+    // every pixel of the corner box is the sidebar, the page, or a blend of them. A seam shows
+    // as a pixel of the window's ground (black here), which this test refuses.
+    for s in SCALES {
+        let h = harness(s);
+        h.comp.set_layout_vertical(true);
+        h.comp.set_sidebar_width(220.0);
+        h.advance(0);
+        let f = h.render();
+        let (x0, y0) = (h.phys(220.0), h.phys(36.0));
+        let (x1, y1) = (h.phys(230.0), h.phys(46.0));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = f.px(x, y);
+                assert!(seamless(p), "scale {s}: pixel ({x}, {y}) is {p:?}, a seam");
+            }
+        }
+        assert!(
+            f.count_where(x0, y0, x1, y1, |p| Frame::near(p, SECONDARY, 3)) > 0,
+            "scale {s}: the sidebar's fill is in the corner"
+        );
+        assert!(
+            f.count_where(x0, y0, x1, y1, is_red) > 0,
+            "scale {s}: the page is in the corner"
+        );
+    }
+}
+
 #[test]
 fn a_collapsed_sidebar_takes_no_room_and_slides_over_the_page() {
     let h = harness(1.0);
