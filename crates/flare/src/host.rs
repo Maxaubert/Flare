@@ -294,7 +294,14 @@ impl GridHost {
             // the grid is un-premultiplied first, or text would be darker at its edges.
             let texture = gpu.paint_straight(&scene, self.glyphs.as_mut());
             match Image::try_from(texture) {
-                Ok(img) => image = Some(img),
+                Ok(img) => {
+                    // The first frames were painted on the CPU: that frame buffer is not needed
+                    // once the GPU paints (a window-sized buffer, M10 Task 66).
+                    if self.cpu_image.data.capacity() > 0 {
+                        self.cpu_image = RgbaImage::new(0, 0);
+                    }
+                    image = Some(img);
+                }
                 Err(e) => {
                     log::warn!("importing the grid texture failed: {e:?}; painting on the CPU");
                     self.painter = GridPainter::Cpu;
@@ -733,6 +740,30 @@ mod tests {
         h.fill_breakdown(&mut b);
         assert_eq!(b.grid_texture, 200 * 100 * 4);
         assert_eq!(b.atlas_gpu, 2048 * 2048 * 4);
+    }
+    #[test]
+    fn no_cpu_buffer_after_the_switch_on_gpu() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.resize(400, 200, 1.0);
+        // The first frames are painted on the CPU, before the GPU is attached.
+        h.render();
+        let mut b = crate::memory::Breakdown::default();
+        h.fill_breakdown(&mut b);
+        assert!(b.cpu_frame_buffer >= 400 * 200 * 4, "the CPU frame is held");
+        h.attach_gpu(&device, &queue);
+        h.render();
+        assert_eq!(h.painter(), GridPainter::Gpu);
+        let mut after = crate::memory::Breakdown::default();
+        h.fill_breakdown(&mut after);
+        assert!(
+            after.cpu_frame_buffer < 400 * 200,
+            "the CPU frame buffer is still held on the GPU painter: {} bytes",
+            after.cpu_frame_buffer
+        );
     }
     #[test]
     fn reattach_after_teardown_restores_the_gpu() {
