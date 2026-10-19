@@ -49,6 +49,10 @@ impl GridSource for LiveSource {
         self.handle.snapshot()
     }
 
+    fn grid_into(&mut self, out: &mut Grid) {
+        self.handle.snapshot_into(out);
+    }
+
     fn dirty(&self) -> bool {
         self.handle.is_dirty()
     }

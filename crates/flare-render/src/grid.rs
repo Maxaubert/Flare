@@ -98,6 +98,21 @@ impl Grid {
         }
     }
 
+    /// Makes the grid `cols` x `rows` (each at least 1), keeping the cell storage when the size is
+    /// the same so a caller that refills the grid every frame allocates nothing. The cells keep
+    /// whatever they held; the caller overwrites every one.
+    pub fn reshape(&mut self, cols: usize, rows: usize) {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.cells.clear();
+        self.cells.resize(cols * rows, Cell::default());
+    }
+
     pub fn cols(&self) -> usize {
         self.cols
     }

@@ -11,7 +11,7 @@ use flare_render::grid::Grid;
 use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GroundPaint, Scene};
-use flare_render::stats::FrameStats;
+use flare_render::stats::{FrameStats, FrameTrace, TracePhase};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 /// Where the grid on screen comes from: the sample, or a live terminal.
@@ -20,6 +20,11 @@ pub trait GridSource {
     fn resize(&mut self, cols: usize, rows: usize);
     /// The grid to paint now, exactly cols x rows as last given to `resize`.
     fn grid(&mut self) -> Grid;
+    /// [`GridSource::grid`] into a buffer the host keeps from frame to frame. A source that can copy
+    /// without allocating overrides this; the default builds a fresh grid.
+    fn grid_into(&mut self, out: &mut Grid) {
+        *out = self.grid();
+    }
     /// Something changed since the last `grid()` (output arrived). Default false.
     fn dirty(&self) -> bool {
         false
@@ -79,6 +84,8 @@ pub struct GridHost {
     /// The device and queue behind `gpu`, kept so `render_rgba` can read the texture back.
     readback: Option<(wgpu::Device, wgpu::Queue)>,
     cpu_image: RgbaImage,
+    /// The grid the source fills each frame (reused, so a frame allocates no cell storage).
+    grid_buf: Grid,
     size: (u32, u32),
     scale: f32,
     /// The face stack and base size (logical px) last given to the glyph source.
@@ -101,6 +108,7 @@ impl GridHost {
             gpu: None,
             readback: None,
             cpu_image: RgbaImage::new(0, 0),
+            grid_buf: Grid::new(1, 1),
             size: (0, 0),
             scale: 1.0,
             families: Vec::new(),
@@ -238,17 +246,19 @@ impl GridHost {
             self.source.resize(cols, rows);
             self.dims = Some((cols, rows));
         }
-        let mut grid = self.source.grid();
+        self.source.grid_into(&mut self.grid_buf);
         let decor = self.source.decor();
-        let mut scene = build_scene_decor(
-            &mut grid,
-            &self.palette,
-            &metrics,
-            w,
-            h,
-            &decor,
-            hair_px(self.scale),
-        );
+        let mut scene = FrameTrace::global().time(TracePhase::Scene, || {
+            build_scene_decor(
+                &mut self.grid_buf,
+                &self.palette,
+                &metrics,
+                w,
+                h,
+                &decor,
+                hair_px(self.scale),
+            )
+        });
         // By UI: the grid clears to transparent so the glass shows through (build_scene_ground's
         // rule for the clear colour; the cell rects follow the same default-background test).
         if self.ground == GroundPaint::ByUi {
@@ -280,7 +290,9 @@ impl GridHost {
         let image = match image {
             Some(img) => img,
             None => {
-                paint_scene(&scene, self.glyphs.as_mut(), &mut self.cpu_image);
+                FrameTrace::global().time(TracePhase::Paint, || {
+                    paint_scene(&scene, self.glyphs.as_mut(), &mut self.cpu_image);
+                });
                 let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
                     &self.cpu_image.data,
                     self.cpu_image.width,
@@ -385,6 +397,42 @@ mod tests {
         h.resize(240, 100, 1.0);
         h.render();
         assert_eq!(*calls.borrow(), vec![(24, 5), (29, 5)]);
+    }
+
+    /// A source that can only fill the host's buffer: asking it for a fresh grid fails the test.
+    struct FillOnly {
+        size: (usize, usize),
+        fills: Rc<RefCell<usize>>,
+    }
+
+    impl GridSource for FillOnly {
+        fn resize(&mut self, cols: usize, rows: usize) {
+            self.size = (cols, rows);
+        }
+        fn grid(&mut self) -> Grid {
+            panic!("the host must ask for the buffer fill, not a new grid");
+        }
+        fn grid_into(&mut self, out: &mut Grid) {
+            *self.fills.borrow_mut() += 1;
+            out.reshape(self.size.0, self.size.1);
+            out.cursor.visible = false;
+            out.cell_mut(0, 0).ch = 'X';
+        }
+    }
+
+    #[test]
+    fn the_host_asks_the_source_to_fill_its_own_buffer() {
+        let fills = Rc::new(RefCell::new(0));
+        let mut h = host(GridPainter::Cpu);
+        h.set_source(Box::new(FillOnly {
+            size: (0, 0),
+            fills: fills.clone(),
+        }));
+        h.resize(200, 100, 1.0);
+        let img = h.render_rgba().expect("image");
+        assert_eq!(img.pixel(8, 12), [0xde, 0xda, 0xcf, 0xff]);
+        h.render();
+        assert_eq!(*fills.borrow(), 2);
     }
 
     #[test]

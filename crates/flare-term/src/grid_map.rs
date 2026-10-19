@@ -16,9 +16,17 @@ use flare_render::grid::{Cell as FCell, CellFlags, Cursor as FCursor, Grid};
 
 /// The viewport as a `flare_render` grid of the same size, with the cursor placed in it.
 pub fn snapshot_grid<T: EventListener>(term: &Term<T>) -> Grid {
+    let mut out = Grid::new(term.columns(), term.screen_lines());
+    snapshot_grid_into(term, &mut out);
+    out
+}
+
+/// [`snapshot_grid`] into a grid the caller keeps: the buffer is reshaped to the viewport and every
+/// cell overwritten, so a frame loop that reuses it allocates nothing (M10 Task 67).
+pub fn snapshot_grid_into<T: EventListener>(term: &Term<T>, out: &mut Grid) {
     let cols = term.columns();
     let rows = term.screen_lines();
-    let mut out = Grid::new(cols, rows);
+    out.reshape(cols, rows);
     let grid = term.grid();
     let offset = grid.display_offset();
     for row in 0..rows {
@@ -42,7 +50,6 @@ pub fn snapshot_grid<T: EventListener>(term: &Term<T>) -> Grid {
             visible: false,
         },
     };
-    out
 }
 
 fn map_cell(src: &TCell) -> FCell {

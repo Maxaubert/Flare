@@ -4,6 +4,7 @@
 use crate::atlas::{AtlasError, GlyphAtlas};
 use crate::glyph::GlyphSource;
 use crate::scene::{RectFill, Scene};
+use crate::stats::{TracePhase, TraceSpan};
 use bytemuck::{Pod, Zeroable};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -305,6 +306,7 @@ impl GpuPainter {
         if scene.clear.a == 255 {
             return painted;
         }
+        let _straight = TraceSpan::new(TracePhase::Paint);
         let (w, h) = (painted.width(), painted.height());
         let stale = self
             .straight_target
@@ -375,6 +377,7 @@ impl GpuPainter {
     /// Paints the scene into a texture of exactly `scene.width x scene.height` (recreated on size
     /// change, clamped to the device limit), submits, and returns a clone of it.
     pub fn paint(&mut self, scene: &Scene, glyphs: &mut dyn GlyphSource) -> wgpu::Texture {
+        let _span = TraceSpan::new(TracePhase::Paint);
         let max = self.device.limits().max_texture_dimension_2d;
         let (w, h) = (scene.width.clamp(1, max), scene.height.clamp(1, max));
         let stale = self
@@ -401,6 +404,7 @@ impl GpuPainter {
         }
         let target = self.target.clone().expect("target was just created");
 
+        let uploading = TraceSpan::new(TracePhase::GlyphUpload);
         let glyph_instances = self.build_glyph_instances(scene, glyphs);
         for up in self.atlas.take_uploads() {
             self.queue.write_texture(
@@ -427,6 +431,7 @@ impl GpuPainter {
                 },
             );
         }
+        drop(uploading);
 
         let rect_instances: Vec<RectInstance> = scene
             .rects

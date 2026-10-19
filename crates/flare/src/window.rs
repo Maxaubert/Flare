@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
+use flare_render::stats::{FrameTrace, TracePhase};
 use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
 use flare_tabs::tabs_store::TabsStore;
@@ -240,6 +241,39 @@ fn repaint_due(dirty: bool) -> bool {
     dirty
 }
 
+/// How often the software path looks for a dirty grid (one display frame at 60 Hz).
+const FRAME_POLL: Duration = Duration::from_millis(16);
+
+/// The software path, a wake-up from a shell just landed: paint now when the grid is dirty and the
+/// last paint is a whole frame ago; else leave it to the poll timer, which comes within one frame.
+/// So output never waits for a wake AND then for the timer (M10 Task 67, step 3).
+fn paint_on_wake(since_last_paint: Duration, dirty: bool) -> bool {
+    dirty && since_last_paint >= FRAME_POLL
+}
+
+/// At most one `HostWake` is queued on the event loop however fast the output arrives: the shell
+/// threads call `try_queue`, the UI thread calls `delivered` as it takes the message.
+#[derive(Default)]
+struct WakeGate(AtomicBool);
+
+impl WakeGate {
+    /// True when the caller must queue a wake-up; false when one is already on its way.
+    fn try_queue(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+
+    /// The queued wake-up is being handled: the next output may queue a new one.
+    fn delivered(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    /// The software path's paint-on-wake hook (UI thread only); empty on the GPU path, where the
+    /// notifier paints in `BeforeRendering` after the `request_redraw` a wake-up makes.
+    static SOFTWARE_PAINT: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
 type CtlRc = Rc<RefCell<AppCtl>>;
 /// The shell the grid shows now: kept by the `set_grid_source` dependency, read by the filter.
 pub(crate) type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
@@ -252,18 +286,25 @@ thread_local! {
 /// The production `post`: a worker's message hops onto the event loop and lands on `AppCtl`.
 /// Wake-ups are coalesced: at most one is queued however fast the output arrives.
 fn make_post() -> Post {
-    let wake_pending = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new(WakeGate::default());
     Arc::new(move |msg: UiMsg| {
         let is_wake = matches!(msg, UiMsg::HostWake);
-        if is_wake && wake_pending.swap(true, Ordering::SeqCst) {
+        if is_wake && !gate.try_queue() {
             return;
         }
-        let flag = Arc::clone(&wake_pending);
+        let gate = Arc::clone(&gate);
         let queued = slint::invoke_from_event_loop(move || {
             if is_wake {
-                flag.store(false, Ordering::SeqCst);
+                gate.delivered();
             }
             deliver_on_ui(msg);
+            if is_wake {
+                // The software path has no notifier: paint what the wake-up changed.
+                let hook = SOFTWARE_PAINT.with(|h| h.borrow().clone());
+                if let Some(paint) = hook {
+                    paint();
+                }
+            }
         });
         if queued.is_err() {
             log::debug!("post: event loop closed");
@@ -647,9 +688,10 @@ pub fn run_window(
             let Some(app) = weak.upgrade() else { return };
             let image = host.borrow_mut().render();
             if let Some(image) = image {
-                app.set_grid_image(image);
+                FrameTrace::global().time(TracePhase::SetImage, || app.set_grid_image(image));
                 note_cell_for_e2e(&host.borrow());
                 crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
+                FrameTrace::global().end_frame();
                 place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                 crate::scrollbar::place(&app, &front);
                 // No notifier means no AfterRendering: log the first frame from here.
@@ -669,6 +711,9 @@ pub fn run_window(
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
         let mut first_frame = true;
+        // The frame trace (FLARE_TRACE_FRAME=1): when the render began and when the last one ended.
+        let mut render_began: Option<std::time::Instant> = None;
+        let mut last_ended: Option<std::time::Instant> = None;
         app.window()
             .set_rendering_notifier(move |state, api| match state {
                 RenderingState::RenderingSetup => {
@@ -691,11 +736,19 @@ pub fn run_window(
                 }
                 RenderingState::BeforeRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
+                    let trace = FrameTrace::global();
+                    if trace.on() {
+                        let now = std::time::Instant::now();
+                        render_began = Some(now);
+                        if let Some(ended) = last_ended {
+                            trace.add(TracePhase::Gap, now.duration_since(ended));
+                        }
+                    }
                     let Some(app) = weak.upgrade() else { return };
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
-                            app.set_grid_image(image);
+                            trace.time(TracePhase::SetImage, || app.set_grid_image(image));
                             note_cell_for_e2e(&host.borrow());
                             place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                             crate::scrollbar::place(&app, &front);
@@ -705,6 +758,15 @@ pub fn run_window(
                 }
                 RenderingState::AfterRendering => {
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
+                    let trace = FrameTrace::global();
+                    if trace.on() {
+                        let now = std::time::Instant::now();
+                        if let Some(began) = render_began.take() {
+                            trace.add(TracePhase::Render, now.duration_since(began));
+                        }
+                        last_ended = Some(now);
+                        trace.end_frame();
+                    }
                     if first_frame {
                         first_frame = false;
                         crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
@@ -1146,15 +1208,30 @@ pub fn run_window(
     // Without a notifier nothing re-renders a dirty grid, so poll for it (M2's live output).
     let frame_timer = slint::Timer::default();
     if no_notifier.get() {
-        frame_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), {
+        // When the grid was last painted, by the timer or by a wake-up.
+        let last_paint = Rc::new(Cell::new(std::time::Instant::now()));
+        frame_timer.start(slint::TimerMode::Repeated, FRAME_POLL, {
             let host = host.clone();
             let render_now = render_now.clone();
+            let last_paint = last_paint.clone();
             move || {
                 if repaint_due(host.borrow().is_dirty()) {
+                    last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
                 }
             }
         });
+        let hook: Rc<dyn Fn()> = {
+            let host = host.clone();
+            let render_now = render_now.clone();
+            Rc::new(move || {
+                if paint_on_wake(last_paint.get().elapsed(), host.borrow().is_dirty()) {
+                    last_paint.set(std::time::Instant::now());
+                    crate::diag_ctl::timed("frame_render", &render_now);
+                }
+            })
+        };
+        SOFTWARE_PAINT.with(|h| *h.borrow_mut() = Some(hook));
     }
 
     // The look (Task 26): the first frame wears the saved theme, opaque (no flash of the default), because
@@ -1315,6 +1392,7 @@ pub fn run_window(
     }
     drop(timer);
     drop(frame_timer);
+    SOFTWARE_PAINT.with(|h| *h.borrow_mut() = None);
     drop(beat_timer);
     drop(park_timer);
     drop(material_timer);
@@ -1918,6 +1996,61 @@ mod tests {
     fn repaint_follows_dirty() {
         assert!(repaint_due(true));
         assert!(!repaint_due(false));
+    }
+
+    #[test]
+    fn software_output_after_a_quiet_frame_is_painted_at_once() {
+        assert!(paint_on_wake(Duration::from_millis(16), true));
+        assert!(paint_on_wake(Duration::from_secs(5), true));
+        assert!(!paint_on_wake(Duration::from_millis(15), true));
+        assert!(!paint_on_wake(Duration::ZERO, true));
+        assert!(!paint_on_wake(Duration::from_secs(5), false), "clean grid");
+    }
+
+    /// The moment (ms) output that arrives at `wake_at` is painted on the software path: at once when
+    /// the last paint is a frame old, else at the poll timer's next tick (ticks at every multiple of
+    /// 16 ms; a tick paints only a dirty grid, and `last_paint` is when the grid was last painted).
+    fn painted_at(wake_at: u64, last_paint: u64) -> u64 {
+        let frame = FRAME_POLL.as_millis() as u64;
+        if paint_on_wake(Duration::from_millis(wake_at - last_paint), true) {
+            wake_at
+        } else {
+            wake_at.div_ceil(frame) * frame
+        }
+    }
+
+    #[test]
+    fn software_output_is_painted_by_the_next_timer_tick() {
+        // However the wake-up falls against the timer, output waits at most one frame: never the wake
+        // and then a second 16 ms wait for the timer (the old path waited for the tick alone, and a
+        // wake that landed just after a tick waited almost 16 ms for nothing else to happen).
+        for last in [0u64, 7, 16, 100] {
+            for wake in last..last + 200 {
+                let wait = painted_at(wake, last) - wake;
+                assert!(
+                    wait < 16,
+                    "wake at {wake}, last paint {last}: waited {wait} ms"
+                );
+            }
+        }
+        // A wake a frame after the last paint is painted in the same tick of the event loop.
+        assert_eq!(painted_at(116, 100), 116);
+        // One inside the frame waits for the tick, which is the soonest the pacing allows.
+        assert_eq!(painted_at(105, 100), 112);
+    }
+
+    #[test]
+    fn output_wakes_a_redraw_and_coalesces() {
+        let gate = WakeGate::default();
+        assert!(gate.try_queue(), "the first wake-up is queued");
+        for _ in 0..1000 {
+            assert!(!gate.try_queue(), "a wake-up is already on its way");
+        }
+        gate.delivered();
+        assert!(
+            gate.try_queue(),
+            "after delivery the next output queues a new one"
+        );
     }
 
     #[test]

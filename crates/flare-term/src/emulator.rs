@@ -24,7 +24,7 @@ use crate::cells::{
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
 use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
-use crate::grid_map::snapshot_grid;
+use crate::grid_map::{snapshot_grid, snapshot_grid_into};
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
 use crate::link_target::{TermPathAt, menu_link, shown_link_over};
 use crate::links::find_links;
@@ -462,6 +462,12 @@ impl Emulator {
 
     pub fn snapshot(&self) -> Grid {
         snapshot_grid(&self.term)
+    }
+
+    /// [`Emulator::snapshot`] into a grid the caller keeps and refills each frame, so the copy under
+    /// the lock allocates nothing.
+    pub fn snapshot_into(&self, out: &mut Grid) {
+        snapshot_grid_into(&self.term, out);
     }
 
     /// The cells of one screen line as text, trailing blanks trimmed, wide spacers skipped.
@@ -1518,6 +1524,72 @@ mod tests {
 
     fn xt() -> Vec<u8> {
         format!("\x1bP>|Flare {FLARE_TERM_VERSION} (alacritty_terminal 0.26.0)\x1b\\").into_bytes()
+    }
+
+    /// A busy 480 x 135 screen: coloured, bold and wide cells on every row.
+    fn busy_emulator() -> Emulator {
+        let mut e = Emulator::new(480, 135);
+        let mut s = String::new();
+        for i in 0..400 {
+            s.push_str(&format!(
+                "\x1b[3{}m\x1b[1m{i:05} the quick brown fox \x1b[0m\x1b[44m jumps \x1b[0m over \u{4e2d}\u{6587} {}\r\n",
+                i % 8,
+                "0123456789".repeat(40)
+            ));
+        }
+        e.feed(s.as_bytes());
+        e
+    }
+
+    #[test]
+    fn snapshot_into_equals_snapshot_and_survives_a_resize() {
+        let mut e = busy_emulator();
+        let mut buf = Grid::new(3, 3);
+        e.snapshot_into(&mut buf);
+        assert_eq!(buf, e.snapshot());
+        // Refilled from a buffer that held something else, and after the screen changed size.
+        e.feed(b"\x1b[2J\x1b[Hnew");
+        e.snapshot_into(&mut buf);
+        assert_eq!(buf, e.snapshot());
+        e.resize(100, 30);
+        e.snapshot_into(&mut buf);
+        assert_eq!((buf.cols(), buf.rows()), (100, 30));
+        assert_eq!(buf, e.snapshot());
+    }
+
+    #[test]
+    fn snapshot_holds_the_lock_under_1_ms() {
+        // The UI copies the visible rows under the emulator's lock while the parser waits for it, so the
+        // hold must be short: 480 x 135 is a maximised window on a 4K screen at 100%. The copy refills
+        // a reused buffer, so it allocates nothing. The 90th percentile of 300 holds, not the worst one,
+        // because a test must not fail on a scheduler hiccup.
+        let emu = alacritty_terminal::sync::FairMutex::new(busy_emulator());
+        let mut buf = Grid::new(1, 1);
+        emu.lock().snapshot_into(&mut buf);
+        let mut holds = Vec::new();
+        for _ in 0..300 {
+            let t = std::time::Instant::now();
+            emu.lock().snapshot_into(&mut buf);
+            holds.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        holds.sort_by(|a, b| a.total_cmp(b));
+        let p90 = holds[holds.len() * 9 / 10];
+        let mut fresh = Vec::new();
+        for _ in 0..300 {
+            let t = std::time::Instant::now();
+            drop(emu.lock().snapshot());
+            fresh.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        fresh.sort_by(|a, b| a.total_cmp(b));
+        println!(
+            "480 x 135 hold, p90: reused buffer {p90:.3} ms, fresh grid {:.3} ms",
+            fresh[fresh.len() * 9 / 10]
+        );
+        let limit = if cfg!(debug_assertions) { 40.0 } else { 1.0 };
+        assert!(
+            p90 < limit,
+            "the 90th percentile hold was {p90:.3} ms (limit {limit} ms)"
+        );
     }
 
     #[test]

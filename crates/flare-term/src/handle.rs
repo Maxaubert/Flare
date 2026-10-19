@@ -386,6 +386,26 @@ impl TermHandle {
         self.emu.lock().snapshot()
     }
 
+    /// [`TermHandle::snapshot`] into a grid the caller keeps and refills each frame (M10 Task 67):
+    /// the lock is held only for the copy of the visible rows, which allocates nothing once the
+    /// buffer has the viewport's size. The wait for the lock and the copy go to the frame trace.
+    pub fn snapshot_into(&self, out: &mut flare_render::grid::Grid) {
+        self.sh.dirty.store(false, Ordering::SeqCst);
+        let trace = flare_render::stats::FrameTrace::global();
+        if !trace.on() {
+            self.emu.lock().snapshot_into(out);
+            return;
+        }
+        use flare_render::stats::TracePhase;
+        let asked = Instant::now();
+        let emu = self.emu.lock();
+        let held = Instant::now();
+        emu.snapshot_into(out);
+        drop(emu);
+        trace.add(TracePhase::LockWait, held.duration_since(asked));
+        trace.add(TracePhase::Snapshot, held.elapsed());
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.sh.dirty.load(Ordering::SeqCst)
     }
