@@ -484,11 +484,8 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     let typed = ctx.until("the field holds the text", 3_000, &mut || {
         search_now(&mut app)["owns_escape"] == json!(true)
     });
-    // FLARE-DEFECT: settingsSearch / typing into the Settings find field / crates/flare/src/appctl.rs
-    // (`on_key`, the NotAChord arm: with no shell in front a letter is consumed) and
-    // crates/flare/ui/app.slint (`chrome-has-focus` leaves the Settings field out). The field is
-    // focused by its click (settings.find_rect); the letters never reach it. Every typed check
-    // below waits on this one fix.
+    // The field is focused by its click (settings.find_rect) and takes the typed letters: a key over
+    // the Settings page reaches Slint (appctl `on_key`, the NotAChord arm; fixed in 75c510e, M10 D17).
     ctx.ok(typed, "a field holding text does");
     let _ = app.session.key("Escape");
     ctx.until("the field is clear", 3_000, &mut || {
