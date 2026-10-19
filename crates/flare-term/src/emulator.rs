@@ -1598,6 +1598,13 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_matches_the_reference_terminals_line_count() {
+        // Prism Terminal's xterm is built with `scrollback: 10000` (core/renderer/components/
+        // TerminalPanel.tsx, v0.55.6). Parity of lines stays; the memory diet leaves it alone because
+        // alacritty's cell cannot be made smaller (size_of::<Cell>() is what it is).
+        assert_eq!(Emulator::SCROLLBACK, 10_000);
+    }
+    #[test]
     fn scrollback_bytes_follow_the_history_and_the_width() {
         let mut e = Emulator::new(80, 24);
         assert_eq!(e.scrollback_bytes(), 0);

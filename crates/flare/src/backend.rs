@@ -499,6 +499,15 @@ mod tests {
         );
     }
     #[test]
+    fn the_device_asks_for_the_memory_usage_hint() {
+        // The prewarmed device uses the same hint as Slint's own (`device_memory_hints` defaults to
+        // MemoryUsage): smaller heaps over speed, which a terminal never needs.
+        let src = include_str!("backend.rs");
+        let from = src.find("fn build_prepared").expect("build_prepared");
+        let body = &src[from..];
+        assert!(body.contains("memory_hints: wgpu::MemoryHints::MemoryUsage"));
+    }
+    #[test]
     fn the_prewarmed_device_has_the_raised_limits() {
         match build_prepared(GlassPlan::NONE) {
             Ok(p) => assert!(

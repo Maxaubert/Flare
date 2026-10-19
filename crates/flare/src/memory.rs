@@ -102,6 +102,7 @@ pub fn regions() -> Option<Regions> {
     while i < pages.len() {
         // SAFETY: `info` is a zeroed plain-data struct and VirtualQuery only writes into it.
         let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the address is a resident page of this process and info is the struct's size.
         let got = unsafe {
             VirtualQuery(
                 pages[i] as *const _,

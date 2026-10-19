@@ -375,14 +375,13 @@ mod tests {
         let run_loop = src
             .find("let result = app.run();")
             .expect("the event loop starts");
-        for name in ["verb_reconcile"] {
-            let call = src
-                .find(&format!("after_first_frame(\"{name}\""))
-                .unwrap_or_else(|| panic!("window.rs defers {name}"));
-            assert!(
-                call < run_loop,
-                "{name} is queued before the event loop starts"
-            );
-        }
+        let name = "verb_reconcile";
+        let call = src
+            .find(&format!("after_first_frame(\"{name}\""))
+            .unwrap_or_else(|| panic!("window.rs defers {name}"));
+        assert!(
+            call < run_loop,
+            "{name} is queued before the event loop starts"
+        );
     }
 }

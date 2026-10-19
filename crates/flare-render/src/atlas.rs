@@ -299,6 +299,7 @@ mod tests {
         assert!(atlas.cpu_bytes() > before + 6 * 9 * 4);
         assert_eq!(GlyphAtlas::gpu_bytes(), 2048 * 2048 * 4);
     }
+
     #[test]
     fn space_is_ok_none() {
         let mut atlas = GlyphAtlas::new();

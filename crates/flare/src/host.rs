@@ -742,6 +742,23 @@ mod tests {
         assert_eq!(b.atlas_gpu, 2048 * 2048 * 4);
     }
     #[test]
+    fn the_grid_texture_matches_the_window() {
+        // The texture is the size of the grid area, never the device limit (8192).
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipping: no wgpu adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        for (w, hgt) in [(400u32, 200u32), (1180, 744), (2655, 1674)] {
+            h.resize(w, hgt, 1.0);
+            h.render_rgba().expect("image");
+            let mut b = crate::memory::Breakdown::default();
+            h.fill_breakdown(&mut b);
+            assert_eq!(b.grid_texture, (w * hgt * 4) as usize, "{w}x{hgt}");
+        }
+    }
+    #[test]
     fn no_cpu_buffer_after_the_switch_on_gpu() {
         let Ok((device, queue, _)) = headless_device() else {
             eprintln!("skipping: no wgpu adapter");
