@@ -10,6 +10,7 @@ mod icons_tabs;
 mod marks;
 mod menus;
 mod motion;
+mod overlay_order;
 mod scrollbar;
 mod settings_about;
 mod settings_colour;

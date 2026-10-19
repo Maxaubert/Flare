@@ -835,6 +835,30 @@ export component AppWindow inherits Window {
         }
 
         // (4) OVERLAYS, last so they are on top. Each is pointer-transparent while closed.
+        // The pop layer (PT LAYER.pop): the update notice and the Settings dropdown, under every menu.
+        unote := UpdateNotice {
+            text: root.update-notice;
+            x: root.update-chip-x + root.update-chip-w - self.width;
+            y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
+            dismissed => { root.update-notice-dismissed(); }
+        }
+        SelectMenu {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.select-open;
+            options: SettingsBridge.select-options;
+            value: SettingsBridge.select-value;
+            menu-x: SettingsBridge.select-x;
+            menu-y: SettingsBridge.select-y;
+            menu-w: SettingsBridge.select-w;
+            menu-h: SettingsBridge.select-h;
+            highlight <=> SettingsBridge.select-highlight;
+            chosen(id) => { SettingsBridge.select-chosen(id); }
+            dismissed => { SettingsBridge.select-dismissed(); }
+            key(k) => { SettingsBridge.select-key(k); }
+        }
         menu := ContextMenu {
             x: 0px;
             y: 0px;
@@ -896,23 +920,6 @@ export component AppWindow inherits Window {
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
         }
-        SelectMenu {
-            x: 0px;
-            y: 0px;
-            width: root.width;
-            height: root.height;
-            open: SettingsBridge.select-open;
-            options: SettingsBridge.select-options;
-            value: SettingsBridge.select-value;
-            menu-x: SettingsBridge.select-x;
-            menu-y: SettingsBridge.select-y;
-            menu-w: SettingsBridge.select-w;
-            menu-h: SettingsBridge.select-h;
-            highlight <=> SettingsBridge.select-highlight;
-            chosen(id) => { SettingsBridge.select-chosen(id); }
-            dismissed => { SettingsBridge.select-dismissed(); }
-            key(k) => { SettingsBridge.select-key(k); }
-        }
         ColourPopover {
             x: 0px;
             y: 0px;
@@ -954,14 +961,7 @@ export component AppWindow inherits Window {
             focus-left => { SettingsBridge.picker-focus-left(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
-        // The update notice under the chip, then the update window: above the page and the Settings
-        // overlays, below the close question (M9 Task 30).
-        unote := UpdateNotice {
-            text: root.update-notice;
-            x: root.update-chip-x + root.update-chip-w - self.width;
-            y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
-            dismissed => { root.update-notice-dismissed(); }
-        }
+        // The update window: a modal, above the Settings overlays, below the close question (M9 Task 30).
         uwin := UpdateWindow {
             x: 0px;
             y: 0px;
