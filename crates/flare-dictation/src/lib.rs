@@ -7,6 +7,7 @@ pub mod clean;
 pub mod controller;
 pub mod cues;
 pub mod engine;
+pub mod fetch_ureq;
 pub mod gpu;
 pub mod hmac;
 pub mod hotkey;
