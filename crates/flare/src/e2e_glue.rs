@@ -586,7 +586,7 @@ fn code_of_char(c: char) -> Option<(String, bool)> {
 
 /// True when `t` names a W3C code this grammar accepts.
 fn is_code(t: &str) -> bool {
-    const NAMED: [&str; 28] = [
+    const NAMED: [&str; 31] = [
         "Enter",
         "Tab",
         "Space",
@@ -615,6 +615,10 @@ fn is_code(t: &str) -> bool {
         "Backquote",
         "NumpadEnter",
         "CapsLock",
+        // A modifier on its own: a held Ctrl is let go with its key-up, which ends a walk.
+        "ControlLeft",
+        "ShiftLeft",
+        "AltLeft",
     ];
     if NAMED.contains(&t) {
         return true;
@@ -670,6 +674,9 @@ fn logical_of_code(code: &str, shift: bool) -> String {
     let pair = |plain: &str, shifted: &str| if shift { shifted } else { plain }.to_string();
     match code {
         "Space" => " ".into(),
+        "ControlLeft" => "Control".into(),
+        "ShiftLeft" => "Shift".into(),
+        "AltLeft" => "Alt".into(),
         "Comma" => pair(",", "<"),
         "Period" => pair(".", ">"),
         "Slash" => pair("/", "?"),
@@ -1754,6 +1761,38 @@ mod tests {
             for down in [true, false] {
                 let want =
                     key_event_from_parts(down, &PhysicalKey::Code(code), &logical, text, mods);
+                let got = event_from_chord(chord, down).unwrap_or_else(|e| panic!("{chord}: {e}"));
+                assert_eq!(got, want, "chord {chord:?} down={down}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_modifier_key_alone_is_a_key_event_so_a_held_ctrl_can_be_let_go() {
+        use slint::winit_030::winit::keyboard::NamedKey as N;
+        for (chord, code, named, mods) in [
+            (
+                "ControlLeft",
+                KeyCode::ControlLeft,
+                N::Control,
+                ModifiersState::empty(),
+            ),
+            (
+                "ShiftLeft",
+                KeyCode::ShiftLeft,
+                N::Shift,
+                ModifiersState::empty(),
+            ),
+            ("AltLeft", KeyCode::AltLeft, N::Alt, ModifiersState::empty()),
+        ] {
+            for down in [true, false] {
+                let want = key_event_from_parts(
+                    down,
+                    &PhysicalKey::Code(code),
+                    &Key::Named(named),
+                    None,
+                    mods,
+                );
                 let got = event_from_chord(chord, down).unwrap_or_else(|e| panic!("{chord}: {e}"));
                 assert_eq!(got, want, "chord {chord:?} down={down}");
             }

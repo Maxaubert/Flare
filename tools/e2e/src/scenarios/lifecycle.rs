@@ -9,11 +9,15 @@ use flare_tabs::restore::{parse_tabs, SavedTab, SavedTabs};
 use flare_tabs::tabs_store::TabsStore;
 use serde_json::json;
 
+use super::driver;
 use crate::ctx::{App, Ctx, Launch};
 use crate::guards::ReapGuard;
 use crate::proc::{reap_by_profile, Child};
 use crate::session::{Rect, TabState};
 use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, Shell};
+
+/// The folder the picker seam answers with in `spawn`'s ask-mode check.
+const ASK_FOLDER: &str = "ask-answer";
 
 /// How many tabs the app shows now (0 when the probe fails).
 fn tab_count(app: &mut App) -> usize {
@@ -71,8 +75,14 @@ pub fn png_is_not_blank(path: &Path) -> bool {
 /// The reference port. PT: run.mjs:473-509. New terminal opens in the user's own folder with
 /// nothing asked, Ctrl+T does the same from inside a shell, and nothing writes the registry.
 pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
+    let chosen = ctx.ensure_world().root.join(ASK_FOLDER);
+    fs::create_dir_all(&chosen).map_err(|e| e.to_string())?;
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        env: vec![(
+            "FLARE_E2E_PICK".to_string(),
+            chosen.to_string_lossy().into_owned(),
+        )],
         ..Launch::default()
     })?;
     let home = std::env::var("USERPROFILE").unwrap_or_default();
@@ -135,10 +145,21 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
     let second = ctx.until("the second tab", 15_000, &mut || tab_count(&mut app) == 2);
     ctx.ok(second, "Ctrl+T opens a tab over a focused shell");
 
-    // PT: run.mjs:500-505 (ask mode): Flare has no plus-button rectangle to click and no
-    // pref seam yet; the Settings port (Task 21, `newTabFolder`) holds that check.
-    ctx.skip(
-        "ask mode: the + opens the folder the chooser answered (held by newTabFolder, Task 21)",
+    // PT: run.mjs:500-505 (ask mode). The Terminal page's New tabs row is set to Ask, and the +
+    // (one action with Ctrl+T) opens the folder the chooser answered: the FLARE_E2E_PICK seam
+    // answers at once, with no dialog.
+    let asked = driver::pick_seg(ctx, &mut app, "newtab-mode", &["ask"]);
+    let before = tab_count(&mut app);
+    app.session.key("Ctrl+T")?;
+    let opened = ctx.until(
+        "a tab in the folder the chooser answered",
+        15_000,
+        &mut || tab_count(&mut app) == before + 1,
+    );
+    let last = tooltips(&mut app).pop().unwrap_or_default();
+    ctx.ok(
+        asked && opened && last.to_lowercase().contains(ASK_FOLDER),
+        format!("ask mode: the + opens the folder the chooser answered ({last:?})"),
     );
 
     // PT: run.mjs:506

@@ -438,6 +438,41 @@ fn a_clean_pick_lands_a_dirty_pick_asks_discard_drops_cancel_keeps_at(f: &Fx) {
     assert_eq!(f.look.see_through(), 0, "and drops the change");
 }
 
+fn the_switch_question_says_where_its_three_buttons_are_at(f: &Fx) {
+    // e2e accentAsk reads the question's paint, so the window reports the buttons' boxes.
+    let first = f.other_card();
+    f.b().invoke_wall_pick(first.as_str().into());
+    f.pump();
+    let second = f
+        .cards()
+        .into_iter()
+        .map(|c| c.id)
+        .find(|id| *id != first && *id != f.look.theme_id())
+        .expect("a third theme");
+    f.b().invoke_row_slide("term-acrylic".into(), 20);
+    f.pump();
+    f.b().invoke_wall_pick(second.as_str().into());
+    f.pump();
+    f.h.advance(0);
+    assert!(f.b().get_ask_open(), "a dirty pick asks");
+    let r: Vec<f32> = f.h.comp.get_ask_rects().iter().collect();
+    assert_eq!(
+        r.len(),
+        12,
+        "x, y, w, h of Cancel, Discard and Save as Custom"
+    );
+    let (cancel, discard, save) = (&r[0..4], &r[4..8], &r[8..12]);
+    let win_w = 1000.0_f32;
+    let win_h = 640.0_f32;
+    for b in [cancel, discard, save] {
+        assert!(b[2] > 40.0 && b[3] >= 30.0, "a button has a size ({b:?})");
+        assert!(b[0] >= 0.0 && b[0] + b[2] <= win_w && b[1] >= 0.0 && b[1] + b[3] <= win_h);
+    }
+    assert!(
+        cancel[0] + cancel[2] <= discard[0] + 0.5 && discard[0] + discard[2] <= save[0] + 0.5,
+        "left to right: Cancel, Discard, Save as Custom ({cancel:?} {discard:?} {save:?})"
+    );
+}
 fn a_saved_custom_comes_first_then_pt_default_and_carries_no_font_at(f: &Fx) {
     f.event(Event::SaveChanges {
         from: SaveFrom::Theme,
@@ -748,6 +783,11 @@ fn saving_the_editor_keeps_the_origin_themes_accent() {
 #[test]
 fn a_clean_pick_lands_a_dirty_pick_asks_discard_drops_cancel_keeps() {
     every_scale(a_clean_pick_lands_a_dirty_pick_asks_discard_drops_cancel_keeps_at);
+}
+
+#[test]
+fn the_switch_question_says_where_its_three_buttons_are() {
+    every_scale(the_switch_question_says_where_its_three_buttons_are_at);
 }
 
 #[test]

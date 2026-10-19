@@ -10,6 +10,7 @@ use std::path::Path;
 use flare_e2e_proto::{Button, PointerAction, Request};
 use serde_json::{json, Value};
 
+use super::driver;
 use crate::ctx::{App, Ctx, Launch};
 use crate::pixels::{bbox_where, Rgb};
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
@@ -33,6 +34,14 @@ impl Snap {
         let i = (y.min(self.h - 1) * self.w + x.min(self.w - 1)) as usize;
         self.px[i]
     }
+}
+
+/// Whether a catalogue row has this id, or a label that says these words (lower case).
+fn has_word(row: &Value, id: &str, words: &str) -> bool {
+    row["id"].as_str() == Some(id)
+        || row["label"]
+            .as_str()
+            .is_some_and(|l| l.to_lowercase().contains(words))
 }
 
 /// The app's `app.state` answer (a Null when the probe fails).
@@ -87,6 +96,22 @@ fn tip_state(app: &mut App) -> Value {
     app.session.probe_str("tip.state").unwrap_or(Value::Null)
 }
 
+/// PT's `hold`: Ctrl held, one Tab per step (1 forward, -1 with Shift), then Ctrl let go with its own
+/// key-up, which is what ends a Most recent walk.
+fn walk(app: &mut App, steps: &[i32]) {
+    for s in steps {
+        let _ = app
+            .session
+            .key(if *s > 0 { "Ctrl+Tab" } else { "Ctrl+Shift+Tab" });
+    }
+    let _ = send(
+        app,
+        Request::Key {
+            chord: "ControlLeft".into(),
+            down: false,
+        },
+    );
+}
 /// The title of the tab in front ("" when none is).
 fn front_title(app: &mut App) -> String {
     tabs_of(app)
@@ -237,6 +262,19 @@ fn ink_box(
     ))
 }
 
+/// The width in css px of the ink at the end of tab `i` (the ring and the close), `None` when there
+/// is no such tab or no snapshot.
+fn end_ink_width(ctx: &mut Ctx, app: &mut App, i: usize, name: &str) -> Option<f32> {
+    let k = scale(app);
+    let t = tabs_of(app).get(i)?.clone();
+    let (x, y, w, h) = rect_of(&t);
+    let s = snap(ctx, app, name)?;
+    let ground = s.at(((x + w / 2.0) * k) as u32, ((y + 5.0) * k) as u32);
+    ink_box(&s, k, (x + w - 44.0, y + 6.0, 42.0, h - 10.0), |p| {
+        dist(p, ground) > 30
+    })
+    .map(|b| b.2)
+}
 /// Starts the app with the given folders, software renderer, 100 percent unless `dpi` says.
 fn launch_strip(
     ctx: &mut Ctx,
@@ -415,9 +453,14 @@ pub fn tab_width(ctx: &mut Ctx) -> Result<(), String> {
     let three = ctx.until("three tabs", 15_000, &mut || tabs_of(&mut app).len() == 3);
     ctx.ok(three, "three tabs open, one of them with a very long name");
 
-    // PT: run.mjs:1814. The Appearance page's Tab width row is the Settings port's (Task 21:
-    // `settings.rows`); the window's row list is not probed yet.
-    ctx.skip("no Tab width setting: the settings rows probe (Task 21) is not in yet");
+    // PT: run.mjs:1814. There is no Tab width setting: the catalogue of every Settings row has none.
+    let no_width = !driver::catalogue(&mut app)
+        .iter()
+        .any(|r| has_word(r, "tab-width", "tab width"));
+    ctx.ok(
+        no_width,
+        "no Tab width setting (no row of the Settings catalogue sets a tab's width)",
+    );
 
     // PT: run.mjs:1817-1819. Every tab one width, whatever its name.
     let widths: Vec<f32> = tabs_of(&mut app)
@@ -579,9 +622,17 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     });
     ctx.ok(only_ring, "Ring is the only mark: no bar");
 
-    // PT: run.mjs:1896. The close waiting behind the ring: the close's opacity is not exported.
-    ctx.skip(
-        "beside its ring the close waits, taking no room: the close's opacity is not exported",
+    // PT: run.mjs:1896. The close waits behind the ring and takes no room: with the pointer off the
+    // tabs, the ink at a marked tab's end is the ring alone (the ring's box is 16 px).
+    if let Some(g) = ui_rect(&mut app, "grid") {
+        let c = centre(g);
+        move_to(&mut app, c.0, c.1);
+    }
+    hold(ctx, 400);
+    let rest = end_ink_width(ctx, &mut app, 2, "tabs-end-rest");
+    ctx.ok(
+        rest.is_some_and(|w| w <= 20.0),
+        format!("beside its ring the close waits, taking no room ({rest:?} px of ink at the end)"),
     );
 
     // PT: run.mjs:1897. An idle tab shows neither ring nor close (the ring: its mark is none).
@@ -590,8 +641,22 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     });
     ctx.ok(idle_ok, "an idle tab behind shows no ring");
 
-    // PT: run.mjs:1904. Hovered: the ring stays and the close slides in: the close is not exported.
-    ctx.skip("hovered, the ring stays and the close slides in after it: the close's slide is not exported");
+    // PT: run.mjs:1904. Hovered: the ring stays and the close slides in after it, so the ink at the
+    // end grows from the ring alone to the ring and the close.
+    if let Some(t) = tabs_of(&mut app).get(2) {
+        let c = centre(rect_of(t));
+        move_to(&mut app, c.0 - 20.0, c.1);
+    }
+    hold(ctx, 400);
+    let hovered = end_ink_width(ctx, &mut app, 2, "tabs-end-hover");
+    ctx.ok(
+        matches!((rest, hovered), (Some(r), Some(h)) if h >= 26.0 && h > r + 8.0),
+        format!("hovered, the ring stays and the close slides in after it ({rest:?} -> {hovered:?} px of ink)"),
+    );
+    if let Some(g) = ui_rect(&mut app, "grid") {
+        let c = centre(g);
+        move_to(&mut app, c.0, c.1);
+    }
 
     // PT: run.mjs:1908. Every tab one width. PT's rule is `flex-[0_1_150px] min-w-[84px]` with the
     // strip's room shared equally, so the width is the strip's share of its room: 150 at most, 84
@@ -634,10 +699,11 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     let after = edges(&mut app);
     ctx.ok(landed && before == after, "clicking a tab moves no tab");
 
-    // PT: run.mjs:1919-1923. The tab style row and the indicator choices are Settings rows.
-    ctx.skip("Settings has no Tab style row: the settings rows probe (Task 21) is not in yet");
-    ctx.skip("the indicator is Ring or Bar: the settings rows probe (Task 21) is not in yet");
-    ctx.skip("Ring is the default: the settings rows probe (Task 21) is not in yet");
+    // PT: run.mjs:1919. No Tab style row: the mark's look is the Agents page's indicator choice.
+    let no_style = !driver::catalogue(&mut app)
+        .iter()
+        .any(|r| has_word(r, "tab-style", "tab style"));
+    ctx.ok(no_style, "Settings has no Tab style row");
 
     // PT: run.mjs:1924. The Settings tab wears the cog: open it from the cog.
     if let Some(cog) = ui_rect(&mut app, "cog") {
@@ -650,8 +716,48 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
     });
     ctx.ok(cog_ok, "the Settings tab wears the cog");
 
-    // PT: run.mjs:1933. Bar: the line along the foot, no ring: the indicator choice is a Settings row.
-    ctx.skip("Bar: a line along each marked tab, no ring: the indicator choice is a Settings row (Task 21)");
+    // PT: run.mjs:1920-1923. The indicator is Ring or Bar, and Ring is the default.
+    let there = driver::goto_row(ctx, &mut app, "agent-indicator");
+    let names: Vec<String> = driver::row(&mut app, "agent-indicator")["options"]
+        .as_array()
+        .map(|o| {
+            o.iter()
+                .map(|n| n.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ctx.ok(
+        there && names.join("|") == "Ring|Bar",
+        format!("the indicator is Ring or Bar ({})", names.join("|")),
+    );
+    ctx.ok(
+        driver::row_is(&mut app, "agent-indicator", &["ring"]),
+        "Ring is the default",
+    );
+
+    // PT: run.mjs:1933. Bar: the line along each marked tab, no ring.
+    let bar = driver::pick_seg(ctx, &mut app, "agent-indicator", &["minimal"]);
+    let lines = ctx.until("every marked tab to wear a line", 6_000, &mut || {
+        let t = tabs_of(&mut app);
+        // The tab clicked above was visited, so its finished mark is gone: only the tabs that
+        // still carry a mark are read.
+        let marked: Vec<&Value> = t
+            .iter()
+            .filter(|x| x["mark"]["state"] != json!("none"))
+            .collect();
+        marked.len() >= 3
+            && marked
+                .iter()
+                .all(|x| matches!(x["mark"]["motion"].as_str(), Some("line" | "run")))
+    });
+    let rings = tabs_of(&mut app)
+        .iter()
+        .filter(|t| t["mark"]["motion"] == json!("ring"))
+        .count();
+    ctx.ok(
+        bar && lines && rings == 0,
+        format!("Bar: a line along each marked tab, no ring ({rings} rings left)"),
+    );
 
     let _ = app.close();
     Ok(())
@@ -697,13 +803,44 @@ pub fn tab_switch(ctx: &mut Ctx) -> Result<(), String> {
         format!("and Ctrl+Shift+Tab back ({})", front_title(&mut app)),
     );
 
-    // PT: run.mjs:1999-2004. The Tab switching row is the Settings port's (Task 21).
-    ctx.skip("Tab switching is right after Tab position: the settings rows probe (Task 21) is not in yet");
-    ctx.skip("In order is the default: the settings rows probe (Task 21) is not in yet");
-    ctx.skip(
-        "the choices are In order and Most recent: the settings rows probe (Task 21) is not in yet",
+    // PT: run.mjs:1999-2004. The Tab switching row: right after Tab position, In order out of the
+    // box, the choices In order and Most recent, and Most recent is stored when picked.
+    let ids: Vec<String> = driver::catalogue(&mut app)
+        .iter()
+        .map(|r| r["id"].as_str().unwrap_or("").to_string())
+        .collect();
+    let at = |id: &str| ids.iter().position(|x| x == id);
+    ctx.ok(
+        at("tab-layout").is_some() && at("tab-switch") == at("tab-layout").map(|i| i + 1),
+        "Tab switching is right after Tab position",
     );
-    ctx.skip("Most recent is stored: the Tab switching row is not clickable from here yet");
+    let there = driver::goto_row(ctx, &mut app, "tab-switch");
+    ctx.ok(
+        there && driver::row_is(&mut app, "tab-switch", &["order"]),
+        "In order is the default",
+    );
+    let names: Vec<String> = driver::row(&mut app, "tab-switch")["options"]
+        .as_array()
+        .map(|o| {
+            o.iter()
+                .map(|n| n.as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ctx.ok(
+        names.join("|") == "In order|Most recent",
+        format!(
+            "the choices are In order and Most recent ({})",
+            names.join("|")
+        ),
+    );
+    let picked = driver::pick_seg(ctx, &mut app, "tab-switch", &["recent"]);
+    let stored_file = ctx.ensure_world().profile.join("settings.json");
+    let stored = ctx.poll(6_000, &mut || {
+        std::fs::read_to_string(&stored_file)
+            .is_ok_and(|s| s.contains("\"flare.window.tabSwitch\"") && s.contains("recent"))
+    });
+    ctx.ok(picked && stored, "Most recent is stored");
 
     // Relaunch on the same profile with Most recent stored, and no saved tabs (the lifecycle port's
     // relaunch): the tabs are the three folders again.
@@ -732,26 +869,51 @@ pub fn tab_switch(ctx: &mut Ctx) -> Result<(), String> {
         }
         hold(ctx, 150);
     }
-    // PT: run.mjs:2009-2010. One Ctrl+Tab goes to the tab used before this one.
-    let _ = app.session.key("Ctrl+Tab");
-    let beta_used = ctx.until("beta, used before gamma, in front", 4_000, &mut || {
-        front_title(&mut app).starts_with("beta")
-    });
-    ctx.ok(
-        beta_used,
-        format!(
-            "one Ctrl+Tab goes to the tab used before this one ({})",
-            front_title(&mut app)
-        ),
+    // PT: run.mjs:2009-2018. Ctrl held, a Tab per step, then Ctrl let go (the hook's key grammar
+    // sends a modifier's key-up on its own): one flip goes to the tab used before this one, the next
+    // flips back, two steps in one hold go two back, and Shift goes the other way.
+    let lands = |ctx: &mut Ctx, app: &mut App, steps: &[i32], want: &str, why: &str| {
+        walk(app, steps);
+        let there = ctx.until(&format!("{want} in front"), 4_000, &mut || {
+            front_title(app).starts_with(want)
+        });
+        ctx.ok(there, format!("{why} ({})", front_title(app)));
+    };
+    lands(
+        ctx,
+        &mut app,
+        &[1],
+        "beta",
+        "one Ctrl+Tab goes to the tab used before this one",
     );
-
-    // PT: run.mjs:2012-2018. Repeated flips inside one held Ctrl need Ctrl released, which the
-    // hook's key grammar cannot send (a modifier alone is not a key event): skipped.
-    ctx.skip("Tab twice in one hold goes two back: a held Ctrl cannot be released through the hook's key grammar");
-    ctx.skip("released there, alpha is now the latest: a held Ctrl cannot be released through the hook's key grammar");
-    ctx.skip("Ctrl+Shift+Tab on a fresh hold goes to the oldest: a held Ctrl cannot be released through the hook's key grammar");
-    ctx.skip("the walk's second flip after release: a held Ctrl cannot be released through the hook's key grammar");
-
+    lands(
+        ctx,
+        &mut app,
+        &[1],
+        "gamma",
+        "and the next flips back: the last two used",
+    );
+    lands(
+        ctx,
+        &mut app,
+        &[1, 1],
+        "alpha",
+        "Tab twice in one hold goes two back, no ping-pong",
+    );
+    lands(
+        ctx,
+        &mut app,
+        &[1],
+        "gamma",
+        "released there, alpha is now the latest, so the next flip is gamma",
+    );
+    lands(
+        ctx,
+        &mut app,
+        &[-1],
+        "beta",
+        "Ctrl+Shift+Tab on a fresh hold goes to the oldest",
+    );
     // PT: run.mjs:2021-2024. A closed tab leaves the list: close gamma (idle, so nothing asks).
     let t = tabs_of(&mut app);
     if let Some(g) = t.get(2) {
@@ -769,7 +931,7 @@ pub fn tab_switch(ctx: &mut Ctx) -> Result<(), String> {
 
     // PT: run.mjs:2026-2028. Ctrl+Tab goes to another open tab, never the closed one.
     let after = front_title(&mut app);
-    let _ = app.session.key("Ctrl+Tab");
+    walk(&mut app, &[1]);
     hold(ctx, 150);
     let flip = front_title(&mut app);
     ctx.ok(
@@ -798,7 +960,7 @@ pub fn tab_switch(ctx: &mut Ctx) -> Result<(), String> {
             .is_some_and(|t| t["front"] == json!(true))
     });
     ctx.ok(in_front, format!("and is in front ({new_title})"));
-    let _ = app.session.key("Ctrl+Tab");
+    walk(&mut app, &[1]);
     let back = ctx.until(
         "the tab used before the new one in front",
         4_000,
@@ -808,9 +970,12 @@ pub fn tab_switch(ctx: &mut Ctx) -> Result<(), String> {
         back,
         format!("one Ctrl+Tab goes to the tab used before the new one ({used_before})"),
     );
-    // PT: run.mjs:2038-2039. The walk only commits when Ctrl is let go, and the hook's key grammar
-    // cannot send a modifier alone, so a second press in the same walk goes two back: skipped.
-    ctx.skip("and the next comes back to the new tab: a walk commits only when Ctrl is let go, which the hook's key grammar cannot send");
+    // PT: run.mjs:2038-2039. The walk ended with Ctrl let go, so the next flip comes back.
+    walk(&mut app, &[1]);
+    let again = ctx.until("the new tab in front again", 4_000, &mut || {
+        front_title(&mut app) == new_title
+    });
+    ctx.ok(again, "and the next comes back to the new tab");
 
     let _ = app.close();
     Ok(())

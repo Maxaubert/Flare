@@ -1651,8 +1651,8 @@ fn vertical_b(ctx: &mut Ctx, app: &mut App, gpu: bool) -> Result<(), String> {
     // winit to start Windows' move loop, and a synthetic Drag cannot start it (this window sits at
     // (-32000, -32000) and its origin never changes). A check that only reads "the origin did not
     // change" would pass for a tab and the terminal by accident, so none of the three is made.
-    ctx.skip("the bar moves the window: a synthetic Drag cannot start Windows' move loop and Flare has no WM_NCHITTEST to ask");
-    ctx.skip("the app's name in the bar moves the window: same reason");
+    ctx.skip("the bar moves the window: a synthetic Drag cannot start Windows' move loop and Flare has no WM_NCHITTEST to ask (DIFF-14)");
+    ctx.skip("the app's name in the bar moves the window: same reason (DIFF-14)");
     ctx.skip(
         "a tab and the terminal do not: same reason (an unchanged origin would prove nothing)",
     );

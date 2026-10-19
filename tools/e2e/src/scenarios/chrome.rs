@@ -4,6 +4,7 @@
 use flare_e2e_proto::{Reply, Request};
 use serde_json::{json, Value};
 
+use super::driver;
 use crate::ctx::{App, Ctx, Launch};
 
 /// The number of tabs the app shows now (0 when the probe fails).
@@ -246,9 +247,14 @@ pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
     // (-32000, -32000) and its origin never changes). The check cannot be made, so it is skipped
     // with that reason, as verticalTabs skips its own.
     ctx.skip("the strip's empty space moves the window: a synthetic Drag cannot start Windows' move loop (DIFF-14)");
-    // PT: there is no Show title bar setting row. The rows are not probed yet (Task 33 adds
-    // settings.rows), so the check waits for it.
-    ctx.skip("no Show title bar row: settings.rows is not probed yet (Task 33)");
+    // PT: there is no Show title bar setting row: the catalogue of every Settings row has none.
+    let no_row = !driver::catalogue(&mut app).iter().any(|r| {
+        r["label"]
+            .as_str()
+            .is_some_and(|l| l.to_lowercase().contains("title bar"))
+            || r["id"].as_str().is_some_and(|i| i.contains("title-bar"))
+    });
+    ctx.ok(no_row, "no Show title bar row in Settings");
     // DROPPED: an old stored "shown" value for a title bar setting has nothing to change here,
     // because Flare never had that key (M7's import map drops it).
 
@@ -275,8 +281,14 @@ pub fn title_bar(ctx: &mut Ctx) -> Result<(), String> {
 
 /// PT: run.mjs:1146-1175. A chosen folder replaces the user's own, and can be given back.
 pub fn new_tab_folder(ctx: &mut Ctx) -> Result<(), String> {
+    let chosen = ctx.ensure_world().root.join(CHOSEN);
+    std::fs::create_dir_all(&chosen).map_err(|e| e.to_string())?;
     let mut app = ctx.launch(Launch {
         renderer: Some("software"),
+        env: vec![(
+            "FLARE_E2E_PICK".to_string(),
+            chosen.to_string_lossy().into_owned(),
+        )],
         ..Launch::default()
     })?;
     // PT: the title bar has a settings cog and no menu.
@@ -295,14 +307,89 @@ pub fn new_tab_folder(ctx: &mut Ctx) -> Result<(), String> {
         format!("opening in a folder is the default ({tip:?})"),
     );
     // PT: Choose folder remembers the folder; the + opens a tab there at once; in the chosen
-    // folder; and "Use my user folder" gives the default back. Those run on the Terminal page's
-    // folder row, which no probe reaches yet (settings.rows, Task 33).
-    ctx.skip("Choose folder remembers the folder: the Terminal page's folder row is not probed yet (Task 33)");
-    ctx.skip("the + opens a tab at once: needs Choose folder first (Task 33)");
-    ctx.skip("in the chosen folder: needs Choose folder first (Task 33)");
-    ctx.skip("Use my user folder gives the default back: needs Choose folder first (Task 33)");
+    // folder; and "Use my user folder" gives the default back. They run on the Terminal page's
+    // folder row; the folder picker answers from the FLARE_E2E_PICK seam, with no dialog.
+    let settings_file = ctx.ensure_world().profile.join("settings.json");
+    let there = driver::goto_row(ctx, &mut app, "newtab-mode");
+    let before = shell_tabs(&mut app);
+    // The last button of the row is Choose folder: a point 30 px in from the row's right end.
+    let clicked = click_row_at(&mut app, "newtab-mode", 30.0);
+    let remembered = ctx.poll(6_000, &mut || {
+        std::fs::read_to_string(&settings_file)
+            .is_ok_and(|s| s.contains("flare.newtab.folder") && s.contains(CHOSEN))
+    });
+    ctx.ok(
+        there && clicked && remembered,
+        "Choose folder remembers the folder",
+    );
+    // The + and Ctrl+T are one action (appctl): a new tab opens at once, with nothing asked.
+    app.session.key("Ctrl+T")?;
+    let at_once = ctx.until("a new tab at once", 15_000, &mut || {
+        shell_tabs(&mut app).len() == before.len() + 1
+    });
+    ctx.ok(at_once, "the + opens a tab at once");
+    let tip = shell_tabs(&mut app)
+        .last()
+        .and_then(|t| t["tooltip"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    ctx.ok(
+        tip.to_lowercase().contains(CHOSEN),
+        format!("in the chosen folder ({tip:?})"),
+    );
+    // "Use my user folder" is the button before Choose folder: a point well left of it.
+    let back = driver::goto_row(ctx, &mut app, "newtab-mode")
+        && probe(&mut app, "diag.buttons", json!({ "id": "newtab-mode" }))["buttons"]
+            .as_array()
+            .is_some_and(|b| b.len() == 2)
+        && click_row_at(&mut app, "newtab-mode", 200.0);
+    let given_back = ctx.poll(6_000, &mut || {
+        std::fs::read_to_string(&settings_file)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .is_some_and(|v| v["flare.newtab.folder"].as_str().is_none_or(str::is_empty))
+    });
+    let count = shell_tabs(&mut app).len();
+    app.session.key("Ctrl+T")?;
+    let opened = ctx.until("a tab in the user's folder", 15_000, &mut || {
+        shell_tabs(&mut app).len() == count + 1
+    });
+    let tip = shell_tabs(&mut app)
+        .last()
+        .and_then(|t| t["tooltip"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    ctx.ok(
+        back && given_back && opened && !home.is_empty() && tip.eq_ignore_ascii_case(&home),
+        format!("Use my user folder gives the default back ({tip:?})"),
+    );
     app.close();
     Ok(())
+}
+
+/// The folder the picker seam answers with (also the end of the new tab's tooltip), in lower case.
+const CHOSEN: &str = "chosen-folder";
+
+/// The tabs that are shells or agents (Settings left out), as `app.state` lists them.
+fn shell_tabs(app: &mut App) -> Vec<Value> {
+    probe(app, "app.state", Value::Null)["tabs"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter(|x| x["kind"] != json!("settings"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Clicks the Settings row `id`, `from_right` css px in from its right end, at its middle.
+fn click_row_at(app: &mut App, id: &str, from_right: f64) -> bool {
+    let r = driver::row(app, id);
+    let Some((x, y, w, h)) = boxed(&r["rect"]) else {
+        return false;
+    };
+    app.session
+        .click((x + w - from_right) as f32, (y + h / 2.0) as f32)
+        .is_ok()
 }
 
 /// The rail item `id` in css pixels, from the `settings.rail` probe.

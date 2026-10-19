@@ -655,6 +655,12 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_IMPORT_APPDATA",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
+    // M3, unchanged: the folder picker answers from this path with no dialog (window.rs reads it as a
+    // concatenated name; tools/e2e newTabFolder and spawn set it).
+    "FLARE_E2E_PICK",
+    // M10 Appendix F: with a sandboxed HOME, the transcript store of that HOME is read for the Claude
+    // session lookup (startup.rs, window.rs; the agentLaunch scenario sets it).
+    "FLARE_E2E_SESSIONS",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

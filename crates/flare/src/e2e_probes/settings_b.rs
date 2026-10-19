@@ -446,13 +446,27 @@ pub(super) fn settings_theme(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, Stri
         "ask": {
             "open": b.get_ask_open(),
             "buttons": ASK_BUTTONS,
+            "rects": ask_rects(ctx),
         },
         "saves": saves(ctx, &f),
     }))
 }
 
-/// `settings.colours`: the accent the window paints and the ink its primary buttons wear, as
-/// `Theme` holds them (`#rrggbbaa`).
+/// The switch question's three buttons in window css px, in `ASK_BUTTONS` order (`Null` when the
+/// window does not report them): `[{ x, y, w, h }, ...]`.
+fn ask_rects(ctx: &ProbeCtx) -> Value {
+    let r: Vec<f32> = ctx.app.get_ask_rects().iter().collect();
+    if r.len() != 12 {
+        return Value::Null;
+    }
+    Value::Array(
+        r.chunks(4)
+            .map(|c| json!({ "x": c[0], "y": c[1], "w": c[2], "h": c[3] }))
+            .collect(),
+    )
+}
+/// `settings.colours`: the accent the window paints and the ink its primary buttons wear, with the ground
+/// and the chosen-row fill (`hover_hi`), as `Theme` holds them (`#rrggbbaa`).
 fn settings_colours(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let t = ctx.app.global::<Theme>();
     Ok(json!({
@@ -460,6 +474,7 @@ fn settings_colours(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "accent_solid": hex8(t.get_accent_solid()),
         "on_accent": hex8(t.get_on_accent()),
         "ground": hex8(t.get_ground()),
+        "hover_hi": hex8(t.get_hover_hi()),
     }))
 }
 

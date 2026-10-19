@@ -379,6 +379,12 @@ export component AppWindow inherits Window {
     out property <length> scroll-thumb-h: scroll-bar.thumb-h;
     // The grid area's origin in the window.
     out property <length> grid-left: grid-box.absolute-position.x;
+    // The switch question's three buttons in window pixels, x y w h each: Cancel, Discard, Save as Custom.
+    out property <[length]> ask-rects: [
+        ask.cancel-x, ask.cancel-y, ask.cancel-w, ask.cancel-h,
+        ask.discard-x, ask.discard-y, ask.discard-w, ask.discard-h,
+        ask.save-x, ask.save-y, ask.save-w, ask.save-h,
+    ];
     out property <length> grid-top: grid-box.absolute-position.y;
 
     // ---- callbacks (UI -> Rust) ----
@@ -857,7 +863,7 @@ export component AppWindow inherits Window {
             focus-restore => { SettingsBridge.pencil-pending = SettingsBridge.pencil-id != ""; }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
-        AskThree {
+        ask := AskThree {
             x: 0px;
             y: 0px;
             width: root.width;

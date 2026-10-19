@@ -8,6 +8,7 @@
 use flare_e2e_proto::{PointerAction, Request};
 use serde_json::{json, Value};
 
+use super::driver;
 use crate::ctx::{App, Ctx, Launch};
 
 /// A probe's answer, `Null` when it fails (a check on it then reads false).
@@ -558,6 +559,19 @@ pub fn window_colours_save(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// The paint of the switch question's Save as Custom, read from a snapshot a few pixels inside its
+/// left edge (clear of the label), with the pointer taken off it so no hover brightens it.
+fn ask_save_paint(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<[u8; 3]> {
+    let _ = app.session.call(&Request::Pointer {
+        x: 2.0,
+        y: 2.0,
+        action: PointerAction::Move,
+    });
+    ctx.settle(50);
+    let save = theme(app)["ask"]["rects"][2].clone();
+    let (x, y, _, h) = rect(&save)?;
+    pixel_css(ctx, app, name, x + 5.0, y + h / 2.0)
+}
 /// accentAsk (PT run.mjs:3145): a red accent lights Save changes with white text; a theme switch
 /// asks, and a near-black red is lifted.
 pub fn accent_ask(ctx: &mut Ctx) -> Result<(), String> {
@@ -594,9 +608,14 @@ pub fn accent_ask(ctx: &mut Ctx) -> Result<(), String> {
     });
     ctx.ok(picked && asked, "picking another theme asks first");
 
-    // PT: its Save as Custom wears the accent, with white text. The question's buttons are not
-    // probed (AskThree's rectangles are not read from Rust), so the paint check is not made here.
-    ctx.skip("the switch question's button rectangles are not probed (AskThree), so its paint is not read");
+    // PT: its Save as Custom wears the accent, with white text.
+    let ask_paint = ask_save_paint(ctx, &mut app, "accent-ask");
+    ctx.ok(
+        ask_paint == Some(rgb_of_hex(&accent)) && hex6(&ink) == "#ffffff",
+        format!(
+            "its Save as Custom wears the accent, with white text (paint {ask_paint:?}, ink {ink})"
+        ),
+    );
 
     // Cancel the question: Tab moves the focus from Save as Custom to Cancel, Enter answers it.
     let _ = app.session.key("Tab");
@@ -617,14 +636,17 @@ pub fn accent_ask(ctx: &mut Ctx) -> Result<(), String> {
         format!("a near-black red is lifted to a red, not a grey ({dark:?})"),
     );
 
-    // PT: the theme switch's Save as Custom is that same red (the question's paint is not probed).
-    ctx.skip("the switch question's Save as Custom paint is not probed (AskThree), see above");
-
-    // Discard the question's changes: Tab twice moves to Discard, Enter answers it.
+    // Discard the question's changes: Tab twice moves to Discard, Enter answers it. The question
+    // is up again first, and its Save as Custom is that same red (PT: the theme switch's button).
     let _ = pick_card(&mut app, "graphite");
     ctx.until("the question opens again", 4_000, &mut || {
         ask_open(&mut app)
     });
+    let ask_dark = ask_save_paint(ctx, &mut app, "accent-ask-dark");
+    ctx.ok(
+        ask_dark.is_some() && ask_dark == dark,
+        format!("the theme switch's Save as Custom is that same red ({ask_dark:?} vs {dark:?})"),
+    );
     let _ = app.session.key("Tab");
     let _ = app.session.key("Tab");
     let _ = app.session.key("Enter");
@@ -891,11 +913,11 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
         format!("font size offers 50% to 200% in tens ({})", sizes.join(" ")),
     );
 
-    // The font, its size, the indicator style and the edges are the user's own settings. The
-    // segmented pills and the font menu have no rectangle the probes read, so they are set in
-    // the profile before the switch (the same values PT's clicks choose), and the switch must
-    // leave all four as they are.
-    ctx.skip("the segmented pills and the font menu are not probed, so the settings are written to settings.json before the switch");
+    // The font, its size, the indicator style and the edges are the user's own settings, and the
+    // switch must leave all four as they are. The edges and the indicator are picked by clicking
+    // their pills below; the font and its size are chosen from select menus, which no probe opens,
+    // so those two are written to the profile before the relaunch (the values PT's clicks choose).
+    ctx.skip("the font and size menus: no probe opens a select popup, so the font and its size are written to settings.json before the switch");
     let profile = app.profile.clone();
     app.close();
     // The relaunch starts clean: the saved strip would restore the first run's tab beside the
@@ -903,7 +925,7 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
     let _ = std::fs::remove_file(profile.join("tabs.json"));
     let _ = std::fs::write(
         profile.join("settings.json"),
-        r#"{"flare.term.fontPct":"140","flare.term.font":"jetbrains","flare.term.agentIndicator":"minimal","flare.window.edges":"solid"}"#,
+        r#"{"flare.term.fontPct":"140","flare.term.font":"jetbrains"}"#,
     );
     let mut app = launch_alpha(ctx)?;
     if !start_appearance(ctx, &mut app) {
@@ -914,6 +936,18 @@ pub fn theme_switch(ctx: &mut Ctx) -> Result<(), String> {
         app.close();
         return Ok(());
     }
+    // PT: the edges and the indicator's style are picked from their pills, by the pointer.
+    let edges = driver::pick_seg(ctx, &mut app, "window-edges", &["solid"]);
+    let bar = driver::pick_seg(ctx, &mut app, "agent-indicator", &["minimal"]);
+    let stored_pills = ctx.until("the pills are stored", 4_000, &mut || {
+        stored_str(&app, "flare.window.edges") == "solid"
+            && stored_str(&app, "flare.term.agentIndicator") == "minimal"
+    });
+    ctx.ok(
+        edges && bar && stored_pills,
+        "Solid edges and the Bar indicator are picked from their pills",
+    );
+    let _ = goto_page(ctx, &mut app, "appearance");
     let mine = |app: &App| {
         json!({
             "pct": stored_str(app, "flare.term.fontPct"),

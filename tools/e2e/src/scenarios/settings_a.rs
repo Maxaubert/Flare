@@ -8,7 +8,129 @@ use std::collections::BTreeSet;
 use flare_e2e_proto::Request;
 use serde_json::{json, Value};
 
+use super::driver;
+use super::strip::snap;
 use crate::ctx::{App, Ctx, Launch};
+use crate::pixels::{contrast, mix, Rgb};
+
+/// A row's icon tile is 32 css px square, 14 px in from the row's left edge, and the label column
+/// starts 14 px after it (`SetRowFrame`: padding-left 14, the tile, spacing 14).
+const TILE: f64 = 32.0;
+const TILE_X: f64 = 14.0;
+const LABEL_X: f64 = TILE_X + TILE + 14.0;
+
+/// What the pixels say about one drawn row of the open page.
+struct RowLook {
+    /// The best contrast of the label's ink against the panel, and of the subtext's (`None`
+    /// when the row has no subtext).
+    label: f64,
+    sub: Option<f64>,
+    /// The icon's best contrast against its tile.
+    icon: f64,
+    /// The tile's width and height in css px, read from the paint.
+    tile: (f64, f64),
+    /// Where the row's top hairline starts, in css px from the row's left edge (`None` for a
+    /// first row, which has none).
+    rule_from: Option<f64>,
+}
+
+/// Reads a plain row of the open page from a snapshot: one with a top hairline (`with_rule`) or the
+/// first of a panel (none). The row must be
+/// in view; `None` when it is not or the page has no such row.
+fn read_row_look(ctx: &mut Ctx, app: &mut App, with_rule: bool, name: &str) -> Option<RowLook> {
+    let page = rows_now(app);
+    let rows = page["rows"].as_array()?.clone();
+    // A row has a top hairline unless it is the first of its panel.
+    let firsts: Vec<String> = page["sections"]
+        .as_array()?
+        .iter()
+        .filter_map(|s| s["ids"][0].as_str().map(str::to_string))
+        .collect();
+    let r = rows.iter().find(|r| {
+        str_of(r, "block") == "row" && firsts.iter().any(|f| f == str_of(r, "id")) != with_rule
+    })?;
+    let has_sub = !str_of(r, "sub").is_empty();
+    let id = str_of(r, "id").to_string();
+    let rr = probe(app, "settings.row", json!({ "id": id }));
+    if rr["visible"] != json!(true) {
+        return None;
+    }
+    let (x, y, w, h) = boxed(&rr["rect"])?;
+    let s = snap(ctx, app, name)?;
+    let k = scale_of(app);
+    let dev = |v: f64| (v * k).round().max(0.0) as u32;
+    let ground: Rgb = s.at(dev(x + 4.0), dev(y + h / 2.0));
+    // The best contrast over the pixels of a css box against `bg`.
+    let best = |x0: f64, x1: f64, y0: f64, y1: f64, bg: Rgb| -> f64 {
+        let mut top: f64 = 1.0;
+        for py in dev(y0)..=dev(y1) {
+            for px in dev(x0)..=dev(x1) {
+                top = top.max(contrast(s.at(px, py), bg));
+            }
+        }
+        top
+    };
+    let mid = y + h / 2.0;
+    let label = best(
+        x + LABEL_X,
+        x + LABEL_X + 120.0,
+        mid - 17.0,
+        mid - 3.0,
+        ground,
+    );
+    let sub = has_sub.then(|| {
+        best(
+            x + LABEL_X,
+            x + LABEL_X + 120.0,
+            mid + 4.0,
+            mid + 17.0,
+            ground,
+        )
+    });
+    // The tile: its fill against the panel, in a box a little larger than the tile.
+    let (ty0, ty1) = (mid - TILE / 2.0, mid + TILE / 2.0);
+    let near = |c: Rgb| (0..3).any(|i| i32::from(c[i]) - i32::from(ground[i]) != 0);
+    let mut bb: Option<(u32, u32, u32, u32)> = None;
+    for py in dev(ty0 - 6.0)..=dev(ty1 + 6.0) {
+        for px in dev(x + 6.0)..=dev(x + LABEL_X - 6.0) {
+            if near(s.at(px, py)) {
+                bb = Some(match bb {
+                    None => (px, py, px, py),
+                    Some((a, b, c, d)) => (a.min(px), b.min(py), c.max(px), d.max(py)),
+                });
+            }
+        }
+    }
+    let tile = bb.map_or((0.0, 0.0), |(a, b, c, d)| {
+        (f64::from(c - a + 1) / k, f64::from(d - b + 1) / k)
+    });
+    let tile_bg = s.at(dev(x + TILE_X + 1.5), dev(mid));
+    let icon = best(
+        x + TILE_X + 6.0,
+        x + TILE_X + TILE - 6.0,
+        ty0 + 6.0,
+        ty1 - 6.0,
+        tile_bg,
+    );
+    // The hairline: the first pixel along the row's top edge that is not the panel's.
+    let rule_from = if !with_rule {
+        None
+    } else {
+        let line_ground = s.at(dev(x + 2.0), dev(y));
+        (dev(x + 2.0)..dev(x + w)).find_map(|px| {
+            let c = s.at(px, dev(y));
+            ((0..3).any(|i| i32::from(c[i]) - i32::from(line_ground[i]) != 0))
+                .then(|| f64::from(px) / k - x)
+        })
+    };
+    Some(RowLook {
+        label,
+        sub,
+        icon,
+        tile,
+        rule_from,
+    })
+}
 
 /// The six pages of the rail, in the rail's order.
 const PAGES: [&str; 6] = [
@@ -165,6 +287,13 @@ fn rgb_of_hex(hex: &str) -> [u8; 3] {
     let h = hex.trim_start_matches('#');
     let ch = |i: usize| u8::from_str_radix(h.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0);
     [ch(0), ch(2), ch(4)]
+}
+
+/// The rgb and alpha (0 to 1) of a `#rrggbbaa` string.
+fn hex8_of(hex: &str) -> Option<(Rgb, f64)> {
+    let h = hex.trim_start_matches('#');
+    let ch = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
+    Some(([ch(0)?, ch(2)?, ch(4)?], f64::from(ch(6)?) / 255.0))
 }
 
 /// The colour of the device pixel (x, y) of the last snapshot, `None` when there is none there.
@@ -350,9 +479,27 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
         format!("and the wall wraps into rows ({wall_rows})"),
     );
     ctx.skip("a theme card's width is not carried by the bridge (WallCard holds x and y only)");
-    ctx.skip("the icon tile is 32px: the tile's size is not probed");
+    // The tile and the hairline are read from the paint: the row's box is a window rectangle now.
+    goto_page(ctx, &mut app, "terminal");
+    let look = read_row_look(ctx, &mut app, true, "options-row-look");
+    ctx.ok(
+        look.as_ref()
+            .is_some_and(|l| (l.tile.0 - TILE).abs() <= 1.0 && (l.tile.1 - TILE).abs() <= 1.0),
+        format!(
+            "the icon tile is 32px ({:?})",
+            look.as_ref().map(|l| l.tile)
+        ),
+    );
     ctx.skip("a panel's corner is the radius plus 3px: the panel's radius is not probed");
-    ctx.skip("the hairline starts after the icon column: the rule's left edge is not probed");
+    ctx.ok(
+        look.as_ref()
+            .and_then(|l| l.rule_from)
+            .is_some_and(|x| (x - LABEL_X).abs() <= 1.5),
+        format!(
+            "the hairline starts after the icon column ({:?} px in, the label column is {LABEL_X})",
+            look.as_ref().and_then(|l| l.rule_from)
+        ),
+    );
     ctx.skip("no two controls in a row overlap: control boxes are not probed");
 
     app.close();
@@ -373,10 +520,7 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
         app.close();
         return Ok(());
     }
-    ctx.skip("label and subtext contrast: the row's box inside the pane is known, but not the pane's origin in the window, so the ink cannot be located");
-    ctx.skip("an icon reads 3:1 on its tile: the tile is not located (see the label check)");
     ctx.skip("a warning subtext reads 4.5:1: the dictation warning belongs to M8");
-    ctx.skip("the chosen rail page is the hover fill: the hover colour is not exported");
 
     // The accent, from the start screen's mark (the same accent the window draws in).
     let accent = rgb_of_hex(str_of(
@@ -394,22 +538,81 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
             fill.is_some_and(|c| c != accent),
             format!("{tab}: and not the accent ({fill:?})"),
         );
+        // PT: the chosen rail page is the grey fill: the hover-hi token laid over the rail, which
+        // is read on a page that is not chosen.
+        let other = if tab == "terminal" {
+            "agents"
+        } else {
+            "terminal"
+        };
+        let rail_ground = rail_rect(&mut app, other)
+            .and_then(|r| pixel(&mut app, (r.0 + r.2 - 6.0) * k, (r.1 + r.3 / 2.0) * k));
+        let hover = hex8_of(str_of(
+            &probe(&mut app, "settings.colours", Value::Null),
+            "hover_hi",
+        ));
+        let want = rail_ground.zip(hover).map(|(g, (rgb, a))| mix(g, rgb, a));
+        ctx.ok(
+            fill.zip(want).is_some_and(|(f, w)| {
+                (0..3).all(|i| (i32::from(f[i]) - i32::from(w[i])).abs() <= 3)
+            }),
+            format!(
+                "{tab}: the chosen rail page is the hover fill (painted {fill:?}, wanted {want:?})"
+            ),
+        );
+        // PT: label and subtext read on the panel (4.5:1) and the icon on its tile (3:1), on every
+        // page that draws a row; read from the snapshot at the row's own window rectangle.
+        if let Some(l) = read_row_look(ctx, &mut app, false, &format!("settings-look-row-{tab}")) {
+            ctx.ok(
+                l.label >= 4.5 && l.sub.is_none_or(|s| s >= 4.5),
+                format!(
+                    "{tab}: label and subtext read on the panel ({:.1}:1, {})",
+                    l.label,
+                    l.sub
+                        .map_or("no subtext".to_string(), |s| format!("{s:.1}:1"))
+                ),
+            );
+            ctx.ok(
+                l.icon >= 3.0,
+                format!("{tab}: the icon reads 3:1 on its tile ({:.1}:1)", l.icon),
+            );
+        }
+        // PT: nothing scrolls sideways (the pane never scrolls that way: every row is inside it).
+        if let Some(inside) = driver::nothing_sideways(&mut app) {
+            ctx.ok(inside, format!("{tab}: nothing scrolls sideways at 1600px"));
+        }
     }
-    ctx.skip("only Save changes and on switches wear the accent: the accent-filled buttons are not probed");
-    ctx.skip("nothing scrolls sideways at 1600px: the pane's sideways scroll is not probed");
+    ctx.skip("only Save changes and on switches wear the accent: held by ui_tests (settings_ink::a_rendered_appearance_page_paints_the_accent_only_in_save_and_on_switches, settings_controls::no_control_but_save_and_the_on_switch_paints_the_accent)");
 
-    // Lit Save changes, the acrylic check and the theme's Save are the skips below: no Save button
-    // is probed, and the see-through check needs the GPU renderer (software stays solid, DIFF-5).
-    ctx.skip("an agent colour of your own lights Save changes: no Save button is probed");
-    ctx.skip("and the theme's Save changes with it: no Save button is probed");
+    // Lit Save changes: an agent colour of one's own lights the Mark colours' Save changes, and the
+    // theme's with it. The acrylic check needs the GPU renderer (software stays solid, DIFF-5).
+    let typed = driver::fill_row_colour(ctx, &mut app, "agent-color", "#3da9fc");
+    let lit = ctx.until("Mark colours' Save changes to light", 4_000, &mut || {
+        driver::save_lit(&mut app)
+    });
+    ctx.ok(
+        typed && lit,
+        "an agent colour of your own lights Mark colours' Save changes",
+    );
+    let there = driver::goto_row(ctx, &mut app, "term-theme");
+    ctx.ok(
+        there && driver::save_lit(&mut app),
+        "and the theme's Save changes with it",
+    );
     ctx.skip("with acrylic on, label and subtext still read: the see-through window is GPU-only (DIFF-5)");
 
-    // 900 px: still the full rail, with its names.
+    // 900 px: still the full rail, with its names, and nothing sideways.
     resize(&mut app, 900.0, 800.0);
     ctx.until("the rail is drawn at 900px", 3_000, &mut || {
         rail_rect(&mut app, "appearance").is_some_and(|r| r.2 > 0.0)
     });
-    ctx.skip("nothing scrolls sideways at 900px: the pane's sideways scroll is not probed");
+    for _ in 0..6 {
+        ctx.settle(50);
+    }
+    ctx.ok(
+        driver::nothing_sideways(&mut app).unwrap_or(false),
+        "nothing scrolls sideways at 900px",
+    );
     let rail_900 = rail_rect(&mut app, "appearance").map_or(0.0, |r| r.2);
     ctx.ok(
         rail_900 >= 200.0,
@@ -430,8 +633,11 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
         rows_now(&mut app)["narrow"] == json!(true),
         "with the page names hidden",
     );
-    ctx.skip("nothing scrolls sideways under 760px: the pane's sideways scroll is not probed");
-    ctx.skip("the magnifier opens the field over the pane: the field's width is not in the bridge");
+    ctx.ok(
+        driver::nothing_sideways(&mut app).unwrap_or(false),
+        "and nothing scrolls sideways",
+    );
+    ctx.skip("the magnifier opens the field over the pane: settings.find_rect answers an error in the narrow frame, so the folded field has no box to read");
 
     resize(&mut app, 1600.0, 1000.0);
     app.close();
@@ -642,12 +848,36 @@ pub fn settings_keys(ctx: &mut Ctx) -> Result<(), String> {
         app.close();
         return Ok(());
     }
+    // Slint exposes no focus query, so where the focus is shows in what Enter opens: the arrows
+    // only move the focus, and Enter opens the page it is on. Each walk starts from the find field
+    // and ends on a page other than the one before it, so it proves the keys moved.
+    let mut reach = |ctx: &mut Ctx, keys: &[&str], want: &str, why: &str| {
+        focus_find(&mut app);
+        for k in keys {
+            let _ = app.session.key(k);
+        }
+        let _ = app.session.key("Enter");
+        let there = ctx.until(&format!("the {want} page"), 5_000, &mut || {
+            page_now(&mut app).as_deref() == Some(want)
+        });
+        ctx.ok(there, format!("{why} (page {:?})", page_now(&mut app)));
+    };
+    // Tab lands on the first page and Down goes one on: Enter opens Terminal, the second.
+    reach(
+        ctx,
+        &["Tab", "ArrowDown"],
+        "terminal",
+        "Tab from the field lands on the rail's first page, and Down walks the rail",
+    );
+    reach(ctx, &["Tab", "End"], "about", "End jumps to the last page");
+    reach(
+        ctx,
+        &["Tab", "End", "Home"],
+        "appearance",
+        "Home jumps to the first page",
+    );
     focus_find(&mut app);
-    ctx.skip("Tab from the field lands on the rail's first page: focus is not probed");
     let _ = app.session.key("Tab");
-    ctx.skip("Down walks the rail: focus is not probed");
-    ctx.skip("End jumps to the last page: focus is not probed");
-    ctx.skip("Home jumps to the first page: focus is not probed");
     let _ = app.session.key("ArrowDown");
     let _ = app.session.key("ArrowDown");
     let _ = app.session.key("Enter");

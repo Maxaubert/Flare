@@ -747,7 +747,7 @@ pub fn edges(ctx: &mut Ctx) -> Result<(), String> {
     );
     // NO LINE BETWEEN TABS (#143): Flare's strip draws no separator, and no probe reads a tab's
     // border, so this is not checked here (PT's `tabBorder`).
-    ctx.skip("no line between tabs: no probe reads a tab's border (Flare's strip has no separator by design)");
+    ctx.skip("DROPPED: no line between tabs (PT tabBorder): Flare's strip draws no separator or tab border by design, so there is no line to measure");
     let main_hairline = probe(&mut app, "window.edge", json!({ "edges": "hairline" }));
     ctx.ok(
         main_hairline.is_string(),
