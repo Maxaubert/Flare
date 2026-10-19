@@ -722,7 +722,10 @@ mod tests {
             label: "Dictation",
             sections: vec![section(
                 "models",
-                vec![BlockModel::Model(row("base")), BlockModel::Model(row("small"))],
+                vec![
+                    BlockModel::Model(row("base")),
+                    BlockModel::Model(row("small")),
+                ],
             )],
         };
         for scale in SCALES {
