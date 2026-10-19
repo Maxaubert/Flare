@@ -51,6 +51,9 @@ pub struct LinkScanner {
     waiting: HashSet<usize>,
     hidden: bool,
     scanned: usize,
+    /// A repaint was asked; the cache is dropped once, at the next scan (the frame).
+    repaint_pending: bool,
+    repaints: usize,
 }
 
 impl Default for LinkScanner {
@@ -66,6 +69,8 @@ impl LinkScanner {
             waiting: HashSet::new(),
             hidden: false,
             scanned: 0,
+            repaint_pending: false,
+            repaints: 0,
         }
     }
 
@@ -77,10 +82,15 @@ impl LinkScanner {
         self.hidden = hidden;
     }
 
-    /// Drops everything.
+    /// Asks for everything to be scanned again. Asks within one frame are one: the cache is dropped at the
+    /// next scan, once (core/renderer/lib/lookApply.ts, oncePerFrame).
     pub fn repaint(&mut self) {
-        self.cache.clear();
-        self.waiting.clear();
+        self.repaint_pending = true;
+    }
+
+    /// Cache drops actually done (a test reads it).
+    pub fn repaints_done(&self) -> usize {
+        self.repaints
     }
 
     /// A path answer arrived: the lines that were waiting for one are scanned again.
@@ -106,6 +116,11 @@ impl LinkScanner {
     ) -> Vec<LinkMark> {
         if self.hidden || cols == 0 || b.is_empty() {
             return Vec::new();
+        }
+        if std::mem::take(&mut self.repaint_pending) {
+            self.cache.clear();
+            self.waiting.clear();
+            self.repaints += 1;
         }
         let last = last.min(b.len() - 1);
         let mut out = Vec::new();
@@ -391,6 +406,25 @@ mod tests {
         assert_eq!(first.len(), 3);
     }
 
+    #[test]
+    fn link_repaints_coalesce_to_one_per_frame() {
+        let mut h = H::new();
+        let b = three_links();
+        h.scan(&b, 20, 0, 4);
+        assert_eq!(h.scanner.lines_scanned(), 3);
+        // A burst of repaints inside one frame (a colour dragged) drops the cache once, at the frame.
+        for _ in 0..5 {
+            h.scanner.repaint();
+        }
+        assert_eq!(h.scanner.repaints_done(), 0);
+        h.scan(&b, 20, 0, 4);
+        assert_eq!(h.scanner.repaints_done(), 1);
+        assert_eq!(h.scanner.lines_scanned(), 6);
+        // The next frame with no repaint asked scans nothing and drops nothing.
+        h.scan(&b, 20, 0, 4);
+        assert_eq!(h.scanner.repaints_done(), 1);
+        assert_eq!(h.scanner.lines_scanned(), 6);
+    }
     #[test]
     fn only_the_changed_line_is_scanned_again() {
         let mut h = H::new();

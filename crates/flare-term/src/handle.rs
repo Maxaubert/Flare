@@ -487,6 +487,11 @@ impl TermHandle {
         self.emu.lock().set_colours(fg, bg);
     }
 
+    /// Whether the colour queries are already answered with these.
+    pub fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        self.emu.lock().colours_are(fg, bg)
+    }
+
     /// The size in columns and rows.
     pub fn size(&self) -> (usize, usize) {
         let e = self.emu.lock();

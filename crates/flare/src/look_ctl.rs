@@ -123,6 +123,10 @@ pub trait ThemePushTarget {
     fn resize(&self, cols: usize, rows: usize);
     /// The colours the tab's colour queries are answered with.
     fn set_colours(&self, _fg: &str, _bg: &str) {}
+    /// Whether the tab already answers colour queries with these (a look apply skips such a tab).
+    fn colours_are(&self, _fg: &str, _bg: &str) -> bool {
+        false
+    }
 }
 
 impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
@@ -143,6 +147,19 @@ impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
     }
     fn set_colours(&self, fg: &str, bg: &str) {
         flare_term::handle::TermHandle::set_colours(self, fg, bg);
+    }
+    fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        flare_term::handle::TermHandle::colours_are(self, fg, bg)
+    }
+}
+
+/// Gives the colours only to the tabs that do not already wear them: a look apply that changed nothing
+/// for a tab (an opacity slider dragged) leaves it alone (perf rule, core/renderer/lib/lookApply.ts).
+fn colours_to_tabs(tabs: &[Rc<dyn ThemePushTarget>], fg: &str, bg: &str) {
+    for tab in tabs {
+        if !tab.colours_are(fg, bg) {
+            tab.set_colours(fg, bg);
+        }
     }
 }
 
@@ -416,9 +433,7 @@ impl LookCtl {
             return;
         };
         let tabs = source();
-        for tab in &tabs {
-            tab.set_colours(&look.term.foreground, &look.term.background);
-        }
+        colours_to_tabs(&tabs, &look.term.foreground, &look.term.background);
         self.push_theme(&tabs, ground_mode(&look.term.background), now);
         self.arm_timer();
     }
@@ -868,6 +883,8 @@ mod tests {
         written: RefCell<Vec<String>>,
         size: Cell<(usize, usize)>,
         resizes: RefCell<Vec<(usize, usize)>>,
+        colours: RefCell<(String, String)>,
+        colour_sets: Cell<usize>,
     }
 
     impl FakeTab {
@@ -877,6 +894,8 @@ mod tests {
                 written: RefCell::new(Vec::new()),
                 size: Cell::new((80, 24)),
                 resizes: RefCell::new(Vec::new()),
+                colours: RefCell::new((String::new(), String::new())),
+                colour_sets: Cell::new(0),
             })
         }
     }
@@ -898,8 +917,31 @@ mod tests {
             self.resizes.borrow_mut().push((cols, rows));
             self.size.set((cols, rows));
         }
+        fn colours_are(&self, fg: &str, bg: &str) -> bool {
+            *self.colours.borrow() == (fg.to_string(), bg.to_string())
+        }
+        fn set_colours(&self, fg: &str, bg: &str) {
+            self.colour_sets.set(self.colour_sets.get() + 1);
+            self.colours.replace((fg.to_string(), bg.to_string()));
+        }
     }
 
+    #[test]
+    fn a_look_apply_touches_only_the_tabs_whose_look_changed() {
+        let a = FakeTab::new(false, Mode::Dark);
+        let b = FakeTab::new(false, Mode::Dark);
+        let tabs = tab_set(&[&a, &b]);
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 1));
+        // The same look again (an opacity slider dragged): nobody is touched.
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 1));
+        // A new colour reaches both; a tab that already wears it is left alone.
+        a.colours.replace(("#333333".into(), "#444444".into()));
+        colours_to_tabs(&tabs, "#333333", "#444444");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 2));
+    }
     #[test]
     fn a_mode_change_pushes_once_then_nudges_one_column_and_back() {
         let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());

@@ -210,6 +210,10 @@ impl Emulator {
         self.bg = bg.to_string();
     }
 
+    pub fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        self.fg == fg && self.bg == bg
+    }
+
     /// Scans the chunk, then feeds `vte` in slices that end at each scanner event, acting on the
     /// event between slices. Returns the events in stream order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermEvent> {
