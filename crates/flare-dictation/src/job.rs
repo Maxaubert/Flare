@@ -9,10 +9,11 @@ use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
 /// A kill-on-close job object. Dropping it closes the handle, which ends every process in it.
 pub struct Job {
@@ -63,8 +64,36 @@ impl Job {
     }
 }
 
+impl Job {
+    /// Whether process `pid` is in this job (false when it is gone or cannot be asked about).
+    pub fn contains(&self, pid: u32) -> bool {
+        // SAFETY: OpenProcess returns a handle or null; a handle is used for the one query and closed once.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut inside = 0;
+            let asked = IsProcessInJob(process, self.handle, &mut inside);
+            CloseHandle(process);
+            asked != 0 && inside != 0
+        }
+    }
+
+    /// A job whose handle is invalid, so every `assign` fails: for tests of the failure path only.
+    #[doc(hidden)]
+    pub fn unusable_for_tests() -> Self {
+        Job {
+            handle: std::ptr::null_mut(),
+        }
+    }
+}
+
 impl Drop for Job {
     fn drop(&mut self) {
+        if self.handle.is_null() {
+            return;
+        }
         // SAFETY: the handle was returned by CreateJobObjectW and is closed exactly once, here.
         unsafe {
             CloseHandle(self.handle);

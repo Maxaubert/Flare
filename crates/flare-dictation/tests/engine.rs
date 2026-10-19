@@ -89,6 +89,7 @@ struct World {
     launched: Launched,
     cpu_dir: tempfile::TempDir,
     gpu_dir: tempfile::TempDir,
+    job: Arc<Job>,
 }
 
 fn flags(v: &[&str]) -> Vec<String> {
@@ -100,6 +101,10 @@ fn world(knobs: Knobs) -> World {
 }
 
 fn world_with(knobs: Knobs, tune: impl FnOnce(&mut EngineConfig)) -> World {
+    world_in_job(knobs, tune, Job::new().expect("a job object"))
+}
+
+fn world_in_job(knobs: Knobs, tune: impl FnOnce(&mut EngineConfig), job: Job) -> World {
     // A space in the folder on purpose: the real one is under a user's profile.
     let cpu_dir = tempfile::Builder::new()
         .prefix("flare dictation cpu ")
@@ -149,9 +154,10 @@ fn world_with(knobs: Knobs, tune: impl FnOnce(&mut EngineConfig)) -> World {
         (PathBuf::from(FAKE), all)
     }));
     tune(&mut cfg);
-    let job = Arc::new(Job::new().expect("a job object"));
+    let job = Arc::new(job);
     World {
-        engine: Engine::start(cfg, job),
+        engine: Engine::start(cfg, Arc::clone(&job)),
+        job,
         knobs,
         launched,
         cpu_dir,
@@ -844,4 +850,46 @@ fn does_not_take_the_requests_waiting_behind_it_down_with_it() {
     w.set(|k| k.cpu_flags.clear());
     assert!(!get(&dies).is_ok());
     assert!(get(&waits).is_ok());
+}
+
+// ---------------------------------------------------------------- the review's two findings
+
+#[test]
+fn warm_and_a_cold_partial_never_ask_where_the_model_is_on_the_callers_thread() {
+    // `model_path` is a disk check in the app: the caller (UI) thread must never run it.
+    let callers: Arc<Mutex<Vec<std::thread::ThreadId>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_by = Arc::clone(&callers);
+    let w = world_with(Knobs::default(), move |cfg| {
+        cfg.model_path = Box::new(move |id| {
+            seen_by.lock().unwrap().push(std::thread::current().id());
+            model_path(id)
+        });
+    });
+    let me = std::thread::current().id();
+    assert!(warm(&w).is_ok());
+    // Warm again (the server is up and warm now) and ask a partial: both answer from state alone.
+    assert!(warm(&w).is_ok());
+    assert!(ask(&w, base(false)).is_ok());
+    assert!(
+        !callers.lock().unwrap().contains(&me),
+        "model_path ran on the caller's thread"
+    );
+}
+
+#[test]
+fn a_server_that_could_not_join_the_job_is_killed_and_the_pass_fails() {
+    let w = world_in_job(Knobs::default(), |_| {}, Job::unusable_for_tests());
+    let r = ask(&w, base(true));
+    assert!(is_engine_failed(&r), "got {r:?}");
+    assert!(failed_detail(&r).contains("job"), "got {r:?}");
+    assert!(w.launched_count() >= 1, "a server was tried");
+    // The refused child is killed and reaped inside the launch, so none is ever recorded as running.
+    assert!(w.engine.launched_pids().is_empty());
+}
+
+#[test]
+fn every_server_is_in_the_job() {
+    let w = world(Knobs::default());
+    assert!(ask(&w, base(true)).is_ok());
+    assert!(w.job.contains(w.pid(0)), "the server is not in the job");
 }

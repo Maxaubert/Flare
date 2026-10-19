@@ -241,7 +241,12 @@ fn stopped_result() -> TranscribeResult {
 }
 
 fn launch_key(kind: EngineKind, model: &Path, language: &str) -> String {
-    format!("{kind:?}\n{}\n{language}", model.display())
+    format!(
+        "{kind:?}
+{}
+{language}",
+        model.display()
+    )
 }
 
 /// A port nobody is using: bind 0, read what Windows handed out, let go.
@@ -329,7 +334,6 @@ impl Engine {
     pub fn warm(&self, model_id: &str, language: &str) -> Receiver<TranscribeResult> {
         let inner = &self.inner;
         let (tx, rx) = channel();
-        let model_path = (inner.cfg.model_path)(model_id);
         let lang = if language.is_empty() {
             "auto"
         } else {
@@ -337,11 +341,7 @@ impl Engine {
         };
         let mut st = lock(&inner.st);
         if let Some(cur) = &st.current {
-            if cur.warm()
-                && !cur.exited()
-                && Some(&cur.model_path) == model_path.as_ref()
-                && cur.language == lang
-            {
+            if cur.warm() && !cur.exited() && cur.model_id == model_id && cur.language == lang {
                 let _ = tx.send(TranscribeResult::Ok(String::new()));
                 return rx;
             }
@@ -610,7 +610,14 @@ impl Inner {
                         }
                     }
                 }
-                let mut started = self.launch(want_kind, &want_dir, &model_path, &language, mine);
+                let mut started = self.launch(
+                    want_kind,
+                    &want_dir,
+                    &model_path,
+                    &req.model_id,
+                    &language,
+                    mine,
+                );
                 if stopped() {
                     return stopped_result();
                 }
@@ -625,7 +632,14 @@ impl Inner {
                                 .unwrap_or_else(|| "the server did not start".into()),
                         );
                     };
-                    started = self.launch(EngineKind::Cpu, &cpu_dir, &model_path, &language, mine);
+                    started = self.launch(
+                        EngineKind::Cpu,
+                        &cpu_dir,
+                        &model_path,
+                        &req.model_id,
+                        &language,
+                        mine,
+                    );
                     if stopped() {
                         return stopped_result();
                     }
@@ -683,6 +697,7 @@ impl Inner {
         kind: EngineKind,
         dir: &Path,
         model_path: &Path,
+        model_id: &str,
         language: &str,
         mine: u64,
     ) -> Result<Arc<Server>, String> {
@@ -716,7 +731,13 @@ impl Inner {
             dir,
             &env,
             &self.job,
-            (kind, model_path.to_path_buf(), language.to_string(), port),
+            (
+                kind,
+                model_path.to_path_buf(),
+                model_id.to_string(),
+                language.to_string(),
+                port,
+            ),
         )
         .map_err(|e| e.to_string())?;
         // Current from the moment it exists, so a stop() during the start kills it.

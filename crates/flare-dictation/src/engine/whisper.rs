@@ -45,6 +45,8 @@ struct State {
 pub struct Server {
     pub kind: EngineKind,
     pub model_path: PathBuf,
+    /// The catalogue id the server was launched for: the caller-side warm check compares ids, never paths.
+    pub model_id: String,
     pub language: String,
     pub port: u16,
     pub pid: u32,
@@ -74,7 +76,7 @@ impl Server {
         dir: &Path,
         env: &[(String, String)],
         job: &Job,
-        meta: (EngineKind, PathBuf, String, u16),
+        meta: (EngineKind, PathBuf, String, String, u16),
     ) -> std::io::Result<Arc<Server>> {
         let mut cmd = Command::new(file);
         cmd.args(args)
@@ -87,14 +89,23 @@ impl Server {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn()?;
-        let _ = job.assign(&child);
+        if let Err(e) = job.assign(&child) {
+            // Outside the kill-on-close job a server could outlive the app: never run one.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("the dictation engine could not join the kill-on-close job: {e}"),
+            ));
+        }
         let stderr = child.stderr.take();
         let pid = child.id();
         let server = Arc::new(Server {
             kind: meta.0,
             model_path: meta.1,
-            language: meta.2,
-            port: meta.3,
+            model_id: meta.2,
+            language: meta.3,
+            port: meta.4,
             pid,
             child: Mutex::new(child),
             state: Mutex::new(State::default()),
