@@ -3862,6 +3862,56 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_focus_returns_to_the_terminal_on_the_frame_after_a_drag() {
+        let f = fx();
+        let a = f.ctl.borrow_mut().open_folder("C:\\a");
+        let _ = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.wait_made("C:\\a");
+        f.wait_made("C:\\b");
+        // The find box holds the keys when the drag starts.
+        f.h.comp.set_find_open(true);
+        f.h.comp.invoke_focus_find();
+        assert!(f.h.comp.get_find_input_focused());
+        let x = {
+            let c = f.ctl.borrow();
+            let r = &c.view().rows[0];
+            (f64::from(r.x) + f64::from(r.w) / 2.0) / c.scale
+        };
+        f.h.comp
+            .invoke_strip_press(a.as_str().into(), 0, x as f32, 0.0);
+        f.h.comp.invoke_strip_moved((x + 80.0) as f32);
+        f.h.comp.invoke_strip_released();
+        f.pump();
+        assert!(
+            !f.h.comp.get_find_input_focused(),
+            "the keys went back to the terminal when the drag ended"
+        );
+    }
+
+    #[test]
+    fn restore_runs_once_even_if_asked_twice() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", Some(AgentKind::Claude))],
+            active: 1,
+            lookup: lookup_of(&lookup),
+            ..Opts::default()
+        });
+        AppCtl::start_restore(&f.ctl);
+        AppCtl::start_restore(&f.ctl);
+        f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+        f.pump_until("both spawns", |f| f.sp.made().len() >= 2);
+        // A second run would answer after the first: give it the time to.
+        std::thread::sleep(Duration::from_millis(100));
+        f.pump();
+        // The lookup is asked once, and each saved folder is spawned once.
+        assert_eq!(lookup.asked(), ["C:\\b"], "the lookup runs once");
+        assert_eq!(f.made_with("C:\\a").len(), 1, "a spawned once");
+        assert_eq!(f.made_with("C:\\b").len(), 1, "b spawned once");
+        assert_eq!(f.cwds(), ["C:\\a", "C:\\b"]);
+    }
+
+    #[test]
     fn closing_the_last_tab_shows_the_start_screen_and_keeps_the_window() {
         let f = fx();
         f.start_restore_and_wait();

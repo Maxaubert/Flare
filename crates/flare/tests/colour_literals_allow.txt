@@ -38,3 +38,4 @@ crates/flare/src/ui_tests/settings_layout.rs | #181818 | a fixture colour of the
 crates/flare/src/ui_tests/settings_layout.rs | #111111 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
 crates/flare/src/ui_tests/settings_layout.rs | #222222 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
 crates/flare/src/ui_tests/settings_layout.rs | #333333 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/menus.rs | #00000080 | the test checks the drop shadow colour text that menus.slint declares (a source string the scan reads, not a painted colour)

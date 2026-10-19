@@ -341,6 +341,30 @@ mod tests {
     }
 
     #[test]
+    fn the_new_tab_row_is_a_two_way_segment_with_its_words() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let e = env(&prefs, &look, face);
+        let page = build_terminal(&e);
+        let Control::Segmented { value, options } = &the_row(&page, "newtab-mode").control else {
+            panic!("the new tab row is a segment");
+        };
+        assert_eq!(value, "folder");
+        let pairs: Vec<(&str, &str)> = options
+            .iter()
+            .map(|o| (o.id.as_str(), o.name.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("folder", "Open in a folder"),
+                ("ask", "Ask where each time"),
+            ]
+        );
+    }
+
+    #[test]
     fn the_new_tab_row_says_what_the_mode_does_and_offers_its_buttons() {
         let prefs = PrefStore::memory();
         let look = LookStore::new(prefs.clone());

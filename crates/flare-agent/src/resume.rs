@@ -311,6 +311,12 @@ mod tests {
     }
 
     #[test]
+    fn sixteen_at_a_time_is_the_walk_width() {
+        // The restore reads the stats and the heads sixteen at a time, on its worker thread.
+        assert_eq!(PARALLEL, 16);
+    }
+
+    #[test]
     fn the_encoding_is_per_utf16_unit() {
         assert_eq!(
             encode_cwd("C:\\Users\\me\\my project"),
