@@ -740,8 +740,8 @@ pub trait ClientHost: Send + Sync + 'static {
     }
     /// What Windows says runs under a tab's shell (`claude`, or not).
     fn agent_under(&self, id: &str) -> Option<String>;
-    /// Write to a tab's shell.
-    fn write(&self, id: &str, data: &str);
+    /// Write to a tab's shell. False when nothing was written (the window could not take it).
+    fn write(&self, id: &str, data: &str) -> bool;
     /// Wait this long (the Enter follows the paste after `SEND_ENTER_MS`). The link's handler thread sleeps; the
     /// UI thread never calls this.
     fn pause(&self, ms: u64) {
@@ -758,8 +758,8 @@ impl<H: ClientHost> SendHost for Checked<'_, H> {
     fn agent_under(&self, id: &str) -> Option<String> {
         self.0.agent_under(id)
     }
-    fn write(&self, id: &str, bytes: &str) {
-        self.0.write(id, bytes);
+    fn write(&self, id: &str, bytes: &str) -> bool {
+        self.0.write(id, bytes)
     }
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>) {
         self.0.pause(ms);
@@ -1598,8 +1598,9 @@ mod tests {
         fn agent_under(&self, _id: &str) -> Option<String> {
             self.under.lock().unwrap().clone()
         }
-        fn write(&self, _id: &str, data: &str) {
+        fn write(&self, _id: &str, data: &str) -> bool {
             self.written.lock().unwrap().push(data.to_string());
+            true
         }
         fn pause(&self, ms: u64) {
             self.pauses.lock().unwrap().push(ms);

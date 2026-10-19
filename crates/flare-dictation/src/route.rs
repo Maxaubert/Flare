@@ -77,8 +77,8 @@ const PICK_MAX: usize = 9;
 pub trait SendHost {
     /// What Windows says runs under a tab's shell (`claude`, or something else). Called off the UI thread.
     fn agent_under(&self, id: &str) -> Option<String>;
-    /// Write to a tab's shell.
-    fn write(&self, id: &str, bytes: &str);
+    /// Write to a tab's shell. False when nothing was written (the window could not take it).
+    fn write(&self, id: &str, bytes: &str) -> bool;
     /// Run `f` after `ms` milliseconds. The real host sleeps on the send's worker, then calls `f`.
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>);
 }
@@ -242,13 +242,16 @@ pub fn type_checked(
     };
     if let SendDecision::Ok(t) = &said {
         let id = t.id.clone();
-        host.write(&id, &paste_of(text));
+        // Words that never reached the shell get no Enter: an Enter alone would run what was already typed.
+        if !host.write(&id, &paste_of(text)) {
+            return SendDecision::No(format!("{} could not take the words: send again", t.label));
+        }
         host.later(
             SEND_ENTER_MS,
             Box::new(move || {
                 if let SendDecision::Ok(still) = decide() {
                     if still.id == id {
-                        host.write(&id, "\r");
+                        let _ = host.write(&id, "\r");
                     }
                 }
             }),
@@ -315,6 +318,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         agent: Option<String>,
+        /// The window could not take a write (busy): nothing is written.
+        refuse: bool,
         written: RefCell<Vec<String>>,
         delays: RefCell<Vec<u64>>,
     }
@@ -323,8 +328,12 @@ mod tests {
         fn agent_under(&self, _id: &str) -> Option<String> {
             self.agent.clone()
         }
-        fn write(&self, _id: &str, bytes: &str) {
+        fn write(&self, _id: &str, bytes: &str) -> bool {
+            if self.refuse {
+                return false;
+            }
             self.written.borrow_mut().push(bytes.to_string());
+            true
         }
         fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>) {
             self.delays.borrow_mut().push(ms);
@@ -599,6 +608,25 @@ mod tests {
             vec!["\x1b[200~hello\x1b[201~".to_string(), "\r".to_string()]
         );
         assert_eq!(*host.delays.borrow(), vec![SEND_ENTER_MS]);
+    }
+
+    #[test]
+    fn type_checked_never_presses_enter_after_words_that_were_not_written() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            refuse: true,
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::No("Wind could not take the words: send again".into())
+        );
+        assert!(host.written.borrow().is_empty());
+        assert!(
+            host.delays.borrow().is_empty(),
+            "no Enter is even scheduled"
+        );
     }
 
     #[test]

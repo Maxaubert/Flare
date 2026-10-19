@@ -381,9 +381,10 @@ impl ClientHost for Bridge {
         self.probe.agent_under(id)
     }
 
-    fn write(&self, id: &str, data: &str) {
+    fn write(&self, id: &str, data: &str) -> bool {
         let (id, data) = (id.to_string(), data.to_string());
-        let _ = self.call(move |d| d.host.write_tab(&id, &data));
+        self.call(move |d| d.host.write_tab(&id, &data))
+            .unwrap_or(false)
     }
 
     fn paste(&self, text: &str) {
