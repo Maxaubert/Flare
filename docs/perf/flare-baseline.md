@@ -92,3 +92,24 @@ By the plan's own rules (misses: B1 GPU, B2 GPU, B3 GPU, B4 both, B5 GPU, B7 int
 
 Order from the wave table: 62, 63, 64, 65, then 67, 68, 66. Before 67 and 68 the orchestrator should settle
 the occlusion question, or their GPU acceptance numbers will measure the retry cadence again.
+
+## Task 65, step 0: the grid painter's own build (2026-10-19)
+
+The owner's queued follow-up (first frames on the CPU painter, then the grid goes to the GPU) was
+measured before any code was written, as the task requires. `GridHost::attach_gpu` (which runs
+`GpuPainter::new` inside the `RenderingSetup` arm) was timed with a temporary probe on a release
+build of `m10-parity` at the Task 64 commit (`9217a3e`), GPU renderer, `cmd`, 8 cold launches
+(1 discarded by the harness):
+
+| Measure | Value |
+|---|---|
+| `attach_gpu` per launch (ms) | 1.8, 1.6, 1.6, 1.6, 1.5, 1.6, 1.6, 2.2 (median 1.6) |
+| B1 `usable_ms` median, GPU, 7 runs | 1492 |
+| Share of B1 | 0.1% (the task's threshold is 5%, about 75 ms) |
+| `render_setup` to `first_frame` in the median run | 13 ms (1109 to 1122) |
+
+Verdict: measured, nothing to win. `GpuPainter::new` costs about 1.6 ms, so moving it to a worker
+thread cannot reach the 5% rule; no code was changed and the temporary probe was removed. The
+cold-start floor is Slint's own GPU window set-up: in the same run `backend` was reached at 705 ms
+and `component` at 942 ms, ahead of `render_setup` at 1109 ms. That is the D8 / Q1 input for the
+verdict (choices (a) to (c) in the plan), not something Task 65 can move.
