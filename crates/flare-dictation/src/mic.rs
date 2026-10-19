@@ -153,6 +153,20 @@ pub fn start_capture(
     start_capture_from(&MicSource::Device, device, on_frame)
 }
 
+thread_local! {
+    /// Microphone opens asked for from this thread (a test reads it to prove a page never opens one).
+    static OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_open() {
+    OPENS.with(|o| o.set(o.get() + 1));
+}
+
+/// How many microphone opens (`start_capture_async`, `start_capture_from`, `start_capture`) this thread has asked for.
+pub fn opens_on_this_thread() -> usize {
+    OPENS.with(std::cell::Cell::get)
+}
+
 /// The answer to `start_capture_async`.
 pub type DoneFn = Box<dyn FnOnce(Result<Box<dyn Capture>, CaptureFailure>) + Send>;
 
@@ -164,6 +178,7 @@ pub fn start_capture_async(
     on_frame: FrameFn,
     done: DoneFn,
 ) {
+    count_open();
     let spawned = std::thread::Builder::new()
         .name("flare-mic-open".into())
         .spawn(move || done(start_capture_from(&source, device.as_deref(), on_frame)));
@@ -177,6 +192,7 @@ pub fn start_capture_from(
     device: Option<&str>,
     on_frame: FrameFn,
 ) -> Result<Box<dyn Capture>, CaptureFailure> {
+    count_open();
     match source {
         MicSource::File(path) => start_file(path, on_frame),
         MicSource::Device => {
