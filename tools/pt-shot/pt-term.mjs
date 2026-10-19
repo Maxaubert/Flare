@@ -12,8 +12,10 @@
 // The images are `<out>/<scene>-<pct>.png` plus `VERSION.txt`. The scene text is what Flare feeds
 // its emulator (same rows, written to a file and printed by the shell), the selection is made with
 // real mouse events at cell centres computed from the measured cell size, find is opened with
-// Ctrl+F, the menus with a right click, the badge with Ctrl+C. Note: Ctrl+C in `term-copied`
-// puts the selected text on the machine's clipboard (the app's own copy), as the scene asks.
+// Ctrl+F, the menus with a right click, the badge with Ctrl+C. Ctrl+C in `term-copied` lands on
+// Prism Terminal's in-memory clipboard stand-in, which `--e2e` swaps in (its e2eClipboard.ts), so
+// the machine's clipboard is never written (checked 2026-10-19: the Windows clipboard sequence
+// number did not move over a full run).
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

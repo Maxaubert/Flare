@@ -26,4 +26,5 @@ of `tools/m5-compare` (`compose.ps1` pairs and makes contact sheets, `check.ps1`
 
 Same launch block as `pt-shot.mjs`. The scene text is printed by the shell from a file, the selection is
 real mouse events at cell centres from the measured cell, find is Ctrl+F, menus a right click, the badge
-Ctrl+C (which puts the selected text on the machine's clipboard, as the scene asks).
+Ctrl+C (which lands on Prism Terminal's in-memory clipboard stand-in under `--e2e`, never on the
+machine's clipboard). The review of the images is `docs/screenshots/m10/m5-pt/README.md`.
