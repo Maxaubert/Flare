@@ -1,7 +1,7 @@
 // The shared structs of the Settings tab (M7 Task 1). Change them only through the orchestrator.
 
-export enum SetKind { none, pill, switch, segmented, select, slider, colour, save }
-export enum BlockKind { row, wall, about, slint, note }
+export enum SetKind { none, pill, switch, segmented, select, slider, colour, save, key, mic }
+export enum BlockKind { row, wall, about, slint, note, model }
 
 // face: the font-family for the font select ("" = the UI font)
 export struct SetOption { id: string, name: string, face: string }
@@ -21,6 +21,14 @@ export struct SetRow {
     note: string,                               // BlockKind.note and about text
     y: length, h: length,                       // inside the panel, snapped
     flash: float,                               // 0..1, the flash fill alpha scale
+    // The Dictation page (M8 Task 25). `value` is the key text or the chosen microphone; `num` the download percentage.
+    capturing: bool,                            // key: the field waits for a key
+    testing: bool,                              // mic: the meter is live
+    limited: bool,                              // language select: the model picks its own language
+    vendor: string,                             // model block: "openai" or "nvidia"
+    size-text: string, recommended: bool, badge: string,
+    state: string,                              // model block: absent, downloading, installed or active
+    button-title: string,                       // the tooltip of the Uninstall or Disable button
 }
 export struct SetSection {
     id: string, title: string, tag: string,

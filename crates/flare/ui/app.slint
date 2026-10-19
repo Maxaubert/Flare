@@ -17,6 +17,7 @@ import { SettingsView, SettingsBridge } from "settings/view.slint";
 import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
+import { DictAsk } from "settings/dictation.slint";
 import { HelpPanel } from "settings/help_panel.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
@@ -922,6 +923,16 @@ export component AppWindow inherits Window {
             height: root.height;
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
+        }
+        // The Dictation page's one-line question before a download (M8 Task 25).
+        dict-ask := DictAsk {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.dict-ask-open;
+            text: SettingsBridge.dict-ask-text;
+            answered(n) => { SettingsBridge.dict-ask-answered(n); }
         }
         ColourPopover {
             x: 0px;

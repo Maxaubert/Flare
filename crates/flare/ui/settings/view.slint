@@ -14,6 +14,7 @@ import { ColourField, ColourPopover } from "colour.slint";
 import { ThemeWallView, ThemeEditor, AskThree } from "wall.slint";
 import { AboutCard, SlintBadge } from "about.slint";
 import { HelpPanel } from "help_panel.slint";
+import { DictKeyField, DictMicField, DictLimitedMark, DictModelRow, DictAsk } from "dictation.slint";
 
 export global SettingsBridge {
     // data, all computed by Rust
@@ -91,6 +92,11 @@ export global SettingsBridge {
     in-out property <[EditorWell]> editor-wells;
     in-out property <WallCard> editor-preview;
     in-out property <bool> ask-open;
+    // The Dictation page (M8 Task 25): the microphone test's smoothed level (written without a rebuild), and the
+    // one-line question before a model that does not support every language is downloaded.
+    in-out property <float> dict-level;
+    in-out property <bool> dict-ask-open;
+    in-out property <string> dict-ask-text;
     // events
     callback page-chosen(string);
     callback find-edited(string);
@@ -130,6 +136,7 @@ export global SettingsBridge {
     callback editor-save();
     callback editor-cancel();
     callback ask-answered(int);
+    callback dict-ask-answered(int);
     callback frame-resized(length, length);
     callback escape-unhandled();
     callback tip(string, length, length, length, length);
@@ -198,6 +205,57 @@ component RowControls inherits HorizontalLayout {
             chosen(id) => { SettingsBridge.row-choose(root.data.id, id); }
         }
     }
+    // The language picker while the model picks its own language: the globe says why (its tooltip is the row's).
+    if root.data.kind == SetKind.select && root.data.limited: VerticalLayout {
+        alignment: center;
+        DictLimitedMark {
+            text: root.data.row-tip;
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
+    if root.data.kind == SetKind.key: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                kf.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        kf := DictKeyField {
+            text: root.data.value;
+            capturing: root.data.capturing;
+            reset: root.data.reset;
+            disabled: root.data.off;
+            label: root.data.label;
+            sub: root.data.sub;
+            pressed => { SettingsBridge.row-button(root.data.id, "capture"); }
+            reset-clicked => { SettingsBridge.row-button(root.data.id, "reset"); }
+        }
+    }
+    if root.data.kind == SetKind.mic: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                mf.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        mf := DictMicField {
+            options: root.data.options;
+            value: root.data.value;
+            disabled: root.data.off;
+            testing: root.data.testing;
+            level: SettingsBridge.dict-level;
+            label: root.data.label;
+            sub: root.data.sub;
+            open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
+            test-clicked => { SettingsBridge.row-button(root.data.id, "test"); }
+            open-request(x, y, w, h) => { SettingsBridge.select-open-request(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
     if root.data.kind == SetKind.select: VerticalLayout {
         alignment: center;
         property <bool> want: root.wants;
@@ -211,7 +269,7 @@ component RowControls inherits HorizontalLayout {
             width: SettingsShape.select-min-w;
             options: root.data.options;
             value: root.data.value;
-            disabled: root.data.off;
+            disabled: root.data.off || root.data.limited;
             label: root.data.label;
             sub: root.data.sub;
             open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
@@ -423,6 +481,14 @@ export component SettingsView inherits Rectangle {
                         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                         RowControls { data: row; }
                     }
+                    if row.block == BlockKind.model: DictModelRow {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        data: row;
+                        pressed(b) => { SettingsBridge.row-button(row.id, b); }
+                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                    }
                     if row.block == BlockKind.wall: SetBlockFrame {
                         width: parent.width;
                         height: parent.height;
@@ -542,6 +608,13 @@ export component SettingsPreview inherits Window {
         height: parent.height;
         open: SettingsBridge.ask-open;
         answered(n) => { SettingsBridge.ask-answered(n); }
+    }
+    DictAsk {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.dict-ask-open;
+        text: SettingsBridge.dict-ask-text;
+        answered(n) => { SettingsBridge.dict-ask-answered(n); }
     }
     SelectMenu {
         width: parent.width;

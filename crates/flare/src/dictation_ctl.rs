@@ -39,7 +39,8 @@ use flare_dictation::controller::{
 use flare_dictation::cues::Cue;
 use flare_dictation::engine::{Engine, EngineConfig, Reason, TranscribeRequest, TranscribeResult};
 use flare_dictation::hotkey::{
-    HOST_TICK_MS, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase, reduce_key,
+    HOST_TICK_MS, Hotkey, KeyChord, KeyConfig, KeyEvt, KeyState, Phase as KeyPhase,
+    parse_hotkey_from_event, reduce_key, usable_hotkey,
 };
 use flare_dictation::job::Job;
 use flare_dictation::keyfeed::HookEvent;
@@ -322,6 +323,10 @@ pub trait Parts {
     /// The model store, for the Dictation page.
     fn store(&self) -> Option<Store> {
         None
+    }
+    /// The GPU engine could not start and the CPU answers for the life of the engine (the GPU row's note).
+    fn gpu_fell_back(&self) -> bool {
+        false
     }
     /// Ends everything it started (children first). Called once, before the parts are dropped.
     fn shutdown(&mut self);
@@ -1505,6 +1510,15 @@ impl DictationKeys {
     /// release. `front` answers the shell tab in front with a live session. Returns whether dictation
     /// swallowed it; a swallowed key goes nowhere else.
     pub fn feed_key(&self, ev: &KeyEvent, up: bool, front: &dyn Fn() -> Option<String>) -> bool {
+        // The Dictation page's key field, while it waits for a key, takes every key (PT's capture listener).
+        match capture_key(ev, up) {
+            CaptureTake::NotWaiting => {}
+            CaptureTake::Taken => return true,
+            CaptureTake::TakenAltUp => {
+                with_dict(|d| d.host.swallow_alt_up());
+                return true;
+            }
+        }
         if !armed() {
             return false;
         }
@@ -1523,6 +1537,8 @@ pub fn tab_gone(id: &str) {
 
 /// The window lost the keyboard focus.
 pub fn on_blur() {
+    // A window that loses the keyboard ends a key capture (PT: `window.addEventListener('blur', stop)`).
+    cancel_capture();
     if !armed() {
         return;
     }
@@ -1531,13 +1547,727 @@ pub fn on_blur() {
 
 /// Quit: stops the engine, the host, the hook and the link before the shells are killed.
 pub fn stop_all() {
+    page_left();
     with_dict(Dict::stop);
     ARMED.with(|a| a.set(false));
 }
 
 /// The model store, while dictation is on (the Dictation page reads it).
 pub fn store() -> Option<Store> {
+    #[cfg(test)]
+    if let Some(s) = TEST_STORE.with(|s| s.borrow().clone()) {
+        return Some(s);
+    }
     with_dict(|d| d.parts.as_ref().and_then(|p| p.store())).flatten()
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Dictation page: what it shows that is not stored, and what its controls do (M8 Task 25)
+// ---------------------------------------------------------------------------------------------------------------------
+//
+// NOTHING HERE STARTS ANYTHING BY ITSELF (PT DictationPage.tsx): opening the page opens no microphone (the meter is
+// behind a Test button) and downloads nothing; every download is a press. The page's own state lives in `PAGE` on
+// the UI thread; what workers learn (a download's progress, the microphone list) arrives as a posted call.
+
+/// How a key was met by the capture.
+pub enum CaptureTake {
+    /// The field is not waiting: the key goes on.
+    NotWaiting,
+    /// The capture took the key.
+    Taken,
+    /// The capture took a modifier's release that is an Alt (the window menu must not open).
+    TakenAltUp,
+}
+
+/// Said under the microphone row when the Test could not open it (PT MicField).
+const MIC_DENIED: &str = "Microphone access was refused.";
+const MIC_NONE: &str = "No working microphone was found.";
+/// The Test ends by itself after this long (PT: 10000 ms).
+const MIC_TEST_MS: u64 = 10_000;
+/// How often the meter moves (80 ms, as PT's transition).
+const METER_TICK_MS: u64 = 80;
+const TEST_TICK: &str = "dictation.mic-test";
+const TEST_STOP: &str = "dictation.mic-test-stop";
+
+/// What the page keeps between rebuilds.
+#[derive(Default)]
+struct PageUi {
+    /// The key field waits for a key.
+    capturing: bool,
+    /// A modifier (or chord of modifiers) pressed during the capture, committed on its release.
+    bare: Option<Hotkey>,
+    /// Codes down during the capture, to tell a repeat from a press.
+    held: HashSet<String>,
+    /// A press elsewhere just ended the capture: the field's own click that follows must not start it again.
+    press_cancelled: bool,
+    /// The model whose download waits on the one-line question.
+    ask: Option<String>,
+    mic_testing: bool,
+    /// The meter, smoothed (PT: up at once, down by 85/15).
+    mic_level: f32,
+    mic_problem: Option<String>,
+    /// The microphones found (listed on a worker when the page opens); `None` until listed.
+    mics: Option<Vec<(String, String)>>,
+    mics_pending: bool,
+    /// Which Test is current: an answer of an older one lets go of its microphone.
+    test_epoch: u64,
+    test_cap: Option<Box<dyn Capture>>,
+    /// The peak level heard since the last tick, as `f32` bits.
+    test_peak: Option<Arc<std::sync::atomic::AtomicU32>>,
+    /// The stored settings, for what a worker finishes.
+    prefs: Option<flare_settings::kv::PrefStore>,
+    /// Rebuilds the page (Settings registers it).
+    refresh: Option<Rc<dyn Fn()>>,
+    /// Moves the meter without a rebuild.
+    meter: Option<Rc<dyn Fn(f32)>>,
+}
+
+thread_local! {
+    static PAGE: RefCell<PageUi> = RefCell::new(PageUi::default());
+    /// A store the tests put in place of the real one.
+    #[cfg(test)]
+    static TEST_STORE: RefCell<Option<Store>> = const { RefCell::new(None) };
+    /// A microphone the tests put in place of the real one (a WAV, never the device).
+    #[cfg(test)]
+    static TEST_MIC: RefCell<Option<MicSource>> = const { RefCell::new(None) };
+}
+
+/// How many times the page has opened a microphone (the tests hold it at what the presses made).
+pub static MIC_OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A download or removal under way, or its last failure; written by workers, read when the page is built.
+#[derive(Clone, Debug, Default)]
+struct Run {
+    done: u64,
+    active: bool,
+    failure: Option<flare_dictation::store::Failure>,
+}
+
+static RUNS: std::sync::LazyLock<Mutex<HashMap<String, Run>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn runs() -> std::sync::MutexGuard<'static, HashMap<String, Run>> {
+    RUNS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What the page needs of its own state, read when a page is built.
+#[derive(Clone, Debug, Default)]
+pub struct PageSnap {
+    pub capturing: bool,
+    pub ask: Option<String>,
+    pub mic_testing: bool,
+    pub mic_level: f32,
+    pub mic_problem: Option<String>,
+}
+
+/// The page's state now.
+pub fn page_snap() -> PageSnap {
+    PAGE.with(|p| {
+        let p = p.borrow();
+        PageSnap {
+            capturing: p.capturing,
+            ask: p.ask.clone(),
+            mic_testing: p.mic_testing,
+            mic_level: p.mic_level,
+            mic_problem: p.mic_problem.clone(),
+        }
+    })
+}
+
+/// The microphones the page lists: the last listing, or nothing yet (a worker lists them, never this thread).
+pub fn page_mics() -> Vec<(String, String)> {
+    let (have, start) = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        let start = p.mics.is_none() && !p.mics_pending;
+        if start {
+            p.mics_pending = true;
+        }
+        (p.mics.clone().unwrap_or_default(), start)
+    });
+    // The tests list nothing: no unit test enumerates the machine's devices.
+    if start && !cfg!(test) {
+        std::thread::Builder::new()
+            .name("flare-mic-list".into())
+            .spawn(|| {
+                let found: Vec<(String, String)> = mic::list_mics()
+                    .into_iter()
+                    .map(|m| (m.id, m.name))
+                    .collect();
+                post_ui(move || {
+                    PAGE.with(|p| {
+                        let mut p = p.borrow_mut();
+                        p.mics = Some(found);
+                        p.mics_pending = false;
+                    });
+                    page_changed();
+                });
+            })
+            .ok();
+    }
+    have
+}
+
+/// The download state of a catalogue entry: its percentage while it runs, the failure of its last end.
+pub fn run_view(id: &str, bytes: u64) -> (Option<u32>, Option<&'static str>) {
+    let r = runs().get(id).cloned().unwrap_or_default();
+    let pct = r.active.then(|| {
+        if bytes == 0 {
+            0
+        } else {
+            ((r.done as f64 / bytes as f64) * 100.0).round().min(100.0) as u32
+        }
+    });
+    let failure = match r.failure {
+        None | Some(flare_dictation::store::Failure::Cancelled) => None,
+        Some(f) => Some(f.text()),
+    };
+    (pct, failure)
+}
+
+/// Hands `f` to the UI thread. The tests have no event loop: they take what was posted and run it themselves.
+fn post_ui(f: impl FnOnce() + Send + 'static) {
+    #[cfg(test)]
+    {
+        TEST_POSTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(Box::new(f));
+    }
+    #[cfg(not(test))]
+    if slint::invoke_from_event_loop(f).is_err() {
+        log::debug!("dictation page: event loop closed");
+    }
+}
+
+/// What the workers posted to the UI thread, for a test to run (see `post_ui`).
+#[cfg(test)]
+static TEST_POSTS: Mutex<std::collections::VecDeque<Box<dyn FnOnce() + Send>>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// The page has something new to draw. From inside a Settings event the page is already being rebuilt, and Settings' own
+/// guard (a busy controller) skips this call.
+fn page_changed() {
+    let refresh = PAGE.with(|p| p.borrow().refresh.clone());
+    if let Some(f) = refresh {
+        f();
+    }
+}
+
+/// Settings tells the page how to rebuild and how to move the meter, and which store holds the settings.
+pub fn register_page(
+    prefs: flare_settings::kv::PrefStore,
+    refresh: Rc<dyn Fn()>,
+    meter: Rc<dyn Fn(f32)>,
+) {
+    PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        p.prefs = Some(prefs);
+        p.refresh = Some(refresh);
+        p.meter = Some(meter);
+    });
+}
+
+/// The Dictation page was shown: the microphones are listed again, nothing else.
+pub fn page_shown() {
+    PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        if !p.mics_pending {
+            p.mics = None;
+        }
+    });
+}
+
+/// The Dictation page went out of sight: a waiting key field, a running Test and an open question end.
+pub fn page_left() {
+    cancel_capture();
+    stop_test();
+    PAGE.with(|p| p.borrow_mut().ask = None);
+}
+
+/// Whether the engine fell back to the CPU for this session (the GPU row says so).
+pub fn gpu_fell_back() -> bool {
+    with_dict(|d| d.parts.as_ref().is_some_and(|p| p.gpu_fell_back())).unwrap_or(false)
+}
+
+/// A press anywhere in the window (PT: `pointerdown` in the capture phase, but not on the field itself).
+pub fn on_press() {
+    PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.capturing {
+            p.capturing = false;
+            p.bare = None;
+            p.held.clear();
+            // The field's own click, which follows this press, must not wait again.
+            p.press_cancelled = true;
+        } else {
+            p.press_cancelled = false;
+        }
+    });
+}
+
+fn cancel_capture() {
+    let was = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        let was = p.capturing;
+        p.capturing = false;
+        p.bare = None;
+        p.held.clear();
+        was
+    });
+    if was {
+        page_changed();
+    }
+}
+
+fn is_modifier_code(code: &str) -> bool {
+    matches!(
+        code,
+        "AltLeft"
+            | "AltRight"
+            | "ControlLeft"
+            | "ControlRight"
+            | "ShiftLeft"
+            | "ShiftRight"
+            | "MetaLeft"
+            | "MetaRight"
+    )
+}
+
+/// One key while the field may be waiting (PT HotkeyField). A bare modifier (Right Alt, the default) is taken on its
+/// RELEASE, so Ctrl+Shift+D is not captured as "Ctrl"; a chord of modifiers is the last modifier's, also on its
+/// release; a key that types, or a chord the terminal owns, is not taken and the field keeps waiting; Escape leaves.
+fn capture_key(ev: &KeyEvent, up: bool) -> CaptureTake {
+    let commit = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        if !p.capturing {
+            return Err(CaptureTake::NotWaiting);
+        }
+        let code = w3c_code(&ev.code).to_string();
+        if up {
+            p.held.remove(&code);
+            let bare = p.bare.take();
+            return match bare {
+                Some(b) if b.code == code => {
+                    p.capturing = false;
+                    p.held.clear();
+                    Ok((Some(b), code.starts_with("Alt")))
+                }
+                other => {
+                    p.bare = other;
+                    Ok((None, code.starts_with("Alt")))
+                }
+            };
+        }
+        if !p.held.insert(code.clone()) {
+            return Ok((None, false));
+        }
+        if code == "Escape" {
+            p.capturing = false;
+            p.bare = None;
+            p.held.clear();
+            return Ok((None, false));
+        }
+        let chord = KeyChord {
+            code: code.clone(),
+            ctrl: ev.ctrl,
+            alt: ev.alt,
+            shift: ev.shift,
+            meta: ev.meta,
+            repeat: false,
+            at: 0.0,
+        };
+        let Some(hk) = parse_hotkey_from_event(&chord) else {
+            return Ok((None, false));
+        };
+        if is_modifier_code(&code) {
+            p.bare = Some(hk);
+        } else if usable_hotkey(&hk, &[]) {
+            p.capturing = false;
+            p.held.clear();
+            return Ok((Some(hk), false));
+        }
+        Ok((None, false))
+    });
+    match commit {
+        Err(not_waiting) => not_waiting,
+        Ok((chosen, alt_up)) => {
+            if let Some(hk) = chosen {
+                write_hotkey(&hk);
+            }
+            page_changed();
+            if up && alt_up {
+                CaptureTake::TakenAltUp
+            } else {
+                CaptureTake::Taken
+            }
+        }
+    }
+}
+
+fn write_hotkey(h: &Hotkey) {
+    let json =
+        json!({ "code": h.code, "ctrl": h.ctrl, "alt": h.alt, "shift": h.shift, "meta": h.meta })
+            .to_string();
+    page_put(2, &json);
+}
+
+/// Writes one of the nine stored dictation keys (an index of `prefs::KEYS`).
+fn page_put(i: usize, value: &str) {
+    if let Some(p) = PAGE.with(|p| p.borrow().prefs.clone()) {
+        p.set(prefs::KEYS[i], value);
+    }
+}
+
+fn page_get(i: usize) -> Option<String> {
+    PAGE.with(|p| p.borrow().prefs.clone())
+        .and_then(|p| p.get(prefs::KEYS[i]))
+}
+
+/// The active model's id as stored.
+fn active_model() -> String {
+    page_get(7).unwrap_or_default()
+}
+
+/// Whether the row `id` is one the Dictation page's controls answer.
+pub fn owns_row(id: &str) -> bool {
+    id.starts_with("dictation-")
+        || id == flare_dictation::catalog::GPU_PACK.id
+        || flare_dictation::catalog::model(id).is_some()
+}
+
+/// A switch of the page. `true` when something changed that the page must show.
+pub fn page_switch(row: &str, on: bool) -> bool {
+    let (i, v) = match row {
+        "dictation-enabled" => (0, on),
+        "dictation-pause-media" => (5, on),
+        "dictation-sounds" => (6, on),
+        "dictation-anywhere" => (8, on),
+        _ => return false,
+    };
+    if row == "dictation-enabled" && !on {
+        // Off means off: nothing waits, listens or asks.
+        page_left();
+    }
+    page_put(i, if v { "1" } else { "0" });
+    true
+}
+
+/// A choice of the page (the mode, the microphone, the language).
+pub fn page_choose(row: &str, option: &str) -> bool {
+    match row {
+        "dictation-mode" if option == "hold" || option == "toggle" => page_put(1, option),
+        "dictation-mic" => {
+            // The Test follows the microphone it was started on: a new pick ends it.
+            stop_test();
+            page_put(3, option);
+        }
+        "dictation-language" if flare_dictation::catalog::valid_language(option) == option => {
+            page_put(4, option);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// A button of the page: the key field, the microphone's Test, a model's or the pack's buttons. `true` when the
+/// page must be built again.
+pub fn page_button(row: &str, button: &str) -> bool {
+    use flare_dictation::catalog;
+    match (row, button) {
+        ("dictation-hotkey", "capture") => {
+            PAGE.with(|p| {
+                let mut p = p.borrow_mut();
+                if p.press_cancelled {
+                    // The press before this click ended a capture: the click closes it, it does not reopen it.
+                    p.press_cancelled = false;
+                } else {
+                    p.capturing = !p.capturing;
+                    p.bare = None;
+                    p.held.clear();
+                }
+            });
+            true
+        }
+        ("dictation-hotkey", "reset") => {
+            write_hotkey(&flare_dictation::hotkey::default_hotkey());
+            true
+        }
+        ("dictation-mic", "test") => {
+            if PAGE.with(|p| p.borrow().mic_testing) {
+                stop_test();
+            } else {
+                start_test();
+            }
+            true
+        }
+        (id, "download") if catalog::model(id).is_some() => {
+            fetch_model(id);
+            true
+        }
+        (id, "cancel") if catalog::model(id).is_some() || id == catalog::GPU_PACK.id => {
+            if let Some(s) = page_store() {
+                s.cancel(id);
+            }
+            true
+        }
+        (id, "use") if catalog::model(id).is_some() => {
+            page_put(7, id);
+            true
+        }
+        (id, "uninstall") if catalog::model(id).is_some() => {
+            remove_item(id);
+            true
+        }
+        (id, "enable") if id == catalog::GPU_PACK.id => {
+            download_item(id);
+            true
+        }
+        (id, "disable") if id == catalog::GPU_PACK.id => {
+            remove_item(id);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The answer of the one-line question: Download starts the download, Cancel drops it.
+pub fn page_ask_answer(download: bool) -> bool {
+    let id = PAGE.with(|p| p.borrow_mut().ask.take());
+    match id {
+        Some(id) if download => {
+            download_item(&id);
+            true
+        }
+        Some(_) => true,
+        None => false,
+    }
+}
+
+fn page_store() -> Option<Store> {
+    store()
+}
+
+/// A model that does not support every language says so once, before its download (#121). A Retry after a failed one
+/// has already been asked.
+fn fetch_model(id: &str) {
+    let failed = runs().get(id).is_some_and(
+        |r| matches!(r.failure, Some(f) if f != flare_dictation::store::Failure::Cancelled),
+    );
+    if flare_dictation::catalog::limited_languages(id) && !failed {
+        PAGE.with(|p| p.borrow_mut().ask = Some(id.to_string()));
+    } else {
+        download_item(id);
+    }
+}
+
+/// Starts the download of a catalogue id (ids come from the catalogue only, never from the page).
+fn download_item(id: &str) {
+    use flare_dictation::catalog;
+    let known = catalog::model(id).is_some() || id == catalog::GPU_PACK.id;
+    let Some(store) = page_store().filter(|_| known) else {
+        return;
+    };
+    runs().insert(
+        id.to_string(),
+        Run {
+            done: 0,
+            active: true,
+            failure: None,
+        },
+    );
+    let for_progress = id.to_string();
+    let rx = store.download(
+        id,
+        Box::new(move |p| {
+            if let Some(r) = runs().get_mut(&for_progress) {
+                r.done = p.done;
+            }
+            post_ui(page_changed);
+        }),
+    );
+    let id = id.to_string();
+    // The end of the download is waited for on its own thread; what follows runs on the UI thread.
+    std::thread::Builder::new()
+        .name("flare-dict-wait".into())
+        .spawn(move || {
+            let end = rx
+                .recv()
+                .unwrap_or(Err(flare_dictation::store::Failure::Network));
+            post_ui(move || finish_download(&id, end));
+        })
+        .ok();
+}
+
+/// A download ended. The first model anyone downloads is the one they meant to use: read NOW, not when the press
+/// was made, so a second download finishing after the first had become the model never replaces it unasked.
+fn finish_download(id: &str, end: Result<(), flare_dictation::store::Failure>) {
+    if let Some(r) = runs().get_mut(id) {
+        r.active = false;
+        r.failure = end.err();
+    }
+    if end.is_ok() && flare_dictation::catalog::model(id).is_some() {
+        let current = active_model();
+        let installed =
+            !current.is_empty() && page_store().is_some_and(|s| s.model_path(&current).is_some());
+        if !installed {
+            page_put(7, id);
+        }
+    }
+    // After a download the engine stops, so the next pass starts from what is on disk now.
+    stop_engine_now();
+    page_changed();
+}
+
+/// Removes a model or the pack: a running download is cancelled and the engine stops first, so nothing holds the
+/// files; removing the active model clears the stored id.
+fn remove_item(id: &str) {
+    let Some(store) = page_store() else {
+        return;
+    };
+    store.cancel(id);
+    stop_engine_now();
+    let rx = store.remove(id);
+    let id = id.to_string();
+    std::thread::Builder::new()
+        .name("flare-dict-remove".into())
+        .spawn(move || {
+            let _ = rx.recv();
+            post_ui(move || {
+                runs().remove(&id);
+                if active_model() == id {
+                    page_put(7, "");
+                }
+                page_changed();
+            });
+        })
+        .ok();
+}
+
+fn stop_engine_now() {
+    with_dict(|d| {
+        if let Some(p) = d.parts.as_mut() {
+            p.stop_engine();
+        }
+    });
+}
+
+/// Where the microphone's sound comes from: the device, or the e2e seam's WAV.
+fn mic_source() -> MicSource {
+    #[cfg(test)]
+    if let Some(s) = TEST_MIC.with(|m| m.borrow().clone()) {
+        return s;
+    }
+    match crate::e2e::global().env(names::SEAM_MIC) {
+        Some(p) if !p.is_empty() => MicSource::File(PathBuf::from(p)),
+        _ => MicSource::Device,
+    }
+}
+
+/// The Test button: opens the chosen microphone on a worker and moves the meter for at most ten seconds.
+fn start_test() {
+    use std::sync::atomic::{AtomicU32, Ordering as O};
+    let device = page_get(3).filter(|d| !d.is_empty());
+    let (epoch, peak) = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        p.mic_problem = None;
+        p.mic_testing = true;
+        p.mic_level = 0.0;
+        p.test_epoch += 1;
+        let peak = Arc::new(AtomicU32::new(0));
+        p.test_peak = Some(Arc::clone(&peak));
+        (p.test_epoch, peak)
+    });
+    MIC_OPENS.fetch_add(1, O::SeqCst);
+    let on_frame: FrameFn = Box::new(move |samples: &[f32]| {
+        let l = flare_dictation::wav::level(samples);
+        let mut cur = peak.load(O::Relaxed);
+        while f32::from_bits(cur) < l {
+            match peak.compare_exchange_weak(cur, l.to_bits(), O::Relaxed, O::Relaxed) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
+        }
+    });
+    let done: DoneFn = Box::new(move |result| post_ui(move || test_opened(epoch, result)));
+    mic::start_capture_async(mic_source(), device, on_frame, done);
+    crate::timer_registry::set(TEST_TICK, METER_TICK_MS, true, meter_tick);
+    crate::timer_registry::set(TEST_STOP, MIC_TEST_MS, false, || {
+        stop_test();
+        page_changed();
+    });
+}
+
+fn test_opened(epoch: u64, result: Result<Box<dyn Capture>, CaptureFailure>) {
+    let current = PAGE.with(|p| {
+        let p = p.borrow();
+        p.mic_testing && p.test_epoch == epoch
+    });
+    match result {
+        Ok(cap) if current => PAGE.with(|p| p.borrow_mut().test_cap = Some(cap)),
+        // A late answer of a Test nobody wants any more: let go of the microphone at once.
+        Ok(cap) => {
+            // sync-ok: ending a capture joins its own thread, which stops within a frame (10 ms)
+            drop(cap.stop());
+        }
+        Err(f) if current => {
+            PAGE.with(|p| {
+                p.borrow_mut().mic_problem = Some(
+                    if f == CaptureFailure::Denied {
+                        MIC_DENIED
+                    } else {
+                        MIC_NONE
+                    }
+                    .to_string(),
+                );
+            });
+            stop_test();
+            page_changed();
+        }
+        Err(_) => {}
+    }
+}
+
+/// The meter: the peak since the last tick, up at once and down slowly (PT: `shown*0.85 + l*0.15`).
+fn meter_tick() {
+    use std::sync::atomic::Ordering as O;
+    let (level, sink) = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        let peak = p
+            .test_peak
+            .as_ref()
+            .map_or(0.0, |a| f32::from_bits(a.swap(0, O::Relaxed)));
+        p.mic_level = if peak > p.mic_level {
+            peak
+        } else {
+            p.mic_level * 0.85 + peak * 0.15
+        };
+        (p.mic_level.min(1.0), p.meter.clone())
+    });
+    if let Some(f) = sink {
+        f(level);
+    }
+}
+
+/// Ends the Test: the microphone is let go and the meter falls to nothing.
+fn stop_test() {
+    let (cap, sink) = PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        p.mic_testing = false;
+        p.mic_level = 0.0;
+        p.test_epoch += 1;
+        p.test_peak = None;
+        (p.test_cap.take(), p.meter.clone())
+    });
+    crate::timer_registry::clear(TEST_TICK);
+    crate::timer_registry::clear(TEST_STOP);
+    if let Some(cap) = cap {
+        // sync-ok: ending a capture joins its own thread, which stops within a frame (10 ms)
+        drop(cap.stop());
+    }
+    if let Some(f) = sink {
+        f(0.0);
+    }
 }
 
 /// Builds the controller, the service and the widget. Nothing is built while dictation is off.
@@ -1760,10 +2490,7 @@ fn hex32(s: &str) -> Option<[u8; 32]> {
 impl RealCfg {
     fn new(e2e: bool, exe: &Path) -> Self {
         let g = crate::e2e::global();
-        let mic = match g.env(names::SEAM_MIC) {
-            Some(p) if !p.is_empty() => MicSource::File(PathBuf::from(p)),
-            _ => MicSource::Device,
-        };
+        let mic = mic_source();
         let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
         let engine_dir = std::env::var_os(names::SEAM_WHISPER_DIR)
             .filter(|v| !v.is_empty())
@@ -2003,6 +2730,10 @@ impl Parts for RealParts {
 
     fn store(&self) -> Option<Store> {
         Some(self.store.clone())
+    }
+
+    fn gpu_fell_back(&self) -> bool {
+        self.engine.info().gpu_fell_back
     }
 
     fn shutdown(&mut self) {
@@ -2928,5 +3659,551 @@ mod tests {
         );
         assert_eq!(r.count("transcribe_final"), 0);
         let _ = right_alt();
+    }
+}
+
+/// The Dictation page's controls (M8 Task 25): the key field's capture, the models' actions, the microphone's Test.
+#[cfg(test)]
+mod page_tests {
+    use super::fixture::{fake_store, install_store, pump_until};
+    use super::*;
+    use flare_settings::kv::PrefStore;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Page {
+        prefs: PrefStore,
+        calls: Arc<AtomicUsize>,
+        refreshes: Rc<Cell<u32>>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A page over a memory store of preferences and a store that downloads "hello" for every model.
+    fn page(urls: [&str; 3]) -> Page {
+        crate::ui_harness::ensure_platform();
+        let (store, dir, calls) = fake_store(urls);
+        install_store(store);
+        let prefs = PrefStore::memory();
+        let refreshes = Rc::new(Cell::new(0));
+        let r = Rc::clone(&refreshes);
+        register_page(
+            prefs.clone(),
+            Rc::new(move || r.set(r.get() + 1)),
+            Rc::new(|_| {}),
+        );
+        Page {
+            prefs,
+            calls,
+            refreshes,
+            _dir: dir,
+        }
+    }
+
+    fn key(code: &str) -> KeyEvent {
+        KeyEvent::new(code, code)
+    }
+
+    fn feed(ev: &KeyEvent, up: bool) -> bool {
+        DictationKeys.feed_key(ev, up, &|| None)
+    }
+
+    fn stored_key(p: &Page) -> String {
+        let kv = |k: &str| p.prefs.get(k);
+        flare_dictation::hotkey::format_hotkey(&stored_prefs(&kv).hotkey)
+    }
+
+    fn start_capture_field() {
+        assert!(page_button("dictation-hotkey", "capture"));
+        assert!(page_snap().capturing);
+    }
+
+    #[test]
+    fn capture_commits_a_bare_modifier_on_release_and_a_chord_on_down() {
+        let p = page(["a", "b", "c"]);
+        // Ctrl, then Win with Ctrl held: the chord of both, committed when Win comes up (N3).
+        start_capture_field();
+        assert!(feed(&key("ControlLeft").ctrl(), false));
+        assert_eq!(
+            stored_key(&p),
+            "Ctrl+Win",
+            "nothing is stored while keys are down (default is Ctrl+Win)"
+        );
+        assert!(p.prefs.get(prefs::KEYS[2]).is_none());
+        assert!(feed(&key("MetaLeft").ctrl().meta(), false));
+        assert!(
+            p.prefs.get(prefs::KEYS[2]).is_none(),
+            "a modifier is taken on its release"
+        );
+        assert!(feed(&key("MetaLeft").ctrl().meta(), true));
+        assert_eq!(stored_key(&p), "Ctrl+Win");
+        assert!(!page_snap().capturing, "the capture ended");
+        // A lone Right Alt (with AltGr's Ctrl riding on it) is bare Right Alt, on its release.
+        start_capture_field();
+        assert!(feed(&key("AltRight").ctrl().alt(), false));
+        assert_eq!(stored_key(&p), "Ctrl+Win");
+        assert!(feed(&key("AltRight").ctrl().alt(), true));
+        assert_eq!(stored_key(&p), "Right Alt");
+        // A chord with a key that is not a modifier is committed on its down.
+        start_capture_field();
+        assert!(feed(&key("ControlLeft").ctrl(), false));
+        assert!(feed(&key("AltLeft").ctrl().alt(), false));
+        assert!(feed(&key("KeyD").ctrl().alt(), false));
+        assert_eq!(stored_key(&p), "Ctrl+Alt+D");
+        assert!(!page_snap().capturing);
+        // Its releases then belong to nobody here: the capture is over, the key goes on.
+        assert!(!feed(&key("KeyD").ctrl().alt(), true));
+    }
+
+    #[test]
+    fn altgr_reads_as_right_alt() {
+        let p = page(["a", "b", "c"]);
+        start_capture_field();
+        // On a Norwegian keyboard Right Alt is AltGr: Ctrl and Alt flags with it, and a Ctrl down before it.
+        assert!(feed(&key("ControlLeft").ctrl(), false));
+        assert!(feed(&key("AltRight").ctrl().alt(), false));
+        assert!(feed(&key("AltRight").ctrl().alt(), true));
+        assert_eq!(stored_key(&p), "Right Alt");
+    }
+
+    #[test]
+    fn escape_cancels_capture() {
+        let p = page(["a", "b", "c"]);
+        start_capture_field();
+        assert!(feed(&key("Escape"), false));
+        assert!(!page_snap().capturing);
+        assert!(
+            p.prefs.get(prefs::KEYS[2]).is_none(),
+            "Escape is never a binding"
+        );
+        assert!(p.refreshes.get() > 0, "the page is drawn again");
+    }
+
+    #[test]
+    fn a_press_outside_and_a_blur_cancel_capture_and_the_fields_own_click_does_not_reopen_it() {
+        let p = page(["a", "b", "c"]);
+        start_capture_field();
+        on_press();
+        assert!(!page_snap().capturing, "a press elsewhere ends the capture");
+        // The press was on the field itself: its click follows and must not wait again.
+        assert!(page_button("dictation-hotkey", "capture"));
+        assert!(!page_snap().capturing);
+        // The next press and click on the field start it again.
+        on_press();
+        assert!(page_button("dictation-hotkey", "capture"));
+        assert!(page_snap().capturing);
+        on_blur();
+        assert!(!page_snap().capturing, "a window blur ends it too");
+        assert!(p.prefs.get(prefs::KEYS[2]).is_none());
+    }
+
+    #[test]
+    fn an_unusable_key_keeps_capture_open() {
+        let p = page(["a", "b", "c"]);
+        start_capture_field();
+        // A letter would be typed away by the terminal: it is refused and the field keeps listening.
+        assert!(feed(&key("KeyA"), false));
+        assert!(feed(&key("KeyA"), true));
+        assert!(page_snap().capturing);
+        assert!(p.prefs.get(prefs::KEYS[2]).is_none());
+        // Ctrl+C is the terminal's.
+        assert!(feed(&key("KeyC").ctrl(), false));
+        assert!(page_snap().capturing);
+        // A function key is fine.
+        assert!(feed(&key("F8"), false));
+        assert!(!page_snap().capturing);
+        assert_eq!(stored_key(&p), "F8");
+    }
+
+    #[test]
+    fn reset_writes_the_default_and_a_waiting_field_takes_no_other_key_away() {
+        let p = page(["a", "b", "c"]);
+        // Not waiting: keys are not the field's.
+        assert!(!feed(&key("KeyA"), false));
+        assert!(page_button("dictation-hotkey", "reset"));
+        assert_eq!(stored_key(&p), "Ctrl+Win");
+    }
+
+    #[test]
+    fn the_first_downloaded_model_becomes_active_unless_one_is_and_removing_it_clears_it() {
+        let p = page(["a", "b", "c"]);
+        assert!(page_button("base", "download"));
+        assert_eq!(
+            run_view("base", 5).0,
+            Some(0),
+            "the row shows a download under way"
+        );
+        pump_until("the first model", || active_model() == "base");
+        assert_eq!(run_view("base", 5), (None, None));
+        let s = page_store().unwrap();
+        assert!(
+            s.model_path("base").is_some(),
+            "the file is in place and verified"
+        );
+        // A second one finishing never replaces the one in use.
+        assert!(page_button("small", "download"));
+        pump_until("the second model", || {
+            page_store().unwrap().model_path("small").is_some() && run_view("small", 5).0.is_none()
+        });
+        assert_eq!(active_model(), "base");
+        // Use picks it.
+        assert!(page_button("small", "use"));
+        assert_eq!(active_model(), "small");
+        // Removing the active model clears the stored id.
+        assert!(page_button("small", "uninstall"));
+        pump_until("the removal", || active_model().is_empty());
+        assert!(page_store().unwrap().model_path("small").is_none());
+        assert_eq!(p.prefs.get(prefs::KEYS[7]).as_deref(), Some(""));
+        let _ = p.calls.load(Ordering::SeqCst);
+    }
+
+    #[test]
+    fn remove_cancels_a_download_under_way_and_leaves_nothing() {
+        let p = page(["stall", "b", "c"]);
+        assert!(page_button("base", "download"));
+        assert!(run_view("base", 5).0.is_some());
+        // Uninstall while it runs: the download is cancelled and the files go.
+        assert!(page_button("base", "uninstall"));
+        pump_until("the end of the download", || {
+            run_view("base", 5).0.is_none()
+        });
+        pump_until("the removal", || {
+            runs().get("base").is_none() && page_store().unwrap().model_path("base").is_none()
+        });
+        assert!(active_model().is_empty(), "nothing became active");
+        let _ = &p;
+    }
+
+    #[test]
+    fn a_model_that_does_not_support_every_language_asks_once_and_a_retry_does_not_ask() {
+        let p = page(["a", "b", "fail"]);
+        // The question first: nothing downloads while it asks.
+        assert!(page_button("parakeet-v3", "download"));
+        assert_eq!(page_snap().ask.as_deref(), Some("parakeet-v3"));
+        assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(run_view("parakeet-v3", 5).0, None);
+        // Cancel puts it away and downloads nothing.
+        assert!(page_ask_answer(false));
+        assert!(page_snap().ask.is_none());
+        assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+        // Download starts the download; this one fails.
+        assert!(page_button("parakeet-v3", "download"));
+        assert!(page_ask_answer(true));
+        pump_until("the failure", || run_view("parakeet-v3", 5).1.is_some());
+        assert_eq!(run_view("parakeet-v3", 5).1, Some("The download failed."));
+        // Retry has already been asked: it goes straight to the download.
+        assert!(page_button("parakeet-v3", "download"));
+        assert!(page_snap().ask.is_none(), "a retry does not ask again");
+        assert!(run_view("parakeet-v3", 5).0.is_some());
+        // A Whisper model never asks.
+        assert!(page_button("base", "download"));
+        assert!(page_snap().ask.is_none());
+        pump_until("whisper", || active_model() == "base");
+    }
+
+    #[test]
+    fn a_cancelled_download_says_nothing_and_download_ids_come_only_from_the_catalogue() {
+        let p = page(["stall", "b", "c"]);
+        assert!(page_button("base", "download"));
+        assert!(page_button("base", "cancel"));
+        pump_until("the cancelled end", || run_view("base", 5).0.is_none());
+        assert_eq!(run_view("base", 5), (None, None), "a cancel is no failure");
+        // Anything that is not a catalogue id is nobody's.
+        let before = p.calls.load(Ordering::SeqCst);
+        assert!(!page_button("../x", "download"));
+        assert!(!page_button("dictation-model", "download"));
+        download_item("../x");
+        download_item("");
+        assert_eq!(p.calls.load(Ordering::SeqCst), before);
+        assert!(!owns_row("../x"));
+        assert!(owns_row("dictation-model") && owns_row("gpu-pack") && owns_row("base"));
+    }
+
+    #[test]
+    fn nothing_changes_without_a_store_dictation_off_has_none() {
+        let p = page(["a", "b", "c"]);
+        TEST_STORE.with(|s| *s.borrow_mut() = None);
+        // `store()` is None too (no controller exists in this test): a press does nothing at all.
+        assert!(page_button("base", "download"));
+        assert!(runs().is_empty());
+        assert_eq!(p.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_switches_and_the_choices_write_their_own_keys() {
+        let p = page(["a", "b", "c"]);
+        assert!(page_switch("dictation-enabled", true));
+        assert_eq!(p.prefs.get(prefs::KEYS[0]).as_deref(), Some("1"));
+        assert!(page_switch("dictation-pause-media", true));
+        assert_eq!(p.prefs.get(prefs::KEYS[5]).as_deref(), Some("1"));
+        assert!(page_switch("dictation-sounds", false));
+        assert_eq!(p.prefs.get(prefs::KEYS[6]).as_deref(), Some("0"));
+        assert!(page_switch("dictation-anywhere", false));
+        assert_eq!(p.prefs.get(prefs::KEYS[8]).as_deref(), Some("0"));
+        assert!(page_choose("dictation-mode", "toggle"));
+        assert_eq!(p.prefs.get(prefs::KEYS[1]).as_deref(), Some("toggle"));
+        assert!(!page_choose("dictation-mode", "sideways"));
+        assert!(page_choose("dictation-mic", "mic-9"));
+        assert_eq!(p.prefs.get(prefs::KEYS[3]).as_deref(), Some("mic-9"));
+        assert!(page_choose("dictation-language", "no"));
+        assert_eq!(p.prefs.get(prefs::KEYS[4]).as_deref(), Some("no"));
+        assert!(!page_choose("dictation-language", "klingon"));
+        assert_eq!(p.prefs.get(prefs::KEYS[4]).as_deref(), Some("no"));
+        // Off: nothing waits, listens or asks.
+        start_capture_field();
+        PAGE.with(|q| q.borrow_mut().ask = Some("parakeet-v3".into()));
+        assert!(page_switch("dictation-enabled", false));
+        assert!(!page_snap().capturing && page_snap().ask.is_none());
+        assert_eq!(p.prefs.get(prefs::KEYS[0]).as_deref(), Some("0"));
+    }
+
+    /// A WAV of a tenth of a second of silence, in the temp folder.
+    fn silent_wav(dir: &Path) -> PathBuf {
+        let path = dir.join("silence.wav");
+        std::fs::write(
+            &path,
+            flare_dictation::wav::encode_wav(&vec![0.0; 1600], 16_000),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn the_page_never_opens_the_mic() {
+        // 1. Nothing the page builds or reads touches a microphone: no source file of the page calls the capture
+        //    or lists a device on the UI thread (the listing is a worker's).
+        for (name, src) in [
+            ("dictation_page.rs", include_str!("dictation_page.rs")),
+            ("settings_ctl.rs", include_str!("settings_ctl.rs")),
+        ] {
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for banned in ["start_capture", "open_mic(", "list_mics("] {
+                assert!(!code.contains(banned), "{name} calls {banned}");
+            }
+        }
+        // 2. At run time: reading the page's state and the controls that are not Test open none.
+        let p = page(["a", "b", "c"]);
+        let dir = tempfile::tempdir().unwrap();
+        TEST_MIC.with(|m| *m.borrow_mut() = Some(MicSource::File(silent_wav(dir.path()))));
+        let before = MIC_OPENS.load(Ordering::SeqCst);
+        let _ = page_snap();
+        assert!(page_button("dictation-hotkey", "capture"));
+        assert!(page_button("dictation-hotkey", "capture"));
+        assert!(page_choose("dictation-mic", "x"));
+        assert!(page_switch("dictation-enabled", true));
+        assert_eq!(
+            MIC_OPENS.load(Ordering::SeqCst),
+            before,
+            "nothing opened a microphone"
+        );
+        // 3. The Test button opens it, once, and Stop lets go.
+        assert!(page_button("dictation-mic", "test"));
+        assert_eq!(MIC_OPENS.load(Ordering::SeqCst), before + 1);
+        assert!(page_snap().mic_testing);
+        assert!(
+            crate::timer_registry::running(TEST_TICK) && crate::timer_registry::running(TEST_STOP)
+        );
+        assert!(page_button("dictation-mic", "test"));
+        assert!(!page_snap().mic_testing);
+        assert!(
+            !crate::timer_registry::running(TEST_TICK),
+            "the meter timer is gone"
+        );
+        assert_eq!(MIC_OPENS.load(Ordering::SeqCst), before + 1);
+        let _ = &p;
+    }
+
+    #[test]
+    fn a_refused_microphone_says_so_and_another_failure_says_none_was_found() {
+        let p = page(["a", "b", "c"]);
+        let dir = tempfile::tempdir().unwrap();
+        TEST_MIC.with(|m| *m.borrow_mut() = Some(MicSource::File(silent_wav(dir.path()))));
+        for (failure, said) in [
+            (CaptureFailure::Denied, "Microphone access was refused."),
+            (CaptureFailure::NoDevice, "No working microphone was found."),
+            (CaptureFailure::Failed, "No working microphone was found."),
+        ] {
+            assert!(page_button("dictation-mic", "test"));
+            let epoch = PAGE.with(|q| q.borrow().test_epoch);
+            test_opened(epoch, Err(failure));
+            let snap = page_snap();
+            assert!(
+                !snap.mic_testing,
+                "a microphone that will not open ends the Test"
+            );
+            assert_eq!(snap.mic_problem.as_deref(), Some(said));
+        }
+        // A new Test clears the problem; an answer of an older Test is let go of.
+        assert!(page_button("dictation-mic", "test"));
+        assert!(page_snap().mic_problem.is_none());
+        let old = PAGE.with(|q| q.borrow().test_epoch) - 1;
+        struct Gone(Arc<AtomicUsize>);
+        impl Capture for Gone {
+            fn stop(self: Box<Self>) -> Vec<f32> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            }
+        }
+        let stopped = Arc::new(AtomicUsize::new(0));
+        test_opened(old, Ok(Box::new(Gone(Arc::clone(&stopped)))));
+        assert_eq!(
+            stopped.load(Ordering::SeqCst),
+            1,
+            "an old answer's microphone is let go at once"
+        );
+        assert!(
+            page_snap().mic_testing,
+            "and the current Test is not disturbed"
+        );
+        page_left();
+        assert!(!page_snap().mic_testing, "leaving the page ends the Test");
+        let _ = &p;
+    }
+
+    #[test]
+    fn the_meter_rises_at_once_and_falls_by_85_15() {
+        let p = page(["a", "b", "c"]);
+        let seen = Rc::new(Cell::new(-1.0_f32));
+        let s = Rc::clone(&seen);
+        register_page(p.prefs.clone(), Rc::new(|| {}), Rc::new(move |l| s.set(l)));
+        let peak = Arc::new(std::sync::atomic::AtomicU32::new(0.8_f32.to_bits()));
+        PAGE.with(|q| {
+            let mut q = q.borrow_mut();
+            q.mic_testing = true;
+            q.test_peak = Some(Arc::clone(&peak));
+        });
+        meter_tick();
+        assert!(
+            (seen.get() - 0.8).abs() < 1e-6,
+            "up at once: {}",
+            seen.get()
+        );
+        meter_tick();
+        assert!(
+            (seen.get() - 0.8 * 0.85).abs() < 1e-6,
+            "down by 85/15: {}",
+            seen.get()
+        );
+        peak.store(2.0_f32.to_bits(), Ordering::SeqCst);
+        meter_tick();
+        assert!((seen.get() - 1.0).abs() < 1e-6, "never past full");
+    }
+}
+
+/// What the Dictation page's tests share: a store that downloads "hello" and a clean page state.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use super::*;
+    use flare_dictation::store::{Failure, Fetch, Item, Kind, StoreConfig};
+    use std::sync::atomic::AtomicUsize;
+
+    /// The SHA-256 of "hello".
+    const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+    /// Serves "hello", except for the urls that stall (until cancelled) or fail.
+    struct Fake {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Fetch for Fake {
+        fn get(&self, url: &str, sink: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), Failure> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if url.contains("fail") {
+                return Err(Failure::Network);
+            }
+            if url.contains("stall") {
+                loop {
+                    std::thread::sleep(Duration::from_millis(5));
+                    if !sink(&[]) {
+                        return Err(Failure::Cancelled);
+                    }
+                }
+            }
+            if sink(b"hello") {
+                Ok(())
+            } else {
+                Err(Failure::Cancelled)
+            }
+        }
+    }
+
+    fn item(id: &str, url: &str) -> Item {
+        Item {
+            id: id.into(),
+            url: url.into(),
+            bytes: 5,
+            sha256: HELLO.into(),
+            kind: Kind::Model,
+        }
+    }
+
+    /// A store of three catalogue ids (`base`, `small`, `parakeet-v3`) that downloads "hello" for each, from the
+    /// urls given (a url with "stall" in it never ends, one with "fail" fails). Also the temp folder it lives in
+    /// and the count of fetches made.
+    pub(crate) fn fake_store(urls: [&str; 3]) -> (Store, tempfile::TempDir, Arc<AtomicUsize>) {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let store = Store::with_config(StoreConfig {
+            root: dir.path().join("FlareDictation"),
+            fetch: Box::new(Fake {
+                calls: Arc::clone(&calls),
+            }),
+            catalog: vec![
+                item("base", urls[0]),
+                item("small", urls[1]),
+                item("parakeet-v3", urls[2]),
+            ],
+            now: None,
+            unzip: None,
+        })
+        .unwrap();
+        (store, dir, calls)
+    }
+
+    /// Puts `store` in place of the real one and the page's state back to nothing.
+    pub(crate) fn install_store(store: Store) {
+        TEST_STORE.with(|s| *s.borrow_mut() = Some(store));
+        TEST_MIC.with(|m| *m.borrow_mut() = None);
+        TEST_POSTS.lock().unwrap().clear();
+        runs().clear();
+        PAGE.with(|p| *p.borrow_mut() = PageUi::default());
+    }
+
+    /// Runs what the workers posted to the UI thread until `done` holds (or five seconds pass).
+    pub(crate) fn pump_until(what: &str, done: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            let next = TEST_POSTS.lock().unwrap().pop_front();
+            match next {
+                Some(f) => f(),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+        }
+    }
+
+    /// The active model as stored.
+    pub(crate) fn model_now() -> String {
+        active_model()
+    }
+
+    /// The microphones the page lists.
+    pub(crate) fn set_mics(mics: &[(&str, &str)]) {
+        PAGE.with(|p| {
+            p.borrow_mut().mics = Some(
+                mics.iter()
+                    .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+                    .collect(),
+            );
+        });
+    }
+
+    /// A tenth of a second of silence as the microphone (a file, never the device).
+    pub(crate) fn silent_mic(dir: &Path) {
+        let path = dir.join("silence.wav");
+        std::fs::write(
+            &path,
+            flare_dictation::wav::encode_wav(&[0.0; 1600], 16_000),
+        )
+        .unwrap();
+        TEST_MIC.with(|m| *m.borrow_mut() = Some(MicSource::File(path)));
     }
 }

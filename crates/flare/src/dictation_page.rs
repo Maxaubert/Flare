@@ -5,9 +5,8 @@
 use flare_dictation::catalog::{self, LANGUAGES, ModelEntry, Runner};
 use flare_dictation::hotkey::DictMode;
 use flare_dictation::hotkey::format_hotkey;
-use flare_dictation::mic;
 use flare_settings::page::dictation::{
-    self as page, DictationData, GPU_PACK_ID, ItemInfo, ItemState, ModelInfo, Prefs, Vendor,
+    self as page, Ask, DictationData, GPU_PACK_ID, ItemInfo, ItemState, ModelInfo, Prefs, Vendor,
 };
 use flare_settings::page::{DictationPage, PageEnv, SectionModel};
 
@@ -50,38 +49,42 @@ pub fn model_infos() -> Vec<ModelInfo> {
         .collect()
 }
 
-/// The page's data for this environment. Reads the stored preferences, the microphones and, while
-/// dictation is on, the store (every model and the pack, installed or not).
+/// The page's data for this environment. Reads the stored preferences, the page's own state (a key being
+/// captured, the Test, the question), the microphones a worker found and, while dictation is on, the store (every
+/// model and the pack, installed or not, or downloading). It opens no microphone and starts no download.
 pub fn page_data(env: &PageEnv<'_>) -> DictationData {
     let kv = |k: &str| env.prefs.get(k);
     let dp = crate::dictation_ctl::stored_prefs(&kv);
     let store = crate::dictation_ctl::store();
+    let snap = crate::dictation_ctl::page_snap();
     let mut items: Vec<(String, ItemInfo)> = Vec::new();
-    let installed = |yes: bool| ItemInfo {
-        state: if yes {
-            ItemState::Installed
-        } else {
-            ItemState::Absent
-        },
-        failure: None,
+    let item = |id: &str, bytes: u64, yes: bool| {
+        let (pct, failure) = crate::dictation_ctl::run_view(id, bytes);
+        ItemInfo {
+            state: match pct {
+                Some(pct) => ItemState::Downloading { pct },
+                None if yes => ItemState::Installed,
+                None => ItemState::Absent,
+            },
+            failure: failure.map(str::to_string),
+        }
     };
     for m in catalog::visible_models() {
         // sync-ok: a file check per model, answered from the store's 30 s memo while the page is open
         let yes = store.as_ref().is_some_and(|s| s.model_path(m.id).is_some());
-        items.push((m.id.to_string(), installed(yes)));
+        items.push((m.id.to_string(), item(m.id, m.bytes, yes)));
     }
     // sync-ok: the pack's marker file, checked once per page build
     let pack = store.as_ref().is_some_and(|s| s.gpu_engine_dir().is_some());
-    items.push((GPU_PACK_ID.to_string(), installed(pack)));
-    let mics = mic::list_mics()
-        .into_iter() // sync-ok: device enumeration when the Dictation page is built
-        .map(|m| (m.id, m.name))
-        .collect();
+    items.push((
+        GPU_PACK_ID.to_string(),
+        item(GPU_PACK_ID, catalog::GPU_PACK.bytes, pack),
+    ));
     DictationData {
         models: model_infos(),
         recommended: recommended(pack),
         items,
-        mics,
+        mics: crate::dictation_ctl::page_mics(),
         languages: LANGUAGES.to_vec(),
         prefs: Prefs {
             enabled: dp.enabled,
@@ -94,15 +97,17 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
             model: dp.model,
             anywhere: dp.anywhere,
         },
-        capturing: false,
-        mic_testing: false,
-        mic_level: 0.0,
-        mic_problem: None,
-        gpu_fell_back: false,
-        ask: None,
+        capturing: snap.capturing,
+        mic_testing: snap.mic_testing,
+        mic_level: snap.mic_level,
+        mic_problem: snap.mic_problem,
+        gpu_fell_back: crate::dictation_ctl::gpu_fell_back(),
+        ask: snap.ask.map(|model_id| Ask {
+            model_id,
+            text: catalog::LIMITED_LANGUAGES_TEXT,
+        }),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

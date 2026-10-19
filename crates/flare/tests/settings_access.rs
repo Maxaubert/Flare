@@ -125,16 +125,17 @@ fn every_value_control_is_named_by_its_row_label_and_described_by_its_subtext() 
 fn the_row_hands_its_label_and_subtext_to_each_control() {
     let view = ui("settings/view.slint");
     let controls = component(&view, "RowControls");
-    // switch, segmented, select, slider and the colour field: five controls, each given both.
+    // switch, segmented, select, slider and the colour field, then the dictation key field and the microphone
+    // (M8 Task 25): seven controls, each given both.
     assert_eq!(
         controls.matches("label: root.data.label;").count(),
-        5,
-        "five controls carry the row label"
+        7,
+        "seven controls carry the row label"
     );
     assert_eq!(
         controls.matches("sub: root.data.sub;").count(),
-        5,
-        "five controls carry the row subtext"
+        7,
+        "seven controls carry the row subtext"
     );
 }
 

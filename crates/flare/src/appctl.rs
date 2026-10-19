@@ -2846,6 +2846,8 @@ impl AppCtl {
     }
 
     pub fn on_pointer_down(&mut self) {
+        // A press anywhere ends a key capture on the Dictation page (the field's own click follows it).
+        crate::dictation_ctl::on_press();
         self.clear_tip();
         if self.flight.on() {
             self.flight.pointer_down();

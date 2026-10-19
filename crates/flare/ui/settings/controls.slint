@@ -211,15 +211,22 @@ export component SetRowButton inherits Rectangle {
     in property <bool> alt;
     in property <bool> off;
     in property <bool> in-row: true;
+    // A stroked 11 px glyph (24 unit path data) left of the label, 6 px away (the dictation Uninstall's cross).
+    in property <string> icon;
+    // The tooltip said on hover (the Uninstall and Disable buttons).
+    in property <string> title;
     out property <bool> keyboard-focus: fs.has-focus && root.by-key;
     callback clicked();
+    callback tip(string, length, length, length, length);
     property <bool> by-key;
+    property <length> icon-room: root.icon != "" ? 17px : 0px;
+    property <length> label-w: root.alt ? m2.preferred-width : m1.preferred-width;
 
     public function focus-me() {
         fs.focus();
     }
 
-    width: max(m1.preferred-width, m2.preferred-width) + 24px;
+    width: max(m1.preferred-width, m2.preferred-width) + 24px + root.icon-room;
     height: SettingsShape.control-h;
     border-radius: SettingsShape.radius-sm;
     background: ta.has-hover && !root.off ? Theme.hover : Theme.control;
@@ -251,7 +258,8 @@ export component SetRowButton inherits Rectangle {
     }
 
     Text {
-        width: parent.width;
+        x: root.icon-room;
+        width: parent.width - root.icon-room;
         height: parent.height;
         text: root.alt ? root.label-alt : root.label;
         font-family: SettingsFixed.font-text;
@@ -260,6 +268,21 @@ export component SetRowButton inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         color: Theme.text;
+    }
+
+    // The glyph, 11 px, centred with its label. The stroked box grows by one stroke and moves back.
+    if root.icon != "": Path {
+        x: (root.width - root.label-w - 17px) / 2 - (2.6 * 11px / 24) / 2;
+        y: (root.height - 11px) / 2 - (2.6 * 11px / 24) / 2;
+        width: 11px + (2.6 * 11px / 24);
+        height: 11px + (2.6 * 11px / 24);
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: transparent;
+        stroke: Theme.text;
+        stroke-width: 2.6 * 11px / 24;
+        stroke-line-cap: round;
     }
 
     fs := FocusScope {
@@ -286,6 +309,11 @@ export component SetRowButton inherits Rectangle {
         }
         clicked => {
             root.clicked();
+        }
+        changed has-hover => {
+            if self.has-hover && root.title != "" {
+                root.tip(root.title, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
         }
     }
 }
