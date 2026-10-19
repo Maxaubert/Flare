@@ -567,6 +567,10 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_icon: r.trailing_icon.map_or("", glyph_path).into(),
         trailing_filled: r.trailing_filled,
         trailing_tip: r.trailing_tip.as_str().into(),
+        keep_open: false,
+        flyout: false,
+        flyout_pick: false,
+        parent: -1,
     }
 }
 

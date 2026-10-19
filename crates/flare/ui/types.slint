@@ -27,7 +27,12 @@ export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, mo
 export struct Place { path: string, name: string, near: string, label: string, pinned: bool }
 
 export struct MenuRow { label: string, hint: string, icon: string, filled-icon: bool, disabled: bool,
-                        trailing-icon: string, trailing-filled: bool, trailing-tip: string }
+                        trailing-icon: string, trailing-filled: bool, trailing-tip: string,
+                        // Checklist row: a pick acts and leaves the menu up (PT keepOpen).
+                        keep-open: bool,
+                        // A row with a flyout of children (one level); the children are the rows whose
+                        // parent is this row's index. A flyout row is flyout-only unless lyout-pick.
+                        flyout: bool, flyout-pick: bool, parent: int }
 
 export struct OverflowRow { id: string, label: string, folder: string, needs: bool, loading: bool, settings: bool,
                             mark-state: int, mark-color: color, agent: int }

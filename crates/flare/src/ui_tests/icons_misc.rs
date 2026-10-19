@@ -274,7 +274,7 @@ const SIZED: [(&str, usize); 8] = [
     ("tabs.slint", 5),
     ("tabmark.slint", 6),
     ("sidebar.slint", 3),
-    ("menus.slint", 3),
+    ("menus.slint", 4),
     ("start.slint", 1),
     ("find.slint", 1),
     ("app.slint", 1),

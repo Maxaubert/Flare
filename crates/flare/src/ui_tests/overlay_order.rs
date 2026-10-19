@@ -119,6 +119,10 @@ fn rows() -> ModelRc<MenuRow> {
         trailing_icon: "".into(),
         trailing_filled: false,
         trailing_tip: "".into(),
+        keep_open: false,
+        flyout: false,
+        flyout_pick: false,
+        parent: -1,
     };
     ModelRc::new(VecModel::from(vec![
         row("Copy"),

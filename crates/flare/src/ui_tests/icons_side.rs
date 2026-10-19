@@ -68,6 +68,10 @@ fn row(label: &str) -> MenuRow {
         trailing_icon: "".into(),
         trailing_filled: false,
         trailing_tip: "".into(),
+        keep_open: false,
+        flyout: false,
+        flyout_pick: false,
+        parent: -1,
     }
 }
 
@@ -228,6 +232,32 @@ fn draw_menu_trailing(s: f32) -> Drawn {
     )
 }
 
+const CHEVRON: &str = "M9 6l6 6-6 6";
+
+fn draw_menu_chevron(s: f32) -> Drawn {
+    let mut r0 = row("One");
+    r0.flyout = true;
+    let mut child = row("Child");
+    child.parent = 0;
+    let (h, px, py, pw) = menu(s, vec![r0, row("Two"), child]);
+    let f = h.render();
+    // The 11 px chevron ends 11 px of padding in from the panel's inner right edge.
+    let hair = s.floor().max(1.0) / s;
+    let r = region_around(
+        &f,
+        (px + pw - hair - 11.0 - 5.5) * s,
+        (py + hair + 14.0) * s,
+        9.0 * s,
+    );
+    let bg = ground(&f, r);
+    let got =
+        ink_edges(&f, r, &Ink::new(bg, blend(bg, TEXT_SOFT, 0.7))).expect("the chevron is drawn");
+    (
+        got,
+        expected_extent_px(CHEVRON, 11.0, 24.0, 2.2 * 11.0 / 24.0, s),
+    )
+}
+
 fn draw_search_small(s: f32) -> Drawn {
     let orow = OverflowRow {
         id: "t0".into(),
@@ -314,6 +344,13 @@ fn menu_icon_draws_at_full_size_at_every_scale() {
 fn menu_trailing_pin_draws_at_full_size_at_every_scale() {
     for s in SCALES {
         assert_size("menu trailing pin", s, draw_menu_trailing(s));
+    }
+}
+
+#[test]
+fn menu_flyout_chevron_draws_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("menu flyout chevron", s, draw_menu_chevron(s));
     }
 }
 
