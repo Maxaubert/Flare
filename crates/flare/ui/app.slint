@@ -209,6 +209,8 @@ export component AppWindow inherits Window {
     in property <StripGeom> strip-geom;
     in property <bool> carrying;
     in property <bool> drag-in-flight;
+    // Whether the strip is window-drag (off while a file drag is in flight); read by the e2e probe.
+    out property <bool> strip-has-move-area: strip.has-move-area;
     in property <string> new-tab-title;
     in property <string> find-tab-key;
     in property <string> new-key;

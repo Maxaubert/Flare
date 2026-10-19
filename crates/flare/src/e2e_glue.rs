@@ -2,7 +2,7 @@
 //! over (Tasks 8 to 11 fill its arms), and the render hooks the window's notifier calls (Appendix F).
 //! Nothing here does anything unless `--e2e` is on.
 //!
-//! Task 8 owns the input arms: `Key`, `KeyPress`, `Text`, `Pointer`, `Drag`, `DropFiles`,
+//! Task 8 owns the input arms: `Key`, `KeyPress`, `Text`, `Pointer`, `Drag`, `HoverFiles`, `DropFiles`,
 //! `Resize`, `Focus`, `Quit`, `BlockUi`, `Slow`, `PanicWorker`, `Window`, `ClipSet`.
 
 use std::cell::RefCell;
@@ -1005,6 +1005,17 @@ impl DropTarget for AppCtl {
     }
 }
 
+/// A file hovers the window and nothing is dropped (winit's `HoveredFile` alone): a drag in flight.
+pub fn hover_files(target: &mut dyn DropTarget) {
+    target.hovered();
+}
+
+/// Whether the controller hears the injected cursor: a collapsed sidebar is revealed by it, and a
+/// file drag in flight ends on the next move (the real window tells it with every `CursorMoved`).
+pub fn cursor_listening(sidebar_collapsed: bool, drag_in_flight: bool) -> bool {
+    sidebar_collapsed || drag_in_flight
+}
+
 /// Hovered, then each path dropped at `at`.
 pub fn drop_files(target: &mut dyn DropTarget, paths: &[String], at: (f32, f32)) {
     target.hovered();
@@ -1058,7 +1069,13 @@ impl GlueCtx {
             {
                 c.on_pointer_look();
             }
-            if let Some(told) = cursor_forward(&e, app.get_sidebar_collapsed())
+            let in_flight = self
+                .ctl
+                .upgrade()
+                .and_then(|rc| rc.try_borrow().ok().map(|c| c.drag_in_flight()))
+                .unwrap_or(false);
+            if let Some(told) =
+                cursor_forward(&e, cursor_listening(app.get_sidebar_collapsed(), in_flight))
                 && let Some(rc) = self.ctl.upgrade()
                 && let Ok(mut c) = rc.try_borrow_mut()
             {
@@ -1500,6 +1517,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             steps,
             button,
         } => ctx.dispatch(drag_events(from, to, steps, button)),
+        Request::HoverFiles => ctx.with_ctl(|c| hover_files(c)),
         Request::DropFiles { paths, x, y } => ctx.with_ctl(|c| drop_files(c, &paths, (x, y))),
         Request::Resize { w, h } => ctx
             .app
@@ -1828,6 +1846,26 @@ mod tests {
                 "drop C:/a.txt (5.0, 6.0)",
                 "drop C:/b.txt (5.0, 6.0)"
             ]
+        );
+    }
+
+    #[test]
+    fn a_hover_alone_never_drops() {
+        let mut f = Fake::default();
+        hover_files(&mut f);
+        assert_eq!(f.0, vec!["hover"]);
+    }
+
+    #[test]
+    fn a_drag_in_flight_makes_the_controller_hear_the_cursor() {
+        let at = LogicalPosition::new(40.0, 10.0);
+        let mv = WindowEvent::PointerMoved { position: at };
+        assert!(cursor_listening(false, true));
+        assert!(cursor_listening(true, false));
+        assert!(!cursor_listening(false, false));
+        assert_eq!(
+            cursor_forward(&mv, cursor_listening(false, true)),
+            Some(Some((40.0, 10.0)))
         );
     }
 

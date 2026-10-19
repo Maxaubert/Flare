@@ -2803,6 +2803,11 @@ impl AppCtl {
         }
     }
 
+    /// Whether a file drag hovers the window (the strip is off window-drag meanwhile).
+    pub fn drag_in_flight(&self) -> bool {
+        self.flight.on()
+    }
+
     pub fn on_hovered_file(&mut self) {
         self.flight.hovered_file();
         self.refresh();

@@ -417,19 +417,31 @@ fn review_keys_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         return Err("the second tab did not open".into());
     }
 
-    // PT: run.mjs:4466 (#33). A drag in flight takes the strip off window-drag. A file drag's
-    // hover has no request of its own (`DropFiles` sends the hover and the drop, as winit does),
-    // so the hover-only step has no seam in the protocol yet.
+    // PT: run.mjs:4466-4469 (#33). A file drag in flight (the hover alone, no drop) takes the
+    // strip off window-drag, and the next pointer move gives it back.
+    app.session.call(&Request::HoverFiles)?;
+    let flying = wait(3_000, &mut || {
+        app.session
+            .probe_str("drag.state")
+            .is_ok_and(|v| v["in_flight"] == true && v["strip_move_area"] == false)
+    });
+    // PT: run.mjs:4467
+    ctx.ok(flying, "a drag in flight takes the strip off window-drag");
+    app.session.call(&Request::Pointer {
+        x: 300.0,
+        y: 20.0,
+        action: PointerAction::Move,
+    })?;
+    let back = wait(3_000, &mut || {
+        app.session
+            .probe_str("drag.state")
+            .is_ok_and(|v| v["in_flight"] == false && v["strip_move_area"] == true)
+    });
+    // PT: run.mjs:4469
     ctx.ok(
-        false,
-        "a drag in flight takes the strip off window-drag: NEEDS SEAM, a hover-only file drag (proto DropFiles also drops)",
+        back,
+        "and the next pointer move after it gives the strip back",
     );
-    // PT: run.mjs:4469 (#33). The next move gives the strip back: the same missing hover seam.
-    ctx.ok(
-        false,
-        "and the next pointer move after it gives the strip back: NEEDS SEAM, the same hover-only file drag",
-    );
-
     // PT has beta (the second tab) in front at launch; Flare opens the first folder in front, so
     // the same tab is made front with the same click the user would make.
     if let Some((bx, by)) = centre_of(app, "tab:1") {

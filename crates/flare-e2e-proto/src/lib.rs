@@ -67,6 +67,8 @@ pub enum Request {
         steps: u32,
         button: Button,
     },
+    /// A file hovers the window and is not dropped (winit's `HoveredFile` alone): a drag in flight.
+    HoverFiles,
     /// Hovered-file then dropped-file, as winit does.
     DropFiles {
         paths: Vec<String>,
@@ -277,6 +279,7 @@ mod tests {
                 steps: 8,
                 button: Button::Right,
             },
+            Request::HoverFiles,
             Request::DropFiles {
                 paths: vec!["C:/a.txt".into()],
                 x: 5.0,
