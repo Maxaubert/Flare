@@ -193,7 +193,7 @@ impl MediaPause {
                 let ids = clean(ids);
                 if !self.deliver(n, Token(ids.clone())) && !ids.is_empty() {
                     // Disposed while the pause was in flight: nobody holds the token, so undo it.
-                    let _ = self.send(Req::Resume(ids));
+                    self.undo(ids);
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -215,15 +215,41 @@ impl MediaPause {
                 // THE DANGEROUS HALF OF A TIMEOUT: the worker was only slow, the music DID stop,
                 // and no token exists that would start it again. Undo it as soon as it says so.
                 if let Ok(ids) = res_rx.recv() {
+                    // A slow worker that answers is alive: it does not count towards a drop.
+                    lock(&self.inner).timeouts_in_a_row = 0;
                     let ids = clean(ids);
                     if !ids.is_empty() {
-                        let _ = self.send(Req::Resume(ids));
+                        self.undo(ids);
                     }
                 }
             }
         }
     }
 
+    /// Undoes a pause nobody holds a token for. Goes to the live worker if there is one; otherwise
+    /// (disposed, or the worker was dropped) a one-shot port does it and is gone again, so a late
+    /// answer never leaves a media worker parked while dictation is off.
+    fn undo(&self, ids: Vec<String>) {
+        let live = lock(&self.inner).worker.as_ref().map(|w| w.tx.clone());
+        let ids = match live {
+            Some(tx) => match tx.send(Req::Resume(ids)) {
+                Ok(()) => return,
+                Err(e) => match e.0 {
+                    Req::Resume(ids) => ids,
+                    Req::Pause(_) => return,
+                },
+            },
+            None => ids,
+        };
+        let factory = Arc::clone(&self.factory);
+        let _ = std::thread::Builder::new()
+            .name("flare-media-undo".into())
+            .spawn(move || {
+                if let Some(mut port) = factory() {
+                    port.resume(&ids);
+                }
+            });
+    }
     /// Hands the token to caller `n`; false when that caller was already answered (by dispose).
     fn deliver(&self, n: u64, token: Token) -> bool {
         let tx = lock(&self.inner).waiting.remove(&n);
@@ -768,14 +794,60 @@ mod tests {
     }
 
     #[test]
+    fn a_late_answer_after_dispose_is_undone_without_leaving_a_worker_behind() {
+        let r = rig(&[("spotify", St::Playing)], Mode::Hang, 3000);
+        let rx = r.media.pause();
+        until(|| r.world.lock().unwrap().pause_calls == 1);
+        r.media.dispose();
+        assert_eq!(get(&rx), Token::default());
+        r.gate.store(true, Ordering::SeqCst);
+        // The pause lands after dispose: it is undone, and dictation being off means no worker.
+        until(|| status(&r, "spotify") == St::Playing);
+        assert!(lock(&r.media.inner).worker.is_none());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(lock(&r.media.inner).worker.is_none());
+    }
+
+    #[test]
+    fn a_late_answer_after_the_worker_was_dropped_leaves_no_new_worker() {
+        let r = rig(&[("spotify", St::Playing)], Mode::Delay(500), 100);
+        let _ = get(&r.media.pause());
+        let _ = get(&r.media.pause());
+        until(|| lock(&r.media.inner).worker.is_none());
+        until(|| status(&r, "spotify") == St::Playing && r.world.lock().unwrap().log.len() >= 2);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(lock(&r.media.inner).worker.is_none());
+    }
+
+    #[test]
+    fn a_slow_but_alive_worker_is_not_dropped_when_its_late_answer_comes() {
+        // Cold first pause: slower than the clock, answers late. The next slow pause must not count
+        // as the second timeout in a row, or a merely slow worker is replaced by a second one.
+        let r = rig(&[("spotify", St::Playing)], Mode::Delay(400), 150);
+        assert_eq!(get(&r.media.pause()), Token::default());
+        until(|| {
+            r.world
+                .lock()
+                .unwrap()
+                .log
+                .iter()
+                .any(|l| l == "resume spotify")
+        });
+        assert_eq!(get(&r.media.pause()), Token::default());
+        assert!(lock(&r.media.inner).worker.is_some());
+        assert_eq!(r.workers.load(Ordering::SeqCst), 1);
+        until(|| status(&r, "spotify") == St::Playing);
+        r.media.dispose();
+    }
+
+    #[test]
     fn never_sends_the_play_pause_key() {
-        // The key toggles: on a machine where nothing played it would START music. The crate must
-        // not name the media key or synthesise any key. Names are joined so this file passes.
-        let banned = [
-            ["VK_MEDIA", "_PLAY_PAUSE"].concat(),
-            ["Send", "Input"].concat(),
-            ["keybd", "_event"].concat(),
-        ];
+        // The key toggles: on a machine where nothing played it would START music. No file in the
+        // crate may name a media-key VK; only this file may not synthesise keys at all (the
+        // keyboard hook has its own file and its own use of key injection).
+        // Names are joined so this file passes.
+        let media_vk = ["VK_MEDIA", "_"].concat();
+        let synth = [["Send", "Input"].concat(), ["keybd", "_event"].concat()];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![src];
         let mut scanned = 0;
@@ -789,12 +861,19 @@ mod tests {
                     stack.push(path);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).expect("read a source file");
-                    for word in &banned {
-                        assert!(
-                            !text.contains(word.as_str()),
-                            "{} names {word}",
-                            path.display()
-                        );
+                    assert!(
+                        !text.contains(media_vk.as_str()),
+                        "{} names a media-key VK",
+                        path.display()
+                    );
+                    if path.file_name().is_some_and(|n| n == "media.rs") {
+                        for word in &synth {
+                            assert!(
+                                !text.contains(word.as_str()),
+                                "{} names {word}",
+                                path.display()
+                            );
+                        }
                     }
                     scanned += 1;
                 }
