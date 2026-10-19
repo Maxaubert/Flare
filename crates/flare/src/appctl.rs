@@ -3415,7 +3415,11 @@ impl AppCtl {
             return;
         }
         if let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) {
-            flare_win::sysmenu::show_at_top_left(hwnd);
+            // The menu runs its own message loop: shown from a zero timer, once this key is handled
+            // and the controller is let go, so shell output and timers reach it while the menu is up.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                flare_win::sysmenu::show_at_top_left(hwnd)
+            });
         }
     }
 }
@@ -4438,6 +4442,23 @@ mod tests {
             f.h.right_click(x, BAR_H / 2.0);
         }
         assert_eq!(system_menu_requests(), before);
+    }
+
+    #[test]
+    fn the_system_menu_opens_after_the_controller_is_let_go() {
+        // The menu runs its own message loop. Opened inside on_key, the controller stays borrowed
+        // for as long as the menu is up, and every message for it (shell output, timers) finds it
+        // busy and is posted again at once: a spin. The menu is shown from a zero timer instead.
+        let src = include_str!("appctl.rs");
+        let at = src
+            .find("pub fn open_system_menu")
+            .expect("the method exists");
+        let body = &src[at..at + src[at..].find("\n    }").expect("its end")];
+        assert!(
+            !body.contains("sysmenu::show_at_top_left(hwnd);"),
+            "the menu must not open while the controller is borrowed"
+        );
+        assert!(body.contains("Timer::single_shot"), "the menu is deferred");
     }
 
     #[test]
