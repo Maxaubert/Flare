@@ -537,7 +537,8 @@ fn settings_deps(
                 .upgrade()
                 .and_then(|a| hwnd_of(&a))
                 .map(|hwnd| ParentWindow { hwnd });
-            let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+            // Under --e2e an unset seam is a cancel (an empty value): no real dialog shows.
+            let seam = e2e::global().dialog_seam(&["FLARE_E2E", "_PICK"].concat(), "", |_| true);
             pick_folder(
                 PickOptions {
                     parent,
@@ -893,7 +894,9 @@ pub fn run_window(
                         .upgrade()
                         .and_then(|a| hwnd_of(&a))
                         .map(|hwnd| ParentWindow { hwnd });
-                    let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+                    // Under --e2e an unset seam is a cancel: no real dialog shows.
+                    let seam =
+                        e2e::global().dialog_seam(&["FLARE_E2E", "_PICK"].concat(), "", |_| true);
                     pick_folder(
                         PickOptions {
                             parent,

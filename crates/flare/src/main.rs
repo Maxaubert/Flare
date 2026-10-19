@@ -274,9 +274,20 @@ fn attach_parent_console() {}
 /// never passes `dialog`, so no box can block it.
 fn show_fatal(title: &str, message: &str, dialog: bool) {
     eprintln!("flare: {message}");
-    if dialog && (!cfg!(debug_assertions) || !console_attached()) {
+    if fatal_dialog_shows(
+        dialog,
+        cfg!(debug_assertions),
+        console_attached(),
+        e2e::global().on(),
+    ) {
         message_box(title, message);
     }
+}
+
+/// Whether a fatal error is also shown in a message box: never under --e2e (no window is ever
+/// shown to the owner), and not in a debug run that has a console to print to.
+fn fatal_dialog_shows(dialog: bool, debug: bool, console: bool, e2e: bool) -> bool {
+    dialog && !e2e && (!debug || !console)
 }
 
 /// Whether this process has a console window to write to.
@@ -312,3 +323,19 @@ fn message_box(title: &str, message: &str) {
 
 #[cfg(not(windows))]
 fn message_box(_title: &str, _message: &str) {}
+
+#[cfg(test)]
+mod fatal_tests {
+    use super::fatal_dialog_shows;
+
+    #[test]
+    fn an_e2e_run_never_shows_the_fatal_message_box() {
+        // A release run with no console shows the box; an --e2e run never does (no window is
+        // ever shown to the owner), and a debug run with a console prints instead.
+        assert!(fatal_dialog_shows(true, false, false, false));
+        assert!(!fatal_dialog_shows(true, false, false, true));
+        assert!(!fatal_dialog_shows(true, true, true, false));
+        assert!(fatal_dialog_shows(true, true, false, false));
+        assert!(!fatal_dialog_shows(false, false, false, false));
+    }
+}

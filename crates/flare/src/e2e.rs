@@ -25,6 +25,25 @@ impl E2eFlag {
         }
         std::env::var(name).ok()
     }
+
+    /// A dialog's seam: None without --e2e (the real dialog is the user's). Under --e2e, the value
+    /// of `name` when `usable` takes it, else `cancel`: an e2e run never shows a real dialog or pick
+    /// window, whatever a scenario forgot to set.
+    pub fn dialog_seam(
+        &self,
+        name: &str,
+        cancel: &str,
+        usable: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        if !self.0 {
+            return None;
+        }
+        Some(
+            self.env(name)
+                .filter(|v| usable(v))
+                .unwrap_or_else(|| cancel.to_string()),
+        )
+    }
 }
 
 static FLAG: OnceLock<E2eFlag> = OnceLock::new();
@@ -65,6 +84,37 @@ mod tests {
         assert_eq!(E2eFlag::new(true).env(&name).as_deref(), Some("yes"));
         assert!(!E2eFlag::new(false).on());
         assert!(E2eFlag::new(true).on());
+    }
+
+    #[test]
+    fn under_e2e_a_dialog_without_its_seam_is_cancelled_never_shown() {
+        let name = ["FLARE_E2E", "_DIALOG_SEAM_TEST"].concat();
+        let any = |_: &str| true;
+        // SAFETY: a variable only this test reads; no other thread touches it.
+        unsafe { std::env::remove_var(&name) };
+        // Without --e2e there is no seam: the real dialog is the user's.
+        assert_eq!(E2eFlag::new(false).dialog_seam(&name, "cancel", any), None);
+        // Under --e2e an unset seam is a cancel, so no real dialog or pick window ever shows.
+        assert_eq!(
+            E2eFlag::new(true)
+                .dialog_seam(&name, "cancel", any)
+                .as_deref(),
+            Some("cancel")
+        );
+        // SAFETY: as above.
+        unsafe { std::env::set_var(&name, "#00ff00") };
+        assert_eq!(
+            E2eFlag::new(true).dialog_seam(&name, "", any).as_deref(),
+            Some("#00ff00")
+        );
+        // A value the seam cannot use is a cancel too, never the real thing.
+        assert_eq!(
+            E2eFlag::new(true)
+                .dialog_seam(&name, "cancel", |v| v == "ok")
+                .as_deref(),
+            Some("cancel")
+        );
+        assert_eq!(E2eFlag::new(false).dialog_seam(&name, "", any), None);
     }
 
     #[test]

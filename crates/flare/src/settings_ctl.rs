@@ -1372,7 +1372,11 @@ impl SettingsCtl {
             window,
             scale,
             lookup: &lookup,
-            seam: crate::e2e::global().env(&["FLARE_E2E", "_PICK_COLOUR"].concat()),
+            seam: crate::e2e::global().dialog_seam(
+                &["FLARE_E2E", "_PICK_COLOUR"].concat(),
+                "cancel",
+                |v| flare_win::eyedrop::pick_seam(Some(v)).is_some(),
+            ),
             post: &self.deps.post,
         };
         let r = f(&mut self.picker, &ctx);
