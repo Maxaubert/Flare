@@ -192,14 +192,36 @@ impl Drop for Subscription {
 pub struct PrefStore {
     backend: Arc<dyn Backend>,
     listeners: ChangeList,
+    /// One value per type, shared by every clone of this store (the look's draft lives here).
+    shared: Arc<Mutex<Vec<SharedSlot>>>,
 }
+
+type SharedSlot = (std::any::TypeId, Arc<dyn std::any::Any + Send + Sync>);
 
 impl PrefStore {
     pub fn new(backend: Arc<dyn Backend>) -> Self {
         Self {
             backend,
             listeners: ChangeList::default(),
+            shared: Arc::default(),
         }
+    }
+
+    /// The one T this store and all its clones share, made by Default on first use.
+    pub(crate) fn shared<T: Default + Send + Sync + 'static>(&self) -> Arc<T> {
+        let id = std::any::TypeId::of::<T>();
+        let mut all = lock(&self.shared);
+        if let Some((_, v)) = all.iter().find(|(t, _)| *t == id)
+            && let Ok(found) = Arc::clone(v).downcast::<T>()
+        {
+            return found;
+        }
+        let made = Arc::new(T::default());
+        all.push((
+            id,
+            Arc::clone(&made) as Arc<dyn std::any::Any + Send + Sync>,
+        ));
+        made
     }
 
     pub fn memory() -> Self {
