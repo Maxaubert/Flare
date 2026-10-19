@@ -496,17 +496,7 @@ impl AgentHub {
                         AgentKind::Codex => "codex".to_string(),
                     })
                 });
-                let state = if self.ind.working_ids().contains(tab) {
-                    Some("working")
-                } else if self.ind.question_ids().contains(tab) {
-                    Some("question")
-                } else if self.ind.failed_ids().contains(tab) {
-                    Some("failed")
-                } else if self.ind.done_ids().contains(tab) {
-                    Some("done")
-                } else {
-                    None
-                };
+                let state = tab_state(&self.ind, tab);
                 SendTab {
                     id: tab.clone(),
                     tab: tab.clone(),
@@ -763,6 +753,32 @@ fn real_poll_deps(mgr: Arc<SessionManager>) -> PollDeps {
     }
 }
 
+/// The state word a send tab reports, in Prism Terminal's `ledgerState` order: question, failed,
+/// working, done. The sets can overlap (a Background phase keeps `working` while a question
+/// mark is set), and a tab with an open question must never read as working, or dictated text
+/// would land in the question box as its answer.
+fn tab_state(ind: &Indicator, tab: &str) -> Option<&'static str> {
+    state_word(
+        ind.question_ids().contains(tab),
+        ind.failed_ids().contains(tab),
+        ind.working_ids().contains(tab),
+        ind.done_ids().contains(tab),
+    )
+}
+
+fn state_word(question: bool, failed: bool, working: bool, done: bool) -> Option<&'static str> {
+    if question {
+        Some("question")
+    } else if failed {
+        Some("failed")
+    } else if working {
+        Some("working")
+    } else if done {
+        Some("done")
+    } else {
+        None
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,6 +1137,29 @@ mod tests {
         assert_eq!(a.state.as_deref(), Some("question"));
     }
 
+    #[test]
+    fn a_tab_in_several_sets_reports_question_then_failed_then_working_then_done() {
+        // PT ledgerState order; the sets overlap (Background keeps working under a question).
+        assert_eq!(state_word(true, false, true, false), Some("question"));
+        assert_eq!(state_word(true, true, true, true), Some("question"));
+        assert_eq!(state_word(false, true, true, false), Some("failed"));
+        assert_eq!(state_word(false, true, false, true), Some("failed"));
+        assert_eq!(state_word(false, false, true, true), Some("working"));
+        assert_eq!(state_word(false, false, false, true), Some("done"));
+        assert_eq!(state_word(false, false, false, false), None);
+    }
+
+    #[test]
+    fn a_failed_turn_reports_failed_though_it_is_also_done() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        r.hub.set_looking(Some("b"), true);
+        r.print("a", &osc("working"));
+        r.print("a", &osc("failed"));
+        r.pump_until("a failed", |h| h.indicator().failed_ids().contains("a"));
+        assert_eq!(tab_of(&r.hub, "a").state.as_deref(), Some("failed"));
+    }
     #[test]
     fn the_neighbours_agent_signal_is_not_accepted() {
         let mut r = Rig::new();
