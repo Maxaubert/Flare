@@ -1,9 +1,14 @@
 //! The engines: whisper-server, the Parakeet runner and the resident host (Tasks 13, 14).
 //!
-//! This is the Whisper engine of Task 13, ported from Prism Terminal's `dictationEngine.ts` (e5848cb).
+//! This is the engine of Tasks 13 and 14, ported from Prism Terminal's `dictationEngine.ts` (e5848cb).
 //! Nothing runs until the first `transcribe`; after that ONE whisper-server is kept, replaced when the
 //! model, the language or the engine kind it was started for is no longer what is being asked for, and
 //! stood down after `idle` with no request (never, when `idle` is `None`, N5) or by `stop()`.
+//!
+//! PARAKEET is one process per pass (`parakeet.rs`) unless the host gives a RESIDENT host (`host.rs`, N6, N7):
+//! one `flare-parakeet-host.exe` keeps the model loaded and answers every pass. A host that will not start
+//! is not asked again this session (`host_broken`): parakeet-cli answers. A Whisper pass, `stop()` and a
+//! pass timeout end the host; a stand-down ends it too.
 //!
 //! ENGINE CHOICE has no switch to get wrong: the GPU pack when it is installed AND an NVIDIA adapter is
 //! present, else the bundled CPU engine. A GPU server that exits or never becomes ready at start is passed
@@ -36,6 +41,8 @@ use std::time::{Duration, Instant};
 
 use crate::catalog::Runner;
 use crate::job::Job;
+use host::Host;
+use parakeet::Pass;
 use queue::Queue;
 use whisper::{Answer, Server};
 
@@ -121,7 +128,7 @@ pub struct TranscribeRequest {
 /// What Settings may ask about the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineInfo {
-    /// A server (or, from Task 14, a Parakeet pass or host) is up.
+    /// A server, a Parakeet pass or the resident Parakeet host is up.
     pub running: bool,
     /// The kind of the server that is up, or of the last one that was.
     pub engine: Option<EngineKind>,
@@ -153,7 +160,7 @@ pub struct EngineConfig {
     pub request_timeout: Duration,
     /// Where the GPU engine keeps its compiled kernels; `None` is the driver's shared cache.
     pub cuda_cache: Option<PathBuf>,
-    /// `flare-parakeet-host.exe` (Task 14); `None` runs one parakeet-cli per pass.
+    /// `flare-parakeet-host.exe`; `None` runs one parakeet-cli per pass.
     pub parakeet_host: Option<PathBuf>,
     /// Threads for a Parakeet pass on the CPU.
     pub threads: u32,
@@ -217,6 +224,15 @@ struct State {
     gpu_fell_back: bool,
     last_kind: Option<EngineKind>,
     current: Option<Arc<Server>>,
+    /// The resident Parakeet host, when one is up.
+    phost: Option<Arc<Host>>,
+    /// The resident host would not start: parakeet-cli for the rest of the session.
+    host_broken: bool,
+    /// The Parakeet pass in flight, so `stop()` can end it.
+    pass: Option<Arc<Pass>>,
+    /// The Parakeet model (by id) a pass last answered for: there is no resident process to be warm, but
+    /// the first GPU pass compiles kernels (16 s, MEASURED) and a partial must not queue behind that.
+    parakeet_warm: Option<String>,
     last_used: Instant,
     shutdown: bool,
 }
@@ -279,6 +295,10 @@ impl Engine {
                 gpu_fell_back: false,
                 last_kind: None,
                 current: None,
+                phost: None,
+                host_broken: false,
+                pass: None,
+                parakeet_warm: None,
                 last_used: Instant::now(),
                 shutdown: false,
             }),
@@ -298,11 +318,16 @@ impl Engine {
     pub fn transcribe(&self, req: TranscribeRequest) -> Receiver<TranscribeResult> {
         let inner = &self.inner;
         let (tx, rx) = channel();
-        let warm_now = lock(&inner.st)
-            .current
-            .as_ref()
-            .is_some_and(|s| s.warm() && !s.exited());
-        let warm_failed = lock(&inner.st).warm_failed;
+        let parakeet = (inner.cfg.runner_for)(&req.model_id) == Runner::Parakeet;
+        let (warm_now, warm_failed) = {
+            let st = lock(&inner.st);
+            let warm_now = if parakeet {
+                st.parakeet_warm.as_deref() == Some(req.model_id.as_str())
+            } else {
+                st.current.as_ref().is_some_and(|s| s.warm() && !s.exited())
+            };
+            (warm_now, st.warm_failed)
+        };
         if !req.final_ && !warm_failed && !warm_now {
             drop(self.warm(&req.model_id, &req.language));
             let _ = tx.send(TranscribeResult::no(Reason::Warming));
@@ -339,8 +364,14 @@ impl Engine {
         } else {
             language
         };
+        let parakeet = (inner.cfg.runner_for)(model_id) == Runner::Parakeet;
         let mut st = lock(&inner.st);
-        if let Some(cur) = &st.current {
+        if parakeet {
+            if st.parakeet_warm.as_deref() == Some(model_id) {
+                let _ = tx.send(TranscribeResult::Ok(String::new()));
+                return rx;
+            }
+        } else if let Some(cur) = &st.current {
             if cur.warm() && !cur.exited() && cur.model_id == model_id && cur.language == lang {
                 let _ = tx.send(TranscribeResult::Ok(String::new()));
                 return rx;
@@ -376,7 +407,9 @@ impl Engine {
     pub fn info(&self) -> EngineInfo {
         let st = lock(&self.inner.st);
         EngineInfo {
-            running: st.current.as_ref().is_some_and(|s| !s.exited()),
+            running: st.current.as_ref().is_some_and(|s| !s.exited())
+                || st.pass.is_some()
+                || st.phost.is_some(),
             engine: st.last_kind,
             gpu_fell_back: st.gpu_fell_back,
         }
@@ -435,7 +468,8 @@ impl Inner {
                     if let Some(job) = st.handoff.take() {
                         break job;
                     }
-                    let due = match (self.cfg.idle, st.current.is_some(), st.running) {
+                    let up = st.current.is_some() || st.phost.is_some();
+                    let due = match (self.cfg.idle, up, st.running) {
                         (Some(idle), true, false) => Some(st.last_used + idle),
                         _ => None,
                     };
@@ -443,6 +477,9 @@ impl Inner {
                         Some(due) if Instant::now() >= due => {
                             if let Some(cur) = st.current.take() {
                                 cur.kill();
+                            }
+                            if let Some(host) = st.phost.take() {
+                                host.kill();
                             }
                         }
                         Some(due) => {
@@ -487,17 +524,19 @@ impl Inner {
 
     fn stop(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        let (jobs, current) = {
+        let (jobs, current, pass, host) = {
             let mut st = lock(&self.st);
             st.warming = false;
             st.warm_failed = false;
             st.launch_failed = None;
+            // Off means off for Parakeet too: the next arm warms again.
+            st.parakeet_warm = None;
             let mut jobs = st.queue.drain();
             if let Some(handed) = st.handoff.take() {
                 st.running = false;
                 jobs.push(handed);
             }
-            (jobs, st.current.take())
+            (jobs, st.current.take(), st.pass.take(), st.phost.take())
         };
         for job in jobs {
             let _ = job.tx.send(stopped_result());
@@ -506,6 +545,39 @@ impl Inner {
         // epoch has moved.
         if let Some(cur) = current {
             cur.kill();
+        }
+        // A Parakeet pass running now is ended, not left to finish.
+        if let Some(pass) = pass {
+            pass.kill();
+        }
+        if let Some(host) = host {
+            host.kill();
+        }
+    }
+
+    /// Ends the resident Parakeet host, if there is one.
+    fn kill_phost(&self) {
+        let host = lock(&self.st).phost.take();
+        if let Some(host) = host {
+            host.kill();
+        }
+    }
+
+    fn kill_host(&self, h: &Arc<Host>) {
+        {
+            let mut st = lock(&self.st);
+            if st.phost.as_ref().is_some_and(|c| Arc::ptr_eq(c, h)) {
+                st.phost = None;
+            }
+        }
+        h.kill();
+    }
+
+    /// What to actually launch for an engine exe and its argv.
+    fn command_for(&self, exe: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+        match &self.cfg.command {
+            Some(command) => command(exe, args),
+            None => (exe.to_path_buf(), args.to_vec()),
         }
     }
 
@@ -570,13 +642,15 @@ impl Inner {
             return TranscribeResult::no(Reason::NoModel);
         };
         if (self.cfg.runner_for)(&req.model_id) == Runner::Parakeet {
-            return TranscribeResult::failed("Parakeet passes arrive with Task 14");
+            return self.run_parakeet(req, &model_path, mine);
         }
         let language = if req.language.is_empty() {
             "auto".to_string()
         } else {
             req.language.clone()
         };
+        // A resident Parakeet host holds a model nobody uses now.
+        self.kill_phost();
 
         let Want::Dir(want_kind, want_dir) = self.pick() else {
             return TranscribeResult::no(Reason::NoEngine);
@@ -690,6 +764,181 @@ impl Inner {
         }
     }
 
+    /// A pass for a Parakeet model: the same choice of engine and the same once-and-for-good fall back to
+    /// the CPU as a Whisper server gets (PT's `runParakeet`).
+    fn run_parakeet(
+        &self,
+        req: &TranscribeRequest,
+        model_path: &Path,
+        mine: u64,
+    ) -> TranscribeResult {
+        let stopped = || self.stopped_since(mine);
+        // A resident Whisper server holds another model in memory nobody uses now.
+        let server = lock(&self.st).current.take();
+        if let Some(server) = server {
+            server.kill();
+        }
+        let Want::Dir(mut kind, dir) = self.pick() else {
+            return TranscribeResult::no(Reason::NoEngine);
+        };
+        if stopped() {
+            return stopped_result();
+        }
+        let mut answer = self.parakeet_pass(kind, &dir, model_path, &req.wav, mine);
+        if stopped() {
+            return stopped_result();
+        }
+        // Only a GPU engine that DIED falls back, Whisper's own rule: an "error:" about the audio or a
+        // timeout is not the card's fault, and the switch holds for the session and for Whisper too.
+        if let (Answer::Failed { detail, died }, EngineKind::Gpu) = (&answer, kind) {
+            if !died {
+                lock(&self.st).last_kind = Some(kind);
+                return TranscribeResult::failed(detail.clone());
+            }
+            lock(&self.st).gpu_fell_back = true;
+            let Some(cpu_dir) = (self.cfg.cpu_dir)() else {
+                return TranscribeResult::failed(detail.clone());
+            };
+            kind = EngineKind::Cpu;
+            answer = self.parakeet_pass(kind, &cpu_dir, model_path, &req.wav, mine);
+            if stopped() {
+                return stopped_result();
+            }
+        }
+        let mut st = lock(&self.st);
+        st.last_kind = Some(kind);
+        match answer {
+            Answer::Text(text) => {
+                st.parakeet_warm = Some(req.model_id.clone());
+                TranscribeResult::Ok(text)
+            }
+            Answer::Failed { detail, .. } => TranscribeResult::failed(detail),
+        }
+    }
+
+    /// One pass, on the resident host when there is one, else a fresh parakeet-cli.
+    fn parakeet_pass(
+        &self,
+        kind: EngineKind,
+        dir: &Path,
+        model: &Path,
+        wav: &[u8],
+        mine: u64,
+    ) -> Answer {
+        if let Some(answer) = self.host_once(kind, dir, model, wav, mine) {
+            return answer;
+        }
+        let args = parakeet::pass_args(model, self.cfg.threads, kind);
+        let (file, args) = self.command_for(&dir.join("parakeet-cli.exe"), &args);
+        let env = self.child_env(kind, dir);
+        let spec = parakeet::Spec {
+            file: &file,
+            args: &args,
+            dir,
+            env: &env,
+            wav,
+            timeout: self.cfg.request_timeout,
+        };
+        // sync-ok: runs on the engine's worker thread, never the UI thread
+        let answer = parakeet::run(&spec, &self.job, &|pass| {
+            lock(&self.st).pass = Some(Arc::clone(pass));
+            lock(&self.pids).push(pass.pid);
+            if self.stopped_since(mine) {
+                // stop() ran before this pass was findable: it did not see this one.
+                pass.kill();
+            }
+        });
+        let mut st = lock(&self.st);
+        st.pass = None;
+        answer
+    }
+
+    /// One pass on the resident host: started (or restarted for another model, folder or engine kind) as
+    /// needed. `None` when there is no host to use: parakeet-cli then (PT's `hostOnce`).
+    fn host_once(
+        &self,
+        kind: EngineKind,
+        dir: &Path,
+        model: &Path,
+        wav: &[u8],
+        mine: u64,
+    ) -> Option<Answer> {
+        let exe = self.cfg.parakeet_host.as_deref()?;
+        let current = {
+            let st = lock(&self.st);
+            if st.host_broken {
+                return None;
+            }
+            st.phost.clone()
+        };
+        let mut host = current;
+        if let Some(h) = &host {
+            if h.exited() || h.kind != kind || h.dir != dir || h.model_path != model {
+                self.kill_host(h);
+                host = None;
+            }
+        }
+        let host = match host {
+            Some(h) => h,
+            None => {
+                let args = [
+                    dir.to_string_lossy().into_owned(),
+                    model.to_string_lossy().into_owned(),
+                    if kind == EngineKind::Gpu { "1" } else { "0" }.to_string(),
+                    self.cfg.threads.to_string(),
+                ];
+                let (file, args) = self.command_for(exe, &args);
+                let env = self.child_env(kind, dir);
+                // sync-ok: runs on the engine's worker thread, never the UI thread
+                let spawned = Host::spawn(
+                    &file,
+                    &args,
+                    dir,
+                    &env,
+                    &self.job,
+                    (kind, dir.to_path_buf(), model.to_path_buf()),
+                );
+                let Ok(h) = spawned else {
+                    // The host cannot be launched at all (or cannot join the job): parakeet-cli answers
+                    // from now on, and says why if it cannot either.
+                    lock(&self.st).host_broken = true;
+                    return None;
+                };
+                // Current from the moment it exists, so a stop() during the start kills it.
+                lock(&self.st).phost = Some(Arc::clone(&h));
+                lock(&self.pids).push(h.pid);
+                if self.stopped_since(mine) {
+                    self.kill_host(&h);
+                    return Some(Answer::Failed {
+                        detail: "dictation was stopped".to_string(),
+                        died: false,
+                    });
+                }
+                if !h.wait_ready(self.cfg.start_timeout) {
+                    self.kill_host(&h);
+                    if self.stopped_since(mine) {
+                        // A host that went away because it was TOLD to is not a broken host.
+                        return Some(Answer::Failed {
+                            detail: "dictation was stopped".to_string(),
+                            died: false,
+                        });
+                    }
+                    // Never ready: the host itself or the engine. The per-pass path says which, and the
+                    // host is not tried again.
+                    lock(&self.st).host_broken = true;
+                    return None;
+                }
+                h
+            }
+        };
+        let answer = host.pass(wav, self.cfg.request_timeout);
+        if host.was_killed() {
+            // A pass that timed out ended the host: the next pass starts a fresh one.
+            self.kill_host(&host);
+        }
+        Some(answer)
+    }
+
     /// Starts a server and waits until it answers GET /. `Err` carries the reason, in the words the
     /// user sees.
     fn launch(
@@ -718,11 +967,7 @@ impl Inner {
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-        let exe = dir.join("whisper-server.exe");
-        let (file, args) = match &self.cfg.command {
-            Some(command) => command(&exe, &args),
-            None => (exe, args),
-        };
+        let (file, args) = self.command_for(&dir.join("whisper-server.exe"), &args);
         let env = self.child_env(kind, dir);
         // sync-ok: runs on the engine's worker thread, never the UI thread
         let server = Server::spawn(
