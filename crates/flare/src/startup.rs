@@ -614,17 +614,11 @@ pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
     }
 }
 
-/// Builds the help catalogue and runs one search on a worker, so the first query is quick.
-pub fn warm_help_index() {
-    let spawned = std::thread::Builder::new()
-        .name("flare-help-warm".into())
-        .spawn(|| {
-            let all = flare_help::entries::all_help();
-            let _ = flare_help::search::search_help(all, "warm", &Default::default());
-        });
-    if let Err(e) = spawned {
-        log::warn!("could not warm the help index: {e}");
-    }
+/// The help warm-up's work: builds the help catalogue and runs one search, so the first query is quick.
+/// It runs on a worker once the first frame is up (`startup_trace::after_first_frame`, M10 Task 63).
+pub fn help_warm_work() {
+    let all = flare_help::entries::all_help();
+    let _ = flare_help::search::search_help(all, "warm", &Default::default());
 }
 
 #[cfg(test)]

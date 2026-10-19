@@ -1233,7 +1233,7 @@ pub fn run_window(
         .as_ref()
         .is_some_and(|(_, _, p)| flare_settings::help_prefs::help_enabled(p))
     {
-        crate::startup::warm_help_index();
+        crate::startup_trace::after_first_frame("help_index", crate::startup::help_warm_work);
     }
     // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
     // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
@@ -1283,12 +1283,8 @@ pub fn run_window(
         }
     }
     if let Some(switch) = verb_switch.take() {
-        let spawned = std::thread::Builder::new()
-            .name("flare-verb-reconcile".into())
-            .spawn(move || switch.reconcile());
-        if let Err(e) = spawned {
-            log::warn!("could not start the verb reconcile: {e}");
-        }
+        // The Explorer verb is repaired on a worker once the first frame is up (M10 Task 63).
+        crate::startup_trace::after_first_frame("verb_reconcile", move || switch.reconcile());
     }
     let result = app.run();
     if let Some((engine, _)) = &update_engine {

@@ -88,6 +88,9 @@ pub fn mark(phase: Phase) {
     }
     let ns = u64::try_from(since_process_start().as_nanos()).unwrap_or(u64::MAX);
     MARKS.set(phase, ns);
+    if phase == Phase::FirstFrame {
+        release_deferred();
+    }
 }
 
 /// Whether `phase` has been reached.
@@ -165,6 +168,57 @@ fn between_filetimes(creation: u64, now: u64) -> Duration {
     Duration::from_nanos(now.saturating_sub(creation).saturating_mul(100))
 }
 
+// ---- M10 Task 63: start-up work the first frame does not need -------------------------------
+
+/// One deferred item: its name (for the log) and the work.
+pub type Deferred = (&'static str, Box<dyn FnOnce() + Send + 'static>);
+
+thread_local! {
+    /// Queued on the UI thread before the event loop starts (every caller is there), so no lock is needed.
+    static DEFERRED: std::cell::RefCell<Vec<Deferred>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queues `f` to run on a worker thread once the first frame is marked. Called on the UI thread
+/// before the event loop starts. Once the first frame is marked, the work starts at once.
+pub fn after_first_frame(name: &'static str, f: impl FnOnce() + Send + 'static) {
+    if is_marked(Phase::FirstFrame) {
+        start_worker(vec![(name, Box::new(f))]);
+        return;
+    }
+    DEFERRED.with(|q| q.borrow_mut().push((name, Box::new(f))));
+}
+
+/// Takes everything queued on this thread, in the order it was queued.
+pub fn take_deferred() -> Vec<Deferred> {
+    DEFERRED.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// Runs each item in order. An item that panics is logged; the rest still run.
+pub fn run_deferred(items: Vec<Deferred>) {
+    for (name, work) in items {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+            log::warn!("deferred start-up work {name} panicked");
+        }
+    }
+}
+
+/// Starts one worker that runs `items`. A worker that cannot start logs it and the items are dropped.
+fn start_worker(items: Vec<Deferred>) {
+    let spawned = std::thread::Builder::new()
+        .name("flare-deferred".into())
+        .spawn(move || run_deferred(items));
+    if let Err(e) = spawned {
+        log::warn!("could not start the deferred start-up work: {e}");
+    }
+}
+
+/// Called once when the first frame is marked: the queued items start on a worker.
+fn release_deferred() {
+    let items = take_deferred();
+    if !items.is_empty() {
+        start_worker(items);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +291,89 @@ mod tests {
             let needle = format!("Phase::{phase:?}");
             let found = sources.iter().any(|(_, s)| s.contains(&needle));
             assert!(found, "no call site marks {needle}");
+        }
+    }
+
+    fn item(name: &'static str, f: impl FnOnce() + Send + 'static) -> Deferred {
+        (name, Box::new(f))
+    }
+
+    #[test]
+    fn deferred_work_runs_exactly_once_after_the_first_frame() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ran = Arc::new(AtomicUsize::new(0));
+        for name in ["first", "second"] {
+            let ran = Arc::clone(&ran);
+            DEFERRED.with(|q| {
+                q.borrow_mut().push(item(name, move || {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                }))
+            });
+        }
+        // Nothing runs while the work is only queued (before the first frame).
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        let items = take_deferred();
+        assert_eq!(
+            items.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec!["first", "second"],
+            "queued in order"
+        );
+        assert!(take_deferred().is_empty(), "taken once, never twice");
+        run_deferred(items);
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_deferred_item_that_panics_does_not_kill_the_rest() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let ran = Arc::new(AtomicBool::new(false));
+        let after = Arc::clone(&ran);
+        run_deferred(vec![
+            item("boom", || panic!("deliberate test panic")),
+            item("after", move || after.store(true, Ordering::SeqCst)),
+        ]);
+        assert!(
+            ran.load(Ordering::SeqCst),
+            "the item after a panic still runs"
+        );
+    }
+
+    #[test]
+    fn nothing_on_the_deferral_list_is_read_by_the_first_frame() {
+        // The first frame is drawn by `render_now` and the rendering notifier. No deferred work may be
+        // registered inside either, and the deferred names are registered before the event loop starts.
+        let src = include_str!("window.rs");
+        let block = |from: &str, to: &str| {
+            let start = src
+                .find(from)
+                .unwrap_or_else(|| panic!("window.rs has {from}"));
+            let end = src[start..]
+                .find(to)
+                .map(|i| start + i)
+                .unwrap_or_else(|| panic!("window.rs has {to} after {from}"));
+            &src[start..end]
+        };
+        let render = block("let render_now = {", "let notifier_result = {");
+        let notifier = block("let notifier_result = {", "if let Err(e) = notifier_result");
+        for scope in [render, notifier] {
+            assert!(
+                !scope.contains("after_first_frame("),
+                "the first frame reads no deferred work"
+            );
+        }
+        let run_loop = src
+            .find("let result = app.run();")
+            .expect("the event loop starts");
+        for name in ["help_index", "verb_reconcile"] {
+            let call = src
+                .find(&format!("after_first_frame(\"{name}\""))
+                .unwrap_or_else(|| panic!("window.rs defers {name}"));
+            assert!(
+                call < run_loop,
+                "{name} is queued before the event loop starts"
+            );
         }
     }
 }
