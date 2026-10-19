@@ -671,6 +671,8 @@ fn move_one(ctx: &mut Ctx, renderer: &'static str) -> Result<(), String> {
             app.hello().is_ok(),
             format!("{at}: the app still answers Hello"),
         );
+        // A picture of every move for the reader of the scaling images (Task 73); failures are ignored.
+        let _ = ctx.shot(&mut app, &format!("{renderer}-move{}-{}", i + 1, pct(dpi)));
         if i == 3 {
             // Through the 300% move at least, the output was still flowing (else it proved nothing).
             ctx.ok(
@@ -702,6 +704,7 @@ fn move_one(ctx: &mut Ctx, renderer: &'static str) -> Result<(), String> {
         echoed,
         format!("[{renderer}] the prompt line survives (echo after-move)"),
     );
+    let _ = ctx.shot(&mut app, &format!("{renderer}-after-move"));
 
     // The roadmap's runaway output: Ctrl+C reaches the shell and the window keeps up.
     let _ = frames(&mut app, true);
