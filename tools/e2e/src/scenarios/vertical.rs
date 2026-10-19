@@ -681,6 +681,17 @@ fn slide_samples(
     out
 }
 
+/// Clicks tab `i` and waits until it is the one in front, so a hook line typed next goes to it and
+/// never to the tab that was in front a moment ago (the click and the typing were a race).
+fn front_tab(ctx: &mut Ctx, app: &mut App, i: usize) {
+    if let Some(r) = rect_of(&tabs_of(app)[i]["rect"]) {
+        click(app, centre(r));
+    }
+    ctx.until("the clicked tab to come to the front", 3_000, &mut || {
+        tabs_of(app).get(i).map(|t| t["front"] == json!(true)) == Some(true)
+    });
+}
+
 /// PT `markStrip` (run.mjs:349): six tabs put into the mockups' states, left to right.
 fn mark_strip(ctx: &mut Ctx, app: &mut App) {
     let states = |app: &mut App| -> Vec<String> {
@@ -692,9 +703,7 @@ fn mark_strip(ctx: &mut Ctx, app: &mut App) {
     let six = ctx.until("six tabs", 30_000, &mut || tabs_of(app).len() == 6);
     if six {
         for i in [0usize, 2, 3, 4, 5] {
-            if let Some(r) = rect_of(&tabs_of(app)[i]["rect"]) {
-                click(app, centre(r));
-            }
+            front_tab(ctx, app, i);
             type_line(app, &say("working", ""));
         }
         // A hook line typed the moment a shell showed its prompt can be lost on a busy machine: any
@@ -704,9 +713,7 @@ fn mark_strip(ctx: &mut Ctx, app: &mut App) {
             let got = states(app);
             for i in [0usize, 2, 3, 4, 5] {
                 if got.get(i).map(String::as_str) != Some("working") {
-                    if let Some(r) = rect_of(&tabs_of(app)[i]["rect"]) {
-                        click(app, centre(r));
-                    }
+                    front_tab(ctx, app, i);
                     type_line(app, &say("working", ""));
                 }
             }
@@ -730,14 +737,10 @@ fn mark_strip(ctx: &mut Ctx, app: &mut App) {
             ),
         ];
         for (i, line) in extra {
-            if let Some(r) = rect_of(&tabs_of(app)[i]["rect"]) {
-                click(app, centre(r));
-            }
+            front_tab(ctx, app, i);
             type_line(app, &line);
         }
-        if let Some(r) = rect_of(&tabs_of(app)[0]["rect"]) {
-            click(app, centre(r));
-        }
+        front_tab(ctx, app, 0);
     }
     let want: Vec<String> = [
         "working", "none", "working", "finished", "question", "failed",
