@@ -81,6 +81,18 @@ component TitleButton inherits Rectangle {
         stroke-line-cap: round;
         stroke-line-join: round;
     }
+    // The keyboard focus ring (PT focus-visible:ring-2 ring-accent-hi): 2 px, drawn outside the box.
+    // A click never takes the focus, so the ring is for the keyboard only, as :focus-visible is.
+    if keys.has-focus : ring := Rectangle {
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-radius: Theme.radius-button + 2px;
+        border-width: 2px;
+        border-color: Theme.accent-hi;
+        background: transparent;
+    }
     ta := TouchArea {
         clicked => { root.clicked(); }
         changed has-hover => {
@@ -93,6 +105,19 @@ component TitleButton inherits Rectangle {
             }
         }
     }
+    // Zero-sized, so it never takes a pointer: the Tab key reaches it, Space and Enter press the button.
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    out property <bool> keyboard-focused: keys.has-focus;
 }
 
 // The window buttons (command help while it is on, settings, minimise, maximise, close),
