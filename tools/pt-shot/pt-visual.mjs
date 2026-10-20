@@ -191,17 +191,28 @@ class Lab {
   }
 }
 
+// The page must lay out at EXACTLY W x H css px (audit V8, 2026-10-21). `setContentSize` asks for DIPs and the
+// frame adds a few, so at 150 and 225 percent the layout came out 1001.3 and 1002.2 wide while the old check
+// (integer `innerWidth`, adjusted by a whole difference) stopped early; the clip then cut the picture at 1000 and
+// every right-anchored piece of chrome sat 1 to 5 device px right of where the same page puts it at 1000. The
+// visual viewport is fractional, so it is the one to compare: it equals W only when the device width is W * scale.
 async function size(h) {
-  for (let k = 0, ask = [W, H]; k < 4; k++) {
+  let ask = [W, H]
+  let vv = [0, 0]
+  for (let k = 0; k < 30; k++) {
     await h.app.evaluate(({ BrowserWindow }, [w, hh]) => {
       for (const win of BrowserWindow.getAllWindows()) win.setContentSize(w, hh)
     }, ask)
-    await sleep(250)
-    const [iw, ih] = await h.page.evaluate(() => [innerWidth, innerHeight])
-    if (iw === W && ih === H) break
-    ask = [ask[0] + (W - iw), ask[1] + (H - ih)]
+    await sleep(200)
+    vv = await h.page.evaluate(() => [visualViewport.width, visualViewport.height])
+    if (vv[0] === W && vv[1] === H) break
+    // A whole step when the miss is under a pixel (the frame rounds), else the miss itself.
+    const step = (v, want) => (v === want ? 0 : Math.abs(v - want) < 1 ? (v > want ? -1 : 1) : Math.round(want - v))
+    ask = [ask[0] + step(vv[0], W), ask[1] + step(vv[1], H)]
   }
-  await h.app.evaluate(park)
+  if (vv[0] !== W || vv[1] !== H) console.warn(`pt-visual: the page lays out ${vv[0]} x ${vv[1]} css px, not ${W} x ${H}`)
+  // No park here: `setPosition` on the parked window re-applies its frame and the layout grows again (measured
+  // 1000 -> 1002.2 css at 225 percent). The window is parked at launch and stays where it is.
 }
 
 const PROMPT = /[A-Za-z]:\\[^>\n]*>\s*$|PS [^>]*>\s*$/
@@ -233,7 +244,13 @@ const save = (dir, v) => {
   writeFileSync(join(dir, 'numbers.json'), JSON.stringify(v, null, 2))
 }
 
-const shot = (h, file) => h.page.screenshot({ path: file, clip: { x: 0, y: 0, width: W, height: H } }).then(() => true).catch(() => false)
+// A picture is taken only while the page lays out at W x H: the app can resize its own window after the first
+// `size` (a restored session, a tab opening), and a 1002 css px layout cut at 1000 moves the right-anchored chrome.
+const shot = async (h, file) => {
+  const vv = await h.page.evaluate(() => [visualViewport.width, visualViewport.height]).catch(() => [W, H])
+  if (vv[0] !== W || vv[1] !== H) await size(h)
+  return h.page.screenshot({ path: file, clip: { x: 0, y: 0, width: W, height: H } }).then(() => true).catch(() => false)
+}
 
 /** Writes the layout and the session a resume needs into a closed profile. */
 async function prepResume(lab, world, scale) {

@@ -37,6 +37,15 @@ switches, see-through 40), `dictation` (Flare only: the pill listening, with liv
 - Prism Terminal: Playwright's Electron driver on the copy; the sidebar numbers come from a `requestAnimationFrame`
   recorder of the slot's width and the panel's left; the pictures of the slide are taken with every CSS transition
   paused at the offset (`document.getAnimations()`), exact where Flare's are within a few ms.
+- Prism Terminal's page must lay out at exactly 1000 x 640 css px (audit V8, 2026-10-21). The old sizing step left it at
+  1000, 1001.3 and 1002.2 css px wide at 100, 150 and 225 percent (the frame adds a few DIPs, and parking the window
+  again re-applied them), so a picture cut at 1000 css px showed PT's right-anchored chrome 0, 2 and 5 device px to the
+  right of where the same page puts it: that was the "Flare is left of PT" finding, and Flare reserves no inset or
+  resize band (its chrome sits at the window width less 6 css px, as PT's `pr-1.5`). `size()` in `pt-visual.mjs` now
+  compares the fractional `visualViewport` and `shot()` re-sizes before a picture. Measured on the re-taken general
+  frames (06-settings-dictation): the buttons' ink right edge is 2207 for both at 225 percent (was 2207 / 2212), 1471
+  / 1471 at 150 (1471 / 1473), 980 / 981 at 100 (one pixel of glyph rounding); the settings card's right edge is
+  2150 for both at 225 (was 2150 / 2155). The sidebar PT cells were not re-taken (their numbers are in css px).
 - The slide numbers use one set of definitions in both tools (`tools/e2e/src/slide.rs`, mirrored in `pt-visual.mjs`):
   frames from the one before the first move to arrival, the longest gap between presented frames, the time to 50, 90
   and 99 percent, and the largest distance of the curve from `cubic-bezier(0.16, 1, 0.3, 1)` over 240 ms (the curve may
