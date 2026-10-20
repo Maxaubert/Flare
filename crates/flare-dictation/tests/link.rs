@@ -256,11 +256,24 @@ fn the_key_is_made_once_and_the_pipe_is_named_by_its_hash() {
     assert_eq!(tail.len(), 24);
     assert!(tail.bytes().all(|b| b.is_ascii_hexdigit()));
     assert!(!pipe.contains(&to_hex(&a)[..24]));
-    // A key file that is not 64 hex digits is no key, and is not overwritten.
-    let bad = dir.path().join("bad.key");
-    std::fs::write(&bad, "nope").unwrap();
-    assert_eq!(link_key(&bad), None);
-    assert_eq!(std::fs::read_to_string(&bad).unwrap(), "nope");
+    // A key file that is not 64 hex digits (cut short or emptied by a crash) is no key: it is replaced
+    // atomically by a fresh one, and that one then stays (audit 2026-10-20 L38).
+    for junk in ["nope", ""] {
+        let bad = dir.path().join("bad.key");
+        std::fs::write(&bad, junk).unwrap();
+        let fresh = link_key(&bad).expect("a bad key file is replaced by a fresh key");
+        assert_eq!(link_key(&bad), Some(fresh));
+        let text = std::fs::read_to_string(&bad).unwrap();
+        assert_eq!(text.len(), 64);
+        assert_eq!(text, to_hex(&fresh));
+    }
+    // No stray temporary file is left beside the key.
+    let strays = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(strays, 0);
 }
 
 #[test]
