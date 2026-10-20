@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use flare_e2e_proto::Request;
+use flare_e2e_proto::{dict_probes, PointerAction, Request};
 use serde_json::{json, Value};
 
 use super::driver;
@@ -461,9 +461,488 @@ pub fn dictation(ctx: &mut Ctx) -> Result<(), String> {
     Ok(())
 }
 
-/// PT `dictationPage` (36 assertions): Task 30.
+/// The Dictation page's GPU row (PT's `gpu-pack`): Flare's own row id.
+const GPU_ROW: &str = "gpu-pack";
+/// The one line the page says before a model that does not support every language is downloaded.
+const LIMITED_LINE: &str = flare_dictation::catalog::LIMITED_LANGUAGES_TEXT;
+
+/// The Dictation page's rows as `dict.rows` lists them (every `dictation-*` row and each model row).
+fn page_rows(app: &mut App) -> Vec<Value> {
+    probe(app, dict_probes::ROWS, Value::Null)
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The model rows: the rows with a vendor mark (the five models and the GPU pack), in page order.
+fn model_rows(app: &mut App) -> Vec<Value> {
+    page_rows(app)
+        .into_iter()
+        .filter(|r| !r["vendor"].as_str().unwrap_or("").is_empty())
+        .collect()
+}
+
+/// One row of the Dictation page by id (`Value::Null` when it is not drawn).
+fn drow(app: &mut App, id: &str) -> Value {
+    page_rows(app)
+        .into_iter()
+        .find(|r| r["id"] == json!(id))
+        .unwrap_or(Value::Null)
+}
+
+fn state_of(app: &mut App, id: &str) -> String {
+    drow(app, id)["state"].as_str().unwrap_or("").to_string()
+}
+
+fn badge_of(app: &mut App, id: &str) -> String {
+    drow(app, id)["badge"].as_str().unwrap_or("").to_string()
+}
+
+fn buttons_of(app: &mut App, id: &str) -> Vec<Value> {
+    drow(app, id)["buttons"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// How many of row `id`'s buttons carry the button id `button` (`uninstall`, `disable`, ...).
+fn count_button(app: &mut App, id: &str, button: &str) -> usize {
+    buttons_of(app, id)
+        .iter()
+        .filter(|b| b["id"] == json!(button))
+        .count()
+}
+
+/// Wheels the Dictation pane until row `id` is inside it. The model rows are not in the Settings catalogue, so
+/// `driver::goto_row` cannot reach them; this is the same wheel over `settings.row`, which does list them.
+fn reveal_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
+    let (gx, gy, gw, gh) = rect4(&probe(app, "ui.rect", json!({ "name": "grid" })))
+        .unwrap_or((0.0, 36.0, 800.0, 600.0));
+    let at = ((gx + gw / 2.0) as f32, (gy + gh / 2.0) as f32);
+    ctx.poll(12_000, &mut || {
+        let r = driver::row(app, id);
+        if r["visible"] == json!(true) {
+            return true;
+        }
+        let y = r["rect"]["y"].as_f64().unwrap_or(0.0);
+        let dy = if y > gy + gh / 2.0 { -160.0 } else { 160.0 };
+        let _ = app.session.call(&Request::Pointer {
+            x: at.0,
+            y: at.1,
+            action: PointerAction::Wheel { dx: 0.0, dy },
+        });
+        false
+    })
+}
+
+/// Presses the button of row `id` that reads `label`. The probe holds no button rectangles, so each button is
+/// placed from the row's right end: 16 px in, 10 px apart, as wide as its text plus 24 px (17 px more for an
+/// icon), the text taken at about 7 px a character. Returns false when the row has no such button.
+fn press_button(ctx: &mut Ctx, app: &mut App, id: &str, label: &str) -> bool {
+    reveal_row(ctx, app, id);
+    let buttons = buttons_of(app, id);
+    let Some((x, y, w, h)) = rect4(&driver::row(app, id)["rect"]) else {
+        return false;
+    };
+    let mut right = x + w - 16.0;
+    for b in buttons.iter().rev() {
+        let text = b["label"].as_str().unwrap_or("");
+        let icon = if b["id"] == json!("uninstall") {
+            17.0
+        } else {
+            0.0
+        };
+        let width = 24.0 + icon + 7.0 * text.chars().count() as f64;
+        let left = right - width;
+        if text == label {
+            return app
+                .session
+                .click((left + width / 2.0) as f32, (y + h / 2.0) as f32)
+                .is_ok();
+        }
+        right = left - 10.0;
+    }
+    false
+}
+
+/// The Dictation page's one-line question (`dict.ask`): open, and its text.
+fn ask_state(app: &mut App) -> (bool, String) {
+    let a = probe(app, dict_probes::ASK, Value::Null);
+    (
+        a["open"] == json!(true),
+        a["text"].as_str().unwrap_or("").to_string(),
+    )
+}
+
+fn ask_open(app: &mut App) -> bool {
+    ask_state(app).0
+}
+
+/// The language picker (`dict.lang`): its text, whether it is disabled, whether the model limits it, its title.
+fn lang(app: &mut App) -> Value {
+    probe(app, dict_probes::LANG, Value::Null)
+}
+
+fn settings_page(app: &mut App) -> Option<String> {
+    probe(app, "settings.state", Value::Null)["page"]
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Opens Settings and picks its Dictation item from the rail.
+fn open_dictation_page(ctx: &mut Ctx, app: &mut App) -> bool {
+    if !driver::open_settings(ctx, app) {
+        return false;
+    }
+    if let Some((x, y, w, h)) = rect4(&probe(app, "settings.rail", json!({ "id": "dictation" }))) {
+        let _ = app
+            .session
+            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32);
+    }
+    ctx.poll(6_000, &mut || {
+        settings_page(app).as_deref() == Some("dictation")
+    })
+}
+
+/// A sparse file of `bytes` length: an installed model to the store (it checks the length alone).
+fn stage_sparse(path: &Path, bytes: u64) -> Result<(), String> {
+    let f = fs::File::create(path).map_err(|e| e.to_string())?;
+    f.set_len(bytes).map_err(|e| e.to_string())
+}
+
+/// The value of one key in the profile's `settings.json`, as the app stored it.
+fn stored(profile: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(profile.join("settings.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    v[key].as_str().map(str::to_string)
+}
+
+/// Starts the app for the Dictation page: the GPU probe answers yes, the models folder is the scenario's, and
+/// the store's downloads are the stalled stand-in (nothing ever reaches the network).
+fn start_page(ctx: &mut Ctx, dict_root: &Path, engine: &Path, alpha: &Path) -> Result<App, String> {
+    let mut env = vec![
+        (concat!("FLARE_E2E", "_NVIDIA").to_string(), "1".to_string()),
+        (
+            concat!("FLARE_DICTATION", "_ROOT").to_string(),
+            dict_root.to_string_lossy().into_owned(),
+        ),
+        (
+            concat!("FLARE_E2E", "_FETCH").to_string(),
+            "stall".to_string(),
+        ),
+    ];
+    if !ctx.packaged {
+        env.push((
+            concat!("FLARE_WHISPER", "_DIR").to_string(),
+            engine.to_string_lossy().into_owned(),
+        ));
+    }
+    ctx.launch(Launch {
+        folders: vec![alpha.to_path_buf()],
+        env,
+        ..Launch::default()
+    })
+}
+
+/// PT `dictationPage` (36 assertions): Task 30. The model manager with things in it: a model and the GPU
+/// pack are staged as installed (a sparse file of the catalogued size, a pack folder with its marker), so the
+/// rows read in the states a user lives in. The GPU pack is disabled (removed from disk) and enabled again
+/// (the button, not a second control), the Parakeet download asks once (one line, and nothing downloads while
+/// it asks), a Whisper model downloads without a question, and the language picker follows the model in use.
 pub fn dictation_page(ctx: &mut Ctx) -> Result<(), String> {
-    ctx.not_ported(30)
+    let engine = engine_dir(ctx.packaged);
+    let (profile, alpha) = world_paths(ctx);
+    let root = profile.join("dictation");
+    fs::create_dir_all(root.join("models")).map_err(|e| e.to_string())?;
+    let base_bytes = flare_dictation::catalog::model("base")
+        .ok_or("the catalogue has no base model")?
+        .bytes;
+    let parakeet = flare_dictation::catalog::model("parakeet-v3")
+        .ok_or("the catalogue has no parakeet-v3 model")?;
+    stage_sparse(&root.join("models").join("base.bin"), base_bytes)?;
+    // The GPU pack as installed: the folder the store names (`gpu-pack-<12 hex>`), its runner, and the marker
+    // the store writes last (`flare-installed.json`, with the entry's byte count and SHA-256).
+    let gpu = flare_dictation::catalog::GPU_PACK;
+    let short: String = gpu.sha256.chars().take(12).collect();
+    let pack = root.join("engines").join(format!("gpu-pack-{short}"));
+    fs::create_dir_all(pack.join("Release")).map_err(|e| e.to_string())?;
+    fs::write(pack.join("Release").join("whisper-server.exe"), b"").map_err(|e| e.to_string())?;
+    let marker = json!({ "id": gpu.id, "bytes": gpu.bytes, "sha256": gpu.sha256 });
+    fs::write(pack.join("flare-installed.json"), marker.to_string()).map_err(|e| e.to_string())?;
+    // Dictation on, the base model, the Norwegian language kept, no sounds, no media pause.
+    seed(
+        &profile,
+        &[
+            ("flare.dictation.enabled", "1"),
+            ("flare.dictation.hotkey", RIGHT_ALT),
+            ("flare.dictation.model", "base"),
+            ("flare.dictation.language", "no"),
+            ("flare.dictation.sounds", "0"),
+            ("flare.dictation.pauseMedia", "0"),
+        ],
+    )?;
+    let mut app = start_page(ctx, &root, &engine, &alpha)?;
+    let rail = open_dictation_page(ctx, &mut app);
+    ctx.until("the GPU pack installed", 8_000, &mut || {
+        state_of(&mut app, GPU_ROW) == "installed"
+    });
+    ctx.ok(
+        rail && settings_page(&mut app).as_deref() == Some("dictation"),
+        "the rail marks Dictation as the page in front",
+    );
+    pause(ctx, 400);
+
+    let rows = model_rows(&mut app);
+    let names: Vec<String> = rows
+        .iter()
+        .map(|r| r["name"].as_str().unwrap_or("").to_string())
+        .collect();
+    let first_five: Vec<&str> = names.iter().take(5).map(String::as_str).collect();
+    ctx.ok(
+        names.len() == 6
+            && first_five
+                == [
+                    "Whisper Base",
+                    "Whisper Small",
+                    "Parakeet v3",
+                    "Whisper Large v3 Turbo",
+                    "Whisper Large v3",
+                ],
+        format!("models carry their full names, smallest first ({names:?})"),
+    );
+    let vendors: Vec<&str> = rows.iter().filter_map(|r| r["vendor"].as_str()).collect();
+    let openai = vendors.iter().filter(|v| **v == "openai").count();
+    let nvidia = vendors.iter().filter(|v| **v == "nvidia").count();
+    ctx.ok(
+        openai == 4 && nvidia == 2,
+        format!(
+            "every row leads with its vendor's mark ({})",
+            vendors.join(",")
+        ),
+    );
+    // FLARE-DEFECT: the mark's and the name's rectangles are drawn inside the Slint row (`DictModelRow`'s
+    // out properties) and no probe reads them. The check stays red until a probe reports them (Task 27).
+    ctx.ok(
+        false,
+        "the mark sits left of the name, centred on the row (FLARE-DEFECT: no probe reports the mark's rectangle)",
+    );
+
+    ctx.ok(
+        badge_of(&mut app, "base") == "Active",
+        "the model in use says Active",
+    );
+    ctx.ok(
+        count_button(&mut app, "base", "uninstall") == 1,
+        "an installed model offers Uninstall",
+    );
+    // FLARE-DEFECT: the button's fill, border, radius and ink are not in any probe (`SetRowButton`'s colours).
+    ctx.ok(
+        false,
+        "and it is a button like Download: same fill, border, radius and ink (FLARE-DEFECT: no probe reports a button's colours)",
+    );
+    // The words on the page, not the tooltips (PT reads the text content): names, sub lines, badges, buttons.
+    let page_text: String = page_rows(&mut app)
+        .iter()
+        .flat_map(|r| {
+            let mut parts = vec![
+                r["name"].as_str().unwrap_or("").to_string(),
+                r["sub"].as_str().unwrap_or("").to_string(),
+                r["badge"].as_str().unwrap_or("").to_string(),
+            ];
+            if let Some(bs) = r["buttons"].as_array() {
+                parts.extend(
+                    bs.iter()
+                        .map(|b| b["label"].as_str().unwrap_or("").to_string()),
+                );
+            }
+            parts
+        })
+        .collect::<Vec<String>>()
+        .join(" ");
+    let says_delete = page_text
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == "Delete" || w == "Remove");
+    ctx.ok(
+        !says_delete,
+        "and nothing on the page says Delete or Remove",
+    );
+
+    ctx.ok(
+        badge_of(&mut app, GPU_ROW) == "Enabled",
+        "the GPU engine says Enabled",
+    );
+    let toggle: Vec<String> = buttons_of(&mut app, GPU_ROW)
+        .iter()
+        .map(|b| b["label"].as_str().unwrap_or("").to_string())
+        .collect();
+    ctx.ok(
+        toggle.first().map(String::as_str) == Some("Disable"),
+        "and offers Disable",
+    );
+    let turbo = drow(&mut app, "large-v3-turbo");
+    ctx.ok(
+        turbo["recommended"] == json!(true),
+        "with the GPU on, Turbo is the recommended model",
+    );
+    // FLARE-DEFECT: the Download buttons' fills are not in any probe (see the Uninstall button above).
+    ctx.ok(
+        false,
+        "and its Download button is the same as every other (FLARE-DEFECT: no probe reports a button's colours)",
+    );
+
+    // DISABLE UNINSTALLS IT, ENABLE DOWNLOADS IT: one control.
+    ctx.ok(
+        count_button(&mut app, GPU_ROW, "uninstall") == 0,
+        "the GPU row has no second control beside Disable",
+    );
+    press_button(ctx, &mut app, GPU_ROW, "Disable");
+    let absent = ctx.until("Disable takes the engine off the disk", 8_000, &mut || {
+        state_of(&mut app, GPU_ROW) == "absent"
+    });
+    ctx.ok(absent, "Disable takes the engine off the disk");
+    ctx.ok(!pack.exists(), "for real");
+    ctx.ok(
+        badge_of(&mut app, GPU_ROW).is_empty(),
+        "the Enabled badge goes",
+    );
+    let offer: Vec<String> = buttons_of(&mut app, GPU_ROW)
+        .iter()
+        .map(|b| b["label"].as_str().unwrap_or("").to_string())
+        .collect();
+    ctx.ok(
+        offer == ["Enable".to_string()],
+        "and the button offers Enable again",
+    );
+    ctx.ok(
+        drow(&mut app, "base")["recommended"] == json!(true),
+        "with the GPU off, Base is the recommended model again",
+    );
+
+    // A MODEL THAT DOES NOT SUPPORT EVERY LANGUAGE SAYS SO, ONCE, BEFORE ITS DOWNLOAD (#121).
+    press_button(ctx, &mut app, "parakeet-v3", "Download");
+    let asked = ctx.until("Download on Parakeet v3 asks first", 4_000, &mut || {
+        ask_open(&mut app)
+    });
+    ctx.ok(asked, "Download on Parakeet v3 asks first");
+    let (_, said) = ask_state(&mut app);
+    // REPLACED: the probe holds the question's line (`dict.ask`), not its two buttons' words, so the line is
+    // what is checked here; the buttons are the Cancel and Download the ask draws (Task 25).
+    ctx.ok(
+        said == LIMITED_LINE,
+        format!("and says the one line, with Cancel and Download and nothing else (\"{said}\")"),
+    );
+    ctx.ok(
+        state_of(&mut app, "parakeet-v3") == "absent",
+        "nothing downloads while it asks",
+    );
+    // REPLACED: the Cancel button has no probe, so Escape (which the ask treats as Cancel) puts it away.
+    press(&mut app, "Escape");
+    let away = ctx.until("Cancel puts it away", 2_000, &mut || !ask_open(&mut app));
+    ctx.ok(asked && away, "Cancel puts it away");
+    ctx.ok(
+        state_of(&mut app, "parakeet-v3") == "absent",
+        "and downloads nothing",
+    );
+    press_button(ctx, &mut app, "parakeet-v3", "Download");
+    let reopened = ctx.poll(4_000, &mut || ask_open(&mut app));
+    press(&mut app, "Escape");
+    let escaped = ctx.until("Escape goes", 2_000, &mut || !ask_open(&mut app));
+    ctx.ok(
+        reopened && escaped && state_of(&mut app, "parakeet-v3") == "absent",
+        "Escape is Cancel",
+    );
+    press_button(ctx, &mut app, "parakeet-v3", "Download");
+    ctx.poll(4_000, &mut || ask_open(&mut app));
+    // The focus starts on Download (the ask's own rule), so Enter is Download.
+    press(&mut app, "Enter");
+    let started = ctx.until("Download starts the download", 4_000, &mut || {
+        state_of(&mut app, "parakeet-v3") == "downloading"
+    });
+    ctx.ok(started, "Download starts the download");
+    press_button(ctx, &mut app, "parakeet-v3", "Cancel");
+    let stopped = ctx.until("its own Cancel stops it", 15_000, &mut || {
+        state_of(&mut app, "parakeet-v3") == "absent"
+    });
+    ctx.ok(stopped, "and its own Cancel stops it");
+    ctx.ok(
+        !root.join("models").join("parakeet-v3.bin").exists(),
+        "leaving no model behind",
+    );
+    // A Whisper model asks nothing.
+    press_button(ctx, &mut app, "small", "Download");
+    pause(ctx, 400);
+    ctx.ok(
+        !ask_open(&mut app),
+        "a Whisper model downloads without a question",
+    );
+    press_button(ctx, &mut app, "small", "Cancel");
+    ctx.poll(15_000, &mut || state_of(&mut app, "small") == "absent");
+
+    // THE LANGUAGE PICKER WHILE IT IS IN USE: Auto-detect, disabled, an icon that says the same line, and the
+    // user's own language kept for later.
+    stage_sparse(&root.join("models").join("parakeet-v3.bin"), parakeet.bytes)?;
+    let l = lang(&mut app);
+    ctx.ok(
+        l["text"] == json!("Norwegian") && l["disabled"] != json!(true),
+        "on Whisper Base the picker shows the chosen language",
+    );
+    ctx.ok(l["limited"] != json!(true), "with no icon beside it");
+    // PT leaves the page for the terminal and comes back, so the page reads the store again.
+    if let Some((x, y, w, h)) = rect4(&probe(
+        &mut app,
+        "settings.rail",
+        json!({ "id": "terminal" }),
+    )) {
+        let _ = app
+            .session
+            .click((x + w / 2.0) as f32, (y + h / 2.0) as f32);
+    }
+    ctx.poll(6_000, &mut || {
+        settings_page(&mut app).as_deref() == Some("terminal")
+    });
+    let _ = open_dictation_page(ctx, &mut app);
+    ctx.poll(8_000, &mut || {
+        state_of(&mut app, "parakeet-v3") == "installed"
+    });
+    press_button(ctx, &mut app, "parakeet-v3", "Use");
+    let auto = ctx.until(
+        "on Parakeet v3 the picker shows Auto-detect",
+        4_000,
+        &mut || lang(&mut app)["text"] == json!("Auto-detect"),
+    );
+    ctx.ok(auto, "on Parakeet v3 the picker shows Auto-detect");
+    ctx.ok(
+        lang(&mut app)["disabled"] == json!(true),
+        "and cannot be changed",
+    );
+    let icon = lang(&mut app);
+    ctx.ok(
+        icon["limited"] == json!(true) && icon["title"] == json!(LIMITED_LINE),
+        "an icon beside it says the same line on hover",
+    );
+    ctx.ok(
+        stored(&profile, "flare.dictation.language").as_deref() == Some("no"),
+        "the stored language is untouched",
+    );
+    press_button(ctx, &mut app, "base", "Use");
+    let back = ctx.until(
+        "back on Whisper Base, Norwegian is back",
+        4_000,
+        &mut || {
+            let l = lang(&mut app);
+            l["text"] == json!("Norwegian") && l["disabled"] != json!(true)
+        },
+    );
+    ctx.ok(
+        back,
+        "back on Whisper Base, Norwegian is back and the picker works",
+    );
+    ctx.ok(
+        lang(&mut app)["limited"] != json!(true),
+        "and the icon is gone",
+    );
+    let _ = app.close();
+    Ok(())
 }
 
 /// PT `dictationParakeet` (11 assertions): Task 29. Parakeet is asked for auto, so the English sentence
