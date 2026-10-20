@@ -2630,12 +2630,22 @@ struct RealParts {
     client: Option<LinkClient>,
 }
 
+/// The download the store uses: the e2e's stand-in when `FLARE_E2E_FETCH=stall` (M8 Task 30, read only under
+/// --e2e, never a request), else the real HTTPS fetch.
+fn store_fetch() -> Box<dyn flare_dictation::store::Fetch> {
+    if crate::e2e::global()
+        .env(flare_win::names::SEAM_FETCH)
+        .as_deref()
+        == Some("stall")
+    {
+        return Box::new(flare_dictation::fetch_ureq::StallFetch::new());
+    }
+    Box::new(flare_dictation::fetch_ureq::UreqFetch::new())
+}
+
 impl RealParts {
     fn new(cfg: &RealCfg) -> Self {
-        let store = Store::open(
-            cfg.root.clone(),
-            Box::new(flare_dictation::fetch_ureq::UreqFetch::new()),
-        );
+        let store = Store::open(cfg.root.clone(), store_fetch());
         let job = Job::new().unwrap_or_else(|e| {
             log::warn!("dictation: no job object ({e}); an engine will not be started");
             Job::unusable_for_tests()

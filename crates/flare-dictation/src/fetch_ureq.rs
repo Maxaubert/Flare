@@ -11,7 +11,7 @@
 //! helper is abandoned: it ends when its socket does (at the latest at the 12 hour ceiling below).
 
 use std::io::Read;
-use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::time::{Duration, Instant};
 
 use crate::store::{Failure, Fetch};
@@ -277,5 +277,69 @@ mod tests {
         cancel_during(serve_script(|_| {
             std::thread::sleep(Duration::from_secs(20))
         }));
+    }
+}
+
+/// The e2e's stand-in for the network (`FLARE_E2E_FETCH=stall`, M8 Task 30): zeros from memory, one chunk every
+/// few milliseconds, and never a byte from the network. It runs until the sink says stop (a Cancel), which is
+/// the only way a scenario's download ends; it has no end of its own.
+pub struct StallFetch {
+    chunk: usize,
+    every: Duration,
+}
+
+impl StallFetch {
+    /// The app's stand-in: 64 KiB every 250 ms.
+    pub fn new() -> Self {
+        Self::with_timing(64 * 1024, Duration::from_millis(250))
+    }
+
+    pub fn with_timing(chunk: usize, every: Duration) -> Self {
+        Self { chunk, every }
+    }
+}
+
+impl Default for StallFetch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Fetch for StallFetch {
+    fn get(&self, _url: &str, sink: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), Failure> {
+        let zeros = vec![0u8; self.chunk];
+        loop {
+            std::thread::sleep(self.every);
+            if !sink(&zeros) {
+                return Err(Failure::Cancelled);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+
+    #[test]
+    fn the_stall_serves_zeros_slowly_and_ends_only_when_the_sink_says_stop() {
+        let f = StallFetch::with_timing(4096, Duration::from_millis(1));
+        let mut got = 0usize;
+        let mut calls = 0;
+        let r = f.get("https://never.invalid/model.bin", &mut |c| {
+            assert!(c.iter().all(|b| *b == 0), "the stand-in serves zeros");
+            got += c.len();
+            calls += 1;
+            calls < 3
+        });
+        assert_eq!(r, Err(Failure::Cancelled));
+        assert_eq!(got, 3 * 4096);
+    }
+
+    #[test]
+    fn the_app_stand_in_is_64_kib_per_quarter_second() {
+        let f = StallFetch::new();
+        assert_eq!(f.chunk, 64 * 1024);
+        assert_eq!(f.every, Duration::from_millis(250));
     }
 }
