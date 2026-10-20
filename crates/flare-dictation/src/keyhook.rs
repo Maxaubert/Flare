@@ -845,6 +845,26 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_that_failed_can_be_started_afresh_in_the_same_lock_dir() {
+        // The owner's re-arm (N15): drop the dead hook, start a new one; the lock was let go, so it runs.
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let first = KeyHook::start_failing_install(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Failed)
+        );
+        first.stop();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let second = KeyHook::start_failing_install(dir.path().to_path_buf(), tx);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(HookEvent::Failed),
+            "the fresh hook took the lock and ran"
+        );
+        second.stop();
+    }
+    #[test]
     #[ignore = "by hand: SendInput reaches the desktop in front (docs/dictation-by-hand.md)"]
     fn reports_the_binding_key_down_and_up_and_stops_when_told() {
         // PT: the real hook on F24 (0x87), a key no application uses; nothing is typed anywhere.

@@ -247,6 +247,8 @@ pub enum TimerKey {
     SvcPick,
     /// The widget's hide.
     WidgetHide,
+    /// A hook that died is armed again (N15).
+    SvcRearm,
 }
 
 impl TimerKey {
@@ -259,10 +261,11 @@ impl TimerKey {
             TimerKey::SvcKey => "dictation.svc-key-tick",
             TimerKey::SvcPick => "dictation.pick",
             TimerKey::WidgetHide => "dictation.widget-hide",
+            TimerKey::SvcRearm => "dictation.hook-rearm",
         }
     }
 
-    fn all() -> [TimerKey; 6] {
+    fn all() -> [TimerKey; 7] {
         [
             TimerKey::WindowKey,
             TimerKey::Partial,
@@ -270,6 +273,7 @@ impl TimerKey {
             TimerKey::SvcKey,
             TimerKey::SvcPick,
             TimerKey::WidgetHide,
+            TimerKey::SvcRearm,
         ]
     }
 }
@@ -884,6 +888,7 @@ impl Dict {
                 }
             }
             TimerKey::SvcKey => self.svc_on(SvcEvent::Timer(TimerId::KeyTick)),
+            TimerKey::SvcRearm => self.svc_on(SvcEvent::Timer(TimerId::HookRearm)),
             TimerKey::SvcPick => self.svc_on(SvcEvent::Timer(TimerId::Pick)),
             TimerKey::WidgetHide => {
                 self.widget = None;
@@ -1542,6 +1547,7 @@ fn svc_timer(id: TimerId) -> TimerKey {
     match id {
         TimerId::Pick => TimerKey::SvcPick,
         TimerId::KeyTick => TimerKey::SvcKey,
+        TimerId::HookRearm => TimerKey::SvcRearm,
     }
 }
 
@@ -3452,6 +3458,36 @@ mod tests {
         assert_eq!(r.count("hook_start"), 0);
     }
 
+    #[test]
+    fn a_hook_that_died_is_started_again_after_a_second_with_its_keys_and_mask() {
+        let mut r = Rig::new(false);
+        r.set("flare.dictation.enabled", "1");
+        r.set("flare.dictation.model", "tiny");
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        assert_eq!(r.count("hook_start"), 1);
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        let keys = r.count("hook_keys");
+        let masks = r.count("hook_mask");
+        r.d.on_msg(DictMsg::Hook(HookEvent::Failed));
+        assert_eq!(r.count("hook_stop"), 1, "the dead hook is dropped");
+        assert_eq!(
+            r.host.timers.borrow().get(&TimerKey::SvcRearm),
+            Some(&(1000, false))
+        );
+        assert_eq!(r.count("hook_start"), 1, "not before the second is out");
+        r.d.on_timer(TimerKey::SvcRearm);
+        assert_eq!(r.count("hook_start"), 2, "a fresh hook");
+        assert_eq!(r.count("hook_keys"), keys + 1);
+        assert_eq!(r.count("hook_mask"), masks + 1);
+        // Turned off meanwhile: nothing is armed.
+        r.d.on_msg(DictMsg::Hook(HookEvent::Failed));
+        r.set("flare.dictation.anywhere", "0");
+        r.d.apply_prefs();
+        assert!(!r.host.timers.borrow().contains_key(&TimerKey::SvcRearm));
+        r.d.on_timer(TimerKey::SvcRearm);
+        assert_eq!(r.count("hook_start"), 2);
+    }
     #[test]
     fn the_hook_never_starts_with_anywhere_off() {
         let mut r = Rig::new(false);

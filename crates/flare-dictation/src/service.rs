@@ -45,6 +45,8 @@ pub const SHOW_MS: u64 = 2200;
 pub const NOTE_HIDE_MS: u64 = 3000;
 /// The key feed's tick while a bare-modifier press is deciding (the hold time is up a little before it).
 pub const KEY_TICK_MS: u64 = 210;
+/// A hook that died is armed again after this long (N15; appHelper.ps1 HookLoop).
+pub const HOOK_REARM_MS: u64 = 1000;
 /// The widget is 480 css px wide.
 pub const WIDGET_WIDTH: u32 = 480;
 /// What a heard text may be, and a message.
@@ -146,6 +148,8 @@ pub enum TimerId {
     Pick,
     /// The key feed's tick (the same as `SvcEvent::Tick`).
     KeyTick,
+    /// A hook that died is armed again (N15).
+    HookRearm,
 }
 
 /// Something that happened.
@@ -246,6 +250,10 @@ pub struct Service {
     cfg: Option<AnywhereConfig>,
     feed: KeyFeed,
     hook_on: bool,
+    /// The keys and mask last sent to the hook: a fresh hook gets them again.
+    last_keys: Vec<u16>,
+    last_mask: bool,
+    rearm_set: bool,
     /// An outside recording is under way (the widget follows it).
     outside: bool,
     tick_set: bool,
@@ -303,6 +311,9 @@ impl Service {
             cfg: None,
             feed: KeyFeed::new(),
             hook_on: false,
+            last_keys: Vec::new(),
+            last_mask: false,
+            rearm_set: false,
             outside: false,
             tick_set: false,
             picking: None,
@@ -354,6 +365,17 @@ impl Service {
                 self.tick_set = false;
                 let a = self.feed.tick(now_ms, &self.key_config());
                 self.act(&mut fx, a);
+            }
+            SvcEvent::Timer(TimerId::HookRearm) => {
+                self.rearm_set = false;
+                if self.hook_on && !self.opts.e2e {
+                    fx.push(SvcEffect::HookStart);
+                    fx.push(SvcEffect::HookKeys(self.last_keys.clone()));
+                    fx.push(SvcEffect::HookMask(self.last_mask));
+                    if self.picking.is_some() {
+                        fx.push(SvcEffect::HookPick(true));
+                    }
+                }
             }
             SvcEvent::Timer(TimerId::Pick) => {
                 if self.picking.is_some() {
@@ -484,6 +506,7 @@ impl Service {
                 fx.push(SvcEffect::ClearTimer(TimerId::Pick));
                 fx.push(SvcEffect::WidgetHide { after_ms: 0 });
             }
+            self.clear_rearm(fx);
             if self.hook_on {
                 self.hook_on = false;
                 fx.push(SvcEffect::HookPick(false));
@@ -499,8 +522,27 @@ impl Service {
             self.hook_on = true;
             fx.push(SvcEffect::HookStart);
         }
+        self.last_keys = keys.clone();
+        self.last_mask = masks_start(&next.hotkey);
         fx.push(SvcEffect::HookKeys(keys));
-        fx.push(SvcEffect::HookMask(masks_start(&next.hotkey)));
+        fx.push(SvcEffect::HookMask(self.last_mask));
+    }
+
+    fn clear_rearm(&mut self, fx: &mut Vec<SvcEffect>) {
+        if self.rearm_set {
+            self.rearm_set = false;
+            fx.push(SvcEffect::ClearTimer(TimerId::HookRearm));
+        }
+    }
+
+    /// The hook died while still wanted: drop it now, start a fresh one after HOOK_REARM_MS (N15).
+    fn rearm(&mut self, fx: &mut Vec<SvcEffect>) {
+        if !self.hook_on || self.opts.e2e {
+            return;
+        }
+        fx.push(SvcEffect::HookStop);
+        self.rearm_set = true;
+        fx.push(SvcEffect::SetTimer(TimerId::HookRearm, HOOK_REARM_MS));
     }
 
     fn clear_tick(&mut self, fx: &mut Vec<SvcEffect>) {
@@ -571,6 +613,9 @@ impl Service {
                     self.become_service(fx);
                 } else {
                     self.become_client(fx);
+                    if h == HookEvent::Failed {
+                        self.rearm(fx);
+                    }
                 }
                 return;
             }
@@ -716,6 +761,7 @@ impl Service {
     }
 
     fn stop(&mut self, fx: &mut Vec<SvcEffect>) {
+        self.clear_rearm(fx);
         if self.hook_on {
             self.hook_on = false;
             fx.push(SvcEffect::HookStop);
@@ -1028,6 +1074,74 @@ mod tests {
         assert!(started_ctl(&fx));
     }
 
+    #[test]
+    fn a_hook_that_died_is_armed_again_after_1000_ms_with_its_last_keys_and_mask() {
+        let mut s = Service::new(opts(false, false));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 0.0);
+        s.on(SvcEvent::Hook(HookEvent::Ready), 1.0);
+        let fx = s.on(SvcEvent::Hook(HookEvent::Failed), 2.0);
+        // The dead hook is dropped now, a fresh one is asked for later.
+        assert!(has(&fx, &SvcEffect::HookStop), "{fx:?}");
+        assert!(
+            has(&fx, &SvcEffect::SetTimer(TimerId::HookRearm, HOOK_REARM_MS)),
+            "{fx:?}"
+        );
+        assert_eq!(HOOK_REARM_MS, 1000);
+        assert!(s.hook_running(), "still wanted");
+        let fx = s.on(SvcEvent::Timer(TimerId::HookRearm), 1002.0);
+        let start = fx.iter().position(|e| *e == SvcEffect::HookStart);
+        let keys = fx
+            .iter()
+            .position(|e| *e == SvcEffect::HookKeys(vec![0x77]));
+        let mask = fx.iter().position(|e| *e == SvcEffect::HookMask(false));
+        assert!(
+            start.is_some() && keys > start && mask > start,
+            "start, then the last keys and mask: {fx:?}"
+        );
+    }
+
+    #[test]
+    fn no_re_arm_when_it_was_turned_off_or_stopped_meanwhile() {
+        let mut s = Service::new(opts(false, false));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 0.0);
+        s.on(SvcEvent::Hook(HookEvent::Failed), 1.0);
+        let mut off = cfg(f8(), DictMode::Hold);
+        off.on = false;
+        let fx = s.on(SvcEvent::Config(off), 2.0);
+        assert!(
+            has(&fx, &SvcEffect::ClearTimer(TimerId::HookRearm)),
+            "{fx:?}"
+        );
+        let fx = s.on(SvcEvent::Timer(TimerId::HookRearm), 1001.0);
+        assert!(!has(&fx, &SvcEffect::HookStart), "{fx:?}");
+        // Never with the hook off to begin with, and not after the app stops.
+        let mut s = Service::new(opts(false, false));
+        let fx = s.on(SvcEvent::Hook(HookEvent::Failed), 1.0);
+        assert!(!has(
+            &fx,
+            &SvcEffect::SetTimer(TimerId::HookRearm, HOOK_REARM_MS)
+        ));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 2.0);
+        s.on(SvcEvent::Hook(HookEvent::Failed), 3.0);
+        let fx = s.on(SvcEvent::Stop, 4.0);
+        assert!(
+            has(&fx, &SvcEffect::ClearTimer(TimerId::HookRearm)),
+            "{fx:?}"
+        );
+        let fx = s.on(SvcEvent::Timer(TimerId::HookRearm), 1004.0);
+        assert!(!has(&fx, &SvcEffect::HookStart));
+    }
+
+    #[test]
+    fn waiting_is_not_a_death_and_arms_nothing() {
+        let mut s = Service::new(opts(false, false));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 0.0);
+        let fx = s.on(SvcEvent::Hook(HookEvent::Waiting), 1.0);
+        assert!(!has(&fx, &SvcEffect::HookStop));
+        assert!(!fx
+            .iter()
+            .any(|e| matches!(e, SvcEffect::SetTimer(TimerId::HookRearm, _))));
+    }
     #[test]
     fn a_digit_outside_the_picker_does_nothing() {
         let mut s = started();
