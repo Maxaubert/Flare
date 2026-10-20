@@ -17,6 +17,9 @@ use std::collections::{HashMap, HashSet};
 /// the cap is what stops a stream of new clusters growing it for the session (audit M1).
 const CACHE_MAX: usize = 8192;
 
+/// Characters remembered as covered by no family; the set starts over past this (audit R5).
+const UNCOVERED_MAX: usize = 4096;
+
 /// The locale the font system is built with (the fallback lists pick Han fonts by it).
 const LOCALE: &str = "en-US";
 
@@ -36,13 +39,19 @@ pub struct Rasterizer {
     cache_cap: usize,
     /// The (lazy family, character) pairs already asked for and found useless: a family is tried
     /// again for a character it was not asked about, never twice for the same one.
-    rejected: Vec<(&'static str, char)>,
+    rejected: HashSet<(&'static str, char)>,
     /// Characters every lazy family was asked about and none covers, never walked again.
     uncovered: HashSet<char>,
     /// The ones that were kept, so a rebuilt database brings them back.
     kept_fallbacks: Vec<&'static str>,
     /// (faces, bytes) of the last `font_bytes` count.
     font_bytes: std::cell::Cell<Option<(usize, usize)>>,
+    /// Codepoint ranges each lazy family covers, read from its font files once (audit R5).
+    coverage: HashMap<&'static str, Vec<(u32, u32)>>,
+    /// How many font files were loaded into the database for a fallback walk.
+    family_loads: usize,
+    /// How many families had their cmap read.
+    cmap_reads: usize,
 }
 
 impl Rasterizer {
@@ -71,10 +80,13 @@ impl Rasterizer {
             units,
             cache: HashMap::new(),
             cache_cap: CACHE_MAX,
-            rejected: Vec::new(),
+            rejected: HashSet::new(),
             uncovered: HashSet::new(),
             kept_fallbacks: Vec::new(),
             font_bytes: std::cell::Cell::new(None),
+            coverage: HashMap::new(),
+            family_loads: 0,
+            cmap_reads: 0,
         }
     }
 
@@ -122,8 +134,47 @@ impl Rasterizer {
         self.cache_cap = cap;
     }
 
-    /// A character nothing loaded covers: loads the next lazy fallback family that covers it, each
-    /// family at most once per character. True when one was added.
+    /// Codepoint ranges the font files of `family` cover, read once and kept (no database load).
+    fn coverage_of(&mut self, family: &'static str, files: &[std::path::PathBuf]) -> &[(u32, u32)] {
+        if !self.coverage.contains_key(family) {
+            self.cmap_reads += 1;
+            let mut points: Vec<u32> = Vec::new();
+            for file in files {
+                // sync-ok: once per lazy family per session, to read its cmap
+                let Ok(data) = std::fs::read(file) else {
+                    continue;
+                };
+                let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+                for index in 0..count {
+                    let Ok(face) = ttf_parser::Face::parse(&data, index) else {
+                        continue;
+                    };
+                    let Some(cmap) = face.tables().cmap else {
+                        continue;
+                    };
+                    for sub in cmap.subtables {
+                        if sub.is_unicode() {
+                            sub.codepoints(|c| points.push(c));
+                        }
+                    }
+                }
+            }
+            points.sort_unstable();
+            points.dedup();
+            let mut ranges: Vec<(u32, u32)> = Vec::new();
+            for c in points {
+                match ranges.last_mut() {
+                    Some(last) if last.1 + 1 == c => last.1 = c,
+                    _ => ranges.push((c, c)),
+                }
+            }
+            self.coverage.insert(family, ranges);
+        }
+        &self.coverage[family]
+    }
+
+    /// A character nothing loaded covers: loads the next lazy fallback family whose cmap has it
+    /// and that shapes it, each family at most once per character. True when one was added.
     fn fallback_for(&mut self, ch: char) -> bool {
         if self.uncovered.contains(&ch) {
             return false;
@@ -133,10 +184,27 @@ impl Rasterizer {
             if self.kept_fallbacks.contains(&family) || self.rejected.contains(&(family, ch)) {
                 continue;
             }
-            self.rejected.push((family, ch));
             let files = files_for_family(&faces, family);
+            let c = ch as u32;
+            let has = self
+                .coverage_of(family, &files)
+                .binary_search_by(|&(lo, hi)| {
+                    if c < lo {
+                        std::cmp::Ordering::Greater
+                    } else if c > hi {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .is_ok();
+            if !has {
+                continue;
+            }
+            self.rejected.insert((family, ch));
             let mut ids = Vec::new();
             for file in files {
+                self.family_loads += 1;
                 ids.extend(
                     self.fs
                         .db_mut()
@@ -151,6 +219,12 @@ impl Rasterizer {
             for id in ids {
                 self.fs.db_mut().remove_face(id);
             }
+        }
+        if self.uncovered.len() >= UNCOVERED_MAX {
+            self.uncovered.clear();
+        }
+        if self.rejected.len() >= UNCOVERED_MAX {
+            self.rejected.clear();
         }
         self.uncovered.insert(ch);
         false
@@ -704,6 +778,32 @@ mod tests {
     }
 
     #[test]
+    fn many_uncovered_characters_load_no_font_file() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        // Unassigned codepoints: no lazy family has them in its cmap (audit R5), so a flood of
+        // them reads each family's cmap at most once and loads nothing into the database.
+        let faces = r.face_count();
+        for i in 0..40u32 {
+            r.glyph(&key(&char::from_u32(0x10FF00 + i).unwrap().to_string()));
+        }
+        assert_eq!(
+            r.family_loads, 0,
+            "a family was loaded for an uncovered char"
+        );
+        assert_eq!(r.face_count(), faces);
+        assert!(r.cmap_reads <= LAZY_FALLBACK_FAMILIES.len());
+    }
+
+    #[test]
+    fn the_uncovered_set_is_bounded() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for i in 0..(UNCOVERED_MAX as u32 + 50) {
+            r.glyph(&key(&char::from_u32(0x100000 + i).unwrap().to_string()));
+        }
+        assert!(r.uncovered.len() <= UNCOVERED_MAX);
+    }
+
+    #[test]
     fn the_glyph_cache_is_bounded() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         r.set_cache_cap(8);
@@ -728,7 +828,7 @@ mod tests {
         r.glyph(&key("\u{10FFFD}"));
         assert!(!r.has_family_loaded("Javanese Text"));
         let walked = r.rejected.len();
-        assert!(walked > 0);
+        assert!(r.uncovered.contains(&'\u{10FFFD}'));
         // The same character is never walked again (a prompt icon redrawn every frame).
         r.glyph(&key("x\u{10FFFD}"));
         assert_eq!(r.rejected.len(), walked);

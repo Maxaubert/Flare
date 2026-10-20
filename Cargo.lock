@@ -1703,6 +1703,7 @@ dependencies = [
  "log",
  "pollster",
  "tempfile",
+ "ttf-parser",
  "unicode-width",
  "wgpu",
  "windows-sys 0.61.2",
