@@ -7,19 +7,19 @@
     "scale": 2.25,
     "version": "0.1.0"
   },
-  "first_window_ms": 58.384100000000004,
-  "first_visible_ms": 122.84689999999999,
-  "first_pipe_ms": 49.513099999999994,
-  "ready_ms": 180.8087,
+  "first_window_ms": 61.9916,
+  "first_visible_ms": 124.9015,
+  "first_pipe_ms": 52.9458,
+  "ready_ms": 183.2489,
   "judged": {
-    "frames": 4,
-    "first_frame_ms": 58.384100000000004,
-    "last_change_ms": 189.767,
+    "frames": 5,
+    "first_frame_ms": 61.9916,
+    "last_change_ms": 924.4101999999999,
     "blank_frames": 1,
     "wrong_size_frames": 0,
     "off_brightness_frames": 0,
-    "wrong_bar_colour_frames": 2,
-    "wrong_foot_colour_frames": 2,
+    "wrong_bar_colour_frames": 1,
+    "wrong_foot_colour_frames": 1,
     "first_size": [
       2655,
       1755
@@ -30,8 +30,8 @@
     ],
     "hidden_frames": 2,
     "copier_frame_frames": 1,
-    "seen_frames": 1,
-    "first_seen_ms": 122.84689999999999,
+    "seen_frames": 2,
+    "first_seen_ms": 124.9015,
     "first_seen_size": [
       2655,
       1755
@@ -42,263 +42,263 @@
     "seen_wrong_size_frames": 0
   },
   "app_trace": {
-    "line": "startup: main 14 ms, args 14 ms, backend 18 ms, component 23 ms, profile 33 ms, shell_spawn 108 ms, first_frame 44 ms, first_prompt 196 ms",
+    "line": "startup: main 14 ms, args 14 ms, backend 19 ms, component 25 ms, profile 35 ms, shell_spawn 110 ms, first_frame 47 ms, first_prompt 200 ms",
     "phases": [
       {
         "name": "main",
-        "ms": 14.1946
+        "ms": 14.7758
       },
       {
         "name": "args",
-        "ms": 14.2292
+        "ms": 14.812
       },
       {
         "name": "backend",
-        "ms": 18.8887
+        "ms": 19.9729
       },
       {
         "name": "component",
-        "ms": 23.8314
+        "ms": 25.2145
       },
       {
         "name": "profile",
-        "ms": 33.6005
+        "ms": 35.586600000000004
       },
       {
         "name": "shell_spawn",
-        "ms": 108.9822
+        "ms": 110.5939
       },
       {
         "name": "first_frame",
-        "ms": 44.8466
+        "ms": 47.2037
       },
       {
         "name": "first_prompt",
-        "ms": 196.0859
+        "ms": 200.5531
       }
     ],
     "prompt_ms": null,
     "usable_ms": null
   },
-  "longest_frame_gap_ms_to_1500_after_first_prompt": 26.6615,
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 26.4091,
   "first_presented_frames": [
     [
-      97.7103,
+      98.7095,
       null,
       null
     ],
     [
-      119.4015,
-      21.690399999999997,
+      122.2035,
+      23.4934,
       null
     ],
     [
-      134.8567,
-      15.4556,
+      139.1839,
+      16.9825,
       null
     ],
     [
-      146.33950000000002,
-      11.4758,
+      151.043,
+      11.8514,
       null
     ],
     [
-      160.0365,
-      13.7024,
+      165.4927,
+      14.4546,
       null
     ],
     [
-      180.1561,
-      20.1225,
+      182.584,
+      17.0894,
       null
     ],
     [
-      190.2698,
-      10.106800000000002,
+      191.9076,
+      9.3199,
       null
     ],
     [
-      196.1737,
-      5.911300000000001,
+      202.5725,
+      10.6733,
       null
     ],
     [
-      209.6265,
-      13.4499,
+      224.7157,
+      22.1325,
       null
     ],
     [
-      232.7471,
-      23.1207,
+      248.1174,
+      23.4074,
       null
     ],
     [
-      255.4568,
-      22.7096,
+      270.7545,
+      22.6373,
       null
     ],
     [
-      277.76050000000004,
-      22.305100000000003,
+      292.6003,
+      21.8486,
       null
     ],
     [
-      299.39149999999995,
-      21.6305,
+      314.5509,
+      21.951600000000003,
       null
     ],
     [
-      321.33430000000004,
-      21.942300000000003,
+      335.89790000000005,
+      21.3465,
       null
     ],
     [
-      343.2942,
-      21.9594,
+      357.3543,
+      21.4576,
       null
     ],
     [
-      365.0875,
-      21.7952,
+      380.8371,
+      23.4807,
       null
     ],
     [
-      387.244,
-      22.1549,
+      402.9578,
+      22.1217,
       null
     ],
     [
-      409.1498,
-      21.9061,
+      424.4397,
+      21.4826,
       null
     ],
     [
-      431.2424999999999,
-      22.0926,
+      446.2466,
+      21.8071,
       null
     ],
     [
-      453.8997,
-      22.656599999999997,
+      468.7411,
+      22.4938,
       null
     ],
     [
-      476.1254,
-      22.2265,
+      478.1847,
+      9.4437,
       null
     ],
     [
-      484.3574,
-      8.229500000000002,
+      490.5188,
+      12.3348,
       null
     ],
     [
-      498.315,
-      13.9586,
+      512.7625999999999,
+      22.2431,
       null
     ],
     [
-      520.4676000000001,
-      22.1525,
+      534.3737,
+      21.610899999999997,
       null
     ],
     [
-      542.3836,
-      21.9168,
+      555.9482999999999,
+      21.5744,
       null
     ],
     [
-      564.0953,
-      21.7116,
+      577.3086,
+      21.3606,
       null
     ],
     [
-      585.8951999999999,
-      21.7993,
+      598.8527,
+      21.545,
       null
     ],
     [
-      612.5547,
-      26.6615,
+      620.3325,
+      21.4784,
       null
     ],
     [
-      635.3180000000001,
-      22.7637,
+      642.8122,
+      22.4807,
       null
     ],
     [
-      657.3507,
-      22.0329,
+      664.5099,
+      21.6966,
       null
     ],
     [
-      679.2838,
-      21.932,
+      686.1271,
+      21.6188,
       null
     ],
     [
-      701.6454,
-      22.3577,
+      707.0251,
+      20.8979,
       null
     ],
     [
-      723.7535,
-      22.1099,
+      728.2275000000001,
+      21.2013,
       null
     ],
     [
-      745.4427000000001,
-      21.6909,
+      749.8332,
+      21.6065,
       null
     ],
     [
-      767.105,
-      21.6624,
+      771.1659,
+      21.3322,
       null
     ],
     [
-      789.4517,
-      22.3466,
+      792.6185999999999,
+      21.451600000000003,
       null
     ],
     [
-      811.9674,
-      22.5161,
+      819.0269999999999,
+      26.4091,
       null
     ],
     [
-      833.8486,
-      21.8813,
+      840.4255,
+      21.3977,
       null
     ],
     [
-      856.3361,
-      22.4872,
+      862.2871,
+      21.8632,
       null
     ],
     [
-      878.0552,
-      21.7202,
+      883.6806,
+      21.393700000000003,
       null
     ]
   ],
   "timeline": [
     {
-      "t_ms": 109.4967,
+      "t_ms": 111.2172,
       "tabs": 3,
       "front": 1,
       "cwds": [
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-HUGpeO\\alpha",
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-HUGpeO\\beta",
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-HUGpeO\\gamma"
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-QjTaGC\\alpha",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-QjTaGC\\beta",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-QjTaGC\\gamma"
       ]
     }
   ],
   "frames": [
     {
       "n": 0,
-      "t_ms": 58.384100000000004,
+      "t_ms": 61.9916,
       "w": 2655,
       "h": 1755,
       "blank": true,
@@ -326,11 +326,11 @@
       ],
       "style": "06cf0000",
       "ex_style": "00040110",
-      "file": "000-t00058ms-hidden.png"
+      "file": "000-t00062ms-hidden.png"
     },
     {
       "n": 1,
-      "t_ms": 80.3844,
+      "t_ms": 84.0619,
       "w": 2655,
       "h": 1755,
       "blank": false,
@@ -358,11 +358,11 @@
       ],
       "style": "06cf0000",
       "ex_style": "00040110",
-      "file": "001-t00080ms-hidden.png"
+      "file": "001-t00084ms-hidden.png"
     },
     {
       "n": 2,
-      "t_ms": 122.84689999999999,
+      "t_ms": 124.9015,
       "w": 2655,
       "h": 1755,
       "blank": false,
@@ -390,18 +390,18 @@
       ],
       "style": "16cf0000",
       "ex_style": "08000190",
-      "file": "002-t00123ms.png"
+      "file": "002-t00125ms.png"
     },
     {
       "n": 3,
-      "t_ms": 189.767,
+      "t_ms": 203.154,
       "w": 2655,
       "h": 1755,
       "blank": false,
       "mean": [
-        32.66388040507957,
-        33.22003103747181,
-        33.78684497939599
+        32.66138508849285,
+        33.21757027373368,
+        33.78453444543429
       ],
       "bar": [
         191,
@@ -422,7 +422,38 @@
       ],
       "style": "16cf0000",
       "ex_style": "08000190",
-      "file": "003-t00190ms-copyframe.png"
+      "file": "003-t00203ms-copyframe.png"
+    },
+    {
+      "n": 4,
+      "t_ms": 924.4101999999999,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        22.397004718717277,
+        22.264141504431027,
+        22.112655807056893
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "source": "app snapshot",
+      "file": "004-t00924ms-app.png"
     }
   ]
 }

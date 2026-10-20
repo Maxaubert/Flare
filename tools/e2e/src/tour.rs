@@ -94,7 +94,9 @@ pub fn read_png(path: &Path) -> Result<Shot, String> {
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => buf
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         other => return Err(format!("unexpected colour type {other:?}")),

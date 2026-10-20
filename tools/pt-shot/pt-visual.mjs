@@ -369,13 +369,16 @@ async function timing(lab, surface, scale, runs) {
 // ---- the sidebar ----------------------------------------------------------------------------------------
 
 const REC = () => {
-  window.__rec = { rows: [], on: true }
+  // Each recorder stops when it is no longer THE recorder: a loop that only read `window.__rec.on` kept running
+  // into the next run's fresh object, so run k pushed 2k-1 rows per frame (audit 2026-10-21).
+  const rec = { rows: [], on: true }
+  window.__rec = rec
   const slot = document.querySelector('[data-sidebar-slot]')
   const nav = document.querySelector('[data-tab-sidebar]')
   const t0 = performance.now()
   const tick = (t) => {
-    if (!window.__rec.on) return
-    window.__rec.rows.push([t - 0, slot.getBoundingClientRect().width, nav.getBoundingClientRect().left])
+    if (!rec.on || window.__rec !== rec) return
+    rec.rows.push([t - 0, slot.getBoundingClientRect().width, nav.getBoundingClientRect().left])
     requestAnimationFrame(tick)
   }
   requestAnimationFrame(tick)

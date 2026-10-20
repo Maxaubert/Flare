@@ -4,57 +4,51 @@
 
 | cell | dir | frames | longest gap ms | t50 / t90 / t99 ms | settle ms | curve error (best fit) | input to first frame ms |
 |---|---|---|---|---|---|---|---|
-| flare 100-gpu | collapse | 7 | 69.8 | 10 / 69 / 144 | 223 | 0.008 | 21.0 |
-| flare 100-gpu | expand | 7 | 70.1 | 9 / 78 / 150 | 177 | 0.006 | 21.3 |
-| flare 100-software | collapse | 13 | 17.3 | 9 / 63 / 133 | 178 | 0.002 | 16.7 |
-| flare 100-software | expand | 13 | 17.2 | 9 / 63 / 133 | 179 | 0.003 | 16.8 |
-| flare 150-gpu | collapse | 7 | 69.8 | 9 / 78 / 148 | 183 | 0.005 | 21.6 |
-| flare 150-gpu | expand | 8 | 68.5 | 9 / 67 / 142 | 227 | 0.008 | 21.6 |
-| flare 150-software | collapse | 13 | 16.8 | 9 / 63 / 133 | 180 | 0.004 | 16.8 |
-| flare 150-software | expand | 13 | 17.0 | 9 / 63 / 133 | 178 | 0.002 | 16.6 |
-| flare 225-gpu | collapse | 7 | 68.7 | 9 / 75 / 148 | 181 | 0.004 | 22.0 |
-| flare 225-gpu | expand | 7 | 69.0 | 10 / 74 / 146 | 179 | 0.005 | 21.1 |
-| flare 225-software | collapse | 13 | 16.9 | 10 / 64 / 134 | 179 | 0.006 | 16.3 |
-| flare 225-software | expand | 13 | 16.9 | 9 / 63 / 133 | 178 | 0.006 | 17.1 |
-| pt 100-pt | collapse | 27 | 7.3 | 18 / 72 / 142 | 174 | 0.000 | 10.9 |
-| pt 100-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.003 | 8.9 |
-| pt 150-pt | collapse | 27 | 7.1 | 18 / 72 / 142 | 174 | 0.000 | 11.5 |
-| pt 150-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.000 | 10.6 |
-| pt 225-pt | collapse | 27 | 7.1 | 18 / 72 / 142 | 174 | 0.003 | 9.9 |
-| pt 225-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.003 | 12.1 |
+| flare 100-gpu | collapse | 7 | 67.6 | 10 / 66 / 143 | 218 | 0.006 | 21.1 |
+| flare 100-gpu | expand | 7 | 71.1 | 10 / 74 / 150 | 179 | 0.008 | 21.4 |
+| flare 100-software | collapse | 13 | 16.9 | 10 / 64 / 134 | 177 | 0.005 | 16.5 |
+| flare 100-software | expand | 13 | 17.6 | 10 / 64 / 133 | 178 | 0.007 | 16.9 |
+| flare 150-gpu | collapse | 7 | 69.0 | 11 / 79 / 146 | 180 | 0.002 | 21.1 |
+| flare 150-gpu | expand | 7 | 69.8 | 10 / 68 / 145 | 228 | 0.008 | 21.3 |
+| flare 150-software | collapse | 13 | 17.2 | 10 / 63 / 134 | 177 | 0.004 | 16.6 |
+| flare 150-software | expand | 13 | 18.1 | 10 / 64 / 134 | 178 | 0.008 | 16.2 |
+| flare 225-gpu | collapse | 8 | 69.6 | 9 / 70 / 145 | 228 | 0.005 | 21.8 |
+| flare 225-gpu | expand | 7 | 66.5 | 9 / 74 / 148 | 167 | 0.004 | 21.5 |
+| flare 225-software | collapse | 13 | 17.8 | 10 / 64 / 134 | 180 | 0.006 | 16.4 |
+| flare 225-software | expand | 13 | 17.6 | 10 / 64 / 133 | 177 | 0.004 | 16.6 |
+| pt 100-pt | collapse | 11 | 18.5 | 7 / 62 / 131 | 163 | 0.000 | 25.6 |
+| pt 100-pt | expand | 11 | 18.8 | 7 / 62 / 131 | 164 | 0.008 | 23.9 |
+| pt 150-pt | collapse | 11 | 18.6 | 7 / 62 / 132 | 163 | 0.009 | 29.7 |
+| pt 150-pt | expand | 11 | 18.7 | 8 / 62 / 132 | 164 | 0.005 | 30.5 |
+| pt 225-pt | collapse | 11 | 18.7 | 7 / 62 / 131 | 164 | 0.004 | 23.4 |
+| pt 225-pt | expand | 11 | 19.0 | 8 / 62 / 132 | 164 | 0.005 | 32.8 |
 
 ## startup: the pictures (judged from the PNG files; only what the screen can show)
 
 | cell | not shown | copier frame | pictures on screen | first on screen ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 225-gpu | 2 | 0 | 2 | 793 | 793 | 916 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
-| flare 225-software | 2 | 1 | 1 | 128 | 128 | 128 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
-| pt 100-pt | 0 | 0 | 4 | 195 | 195 | 1745 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
-| pt 150-pt | 0 | 0 | 4 | 178 | 178 | 1729 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
-| pt 225-pt | 0 | 0 | 4 | 178 | 178 | 1782 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
+| flare 225-gpu | 2 | 0 | 2 | 788 | 788 | 911 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| flare 225-software | 2 | 2 | 2 | 124 | 124 | 920 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| pt 100-pt | 0 | 0 | 4 | 184 | 184 | 1733 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
+| pt 150-pt | 0 | 0 | 4 | 177 | 177 | 1747 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
+| pt 225-pt | 0 | 0 | 4 | 193 | 193 | 1799 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
 
 ## resume: the pictures (judged from the PNG files; only what the screen can show)
 
 | cell | not shown | copier frame | pictures on screen | first on screen ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 225-gpu | 2 | 0 | 2 | 796 | 796 | 932 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
-| flare 225-software | 2 | 1 | 1 | 123 | 123 | 123 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
-| pt 100-pt | 0 | 0 | 5 | 201 | 201 | 1813 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
-| pt 150-pt | 0 | 0 | 5 | 183 | 183 | 1791 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
-| pt 225-pt | 0 | 0 | 5 | 184 | 184 | 1796 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
+| flare 225-gpu | 2 | 0 | 2 | 795 | 795 | 917 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| flare 225-software | 2 | 1 | 2 | 125 | 125 | 924 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| pt 100-pt | 0 | 0 | 5 | 180 | 180 | 1786 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
+| pt 150-pt | 0 | 0 | 5 | 182 | 182 | 1788 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
+| pt 225-pt | 0 | 0 | 5 | 179 | 179 | 1797 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
 
 ## Time to first frame and to the session (ms from process start; median of the timed launches)
 
 | run | first frame / paint | tabs there | prompt shown |
 |---|---|---|---|
-| flare startup-gpu | 745.7 | 755.4 (wall, from CreateProcess) | 815.3 (wall) |
-| flare startup-software | 46.1 | 88.8 (wall, from CreateProcess) | 147.3 (wall) |
-| flare resume-gpu | 747.4 | 757.5 (wall, from CreateProcess) | 952.8 (wall) |
-| flare resume-software | 45.7 | 88.3 (wall, from CreateProcess) | 155.9 (wall) |
-| startup-100-pt | 307.8 | 211.8 | 730.7 |
-| resume-100-pt | 342.0 | 198.0 | 777.0 |
-| startup-150-pt | 303.5 | 208.5 | 721.9 |
-| resume-150-pt | 325.3 | 199.4 | 767.8 |
-| startup-225-pt | 303.0 | 208.4 | 714.7 |
-| resume-225-pt | 325.8 | 199.2 | 786.2 |
+| flare startup-gpu | 746.3 | 756.3 (wall, from CreateProcess) | 834.5 (wall) |
+| flare startup-software | 47.5 | 90.4 (wall, from CreateProcess) | 156.0 (wall) |
+| flare resume-gpu | 752.3 | 762.2 (wall, from CreateProcess) | 872.0 (wall) |
+| flare resume-software | 46.5 | 89.1 (wall, from CreateProcess) | 158.8 (wall) |
 

@@ -1,6 +1,6 @@
 # Visual comparison: Flare and Prism Terminal (audit 2026-10-20)
 
-Captured 2026-10-20 on the owner's PC (Windows 11, GPU and software renderers; the monitor refreshes faster than
+Captured 2026-10-20 and re-captured whole 2026-10-21 (branch head `5aa8c7f`, a release build, run at BelowNormal priority) on the owner's PC (Windows 11, GPU and software renderers; the monitor refreshes faster than
 60 Hz). Flare is the audit-fixes build (0.1.0 + the tour's probes); Prism Terminal is the installed 0.58.0, run from a
 COPY of its folder with its own profile (see "Safety"). Every number is in `numbers.md` (made by
 `tools/visual/summarize.py`) and in each cell's `numbers.json`; the pictures are in each cell's `frames/` (not
@@ -57,46 +57,63 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
 
 | | frames | longest gap | t50 / t90 / t99 | curve error |
 |---|---|---|---|---|
-| Prism Terminal, all scales | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
-| Flare GPU, 100 / 150 / 225 % (V3, 2026-10-21) | 7 to 8 | 68.5 to 70.1 ms | 9 to 10 / 67 to 78 / 142 to 150 ms | 0.004 to 0.008 |
-| Flare software, 100 / 150 / 225 % (V3, 2026-10-21) | 13 | 16.8 to 17.3 ms | 9 to 10 / 63 to 64 / 133 to 134 ms | 0.002 to 0.006 |
+| Prism Terminal, 100 / 150 / 225 % (2026-10-21 re-capture) | 11 to 38 | 18.7 to 19.1 ms | 7 to 8 / 62 / 131 to 132 ms | 0.002 to 0.008 |
+| Prism Terminal, all scales (2026-10-20 capture, machine not throttled) | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
+| Flare GPU, 100 / 150 / 225 % (2026-10-21 re-capture) | 7 to 8 | 66.5 to 71.1 ms | 9 to 11 / 66 to 79 / 143 to 150 ms | 0.002 to 0.008 |
+| Flare software, 100 / 150 / 225 % (2026-10-21 re-capture) | 13 | 16.9 to 18.1 ms | 10 / 63 to 64 / 133 to 134 ms | 0.004 to 0.008 |
 | Flare GPU before V3 (2026-10-20, same machine state) | 7 | 67 to 71 ms | 8 to 27 / 66 to 78 / 139 to 153 ms | 0.116 to 0.206 |
 | Flare software before V3 (2026-10-20) | 11 | 17.7 to 20.9 ms | 7 to 8 / 61 to 63 / 127 to 128 ms | 0.018 to 0.019 |
 
 - Audit V3 (2026-10-21): the slide now starts at the first frame that draws it, as a CSS transition does, and every
   frame reads the curve at its own moment (`crates/flare/src/side_slide.rs`; the GPU path at its `BeforeRendering`, after
-  the vsync wait). The curve error is now 0.002 to 0.008 (it was 0.018 to 0.206), near Prism Terminal's 0.000 to 0.003.
+  the vsync wait). The curve error is now 0.002 to 0.008 (it was 0.018 to 0.206), near Prism Terminal's 0.000 to 0.009 on the re-capture.
 - t50/t90/t99 count from the first frame that MOVED. Flare's first frame shows the start (progress 0, as CSS) and its
-  next frame comes one compositor frame later (16.7 ms here), Prism Terminal's 7 ms later, so Flare's t50 reads 9 ms
-  against 18: both reach 50 percent about 25 ms after the slide starts, which is the declared curve.
-- The frame rate is the machine, not the slide, on these runs: the desktop compositor reported 60 Hz
-  (`DwmGetCompositionTimingInfo`, 16.67 ms) although the panel is set to 143 Hz, and the GPU path presented only about
-  15 frames a second (68 to 70 ms gaps, the monitor not awake to the harness's zero-distance mouse move), as the
-  baseline build did too. The software path now gives a frame every compositor frame (16.8 to 17.3 ms, 13 frames).
-  The slide asks the OS window for each next frame at once, so with the monitor awake it should follow the
-  display's rate like Prism Terminal; that was not measurable on these runs.
+  next frame comes one compositor frame later (16.7 ms here); t50 reads 9 to 11 ms for Flare against 7 to 8 for Prism
+  Terminal, t90 63 to 79 against 62, t99 133 to 150 against 131 to 132: the same curve, a few ms apart, and Flare's GPU
+  numbers are carried by its 15 frames a second (below).
+- Prism Terminal's old row (27 frames, 7.0 ms gap, t50 18 ms) was an artefact of the recorder in `pt-visual.mjs`: each run's
+  `requestAnimationFrame` loop kept running into the next run's fresh object, so run k pushed 2k-1 rows per frame and the
+  frame counts and gaps were wrong. Fixed 2026-10-21 (a loop stops when it is no longer the current recorder); the
+  sidebar cells were re-taken. Prism Terminal presents 11 distinct frames in the slide, 18.5 to 19.0 ms apart (about
+  54 Hz on this run), the same on all three scales.
+- THE MACHINE WAS THROTTLED on this capture: the monitor was woken with a zero-distance mouse move before the
+  Flare tour and before Prism Terminal's run, both ran at BelowNormal priority, and the Flare GPU path still presented
+  about 15 frames a second (66 to 71 ms gaps, 7 to 8 frames; every GPU cell, all three scales), while the software path
+  gave a frame every compositor frame (16.9 to 18.1 ms, 13 frames) and Prism Terminal one every 18.5 to 19 ms. The GPU
+  frame rate is the machine, not the slide, and the GPU slide numbers (frames, longest gap, input to first frame, the
+  sidebar snapshot offsets: `collapse-00` shows slot 154, not 220) are NOT a baseline; do not compare them with Prism
+  Terminal's frame count. The software cells are the trustworthy Flare numbers on this machine state.
 - The terminal keeps its width after a round trip (102 columns before and after), and goes 102 to 131 collapsed. The
   snapshots show the terminal text moving with the slot edge in both apps; no jump in the tab strip or the rows.
-- Input to the first frame that moved: Flare 16 to 22 ms (2026-10-21; 19 to 27 ms before V3), Prism Terminal 9 to
-  12 ms.
+- Input to the first frame that moved: Flare GPU 21 to 22 ms, Flare software 16 to 17 ms, Prism Terminal 23 to 33
+  ms (its key goes through Playwright and the renderer's event loop). Both apps open the sidebar with the middle tab
+  (beta) selected, so the frames show the same tab; Flare's cell checks it.
 
 Start-up (from process start; Flare's tabs and prompt times are wall clock from `CreateProcess`, Prism Terminal's are
 from `process.uptime()`, so a few ms apart in kind):
 
 | | first frame / paint | tabs there | prompt |
 |---|---|---|---|
-| Prism Terminal | 303 to 308 ms (resume 325 to 342) | 198 to 212 ms | 715 to 786 ms |
-| Flare software | 46 ms | 89 ms | 147 ms (resume 156) |
-| Flare GPU | 746 ms (resume 747) | 755 ms | 815 ms (resume 953) |
+| Prism Terminal | 228 to 247 ms (resume 282 to 300) | 200 to 215 ms | 723 to 742 ms (resume 761 to 780) |
+| Flare software | 47 ms (resume 46) | 90 ms | 156 ms (resume 159) |
+| Flare GPU | 746 ms (resume 752) | 756 ms | 835 ms (resume 872) |
 
-- Flare GPU's first frame is late: `startup.trace` shows `backend` at 491 ms and the first frame at 772 ms, against 46 ms
+- Flare GPU's first frame is late: `startup.trace` shows `backend` at 478 ms and the first frame at 746 ms, against 46 ms
   on the software path. Until then the window is not shown at all (see below), so nothing blank is on the screen.
 - The pictures from outside (`startup/`, `resume/`): the window first comes on the screen (shown and not cloaked) at
-  about 795 ms on the GPU path and 125 ms on the software path, and its first picture there is already the UI in the
+  about 788 to 795 ms on the GPU path and 124 to 125 ms on the software path, and its first picture there is already the UI in the
   theme's colours, frameless and at its size (2655 x 1755). The black, light-framed and 2880 x 1497 pictures before
   that are copies of a window that is not shown yet (named `-hidden`; DWM never composes them). See "Audit V1" below.
   Prism Terminal's first picture is already its UI, because Playwright attaches after the page has loaded (180 ms), so
   its pre-paint window is not seen by this method; its first-paint time above is.
+- The LAST software picture of start-up and resume is the app's own snapshot (`-app`, taken once the launch has been
+  still for 700 ms), not a copy of the window: a copy of the shown software window carries the classic caption strip
+  ("Flare", a close box) and a thick light frame that `PrintWindow` draws from the style bits and the screen never shows
+  (those copies are named `-copyframe`, shown in the sheet, and left out of the judging), `PW_RENDERFULLCONTENT` of the
+  parked GDI window is black and a `BitBlt` from its window DC is black (tried 2026-10-21, `tools/e2e/src/winshot.rs`
+  `Method::Gdi`). Check on one real frame (`startup/225-software`): frame 003 (t 164 ms) is caught as `copyframe` and
+  frame 005 (t 920 ms, `-app`) is the clean UI. The `last change` column of a software cell is therefore the time of the
+  snapshot, not of a change of the window.
 - Resume: Flare shows all three tabs in one step with the saved middle tab in front (timeline in `numbers.json`: no
   tab popping in, no front change, no folder change afterwards). Prism Terminal likewise. Scrollback is restored by
   neither app (a new shell starts in each tab).
@@ -104,6 +121,17 @@ from `process.uptime()`, so a few ms apart in kind):
   folders are named `225-software` and `225-gpu`); the app cannot start at a chosen scale (the harness changes DPI
   only after connecting), so only the native one is captured for start-up. Prism Terminal's start-up is captured at 100,
   150 and 225 %.
+
+## Like for like (2026-10-21)
+
+- Tabs: every `general` frame of both apps shows alpha, beta and gamma with gamma in front (the three folders as
+  arguments), including `see-through-40` (Flare's second launch used one tab before and now opens the same three; PT's
+  frame is taken in its three-tab session). Every `sidebar` frame of both apps is a restored session of the same three
+  tabs with the middle one (beta) selected and the vertical sidebar open (Flare's cell seeds `tabs.json` with
+  `active: 1`, as PT's `prepResume` does, and checks the front tab). Start-up is one tab (alpha), resume three with
+  beta in front, as before.
+- Run: a release build, the monitor woken by a zero-distance mouse move, both tools at BelowNormal priority, one app
+  at a time; Flare `visualTour` 233 checks, 0 failures, 342 s.
 
 ## Not captured, and why
 
@@ -163,9 +191,12 @@ over a painted window. It is not in the window. Two faults of the copier, both f
   device context, the surface was painted everywhere (a 6 x 6 lattice, no black) from the first paint to ready, and
   stayed so. A new visualTour check fails a last picture whose mean colour is near black. Software windows are now
   copied with `PrintWindow` and `PW_CLIENTONLY` (`Method::Gdi`); GPU windows keep `PW_RENDERFULLCONTENT`.
-- Left over: a late software picture can still carry the system caption strip ("Flare" and a close box) along the top
-  and a one-pixel frame, drawn by `PrintWindow` itself from that same style. The app never shows it (client area and
-  window rectangle are equal, `GetClientRect` 2655 x 1755).
+- A shown software window's later copies still carry the system caption strip ("Flare" and a close box) and a thick
+  light frame, drawn by `PrintWindow` itself from that same style (the app never shows it: client area and window
+  rectangle are equal, `GetClientRect` 2655 x 1755). Re-checked 2026-10-21: `PW_CLIENTONLY` and no flag draw it,
+  `PW_RENDERFULLCONTENT`, `BitBlt` from the window DC and a direct `WM_PRINT` answer black, so no copier can show the
+  screen for this window while it is parked. The tour keeps tagging those copies `copyframe` and takes the last
+  picture from the app's own snapshot instead (see the start-up section above).
 - Audit V6: `hello.scale` read 1.0 for the software window while its window was 2655 x 1755 at the monitor's 225 %, so the
   start-up and resume cells were wrongly named `100-software`; the software path never starts at 100 %. Cause: the
   renderer word and scale are noted before the window has its monitor's scale. Fix: `e2e_hook::set_hello_scale` runs on
