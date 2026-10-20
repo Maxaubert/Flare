@@ -68,21 +68,17 @@ from `process.uptime()`, so a few ms apart in kind):
 | | first frame / paint | tabs there | prompt |
 |---|---|---|---|
 | Prism Terminal | 303 to 308 ms (resume 325 to 342) | 198 to 212 ms | 715 to 786 ms |
-| Flare software | 46 ms | 80 ms | 138 ms (resume 154) |
-| Flare GPU | 738 ms (resume 749) | 748 ms | 816 ms (resume 824) |
+| Flare software | 46 ms | 89 ms | 147 ms (resume 156) |
+| Flare GPU | 746 ms (resume 747) | 755 ms | 815 ms (resume 953) |
 
 - Flare GPU's first frame is late: `startup.trace` shows `backend` at 491 ms and the first frame at 772 ms, against 46 ms
-  on the software path. Until then the window is blank (see below).
-- The pictures from outside (`startup/`, `resume/`): the first picture of a software-path resume (and of the 100 %
-  start-up) is 1280 x 665 logical (2880 x 1497 physical at 225 %), black; the start-up at 225 % and the GPU captures
-  start at 1180 x 780 (2655 x 1755), black. Flare's window is then resized to 1180 x 780 and painted where the first
-  picture was 1280 x 665; on the GPU path a picture with a light strip along the top (the default
-  window colour showing where the swapchain does not cover yet) comes between the black one and the first UI. Read this
-  with care: the e2e window is shown at once (`showInactive`) and `PrintWindow` of a swapchain that has presented
-  nothing is black, so a user may not see every one of these pictures; the resize from 1280 x 665 to 1180 x 780 and
-  the black first picture are real states of the window. Prism Terminal's first picture is already its UI, because
-  Playwright attaches after the page has loaded (180 ms), so its pre-paint window is not seen by this method; its
-  first-paint time above is.
+  on the software path. Until then the window is not shown at all (see below), so nothing blank is on the screen.
+- The pictures from outside (`startup/`, `resume/`): the window first comes on the screen (shown and not cloaked) at
+  about 795 ms on the GPU path and 125 ms on the software path, and its first picture there is already the UI in the
+  theme's colours, frameless and at its size (2655 x 1755). The black, light-framed and 2880 x 1497 pictures before
+  that are copies of a window that is not shown yet (named `-hidden`; DWM never composes them). See "Audit V1" below.
+  Prism Terminal's first picture is already its UI, because Playwright attaches after the page has loaded (180 ms), so
+  its pre-paint window is not seen by this method; its first-paint time above is.
 - Resume: Flare shows all three tabs in one step with the saved middle tab in front (timeline in `numbers.json`: no
   tab popping in, no front change, no folder change afterwards). Prism Terminal likewise. Scrollback is restored by
   neither app (a new shell starts in each tab).
@@ -111,6 +107,29 @@ Prism Terminal is only ever run from `%TEMP%\pt-visual-*\app`, a copy of the ins
 `--user-data-dir` inside that temp folder and `--e2e` (parked, unfocusable); the installed copy and `%APPDATA%` are not
 read or written, and what the script reaps is matched by the temp folder's path. Flare ran from its own worlds with
 the harness's guards. Neither the real microphone, the keyboard hook nor the registry was touched.
+
+## Audit V1: the black and light-framed start-up pictures are copies of a window not yet shown (2026-10-20)
+
+The GPU start-up and resume cells showed an all-black picture, then a light Windows-classic caption band (191, 206,
+220) and border (215, 228, 242) around a black client area for about 100 ms, then the UI; the resume cell's first
+picture was 2880 x 1497 before 2655 x 1755. The tour now reads the window manager's facts with every copy
+(`winshot::state`: `IsWindowVisible`, `WS_VISIBLE`, `DWMWA_CLOAKED`, the window and client rectangles, the styles) and
+records them in each frame of `numbers.json` (`on_screen`, `framed`, `client`, `style`, `ex_style`, `tag`).
+
+- Every one of those pictures was copied while the window was NOT shown (`style` 06cf0000, no `WS_VISIBLE`). The
+  winit backend creates the window hidden, Slint sizes it and presents the first frame, and only then shows it
+  (`set_visibility`: `draw()` before `set_visible(true)`). `PrintWindow` copies a hidden window anyway, and paints the
+  classic frame that its style bits describe: winit keeps `WS_CAPTION | WS_THICKFRAME` on a frameless window and
+  removes the frame in `WM_NCCALCSIZE`. The 2880 x 1497 picture is the window during `CreateWindowEx`, before winit
+  applies the size (style 06cc0000), also hidden.
+- The first copy taken once `WS_VISIBLE` is set (style 16cf0000) is the UI in the theme's colours, with the client
+  rectangle equal to the window rectangle (no frame) and the window at 2655 x 1755, on both renderers, start-up and
+  resume. No app change was needed, and start-up time is unchanged.
+- The software path's later copy with the classic caption (`-copyframe`) is the same `PrintWindow` painting on a
+  window that is on the screen with no frame (`GetClientRect` = the window rectangle): the screen does not show it.
+- visualTour now checks, per start-up and resume cell, that the window came on the screen, and that from then on no
+  picture is blank, framed or of another size, and the first one is painted. `tools/visual/summarize.py` judges only
+  the pictures the screen can show and counts `not shown` and `copier frame` in their own columns.
 
 ## Audit V2: the black block in the software start-up and resume pictures is not the app (2026-10-20)
 

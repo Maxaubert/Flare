@@ -116,6 +116,8 @@ pub struct Watch {
     pub trace: Value,
     pub series: Value,
     pub first_window_ms: Option<f64>,
+    /// When the window was first on the screen (shown and not cloaked).
+    pub first_visible_ms: Option<f64>,
     pub first_pipe_ms: Option<f64>,
     pub ready_ms: Option<f64>,
 }
@@ -189,7 +191,7 @@ pub fn watch_launch(
     let stop = Arc::new(AtomicBool::new(false));
     let (ptx, prx) = mpsc::channel::<Poll>();
     let mut hwnd: Option<isize> = None;
-    let mut last: Option<(u64, u32, u32)> = None;
+    let mut last: Option<(u64, u32, u32, bool, bool)> = None;
     let mut changed = Instant::now();
     let mut watch = Watch {
         frames: Vec::new(),
@@ -197,6 +199,7 @@ pub fn watch_launch(
         trace: Value::Null,
         series: Value::Null,
         first_window_ms: None,
+        first_visible_ms: None,
         first_pipe_ms: None,
         ready_ms: None,
     };
@@ -216,18 +219,38 @@ pub fn watch_launch(
                 watch.first_window_ms = Some(ms(now));
             }
         }
+        // The window manager's view first: whether this picture can be on the screen at all.
+        let st = hwnd.and_then(winshot::state);
         let copy = hwnd.and_then(|h| winshot::capture_with(h, method).ok());
         if let Some(shot) = copy {
             let l: Look = winshot::look(&shot);
-            let key = (l.hash, l.w, l.h);
+            let on_screen = st.is_some_and(|s| s.on_screen);
+            let framed = st.is_some_and(|s| s.framed());
+            let key = (l.hash, l.w, l.h, on_screen, framed);
             if last != Some(key) {
                 last = Some(key);
                 changed = Instant::now();
+                if on_screen && watch.first_visible_ms.is_none() {
+                    watch.first_visible_ms = Some(ms(now));
+                }
                 let n = watch.frames.len();
-                let file = frames_dir.join(format!("{n:03}-t{:05}ms.png", ms(now).round() as i64));
+                let tag = frame_tag(on_screen, framed, l.bar, l.foot);
+                let suffix = if tag.is_empty() {
+                    String::new()
+                } else {
+                    format!("-{tag}")
+                };
+                let file = frames_dir.join(format!(
+                    "{n:03}-t{:05}ms{suffix}.png",
+                    ms(now).round() as i64
+                ));
                 watch.frames.push(json!({
                     "n": n, "t_ms": ms(now), "w": l.w, "h": l.h, "blank": l.blank,
                     "mean": l.mean, "bar": l.bar, "foot": l.foot,
+                    "on_screen": on_screen, "framed": framed, "tag": tag,
+                    "client": st.map(|s| [s.cw, s.ch]),
+                    "style": st.map(|s| format!("{:08x}", s.style)),
+                    "ex_style": st.map(|s| format!("{:08x}", s.ex_style)),
                     "file": file.file_name().map(|f| f.to_string_lossy()),
                 }));
                 if watch.frames.len() <= 80 {
@@ -305,8 +328,63 @@ pub fn watch_launch(
     Ok((watch, app))
 }
 
-/// What the frames of a launch say about flashes, jumps and a late theme.
+/// What a copied picture stands for, from the window manager's facts at the moment of the copy (audit
+/// V1). `PrintWindow` asks the window to paint itself, so it also copies a window DWM is not composing
+/// yet, and it paints the classic frame that the window's style bits describe even when the window has
+/// none (winit keeps `WS_CAPTION | WS_THICKFRAME` on a frameless window and takes the frame away in
+/// `WM_NCCALCSIZE`, so its client rectangle is the whole window):
+/// - `"hidden"`: the window is not shown or is cloaked; nothing of this picture reaches the screen.
+/// - `"copyframe"`: the window is on the screen with no frame, yet the copy's top and bottom edges are
+///   the light classic caption and border: the copier drew them, the screen does not.
+/// - `""`: a picture the screen can show; it is judged.
+pub fn frame_tag(on_screen: bool, framed: bool, bar: [u8; 3], foot: [u8; 3]) -> &'static str {
+    let classic_light = |c: [u8; 3]| c.iter().all(|v| *v >= 180);
+    if !on_screen {
+        "hidden"
+    } else if !framed && classic_light(bar) && classic_light(foot) {
+        "copyframe"
+    } else {
+        ""
+    }
+}
+
+/// What the frames of a launch say about flashes, jumps and a late theme. The plain counts take every
+/// copied picture; the `seen_` counts take only the pictures the screen can show (`frame_tag` is empty;
+/// a frame from before the window-manager facts were recorded counts as seen).
 pub fn judge_frames(frames: &[Value]) -> Value {
+    let mut out = judge_all(frames);
+    let tag = |f: &Value| f["tag"].as_str().unwrap_or("").to_string();
+    let seen: Vec<&Value> = frames.iter().filter(|f| tag(f).is_empty()).collect();
+    let size_of = |f: &Value| (num(&f["w"]) as u32, num(&f["h"]) as u32);
+    let final_size = seen.last().map(|f| size_of(f));
+    let first = seen.first();
+    let painted = first.is_some_and(|f| {
+        f["blank"] != json!(true)
+            && f["mean"]
+                .as_array()
+                .is_some_and(|m| !m.is_empty() && m.iter().all(|c| num(c) > 10.0))
+    });
+    let extra = json!({
+        "hidden_frames": frames.iter().filter(|f| tag(f) == "hidden").count(),
+        "copier_frame_frames": frames.iter().filter(|f| tag(f) == "copyframe").count(),
+        "seen_frames": seen.len(),
+        "first_seen_ms": first.map(|f| f["t_ms"].clone()),
+        "first_seen_size": first.map(|f| json!([f["w"], f["h"]])),
+        "first_seen_painted": painted,
+        "seen_blank_frames": seen.iter().filter(|f| f["blank"] == json!(true)).count(),
+        "seen_framed_frames": seen.iter().filter(|f| f["framed"] == json!(true)).count(),
+        "seen_wrong_size_frames": seen.iter().filter(|f| Some(size_of(f)) != final_size).count(),
+    });
+    if let (Some(o), Some(e)) = (out.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// The counts over every copied picture, compared with the last one.
+fn judge_all(frames: &[Value]) -> Value {
     let n = frames.len();
     let Some(last) = frames.last() else {
         return json!({ "frames": 0 });
@@ -383,5 +461,78 @@ mod tests {
         );
         assert_eq!(j["first_frame_ms"], 10.0);
         assert_eq!(judge_frames(&[])["frames"], 0);
+    }
+
+    fn seen(t: f64, w: u32, mean: f64, blank: bool, tag: &str, framed: bool) -> Value {
+        json!({ "t_ms": t, "w": w, "h": 100, "blank": blank, "mean": [mean, mean, mean],
+                "bar": [mean as u8, 0, 0], "foot": [10, 10, 10],
+                "on_screen": tag != "hidden", "framed": framed, "tag": tag })
+    }
+
+    #[test]
+    fn a_hidden_window_and_a_copier_frame_are_tagged() {
+        // Not shown (or cloaked): DWM composes nothing, whatever the copy shows (audit V1).
+        assert_eq!(
+            frame_tag(false, false, [191, 206, 220], [215, 228, 242]),
+            "hidden"
+        );
+        assert_eq!(frame_tag(false, true, [0, 0, 0], [0, 0, 0]), "hidden");
+        // On the screen, with no frame by the window manager, yet the copy has the light classic
+        // caption and border: PrintWindow painted the style's frame itself.
+        assert_eq!(
+            frame_tag(true, false, [191, 206, 220], [215, 227, 241]),
+            "copyframe"
+        );
+        // A real picture on the screen, or a real frame, is judged.
+        assert_eq!(frame_tag(true, false, [23, 23, 23], [23, 23, 23]), "");
+        assert_eq!(frame_tag(true, true, [191, 206, 220], [215, 227, 241]), "");
+    }
+
+    #[test]
+    fn the_judge_reads_only_what_the_screen_can_show() {
+        let frames = vec![
+            seen(600.0, 1280, 0.0, true, "hidden", true),
+            seen(650.0, 1000, 12.0, false, "hidden", false),
+            seen(700.0, 1000, 23.0, false, "", false),
+            seen(800.0, 1000, 23.0, false, "copyframe", false),
+            seen(900.0, 1000, 24.0, false, "", false),
+        ];
+        let j = judge_frames(&frames);
+        assert_eq!(j["hidden_frames"], 2);
+        assert_eq!(j["copier_frame_frames"], 1);
+        assert_eq!(j["seen_frames"], 2);
+        assert_eq!(j["first_seen_ms"], 700.0);
+        assert_eq!(j["seen_blank_frames"], 0);
+        assert_eq!(j["seen_framed_frames"], 0);
+        assert_eq!(j["seen_wrong_size_frames"], 0);
+        assert_eq!(j["first_seen_painted"], true);
+        assert_eq!(j["first_seen_size"], json!([1000, 100]));
+        // Every picture is still counted in the plain columns.
+        assert_eq!(j["frames"], 5);
+        assert_eq!(j["blank_frames"], 1);
+
+        // A black or framed or wrong-size picture once on the screen is counted.
+        let bad = vec![
+            seen(700.0, 900, 0.0, true, "", false),
+            seen(750.0, 1000, 23.0, false, "", true),
+            seen(800.0, 1000, 23.0, false, "", false),
+        ];
+        let j = judge_frames(&bad);
+        assert_eq!(j["seen_blank_frames"], 1);
+        assert_eq!(j["seen_framed_frames"], 1);
+        assert_eq!(j["seen_wrong_size_frames"], 1);
+        assert_eq!(j["first_seen_painted"], false);
+
+        // Older numbers with no window-manager facts count every picture as seen.
+        let old = [seen(10.0, 800, 20.0, false, "", false)];
+        let mut o = old[0].clone();
+        o.as_object_mut().unwrap().remove("on_screen");
+        o.as_object_mut().unwrap().remove("tag");
+        assert_eq!(judge_frames(&[o])["seen_frames"], 1);
+        // Nothing on the screen at all: no first seen picture.
+        let none = judge_frames(&[seen(5.0, 800, 0.0, true, "hidden", false)]);
+        assert_eq!(none["seen_frames"], 0);
+        assert_eq!(none["first_seen_ms"], Value::Null);
+        assert_eq!(none["first_seen_painted"], false);
     }
 }

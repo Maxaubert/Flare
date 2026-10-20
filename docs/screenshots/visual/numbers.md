@@ -23,36 +23,34 @@
 | pt 225-pt | collapse | 27 | 7.1 | 18 / 72 / 142 | 174 | 0.003 | 9.9 |
 | pt 225-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.003 | 12.1 |
 
-## startup: the pictures (judged from the PNG files)
+## startup: the pictures (judged from the PNG files; only what the screen can show)
 
-| cell | pictures | first picture ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 100-software | 4 | 58 | 88 | 203 | 1 | 1 | 0 | 2 | 2 | 2880x1497 | 2655x1755 |
-| flare 225-gpu | 3 | 651 | 677 | 778 | 1 | 0 | 0 | 1 | 1 | 2655x1755 | 2655x1755 |
-| flare 225-software | 3 | 78 | 78 | 211 | 0 | 0 | 0 | 2 | 2 | 2655x1755 | 2655x1755 |
-| pt 100-pt | 4 | 195 | 195 | 1745 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
-| pt 150-pt | 4 | 178 | 178 | 1729 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
-| pt 225-pt | 4 | 178 | 178 | 1782 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
+| cell | not shown | copier frame | pictures on screen | first on screen ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| flare 225-gpu | 2 | 0 | 2 | 793 | 793 | 916 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| flare 225-software | 2 | 1 | 1 | 128 | 128 | 128 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| pt 100-pt | 0 | 0 | 4 | 195 | 195 | 1745 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
+| pt 150-pt | 0 | 0 | 4 | 178 | 178 | 1729 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
+| pt 225-pt | 0 | 0 | 4 | 178 | 178 | 1782 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
 
-## resume: the pictures (judged from the PNG files)
+## resume: the pictures (judged from the PNG files; only what the screen can show)
 
-| cell | pictures | first picture ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 100-software | 5 | 63 | 83 | 223 | 1 | 1 | 0 | 3 | 3 | 2880x1497 | 2655x1755 |
-| flare 225-gpu | 4 | 639 | 674 | 898 | 1 | 1 | 0 | 1 | 1 | 2880x1497 | 2655x1755 |
-| flare 225-software | 4 | 65 | 86 | 200 | 1 | 0 | 0 | 2 | 2 | 2655x1755 | 2655x1755 |
-| pt 100-pt | 5 | 201 | 201 | 1813 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
-| pt 150-pt | 5 | 183 | 183 | 1791 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
-| pt 225-pt | 5 | 184 | 184 | 1796 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
+| cell | not shown | copier frame | pictures on screen | first on screen ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| flare 225-gpu | 2 | 0 | 2 | 796 | 796 | 932 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| flare 225-software | 2 | 1 | 1 | 123 | 123 | 123 | 0 | 0 | 0 | 0 | 0 | 2655x1755 | 2655x1755 |
+| pt 100-pt | 0 | 0 | 5 | 201 | 201 | 1813 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
+| pt 150-pt | 0 | 0 | 5 | 183 | 183 | 1791 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
+| pt 225-pt | 0 | 0 | 5 | 184 | 184 | 1796 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
 
 ## Time to first frame and to the session (ms from process start; median of the timed launches)
 
 | run | first frame / paint | tabs there | prompt shown |
 |---|---|---|---|
-| flare startup-gpu | 762.0 | 771.6 (wall, from CreateProcess) | 864.2 (wall) |
-| flare startup-software | 46.0 | 88.6 (wall, from CreateProcess) | 147.2 (wall) |
-| flare resume-gpu | 743.2 | 752.8 (wall, from CreateProcess) | 834.2 (wall) |
-| flare resume-software | 45.0 | 87.3 (wall, from CreateProcess) | 160.2 (wall) |
+| flare startup-gpu | 745.7 | 755.4 (wall, from CreateProcess) | 815.3 (wall) |
+| flare startup-software | 46.1 | 88.8 (wall, from CreateProcess) | 147.3 (wall) |
+| flare resume-gpu | 747.4 | 757.5 (wall, from CreateProcess) | 952.8 (wall) |
+| flare resume-software | 45.7 | 88.3 (wall, from CreateProcess) | 155.9 (wall) |
 | startup-100-pt | 307.8 | 211.8 | 730.7 |
 | resume-100-pt | 342.0 | 198.0 | 777.0 |
 | startup-150-pt | 303.5 | 208.5 | 721.9 |

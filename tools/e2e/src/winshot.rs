@@ -19,6 +19,88 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 unsafe extern "system" {
     fn PrintWindow(hwnd: HWND, hdc: HDC, flags: u32) -> i32;
     fn SetThreadDpiAwarenessContext(context: isize) -> isize;
+    fn IsWindowVisible(hwnd: HWND) -> i32;
+    fn GetClientRect(hwnd: HWND, rect: *mut RECT) -> i32;
+    fn GetWindowLongW(hwnd: HWND, index: i32) -> i32;
+}
+
+#[link(name = "dwmapi")]
+unsafe extern "system" {
+    fn DwmGetWindowAttribute(
+        hwnd: HWND,
+        attribute: u32,
+        value: *mut core::ffi::c_void,
+        size: u32,
+    ) -> i32;
+}
+
+/// What the screen can show of a window at one moment, read from the window manager rather than from a
+/// copy: `PrintWindow` asks the window to paint itself, so a copy of a window that is not on the screen
+/// (not yet shown, or cloaked) shows what DWM never composes (audit V1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WinState {
+    /// `WS_VISIBLE` is set and DWM has not cloaked the window: it is composed on the screen.
+    pub on_screen: bool,
+    /// The window rectangle, device pixels.
+    pub w: i32,
+    pub h: i32,
+    /// The client rectangle, device pixels. A frameless window's client is the whole window; a smaller
+    /// client means DWM draws a frame (caption and border) around it.
+    pub cw: i32,
+    pub ch: i32,
+    /// `GWL_STYLE`.
+    pub style: u32,
+    /// `GWL_EXSTYLE`.
+    pub ex_style: u32,
+}
+
+impl WinState {
+    /// The client is smaller than the window: a frame is drawn around it.
+    pub fn framed(&self) -> bool {
+        self.cw < self.w || self.ch < self.h
+    }
+}
+
+/// The window's state now, or None when it is gone.
+pub fn state(hwnd: isize) -> Option<WinState> {
+    const GWL_STYLE: i32 = -16;
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_VISIBLE: u32 = 0x1000_0000;
+    const DWMWA_CLOAKED: u32 = 14;
+    let _device = DeviceCoordinates::enter();
+    let h = hwnd as HWND;
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut c = r;
+    // SAFETY: a window handle and valid out pointers; a gone window just fails.
+    unsafe {
+        if GetWindowRect(h, &mut r) == 0 || GetClientRect(h, &mut c) == 0 {
+            return None;
+        }
+        let style = GetWindowLongW(h, GWL_STYLE) as u32;
+        let ex_style = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+        let mut cloaked = 0u32;
+        let got = DwmGetWindowAttribute(
+            h,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        let visible = IsWindowVisible(h) != 0 && style & WS_VISIBLE != 0;
+        Some(WinState {
+            on_screen: visible && (got != 0 || cloaked == 0),
+            w: r.right - r.left,
+            h: r.bottom - r.top,
+            cw: c.right - c.left,
+            ch: c.bottom - c.top,
+            style,
+            ex_style,
+        })
+    }
 }
 
 /// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`.

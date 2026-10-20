@@ -520,6 +520,39 @@ fn startup_cell(
             "{surface} {renderer}: the last picture is painted, not black (mean colour {mean:?})"
         ),
     );
+    // What the screen can show (audit V1): from the moment the window is shown and not cloaked, every
+    // picture is the app's own (not black), frameless, at the window's size, and the first is painted.
+    // The pictures copied before then are named `-hidden` and DWM never composed them.
+    let seen = |k: &str| judged[k].as_u64().unwrap_or(u64::MAX);
+    ctx.ok(
+        watch.first_visible_ms.is_some() && seen("seen_frames") >= 1,
+        format!(
+            "{surface} {pct}-{renderer}: the window came on the screen at {:?} ms ({} picture(s) before, not shown)",
+            watch.first_visible_ms,
+            judged["hidden_frames"]
+        ),
+    );
+    ctx.ok(
+        seen("seen_blank_frames") == 0 && judged["first_seen_painted"] == json!(true),
+        format!(
+            "{surface} {pct}-{renderer}: no black picture once on the screen; the first is painted ({} blank)",
+            judged["seen_blank_frames"]
+        ),
+    );
+    ctx.ok(
+        seen("seen_framed_frames") == 0,
+        format!(
+            "{surface} {pct}-{renderer}: frameless from the first picture on the screen ({} framed)",
+            judged["seen_framed_frames"]
+        ),
+    );
+    ctx.ok(
+        seen("seen_wrong_size_frames") == 0 && judged["first_seen_size"] == json!([own.0, own.1]),
+        format!(
+            "{surface} {pct}-{renderer}: the first picture on the screen is already the window's size {own:?} (first {}, {} other size)",
+            judged["first_seen_size"], judged["seen_wrong_size_frames"]
+        ),
+    );
     let series_rows = slide::parse_rows(&watch.series);
     let first_frames: Vec<Value> = series_rows
         .iter()
@@ -562,7 +595,8 @@ fn startup_cell(
     let out = json!({
         "surface": surface, "pct": pct, "renderer": renderer,
         "hello": { "renderer": hello.renderer, "scale": hello.scale, "version": hello.version },
-        "first_window_ms": watch.first_window_ms, "first_pipe_ms": watch.first_pipe_ms,
+        "first_window_ms": watch.first_window_ms, "first_visible_ms": watch.first_visible_ms,
+        "first_pipe_ms": watch.first_pipe_ms,
         "ready_ms": watch.ready_ms,
         "judged": judged,
         "app_trace": watch.trace,

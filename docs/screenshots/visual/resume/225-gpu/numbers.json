@@ -7,191 +7,204 @@
     "scale": 2.25,
     "version": "0.1.0"
   },
-  "first_window_ms": 638.5345,
-  "first_pipe_ms": 625.1694,
-  "ready_ms": 861.3586,
+  "first_window_ms": 658.6918000000001,
+  "first_visible_ms": 795.6351999999999,
+  "first_pipe_ms": 649.8668,
+  "ready_ms": 990.6626,
   "judged": {
     "frames": 4,
-    "first_frame_ms": 638.5345,
-    "last_change_ms": 898.1048000000001,
+    "first_frame_ms": 658.6918000000001,
+    "last_change_ms": 932.0733,
     "blank_frames": 1,
-    "wrong_size_frames": 1,
+    "wrong_size_frames": 0,
     "off_brightness_frames": 0,
     "wrong_bar_colour_frames": 1,
     "wrong_foot_colour_frames": 1,
     "first_size": [
-      2880,
-      1497
+      2655,
+      1755
     ],
     "final_size": [
       2655,
       1755
-    ]
+    ],
+    "hidden_frames": 2,
+    "copier_frame_frames": 0,
+    "seen_frames": 2,
+    "first_seen_ms": 795.6351999999999,
+    "first_seen_size": [
+      2655,
+      1755
+    ],
+    "first_seen_painted": true,
+    "seen_blank_frames": 0,
+    "seen_framed_frames": 0,
+    "seen_wrong_size_frames": 0
   },
   "app_trace": {
-    "line": "startup: main 14 ms, args 14 ms, backend 466 ms, component 600 ms, profile 611 ms, shell_spawn 773 ms, render_setup 676 ms, first_frame 748 ms, first_prompt 860 ms",
+    "line": "startup: main 15 ms, args 15 ms, backend 480 ms, component 621 ms, profile 631 ms, shell_spawn 780 ms, render_setup 685 ms, first_frame 756 ms, first_prompt 892 ms",
     "phases": [
       {
         "name": "main",
-        "ms": 14.3385
+        "ms": 15.1562
       },
       {
         "name": "args",
-        "ms": 14.398
+        "ms": 15.2168
       },
       {
         "name": "backend",
-        "ms": 466.5259
+        "ms": 480.9165
       },
       {
         "name": "component",
-        "ms": 600.8496
+        "ms": 621.7928
       },
       {
         "name": "profile",
-        "ms": 611.2959999999999
+        "ms": 631.518
       },
       {
         "name": "shell_spawn",
-        "ms": 773.7546
+        "ms": 780.5775
       },
       {
         "name": "render_setup",
-        "ms": 676.8069
+        "ms": 685.2274
       },
       {
         "name": "first_frame",
-        "ms": 748.6598
+        "ms": 756.4364
       },
       {
         "name": "first_prompt",
-        "ms": 860.5769
+        "ms": 892.9873
       }
     ],
     "prompt_ms": null,
     "usable_ms": null
   },
-  "longest_frame_gap_ms_to_1500_after_first_prompt": 117.3532,
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 112.546,
   "first_presented_frames": [
     [
-      625.2224,
-      1.3387,
-      0.9404
+      645.8868,
+      1.361,
+      0.9379
     ],
     [
-      684.677,
-      59.4545,
-      7.7545
+      692.1502,
+      46.263,
+      6.815200000000001
     ],
     [
-      685.3730999999999,
-      0.6976,
-      0.382
+      692.7526,
+      0.6063000000000001,
+      0.3203
     ],
     [
-      685.9739999999999,
-      0.6003000000000001,
-      0.5934
+      693.2437,
+      0.4908,
+      0.486
     ],
     [
-      748.657,
-      62.6808,
-      19.8112
+      756.4341999999999,
+      63.1889,
+      20.2908
     ],
     [
-      767.4778,
-      18.8227,
-      3.8295
+      773.7222,
+      17.288899999999998,
+      3.6531
     ],
     [
-      792.3567,
-      24.8756,
-      6.7371
+      814.1392,
+      40.414,
+      4.4459
     ],
     [
-      798.5164,
-      6.1615,
-      5.1364
+      818.4373,
+      4.3008,
+      3.3882
     ],
     [
-      860.2703,
-      61.753,
-      5.4126
+      892.6747,
+      74.2216,
+      5.264600000000001
     ],
     [
-      952.6968,
-      92.4216,
-      3.8811
+      985.3243,
+      92.6573,
+      3.9916
     ],
     [
-      956.9604,
-      4.2712,
-      3.3187
+      989.6185,
+      4.303000000000001,
+      3.2992999999999997
     ],
     [
-      1067.4404,
-      110.4772,
-      3.8039
+      1099.5619000000002,
+      109.9394,
+      3.7962
     ],
     [
-      1136.8107,
-      69.3724,
-      3.7765
+      1156.3409,
+      56.778099999999995,
+      3.8191
     ],
     [
-      1152.0695999999998,
-      15.2514,
-      3.9951
+      1165.9426,
+      9.6051,
+      3.5493
     ],
     [
-      1219.9393,
-      67.876,
-      3.7742
+      1252.5055,
+      86.5631,
+      3.7722
     ],
     [
-      1337.291,
-      117.3532,
-      3.6424
+      1365.0502,
+      112.546,
+      3.4002
     ],
     [
-      1426.8367,
-      89.5459,
-      3.5168999999999997
+      1458.4054,
+      93.3551,
+      3.5181
     ],
     [
-      1520.896,
-      94.0595,
-      3.5829999999999997
+      1555.9803,
+      97.5742,
+      3.6207
     ],
     [
-      1612.6565,
-      91.7607,
+      1647.8212999999998,
+      91.8413,
       3.536
     ],
     [
-      1706.1882,
-      93.5318,
-      3.3766
+      1738.7587,
+      90.9377,
+      3.4122000000000003
     ]
   ],
   "timeline": [
     {
-      "t_ms": 774.3455,
+      "t_ms": 781.3826,
       "tabs": 3,
       "front": 1,
       "cwds": [
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-p5MwHJ\\alpha",
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-p5MwHJ\\beta",
-        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-p5MwHJ\\gamma"
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-7r9VBB\\alpha",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-7r9VBB\\beta",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-7r9VBB\\gamma"
       ]
     }
   ],
   "frames": [
     {
       "n": 0,
-      "t_ms": 638.5345,
-      "w": 2880,
-      "h": 1497,
+      "t_ms": 658.6918000000001,
+      "w": 2655,
+      "h": 1755,
       "blank": true,
       "mean": [
         0.0,
@@ -208,11 +221,20 @@
         0,
         0
       ],
-      "file": "000-t00639ms.png"
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "000-t00659ms-hidden.png"
     },
     {
       "n": 1,
-      "t_ms": 674.3832,
+      "t_ms": 684.4969,
       "w": 2655,
       "h": 1755,
       "blank": false,
@@ -231,11 +253,20 @@
         228,
         242
       ],
-      "file": "001-t00674ms.png"
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "001-t00684ms-hidden.png"
     },
     {
       "n": 2,
-      "t_ms": 788.3662999999999,
+      "t_ms": 795.6351999999999,
       "w": 2655,
       "h": 1755,
       "blank": false,
@@ -254,18 +285,27 @@
         23,
         23
       ],
-      "file": "002-t00788ms.png"
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "002-t00796ms.png"
     },
     {
       "n": 3,
-      "t_ms": 898.1048000000001,
+      "t_ms": 932.0733,
       "w": 2655,
       "h": 1755,
       "blank": false,
       "mean": [
-        22.456657958347293,
-        22.32222784749274,
-        22.160497981662953
+        22.455359973078824,
+        22.320961410477324,
+        22.159291636558116
       ],
       "bar": [
         13,
@@ -277,7 +317,16 @@
         23,
         23
       ],
-      "file": "003-t00898ms.png"
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "003-t00932ms.png"
     }
   ]
 }

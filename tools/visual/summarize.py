@@ -11,6 +11,10 @@ The start-up pictures of both sides are judged HERE, from the PNG files, with on
 is the last one kept; a frame is blank when it is one colour; "off brightness" is a mean more than 60 grey levels
 from the final one; the bar and foot colours are the pixels at the middle of the top edge (row 3) and the bottom
 edge (4 px up), compared with the final picture's.
+Only the pictures the screen can show are judged (audit V1): the tour names a copy of a window that was not
+shown, or was cloaked, `-hidden`, and a copy where PrintWindow painted the classic frame on a frameless window
+`-copyframe` (the window manager's facts are in `numbers.json`). They are counted in their own columns and left
+out of the others. PT's copies carry no tag: Playwright attaches after its window is up.
 """
 import argparse
 import glob
@@ -28,6 +32,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def judge(frames_dir):
     files = sorted(glob.glob(os.path.join(frames_dir, "*.png")))
+    if not files:
+        return None
+    hidden = sum(f.endswith("-hidden.png") for f in files)
+    copier = sum(f.endswith("-copyframe.png") for f in files)
+    files = [f for f in files if not f.endswith(("-hidden.png", "-copyframe.png"))]
     if not files:
         return None
     rows = []
@@ -51,6 +60,8 @@ def judge(frames_dir):
     live = [r for r in rows if not r["blank"]]
     return dict(
         pictures=len(rows),
+        hidden=hidden,
+        copier=copier,
         first_ms=rows[0]["t"],
         first_nonblank_ms=live[0]["t"] if live else None,
         last_change_ms=last["t"],
@@ -138,13 +149,13 @@ def main():
 
     # -- start-up and resume
     for surface in ("startup", "resume"):
-        md += [f"## {surface}: the pictures (judged from the PNG files)", ""]
-        md += ["| cell | pictures | first picture ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        md += [f"## {surface}: the pictures (judged from the PNG files; only what the screen can show)", ""]
+        md += ["| cell | not shown | copier frame | pictures on screen | first on screen ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for label, d in cells(root, surface):
             j = judge(os.path.join(d, "frames"))
             if j:
                 md.append(
-                    f"| {label} | {j['pictures']} | {j['first_ms']} | {j['first_nonblank_ms']} | {j['last_change_ms']} | {j['blank']} | {j['wrong_size']} | "
+                    f"| {label} | {j['hidden']} | {j['copier']} | {j['pictures']} | {j['first_ms']} | {j['first_nonblank_ms']} | {j['last_change_ms']} | {j['blank']} | {j['wrong_size']} | "
                     f"{j['off_brightness']} | {j['wrong_bar']} | {j['wrong_foot']} | {j['first_size'][0]}x{j['first_size'][1]} | {j['final_size'][0]}x{j['final_size'][1]} |"
                 )
         md.append("")
