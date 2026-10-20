@@ -1809,6 +1809,12 @@ fn forget_absent(id: &str) {
 /// Whether the page may show `id` as installed: the answer of `check` (a file check), except that a recent "no" is
 /// not asked again.
 pub(crate) fn installed_for_page(id: &str, check: impl FnOnce() -> bool) -> bool {
+    // Only while a download reports progress: a page opened at rest looks at the disk, so a model file put in place
+    // by hand shows at once.
+    if !runs().values().any(|r| r.active) {
+        forget_absent(id);
+        return check();
+    }
     if absent_recently(id) {
         return false;
     }
@@ -4430,6 +4436,23 @@ mod page_tests {
     #[test]
     fn a_missing_model_is_not_checked_again_until_something_changes() {
         let _p = page(["a", "b", "c"]);
+        // At rest every build looks at the disk (a model put in place by hand shows at once).
+        let mut rest = 0;
+        for _ in 0..3 {
+            installed_for_page("base", || {
+                rest += 1;
+                false
+            });
+        }
+        assert_eq!(rest, 3);
+        // While a download runs, its progress rebuilds the page up to ten times a second.
+        runs().insert(
+            "small".into(),
+            Run {
+                active: true,
+                ..Run::default()
+            },
+        );
         let mut checks = 0;
         for _ in 0..10 {
             assert!(!installed_for_page("base", || {
