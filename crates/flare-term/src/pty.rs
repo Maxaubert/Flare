@@ -871,11 +871,17 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
             .collect();
         // Give the job time to end whatever it is going to end.
         std::thread::sleep(Duration::from_secs(2));
+        let end = Instant::now() + Duration::from_secs(10);
+        while alive(pids[1]) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let gui_alive = alive(pids[0]);
+        let con_alive = alive(pids[1]);
         for p in &pids {
             end_pid(*p);
         }
         assert!(gui_alive, "a GUI app the user started outlives the crash");
+        assert!(!con_alive, "a console child still ends with a crash of its terminal");
     }
     #[test]
     fn shells_die_with_the_process_that_started_them() {
