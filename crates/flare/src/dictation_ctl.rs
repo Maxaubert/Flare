@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use flare_dictation::catalog::language_for;
 use flare_dictation::controller::{
-    Controller, Effect, Event, OUTSIDE, PARTIAL_EVERY_MS, Phase, Role, View,
+    Controller, Effect, Event, OUTSIDE, PARTIAL_EVERY_MS, Phase, Role, RouteResult, View,
 };
 use flare_dictation::cues::Cue;
 use flare_dictation::engine::{Engine, EngineConfig, Reason, TranscribeRequest, TranscribeResult};
@@ -327,6 +327,10 @@ pub trait Parts {
     /// The GPU engine could not start and the CPU answers for the life of the engine (the GPU row's note).
     fn gpu_fell_back(&self) -> bool {
         false
+    }
+    /// Whether an engine is up and the kind of the last one (the e2e probes read it; nothing else does).
+    fn engine_state(&self) -> (bool, Option<flare_dictation::engine::EngineKind>) {
+        (false, None)
     }
     /// Ends everything it started (children first). Called once, before the parts are dropped.
     fn shutdown(&mut self);
@@ -1270,6 +1274,26 @@ impl Dict {
         };
         let fx = s.on(e, now);
         self.run_svc(fx);
+    }
+
+    /// The e2e seam `DictRoute`: returns false when there is no service to route through (dictation is off).
+    fn e2e_route(&mut self, text: String, front: Option<u32>) -> bool {
+        let now = self.host.now_ms();
+        let Some(s) = self.svc.as_mut() else {
+            return false;
+        };
+        let fx = s.route(text, front, now);
+        self.run_svc(fx);
+        true
+    }
+
+    /// The e2e seam `DictRouted`: a routed result handed in as the window would hand it.
+    fn svc_routed(&mut self, r: RouteResult) -> bool {
+        if self.svc.is_none() {
+            return false;
+        }
+        self.svc_on(SvcEvent::Routed(r));
+        true
     }
 
     fn merged_tabs(&self, remote: &[(RemoteCopy, Vec<SendTab>)]) -> Vec<SendTab> {
@@ -2312,19 +2336,52 @@ pub fn install(app: &AppWindow, ctl: &Rc<RefCell<AppCtl>>, args: &Args) {
     with_dict(Dict::apply_prefs);
 }
 
-/// The test hook's `DictLine`: one helper line, as if the keyboard hook had printed it. Task 27 fills it.
-pub fn e2e_line(_line: &str) -> Result<(), String> {
-    Err("the dictation test lines arrive with Task 27".into())
+/// The test hook's `DictLine`: one helper line, as if the keyboard hook had printed it (the real hook is never
+/// installed under --e2e). A line that is not a helper line is refused.
+pub fn e2e_line(line: &str) -> Result<(), String> {
+    let ev = flare_dictation::keyfeed::parse_helper_line(line)
+        .ok_or_else(|| format!("not a helper line: {line:?}"))?;
+    deliver(DictMsg::Hook(ev));
+    Ok(())
 }
 
 /// The test hook's `DictRoute`: `text` was heard with the window of process `front` in front.
-pub fn e2e_route(_text: &str, _front: Option<u32>) -> Result<(), String> {
-    Err("the dictation test lines arrive with Task 27".into())
+pub fn e2e_route(text: &str, front: Option<u32>) -> Result<(), String> {
+    match with_dict(|d| d.e2e_route(text.to_string(), front)) {
+        Some(true) => Ok(()),
+        Some(false) => Err("dictation is off: nothing routes".into()),
+        None => Err("dictation is busy: the route was not taken".into()),
+    }
 }
 
 /// The test hook's `DictRouted`: what the window hands main as heard.
-pub fn e2e_routed(_result: &WireRouteResult) -> Result<(), String> {
-    Err("the dictation test lines arrive with Task 27".into())
+pub fn e2e_routed(result: &WireRouteResult) -> Result<(), String> {
+    let r = match result {
+        WireRouteResult::Text { text } => RouteResult::Text(text.clone()),
+        WireRouteResult::Message { message } => RouteResult::Message(message.clone()),
+    };
+    match with_dict(|d| d.svc_routed(r)) {
+        Some(true) => Ok(()),
+        Some(false) => Err("dictation is off: nothing routes".into()),
+        None => Err("dictation is busy: the result was not taken".into()),
+    }
+}
+
+/// The engine as the probes read it: whether one runs, its kind, and whether a GPU engine fell back.
+pub fn engine_probe() -> (bool, Option<flare_dictation::engine::EngineKind>, bool) {
+    with_dict(|d| {
+        d.parts.as_ref().map(|p| {
+            let (running, kind) = p.engine_state();
+            (running, kind, p.gpu_fell_back())
+        })
+    })
+    .flatten()
+    .unwrap_or((false, None, false))
+}
+
+/// This copy's dictation role, as the probes read it.
+pub fn role_probe() -> Role {
+    with_dict(|d| d.role()).unwrap_or(Role::None)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2749,6 +2806,11 @@ impl Parts for RealParts {
 
     fn gpu_fell_back(&self) -> bool {
         self.engine.info().gpu_fell_back
+    }
+
+    fn engine_state(&self) -> (bool, Option<flare_dictation::engine::EngineKind>) {
+        let info = self.engine.info();
+        (info.running, info.engine)
     }
 
     fn shutdown(&mut self) {
