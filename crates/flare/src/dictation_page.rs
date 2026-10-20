@@ -25,6 +25,12 @@ pub fn recommended(pack_installed: bool) -> &'static str {
     catalog::recommended_model(pack_installed)
 }
 
+/// Whether the stored model picks its own language, by the catalogue (PT's `limitedLanguages`): an e2e-only model
+/// limits the picker too, which the page's visible list would not say.
+pub fn limits_language(model: &str) -> bool {
+    catalog::limited_languages(model)
+}
+
 /// The model the page's row describes, from its catalogue entry.
 fn model_info(m: &ModelEntry) -> ModelInfo {
     ModelInfo {
@@ -80,6 +86,7 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
         GPU_PACK_ID.to_string(),
         item(GPU_PACK_ID, catalog::GPU_PACK.bytes, pack),
     ));
+    let stored_limited = limits_language(&dp.model);
     DictationData {
         models: model_infos(),
         recommended: recommended(pack),
@@ -97,6 +104,7 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
             model: dp.model,
             anywhere: dp.anywhere,
         },
+        stored_limited,
         capturing: snap.capturing,
         mic_testing: snap.mic_testing,
         mic_level: snap.mic_level,
@@ -132,6 +140,16 @@ mod tests {
         assert!(models.iter().any(|m| m.vendor == Vendor::Nvidia));
         let base = models.iter().find(|m| m.id == "base").expect("base");
         assert_eq!(base.size_text, "148 MB");
+    }
+
+    #[test]
+    fn a_stored_model_limits_the_language_as_the_catalogue_says_test_only_ones_included() {
+        // PT's language row asks the catalogue (limitedLanguages), e2e-only models included, so the
+        // e2e's Parakeet file limits the picker like the real one (M8 Task 29).
+        assert!(limits_language("parakeet-v3-q4"));
+        assert!(limits_language("parakeet-v3"));
+        assert!(!limits_language("base"));
+        assert!(!limits_language(""));
     }
 
     #[test]

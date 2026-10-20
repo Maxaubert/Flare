@@ -138,6 +138,8 @@ pub struct DictationData {
     /// The engine fell back to the CPU for this session (the GPU row's note).
     pub gpu_fell_back: bool,
     pub ask: Option<Ask>,
+    /// Whether the stored model picks its own language, as the catalogue says (e2e-only models included).
+    pub stored_limited: bool,
 }
 
 impl DictationData {
@@ -161,11 +163,14 @@ impl DictationData {
         self.models.iter().any(|m| self.installed(m.id))
     }
 
-    /// Whether the stored model is one that picks its own language.
+    /// Whether the stored model is one that picks its own language (the caller's catalogue answer, or a
+    /// listed model that says so).
     fn limited_model(&self) -> bool {
-        self.models
-            .iter()
-            .any(|m| m.id == self.prefs.model && m.limited)
+        self.stored_limited
+            || self
+                .models
+                .iter()
+                .any(|m| m.id == self.prefs.model && m.limited)
     }
 }
 
@@ -322,7 +327,13 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
     };
     [mode, key, mic, language]
         .into_iter()
-        .map(|r| BlockModel::Row(dimmed(r, on)))
+        .map(|r| {
+            // A limited model picks its own language, so its picker is disabled (PT's `disabled={ownLanguage}`).
+            let pinned = limited && r.id == "dictation-language";
+            let mut row = dimmed(r, on);
+            row.off |= pinned;
+            BlockModel::Row(row)
+        })
         .collect()
 }
 
@@ -542,6 +553,7 @@ mod tests {
             mic_problem: None,
             gpu_fell_back: false,
             ask: None,
+            stored_limited: false,
         }
     }
 
@@ -683,6 +695,30 @@ mod tests {
             ));
             // The stored choice is not touched by the page, so a Whisper model brings it back.
             assert_eq!(d.prefs.language, "de");
+        });
+    }
+
+    #[test]
+    fn the_limited_language_picker_is_disabled_with_dictation_on() {
+        // PT's language select is `disabled={ownLanguage}` (M8 Task 29): a limited model picks its own language.
+        with_env(false, |env| {
+            let mut d = data(true);
+            d.prefs.model = "parakeet-v3".to_string();
+            d.items.push(installed("parakeet-v3"));
+            let s = sections(env, &d);
+            let lang = rows(&s)
+                .into_iter()
+                .find(|r| r.id == "dictation-language")
+                .expect("language row");
+            assert!(lang.off, "a limited model disables the picker");
+            // Another model leaves the picker on.
+            d.prefs.model = "base".to_string();
+            let s = sections(env, &d);
+            let lang = rows(&s)
+                .into_iter()
+                .find(|r| r.id == "dictation-language")
+                .expect("language row");
+            assert!(!lang.off);
         });
     }
 
