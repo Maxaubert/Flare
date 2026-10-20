@@ -1,7 +1,7 @@
 # Visual comparison: Flare and Prism Terminal (audit 2026-10-20)
 
 Captured 2026-10-20 on the owner's PC (Windows 11, GPU and software renderers; the monitor refreshes faster than
-60 Hz). Flare is the audit-fixes build (0.1.5 + the tour's probes); Prism Terminal is the installed 0.58.0, run from a
+60 Hz). Flare is the audit-fixes build (0.1.0 + the tour's probes); Prism Terminal is the installed 0.58.0, run from a
 COPY of its folder with its own profile (see "Safety"). Every number is in `numbers.md` (made by
 `tools/visual/summarize.py`) and in each cell's `numbers.json`; the pictures are in each cell's `frames/` (not
 committed, 21 MB; `sheet.png` and `compare-<scale>.png` are).
@@ -73,8 +73,10 @@ from `process.uptime()`, so a few ms apart in kind):
 
 - Flare GPU's first frame is late: `startup.trace` shows `backend` at 491 ms and the first frame at 772 ms, against 46 ms
   on the software path. Until then the window is blank (see below).
-- The pictures from outside (`startup/`, `resume/`): Flare's window is created at 1280 x 665, shows a black picture,
-  then is resized to 1180 x 780 and painted; on the GPU path a picture with a light strip along the top (the default
+- The pictures from outside (`startup/`, `resume/`): the first picture of a software-path resume (and of the 100 %
+  start-up) is 1280 x 665 logical (2880 x 1497 physical at 225 %), black; the start-up at 225 % and the GPU captures
+  start at 1180 x 780 (2655 x 1755), black. Flare's window is then resized to 1180 x 780 and painted where the first
+  picture was 1280 x 665; on the GPU path a picture with a light strip along the top (the default
   window colour showing where the swapchain does not cover yet) comes between the black one and the first UI. Read this
   with care: the e2e window is shown at once (`showInactive`) and `PrintWindow` of a swapchain that has presented
   nothing is black, so a user may not see every one of these pictures; the resize from 1280 x 665 to 1180 x 780 and
