@@ -82,7 +82,8 @@ component TitleButton inherits Rectangle {
         commands: root.commands;
         fill: transparent;
         stroke: ta.has-hover ? (root.danger ? #ffffff : Theme.text) : Theme.icon;
-        stroke-width: root.stroke-units * root.icon-size / 24;
+        // Under glass the stroke is at least two device pixels (audit V7), so it never anti-aliases away.
+        stroke-width: max(root.stroke-units * root.icon-size / 24, Theme.glyph-stroke-floor * 1phx);
         stroke-line-cap: round;
         stroke-line-join: round;
     }

@@ -13,6 +13,7 @@ use flare_render::color::{Palette, Rgba};
 use flare_render::scene::GroundPaint;
 use flare_theme::look::AppliedLook;
 use flare_theme::resolve::TermTheme;
+use flare_theme::see_through::glyph_stroke_floor_device_px;
 use slint::{Color, Global};
 
 use crate::host::GridHost;
@@ -123,6 +124,7 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
         colour(&look.solid_ground)
     };
     theme.set_window_clear(clear);
+    theme.set_glyph_stroke_floor(glyph_stroke_floor_device_px(look.glass));
     theme.set_light(look.light);
     // Reduced motion, app-wide (parity line 37): every animate duration goes through Motion.d().
     Motion::get(app).set_reduced(!crate::e2e::animations_enabled());
@@ -272,6 +274,18 @@ mod tests {
         assert_eq!(argb(solid), argb(Theme::get(&h.comp).get_ground_solid()));
         apply_chrome(&h.comp, &look_of("pt-default", 40, true));
         assert_eq!(Theme::get(&h.comp).get_window_clear().alpha(), 0);
+    }
+
+    #[test]
+    fn the_glyph_stroke_floor_is_set_only_under_glass() {
+        // Audit V7: the title buttons and the new-tab + read this, so their 1 px strokes stay whole under glass.
+        let h = Harness::new(1.0, 1000, 640, || {
+            AppWindow::new().expect("the window builds")
+        });
+        apply_chrome(&h.comp, &look_of("pt-default", 0, true));
+        assert_eq!(Theme::get(&h.comp).get_glyph_stroke_floor(), 0.0);
+        apply_chrome(&h.comp, &look_of("pt-default", 40, true));
+        assert_eq!(Theme::get(&h.comp).get_glyph_stroke_floor(), 2.0);
     }
 
     #[test]

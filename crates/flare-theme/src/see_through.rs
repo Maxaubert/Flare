@@ -16,6 +16,19 @@ pub const SEE_THROUGH_MAX: f64 = 242.0 / 255.0;
 pub const SEE_THROUGH_TOP: u8 = 70;
 /// The 30 percent alpha floor, 0x4d (PT `GROUND_ALPHA_MIN`).
 pub const GROUND_ALPHA_MIN: f64 = 77.0 / 255.0;
+/// The thinnest a chrome glyph stroke may be under glass, in device pixels (audit V7). A stroke narrower
+/// than two device pixels anti-aliases into two part-covered rows that the see-through blend washes out.
+pub const GLYPH_STROKE_FLOOR_DEVICE_PX: f32 = 2.0;
+
+/// The glyph stroke floor the Slint chrome applies: 2 device pixels under glass, none on a solid window
+/// (the solid window keeps each glyph's own 1 px-ish stroke, which reads fine on an opaque ground).
+pub fn glyph_stroke_floor_device_px(glass: bool) -> f32 {
+    if glass {
+        GLYPH_STROKE_FLOOR_DEVICE_PX
+    } else {
+        0.0
+    }
+}
 
 /// The default see-through for a ground, light or dark MEASURED from its opaque colour; junk reads dark.
 pub fn see_through_alpha(ground: &str) -> f64 {
@@ -126,5 +139,18 @@ mod tests {
             paints_alpha(f64::from(0x05u8) / 255.0, "#000000", true),
             f64::from(0x4du8) / 255.0
         );
+    }
+
+    #[test]
+    fn under_glass_a_glyph_stroke_is_at_least_two_device_pixels() {
+        // Audit V7: a 1.1 px stroke anti-aliases over two rows at 100%, each part-covered, so under the
+        // see-through blend it drops out. Two device pixels always cover one whole row.
+        assert_eq!(glyph_stroke_floor_device_px(true), 2.0);
+        const { assert!(GLYPH_STROKE_FLOOR_DEVICE_PX >= 2.0) };
+    }
+
+    #[test]
+    fn on_a_solid_window_the_glyph_stroke_keeps_its_own_width() {
+        assert_eq!(glyph_stroke_floor_device_px(false), 0.0);
     }
 }

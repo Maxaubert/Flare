@@ -175,6 +175,10 @@ are added as milestones land.
   every surface with one coat at the slider value (ground alpha = 1 - level/100). Each theme's own
   see-through is 0; Custom keeps its own. Held by `see_through_reads_clamped_and_nonsense_as_zero`,
   `ground_alpha_is_one_minus_the_level` and `glass_paints_the_ground_once`.
+  Under glass the title buttons' and the new-tab "+" strokes are at least 2 device pixels (audit 2026-10-20,
+  V7): a 1.1 px stroke at 100% anti-aliased into two part-covered rows and dropped out on the GPU window
+  (the minimise glyph vanished, the "+" went faint). The solid window keeps each glyph's own width. Held by
+  `glyph_stroke_floor_device_px` and `the_glyph_stroke_floor_is_set_only_under_glass`.
 - **Edges: None, Faint, Hairline (default), Solid.** The window line and the one-pixel DWM border step
   follow the ground. Nothing is stored until a choice is made. Held by `edges_are_offered_weakest_to_strongest_by_every_number`,
   `default_to_hairline_and_read_anything_else_as_it` and `apply_is_debounced_250_ms`.

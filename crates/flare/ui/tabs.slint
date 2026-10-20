@@ -353,7 +353,8 @@ export component TabStrip inherits Rectangle {
             commands: Glyphs.plus;
             fill: transparent;
             stroke: pta.has-hover ? Theme.text : Theme.icon;
-            stroke-width: 2 * 13px / 24;
+            // Under glass the stroke is at least two device pixels (audit V7); the box keeps its natural size.
+            stroke-width: max(2 * 13px / 24, Theme.glyph-stroke-floor * 1phx);
             stroke-line-cap: round;
             stroke-line-join: round;
         }
