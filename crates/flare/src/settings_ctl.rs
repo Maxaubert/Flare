@@ -381,7 +381,7 @@ pub fn to_slint_model(m: &ModelRow, y: f64, h: f64) -> SetRow {
         label: m.name.into(),
         sub: m.sub.as_str().into(),
         warn: m.warn,
-        off: m.off,
+        off: false,
         block: SlintBlock::Model,
         kind: SetKind::None,
         colour: no_colour(),
@@ -416,7 +416,7 @@ pub fn to_slint_gpu(g: &GpuRow, y: f64, h: f64) -> SetRow {
             .clone()
             .unwrap_or_else(|| pack.note.to_string())
             .into(),
-        off: g.off,
+        off: false,
         block: SlintBlock::Model,
         kind: SetKind::None,
         colour: no_colour(),
@@ -3091,7 +3091,6 @@ mod tests {
                 off: false,
             }],
             title: tip.to_string(),
-            off: false,
         };
         let row = to_slint_gpu(&g, 0.0, 64.0);
         let b = row.buttons.row_data(0).unwrap();
@@ -3165,7 +3164,7 @@ mod tests {
 
     #[test]
     fn the_models_card_and_the_buttons_follow_the_store_not_the_page() {
-        // With dictation off there is no store: every model is Download, and a press does nothing.
+        // With dictation off the models card is live: it reads the one store, and nothing is dimmed (F2).
         let (f, _dir, calls) = fx_dict(1.0, ["a", "b", "c"]);
         for r in f
             .sections()
@@ -3174,7 +3173,7 @@ mod tests {
             .flat_map(|s| s.rows.iter())
         {
             assert_eq!(r.state, "absent", "{}", r.id);
-            assert!(r.off, "{} is dimmed while dictation is off", r.id);
+            assert!(!r.off, "{} is live while dictation is off (F2)", r.id);
         }
         let _ = calls;
     }

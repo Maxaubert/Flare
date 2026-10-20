@@ -8,8 +8,9 @@
 //!   [`DictHost`] (the window: the front tab, a paste, the clock, timers, the diag log) and [`Parts`] (the
 //!   machinery: microphone, engine, media, cues, hook, link). Tests stand in for both.
 //! - [`RealParts`] and [`AppHost`] are the real ports. [`Parts`] are created only while dictation is on:
-//!   with it off there is no engine, no store, no hook, no media worker and no link (a switch-off drops them
-//!   all, and the Job Object kills the children).
+//!   with it off there is no engine, no hook, no media worker and no link (a switch-off drops them all, and the
+//!   Job Object kills the children). The model store is the exception: [install] makes it at startup so the
+//!   page's model and GPU cards work while dictation is off (F2).
 //! - [`install`], [`feed_key`](DictationKeys::feed_key), [`on_blur`], [`stop_all`] and [`view`] are the call
 //!   sites Task 1 pre-wired.
 //!
@@ -1605,8 +1606,8 @@ pub fn widget_pick(id: String) {
     make_post()(DictMsg::Pick(id));
 }
 
-/// The model store: the process's one store once dictation has been on, kept across switch-off so a download still
-/// running can be cancelled (F1). Before the first switch-on there is none.
+/// The model store: the process's one store, made at startup by [install] and kept for the life of the process, so
+/// the page's model cards work while dictation is off and a download still running can be cancelled (F1, F2).
 pub fn store() -> Option<Store> {
     #[cfg(test)]
     if let Some(s) = TEST_STORE.with(|s| s.borrow().clone()) {
@@ -2385,6 +2386,10 @@ pub fn install(app: &AppWindow, ctl: &Rc<RefCell<AppCtl>>, args: &Args) {
     let e2e = args.e2e;
     let exe = std::env::current_exe().unwrap_or_default(); // sync-ok: startup, before the window shows
     let cfg = RealCfg::new(e2e, &exe);
+    // The model store exists from startup, dictation on or off: the Speech models and GPU cards are live while it is
+    // off (PT disables only Listening and While), so they read it and a download starts from it (F2). It opens no
+    // file and starts nothing; the engine, hook and microphone still exist only while dictation is on.
+    shared_store(&APP_STORE, || Store::open(cfg.root.clone(), store_fetch()));
     let deps = DictDeps {
         host,
         post: Arc::clone(&post),
@@ -4102,10 +4107,10 @@ mod page_tests {
     }
 
     #[test]
-    fn nothing_changes_without_a_store_dictation_off_has_none() {
+    fn nothing_changes_without_a_store() {
         let p = page(["a", "b", "c"]);
         TEST_STORE.with(|s| *s.borrow_mut() = None);
-        // `store()` is None too (no controller exists in this test): a press does nothing at all.
+        // `store()` is None too (no controller exists in this test and `install` never ran): a press does nothing.
         assert!(page_button("base", "download"));
         assert!(runs().is_empty());
         assert_eq!(p.calls.load(Ordering::SeqCst), 0);

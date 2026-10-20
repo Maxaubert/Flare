@@ -715,7 +715,6 @@ mod tests {
             failure: None,
             buttons: Vec::new(),
             uninstall_title: String::new(),
-            off: false,
         };
         let page = PageModel {
             id: "dictation",

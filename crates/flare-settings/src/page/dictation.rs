@@ -191,7 +191,6 @@ pub struct ModelRow {
     pub buttons: Vec<Button>,
     /// The Uninstall button's title ("Delete <name> from this PC.", D13).
     pub uninstall_title: String,
-    pub off: bool,
 }
 
 /// The NVIDIA GPU pack's row in the GPU card.
@@ -205,7 +204,6 @@ pub struct GpuRow {
     pub buttons: Vec<Button>,
     /// The Disable button's title, once the pack is installed.
     pub title: String,
-    pub off: bool,
 }
 
 fn def(id: &str) -> &'static RowDef {
@@ -388,7 +386,6 @@ pub fn model_row(m: &ModelInfo, d: &DictationData) -> ModelRow {
         failure: item.failure.clone(),
         buttons,
         uninstall_title: format!("Delete {} from this PC.", m.name),
-        off: !d.prefs.enabled,
     }
 }
 
@@ -422,7 +419,6 @@ pub fn gpu_row(d: &DictationData) -> GpuRow {
         sub: def("dictation-gpu").sub.to_string(),
         buttons,
         title: GPU_OFF_TITLE.to_string(),
-        off: !d.prefs.enabled,
     }
 }
 
@@ -444,11 +440,7 @@ pub fn sections(env: &PageEnv<'_>, d: &DictationData) -> Vec<SectionModel> {
     let models: Vec<BlockModel> = d
         .models
         .iter()
-        .map(|m| {
-            let mut r = model_row(m, d);
-            r.off = !d.prefs.enabled;
-            BlockModel::Model(r)
-        })
+        .map(|m| BlockModel::Model(model_row(m, d)))
         .collect();
     out.push(section("models", models));
     if env.nvidia {
@@ -650,10 +642,32 @@ mod tests {
             for s in &off {
                 for b in &s.blocks {
                     if let BlockModel::Model(m) = b {
-                        assert!(m.off, "model {} dims while off", m.id);
+                        assert!(
+                            m.buttons.iter().all(|b| !b.off),
+                            "model {} buttons stay live while off (F2)",
+                            m.id
+                        );
                     }
                 }
             }
+            // The GPU card is live too (PT's DictationPage disables only Listening and While).
+            with_env(true, |env| {
+                let mut d = data(false);
+                d.items.push(installed(GPU_PACK_ID));
+                let mut seen = 0;
+                for s in &sections(env, &d) {
+                    for b in &s.blocks {
+                        if let BlockModel::Gpu(g) = b {
+                            assert!(
+                                g.buttons.iter().all(|b| !b.off),
+                                "the GPU row stays live while off (F2)"
+                            );
+                            seen += 1;
+                        }
+                    }
+                }
+                assert_eq!(seen, 1);
+            });
             let on = sections(env, &data(true));
             assert!(rows(&on).iter().all(|r| !r.off));
         });
