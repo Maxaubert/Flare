@@ -559,6 +559,7 @@ impl VerbQueue {
             let started = std::thread::Builder::new()
                 .name("flare-verb".into())
                 .spawn(move || {
+                    // sync-ok: the verb worker thread
                     while let Ok(job) = rx.recv() {
                         job();
                     }

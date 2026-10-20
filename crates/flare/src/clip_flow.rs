@@ -131,6 +131,7 @@ impl LatestCopier {
     pub fn new(port: Arc<dyn ClipboardPort>) -> Self {
         let (tx, rx) = mpsc::channel::<CopyJob>();
         thread::spawn(move || {
+            // sync-ok: the clipboard worker thread
             while let Ok(mut job) = rx.recv() {
                 while let Ok(newer) = rx.try_recv() {
                     job = newer;
