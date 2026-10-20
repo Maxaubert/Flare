@@ -535,34 +535,43 @@ fn reveal_row(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
     })
 }
 
-/// Presses the button of row `id` that reads `label`. The probe holds no button rectangles, so each button is
-/// placed from the row's right end: 16 px in, 10 px apart, as wide as its text plus 24 px (17 px more for an
-/// icon), the text taken at about 7 px a character. Returns false when the row has no such button.
+/// What a row drew (`look` in `dict.rows`): its buttons, each with its rectangle in the row and its look.
+fn look_buttons(app: &mut App, id: &str) -> Vec<Value> {
+    drow(app, id)["look"]["buttons"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Presses the button of row `id` that reads `label`, at the centre of the rectangle the row itself reported
+/// for it (`look`), placed by the row's own position. Returns false when the row has no such button.
 fn press_button(ctx: &mut Ctx, app: &mut App, id: &str, label: &str) -> bool {
     reveal_row(ctx, app, id);
-    let buttons = buttons_of(app, id);
-    let Some((x, y, w, h)) = rect4(&driver::row(app, id)["rect"]) else {
+    let want = buttons_of(app, id)
+        .iter()
+        .find(|b| b["label"].as_str() == Some(label))
+        .map(|b| b["id"].clone());
+    let Some(want) = want else {
         return false;
     };
-    let mut right = x + w - 16.0;
-    for b in buttons.iter().rev() {
-        let text = b["label"].as_str().unwrap_or("");
-        let icon = if b["id"] == json!("uninstall") {
-            17.0
-        } else {
-            0.0
-        };
-        let width = 24.0 + icon + 7.0 * text.chars().count() as f64;
-        let left = right - width;
-        if text == label {
-            return app
-                .session
-                .click((left + width / 2.0) as f32, (y + h / 2.0) as f32)
-                .is_ok();
-        }
-        right = left - 10.0;
-    }
-    false
+    let Some(b) = look_buttons(app, id).into_iter().find(|b| b["id"] == want) else {
+        return false;
+    };
+    let Some((x, y, _, _)) = rect4(&driver::row(app, id)["rect"]) else {
+        return false;
+    };
+    let n = |k: &str| b[k].as_f64().unwrap_or(0.0);
+    app.session
+        .click(
+            (x + n("x") + n("w") / 2.0) as f32,
+            (y + n("y") + n("h") / 2.0) as f32,
+        )
+        .is_ok()
+}
+
+/// A button's look as one comparable value: fill, border, radius and ink.
+fn button_style(b: &Value) -> Value {
+    json!([b["fill"], b["border"], b["radius"], b["ink"]])
 }
 
 /// The Dictation page's one-line question (`dict.ask`): open, and its text.
@@ -720,11 +729,27 @@ pub fn dictation_page(ctx: &mut Ctx) -> Result<(), String> {
             vendors.join(",")
         ),
     );
-    // FLARE-DEFECT: the mark's and the name's rectangles are drawn inside the Slint row (`DictModelRow`'s
-    // out properties) and no probe reads them. The check stays red until a probe reports them (Task 27).
+    // The row reports where it drew its mark and name (`look` in `dict.rows`, from `DictModelRow`).
+    let centred = !rows.is_empty()
+        && rows.iter().all(|r| {
+            let l = &r["look"];
+            let g = |v: &Value| v.as_f64();
+            match (
+                g(&l["mark"]["x"]),
+                g(&l["name_x"]),
+                g(&l["mark"]["y"]),
+                g(&l["mark"]["h"]),
+                g(&l["row_h"]),
+            ) {
+                (Some(mx), Some(nx), Some(my), Some(mh), Some(rh)) => {
+                    mx < nx && mh > 0.0 && (my + mh / 2.0 - rh / 2.0).abs() <= 1.0
+                }
+                _ => false,
+            }
+        });
     ctx.ok(
-        false,
-        "the mark sits left of the name, centred on the row (FLARE-DEFECT: no probe reports the mark's rectangle)",
+        centred,
+        "the mark sits left of the name, centred on the row",
     );
 
     ctx.ok(
@@ -735,10 +760,21 @@ pub fn dictation_page(ctx: &mut Ctx) -> Result<(), String> {
         count_button(&mut app, "base", "uninstall") == 1,
         "an installed model offers Uninstall",
     );
-    // FLARE-DEFECT: the button's fill, border, radius and ink are not in any probe (`SetRowButton`'s colours).
+    // Same fill, border, radius and ink as a Download button (the row reports each button's look).
+    let uninstall = look_buttons(&mut app, "base")
+        .into_iter()
+        .find(|b| b["id"] == json!("uninstall"));
+    let download = model_rows(&mut app)
+        .iter()
+        .flat_map(|r| r["look"]["buttons"].as_array().cloned().unwrap_or_default())
+        .find(|b| b["id"] == json!("download"));
     ctx.ok(
-        false,
-        "and it is a button like Download: same fill, border, radius and ink (FLARE-DEFECT: no probe reports a button's colours)",
+        matches!((&uninstall, &download), (Some(u), Some(d)) if button_style(u) == button_style(d)),
+        format!(
+            "and it is a button like Download: same fill, border, radius and ink ({:?} against {:?})",
+            uninstall.as_ref().map(button_style),
+            download.as_ref().map(button_style)
+        ),
     );
     // The words on the page, not the tooltips (PT reads the text content): names, sub lines, badges, buttons.
     let page_text: String = page_rows(&mut app)
@@ -784,10 +820,19 @@ pub fn dictation_page(ctx: &mut Ctx) -> Result<(), String> {
         turbo["recommended"] == json!(true),
         "with the GPU on, Turbo is the recommended model",
     );
-    // FLARE-DEFECT: the Download buttons' fills are not in any probe (see the Uninstall button above).
+    // Every Download button wears one look (as the rows report each).
+    let fills: Vec<Value> = model_rows(&mut app)
+        .iter()
+        .flat_map(|r| r["look"]["buttons"].as_array().cloned().unwrap_or_default())
+        .filter(|b| b["id"] == json!("download"))
+        .map(|b| button_style(&b))
+        .collect();
     ctx.ok(
-        false,
-        "and its Download button is the same as every other (FLARE-DEFECT: no probe reports a button's colours)",
+        !fills.is_empty() && fills.windows(2).all(|p| p[0] == p[1]),
+        format!(
+            "and its Download button is the same as every other ({} of them)",
+            fills.len()
+        ),
     );
 
     // DISABLE UNINSTALLS IT, ENABLE DOWNLOADS IT: one control.
