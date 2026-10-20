@@ -328,12 +328,8 @@ fn listening_rows(d: &DictationData) -> Vec<BlockModel> {
         .map(|r| {
             // A limited model picks its own language, so its picker is disabled (PT's `disabled={ownLanguage}`).
             let pinned = limited && r.id == "dictation-language";
-            // PT leaves the microphone and language pickers live while dictation is off (only ownLanguage
-            // disables the language one); their labels still dim (audit V12).
-            let live = !pinned && matches!(r.id, "dictation-mic" | "dictation-language");
             let mut row = dimmed(r, on);
             row.off |= pinned;
-            row.live = live;
             BlockModel::Row(row)
         })
         .collect()
@@ -713,33 +709,6 @@ mod tests {
             ));
             // The stored choice is not touched by the page, so a Whisper model brings it back.
             assert_eq!(d.prefs.language, "de");
-        });
-    }
-
-    #[test]
-    fn the_microphone_and_language_stay_bright_while_off() {
-        // PT's MicField and language Select are not disabled by the switch (only ownLanguage disables
-        // the language one), so their controls keep full brightness while their labels dim (audit V12).
-        with_env(false, |env| {
-            let off = sections(env, &data(false));
-            for r in rows(&off) {
-                let live = matches!(r.id, "dictation-mic" | "dictation-language");
-                assert_eq!(r.live, live, "{}", r.id);
-                assert_eq!(r.off, r.id != "dictation-enabled", "{}", r.id);
-            }
-            // A limited model disables the language picker, so its control dims with the row.
-            let mut d = data(false);
-            d.prefs.model = "parakeet-v3".to_string();
-            d.items.push(installed("parakeet-v3"));
-            let s = sections(env, &d);
-            let lang = rows(&s)
-                .into_iter()
-                .find(|r| r.id == "dictation-language")
-                .expect("language row");
-            assert!(lang.off && !lang.live, "a limited model pins the picker");
-            // With dictation on nothing is dimmed, so nothing needs to stay live.
-            let on = sections(env, &data(true));
-            assert!(rows(&on).iter().all(|r| !r.off));
         });
     }
 

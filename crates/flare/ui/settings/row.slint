@@ -5,12 +5,10 @@ import { Theme, Px, SettingsInk, SettingsShape } from "../theme.slint";
 // The 32 by 32 icon tile. `icon` is the SVG path data on a 24 unit box (settings icons.rs).
 export component SetIconTile inherits Rectangle {
     in property <string> icon;
-    in property <float> alpha: 1;
     width: SettingsShape.tile;
     height: SettingsShape.tile;
     border-radius: SettingsShape.tile-radius;
     background: SettingsInk.tile-fill;
-    opacity: root.alpha;
     Path {
         x: (8px) - (1.7 * 16px / 24) / 2;
         y: (8px) - (1.7 * 16px / 24) / 2;
@@ -32,7 +30,6 @@ export component SetIconTile inherits Rectangle {
 export component SetSubtext inherits Rectangle {
     in property <string> text;
     in property <bool> warn;
-    in property <float> alpha: 1;
     callback tip(string, length, length, length, length);
     out property <bool> cut: probe.preferred-width > root.width + 0.5px;
     height: 16px;
@@ -52,7 +49,6 @@ export component SetSubtext inherits Rectangle {
         color: root.warn ? SettingsInk.warn : SettingsInk.sub;
         overflow: elide;
         vertical-alignment: center;
-        opacity: root.alpha;
     }
     ta := TouchArea {
         changed has-hover => {
@@ -71,9 +67,6 @@ export component SetRowFrame inherits Rectangle {
     in property <string> sub-tip;
     in property <bool> warn;
     in property <bool> off;
-    // Off, but the control stays bright (the microphone and language pickers, audit V12): then only the
-    // icon, label and subtext dim, and the control is drawn outside the dimmed group.
-    in property <bool> live;
     in property <bool> first;
     in property <bool> after-block;
     in property <bool> hover-fill;
@@ -105,7 +98,7 @@ export component SetRowFrame inherits Rectangle {
     Rectangle {
         width: parent.width;
         height: parent.height;
-        opacity: root.live ? 1 : (root.off ? 0.45 : 1);
+        opacity: root.off ? 0.45 : 1;
         HorizontalLayout {
             width: parent.width;
             height: parent.height;
@@ -115,7 +108,7 @@ export component SetRowFrame inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 width: SettingsShape.tile;
-                SetIconTile { icon: root.icon; alpha: root.live && root.off ? 0.45 : 1; }
+                SetIconTile { icon: root.icon; }
             }
             text-col := VerticalLayout {
                 alignment: center;
@@ -129,12 +122,10 @@ export component SetRowFrame inherits Rectangle {
                     font-weight: 600;
                     color: Theme.text;
                     overflow: elide;
-                    opacity: root.live && root.off ? 0.45 : 1;
                 }
                 sub := SetSubtext {
                     text: root.sub;
                     warn: root.warn;
-                    alpha: root.live && root.off ? 0.45 : 1;
                     tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
                 }
             }

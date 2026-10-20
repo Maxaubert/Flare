@@ -271,7 +271,7 @@ component RowControls inherits HorizontalLayout {
             width: SettingsShape.select-min-w;
             options: root.data.options;
             value: root.data.value;
-            disabled: (root.data.off && !root.data.live) || root.data.limited;
+            disabled: root.data.off || root.data.limited;
             label: root.data.label;
             sub: root.data.sub;
             open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
@@ -473,7 +473,6 @@ export component SettingsView inherits Rectangle {
                         sub-tip: row.sub-tip;
                         warn: row.warn;
                         off: row.off;
-                        live: row.live;
                         tap: row.tap;
                         flash: row.flash;
                         tapped => {

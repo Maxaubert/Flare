@@ -139,8 +139,6 @@ export component DictMicField inherits HorizontalLayout {
             height: 6px;
             border-radius: 3px;
             background: Theme.track;
-            // The meter dims with the switch (PT's MicField is disabled by it); the picker beside it does not.
-            opacity: root.disabled ? 0.45 : 1;
             clip: true;
             fill := Rectangle {
                 x: 0px;
@@ -161,16 +159,10 @@ export component DictMicField inherits HorizontalLayout {
     }
     VerticalLayout {
         alignment: center;
-        // Dims with the switch like the rest of the row's controls (PT's group opacity), and its own 50 percent when off.
-        test-wrap := Rectangle {
-            width: test.width;
-            height: test.height;
-            opacity: root.disabled ? 0.45 : 1;
-            test := SetRowButton {
-                label: root.testing ? "Stop" : "Test";
-                off: root.disabled;
-                clicked => { root.test-clicked(); }
-            }
+        test := SetRowButton {
+            label: root.testing ? "Stop" : "Test";
+            off: root.disabled;
+            clicked => { root.test-clicked(); }
         }
     }
     VerticalLayout {
@@ -179,6 +171,7 @@ export component DictMicField inherits HorizontalLayout {
             width: SettingsShape.select-min-w;
             options: root.options;
             value: root.value;
+            disabled: root.disabled;
             label: root.label;
             sub: root.sub;
             open: root.open;
