@@ -303,3 +303,24 @@ fn no_control_but_save_and_the_on_switch_paints_the_accent() {
         assert_eq!(outside, 0, "no other control paints the accent at {s}");
     }
 }
+
+/// Prism Terminal's "Panel edges" pill (None, Faint, Hairline, Solid) is 3.0, 2.0 and 1.8 css px
+/// narrower than the 233 Flare drew, at 100, 150 and 225 percent (the pill's left edge on the same
+/// row of 05-settings-appearance, the right edges being level): 230.0, 231.0 and 231.2 wide, because
+/// Chromium lays each label out at its own fractional width. Slint rounds a Text's preferred width UP
+/// to a whole css px, so the pill came out 233 and its first label sat 2 to 3 css px left of PT's
+/// (audit V13, 2026-10-21).
+const PT_PANEL_EDGES_PILL_W: [(f32, f32); 3] = [(1.0, 230.0), (1.5, 231.0), (2.25, 231.2)];
+
+#[test]
+fn a_segmented_pill_is_as_wide_as_pts_not_a_whole_pixel_per_label_wider() {
+    for (s, want) in PT_PANEL_EDGES_PILL_W {
+        let h = harness(s);
+        h.advance(0);
+        let w = h.comp.get_seg4_w();
+        assert!(
+            (w - want).abs() <= 1.4,
+            "the four-label pill is {w} css px at {s}, PT's is {want}"
+        );
+    }
+}

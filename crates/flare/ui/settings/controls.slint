@@ -110,7 +110,11 @@ export component SetSegmented inherits Rectangle {
         for o in root.options: seg := Rectangle {
             property <bool> chosen: o.id == root.value;
             property <bool> hot: ta.has-hover;
-            preferred-width: lbl.preferred-width + 24px;
+            // Slint rounds a Text's preferred width UP to a whole css px, Chromium keeps it fractional,
+            // so each segment (and the pill) came out about half a px wider than PT's, 3 px over four
+            // labels (audit V13). The same label sixteen times over is rounded up the same way, and a
+            // sixteenth of that is the label's width to within 0.07 px.
+            preferred-width: lbl16.preferred-width / 16 + 24px;
             min-width: self.preferred-width;
             min-height: 24px;
             max-height: 24px;
@@ -119,6 +123,16 @@ export component SetSegmented inherits Rectangle {
             accessible-role: button;
             accessible-label: o.name;
             accessible-description: seg.chosen ? "pressed" : "";
+
+            lbl16 := Text {
+                visible: false;
+                wrap: no-wrap;
+                text: o.name + o.name + o.name + o.name + o.name + o.name + o.name + o.name
+                    + o.name + o.name + o.name + o.name + o.name + o.name + o.name + o.name;
+                font-family: SettingsFixed.font-text;
+                font-size: 11.5px;
+                font-weight: 600;
+            }
 
             lbl := Text {
                 width: parent.width;
@@ -409,6 +423,7 @@ export component ControlsPreview inherits Window {
     out property <length> seg-y: seg.absolute-position.y;
     out property <length> seg-w: seg.width;
     out property <length> seg-h: seg.height;
+    out property <length> seg4-w: seg4.width;
     out property <length> save-x: save.absolute-position.x;
     out property <length> save-y: save.absolute-position.y;
     out property <length> save-w: save.width;
@@ -455,6 +470,20 @@ export component ControlsPreview inherits Window {
             root.seg-value = id;
             root.seg-picks += 1;
         }
+    }
+
+    // PT's Panel edges pill: four labels of different widths (the fractional-width test).
+    seg4 := SetSegmented {
+        x: 200px;
+        y: 70px;
+        label: "Preview four segments";
+        options: [
+            { id: "none", name: "None", face: "" },
+            { id: "faint", name: "Faint", face: "" },
+            { id: "hairline", name: "Hairline", face: "" },
+            { id: "solid", name: "Solid", face: "" }
+        ];
+        value: "hairline";
     }
 
     save := SetSaveButton {

@@ -39,6 +39,9 @@ use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, S
 const SIZE: (f32, f32) = (1000.0, 640.0);
 /// The scalings of the matrix, as percent and the DPI that sets them.
 const SCALES: [(u32, u32); 3] = [(100, 96), (150, 144), (225, 216)];
+/// Scalings only a cell list that names them runs (`FLARE_VISUAL_CELLS=300-gpu`); `all` leaves them out,
+/// so the committed matrix and Prism Terminal's pictures keep their three.
+const OPT_IN_SCALES: [(u32, u32); 1] = [(300, 288)];
 const RENDERERS: [&str; 2] = ["gpu", "software"];
 /// The offsets into a slide the snapshots are taken at, ms after the key.
 const OFFSETS: [u64; 10] = [0, 20, 40, 60, 80, 100, 130, 160, 200, 260];
@@ -87,10 +90,12 @@ fn cfg() -> Cfg {
         .unwrap_or_else(|_| repo.join("docs").join("screenshots").join("visual"));
     let want_cells = list_filter(std::env::var("FLARE_VISUAL_CELLS").ok().as_deref());
     let mut cells = Vec::new();
-    for (pct, dpi) in SCALES {
+    for (pct, dpi) in SCALES.iter().chain(OPT_IN_SCALES.iter()).copied() {
         for r in RENDERERS {
             let name = format!("{pct}-{r}");
-            if want_cells.as_ref().is_none_or(|w| w.contains(&name)) {
+            let named = want_cells.as_ref().is_some_and(|w| w.contains(&name));
+            let opt_in = OPT_IN_SCALES.iter().any(|(p, _)| *p == pct);
+            if named || (!opt_in && want_cells.is_none()) {
                 cells.push((pct, dpi, r));
             }
         }
