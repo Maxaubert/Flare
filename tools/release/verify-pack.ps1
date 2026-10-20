@@ -45,7 +45,7 @@ if (Test-Path -LiteralPath $zipPath) {
   $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
   try {
     $entries = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
-    foreach ($need in '.portable', 'Update.exe', 'Flare.exe', 'current/Flare.exe', 'current/sq.version', 'current/conpty.dll', 'current/OpenConsole.exe', 'current/claude-plugin/hooks/hooks.json', 'current/LICENSE', 'current/THIRD-PARTY-NOTICES.md') {
+    foreach ($need in '.portable', 'Update.exe', 'Flare.exe', 'current/Flare.exe', 'current/sq.version', 'current/conpty.dll', 'current/OpenConsole.exe', 'current/claude-plugin/hooks/hooks.json', 'current/whisper/whisper-server.exe', 'current/flare-parakeet-host.exe', 'current/LICENSE', 'current/THIRD-PARTY-NOTICES.md') {
       if ($entries -notcontains $need) { Fail "the portable zip lacks $need" }
     }
     if (@($entries | Where-Object { $_ -like '*.pdb' }).Count -gt 0) { Fail 'the portable zip carries a .pdb' }

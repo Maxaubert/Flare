@@ -52,6 +52,27 @@ $Runtime = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll', 'vcomp140
 # Where the zip keeps the files. They land flattened in -Out.
 $ZipDir = 'Release'
 
+# One SHA-256 per engine file (audit L64, 2026-10-20): taken from the files of the verified zip. A folder is
+# trusted only when every file hashes to its pin, never by the presence of a name or a stamp.
+$FileHashes = @{
+  'whisper-server.exe'       = '74c13bcb83b944412b971886d37893611fb31846780c3a78db3847b3132306bc'
+  'whisper.dll'              = 'b7bb4ba92bd36b8afe0c00059ca6a0f69c6767193bfb5f0761e9ed27b1087803'
+  'ggml.dll'                 = 'c6e88687d6aa0238f2e834a87958f38d2dc96075a6a7bf6fb8b9cd728a0faed2'
+  'ggml-base.dll'            = 'a5241b52206f61c9dfd6f0f53a8ef19076f9528ead2db1e039a66d7e03817bfc'
+  'ggml-cpu-alderlake.dll'   = '5a5b11dcd38e321b13f85c95414940db9eab1132be3da6342f03dfb1d8e51bd5'
+  'ggml-cpu-cannonlake.dll'  = '2c858781450b52eda95c381232cc65c9e19cbf621cc7b254d8c44fdbab77791e'
+  'ggml-cpu-cascadelake.dll' = 'ddf49bb749b34800afcb3d6224544966a05c5d00f1d0b6565bee9f3b010dd53c'
+  'ggml-cpu-haswell.dll'     = '6b772e094b8976e22b4c043be86a1a8deda4b50511dc803a693b652c51b24944'
+  'ggml-cpu-icelake.dll'     = 'bbd87ea5920edc401054848071ad2ef8c96bbf8007c4e4cd0ea82ba9b9e3bd10'
+  'ggml-cpu-sandybridge.dll' = 'de2ad5f84c7dfa557d515b3678d6452ce0216590268b2ca79cc537fe87cf239d'
+  'ggml-cpu-skylakex.dll'    = '9fa3f9d984ca42d568181dd345072299db2978b328800343218c2c7f000b7152'
+  'ggml-cpu-sse42.dll'       = '740fc769ef433985dfdb24a609a42d5acf188abda52287a4d89b89b567507c19'
+  'ggml-cpu-x64.dll'         = '43ccf32b9b70aa4c47d0a12ac2ed3c241e0045571acdad565ecd9d1f99ffc08b'
+  'parakeet-cli.exe'         = '8de0c0805272b17d779aa2a0a12d4e6e99b076d3843e12da54ee5ae7fe00c829'
+  'parakeet.dll'             = 'fac30f11a9ed424e7897ed02c7186377ff7201bc9bc59bc5e025c84d296cd367'
+}
+# The notice is the repository's own copy, not a download from a tag.
+$LicenseSrc = Join-Path $PSScriptRoot '..\LICENSE-whisper.cpp.txt'
 if ([Net.ServicePointManager]::SecurityProtocol -notmatch 'Tls12') {
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
@@ -60,11 +81,14 @@ $OutDir = [IO.Path]::GetFullPath($Out)
 $stamp = Join-Path $OutDir '.source'
 $license = Join-Path $OutDir 'LICENSE-whisper.cpp.txt'
 
-# Every file, the runtime and the notice, not only the server: the stamp is the zip's checksum, which
-# a changed file list does not change.
+# Every engine file is hashed against its pin (a swapped or truncated file fails, a present name does
+# not pass), and the runtime and the notice must exist. The stamp alone proves nothing.
 $missing = @($Files + $Runtime | Where-Object { -not (Test-Path -LiteralPath (Join-Path $OutDir $_)) })
-$stamped = (Test-Path -LiteralPath $stamp) -and ((Get-Content -LiteralPath $stamp -Raw).Trim() -eq $Sha256)
-if ($missing.Count -eq 0 -and $stamped -and (Test-Path -LiteralPath $license)) {
+$wrong = @($Files | Where-Object {
+  (Test-Path -LiteralPath (Join-Path $OutDir $_)) -and
+  ((Get-FileHash -LiteralPath (Join-Path $OutDir $_) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $FileHashes[$_])
+})
+if ($missing.Count -eq 0 -and $wrong.Count -eq 0 -and (Test-Path -LiteralPath $license)) {
   Write-Host "whisper: $OutDir already holds $Asset of $Tag"
   return
 }
@@ -112,6 +136,10 @@ try {
     Where-Object { $_.Name -match '^(whisper|ggml|parakeet)[\w.-]*\.(exe|dll)$' } |
     Remove-Item -Force
   foreach ($name in $Files) {
+    $have = (Get-FileHash -LiteralPath (Join-Path $release $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($have -ne $FileHashes[$name]) { throw "$name in the archive hashes to $have, expected $($FileHashes[$name])" }
+  }
+  foreach ($name in $Files) {
     Copy-Item -LiteralPath (Join-Path $release $name) -Destination $OutDir -Force
   }
 
@@ -129,15 +157,10 @@ try {
     Copy-Item -LiteralPath $from -Destination $OutDir -Force
   }
 
-  # whisper.cpp is MIT: its notice travels with every copy. Taken from the zip when it has one;
-  # otherwise from the same tag's LICENSE (the official zip carries none, as of b5130).
-  $licenseSrc = Get-ChildItem -LiteralPath $tree -Recurse -File -Filter 'LICENSE*' | Select-Object -First 1
-  if ($licenseSrc) {
-    Copy-Item -LiteralPath $licenseSrc.FullName -Destination $license -Force
-  } else {
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ggml-org/whisper.cpp/$Tag/LICENSE" `
-      -OutFile $license -UseBasicParsing
-  }
+  # whisper.cpp is MIT: its notice travels with every copy. It is the repository's committed copy
+  # (the official zip carries none, as of b5130), so nothing mutable is downloaded.
+  if (-not (Test-Path -LiteralPath $LicenseSrc)) { throw "$LicenseSrc is missing from the repository" }
+  Copy-Item -LiteralPath $LicenseSrc -Destination $license -Force
 
   # Last, so the stamp only ever vouches for a complete folder.
   Set-Content -LiteralPath $stamp -Value $Sha256 -Encoding ascii

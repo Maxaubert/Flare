@@ -113,6 +113,15 @@ jobs:
           cargo build --release -p flare @features
           if ($LASTEXITCODE -ne 0) { throw "release build failed" }
 
+      - name: Build the Parakeet host (pack.ps1 copies it from beside flare.exe)
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo build --release -p flare-dictation --bin flare-parakeet-host
+
+      - name: Fetch the speech engine (vendor/whisper, gitignored)
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/fetch-whisper.ps1 -Out vendor/whisper
+
       - name: Release notes
         if: steps.ver.outputs.fresh == 'true'
         shell: pwsh

@@ -48,6 +48,13 @@ jobs:
       - name: Build
         run: cargo build --release -p flare
 
+      - name: Build the Parakeet host (pack.ps1 copies it from beside flare.exe)
+        run: cargo build --release -p flare-dictation --bin flare-parakeet-host
+
+      - name: Fetch the speech engine (vendor/whisper, gitignored)
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/fetch-whisper.ps1 -Out vendor/whisper
+
       - name: Pack 0.0.1 into a temp folder
         shell: pwsh
         run: |
