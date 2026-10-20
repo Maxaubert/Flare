@@ -19,10 +19,9 @@ use crate::dictation_ctl::{self, DictView};
 use crate::dictation_widget::{self, Snapshot};
 use crate::{BlockKind as SlintBlock, SettingsBridge};
 
-/// Whether the pill is in the window's tree. Task 23 drew the pill and the tab mark but the mount in the terminal
-/// area (Appendix D, `term_ui.rs`) was never made, so the pill is not in the tree yet; the probe says so rather than
-/// reading a pill that is not there.
-const PILL_MOUNTED: bool = false;
+/// Whether the pill is in the window's tree: it is mounted over the terminal area in `app.slint` and fed from
+/// `dictation_ctl::view()` by the host's `view_changed`.
+const PILL_MOUNTED: bool = true;
 
 /// Adds this file's probes to `r`.
 pub fn register(r: &mut ProbeRegistry) {
@@ -67,15 +66,7 @@ pub fn view_json(v: &DictView) -> Value {
 
 /// The pill's face (0 nothing, 1 listening, 2 transcribing, 3 a message), as the Slint `face` property counts it.
 pub fn pill_face(v: &DictView) -> i32 {
-    if v.transcribing {
-        2
-    } else if v.listening {
-        1
-    } else if v.message.is_some() {
-        3
-    } else {
-        0
-    }
+    dictation_ctl::pill_phase(v)
 }
 
 /// `dict.pill`: whether the pill is mounted, its face and its meter.

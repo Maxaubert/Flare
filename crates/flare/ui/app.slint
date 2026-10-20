@@ -11,6 +11,7 @@ import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "typ
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { TermScrollbar } from "scrollbar.slint";
+import { DictationPill } from "dictation_pill.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
 import { SettingsView, SettingsBridge } from "settings/view.slint";
@@ -400,6 +401,12 @@ export component AppWindow inherits Window {
     in property <float> scroll-top: 0;
     in property <float> scroll-len: 1;
     in property <bool> scroll-back: false;
+    // The dictation pill (M8): fed from dictation_ctl::view() by dictation_ctl's host; 0 mounts nothing.
+    in property <int> dict-phase: 0;
+    in property <bool> dict-starting: false;
+    in property <string> dict-live-text;
+    in property <string> dict-message;
+    in property <float> dict-level: 0;
     out property <length> scroll-strip-x: scroll-bar.strip-x;
     out property <length> scroll-strip-w: scroll-bar.strip-w;
     out property <length> scroll-thumb-x: scroll-bar.thumb-x;
@@ -680,6 +687,17 @@ export component AppWindow inherits Window {
                             top: root.scroll-top;
                             len: root.scroll-len;
                             back: root.scroll-back;
+                        }
+                        dict-pill := DictationPill {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            phase: root.dict-phase;
+                            starting: root.dict-starting;
+                            live-text: root.dict-live-text;
+                            message: root.dict-message;
+                            level: root.dict-level;
                         }
                     }
                     settings-view := SettingsView {

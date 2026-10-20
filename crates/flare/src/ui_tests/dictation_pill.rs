@@ -224,3 +224,42 @@ fn the_tab_mark_is_not_drawn_while_idle() {
         );
     }
 }
+
+#[test]
+fn the_pill_is_mounted_in_the_window_over_the_terminal_area() {
+    use crate::AppWindow;
+    for s in SCALES {
+        let h = Harness::new(s, 1000, 640, || {
+            AppWindow::new().expect("the window builds")
+        });
+        h.comp.set_dict_phase(0);
+        h.advance(0);
+        let idle = h.render();
+        let left = h.phys(h.comp.get_grid_left());
+        let top = h.phys(h.comp.get_grid_top());
+        let below = top + h.phys(300.0);
+        assert_eq!(
+            idle.count_where(left, below, idle.w, idle.h, is_fill),
+            0,
+            "scale {s}: a pill is drawn while idle"
+        );
+        h.comp.set_dict_phase(1);
+        h.advance(500);
+        let on = h.render();
+        let (x0, _, x1, y1) = on
+            .bbox_where(left, below, on.w, on.h, is_fill)
+            .unwrap_or_else(|| panic!("scale {s}: the window draws no pill"));
+        let centre = (x0 + x1 + 1) as f32 / 2.0;
+        let area_mid = (left + on.w) as f32 / 2.0;
+        assert!(
+            (centre - area_mid).abs() <= 2.0,
+            "scale {s}: centre {centre}, area middle {area_mid}"
+        );
+        let want = on.h - (16.0 * s).round() as u32;
+        assert!(
+            (y1 + 1).abs_diff(want) <= 2,
+            "scale {s}: bottom {}, want {want}",
+            y1 + 1
+        );
+    }
+}

@@ -1116,8 +1116,6 @@ impl TermUi {
         let now = self.now();
         let mut out = TickOut::default();
         let mut due: Vec<u64> = Vec::new();
-        // The pill and the tab mark follow the dictation view (Task 23 draws them).
-        let _dictation = crate::dictation_ctl::view();
         if let Some(t) = tab {
             self.sync_inputs(t, now);
             self.mouse_flag

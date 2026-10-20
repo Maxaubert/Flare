@@ -104,6 +104,29 @@ pub fn view() -> DictView {
     VIEW.with(|v| v.borrow().clone())
 }
 
+/// The pill's face as the window's dict-phase counts it: 0 nothing (no pill in the tree), 1 listening,
+/// 2 transcribing, 3 a message. Transcribing wins over listening.
+pub fn pill_phase(v: &DictView) -> i32 {
+    if v.transcribing {
+        2
+    } else if v.listening {
+        1
+    } else if v.message.is_some() {
+        3
+    } else {
+        0
+    }
+}
+
+/// Feeds the pill mounted over the terminal area from the view (M8 Task 23's Appendix D call site).
+fn push_pill(app: &AppWindow, v: &DictView) {
+    app.set_dict_phase(pill_phase(v));
+    app.set_dict_starting(v.starting);
+    app.set_dict_live_text(v.live_text.as_str().into());
+    app.set_dict_message(v.message.clone().unwrap_or_default().as_str().into());
+    app.set_dict_level(v.level);
+}
+
 /// Counts every change of the view, so a drawing loop redraws only when it moved.
 pub fn view_epoch() -> u64 {
     VIEW_EPOCH.with(Cell::get)
@@ -2490,6 +2513,12 @@ impl DictHost for AppHost {
         crate::diag_ctl::crumb(name, fields);
     }
 
+    fn view_changed(&self) {
+        if let Some(app) = self.app.upgrade() {
+            push_pill(&app, &view());
+        }
+    }
+
     fn widget(&self, face: Option<&OverlayState>) {
         let app = self.app.clone();
         crate::dictation_widget::set(
@@ -4247,8 +4276,26 @@ pub(crate) mod fixture {
         (store, dir, calls)
     }
 
+    static TEST_QUEUE_LOCK: Mutex<()> = Mutex::new(());
+
+    thread_local! {
+        static TEST_QUEUE_GUARD: RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+
     /// Puts `store` in place of the real one and the page's state back to nothing.
     pub(crate) fn install_store(store: Store) {
+        // The posted-work queue is one process-wide list, so two tests that use it at once would run (and clear)
+        // each other's posts. A test that installs a store holds this lock until its thread ends.
+        TEST_QUEUE_GUARD.with(|g| {
+            let mut g = g.borrow_mut();
+            if g.is_none() {
+                *g = Some(
+                    TEST_QUEUE_LOCK
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+            }
+        });
         TEST_STORE.with(|s| *s.borrow_mut() = Some(store));
         TEST_MIC.with(|m| *m.borrow_mut() = None);
         TEST_POSTS.lock().unwrap().clear();
