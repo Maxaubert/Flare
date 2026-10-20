@@ -93,6 +93,7 @@ unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> i32 {
 
 /// The top-level windows of process `pid` with an area, the largest first.
 pub fn windows_of(pid: u32) -> Vec<WinInfo> {
+    let _device = DeviceCoordinates::enter();
     let mut c = Collect {
         pid,
         found: Vec::new(),
