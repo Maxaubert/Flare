@@ -253,6 +253,11 @@ impl FakeFeed {
         self.with(|s| s.applied_args.clone())
     }
 
+    /// Models the real feed's joiner thread, which removes an abandoned download's files itself.
+    pub fn join_abandoned(&self) {
+        self.with(|s| s.files_left = false);
+    }
+
     /// True between a download that started writing and the next `discard`.
     pub fn files_left(&self) -> bool {
         self.with(|s| s.files_left)

@@ -68,7 +68,9 @@ fn calls(profile: &Path) -> Option<(u64, u64)> {
 
 /// Writes one command word for the app to read and delete.
 fn send(profile: &Path, word: &str) {
-    std::fs::write(profile.join("update-command"), word).expect("the command file");
+    let tmp = profile.join("update-command.tmp");
+    std::fs::write(&tmp, word).expect("the command file");
+    std::fs::rename(&tmp, profile.join("update-command")).expect("the command file");
 }
 
 fn chip_on(profile: &Path) -> bool {

@@ -292,7 +292,9 @@ fn send(profile: &Path, word: &str) {
         until(Duration::from_secs(5), || !path.exists()),
         "an earlier command was never taken"
     );
-    std::fs::write(&path, word).expect("write the command");
+    let tmp = profile.join("update-command.tmp");
+    std::fs::write(&tmp, word).expect("write the command");
+    std::fs::rename(&tmp, &path).expect("write the command");
     assert!(
         until(Duration::from_secs(10), || !path.exists()),
         "the app never took `{word}`"

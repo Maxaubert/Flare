@@ -400,8 +400,12 @@ fn a_cancel_during_the_download_leaves_nothing() {
     r.engine.cancel();
     latch.open();
     assert!(!worker.join().expect("worker"));
+    r.feed.join_abandoned();
     assert!(!r.feed.files_left());
     assert_eq!(r.feed.applies(), 0);
+    // The cancelled download still runs and its own joiner removes its files: the engine must not
+    // discard under it (audit L24).
+    assert_eq!(r.feed.discards(), 0);
 }
 
 #[test]

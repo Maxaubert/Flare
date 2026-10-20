@@ -474,12 +474,9 @@ impl UpdateCtl {
         let me = self.me.clone();
         self.cmd_timer
             .start(TimerMode::Repeated, Duration::from_millis(250), move || {
-                let path = dir.join("update-command");
-                // sync-ok: the e2e command file, polled only under --e2e
-                let Ok(word) = std::fs::read_to_string(&path) else {
+                let Some(word) = claim_command(&dir) else {
                     return;
                 };
-                let _ = std::fs::remove_file(&path); // sync-ok: the e2e command file
                 if let Some(rc) = me.upgrade()
                     && let Ok(mut c) = rc.try_borrow_mut()
                 {
@@ -529,6 +526,19 @@ impl UpdateCtl {
             write_atomic(&dir.join("update-calls.json"), &calls);
         }));
     }
+}
+
+/// Takes the e2e command: renames `update-command` to a claimed name first (so a command written
+/// meanwhile is a new file, never deleted unread), then reads and removes the claimed copy.
+/// Writers put the word in `update-command.tmp` and rename it, so a half-written word is never read.
+fn claim_command(dir: &std::path::Path) -> Option<String> {
+    let path = dir.join("update-command");
+    let claimed = dir.join("update-command.claimed");
+    // sync-ok: the e2e command file, polled only under --e2e
+    std::fs::rename(&path, &claimed).ok()?;
+    let word = std::fs::read_to_string(&claimed).ok(); // sync-ok: the e2e command file
+    let _ = std::fs::remove_file(&claimed); // sync-ok: the e2e command file
+    word
 }
 
 /// Writes next to the target, then renames over it, so a reader never sees half a file.
@@ -1049,6 +1059,27 @@ mod tests {
         std::fs::write(&cmd, "nonsense").unwrap();
         f.h.advance(250);
         assert!(!cmd.exists(), "an unknown word is consumed and ignored");
+    }
+
+    #[test]
+    fn claiming_a_command_takes_it_whole_and_never_eats_the_next_or_a_half_written_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = dir.path().join("update-command");
+        assert_eq!(claim_command(dir.path()), None);
+        // A writer still filling its temp file is invisible.
+        std::fs::write(dir.path().join("update-command.tmp"), "inst").unwrap();
+        assert_eq!(claim_command(dir.path()), None);
+        std::fs::write(&cmd, "open").unwrap();
+        assert_eq!(claim_command(dir.path()).as_deref(), Some("open"));
+        assert!(!cmd.exists());
+        assert!(!dir.path().join("update-command.claimed").exists());
+        // The next command lands after a claim: it is a new file and is read in its turn.
+        std::fs::write(&cmd, "install").unwrap();
+        assert_eq!(claim_command(dir.path()).as_deref(), Some("install"));
+        // A claimed copy left by a crash does not block the next claim.
+        std::fs::write(dir.path().join("update-command.claimed"), "old").unwrap();
+        std::fs::write(&cmd, "cancel").unwrap();
+        assert_eq!(claim_command(dir.path()).as_deref(), Some("cancel"));
     }
 
     #[test]
