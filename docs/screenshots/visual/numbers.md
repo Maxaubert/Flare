@@ -4,18 +4,18 @@
 
 | cell | dir | frames | longest gap ms | t50 / t90 / t99 ms | settle ms | curve error (best fit) | input to first frame ms |
 |---|---|---|---|---|---|---|---|
-| flare 100-gpu | collapse | 7 | 69.1 | 24 / 66 / 139 | 205 | 0.203 | 42.2 |
-| flare 100-gpu | expand | 7 | 68.2 | 18 / 75 / 150 | 172 | 0.203 | 42.2 |
-| flare 100-software | collapse | 11 | 19.2 | 8 / 63 / 128 | 153 | 0.018 | 36.9 |
-| flare 100-software | expand | 11 | 20.9 | 8 / 62 / 128 | 155 | 0.018 | 36.7 |
-| flare 150-gpu | collapse | 7 | 70.8 | 20 / 72 / 147 | 206 | 0.194 | 43.5 |
-| flare 150-gpu | expand | 7 | 68.1 | 8 / 76 / 153 | 155 | 0.116 | 43.3 |
-| flare 150-software | collapse | 11 | 18.9 | 7 / 61 / 127 | 154 | 0.019 | 39.1 |
-| flare 150-software | expand | 11 | 19.9 | 8 / 63 / 127 | 153 | 0.019 | 37.2 |
-| flare 225-gpu | collapse | 7 | 68.8 | 27 / 70 / 148 | 167 | 0.206 | 41.2 |
-| flare 225-gpu | expand | 7 | 67.0 | 8 / 78 / 153 | 159 | 0.151 | 41.7 |
-| flare 225-software | collapse | 11 | 17.7 | 7 / 62 / 128 | 150 | 0.018 | 37.4 |
-| flare 225-software | expand | 11 | 18.6 | 8 / 63 / 128 | 153 | 0.019 | 36.9 |
+| flare 100-gpu | collapse | 7 | 69.8 | 10 / 69 / 144 | 223 | 0.008 | 21.0 |
+| flare 100-gpu | expand | 7 | 70.1 | 9 / 78 / 150 | 177 | 0.006 | 21.3 |
+| flare 100-software | collapse | 13 | 17.3 | 9 / 63 / 133 | 178 | 0.002 | 16.7 |
+| flare 100-software | expand | 13 | 17.2 | 9 / 63 / 133 | 179 | 0.003 | 16.8 |
+| flare 150-gpu | collapse | 7 | 69.8 | 9 / 78 / 148 | 183 | 0.005 | 21.6 |
+| flare 150-gpu | expand | 8 | 68.5 | 9 / 67 / 142 | 227 | 0.008 | 21.6 |
+| flare 150-software | collapse | 13 | 16.8 | 9 / 63 / 133 | 180 | 0.004 | 16.8 |
+| flare 150-software | expand | 13 | 17.0 | 9 / 63 / 133 | 178 | 0.002 | 16.6 |
+| flare 225-gpu | collapse | 7 | 68.7 | 9 / 75 / 148 | 181 | 0.004 | 22.0 |
+| flare 225-gpu | expand | 7 | 69.0 | 10 / 74 / 146 | 179 | 0.005 | 21.1 |
+| flare 225-software | collapse | 13 | 16.9 | 10 / 64 / 134 | 179 | 0.006 | 16.3 |
+| flare 225-software | expand | 13 | 16.9 | 9 / 63 / 133 | 178 | 0.006 | 17.1 |
 | pt 100-pt | collapse | 27 | 7.3 | 18 / 72 / 142 | 174 | 0.000 | 10.9 |
 | pt 100-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.003 | 8.9 |
 | pt 150-pt | collapse | 27 | 7.1 | 18 / 72 / 142 | 174 | 0.000 | 11.5 |

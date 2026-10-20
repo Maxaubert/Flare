@@ -49,18 +49,27 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
 | | frames | longest gap | t50 / t90 / t99 | curve error |
 |---|---|---|---|---|
 | Prism Terminal, all scales | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
-| Flare GPU, 100 / 150 / 225 % | 21 to 22 | 8.9 to 12.0 ms | 14 to 15 / 68 to 70 / 135 to 137 ms | 0.016 to 0.024 |
-| Flare software, 100 / 150 / 225 % | 22 to 26 (15 / 16 at 225) | 8.7 to 9.9 ms (14.5 ms at 225) | 13 to 18 / 68 to 72 / 135 to 140 ms | 0.009 to 0.020 |
+| Flare GPU, 100 / 150 / 225 % (V3, 2026-10-21) | 7 to 8 | 68.5 to 70.1 ms | 9 to 10 / 67 to 78 / 142 to 150 ms | 0.004 to 0.008 |
+| Flare software, 100 / 150 / 225 % (V3, 2026-10-21) | 13 | 16.8 to 17.3 ms | 9 to 10 / 63 to 64 / 133 to 134 ms | 0.002 to 0.006 |
+| Flare GPU before V3 (2026-10-20, same machine state) | 7 | 67 to 71 ms | 8 to 27 / 66 to 78 / 139 to 153 ms | 0.116 to 0.206 |
+| Flare software before V3 (2026-10-20) | 11 | 17.7 to 20.9 ms | 7 to 8 / 61 to 63 / 127 to 128 ms | 0.018 to 0.019 |
 
-- The easing and the duration match: same curve, same 240 ms, t50/t90/t99 within a few ms (Flare's are 2 to 4 ms
-  earlier, which is the half-frame of where the first frame lands). No stutter: the medians of the longest gap are under 15 ms in both
-  apps (Flare software at 225 % is the largest, 14.5 ms).
-- Flare presents fewer frames in the same 240 ms than Prism Terminal (about 21 against 27): its frames come every 9
-  to 12 ms, Prism Terminal's every 7 ms. Both are smooth; Flare is not tracking the display's full rate during the slide.
-  At 225 % software it drops to 15 frames at 14.5 ms (about 70 fps), the one cell where the slide is visibly coarser.
+- Audit V3 (2026-10-21): the slide now starts at the first frame that draws it, as a CSS transition does, and every
+  frame reads the curve at its own moment (`crates/flare/src/side_slide.rs`; the GPU path at its `BeforeRendering`, after
+  the vsync wait). The curve error is now 0.002 to 0.008 (it was 0.018 to 0.206), near Prism Terminal's 0.000 to 0.003.
+- t50/t90/t99 count from the first frame that MOVED. Flare's first frame shows the start (progress 0, as CSS) and its
+  next frame comes one compositor frame later (16.7 ms here), Prism Terminal's 7 ms later, so Flare's t50 reads 9 ms
+  against 18: both reach 50 percent about 25 ms after the slide starts, which is the declared curve.
+- The frame rate is the machine, not the slide, on these runs: the desktop compositor reported 60 Hz
+  (`DwmGetCompositionTimingInfo`, 16.67 ms) although the panel is set to 143 Hz, and the GPU path presented only about
+  15 frames a second (68 to 70 ms gaps, the monitor not awake to the harness's zero-distance mouse move), as the
+  baseline build did too. The software path now gives a frame every compositor frame (16.8 to 17.3 ms, 13 frames).
+  The slide asks the OS window for each next frame at once, so with the monitor awake it should follow the
+  display's rate like Prism Terminal; that was not measurable on these runs.
 - The terminal keeps its width after a round trip (102 columns before and after), and goes 102 to 131 collapsed. The
   snapshots show the terminal text moving with the slot edge in both apps; no jump in the tab strip or the rows.
-- Input to first frame: Flare 19 to 27 ms, Prism Terminal 9 to 12 ms.
+- Input to the first frame that moved: Flare 16 to 22 ms (2026-10-21; 19 to 27 ms before V3), Prism Terminal 9 to
+  12 ms.
 
 Start-up (from process start; Flare's tabs and prompt times are wall clock from `CreateProcess`, Prism Terminal's are
 from `process.uptime()`, so a few ms apart in kind):

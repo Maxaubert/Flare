@@ -699,9 +699,12 @@ pub fn run_window(
         }
     };
 
+    // The controller, once made: the GPU path's frames step the sidebar's slide (audit V3).
+    let slide_ctl: Rc<RefCell<Option<std::rc::Weak<RefCell<AppCtl>>>>> = Rc::default();
     let notifier_result = {
         let host = host.clone();
         let note = note.clone();
+        let slide_ctl = slide_ctl.clone();
         let weak = app.as_weak();
         let front = front.clone();
         let caret = caret.clone();
@@ -731,6 +734,13 @@ pub fn run_window(
                     }
                 }
                 RenderingState::BeforeRendering => {
+                    // The sidebar's slide takes its place here: after the swap chain gave the frame its
+                    // buffer (the vsync wait), right before the items are drawn.
+                    if let Some(rc) = slide_ctl.borrow().as_ref().and_then(std::rc::Weak::upgrade)
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                    {
+                        c.on_frame();
+                    }
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
                     let trace = FrameTrace::global();
                     if trace.on() {
@@ -988,6 +998,10 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
+        rc.borrow_mut()
+            .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
+        *slide_ctl.borrow_mut() = Some(Rc::downgrade(&rc));
         crate::dictation_ctl::install(&app, &rc, args);
         // What this run is: installed or not, e2e or not (M9 Task 32). The verb and the update
         // engine follow from it.
@@ -1199,6 +1213,7 @@ pub fn run_window(
                 material: material.clone(),
                 caret: caret.clone(),
                 e2e: args.e2e,
+                software: no_notifier.clone(),
             },
         )
     });
@@ -1484,6 +1499,8 @@ struct FilterState {
     caret: Rc<RefCell<CaretFollower>>,
     /// `--e2e`: the saved position is never applied.
     e2e: bool,
+    /// Slint's software renderer draws (it has no rendering notifier).
+    software: Rc<Cell<bool>>,
 }
 
 /// Everything a key (and a focus change) needs: the winit filter and the e2e glue both go through
@@ -1738,6 +1755,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         material,
         caret,
         e2e,
+        software,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
@@ -1823,8 +1841,25 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         };
         let scale = f64::from(window.scale_factor()).max(0.01);
         match event {
-            // The software renderer's frames, for the e2e's series (a no-op unless it asked for them).
             WindowEvent::RedrawRequested => {
+                // The sidebar's slide (audit V3): while it runs, the next frame is asked for straight from
+                // the OS window, not through Slint's frame timer, and each present paces it (the GPU path on
+                // vsync, the software path on the compositor; measured 2026-10-20, an added wait for the next
+                // refresh only doubled some gaps). The software renderer has no notifier, so its frame steps
+                // the slide here (its start the first time, its place on the curve now); the GPU path's
+                // BeforeRendering does, after the vsync wait.
+                let mut more = false;
+                with_ctl(&mut |c| {
+                    more = if software.get() {
+                        c.on_frame()
+                    } else {
+                        c.slide_running()
+                    }
+                });
+                if more {
+                    window.request_redraw();
+                }
+                // The software renderer's frames, for the e2e's series (a no-op unless it asked for them).
                 crate::e2e_glue::on_redraw();
                 EventResult::Propagate
             }

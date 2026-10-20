@@ -199,7 +199,7 @@ export component TabSidebar inherits Rectangle {
     in property <bool> collapsed;               // not pinned: takes no room, slides over the terminal
     in property <bool> revealed;                // collapsed and slid out
     in property <length> side-width: 220px;     // 150..420, already Px.snap'd by the glue
-    in property <bool> sliding;                 // a pin/unpin slide is running: the SLOT animates too
+    in property <bool> sliding;                 // a pin/unpin slide is running (the glue moves the slot too)
     in property <bool> carrying;
     in-out property <string> find-text <=> find-input.text;
     in property <string> find-key;
@@ -223,25 +223,26 @@ export component TabSidebar inherits Rectangle {
     callback tip(string, length, length, length, length);
     public function focus-find() { find-input.focus(); }
 
-    // The room it takes now: eases to `slot-width` while a pin/unpin slide runs.
+    // The slide (audit V3): the glue eases both values frame by frame (side_slide.rs, 240 ms of
+    // cubic-bezier(0.16, 1, 0.3, 1) started at the first frame that draws it, as CSS does). Left unset,
+    // they are the rest values: no slide.
+    in property <length> slot-now: root.collapsed ? 0px : root.side-width;
+    in property <length> slide-now: (root.collapsed && !root.revealed) ? -(root.side-width + 10px) : 0px;
+
+    // The room it takes now.
     slot := Rectangle {
-        width: root.slot-width;
+        width: root.slot-now;
         height: 0px;
-        animate width { duration: Motion.d(root.sliding ? 240ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
     }
 
     // Hidden, the panel waits side-width + CORNER_R off the edge, so its right edge and the cut travel together.
-    // The slide is eased by this helper and the panel takes it rounded to a whole device pixel: on a
-    // fractional x the panel's edge and the corner's edge each cover part of one pixel and leave a seam
-    // (the e2e verticalTabs corner read 4 px short on such a frame).
+    // The panel takes the slide rounded to a whole device pixel: on a fractional x the panel's edge and the
+    // corner's edge each cover part of one pixel and leave a seam (the e2e verticalTabs corner read 4 px
+    // short on such a frame).
     slide := Rectangle {
-        x: (root.collapsed && !root.revealed) ? -(root.side-width + 10px) : 0px;
+        x: root.slide-now;
         width: 0px;
         height: 0px;
-        animate x {
-            duration: Motion.d((root.collapsed || root.sliding) ? 240ms : 0ms);
-            easing: cubic-bezier(0.16, 1, 0.3, 1);
-        }
     }
 
     panel := Rectangle {
@@ -498,6 +499,8 @@ export component TabSidebarPreview inherits Window {
     in property <length> side-width: 220px;
     in property <bool> sliding;
     in property <bool> carrying;
+    in property <length> slot-now: root.collapsed ? 0px : root.side-width;
+    in property <length> slide-now: (root.collapsed && !root.revealed) ? -(root.side-width + 10px) : 0px;
     in-out property <string> find-text <=> sb.find-text;
     // The label comes from the chord table (the tests set it); never typed by hand here.
     in property <string> find-key;
@@ -534,6 +537,8 @@ export component TabSidebarPreview inherits Window {
         revealed: root.revealed;
         side-width: root.side-width;
         sliding: root.sliding;
+        slot-now: root.slot-now;
+        slide-now: root.slide-now;
         carrying: root.carrying;
         find-key: root.find-key;
         new-tab-title: root.new-tab-title;

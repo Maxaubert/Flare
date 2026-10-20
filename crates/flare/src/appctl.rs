@@ -82,6 +82,7 @@ use crate::menus_ui::{
     tab_menu_rows, toggle_pin_in_menu,
 };
 use crate::settings_ctl::{SettingsCtl, SettingsMsg};
+use crate::side_slide::{SideSlide, SlideAim};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
@@ -231,6 +232,8 @@ const BAR_H: f32 = 36.0;
 const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
+/// The slide's fallback step when no frame comes.
+const SLIDE_STEP_MS: u64 = 16;
 /// The mark clock's frame (about 60 per second); it runs only while a mark moves.
 const MARK_FRAME_MS: u64 = 16;
 
@@ -343,6 +346,12 @@ pub struct AppCtl {
     scale: f64,
     timer: slint::Timer,
     timer_on: bool,
+    /// The sidebar's slide, eased frame by frame from its first frame (audit V3).
+    side_slide: SideSlide,
+    /// Steps the slide where no OS window draws frames (the tests, the scenes).
+    slide_timer: slint::Timer,
+    /// The slide's clock in fractional ms; the window sets the precise one.
+    frame_clock: Rc<dyn Fn() -> f64>,
     rows_model: Rc<VecModel<TabRow>>,
     view: View,
     last_geom: Option<GeomData>,
@@ -665,6 +674,10 @@ impl AppCtl {
             ]
         };
         Self::push_rainbow(app, &marks);
+        let frame_clock: Rc<dyn Fn() -> f64> = {
+            let clock = Rc::clone(&deps.clock);
+            Rc::new(move || clock() as f64)
+        };
         let ctl = AppCtl {
             weak: app.as_weak(),
             me: Weak::new(),
@@ -688,6 +701,9 @@ impl AppCtl {
             scale: 1.0,
             timer: slint::Timer::default(),
             timer_on: false,
+            side_slide: SideSlide::default(),
+            slide_timer: slint::Timer::default(),
+            frame_clock,
             rows_model,
             view: View {
                 rows: Vec::new(),
@@ -1304,6 +1320,7 @@ impl AppCtl {
         app.set_sidebar_revealed(sv.revealed);
         app.set_sidebar_width(sv.width_css as f32);
         app.set_sidebar_sliding(sv.sliding);
+        self.aim_slide(&app, &sv);
         if sv.frozen {
             if app.get_grid_frozen_width() <= 0.0 {
                 let w = app.get_grid_phys_width() as f32 / self.scale as f32;
@@ -2612,6 +2629,94 @@ impl AppCtl {
             KeyDone::Handled => KeyOutcome::Consumed,
             KeyDone::Send => KeyOutcome::Pty,
         }
+    }
+
+    // ---- the sidebar's slide (audit V3) ---------------------------------------------------------------------
+
+    /// The window's precise frame clock (fractional ms, the clock `ui_clock` counts on); the tests keep
+    /// the controller's own clock.
+    pub fn set_frame_clock(&mut self, clock: Rc<dyn Fn() -> f64>) {
+        self.frame_clock = clock;
+    }
+
+    /// The sidebar's state reached the window: the slot and the panel head for their new rest. A slide
+    /// shows its start until its first frame takes the time (`on_frame`).
+    fn aim_slide(&mut self, app: &AppWindow, sv: &crate::sidebar_ui::SidebarView) {
+        use slint::Global;
+        let owed = self.side_slide.aim(&SlideAim {
+            collapsed: sv.collapsed,
+            revealed: sv.revealed,
+            width: sv.width_css,
+            sliding: sv.sliding,
+            reduced: crate::Motion::get(app).get_reduced(),
+        });
+        let (slot, panel) = self.side_slide.shown();
+        app.set_sidebar_slot_now(slot);
+        app.set_sidebar_slide_now(panel);
+        // A window with no OS window behind it (the tests, the scenes) has no frames to step the slide:
+        // a timer does.
+        if owed && !Self::ask_frame(app) {
+            self.start_slide_timer();
+        }
+    }
+
+    /// A frame begins (the window calls this as each frame starts): a slide that has not started starts
+    /// now, and the slot and the panel take their place on the curve at this moment. True while the
+    /// slide owes more frames.
+    pub fn on_frame(&mut self) -> bool {
+        if !self.side_slide.running() {
+            return false;
+        }
+        let Some(app) = self.app() else { return false };
+        let (slot, panel) = self.side_slide.frame((self.frame_clock)());
+        app.set_sidebar_slot_now(slot);
+        app.set_sidebar_slide_now(panel);
+        let more = self.side_slide.running();
+        if !more {
+            self.slide_timer.stop();
+        }
+        more
+    }
+
+    /// A sidebar slide waits for its first frame or still moves.
+    pub fn slide_running(&self) -> bool {
+        self.side_slide.running()
+    }
+
+    /// Asks for a frame at once: straight from the OS window when there is one (true), since Slint's
+    /// own request waits for its frame timer (whole timer ticks on Windows).
+    fn ask_frame(app: &AppWindow) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        let os = app
+            .window()
+            .with_winit_window(|w| w.request_redraw())
+            .is_some();
+        if !os {
+            app.window().request_redraw();
+        }
+        os
+    }
+
+    /// Steps the slide where no OS window draws frames (the tests, the scenes). Never in the app: a
+    /// timer that fired before a slow first frame would take the start from it.
+    fn start_slide_timer(&mut self) {
+        if self.slide_timer.running() {
+            return;
+        }
+        let weak = self.me.clone();
+        self.slide_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(SLIDE_STEP_MS),
+            move || {
+                if let Some(rc) = weak.upgrade()
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                    && c.on_frame()
+                    && let Some(app) = c.app()
+                {
+                    Self::ask_frame(&app);
+                }
+            },
+        );
     }
 
     // ---- the timer --------------------------------------------------------------------------------------------

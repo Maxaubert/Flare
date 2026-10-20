@@ -14,6 +14,12 @@ pub fn monotonic_ms() -> u64 {
     start.elapsed().as_millis() as u64
 }
 
+/// The same clock to the fraction of a millisecond (the sidebar's slide reads its curve on it).
+pub fn monotonic_ms_f64() -> f64 {
+    let start = START.get_or_init(Instant::now);
+    start.elapsed().as_secs_f64() * 1000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
