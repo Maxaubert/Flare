@@ -196,7 +196,14 @@ impl HelpCtl {
             .spawn(crate::startup::help_warm_work)
             .map_or_else(
                 |e| log::warn!("could not start the help index worker: {e}"),
-                drop,
+                |h| {
+                    // Tests join every worker, so a late one cannot rebuild the shared index
+                    // under a test that just released it (audit R4).
+                    #[cfg(test)]
+                    tests::WORKERS.lock().unwrap_or_else(|e| e.into_inner()).push(h);
+                    #[cfg(not(test))]
+                    drop(h);
+                },
             );
         self.open = true;
         self.opened_seq = next_open_seq();
@@ -571,6 +578,23 @@ mod tests {
     use crate::ui_harness::Harness;
     use flare_help::panel::{FIRST_PAGE, OUT_MS};
 
+    /// The help index is process-wide, so every test that builds a panel takes turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The index workers the panels started, joined when the test's panel is gone.
+    pub(super) static WORKERS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+        std::sync::Mutex::new(Vec::new());
+
+    fn join_workers() {
+        let all: Vec<_> = WORKERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for h in all {
+            let _ = h.join();
+        }
+    }
+
     struct Fx {
         h: Harness<AppWindow>,
         ctl: Rc<RefCell<HelpCtl>>,
@@ -578,9 +602,20 @@ mod tests {
         copied: Log,
         front: Rc<RefCell<Option<String>>>,
         clock: Rc<Cell<u64>>,
+        // Last field: held until the Drop below has joined the workers.
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Fx {
+        fn drop(&mut self) {
+            join_workers();
+        }
     }
 
     fn fx() -> Fx {
+        let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        // A worker a previous test left must not rebuild what this one is about to check.
+        join_workers();
         let prefs = PrefStore::memory();
         let copied: Log = Rc::default();
         let front: Rc<RefCell<Option<String>>> = Rc::default();
@@ -616,6 +651,7 @@ mod tests {
             copied,
             front,
             clock,
+            _turn: turn,
         }
     }
 
@@ -655,8 +691,8 @@ mod tests {
 
     #[test]
     fn the_index_is_built_on_first_use() {
-        flare_help::search::release_index();
         let f = fx();
+        flare_help::search::release_index();
         // Nothing builds it before somebody asks for help.
         assert_eq!(flare_help::search::index_bytes(), 0);
         f.open();
