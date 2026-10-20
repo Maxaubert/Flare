@@ -175,6 +175,7 @@ pub struct SettingsCtl {
     poll_timer: slint::Timer,
     wall_timer: slint::Timer,
     mark_timer: slint::Timer,
+    verb_q: VerbQueue,
     /// How many full rebuilds ran (the tests count them).
     pub rebuilds: u32,
 }
@@ -537,6 +538,47 @@ fn spawn_worker(name: &str, f: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// One serial worker for the Explorer verb: every status read and every toggle runs here in the
+/// order asked, so the last request wins and the marker follows the registry. The thread starts on
+/// first use and ends when the queue is dropped.
+#[derive(Default)]
+struct VerbQueue {
+    tx: std::sync::Mutex<Option<std::sync::mpsc::Sender<VerbJob>>>,
+}
+
+type VerbJob = Box<dyn FnOnce() + Send>;
+
+impl VerbQueue {
+    fn run(&self, job: impl FnOnce() + Send + 'static) {
+        let mut slot = self
+            .tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<VerbJob>();
+            let started = std::thread::Builder::new()
+                .name("flare-verb".into())
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                });
+            match started {
+                Ok(_) => *slot = Some(tx),
+                Err(e) => {
+                    log::warn!("could not start flare-verb: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(tx) = slot.as_ref()
+            && tx.send(Box::new(job)).is_err()
+        {
+            *slot = None;
+        }
+    }
+}
+
 /// Binds one callback of `SettingsBridge` to a method of the controller.
 macro_rules! on {
     ($app:expr, $rc:expr, $reg:ident, |$c:ident $(, $a:ident : $t:ty)*| $body:expr) => {{
@@ -597,6 +639,7 @@ impl SettingsCtl {
             poll_timer: slint::Timer::default(),
             wall_timer: slint::Timer::default(),
             mark_timer: slint::Timer::default(),
+            verb_q: VerbQueue::default(),
             rebuilds: 0,
             deps,
         };
@@ -1394,7 +1437,7 @@ impl SettingsCtl {
             Effect::SetVerb(on) => {
                 let verb = Arc::clone(&self.deps.verb);
                 let post = Arc::clone(&self.deps.post);
-                spawn_worker("flare-verb", move || {
+                self.verb_q.run(move || {
                     post(UiMsg::Settings(SettingsMsg::Verb(verb.set(on))));
                 });
             }
@@ -2067,7 +2110,7 @@ impl SettingsCtl {
     fn ask_verb(&self) {
         let verb = Arc::clone(&self.deps.verb);
         let post = Arc::clone(&self.deps.post);
-        spawn_worker("flare-verb-status", move || {
+        self.verb_q.run(move || {
             // sync-ok: runs on this worker thread, never on the UI thread
             post(UiMsg::Settings(SettingsMsg::Verb(verb.status())));
         });
@@ -2594,6 +2637,54 @@ mod tests {
         f.b().invoke_row_switch("explorer-verb".into(), true);
         f.settle_workers();
         assert!(f.row("explorer-verb").unwrap().on);
+    }
+
+    /// A verb whose "on" is slow, so an unserialised second request overtakes the first.
+    struct SlowOnVerb {
+        state: Mutex<VerbState>,
+    }
+
+    impl ExplorerVerb for SlowOnVerb {
+        fn status(&self) -> VerbState {
+            *self.state.lock().unwrap()
+        }
+        fn set(&self, on: bool) -> VerbState {
+            if on {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let next = if on { VerbState::On } else { VerbState::Off };
+            *self.state.lock().unwrap() = next;
+            next
+        }
+    }
+
+    #[test]
+    fn two_quick_verb_toggles_run_in_order_so_the_last_request_wins() {
+        let verb = Arc::new(SlowOnVerb {
+            state: Mutex::new(VerbState::Off),
+        });
+        let f = fx_with(1.0, verb.clone());
+        f.page("terminal");
+        f.settle_workers();
+        f.b().invoke_row_switch("explorer-verb".into(), true);
+        f.b().invoke_row_switch("explorer-verb".into(), false);
+        let start = std::time::Instant::now();
+        let mut got = 0;
+        while got < 2 && start.elapsed() < Duration::from_secs(5) {
+            got += f.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        f.pump();
+        assert_eq!(
+            verb.status(),
+            VerbState::Off,
+            "the registry follows the last request"
+        );
+        assert!(
+            !f.row("explorer-verb").unwrap().on,
+            "the marker follows the registry"
+        );
     }
 
     #[test]
