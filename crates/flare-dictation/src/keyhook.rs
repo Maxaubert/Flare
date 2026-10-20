@@ -27,12 +27,12 @@ use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, PeekMessageW,
-    PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
-    PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+    PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
+    MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_TIMER,
 };
 
 /// The lock file's name, in the folder `KeyHook::start` is given (`%TEMP%` in the app).
@@ -157,6 +157,32 @@ pub fn decide(
     (None, false, send_mask)
 }
 
+/// The keys the hook holds down although the system says they are up: a key-up an elevated window or the
+/// UAC prompt swallowed (L34). Each is forgotten and answered with the up the hook never saw.
+pub fn lost_ups(s: &mut HookState, is_down: impl Fn(u16) -> bool) -> Vec<HookEvent> {
+    let gone: Vec<u16> = s.down.iter().copied().filter(|vk| !is_down(*vk)).collect();
+    let mut out = Vec::new();
+    for vk in gone {
+        s.down.remove(&vk);
+        if let Some(code) = code_of_vk(vk) {
+            out.push(HookEvent::Key {
+                down: false,
+                code,
+                front: None,
+            });
+        }
+    }
+    out
+}
+
+/// True when the system reports the virtual key physically down right now.
+fn system_key_down(vk: u16) -> bool {
+    // SAFETY: GetAsyncKeyState takes a plain virtual-key value and keeps nothing.
+    (unsafe { GetAsyncKeyState(vk as i32) } as u16) & 0x8000 != 0
+}
+
+/// How often the hook thread re-checks the keys it holds.
+const SWEEP_MS: u32 = 250;
 /// Open the lock file with no sharing. Held until the returned file drops (or the process ends).
 pub fn take_lock(dir: &Path) -> io::Result<File> {
     let _ = std::fs::create_dir_all(dir);
@@ -470,7 +496,12 @@ fn run(
     // SAFETY: a plain message pump on this thread; a WM_QUIT (0) or an error (-1) ends it.
     unsafe {
         let mut m: MSG = std::mem::zeroed();
-        while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) > 0 {}
+        SetTimer(std::ptr::null_mut(), 0, SWEEP_MS, None);
+        while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) > 0 {
+            if m.message == WM_TIMER {
+                sweep_lost_ups();
+            }
+        }
     }
     // SAFETY: `hook` is the live handle installed above.
     unsafe {
@@ -485,6 +516,14 @@ fn run(
     }
 }
 
+/// Runs on the hook thread's timer: sends the ups the system never delivered.
+fn sweep_lost_ups() {
+    let mut guard = lock_active();
+    let Some(a) = guard.as_mut() else { return };
+    for ev in lost_ups(&mut a.state, system_key_down) {
+        let _ = a.tx.send(ev);
+    }
+}
 fn install_hook() -> HHOOK {
     // SAFETY: `hook_proc` has the HOOKPROC signature; the module handle is this process's own.
     unsafe {
@@ -536,6 +575,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_lost_key_up_is_found_when_the_system_says_the_key_is_up() {
+        // UAC or an elevated window ate the up: the hook still holds F9 down.
+        let mut s = HookState::default();
+        let ks = keys(&[0x78, 0xa2]);
+        decide(0x78, true, &mut s, &ks, false, false);
+        decide(0xa2, true, &mut s, &ks, false, false);
+        // F9 is still physically down, Ctrl was released unseen.
+        let evs = lost_ups(&mut s, |vk| vk == 0x78);
+        assert_eq!(evs.len(), 1);
+        assert!(
+            matches!(&evs[0], HookEvent::Key { down: false, code, .. } if code == "ControlLeft")
+        );
+        // Nothing left to find, and a later real up of F9 is still reported once.
+        assert!(lost_ups(&mut s, |vk| vk == 0x78).is_empty());
+        let (ev, _, _) = decide(0x78, false, &mut s, &ks, false, false);
+        assert!(ev.is_some());
+        // Once it is up for good, "another key" is no longer reported as a chord.
+        let (ev, _, _) = decide(0x41, true, &mut s, &ks, false, false);
+        assert!(ev.is_none());
+    }
+
+    #[test]
+    fn a_key_the_system_still_holds_is_never_released_by_the_sweep() {
+        let mut s = HookState::default();
+        let ks = keys(&[0x78]);
+        decide(0x78, true, &mut s, &ks, false, false);
+        assert!(lost_ups(&mut s, |_| true).is_empty());
+    }
     #[test]
     fn a_binding_down_is_reported_once_and_passes_through() {
         let mut s = HookState::default();
