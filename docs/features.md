@@ -632,6 +632,10 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   `%LOCALAPPDATA%\PrismDictation` when one is missing and matches by size and SHA-256 (checked the same way; O14, Q9).
   The page refreshes when one was linked. An overridden store root (`FLARE_DICTATION_ROOT`) links nothing, so an isolated
   profile never takes the user's models. Held by `the_first_switch_on_reuses_the_neighbours_models_and_never_while_off`.
+  An uninstalled model is tombstoned (`removed/<id>` in the store root) so the next switch-on does not link it back; asking
+  to download it again clears the tombstone. Uninstall waits up to 5 s for a stopping engine to let go of its files and answers
+  `Err(Disk)` if one stays held (audit 2026-10-20, L28, L29). Held by
+  `a_removed_model_is_not_reused_again_until_it_is_asked_for_again` and `remove_waits_for_a_held_file_and_reports_one_that_stays_held`.
 - **The key is Ctrl+Win by default**, hold or toggle, with the solo rules: a chord of modifiers works, and a stored key
   (Right Alt included) is kept (N1 to N3). "Dictate from any app" is on by default once dictation is on, so Ctrl+Win
   also works with another app in front, as in Prism Terminal. Both apps on Ctrl+Win means both widgets open (Q2): turn

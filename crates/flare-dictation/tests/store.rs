@@ -437,6 +437,7 @@ fn answers_network_for_an_id_the_catalog_does_not_hold() {
     assert_eq!(s.model_path("nope"), None);
     s.remove("nope")
         .recv_timeout(Duration::from_secs(5))
+        .unwrap()
         .unwrap();
     s.cancel("nope");
 }
@@ -541,6 +542,7 @@ fn removes_an_installed_model_and_a_download_in_flight() {
     assert_eq!(end(s.download("base", quiet())), Ok(()));
     s.remove("base")
         .recv_timeout(Duration::from_secs(30))
+        .unwrap()
         .unwrap();
     assert_eq!(s.model_path("base"), None);
     assert!(!fx.root.join("models").join("base.bin").exists());
@@ -550,6 +552,7 @@ fn removes_an_installed_model_and_a_download_in_flight() {
     until(|| !seen.lock().unwrap().is_empty());
     s.remove("slow")
         .recv_timeout(Duration::from_secs(30))
+        .unwrap()
         .unwrap();
     assert_eq!(end(p), Err(Failure::Cancelled));
     assert!(fx.models().is_empty());
@@ -588,6 +591,7 @@ fn believes_an_installed_model_for_30_s_a_missing_one_never_and_forgets_on_remov
     assert_eq!(s.model_path("base"), Some(file.clone()));
     s.remove("base")
         .recv_timeout(Duration::from_secs(30))
+        .unwrap()
         .unwrap();
     assert_eq!(s.model_path("base"), None);
 }
@@ -800,6 +804,7 @@ fn the_real_fetch_obeys_cancel_and_remove_at_once_while_the_line_stalls() {
     let t = Instant::now();
     s.remove("base")
         .recv_timeout(Duration::from_secs(10))
+        .unwrap()
         .unwrap();
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     assert_eq!(end(p), Err(Failure::Cancelled));
@@ -850,6 +855,7 @@ fn removes_the_pack_and_the_folder_of_a_pack_the_catalog_has_moved_on_from() {
     assert!(!old.exists());
     s.remove("gpu")
         .recv_timeout(Duration::from_secs(30))
+        .unwrap()
         .unwrap();
     assert_eq!(s.gpu_engine_dir(), None);
     assert_eq!(status(&s)[0].state, ItemState::Absent);
@@ -938,6 +944,7 @@ fn reuse_links_a_matching_prism_model_and_never_writes_there() {
     // Deleting Flare's copy leaves Prism's alone.
     s.remove("base")
         .recv_timeout(Duration::from_secs(30))
+        .unwrap()
         .unwrap();
     assert_eq!(
         fs::read(prism.join("models").join("base.bin")).unwrap(),
@@ -1002,4 +1009,75 @@ fn the_shipped_catalogue_opens_and_the_failure_texts_are_the_parity_line() {
     );
     assert_eq!(Failure::Disk.text(), "It could not be written to disk.");
     assert_eq!(Failure::Unpack.text(), "It could not be unpacked.");
+}
+
+// Audit 2026-10-20 L28: an uninstall is not undone by the next switch-on's reuse of Prism Terminal's copy.
+#[test]
+fn a_removed_model_is_not_reused_again_until_it_is_asked_for_again() {
+    let fx = Fx::new();
+    let prism = other_root_with(&fx, &fx.good);
+    let s = fx.store(vec![fx.model("base", "/good")]);
+    let first = s
+        .reuse_models_from(prism.clone())
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(first, vec!["base".to_string()]);
+    assert_eq!(
+        s.remove("base")
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap(),
+        Ok(())
+    );
+    let again = s
+        .reuse_models_from(prism.clone())
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap();
+    assert!(again.is_empty(), "the tombstone holds across switch-ons");
+    assert_eq!(s.model_path("base"), None);
+    // A fresh store over the same root (the next run) honours it too.
+    let s2 = fx.store(vec![fx.model("base", "/good")]);
+    assert!(s2
+        .reuse_models_from(prism)
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap()
+        .is_empty());
+    // Downloading it again clears the tombstone.
+    assert_eq!(end(s2.download("base", quiet())), Ok(()));
+    assert!(s2.model_path("base").is_some());
+}
+
+// Audit 2026-10-20 L29: a file still held (the killed engine) is waited for, and a failure is told.
+#[cfg(windows)]
+#[test]
+fn remove_waits_for_a_held_file_and_reports_one_that_stays_held() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let fx = Fx::new();
+    let s = fx.store(vec![fx.model("base", "/good")]);
+    assert_eq!(end(s.download("base", quiet())), Ok(()));
+    let file = fx.root.join("models").join("base.bin");
+    let hold = || {
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ only: no delete while open
+            .open(&file)
+            .unwrap()
+    };
+    // Let go after a moment: remove waits and succeeds.
+    let held = hold();
+    let rx = s.remove("base");
+    thread::sleep(Duration::from_millis(400));
+    drop(held);
+    assert_eq!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), Ok(()));
+    assert!(!file.exists());
+    // Held for good: the answer is an error, not silence.
+    assert_eq!(end(s.download("base", quiet())), Ok(()));
+    s.set_remove_wait(Duration::from_millis(300));
+    let held = hold();
+    assert_eq!(
+        s.remove("base")
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap(),
+        Err(Failure::Disk)
+    );
+    drop(held);
 }

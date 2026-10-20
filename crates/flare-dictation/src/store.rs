@@ -51,6 +51,9 @@ pub const INSTALLED_MEMO_MS: u64 = 30_000;
 /// "At most about 10 times a second": a 3 GB model is about 50 000 chunks.
 const PROGRESS_EVERY_MS: u64 = 100;
 
+/// How long an uninstall waits for a stopping engine to let go of its files.
+const REMOVE_WAIT_MS: u64 = 5_000;
+
 const SERVER_EXE: &str = "whisper-server.exe";
 
 /// Why a download or install did not finish. `text()` is what the model row says (parity line 901).
@@ -210,6 +213,8 @@ struct Inner {
     unzip: Unzip,
     now: Clock,
     state: Mutex<State>,
+    /// How long `remove` keeps trying while something still holds the files (ms).
+    remove_wait_ms: AtomicU64,
 }
 
 /// The store. Cheap to clone: every clone is the same store.
@@ -254,6 +259,18 @@ fn gone(path: &Path) -> io::Result<()> {
         }
     }
     last
+}
+
+/// Like `gone`, but keeps trying for `wait`: a killed engine can still hold its model for a moment.
+fn gone_within(path: &Path, wait: Duration) -> io::Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        match gone(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if start.elapsed() >= wait => return Err(e),
+            Err(_) => thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 
 /// Whole or not at all: write beside, then rename over.
@@ -366,6 +383,7 @@ impl Store {
                 unzip,
                 now,
                 state: Mutex::new(State::default()),
+                remove_wait_ms: AtomicU64::new(REMOVE_WAIT_MS),
             }),
         })
     }
@@ -400,15 +418,24 @@ impl Store {
     }
 
     /// Delete the model (or the pack and every folder of an older one), stopping a download first.
-    pub fn remove(&self, id: &str) -> Receiver<()> {
+    /// Waits for a stopping engine to let go; `Err(Disk)` if a file is still held after that, so the
+    /// row can say so instead of showing a model that is still there as removed. A removed model is
+    /// tombstoned: `reuse_models_from` does not bring it back from Prism Terminal.
+    pub fn remove(&self, id: &str) -> Receiver<Result<(), Failure>> {
         let (tx, rx) = channel();
         let inner = self.inner.clone();
         let id = id.to_string();
         thread::spawn(move || {
-            inner.remove_now(&id);
-            let _ = tx.send(());
+            let _ = tx.send(inner.remove_now(&id));
         });
         rx
+    }
+
+    /// How long `remove` waits for held files (tests shorten it).
+    pub fn set_remove_wait(&self, wait: Duration) {
+        self.inner
+            .remove_wait_ms
+            .store(wait.as_millis() as u64, Ordering::SeqCst);
     }
 
     /// The installed model's file, or `None`. A "yes" is believed for 30 s, a "no" never.
@@ -582,23 +609,47 @@ impl Inner {
         out
     }
 
-    fn remove_now(&self, id: &str) {
-        let Some(e) = self.find(id) else { return };
+    fn tombstone(&self, e: &Item) -> PathBuf {
+        self.root.join("removed").join(&e.id)
+    }
+
+    fn remove_now(&self, id: &str) -> Result<(), Failure> {
+        let Some(e) = self.find(id) else {
+            return Ok(());
+        };
+        if e.kind == Kind::Model {
+            let t = self.tombstone(e);
+            if let Some(dir) = t.parent() {
+                let _ = fs::create_dir_all(dir);
+            }
+            if let Err(err) = fs::write(&t, b"removed") {
+                log::warn!("dictation store: tombstone {}: {err}", e.id);
+            }
+        }
         let flight = lock(&self.state).flights.get(id).cloned();
         if let Some(f) = flight {
             f.cancelled.store(true, Ordering::SeqCst);
             f.wait_done();
         }
         self.forget(id);
-        let _ = gone(&self.part_path(e));
-        let _ = gone(&self.final_path(e));
+        let wait = Duration::from_millis(self.remove_wait_ms.load(Ordering::SeqCst));
+        let mut result = Ok(());
+        let mut note = |r: io::Result<()>| {
+            if let Err(err) = r {
+                log::warn!("dictation store: remove {}: {err}", e.id);
+                result = Err(Failure::Disk);
+            }
+        };
+        note(gone_within(&self.part_path(e), wait));
+        note(gone_within(&self.final_path(e), wait));
         if e.kind == Kind::GpuPack {
             lock(&self.state).engine_dir = None;
-            let _ = gone(&self.pack_dir(e));
+            note(gone_within(&self.pack_dir(e), wait));
             self.sweep_packs(e, None);
         }
         // Again once the files are gone: an ask made while they went may have found them still there.
         self.forget(id);
+        result
     }
 
     fn start(this: &Arc<Self>, id: String, on: Listener, tx: Sender<Result<(), Failure>>) {
@@ -607,6 +658,8 @@ impl Inner {
             return;
         };
         this.forget(&id);
+        // Asking for it again is the owner changing their mind: it may be reused again.
+        let _ = fs::remove_file(this.tombstone(&e));
         let mut st = lock(&this.state);
         if let Some(running) = st.flights.get(&id).cloned() {
             if running.cancelled.load(Ordering::SeqCst) {
@@ -815,7 +868,10 @@ impl Inner {
     fn reuse_now(&self, other_root: &Path) -> Vec<String> {
         let mut reused = Vec::new();
         for e in self.catalog.iter().filter(|e| e.kind == Kind::Model) {
-            if lock(&self.state).flights.contains_key(&e.id) || self.installed_sync(e) {
+            if lock(&self.state).flights.contains_key(&e.id)
+                || self.installed_sync(e)
+                || self.tombstone(e).exists()
+            {
                 continue;
             }
             let src = other_root.join("models").join(format!("{}.bin", e.id));
