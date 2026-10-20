@@ -1552,6 +1552,11 @@ pub fn stop_all() {
     ARMED.with(|a| a.set(false));
 }
 
+/// A row clicked in the widget (M8 Task 26): it reaches the service on the next turn of the event loop.
+pub fn widget_pick(id: String) {
+    make_post()(DictMsg::Pick(id));
+}
+
 /// The model store, while dictation is on (the Dictation page reads it).
 pub fn store() -> Option<Store> {
     #[cfg(test)]
