@@ -48,7 +48,7 @@ use flare_dictation::keyfeed::HookEvent;
 use flare_dictation::keyhook::KeyHook;
 use flare_dictation::link::{self, LinkClient, LinkService};
 use flare_dictation::media::{MediaPause, Token};
-use flare_dictation::mic::{self, Capture, CaptureFailure, DoneFn, FrameFn, MicSource};
+use flare_dictation::mic::{self, Capture, CaptureFailure, DoneFn, FrameFn, LostFn, MicSource};
 use flare_dictation::prefs::{self, DictPrefs, read as read_prefs};
 use flare_dictation::route::{RemoteCopy, SendDecision, SendTab, merge_tabs};
 use flare_dictation::service::{
@@ -164,6 +164,8 @@ pub enum DictMsg {
     },
     /// Frames are waiting in the open microphone's accumulator.
     Frames { epoch: u64 },
+    /// The open microphone's device went away mid-recording (audit L37).
+    MicLost { epoch: u64, why: CaptureFailure },
     /// The engine answered the pass `id`.
     Heard { id: u64, result: TranscribeResult },
     /// A line of the keyboard hook.
@@ -316,7 +318,7 @@ pub trait DictHost {
 /// holds threads, never shares them).
 pub trait Parts {
     /// Opens the microphone off the UI thread; `done` runs on a worker.
-    fn open_mic(&mut self, device: Option<String>, on_frame: FrameFn, done: DoneFn);
+    fn open_mic(&mut self, device: Option<String>, on_frame: FrameFn, done: DoneFn, lost: LostFn);
     fn transcribe(&mut self, req: TranscribeRequest) -> Receiver<TranscribeResult>;
     fn warm(&mut self, model: &str, language: &str) -> Receiver<TranscribeResult>;
     /// Links in the models the neighbour apps already have (O14, Q9). Asked once per switch-on; the real parts run it on a worker.
@@ -534,6 +536,8 @@ struct MicState {
     wanted: bool,
     cap: Option<Box<dyn Capture>>,
     acc: Option<Arc<Mutex<Acc>>>,
+    /// The device went away before the open's answer was taken in: applied the moment it is.
+    lost_early: Option<CaptureFailure>,
 }
 
 /// A pause asked for and not answered yet.
@@ -924,6 +928,7 @@ impl Dict {
             DictMsg::Prefs => self.apply_prefs(),
             DictMsg::MicDone { epoch, result } => self.on_mic_done(epoch, result),
             DictMsg::Frames { epoch } => self.on_frames(epoch),
+            DictMsg::MicLost { epoch, why } => self.on_mic_lost(epoch, why),
             DictMsg::Heard { id, result } => {
                 let fx = self.ctl_on(Event::Heard { id, result });
                 self.run(fx);
@@ -1101,8 +1106,11 @@ impl Dict {
         });
         let post = Arc::clone(&self.post);
         let done: DoneFn = Box::new(move |result| post(DictMsg::MicDone { epoch, result }));
+        let post_lost = Arc::clone(&self.post);
+        let lost: LostFn = Box::new(move |why| post_lost(DictMsg::MicLost { epoch, why }));
+        self.mic.lost_early = None;
         if let Some(p) = self.parts.as_mut() {
-            p.open_mic(device, on_frame, done);
+            p.open_mic(device, on_frame, done, lost);
         }
     }
 
@@ -1118,6 +1126,10 @@ impl Dict {
         match result {
             Ok(cap) => {
                 self.mic.cap = Some(cap);
+                if let Some(why) = self.mic.lost_early.take() {
+                    self.lose_mic(why);
+                    return;
+                }
                 let fx = self.ctl_on(Event::MicOpened);
                 self.run(fx);
             }
@@ -1128,6 +1140,24 @@ impl Dict {
                 self.run(fx);
             }
         }
+    }
+
+    /// The device went away while recording: the capture is let go and the recording ends with the failure.
+    fn on_mic_lost(&mut self, epoch: u64, why: CaptureFailure) {
+        if epoch != self.mic.epoch || !self.mic.wanted {
+            return;
+        }
+        if self.mic.cap.is_none() {
+            self.mic.lost_early = Some(why);
+            return;
+        }
+        self.lose_mic(why);
+    }
+
+    fn lose_mic(&mut self, why: CaptureFailure) {
+        self.close_mic();
+        let fx = self.ctl_on(Event::MicFailed(why));
+        self.run(fx);
     }
 
     /// Takes in what the capture thread has handed over.
@@ -2841,8 +2871,8 @@ impl RealParts {
 }
 
 impl Parts for RealParts {
-    fn open_mic(&mut self, device: Option<String>, on_frame: FrameFn, done: DoneFn) {
-        mic::start_capture_async(self.cfg.mic.clone(), device, on_frame, done);
+    fn open_mic(&mut self, device: Option<String>, on_frame: FrameFn, done: DoneFn, lost: LostFn) {
+        mic::start_capture_async_watched(self.cfg.mic.clone(), device, on_frame, done, Some(lost));
     }
 
     fn transcribe(&mut self, req: TranscribeRequest) -> Receiver<TranscribeResult> {
@@ -3134,6 +3164,7 @@ mod tests {
     struct Shared {
         calls: RefCell<Vec<String>>,
         done: RefCell<Option<DoneFn>>,
+        lost: RefCell<Option<LostFn>>,
         on_frame: RefCell<Option<FrameFn>>,
         transcribes: RefCell<Vec<(Vec<u8>, bool)>>,
         hook_tx: RefCell<Option<Sender<HookEvent>>>,
@@ -3157,8 +3188,9 @@ mod tests {
     }
 
     impl Parts for FakeParts {
-        fn open_mic(&mut self, _d: Option<String>, on_frame: FrameFn, done: DoneFn) {
+        fn open_mic(&mut self, _d: Option<String>, on_frame: FrameFn, done: DoneFn, lost: LostFn) {
             self.note("open_mic");
+            *self.s.lost.borrow_mut() = Some(lost);
             *self.s.on_frame.borrow_mut() = Some(on_frame);
             *self.s.done.borrow_mut() = Some(done);
         }
@@ -3509,6 +3541,54 @@ mod tests {
         assert!(!r.d.view.active);
     }
 
+    #[test]
+    fn a_microphone_lost_mid_recording_ends_it_with_the_failure_and_pastes_nothing() {
+        let mut r = Rig::on_with_model(false);
+        r.at(1000.0);
+        r.key("AltRight", false);
+        r.at(1210.0);
+        r.d.on_timer(TimerKey::WindowKey);
+        let done = r.s.done.borrow_mut().take().unwrap();
+        done(Ok(Box::new(FakeCapture)));
+        r.pump();
+        let mut on_frame = r.s.on_frame.borrow_mut().take().unwrap();
+        for _ in 0..60 {
+            on_frame(&[0.1f32; 160]);
+        }
+        r.pump();
+        // The device is unplugged while the key is still held.
+        let lost = r.s.lost.borrow_mut().take().expect("open_mic gave a lost");
+        lost(CaptureFailure::NoDevice);
+        r.pump();
+        assert_eq!(r.d.view.message.as_deref(), Some("No microphone found"));
+        assert!(!r.d.view.active, "the recording ended");
+        assert!(r.d.mic.cap.is_none(), "the capture was let go");
+        assert!(r.host.pastes.borrow().is_empty());
+        r.at(2400.0);
+        r.key("AltRight", true);
+        r.pump();
+        assert_eq!(r.count("transcribe_final"), 0, "nothing is transcribed");
+    }
+
+    #[test]
+    fn a_loss_before_the_open_was_taken_in_still_ends_the_recording() {
+        let mut r = Rig::on_with_model(false);
+        r.at(1000.0);
+        r.key("AltRight", false);
+        r.at(1210.0);
+        r.d.on_timer(TimerKey::WindowKey);
+        let done = r.s.done.borrow_mut().take().unwrap();
+        let lost = r.s.lost.borrow_mut().take().unwrap();
+        lost(CaptureFailure::Failed);
+        r.pump();
+        done(Ok(Box::new(FakeCapture)));
+        r.pump();
+        assert_eq!(
+            r.d.view.message.as_deref(),
+            Some("The microphone could not be opened")
+        );
+        assert!(r.d.mic.cap.is_none());
+    }
     #[test]
     fn a_tab_that_closes_while_the_words_are_found_gets_nothing() {
         let mut r = Rig::on_with_model(false);

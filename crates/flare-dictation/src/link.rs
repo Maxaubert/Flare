@@ -83,13 +83,26 @@ const MAC_HEX: usize = 64;
 // The key and the pipe's name
 // ---------------------------------------------------------------------------------------------
 
-/// The user's link key: read, or made once (32 random bytes, hex) with the file created exclusively, so two
-/// copies starting together agree on one. `None` when it can be neither read nor made: then there is no link.
+/// The user's link key: read, or made once (32 random bytes, hex). It is written whole to a temporary file and
+/// put in place atomically, so a reader never sees a half-written key and two copies starting together agree
+/// on one (the link that loses the race reads the winner's). A file that is there but is not a key (empty or
+/// cut short by a crash) counts as missing and is replaced (audit L38). `None` when it can be neither read nor
+/// made: then there is no link.
 pub fn link_key(file: &Path) -> Option<[u8; 32]> {
     fn read(file: &Path) -> Option<[u8; 32]> {
         let text = std::fs::read_to_string(file).ok()?;
         let bytes = from_hex(text.trim(), 64)?;
         bytes.try_into().ok()
+    }
+    fn settle(file: &Path) -> Option<[u8; 32]> {
+        // The other copy may be mid-way: give it a moment.
+        for _ in 0..20 {
+            if let Some(k) = read(file) {
+                return Some(k);
+            }
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: link worker, a first-run race with another copy
+        }
+        None
     }
     if let Some(k) = read(file) {
         return Some(k);
@@ -98,28 +111,31 @@ pub fn link_key(file: &Path) -> Option<[u8; 32]> {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut fresh = [0u8; 32];
-    if random_bytes(&mut fresh) {
-        let made = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(file);
-        if let Ok(mut f) = made {
-            use std::io::Write;
-            // A copy that reads between create and write sees an empty file and retries below; a failed
-            // write is read back as nothing and the link stays off.
-            let _ = f.write_all(to_hex(&fresh).as_bytes());
+    if !random_bytes(&mut fresh) {
+        return settle(file);
+    }
+    let mut salt = [0u8; 4];
+    let _ = random_bytes(&mut salt);
+    let mut tmp_name = file.as_os_str().to_os_string();
+    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), to_hex(&salt)));
+    let tmp = std::path::PathBuf::from(tmp_name);
+    if std::fs::write(&tmp, to_hex(&fresh)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return settle(file);
+    }
+    // A file that is not there yet: link the finished one in (fails if another copy got there first).
+    let linked = std::fs::hard_link(&tmp, file).is_ok();
+    if !linked {
+        // Something is there. A good key wins; a bad one waits a moment (an older build writes in place),
+        // then is replaced in one atomic step.
+        let found = settle(file);
+        if found.is_none() {
+            let _ = std::fs::rename(&tmp, file);
         }
     }
-    // The other copy may be mid-write: give it a moment.
-    for _ in 0..20 {
-        if let Some(k) = read(file) {
-            return Some(k);
-        }
-        std::thread::sleep(Duration::from_millis(10)); // sync-ok: link worker, a first-run race with another copy
-    }
-    None
+    let _ = std::fs::remove_file(&tmp);
+    settle(file)
 }
-
 /// The pipe's name: the key's hash, never the key.
 pub fn link_pipe(key: &[u8; 32]) -> String {
     let hash = Sha256::digest(key);
@@ -1460,6 +1476,29 @@ mod tests {
             out,
         });
         (peer, lines)
+    }
+
+    #[test]
+    fn an_empty_or_garbled_key_file_is_replaced_not_kept_forever() {
+        for junk in ["", "   \n", "not hex at all", "abcd"] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("link.key");
+            std::fs::write(&file, junk).unwrap();
+            let key = link_key(&file).expect("a crash-left file must not disable the link");
+            assert_eq!(link_key(&file), Some(key), "the replacement is stable");
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert_eq!(text.trim().len(), 64);
+        }
+    }
+
+    #[test]
+    fn a_good_key_file_is_left_alone_and_a_missing_one_is_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sub").join("link.key");
+        let key = link_key(&file).expect("made");
+        let before = std::fs::read(&file).unwrap();
+        assert_eq!(link_key(&file), Some(key));
+        assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 
     #[test]
