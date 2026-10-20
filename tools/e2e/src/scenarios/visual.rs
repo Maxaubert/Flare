@@ -702,7 +702,9 @@ fn general_cell(
     // The tab menu: a right click on the first tab.
     let tabs = Tabs::read(&mut app);
     if let Some((x, y)) = tabs.as_ref().and_then(|t| t.centre(0)) {
-        let _ = app.session.right_click(x, y);
+        // A pointer is on a whole device pixel. The tab's centre can be a half pixel (17.5), which
+        // the menu's device-pixel snap rounds to the row below; Prism Terminal's click truncates.
+        let _ = app.session.right_click(x.floor(), y.floor());
         let open = ctx.until("the tab menu", 3_000, &mut || {
             probe(&mut app, "app.state", Value::Null)["menu"]["open"] == json!(true)
         });
