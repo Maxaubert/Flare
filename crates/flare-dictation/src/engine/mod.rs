@@ -325,12 +325,10 @@ impl Engine {
         let parakeet = (inner.cfg.runner_for)(&req.model_id) == Runner::Parakeet;
         let (warm_now, warm_failed) = {
             let st = lock(&inner.st);
-            let warm_now = if parakeet {
-                st.parakeet_warm.as_deref() == Some(req.model_id.as_str())
-            } else {
-                st.current.as_ref().is_some_and(|s| s.warm() && !s.exited())
-            };
-            (warm_now, st.warm_failed)
+            (
+                st.is_warm_for(parakeet, &req.model_id, &req.language),
+                st.warm_failed,
+            )
         };
         if !req.final_ && !warm_failed && !warm_now {
             drop(self.warm(&req.model_id, &req.language));
@@ -363,23 +361,11 @@ impl Engine {
     pub fn warm(&self, model_id: &str, language: &str) -> Receiver<TranscribeResult> {
         let inner = &self.inner;
         let (tx, rx) = channel();
-        let lang = if language.is_empty() {
-            "auto"
-        } else {
-            language
-        };
         let parakeet = (inner.cfg.runner_for)(model_id) == Runner::Parakeet;
         let mut st = lock(&inner.st);
-        if parakeet {
-            if st.parakeet_warm.as_deref() == Some(model_id) {
-                let _ = tx.send(TranscribeResult::Ok(String::new()));
-                return rx;
-            }
-        } else if let Some(cur) = &st.current {
-            if cur.warm() && !cur.exited() && cur.model_id == model_id && cur.language == lang {
-                let _ = tx.send(TranscribeResult::Ok(String::new()));
-                return rx;
-            }
+        if st.is_warm_for(parakeet, model_id, language) {
+            let _ = tx.send(TranscribeResult::Ok(String::new()));
+            return rx;
         }
         if st.warming {
             let _ = tx.send(TranscribeResult::no(Reason::Warming));
@@ -431,8 +417,35 @@ impl Drop for Engine {
         lock(&self.inner.st).shutdown = true;
         self.inner.stop();
         self.inner.cv.notify_all();
+        // The join runs off this thread: Drop is called on the UI thread when dictation is switched
+        // off, and the worker can be inside a launch or a pass for seconds (audit 2026-10-20, L33).
+        // Everything it holds was killed by the stop above.
         if let Some(w) = self.worker.take() {
-            let _ = w.join();
+            let _ = std::thread::Builder::new()
+                .name("flare-dictation-engine-join".to_string())
+                .spawn(move || {
+                    let _ = w.join();
+                });
+        }
+    }
+}
+
+impl State {
+    /// True when a pass for this model and language needs no cold start: the Parakeet model a pass last
+    /// answered for, or a live Whisper server warm for exactly this model and language. The one test
+    /// both `transcribe` (partials) and `warm` use (audit 2026-10-20, L30).
+    fn is_warm_for(&self, parakeet: bool, model_id: &str, language: &str) -> bool {
+        let lang = if language.is_empty() {
+            "auto"
+        } else {
+            language
+        };
+        if parakeet {
+            self.parakeet_warm.as_deref() == Some(model_id)
+        } else {
+            self.current.as_ref().is_some_and(|s| {
+                s.warm() && !s.exited() && s.model_id == model_id && s.language == lang
+            })
         }
     }
 }

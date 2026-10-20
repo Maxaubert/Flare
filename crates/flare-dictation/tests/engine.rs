@@ -943,3 +943,56 @@ fn every_server_is_in_the_job() {
     assert!(ask(&w, base(true)).is_ok());
     assert!(w.job.contains(w.pid(0)), "the server is not in the job");
 }
+
+// ---------------------------------------------------------------- audit 2026-10-20 (A18)
+
+// L30: a partial is served inline only by a server warm for ITS model and language; any other partial
+// is answered Warming at once and warms the right server, never a cold start on the caller's pass.
+#[test]
+fn a_partial_for_another_model_or_language_is_answered_warming_not_run_inline() {
+    let w = world(Knobs::default());
+    assert!(warm(&w).is_ok());
+    assert_eq!(w.launched_count(), 1);
+    assert_eq!(ask(&w, req("small", "auto", false)), no(Reason::Warming));
+    assert_eq!(ask(&w, req("base", "en", false)), no(Reason::Warming));
+    // The right partial still goes straight through the warm server.
+    assert!(ask(&w, base(false)).is_ok());
+}
+
+// L33: dropping the engine (dictation switched off, on the UI thread) never waits for the worker.
+#[test]
+fn dropping_the_engine_does_not_wait_for_a_worker_stuck_in_a_launch() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().expect("a temp folder");
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let dir_path = dir.path().to_path_buf();
+    let mut cfg = EngineConfig::new(
+        Box::new(move || Some(dir_path.clone())),
+        Box::new(|| None),
+        Box::new(model_path),
+    );
+    cfg.runner_for = Box::new(|_| Runner::Whisper);
+    cfg.threads = 6;
+    let (e, r) = (Arc::clone(&entered), Arc::clone(&release));
+    cfg.command = Some(Box::new(move |_exe: &Path, args: &[String]| {
+        e.store(true, Ordering::SeqCst);
+        let end = Instant::now() + Duration::from_secs(4);
+        while !r.load(Ordering::SeqCst) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (PathBuf::from(FAKE), args.to_vec())
+    }));
+    let job = Arc::new(Job::new().expect("a job object"));
+    let engine = Engine::start(cfg, job);
+    let _rx = engine.transcribe(base(true));
+    until(|| entered.load(Ordering::SeqCst), 6000);
+    let began = Instant::now();
+    drop(engine);
+    let took = began.elapsed();
+    release.store(true, Ordering::SeqCst);
+    assert!(
+        took < Duration::from_millis(1000),
+        "dropping the engine waited {took:?} for the worker"
+    );
+}
