@@ -27,7 +27,7 @@ pub fn has_control(p: &str) -> bool {
 }
 
 /// True for a path that may leave this machine: a UNC path (`\\host\share`, also with forward
-/// slashes) and every device form (`\\?\`, `\\.\`) except one naming a local drive (`\\?\C:\`).
+/// slashes) and every device form (`\\?\`, `\\.\`) except one naming a local drive (`\\?\C:\`) without a `.` or `..` segment.
 /// `\\?\UNC\`, `\\.\UNC\` and `\\?\GLOBALROOT\Device\Mup\` all reach SMB, so they count.
 pub fn is_unc(p: &str) -> bool {
     let n = p.replace('/', "\\");
@@ -37,7 +37,10 @@ pub fn is_unc(p: &str) -> bool {
     match n.get(..4) {
         Some("\\\\?\\") | Some("\\\\.\\") => {
             let b = &n.as_bytes()[4..];
-            !(b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
+            let local = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+            // Windows folds `.` and `..` in a `\\.\` path, so `\\.\C:\..\UNC\h\s` drops the drive and reaches SMB.
+            let dotted = n[4..].split('\\').any(|s| s == "." || s == "..");
+            !local || dotted
         }
         _ => true,
     }
@@ -271,6 +274,11 @@ mod tests {
         assert!(!is_unc("C:\\work"));
         assert!(!is_unc("\\\\?\\C:\\work"));
         assert!(!is_unc("\\\\.\\D:\\work"));
+        // A device form with a dot segment is normalised by Windows and can drop the drive into SMB.
+        assert!(is_unc("\\\\.\\C:\\..\\UNC\\h\\s"));
+        assert!(is_unc("//./C:/../UNC/h/s"));
+        assert!(is_unc("\\\\.\\C:\\a\\.\\b"));
+        assert!(is_unc("\\\\?\\C:\\..\\x"));
         assert_eq!(folder_after_report("C:\\work", "D:\\other"), "D:\\other");
     }
 

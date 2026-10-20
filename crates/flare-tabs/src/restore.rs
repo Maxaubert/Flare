@@ -595,13 +595,15 @@ mod tests {
                 st("\\/evil/share", None),
                 st("/\\evil\\share", None),
                 st("\\\\?\\UNC\\evil\\share", None),
+                st("\\\\.\\C:\\..\\UNC\\h\\s", None),
+                st("//./C:/../UNC/h/s", None),
                 st("C:\\c1\u{85}dir", None),
                 st("C:\\ok", None),
             ],
             active: 0,
         };
         let r = plan_restore(&saved, &all, &no_sessions);
-        assert_eq!(r.tabs, vec![rt("C:\\ok", None, Some(7))]);
+        assert_eq!(r.tabs, vec![rt("C:\\ok", None, Some(9))]);
         // A device path naming a local drive is a local folder.
         assert!(!is_unsafe_restore_folder("\\\\?\\C:\\work"));
         // The parallel resolver never even stats them (a stat over SMB leaks the hash).
