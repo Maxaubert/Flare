@@ -343,7 +343,7 @@ pub trait Parts {
         timeout: Duration,
     ) -> Receiver<SendDecision>;
     fn link_paste(&mut self, pid: u32, text: &str) -> bool;
-    /// The model store, for the Dictation page.
+    /// The model store, for the Dictation page. It is the process's one store, so it outlives these parts.
     fn store(&self) -> Option<Store> {
         None
     }
@@ -1605,13 +1605,16 @@ pub fn widget_pick(id: String) {
     make_post()(DictMsg::Pick(id));
 }
 
-/// The model store, while dictation is on (the Dictation page reads it).
+/// The model store: the process's one store once dictation has been on, kept across switch-off so a download still
+/// running can be cancelled (F1). Before the first switch-on there is none.
 pub fn store() -> Option<Store> {
     #[cfg(test)]
     if let Some(s) = TEST_STORE.with(|s| s.borrow().clone()) {
         return Some(s);
     }
-    with_dict(|d| d.parts.as_ref().and_then(|p| p.store())).flatten()
+    with_dict(|d| d.parts.as_ref().and_then(|p| p.store()))
+        .flatten()
+        .or_else(|| APP_STORE.get().cloned())
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2690,9 +2693,18 @@ fn store_fetch() -> Box<dyn flare_dictation::store::Fetch> {
     Box::new(flare_dictation::fetch_ureq::UreqFetch::new())
 }
 
+/// The one model store of the process, made on the first switch-on and never dropped: a download keeps running
+/// across a switch-off, and its Cancel must find it after the next switch-on (F1).
+static APP_STORE: std::sync::OnceLock<Store> = std::sync::OnceLock::new();
+
+/// The store in `cell`, made by `make` the first time only.
+fn shared_store(cell: &std::sync::OnceLock<Store>, make: impl FnOnce() -> Store) -> Store {
+    cell.get_or_init(make).clone()
+}
+
 impl RealParts {
     fn new(cfg: &RealCfg) -> Self {
-        let store = Store::open(cfg.root.clone(), store_fetch());
+        let store = shared_store(&APP_STORE, || Store::open(cfg.root.clone(), store_fetch()));
         let job = Job::new().unwrap_or_else(|e| {
             log::warn!("dictation: no job object ({e}); an engine will not be started");
             Job::unusable_for_tests()
@@ -4099,6 +4111,20 @@ mod page_tests {
         assert_eq!(p.calls.load(Ordering::SeqCst), 0);
     }
 
+    #[test]
+    fn one_store_serves_every_switch_on_so_a_download_can_still_be_cancelled() {
+        // The store is made once for the process: a second switch-on gets the same one, so the Cancel of a download
+        // that began before a switch-off reaches that download (F1).
+        let cell = std::sync::OnceLock::new();
+        let (first, _dir, _calls) = fixture::fake_store(["stall", "stall", "stall"]);
+        let a = shared_store(&cell, || first);
+        let b = shared_store(&cell, || panic!("a second store was made"));
+        let rx = a.download("base", Box::new(|_| {}));
+        std::thread::sleep(Duration::from_millis(50));
+        b.cancel("base");
+        let end = rx.recv_timeout(Duration::from_secs(5)).expect("cancelled");
+        assert_eq!(end, Err(flare_dictation::store::Failure::Cancelled));
+    }
     #[test]
     fn the_switches_and_the_choices_write_their_own_keys() {
         let p = page(["a", "b", "c"]);
