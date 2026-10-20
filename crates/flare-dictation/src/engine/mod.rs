@@ -167,6 +167,9 @@ pub struct EngineConfig {
     /// What to actually launch for an engine exe and its argv; the default is the exe itself.
     #[allow(clippy::type_complexity)]
     pub command: Option<Box<dyn Fn(&Path, &[String]) -> (PathBuf, Vec<String>) + Send + Sync>>,
+    /// Which port the server is told to listen on; None asks Windows for a free one. A test seam.
+    #[allow(clippy::type_complexity)]
+    pub port: Option<Box<dyn Fn() -> std::io::Result<u16> + Send + Sync>>,
 }
 
 impl EngineConfig {
@@ -188,6 +191,7 @@ impl EngineConfig {
             parakeet_host: None,
             threads: parakeet_threads(),
             command: None,
+            port: None,
         }
     }
 }
@@ -951,7 +955,11 @@ impl Inner {
         language: &str,
         mine: u64,
     ) -> Result<Arc<Server>, String> {
-        let port = free_port().map_err(|e| format!("no free port: {e}"))?;
+        let port = match &self.cfg.port {
+            Some(pick) => pick(),
+            None => free_port(),
+        }
+        .map_err(|e| format!("no free port: {e}"))?;
         if self.stopped_since(mine) {
             return Err("stopped".to_string());
         }
@@ -1005,7 +1013,15 @@ impl Inner {
                 if server.exited() {
                     return Err(server.why_it_died());
                 }
-                return Ok(server);
+                // And that it was OUR server (audit L27): a program that took the port in the gap after
+                // free_port() would otherwise be handed the user's audio. Trusted only when every
+                // listener on the port is the server's own process; until then it is not ready.
+                if flare_win::tcp_owner::only_owner(
+                    &flare_win::tcp_owner::listener_pids(port),
+                    server.pid,
+                ) {
+                    return Ok(server);
+                }
             }
             if self.stopped_since(mine) {
                 self.kill_server(&server);

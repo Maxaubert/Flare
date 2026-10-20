@@ -1612,6 +1612,7 @@ dependencies = [
 name = "flare-agent"
 version = "0.1.0"
 dependencies = [
+ "flare-win",
  "log",
  "regex",
  "serde",

@@ -25,6 +25,7 @@ pub mod single_instance;
 pub mod sysmenu;
 pub mod taskbar;
 pub mod taskbar_flash;
+pub mod tcp_owner;
 pub mod window_edge;
 pub mod window_park;
 pub mod window_state;

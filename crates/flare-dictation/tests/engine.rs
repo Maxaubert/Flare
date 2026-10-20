@@ -485,6 +485,56 @@ fn falls_back_the_same_way_when_it_never_becomes_ready_and_the_stuck_one_is_kill
 }
 
 #[test]
+fn a_stranger_answering_on_the_engines_port_is_never_trusted() {
+    // A program that grabbed the port the engine picked answers GET / with 200. The real server (here
+    // the stand-in that never listens) is not the owner, so the engine must not take that for ready.
+    let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let port = squatter.local_addr().expect("addr").port();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = Arc::clone(&stop);
+    let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let posts2 = Arc::clone(&posts);
+    squatter.set_nonblocking(true).expect("nonblocking");
+    let t = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((mut s, _)) = squatter.accept() {
+                let mut b = [0u8; 512];
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_millis(200)));
+                let n = s.read(&mut b).unwrap_or(0);
+                if b[..n].starts_with(b"POST") {
+                    posts2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            } else {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    });
+    let w = world_with(
+        Knobs {
+            cpu_flags: flags(&["--fake-never-ready"]),
+            ..Knobs::default()
+        },
+        |c| {
+            c.start_timeout = Duration::from_millis(1500);
+            c.port = Some(Box::new(move || Ok(port)));
+        },
+    );
+    let r = ask(&w, base(true));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    t.join().expect("squatter");
+    assert_eq!(
+        posts.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "audio went to a stranger"
+    );
+    assert!(!r.is_ok(), "{r:?}");
+}
+#[test]
 fn is_a_failure_not_a_loop_when_there_is_no_cpu_engine_to_fall_back_to() {
     let w = world(Knobs {
         cpu: false,

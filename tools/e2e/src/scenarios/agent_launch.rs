@@ -211,7 +211,8 @@ fn question_screens() -> Result<Vec<String>, String> {
     Ok(screens.iter().map(|lines| lines.join("\r\n")).collect())
 }
 
-/// The question program: draws the screen it is on at once, `n` moves to the next screen, any other
+/// The question program: titles itself as Claude Code (only a Claude tab's screen is believed, audit L22),
+/// draws the screen it is on at once, `n` moves to the next screen, any other
 /// key (`x`) redraws the same one, and `q` leaves.
 fn question_script(screens: &[String]) -> String {
     let list = screens
@@ -223,6 +224,7 @@ fn question_script(screens: &[String]) -> String {
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8\r\n\
          $screens = @(\r\n  {list}\r\n)\r\n\
          $k = 0\r\n\
+         [Console]::Write([string][char]27 + ']0;' + [string][char]0x2733 + ' Claude Code' + [string][char]7)\r\n\
          function Draw {{ [Console]::Write([string][char]27 + '[2J' + [string][char]27 + '[H' + $screens[$k]) }}\r\n\
          Draw\r\n\
          while ($true) {{\r\n\

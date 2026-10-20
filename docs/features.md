@@ -354,8 +354,13 @@ M6 plan's Tasks 2 to 35.
 - **D7** The resume reveal splice lives in the terminal handle, the one place that sees the raw chunks.
 - **D8** The plugin ships in `crates/flare-agent/claude-plugin/` and is copied beside the exe. It is
   handed to a shell as `CLAUDE_CODE_PLUGIN_DIRS` (`an_inherited_copy_of_our_plugin_is_dropped`).
-- **D9** The question widget is watched for every tab and posted to Sonara on a worker, to 127.0.0.1
-  only, with the token refused if it holds a control character (`only_loopback_is_ever_contacted`).
+- **D9** The question widget is watched for tabs recognised as Claude Code and posted to Sonara on ONE worker
+  thread, to 127.0.0.1 only, with the token refused if it holds a control character (`only_loopback_is_ever_contacted`).
+  Audit 2026-10-20 (A15): the post also needs the listener on the port to be the process runtime.json names in
+  `pid` (`a_port_held_by_another_process_gets_neither_the_token_nor_the_question`), and a plain shell cannot
+  forge a post (`a_plain_shell_cannot_forge_a_question_shown_post`). The dictation engine likewise trusts its
+  port only when its own server is the listener (`a_stranger_answering_on_the_engines_port_is_never_trusted`),
+  and a plugin refresh writes a temp file and renames it (`a_refresh_goes_through_a_temp_file_and_a_rename`).
 - **D10** Diagnostics go through `DiagSink`; M9 implements it over `diag.jsonl`
   (`diagnostics_get_the_four_kinds_and_no_text`).
 - **D11** The agent colours are M4's; the picks replace the theme's working, finished and question

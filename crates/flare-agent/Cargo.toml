@@ -10,6 +10,7 @@ regex.workspace = true
 serde_json.workspace = true
 log.workspace = true
 windows-sys.workspace = true
+flare-win = { path = "../flare-win" }
 
 [dev-dependencies]
 tempfile.workspace = true

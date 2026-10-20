@@ -58,7 +58,7 @@ impl SonaraStandIn {
             .map_err(|e| format!("nonblocking: {e}"))?;
         std::fs::write(
             home.join("runtime.json"),
-            json!({ "http_port": port, "token": key }).to_string(),
+            json!({ "http_port": port, "token": key, "pid": std::process::id() }).to_string(),
         )
         .map_err(|e| format!("runtime.json: {e}"))?;
 

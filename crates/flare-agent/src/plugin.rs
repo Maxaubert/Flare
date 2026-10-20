@@ -151,6 +151,26 @@ pub fn hooks_commands_are_absolute(text: &str) -> bool {
     count > 0
 }
 
+/// The sibling a file is written to before it is renamed over its target.
+fn temp_name(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(".flare-tmp");
+    target.with_file_name(name)
+}
+
+/// Writes `bytes` to a temp file beside `target`, then renames it over `target` (audit L26): a reader
+/// (Claude Code starting a hook) sees the old file or the new one, never half of either. The rename
+/// replaces an existing file on Windows. A failed write removes the temp file.
+fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = temp_name(target);
+    // sync-ok: install on the spawn worker
+    let written = std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, target));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp); // sync-ok: install on the spawn worker
+    }
+    written
+}
+
 /// Install (or refresh) the plugin from `src` into `dest`: every file is copied as is, except
 /// `hooks\hooks.json`, which is written with the absolute `cmd.exe` of `system_dir`. A file whose
 /// bytes already match is left alone, so the identity check covers the rewritten file too: an
@@ -188,7 +208,7 @@ pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Re
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?; // sync-ok: install on the spawn worker
             }
-            std::fs::write(&target, bytes)?; // sync-ok: install on the spawn worker
+            write_atomic(&target, &bytes)?; // sync-ok: install on the spawn worker
             written += 1;
         }
     }
@@ -597,6 +617,31 @@ mod tests {
             1
         );
         assert_eq!(std::fs::read_to_string(&hooks).expect("read"), good); // sync-ok: test fixture on a temp folder
+    }
+
+    #[test]
+    fn a_refresh_goes_through_a_temp_file_and_a_rename() {
+        // A refresh must never leave a half-written file for Claude Code to read (audit L26). With the
+        // temp name taken by a folder the write cannot even start, so the old file is untouched; an
+        // in-place write would have gone ahead and changed it.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let one = fake_system32(tmp.path());
+        let other = tmp.path().join("Other").join("System32");
+        std::fs::create_dir_all(&other).expect("dir"); // sync-ok: test fixture on a temp folder
+        let dest = tmp.path().join("plug");
+        install_plugin(&plugin_root(), &dest, &one).expect("install");
+        let hooks = dest.join("hooks").join("hooks.json");
+        let before = std::fs::read(&hooks).expect("read"); // sync-ok: test fixture on a temp folder
+        std::fs::create_dir_all(temp_name(&hooks)).expect("block the temp name"); // sync-ok: test fixture on a temp folder
+        assert!(install_plugin(&plugin_root(), &dest, &other).is_err());
+        assert_eq!(std::fs::read(&hooks).expect("read"), before); // sync-ok: test fixture on a temp folder
+        // And a good refresh leaves no temp file behind.
+        std::fs::remove_dir(temp_name(&hooks)).expect("unblock"); // sync-ok: test fixture on a temp folder
+        assert_eq!(
+            install_plugin(&plugin_root(), &dest, &other).expect("refresh"),
+            1
+        );
+        assert!(!temp_name(&hooks).exists());
     }
 
     #[test]

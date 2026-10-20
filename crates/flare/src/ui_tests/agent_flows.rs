@@ -1601,6 +1601,9 @@ fn sonara_hears_the_shown_question_with_the_tab_token() {
     f.tabs(&["C:\\a"]);
     f.visit(0);
     let token = env_of(&f.shell("C:\\a"), "FLARE_TAB_ID").expect("the shell has a tab id");
+    // Only a Claude tab is believed (audit L22).
+    f.say("C:\\a", &title(T_IDLE));
+    f.pump_until("the agent", |f| f.agent_here(0));
     f.say("C:\\a", &paint_owned(&screens("run2-01-question-1")));
     f.step(150);
     f.step(0);
