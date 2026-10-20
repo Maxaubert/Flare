@@ -1658,6 +1658,7 @@ version = "0.1.0"
 dependencies = [
  "flare-agent",
  "flare-diag",
+ "flare-dictation",
  "flare-e2e-proto",
  "flare-render",
  "flare-settings",
