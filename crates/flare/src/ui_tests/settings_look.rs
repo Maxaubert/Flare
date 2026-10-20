@@ -506,21 +506,33 @@ fn the_select_menu_and_popover_sit_on_the_pixel_grid() {
 }
 
 #[test]
-fn the_dictation_page_shows_its_placeholder_and_the_rail_still_lists_it() {
+fn the_dictation_page_draws_its_cards() {
     for s in REFERENCE {
         let sc = Scene::new("dictation", s, 1000, 604);
-        // The model: one note block with the placeholder words, nothing else.
-        let blocks: Vec<&BlockModel> = sc
+        // The model: the master card leads, and the page's other cards follow, rows in each.
+        assert!(
+            sc.model.sections.len() >= 2,
+            "@{s}: Dictation has more than one card ({})",
+            sc.model.sections.len()
+        );
+        assert_eq!(
+            sc.model.sections[0].id, "dictation",
+            "@{s}: the master card leads the page"
+        );
+        let rows: Vec<&str> = sc
             .model
             .sections
             .iter()
             .flat_map(|x| x.blocks.iter())
+            .filter_map(|b| match b {
+                BlockModel::Row(r) => Some(r.id),
+                _ => None,
+            })
             .collect();
-        assert_eq!(blocks.len(), 1, "@{s}: Dictation shows one block in M7");
-        match blocks[0] {
-            BlockModel::Note(t) => assert_eq!(t, "Dictation arrives in a later update."),
-            other => panic!("@{s}: the placeholder is a note, got {other:?}"),
-        }
+        assert!(
+            rows.contains(&"dictation-enabled"),
+            "@{s}: the master row is drawn ({rows:?})"
+        );
         // The rail lists all six pages, Dictation fourth, About pinned last.
         let rail = sc.h.comp.global::<SettingsBridge>().get_rail();
         let ids: Vec<String> = rail.iter().map(|r| r.id.to_string()).collect();
@@ -571,7 +583,7 @@ fn the_dictation_page_shows_its_placeholder_and_the_rail_still_lists_it() {
             sc.dev(r.y + r.h),
             |p| differs(p, fill, 25),
         );
-        assert!(note.is_some(), "@{s}: the placeholder note draws");
+        assert!(note.is_some(), "@{s}: the first card's row draws its words");
     }
 }
 

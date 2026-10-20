@@ -488,14 +488,14 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `reviewKeys` | 16 | `scenarios/input_d.rs`, `review_keys` | 17 | 0 | ok |
 | `dropAndMenu` | 6 | `scenarios/input_d.rs`, `drop_and_menu` | 7 | 0 | ok |
 | `helpPanel` | 89 | `scenarios/help.rs`, `help_panel` | 90 | 2 | ok |
-| `options` | 19 | `scenarios/settings_a.rs`, `options` | 16 | 5 | ok |
+| `options` | 19 | `scenarios/settings_a.rs`, `options` | 17 | 3 | ok |
 | `diagLog` | 26 | `scenarios/diag.rs`, `diag_log` | 24 | 2 | ok |
-| `settingsLook` | 16 | `scenarios/settings_a.rs`, `settings_look` | 13 | 4 | ok |
+| `settingsLook` | 16 | `scenarios/settings_a.rs`, `settings_look` | 14 | 3 | ok |
 | `settingsSearch` | 15 | `scenarios/settings_a.rs`, `settings_search` | 15 | 1 | ok |
 | `settingsKeys` | 8 | `scenarios/settings_a.rs`, `settings_keys` | 4 | 3 | by hand |
 | `themeEditorLive` | 17 | `scenarios/settings_b.rs`, `theme_editor_live` | 20 | 1 | ok |
 | `themeSwitch` | 15 | `scenarios/settings_b.rs`, `theme_switch` | 18 | 1 | ok |
-| `reviewSettings` | 19 | `scenarios/settings_b.rs`, `review_settings` | 18 | 3 | ok |
+| `reviewSettings` | 19 | `scenarios/settings_b.rs`, `review_settings` | 21 | 3 | ok |
 | `colourPicker` | 46 | `scenarios/settings_c.rs`, `colour_picker` | 47 | 1 | ok |
 | `pickedGround` | 3 | `scenarios/settings_c.rs`, `picked_ground` | 4 | 0 | ok |
 | `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 19 | 2 | ok |
@@ -507,13 +507,13 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `updateGuard` | 26 | `scenarios/update.rs`, `update_guard` | 26 | 0 | ok |
 | `updateNotes` | 9 | `scenarios/update.rs`, `update_notes` | 9 | 0 | ok |
 | `updateQuiet` | 6 | M9 out of process (Task 39) | - | 0 | elsewhere |
-| `dictation` | 21 | M8 | - | 0 | waits |
-| `dictationPage` | 36 | M8 | - | 0 | waits |
-| `dictationParakeet` | 11 | M8 | - | 0 | waits |
+| `dictation` | 21 | `scenarios/dictation.rs`, `dictation` | 21 | 0 | ok |
+| `dictationPage` | 36 | `scenarios/dictation.rs`, `dictation_page` | 36 | 0 | ok |
+| `dictationParakeet` | 11 | `scenarios/dictation.rs`, `dictation_parakeet` | 11 | 0 | ok |
 | `exitClosesTab` | 3 | `scenarios/lifecycle.rs`, `exit_closes_tab` | 3 | 0 | ok |
 | `promptLayout` | 2 | `scenarios/lifecycle.rs`, `prompt_layout` | 2 | 0 | ok |
-| `dictateAnywhere` | 9 | M8 | - | 0 | waits |
-| `dictateTwoCopies` | 10 | M8 | - | 0 | waits |
+| `dictateAnywhere` | 9 | `scenarios/anywhere.rs`, `dictate_anywhere` | 9 | 0 | ok |
+| `dictateTwoCopies` | 10 | `scenarios/anywhere.rs`, `dictate_two_copies` | 10 | 0 | ok |
 
 `settingsKeys` is judged by hand: the `reach` closure runs three walks (5 checks run, 3 DROPPED notes; 8 of 8 PT checks accounted).
 

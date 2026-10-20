@@ -854,10 +854,6 @@ mod tests {
         "first-run",
     ];
 
-    /// `dictation` waits for the dictation milestone (M8 moved to the end): its controller will call
-    /// `diag_ctl::crumb("dictation", ..)` with `phase`.
-    const SEAM_CRUMBS: &[&str] = &["dictation"];
-
     fn source_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
             return;
@@ -900,7 +896,6 @@ mod ",
                 "no call site writes the crumb {c}"
             );
         }
-        assert_eq!(SEAM_CRUMBS, ["dictation"]);
     }
 
     #[test]

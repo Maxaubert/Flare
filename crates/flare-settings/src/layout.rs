@@ -514,7 +514,7 @@ fn place_menu_raw(
 mod tests {
     use super::*;
     use crate::page::test_env::with_env;
-    use crate::page::{PlaceholderDictation, build_page, section};
+    use crate::page::{NoDictation, build_page, section};
     use crate::wall::{layout as wall_layout, total_themes};
 
     const PAGES: [&str; 6] = [
@@ -553,7 +553,7 @@ mod tests {
 
     fn laid_out(id: &str, frame_w: f64, scale: f64) -> PageLayout {
         with_env(|env| {
-            let page = build_page(id, env, &PlaceholderDictation);
+            let page = build_page(id, env, &NoDictation);
             let wall = wall_for(frame_w, false);
             layout_page(&page, frame_w, scale, &wall, wall.full_h, 112.0)
         })

@@ -18,7 +18,7 @@ use flare_settings::kv::PrefStore;
 use flare_settings::layout::{Metrics, is_narrow, rail_width};
 use flare_settings::look::LookStore;
 use flare_settings::new_tab::{NewTabMode, set_new_tab_mode};
-use flare_settings::page::{GlassSupport, PlaceholderDictation};
+use flare_settings::page::GlassSupport;
 use flare_settings::tab_layout::{TabLayout, set_tab_layout};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_settings::window_colours::set_window_edges;
@@ -79,7 +79,7 @@ pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> Settin
         look: LookStore::new(prefs.clone()),
         diag: Rc::new(FakeDiag::new(LOG_DIR, false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
-        dictation: Rc::new(PlaceholderDictation),
+        dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None::<PathBuf>)),
         open_path: Rc::new(|_| {}),
         clipboard: Rc::new(|_: &str| {}),

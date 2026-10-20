@@ -18,7 +18,7 @@ use flare_settings::custom_theme::serialize_custom;
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
 use flare_settings::page::appearance;
-use flare_settings::page::{GlassSupport, PlaceholderDictation, ThemeColours};
+use flare_settings::page::{GlassSupport, ThemeColours};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
 use flare_settings::wall::{self, CardData};
 use flare_settings::window_colours::{ACCENT, BACKGROUND, SECONDARY, custom_window_colours};
@@ -65,7 +65,7 @@ fn fx_at(scale: f32) -> Fx {
         look: look.clone(),
         diag: Rc::new(FakeDiag::new("C:/logs", false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
-        dictation: Rc::new(PlaceholderDictation),
+        dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None)),
         open_path: {
             let opened = Rc::clone(&opened);

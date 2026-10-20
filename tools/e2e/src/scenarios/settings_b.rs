@@ -1313,8 +1313,46 @@ pub fn review_settings(ctx: &mut Ctx) -> Result<(), String> {
         "and forgets the picked background, so the edited one shows",
     );
 
-    // PT #27: the dictation key capture belongs to M8's row.
-    ctx.skip("M8: the dictation key capture check waits for dictation (Task 47)");
+    // PT #27: the dictation key capture, in its own app (dictation on, no model), after this one.
     app.close();
+    dictation_capture(ctx);
     Ok(())
+}
+
+/// PT #27 (run.mjs 6310-6324): the dictation key capture refuses a letter, and a press elsewhere ends it.
+fn dictation_capture(ctx: &mut Ctx) {
+    let Some((_world, mut app)) = super::settings_a::seeded_dictation_app(ctx) else {
+        ctx.ok(false, "the dictation app starts for the key capture");
+        return;
+    };
+    if !(open_settings(ctx, &mut app) && goto_page(ctx, &mut app, "dictation")) {
+        ctx.ok(false, "the Dictation page opens for the key capture");
+        app.close();
+        return;
+    }
+    let before = row(&mut app, "dictation-hotkey")["value"].clone();
+    let key_at = rect(&row(&mut app, "dictation-hotkey")["rect"]);
+    if let Some((x, y, w, h)) = key_at {
+        // The key field is the row's right-hand 112px box, 16px in from the row's edge.
+        let _ = app
+            .session
+            .click((x + w - 16.0 - 56.0) as f32, (y + h / 2.0) as f32);
+    }
+    ctx.until("the key field is capturing", 3_000, &mut || {
+        row(&mut app, "dictation-hotkey")["capturing"] == json!(true)
+    });
+    let _ = app.session.key("KeyA");
+    for _ in 0..4 {
+        ctx.settle(50);
+    }
+    let typed = row(&mut app, "dictation-hotkey");
+    ctx.ok(
+        typed["capturing"] == json!(true) && typed["value"] == before,
+        "a letter is not taken as the dictation key",
+    );
+    // A press elsewhere ends the capture on the window's mouse input (appctl's on_pointer_down). The
+    // e2e's pointer does not reach that input, so the press is held by dictation_ctl's unit test
+    // (a_press_outside_and_a_blur_cancel_capture), not here.
+    ctx.skip("a press elsewhere ends the capture: the e2e pointer does not reach the window's mouse input (dictation_ctl::a_press_outside_and_a_blur_cancel_capture holds it)");
+    app.close();
 }

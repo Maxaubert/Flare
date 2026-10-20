@@ -188,22 +188,19 @@ pub struct PageEnv<'a> {
     pub face_of: &'a dyn Fn(&str) -> String,
 }
 
-/// The Dictation page's content. M7 ships only the placeholder (decision D7); M8 replaces it.
+/// The Dictation page's content. The app's provider (`flare`'s `dictation_page`, M8 Task 24) fills it.
 pub trait DictationPage {
     fn sections(&self, env: &PageEnv<'_>) -> Vec<SectionModel>;
 }
 
-/// The M7 Dictation page: one note, no controls.
-pub struct PlaceholderDictation;
+/// A Dictation page with no sections, for this crate's own tests (the page's rows are the app's).
+#[cfg(test)]
+pub(crate) struct NoDictation;
 
-impl DictationPage for PlaceholderDictation {
+#[cfg(test)]
+impl DictationPage for NoDictation {
     fn sections(&self, _env: &PageEnv<'_>) -> Vec<SectionModel> {
-        vec![section(
-            "dictation",
-            vec![BlockModel::Note(
-                "Dictation arrives in a later update.".to_string(),
-            )],
-        )]
+        Vec::new()
     }
 }
 
@@ -285,56 +282,6 @@ pub(crate) fn section(id: &'static str, blocks: Vec<BlockModel>) -> SectionModel
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn face(_: &str) -> String {
-        String::new()
-    }
-
-    fn with_env<R>(f: impl FnOnce(&PageEnv<'_>) -> R) -> R {
-        let prefs = PrefStore::memory();
-        let look = LookStore::new(PrefStore::memory());
-        let face_of: &dyn Fn(&str) -> String = &face;
-        let env = PageEnv {
-            prefs: &prefs,
-            look: &look,
-            shells: None,
-            verb: VerbState::Busy,
-            home: String::new(),
-            version: "0.0.0".to_string(),
-            copyright: String::new(),
-            glass: GlassSupport::Ok,
-            diag: DiagInfo {
-                verbose: false,
-                dir: String::new(),
-            },
-            diag_marked: false,
-            nvidia: false,
-            dictation_wired: false,
-            theme_colours: ThemeColours {
-                accent: String::new(),
-                background: String::new(),
-                secondary: String::new(),
-            },
-            agent_colours: [String::new(), String::new(), String::new()],
-            agent_key_labels: String::new(),
-            face_of,
-        };
-        f(&env)
-    }
-
-    #[test]
-    fn the_placeholder_dictation_page_is_one_note() {
-        with_env(|env| {
-            let sections = PlaceholderDictation.sections(env);
-            assert_eq!(sections.len(), 1);
-            assert_eq!(sections[0].id, "dictation");
-            assert_eq!(sections[0].blocks.len(), 1);
-            assert!(matches!(
-                &sections[0].blocks[0],
-                BlockModel::Note(text) if text == "Dictation arrives in a later update."
-            ));
-        });
-    }
 
     #[test]
     fn plain_row_takes_label_sub_and_icon_from_the_table() {
@@ -467,12 +414,9 @@ mod cross_page_tests {
     #[test]
     fn build_page_for_an_unknown_id_builds_appearance() {
         with_env(|env| {
-            assert_eq!(
-                build_page("nope", env, &PlaceholderDictation).id,
-                "appearance"
-            );
+            assert_eq!(build_page("nope", env, &NoDictation).id, "appearance");
             for id in SIX {
-                assert_eq!(build_page(id, env, &PlaceholderDictation).id, id);
+                assert_eq!(build_page(id, env, &NoDictation).id, id);
             }
         });
     }
@@ -482,7 +426,7 @@ mod cross_page_tests {
         with_env(|env| {
             let drawn: Vec<&str> = SIX
                 .iter()
-                .flat_map(|id| all_row_ids(&build_page(id, env, &PlaceholderDictation)))
+                .flat_map(|id| all_row_ids(&build_page(id, env, &NoDictation)))
                 .collect();
             let unique: BTreeSet<&str> = drawn.iter().copied().collect();
             assert_eq!(unique.len(), drawn.len(), "a row is drawn twice: {drawn:?}");
@@ -499,7 +443,7 @@ mod cross_page_tests {
     fn the_drawn_order_inside_each_section_follows_the_tables() {
         with_env(|env| {
             for id in SIX {
-                let page = build_page(id, env, &PlaceholderDictation);
+                let page = build_page(id, env, &NoDictation);
                 for section in &page.sections {
                     let drawn: Vec<&str> = section
                         .blocks

@@ -2117,7 +2117,7 @@ mod tests {
     use crate::ui_harness::{Harness, SCALES};
     use flare_settings::kv::{Backend, MemoryBackend};
     use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
-    use flare_settings::page::{Button, Opt, PlaceholderDictation};
+    use flare_settings::page::{Button, Opt};
     use flare_settings::verb::{FakeDiag, FakeVerb, PendingVerb};
     use flare_settings::window_colours::ACCENT;
     use slint::Model;
@@ -2167,7 +2167,11 @@ mod tests {
     }
 
     fn fx_with(scale: f32, verb: Arc<dyn ExplorerVerb>) -> Fx {
-        fx_with_dictation(scale, verb, Rc::new(PlaceholderDictation))
+        fx_with_dictation(
+            scale,
+            verb,
+            Rc::new(crate::dictation_page::DictationPageProvider),
+        )
     }
 
     fn fx_with_dictation(

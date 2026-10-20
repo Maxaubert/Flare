@@ -12,8 +12,8 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 /// A folder of downloaded fixtures (`.e2e-cache`). A file is used only when its SHA-256 is the
-/// pinned one; a download whose hash differs is removed and refused. Never called before M8: no
-/// fixture is needed yet, so the dictation audio is not fetched here.
+/// pinned one; a download whose hash differs is removed and refused. The dictation fixtures use their
+/// own cache (`fixtures.rs`, M8 Task 28), filled only by `--fetch-fixtures`; this one is the test's.
 #[derive(Clone, Debug)]
 pub struct FixtureCache {
     pub dir: PathBuf,

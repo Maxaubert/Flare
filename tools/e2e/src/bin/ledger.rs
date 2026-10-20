@@ -96,7 +96,7 @@ pub enum Port {
     Flare { group: String, func: String },
     /// Ported by M9 out of process (`updateQuiet`), not in `ALL`; not counted here.
     Elsewhere(&'static str),
-    /// Waits for M8 (dictation); not ported.
+    /// Not in `scenarios::ALL` and not ported (the reason is the string).
     Waits(&'static str),
 }
 
@@ -291,16 +291,6 @@ pub fn ledger(dir: &Path) -> Vec<Row> {
                     0,
                 );
             }
-            if matches!(
-                name,
-                "dictation"
-                    | "dictationPage"
-                    | "dictationParakeet"
-                    | "dictateAnywhere"
-                    | "dictateTwoCopies"
-            ) {
-                return row(name, pt_ok, Port::Waits("M8"), 0, 0);
-            }
             let Some((_, group, func)) = table.iter().find(|(n, _, _)| n == name) else {
                 return row(name, pt_ok, Port::Waits("not in ALL"), 0, 0);
             };
@@ -451,13 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn the_flare_ports_are_the_70_scenarios_of_all() {
+    fn the_flare_ports_are_the_75_scenarios_of_all() {
+        // 70 before M8, plus the five dictation scenarios (Tasks 29 to 31), none waiting any more.
         let rows = ledger(&scenarios_dir());
         let ported = rows
             .iter()
             .filter(|r| matches!(r.port, Port::Flare { .. }))
             .count();
-        assert_eq!(ported, 70);
+        assert_eq!(ported, 75);
     }
 
     #[test]
