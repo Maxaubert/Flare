@@ -161,6 +161,13 @@ pub fn default_root() -> PathBuf {
     base.join(flare_win::names::DICTATION_FOLDER)
 }
 
+/// Prism's and Prism Terminal's models folder, `%LOCALAPPDATA%\PrismDictation` (O14, Q9). Flare only reads it, to
+/// link in a model that matches the catalogue's size and SHA-256; nothing is written there.
+pub fn prism_root() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
+    base.join("PrismDictation")
+}
+
 /// A clock in milliseconds (epoch), injectable so progress and the memo are testable.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
