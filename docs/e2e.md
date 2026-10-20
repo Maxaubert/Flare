@@ -64,8 +64,45 @@ stand-in waits for the first agent verdict of its tab before it stands in for an
 by SHA-256 on every run; a wrong hash is refused (`the_cache_refuses_a_wrong_hash`).
 
 Machine-dependent features are faked, not read from the owner's machine: the clipboard, and the dictation
-seams (the microphone, the speech engine's folder, the whisper-server fake) which arrive with M8, when the
-three dictation scenarios are ported.
+seams (the microphone, the speech engine's folder, the GPU probe, the download stand-in) are set by the
+dictation scenarios, listed under "Dictation scenarios" below.
+
+## Dictation scenarios (M8)
+
+Five scenarios from Prism Terminal's suite at `e5848cb` are ported in `tools/e2e/src/scenarios/dictation.rs`
+(`dictation`, `dictationPage`, `dictationParakeet`) and `anywhere.rs` (`dictateAnywhere`, `dictateTwoCopies`).
+Together they make 87 checks, one `ctx.ok` per PT `ok(`, in order (`docs/test-port.md`, "E2E map: the dictation
+scenarios"). Run them by name, one at a time, like the others:
+
+```powershell
+cargo run -p flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release\flare.exe dictation
+```
+
+- **What they need, once.** The speech engine (`vendor/whisper`, shipped beside the app by the build) and the
+  fixture cache (`tools/e2e/.e2e-cache`, gitignored: `ggml-tiny.bin` 78 MB, `jfk.wav` 0.35 MB and the Parakeet q4
+  file 356 MB). Fetch both with `powershell -NoProfile -File tools\fetch-whisper.ps1 -Out vendor\whisper` and
+  `cargo e2e -- --fetch-fixtures`. The fetch is the only code that downloads anything; a scenario never does. Every
+  file is checked by size and SHA-256 before use, and a missing or wrong file stops the scenario with the fetch hint.
+- **The seams** (names read only through `e2e::global().env`, so they do nothing without `--e2e`):
+
+| Seam | What it does in a scenario |
+|---|---|
+| `FLARE_E2E_MIC` | a WAV played as the microphone in real time; the device is never opened |
+| `FLARE_DICTATION_ROOT` | the scenario's own models folder (else `%LOCALAPPDATA%\FlareDictation`) |
+| `FLARE_WHISPER_DIR` | the engine folder (else `<exe dir>\whisper`) |
+| `FLARE_E2E_NVIDIA` | `1` or `0` instead of the DXGI probe |
+| `FLARE_E2E_DICT_PIPE`, `FLARE_E2E_DICT_KEY` | the scenario's own link pipe and key; without both under `--e2e`, no link |
+| `FLARE_E2E_FETCH=stall` | the store's downloads come from a slow in-memory stand-in (`dictationPage`) |
+
+- **The hotkey.** The scenarios seed the dictation key to Right Alt in their own profile before they press it, as
+  Prism Terminal's do. The app's default is Ctrl+Win, which the scenarios do not use.
+- **The hook is never installed.** Under `--e2e` no keyboard hook runs (rule 185 in `docs/regression-rules.md`).
+  The scenario's keys go through the same path as a real key, and the hook's lines arrive through the test seam.
+  Nothing sends `SendInput`, opens the real microphone or pauses the owner's media.
+- **Two copies.** `dictateTwoCopies` starts two copies of Flare, each on its own profile, with the pipe and key
+  above, and announces both worlds so a failure reaps both. DIFF-21 in `docs/parity.md` records a known difference
+  in when the second copy's Claude session is kept across a prompt.
+- **The by-hand list.** What the suite cannot check is in `docs/dictation-by-hand.md`.
 
 ## The test hook
 

@@ -9,7 +9,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 ## What reaches a shell
 
 1. **Input to a shell is inert until the user acts.** Strip every ESC and C0 control except TAB, LF, CR (plus DEL and C1 CSI) before any paste; quote each dropped path with a per-shell function (PowerShell single quotes with doubling, bash escape, cmd double quotes); start Windows tools by absolute System32 path. Native: pure functions `sanitize_paste` and `quote_path` in `flare-shells`, `Command::new` with absolute paths only, one unit test per quoting rule. Source: regression-rules.md inert-input (#1, #5); core/renderer/lib/termPaste.ts; core/main/sysTools.ts.
-2. **The only commands written into a shell are the agent resume, dictated text, and (open decision O1) the idle-prompt cd line.** The resume is the shell's startup command, built from argv Flare owns, with the id validated and carried in `FLARE_RESUME_ID`; dictation is one bracketed paste with a trailing space, never Enter. Native: no generic "send text to shell" path in the tab code; the pty write API takes typed intents. Source: core/main/terminal.ts withResume; core/main/agentResume.ts validResume; core/renderer/lib/dictation.ts finishStop; core/shared/termCwd.ts cdCommand.
+2. **The only commands written into a shell are the agent resume, dictated text, and (open decision O1) the idle-prompt cd line.** The resume is the shell's startup command, built from argv Flare owns, with the id validated and carried in `FLARE_RESUME_ID`; dictation is one bracketed paste with a trailing space, never Enter. Exception (M8, N30; rule 182): dictation from another app types into a RUNNING Claude prompt and presses Enter, through the checked send only; inside the Flare window dictation only pastes at the cursor and never presses Enter; words for a copy whose window was in front are only pasted. Native: no generic "send text to shell" path in the tab code; the pty write API takes typed intents. Source: core/main/terminal.ts withResume; core/main/agentResume.ts validResume; core/renderer/lib/dictation.ts finishStop; core/shared/termCwd.ts cdCommand.
 3. **The resume id travels in the environment, and every shell of a kind has the same command line.** Defender judges each new command line inside CreateProcess (700 ms each in Prism Terminal, 3 ms when repeated). Native: set `FLARE_RESUME_ID`, clear it in the startup line before the agent starts, keep each shell kind's command line constant, spawn on a worker, measure a cold restored Claude tab on the release build. Source: regression-rules.md same-command-line (#180); core/main/terminal.ts.
 4. **A claude resume is the newest interactive session of that folder; nothing is guessed.** `--continue` once resumed the wrong conversation. Native: read each transcript's first 4096 bytes, drop a queue-operation first line or a non-cli entrypoint, no session means a plain shell; the lookup runs on a worker, 16 stats at a time. Source: core/main/agentResume.ts; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS (#87).
 5. **One Ctrl+V is one paste; one image key per agent.** The native paste and the app's paste both ran once. Native: the key handler consumes Ctrl+V and returns handled; the image key is a single lookup by agent kind (ESC v for Claude, ^V otherwise); a test asserts one pty write per key. Source: two-apps.md ONE CTRL+V IS ONE PASTE; core/renderer/lib/termPaste.ts imagePasteKey (#170).
@@ -123,7 +123,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 92. **Downloads are pinned by commit or tag, byte size and SHA-256; an unverified file is deleted, never loaded or run.** Native: URLs are data from the catalogue; stream to `.part`, hash while streaming, rename only on a full match; a test that every URL carries a 40-hex commit or the b5130 tag. Source: core/main/dictationStore.ts; dictationCatalog.test.
 93. **The GPU pack is optional and offered only with an NVIDIA adapter; a failed GPU engine falls back to CPU once per session, saying so.** Native: vendor 0x10DE from DXGI adapter enumeration, answered once; never spawn nvidia-smi. Source: dictationEngine.ts gpuFellBack.
 94. **The engine is warm before the first press, and a partial never queues behind a cold start.** Native: warm at arm, at each press and on model or language change; a cold partial answers `warming` at once; the CUDA cache is capped at 4 GiB. Source: dictationEngine.ts.
-95. **The engine stands down after 5 minutes idle.** Native: a timer on the engine actor that does not keep the process alive. Source: dictationEngine.ts DICTATION_IDLE_MS.
+95. **The engine stands down after 5 minutes idle, except while dictation is on in the app (amended at `e5848cb`, M8 D11, N5).** The app passes no idle limit, so while dictation is on the engine stays up until `stop()` (switching dictation off, quitting, or the model's engine changing). The 5-minute stand-down is the engine's default for a host that sets none. Native: a timer on the engine actor that does not keep the process alive; `Option<Duration>` idle, where `None` never stands down (`engine/mod.rs`). Held by `never_stands_down_with_no_idle` and `kills_the_server_after_idle_with_no_request_and_starts_a_fresh_one_on_the_next` (`crates/flare-dictation/tests/engine.rs`). Source: dictationEngine.ts DICTATION_IDLE_MS; src/main/index.ts idleMs (Prism Terminal passes `Infinity`).
 96. **The microphone is the only permission, and opening Settings never opens it.** Native: capture starts only on a press or the Test button; a refused microphone shows "Microphone access was refused". Source: DictationPage.tsx header.
 97. **Pause media uses the Windows media session API, never the play/pause key, and resumes only what it paused.** Native: GSMTC through the `windows` crate, 3 s per call, never throws. Source: core/main/mediaPause.ts.
 98. **A limited-language model does not change the stored language; a recording is capped at 5 minutes and a clip under 0.35 s is dropped; the text cleaner removes only what is certainly not speech.** Native: picker shows Auto-detect disabled without writing; buffer bounded at 300 s of 16 kHz f32; lists ported verbatim. Source: dictationCatalog.ts languageFor; dictation.ts; dictationClean.ts.
@@ -291,3 +291,49 @@ its edge, and a rule that needs a Prism Terminal baseline that is missing is unk
 grid follows the new cell size at every scale, a resize never loses the prompt line, and the hairline is the
 floor of the scale. Held by `the_expected_grid_changes_with_the_scale`, `a_grid_that_kept_the_old_cell_size_is_not_the_rule`,
 `a_hairline_is_the_floor_of_the_scale_and_at_least_one` and `a_resize_nudge_never_loses_the_prompt_line`.
+
+## Dictation from any app (M8)
+
+These rules came with the M8 dictation port at Prism Terminal `e5848cb`. Each names the tests that hold it. The
+rule numbers continue from 180; rules 2 and 95 above carry their M8 amendments.
+
+181. **The keyboard hook reads only the dictation key, and swallows only the picker's digits and Esc.** It reads the
+binding's own keys (both sides of each modifier the binding names), reports that another key went down without saying
+which while a binding key is held, and while the Claude picker is open swallows and reports digits 1 to 9 and Esc, on
+down and up. It swallows nothing else, ever. Native: `flare-dictation` `keyhook.rs` and `keyfeed.rs` (`keys_for`,
+`is_digit_key`). Held by `another_key_with_no_binding_key_held_is_not_read`, `an_up_of_another_key_says_nothing`,
+`digits_one_to_nine_are_swallowed_and_reported_only_while_picking`, `zero_and_the_keys_beside_the_digits_are_never_taken`,
+`escape_is_swallowed_and_reported_only_while_picking`, `keys_for_watches_both_sides_of_each_modifier_of_ctrl_win_and_masks_start`
+and `parse_helper_line_reads_keys_another_key_digits_and_esc_and_nothing_else`. Source: appHelper.ps1; globalDictKey.ts
+keysFor (N13, N16).
+182. **Typing into a tab is checked three times, and dictation never presses Enter inside the window.** Before dictated
+text goes into a Claude tab, the tab must still exist, run Claude by its mark with a session, and not be asking; Windows'
+process tree under that tab's shell must show Claude; and the same tab and session must win again right before the paste
+and again before the Enter (one lone CR after 300 ms, and only if the tab is still sendable). A bare shell never receives
+dictated text with an Enter. Native: `route.rs` (`decide_into`, `type_checked`) and `service.rs` (`dictation_answers`),
+with the Windows check through the process tree. Held by `type_checked_types_nothing_where_windows_says_no_claude_runs`,
+`type_checked_types_nothing_when_the_tab_changed_while_windows_was_asked`,
+`type_checked_never_presses_enter_after_words_that_were_not_written`, `type_checked_holds_the_enter_back_when_a_question_opened_before_it`,
+`never_types_into_a_shell_or_into_a_question` and `dictation_answers_never_types_into_a_shell_or_a_question`. Source:
+orchestratorSend.ts decideInto and typeable; dictationClient.ts typeChecked (N24, N30).
+183. **The link is authenticated both ways.** Two copies prove the shared key with HMAC-SHA256 over fresh nonces, compared
+in constant time; a peer that has not proved itself within 5000 ms, or that fails the proof, is answered nothing and
+dropped. The pipe has a current-user DACL. A line over 64 KiB, or a buffer over 256 KiB, drops the peer. Native:
+`hmac.rs`, `link.rs` (`current_user`, `create_instance`), `tests/link.rs`. Held by
+`a_peer_that_fails_the_proof_is_answered_nothing_and_dropped`, `a_peer_that_proves_nothing_in_time_is_dropped`,
+`a_line_over_64_kib_drops_the_peer`, `a_buffer_that_never_ends_a_line_drops_the_peer_too`,
+`a_client_drops_a_service_whose_proof_has_the_wrong_mac`, `the_key_is_made_once_and_the_pipe_is_named_by_its_hash`,
+`two_copies_starting_together_agree_on_one_key` and `never_answers_types_or_pastes_for_a_service_that_does_not_hold_the_key`.
+Source: dictationLink.ts (N26).
+184. **The widget never takes focus.** The widget window is frameless, transparent, never focusable, off the taskbar and
+above the other windows, never navigates, and lets clicks through except while the picker is up. Showing it does not move
+focus from the app in front, so the key keeps working where you are. It takes the scaling of the monitor it opens on.
+Native: `crates/flare/src/dictation_widget.rs` (`show_now`, `click_through`, `keep_style`). Held by
+`the_window_never_takes_focus`, `the_style_is_never_active_off_the_taskbar_and_on_top`,
+`the_card_is_480_wide_and_the_heights_follow_the_state` (at all eight scales) and `the_bounds_follow_the_scale_of_the_monitor`.
+Source: overlay.ts, overlay.css (N18).
+185. **The e2e never installs the keyboard hook.** A run under `--e2e` starts no hook; the scenario's keys reach the
+reducer only through the test seam (`DictLine` lines and `DictRoute`), and every key still takes the one path the real key
+does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
+the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
+(the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
