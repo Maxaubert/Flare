@@ -12,6 +12,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if cli.fetch_fixtures {
+        // Downloads only what the cache lacks, by the pins; runs no scenario (M8 D10).
+        match flare_e2e::fixtures::fetch_all() {
+            Ok(()) => println!("fixture cache is complete"),
+            Err(e) => {
+                println!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if cli.list {
         for s in ALL {
             println!("{}", s.name);
