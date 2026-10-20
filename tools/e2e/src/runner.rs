@@ -46,6 +46,8 @@ pub struct Cli {
     pub out: Option<PathBuf>,
     /// `perf` only: the Prism Terminal baseline.
     pub baseline: Option<PathBuf>,
+    /// Downloads the dictation fixtures into the cache, then stops (M8 Task 28, D10). Never a scenario.
+    pub fetch_fixtures: bool,
 }
 
 fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -66,6 +68,7 @@ impl Cli {
                 "--list" => cli.list = true,
                 "--packaged" => cli.packaged = true,
                 "--keep" => cli.keep = true,
+                "--fetch-fixtures" => cli.fetch_fixtures = true,
                 "--exe" => cli.exe = Some(PathBuf::from(value(&mut it, "--exe")?)),
                 "--shots" => cli.shots = Some(PathBuf::from(value(&mut it, "--shots")?)),
                 "--run-one" => cli.run_one = Some(value(&mut it, "--run-one")?),
@@ -395,5 +398,23 @@ pub fn run_all(cli: &Cli) -> i32 {
     } else {
         println!("all scenarios passed");
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fetch_fixtures_is_a_flag_of_its_own_and_runs_no_scenario() {
+        let cli = Cli::parse(["--fetch-fixtures".to_string()]).expect("the flag parses");
+        assert!(cli.fetch_fixtures);
+        assert!(cli.filters.is_empty());
+        assert!(!cli.list && cli.run_one.is_none() && !cli.perf);
+        assert!(
+            !Cli::parse(Vec::<String>::new())
+                .expect("no args")
+                .fetch_fixtures
+        );
     }
 }
