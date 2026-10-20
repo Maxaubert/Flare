@@ -123,6 +123,14 @@ pub fn ask_json(open: bool, text: &str, pending: Option<&str>) -> Value {
     json!({ "open": open, "text": text, "pending": pending })
 }
 
+/// The name a select shows for its stored value: the option whose id is the value, else the value itself.
+pub fn option_name(options: &[(String, String)], value: &str) -> String {
+    options
+        .iter()
+        .find(|(id, _)| id == value)
+        .map_or_else(|| value.to_string(), |(_, name)| name.clone())
+}
+
 /// `dict.lang`: the language select's text, whether it is disabled, whether the model limits it, and its title.
 pub fn lang_json(text: &str, disabled: bool, limited: bool, title: &str) -> Value {
     json!({ "text": text, "disabled": disabled, "limited": limited, "title": title })
@@ -263,12 +271,13 @@ fn dict_lang(ctx: &ProbeCtx, _: &Value) -> Result<Value, String> {
     for s in b.get_sections().iter() {
         for r in s.rows.iter() {
             if r.id.as_str() == "dictation-language" {
-                return Ok(lang_json(
-                    r.value.as_str(),
-                    r.off,
-                    r.limited,
-                    r.row_tip.as_str(),
-                ));
+                let options: Vec<(String, String)> = r
+                    .options
+                    .iter()
+                    .map(|o| (o.id.to_string(), o.name.to_string()))
+                    .collect();
+                let text = option_name(&options, r.value.as_str());
+                return Ok(lang_json(&text, r.off, r.limited, r.row_tip.as_str()));
             }
         }
     }
@@ -384,6 +393,17 @@ mod tests {
         let off = row_json(&facts(true));
         assert_eq!(on["disabled"], false);
         assert_eq!(off["disabled"], true);
+    }
+
+    #[test]
+    fn the_picker_shows_the_name_of_its_stored_value() {
+        let opts = vec![
+            ("no".to_string(), "Norwegian".to_string()),
+            ("auto".to_string(), "Auto-detect".to_string()),
+        ];
+        assert_eq!(option_name(&opts, "no"), "Norwegian");
+        assert_eq!(option_name(&opts, "auto"), "Auto-detect");
+        assert_eq!(option_name(&opts, "xx"), "xx");
     }
 
     #[test]
