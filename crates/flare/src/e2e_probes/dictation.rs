@@ -97,6 +97,9 @@ pub struct RowFacts<'a> {
     pub disabled: bool,
     pub title: &'a str,
     pub buttons: Vec<Value>,
+    /// The row's name (the label beside the mark) and its sub line, as the Dictation page draws them.
+    pub name: &'a str,
+    pub sub: &'a str,
 }
 
 /// One Dictation page row as `dict.rows` answers it.
@@ -110,6 +113,8 @@ pub fn row_json(f: &RowFacts) -> Value {
         "disabled": f.disabled,
         "title": f.title,
         "buttons": f.buttons,
+        "name": f.name,
+        "sub": f.sub,
     })
 }
 
@@ -234,6 +239,8 @@ fn dict_rows(ctx: &ProbeCtx, _: &Value) -> Result<Value, String> {
                 disabled: r.off,
                 title: r.button_title.as_str(),
                 buttons,
+                name: r.label.as_str(),
+                sub: r.sub.as_str(),
             }));
         }
     }
@@ -370,11 +377,31 @@ mod tests {
             disabled,
             title: "",
             buttons: vec![],
+            name: "",
+            sub: "",
         };
         let on = row_json(&facts(false));
         let off = row_json(&facts(true));
         assert_eq!(on["disabled"], false);
         assert_eq!(off["disabled"], true);
+    }
+
+    #[test]
+    fn a_row_carries_its_name_and_its_sub_line() {
+        let r = row_json(&RowFacts {
+            id: "base",
+            state: "absent",
+            badge: "",
+            vendor: "openai",
+            recommended: false,
+            disabled: false,
+            title: "",
+            buttons: vec![],
+            name: "Whisper Base",
+            sub: "Downloaded once",
+        });
+        assert_eq!(r["name"], "Whisper Base");
+        assert_eq!(r["sub"], "Downloaded once");
     }
 
     #[test]
@@ -388,6 +415,8 @@ mod tests {
             disabled: false,
             title: "Remove",
             buttons: vec![],
+            name: "",
+            sub: "",
         });
         assert_eq!(r["state"], "installed");
         assert_eq!(r["badge"], "Recommended");
