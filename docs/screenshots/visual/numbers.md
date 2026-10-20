@@ -4,18 +4,18 @@
 
 | cell | dir | frames | longest gap ms | t50 / t90 / t99 ms | settle ms | curve error (best fit) | input to first frame ms |
 |---|---|---|---|---|---|---|---|
-| flare 100-gpu | collapse | 22 | 8.9 | 15 / 68 / 135 | 165 | 0.020 | 27.3 |
-| flare 100-gpu | expand | 21 | 10.4 | 15 / 69 / 137 | 171 | 0.016 | 26.3 |
-| flare 100-software | collapse | 22 | 9.9 | 18 / 72 / 140 | 167 | 0.020 | 18.9 |
-| flare 100-software | expand | 24 | 9.9 | 16 / 68 / 136 | 167 | 0.020 | 21.8 |
-| flare 150-gpu | collapse | 22 | 9.4 | 14 / 68 / 136 | 166 | 0.024 | 26.3 |
-| flare 150-gpu | expand | 21 | 12.0 | 15 / 69 / 137 | 171 | 0.022 | 26.2 |
-| flare 150-software | collapse | 26 | 9.5 | 16 / 70 / 139 | 169 | 0.015 | 21.1 |
-| flare 150-software | expand | 25 | 8.7 | 15 / 70 / 138 | 169 | 0.020 | 20.0 |
-| flare 225-gpu | collapse | 21 | 11.4 | 15 / 69 / 137 | 166 | 0.020 | 25.8 |
-| flare 225-gpu | expand | 20 | 11.2 | 15 / 70 / 137 | 170 | 0.018 | 25.7 |
-| flare 225-software | collapse | 15 | 14.6 | 13 / 68 / 136 | 169 | 0.009 | 24.7 |
-| flare 225-software | expand | 16 | 14.4 | 13 / 68 / 135 | 169 | 0.009 | 26.0 |
+| flare 100-gpu | collapse | 7 | 69.1 | 24 / 66 / 139 | 205 | 0.203 | 42.2 |
+| flare 100-gpu | expand | 7 | 68.2 | 18 / 75 / 150 | 172 | 0.203 | 42.2 |
+| flare 100-software | collapse | 11 | 19.2 | 8 / 63 / 128 | 153 | 0.018 | 36.9 |
+| flare 100-software | expand | 11 | 20.9 | 8 / 62 / 128 | 155 | 0.018 | 36.7 |
+| flare 150-gpu | collapse | 7 | 70.8 | 20 / 72 / 147 | 206 | 0.194 | 43.5 |
+| flare 150-gpu | expand | 7 | 68.1 | 8 / 76 / 153 | 155 | 0.116 | 43.3 |
+| flare 150-software | collapse | 11 | 18.9 | 7 / 61 / 127 | 154 | 0.019 | 39.1 |
+| flare 150-software | expand | 11 | 19.9 | 8 / 63 / 127 | 153 | 0.019 | 37.2 |
+| flare 225-gpu | collapse | 7 | 68.8 | 27 / 70 / 148 | 167 | 0.206 | 41.2 |
+| flare 225-gpu | expand | 7 | 67.0 | 8 / 78 / 153 | 159 | 0.151 | 41.7 |
+| flare 225-software | collapse | 11 | 17.7 | 7 / 62 / 128 | 150 | 0.018 | 37.4 |
+| flare 225-software | expand | 11 | 18.6 | 8 / 63 / 128 | 153 | 0.019 | 36.9 |
 | pt 100-pt | collapse | 27 | 7.3 | 18 / 72 / 142 | 174 | 0.000 | 10.9 |
 | pt 100-pt | expand | 27 | 7.0 | 18 / 72 / 142 | 174 | 0.003 | 8.9 |
 | pt 150-pt | collapse | 27 | 7.1 | 18 / 72 / 142 | 174 | 0.000 | 11.5 |
@@ -27,8 +27,9 @@
 
 | cell | pictures | first picture ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 100-software | 3 | 58 | 68 | 98 | 1 | 0 | 0 | 0 | 1 | 1180x780 | 1180x780 |
-| flare 225-gpu | 4 | 667 | 680 | 857 | 1 | 0 | 0 | 1 | 1 | 1180x780 | 1180x780 |
+| flare 100-software | 4 | 58 | 88 | 203 | 1 | 1 | 0 | 2 | 2 | 2880x1497 | 2655x1755 |
+| flare 225-gpu | 3 | 651 | 677 | 778 | 1 | 0 | 0 | 1 | 1 | 2655x1755 | 2655x1755 |
+| flare 225-software | 3 | 78 | 78 | 211 | 0 | 0 | 0 | 2 | 2 | 2655x1755 | 2655x1755 |
 | pt 100-pt | 4 | 195 | 195 | 1745 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
 | pt 150-pt | 4 | 178 | 178 | 1729 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
 | pt 225-pt | 4 | 178 | 178 | 1782 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
@@ -37,8 +38,9 @@
 
 | cell | pictures | first picture ms | first non-blank ms | last change ms | blank | wrong size | off brightness | wrong bar | wrong foot | first size | final size |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| flare 100-software | 3 | 58 | 67 | 101 | 1 | 0 | 0 | 0 | 1 | 1180x780 | 1180x780 |
-| flare 225-gpu | 4 | 678 | 690 | 857 | 1 | 0 | 0 | 1 | 1 | 1180x780 | 1180x780 |
+| flare 100-software | 5 | 63 | 83 | 223 | 1 | 1 | 0 | 3 | 3 | 2880x1497 | 2655x1755 |
+| flare 225-gpu | 4 | 639 | 674 | 898 | 1 | 1 | 0 | 1 | 1 | 2880x1497 | 2655x1755 |
+| flare 225-software | 4 | 65 | 86 | 200 | 1 | 0 | 0 | 2 | 2 | 2655x1755 | 2655x1755 |
 | pt 100-pt | 5 | 201 | 201 | 1813 | 0 | 0 | 0 | 0 | 0 | 1000x640 | 1000x640 |
 | pt 150-pt | 5 | 183 | 183 | 1791 | 0 | 0 | 0 | 0 | 0 | 1500x960 | 1500x960 |
 | pt 225-pt | 5 | 184 | 184 | 1796 | 0 | 0 | 0 | 0 | 0 | 2250x1440 | 2250x1440 |
@@ -47,10 +49,10 @@
 
 | run | first frame / paint | tabs there | prompt shown |
 |---|---|---|---|
-| flare startup-gpu | 737.7 | 748.3 (wall, from CreateProcess) | 815.5 (wall) |
-| flare startup-software | 46.1 | 80.1 (wall, from CreateProcess) | 138.1 (wall) |
-| flare resume-gpu | 748.6 | 759.3 (wall, from CreateProcess) | 824.4 (wall) |
-| flare resume-software | 46.0 | 81.1 (wall, from CreateProcess) | 153.5 (wall) |
+| flare startup-gpu | 762.0 | 771.6 (wall, from CreateProcess) | 864.2 (wall) |
+| flare startup-software | 46.0 | 88.6 (wall, from CreateProcess) | 147.2 (wall) |
+| flare resume-gpu | 743.2 | 752.8 (wall, from CreateProcess) | 834.2 (wall) |
+| flare resume-software | 45.0 | 87.3 (wall, from CreateProcess) | 160.2 (wall) |
 | startup-100-pt | 307.8 | 211.8 | 730.7 |
 | resume-100-pt | 342.0 | 198.0 | 777.0 |
 | startup-150-pt | 303.5 | 208.5 | 721.9 |
