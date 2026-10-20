@@ -27,6 +27,27 @@
 .PARAMETER CopySuspects
   Copy each suspect's full image into <sheets>\suspects.
 
+.PARAMETER Only
+  Make sheets only for the scenes whose name contains this text (the M8 dictation sheets: -Only dictation).
+
+.PARAMETER Name
+  Names the grids `sheet-<Name>-100.png` and so on instead of `sheet-100.png`, so a partial set never
+  overwrites M10's grids (default: the Only text, or nothing).
+
+.PARAMETER Height
+  The common height of a scene's sheet row, in px (default 200). The eight scalings are shrunk to this height,
+  so every scale looks the same size: the labels carry each image's real size, and -Native copies the real images.
+
+.PARAMETER Cell
+  The width of a grid cell, in px (default 320).
+
+.PARAMETER Native
+  Scale tags (1, 2_25, 3) whose full images are copied, unscaled, into <sheets>\native\ for the reader who must
+  judge blur and 1 px clipping at 1:1. Names are <scene>-<tag>-<renderer>.png.
+
+A gpu pass writes sheets with a `-gpu` suffix (`sheet-<scene>-gpu.png`, `sheet-<name>-100-gpu.png`), so both
+renderers sit side by side.
+
 .EXAMPLE
   powershell -File tools\dpi-matrix\compose.ps1 -Images <scratch>\dpi
 #>
@@ -34,7 +55,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Images,
     [string]$Sheets = '',
     [ValidateSet('software', 'gpu')][string]$Renderer = 'software',
-    [switch]$CopySuspects
+    [switch]$CopySuspects,
+    [string]$Only = '',
+    [string]$Name = '',
+    [int]$Height = 200,
+    [int]$Cell = 320,
+    [string]$Native = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,10 +97,14 @@ function Draw-Scaled($graphics, [System.Drawing.Image]$img, [int]$x, [int]$y, [i
 $scenes = @(Get-ChildItem -LiteralPath $Images -Filter "*-1-$Renderer.png" | ForEach-Object {
         $_.Name -replace "-1-$Renderer\.png$", ''
     } | Where-Object { $_ -ne 'badge' } | Sort-Object)
+if ($Only) { $scenes = @($scenes | Where-Object { $_ -like "*$Only*" }) }
 if ($scenes.Count -eq 0) { throw "no $Renderer images in $Images" }
+if (-not $Name) { $Name = $Only }
+$suffix = if ($Renderer -eq 'gpu') { '-gpu' } else { '' }
+$gridName = if ($Name) { "sheet-$Name-" } else { 'sheet-' }
 
 # One sheet per scene: the eight scalings side by side at one height.
-$height = 200
+$height = $Height
 $gap = 8
 $labelH = 22
 foreach ($scene in $scenes) {
@@ -83,26 +113,28 @@ foreach ($scene in $scenes) {
         $p = Join-Path $Images "$scene-$tag-$Renderer.png"
         if (Test-Path -LiteralPath $p) { $imgs += , @($tag, (Read-Image $p)) }
     }
-    $widths = @($imgs | ForEach-Object { [int][math]::Round($_[1].Width * $height / $_[1].Height) })
+    # A very wide scene (the tab strip) is shrunk further so its sheet stays about 6000 px wide.
+    $sceneH = [math]::Min($height, [int][math]::Floor(6000 / (8 * $imgs[0][1].Width / $imgs[0][1].Height)))
+    $widths = @($imgs | ForEach-Object { [int][math]::Round($_[1].Width * $sceneH / $_[1].Height) })
     $total = [int](($widths | Measure-Object -Sum).Sum + $gap * ($imgs.Count + 1))
-    $bmp = New-Object System.Drawing.Bitmap $total, ($height + $labelH + 2 * $gap)
+    $bmp = New-Object System.Drawing.Bitmap $total, ($sceneH + $labelH + 2 * $gap)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.Clear($ground)
     $x = $gap
     for ($i = 0; $i -lt $imgs.Count; $i++) {
-        $g.DrawString(($imgs[$i][0] -replace '_', '.') + 'x', $labelFont, $brush, $x, 2)
-        Draw-Scaled $g $imgs[$i][1] $x ($labelH) $widths[$i] $height
+        $g.DrawString((($imgs[$i][0] -replace '_', '.') + 'x ' + $imgs[$i][1].Width + 'x' + $imgs[$i][1].Height), $labelFont, $brush, $x, 2)
+        Draw-Scaled $g $imgs[$i][1] $x ($labelH) $widths[$i] $sceneH
         $x += $widths[$i] + $gap
     }
     $g.Dispose()
-    Save-Sheet $bmp (Join-Path $Sheets "sheet-$scene.png")
+    Save-Sheet $bmp (Join-Path $Sheets "sheet-$scene$suffix.png")
     foreach ($item in $imgs) { $item[1].Dispose() }
 }
 
 # The grids: every scene at one scale, six to a row, each cell 320 px wide.
-$cell = 320
+$cell = $Cell
 $cols = 6
-$grids = @(@{ Tag = '1'; Name = 'sheet-100.png' }, @{ Tag = '1_5'; Name = 'sheet-150.png' }, @{ Tag = '2_25'; Name = 'sheet-225.png' })
+$grids = @(@{ Tag = '1'; Name = "${gridName}100$suffix.png" }, @{ Tag = '1_5'; Name = "${gridName}150$suffix.png" }, @{ Tag = '2_25'; Name = "${gridName}225$suffix.png" })
 foreach ($grid in $grids) {
     $cells = @()
     foreach ($scene in $scenes) {
@@ -143,6 +175,17 @@ foreach ($grid in $grids) {
     $g.Dispose()
     Save-Sheet $bmp (Join-Path $Sheets $grid.Name)
     foreach ($item in $cells) { $item[1].Dispose() }
+}
+
+if ($Native) {
+    $nativeDir = Join-Path $Sheets 'native'
+    New-Item -ItemType Directory -Force -Path $nativeDir | Out-Null
+    foreach ($scene in $scenes) {
+        foreach ($tag in @($Native -split '[,; ]+' | Where-Object { $_ })) {
+            $src = Join-Path $Images "$scene-$tag-$Renderer.png"
+            if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $nativeDir -Force }
+        }
+    }
 }
 
 if ($CopySuspects) {

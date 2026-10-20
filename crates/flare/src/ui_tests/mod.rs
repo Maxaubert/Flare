@@ -5,7 +5,6 @@ mod app;
 mod dialog;
 mod dictation_page;
 mod dictation_pill;
-mod dictation_sheets;
 mod dictation_widget;
 mod flows;
 mod icons_misc;

@@ -4,7 +4,7 @@ Reads the folder run.ps1 wrote (`<scene>-<tag>-<renderer>.png`, the tag is the s
 for its dot: 1, 1_25, 2_25) and checks each image:
 
   size        the image is round(W * s) by round(H * s), W x H the scene's logical size (1000 x 640, or the
-              scene's own size from SCENE_SIZE: marks-overflow 700 x 640, update-window-small 1000 x 420).
+              scene's own size from SCENE_SIZE: marks-overflow 700 x 640, update-window-small 1000 x 420, and the dictation\n              scenes that are windows of their own).
               The badge scene is a contact sheet, not a window, and is not checked here (NOT_WINDOWS)
   blank       more than two colours
   renderer    software against gpu at the same scene and scale: no pixel differs by more than 8 in any
@@ -42,7 +42,19 @@ BASE_H = 640
 SCALES = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0]
 RENDERERS = ["software", "gpu"]
 # A scene's own logical size, when it is not 1000 x 640 (scene_args in headless.rs).
-SCENE_SIZE = {"marks-overflow": (700, 640), "update-window-small": (1000, 420)}
+SCENE_SIZE = {
+    "marks-overflow": (700, 640),
+    "update-window-small": (1000, 420),
+    # The dictation scenes that are windows of their own (dictation_scenes.rs holds the same sizes; a test there
+    # reads this table): the tab mark on a strip and on the sidebar, and the widget card at each face's height.
+    "dictation-mark-strip": (400, 36),
+    "dictation-mark-sidebar": (260, 148),
+    "dictation-widget-listening": (480, 196),
+    "dictation-widget-starting": (480, 196),
+    "dictation-widget-pick": (480, 400),
+    "dictation-widget-sent": (480, 104),
+    "dictation-widget-warning": (480, 104),
+}
 # `badge` is a contact sheet of every taskbar disc at its own scales, not a window: --scale does not apply.
 NOT_WINDOWS = {"badge"}
 CROSS_TOL = 8

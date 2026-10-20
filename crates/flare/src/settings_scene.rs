@@ -70,6 +70,13 @@ pub fn prep(prefs: &PrefStore) {
     set_new_tab_mode(prefs, NewTabMode::Folder, None);
 }
 
+/// The fixed store of the Dictation page scenes (M8, Task 35): `prep`, with dictation switched on and the Base model
+/// chosen. Every other dictation key is its default (Ctrl+Win held, the system microphone, any language).
+pub fn prep_dictation(prefs: &PrefStore) {
+    prep(prefs);
+    prefs.set("flare.dictation.enabled", "1");
+    prefs.set("flare.dictation.model", "base");
+}
 /// The Settings controller's ports in the scene: fixed answers, no profile, no clipboard, no
 /// folder picker, no opened path. `post` is the scene's queue.
 pub fn deps(prefs: &PrefStore, post: Post, clock: Rc<dyn Fn() -> u64>) -> SettingsDeps {

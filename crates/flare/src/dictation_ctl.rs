@@ -1775,6 +1775,53 @@ pub fn run_view(id: &str, bytes: u64) -> (Option<u32>, Option<&'static str>) {
     (pct, failure)
 }
 
+thread_local! {
+    /// Catalogue ids the scenes show as installed (the headless scenes have no store).
+    static SCENE_INSTALLED: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether a scene says this catalogue entry is installed.
+pub(crate) fn scene_installed(id: &str) -> bool {
+    SCENE_INSTALLED.with(|s| s.borrow().contains(&id))
+}
+
+/// The Dictation page's fixed states for the headless scenes and the scaling images (M8 Task 35): no store, no worker,
+/// no microphone listing. `installed` entries wear their installed state, `downloading` is one entry at a percentage,
+/// `ask` is the model whose one-line question is open. Called before the page is built.
+pub(crate) fn scene_page(
+    installed: &[&'static str],
+    downloading: Option<(&'static str, u32)>,
+    ask: Option<&str>,
+) {
+    SCENE_INSTALLED.with(|s| *s.borrow_mut() = installed.to_vec());
+    let mut r = runs();
+    r.clear();
+    if let Some((id, pct)) = downloading {
+        let bytes = flare_dictation::catalog::visible_models()
+            .into_iter()
+            .find(|m| m.id == id)
+            .map_or(0, |m| m.bytes);
+        r.insert(
+            id.to_string(),
+            Run {
+                done: bytes / 100 * u64::from(pct),
+                active: true,
+                failure: None,
+            },
+        );
+    }
+    drop(r);
+    PAGE.with(|p| {
+        let mut p = p.borrow_mut();
+        p.mics = Some(vec![(
+            "scene-mic".to_string(),
+            "Headset Microphone".to_string(),
+        )]);
+        p.mics_pending = false;
+        p.ask = ask.map(str::to_string);
+    });
+}
+
 /// Hands `f` to the UI thread. The tests have no event loop: they take what was posted and run it themselves.
 fn post_ui(f: impl FnOnce() + Send + 'static) {
     #[cfg(test)]

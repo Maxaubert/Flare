@@ -12,6 +12,7 @@ mod config;
 mod diag_ctl;
 mod dictation_ctl;
 mod dictation_page;
+mod dictation_scenes;
 mod dictation_widget;
 mod drop_flow;
 mod e2e;
