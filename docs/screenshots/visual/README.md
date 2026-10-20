@@ -171,3 +171,16 @@ over a painted window. It is not in the window. Two faults of the copier, both f
   renderer word and scale are noted before the window has its monitor's scale. Fix: `e2e_hook::set_hello_scale` runs on
   every move, resize and scale change, so Hello reports the window's own scale; the cells are now `225-software` (the old
   `100-software` start-up and resume folders were removed).
+
+## Ink weight, pill width and preview baselines (audit V13, 2026-10-21)
+
+- Weight 600 is NOT lost on the GPU path. The segmented label 'Horizontal' at 100 percent on the GPU has 26.5k of ink at
+  weight 600 and 20.6k at weight 400 (a capture of each, same page), and GPU ink is at or above the software
+  renderer's at 100, 150 and 225 percent. Prism Terminal's labels are about 19 percent heavier still (31.7k): that is
+  Chromium's own rasteriser (ClearType at 100 percent), not a weight. Flare does not copy it.
+- The Panel edges pill was 233 css px wide against PT's 230 / 231 / 231.2 (100 / 150 / 225): Slint rounds a Text's
+  preferred width up to a whole px, four times. The segment now takes a sixteenth of the label repeated sixteen times.
+  After: the pill's left edge is 711.0 at 100 percent on both apps.
+- The theme preview's text sat 1.3 to 1.8 css px under PT's baselines; line 2's baseline is now at 473.0 on both at
+  100 percent (472.3 at 300 percent).
+- FLARE_VISUAL_CELLS=300-gpu runs the 300 percent cell (opt-in; ll keeps the three PT also has).
