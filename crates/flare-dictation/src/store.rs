@@ -414,13 +414,13 @@ impl Store {
         self.inner.gpu_engine_dir()
     }
 
-    /// O14: for each model not installed here whose twin in `prism_root` matches the catalogue's size
+    /// O14: for each model not installed here whose twin in `other_root` matches the catalogue's size
     /// and SHA-256, hard-link it (a copy across volumes). Returns the ids reused. Never writes there.
-    pub fn reuse_prism_models(&self, prism_root: PathBuf) -> Receiver<Vec<String>> {
+    pub fn reuse_models_from(&self, other_root: PathBuf) -> Receiver<Vec<String>> {
         let (tx, rx) = channel();
         let inner = self.inner.clone();
         thread::spawn(move || {
-            let _ = tx.send(inner.reuse_now(&prism_root));
+            let _ = tx.send(inner.reuse_now(&other_root));
         });
         rx
     }
@@ -804,13 +804,13 @@ impl Inner {
         Ok((hex(&hash.finalize()), received))
     }
 
-    fn reuse_now(&self, prism_root: &Path) -> Vec<String> {
+    fn reuse_now(&self, other_root: &Path) -> Vec<String> {
         let mut reused = Vec::new();
         for e in self.catalog.iter().filter(|e| e.kind == Kind::Model) {
             if lock(&self.state).flights.contains_key(&e.id) || self.installed_sync(e) {
                 continue;
             }
-            let src = prism_root.join("models").join(format!("{}.bin", e.id));
+            let src = other_root.join("models").join(format!("{}.bin", e.id));
             if !fs::metadata(&src).is_ok_and(|m| m.is_file() && m.len() == e.bytes) {
                 continue;
             }

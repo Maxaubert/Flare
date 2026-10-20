@@ -1,5 +1,5 @@
-//! WAV encoding and the arithmetic between the microphone and whisper-server (Task 6). Ported from Prism
-//! Terminal's `core/renderer/lib/wav.ts` at e5848cb (#13), with `level` from `core/renderer/lib/micCapture.ts`
+//! WAV encoding and the arithmetic between the microphone and whisper-server (Task 6). Ported from
+//! Prism Terminal's `core/renderer/lib/wav.ts` at e5848cb (#13), with `level` from `core/renderer/lib/micCapture.ts`
 //! (min(1, rms * 6)) and `silent_warmup_wav` from `core/main/dictationEngine.ts` (`silentWav`).
 //!
 //! Pure on purpose: everything that can be wrong about the bytes is checked field by field here. The clip is

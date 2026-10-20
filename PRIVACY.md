@@ -35,6 +35,6 @@ Dictation (off by default) can take your voice with another app in front. With *
 - **Where the words go.** Into a Claude tab's terminal, as a paste. In a shell that is not running Claude, dictated text is pasted and never sent with Enter. In a running Claude prompt, Flare presses Enter once, and only after it has checked that tab is still the one you picked and still runs Claude.
 - **What is kept.** The window's number lives in memory for that one dictation. The keys, that number, the words and the audio are never written to a file, never put in the diagnostics log (which keeps only the phases: listening, transcribing, pasted) and never sent anywhere.
 
-The speech models are in `%LOCALAPPDATA%\FlareDictation`. When you first switch dictation on, Flare links the models Prism already has in its own folder, after checking each one's size and SHA-256, and it never writes into Prism's folder.
+The speech models are in `%LOCALAPPDATA%\FlareDictation`. When you first switch dictation on, Flare links any of the same models that another dictation app on this PC already holds in its own folder, after checking each one's size and SHA-256, and it never writes into that folder.
 
 If the app ever gains a request that is not listed here, this file changes in the same pull request.

@@ -894,7 +894,7 @@ mod tests {
             .expect("a picker")
     }
 
-    /* ----- the key with a Flare in front (PT: describe 'the key with a Prism Terminal in front') ----- */
+    // ----- the key with a Flare in front (PT: describe 'the key with a Prism Terminal in front') -----
 
     #[test]
     fn starts_with_another_app_in_front_whichever_it_is_named_by_its_process() {

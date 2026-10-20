@@ -25,6 +25,15 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/scenarios/input_b.rs", "Links"),
     ("e2e/src/scenarios/input_d.rs", "Links"),
     ("e2e/src/scenarios/update.rs", "update check"),
+    // Dictation: the catalogue holds the fixed download addresses (whisper.cpp releases, Hugging Face), the
+    // fetcher is the one client that requests them, and only after the user chose a model; the engine's
+    // client talks to 127.0.0.1 only. The controller picks the real or a stalled fetcher.
+    ("flare-dictation/src/catalog.rs", "Dictation"),
+    ("flare-dictation/src/fetch_ureq.rs", "Dictation"),
+    ("flare-dictation/src/engine/http.rs", "Dictation"),
+    ("flare/src/dictation_ctl.rs", "Dictation"),
+    // The e2e's explicit fetch step names the sample recording it may download for the dictation scenarios.
+    ("e2e/src/fixtures.rs", "Dictation"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

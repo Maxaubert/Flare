@@ -18,17 +18,21 @@ use super::{ProbeCtx, ProbeRegistry};
 use crate::dictation_ctl::{self, DictView};
 use crate::dictation_widget::{self, Snapshot};
 use crate::{BlockKind as SlintBlock, RowLook, SettingsBridge};
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 thread_local! {
     /// What each Dictation model row last said it drew (SettingsBridge.row-look), by row id.
-    static LOOKS: RefCell<HashMap<String, RowLook>> = RefCell::new(HashMap::new());
+    static LOOKS: Mutex<HashMap<String, RowLook>> = Mutex::new(HashMap::new());
 }
 
 /// Keeps what a model row drew; the latest word of a row replaces its earlier one.
 pub fn note_look(l: RowLook) {
-    LOOKS.with(|m| m.borrow_mut().insert(l.id.to_string(), l));
+    LOOKS.with(|m| {
+        m.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(l.id.to_string(), l)
+    });
 }
 
 fn hex(c: slint::Color) -> String {
@@ -319,8 +323,12 @@ fn dict_rows(ctx: &ProbeCtx, _: &Value) -> Result<Value, String> {
                 name: r.label.as_str(),
                 sub: r.sub.as_str(),
             });
-            row["look"] =
-                LOOKS.with(|m| m.borrow().get(r.id.as_str()).map_or(Value::Null, look_json));
+            row["look"] = LOOKS.with(|m| {
+                m.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(r.id.as_str())
+                    .map_or(Value::Null, look_json)
+            });
             out.push(row);
         }
     }

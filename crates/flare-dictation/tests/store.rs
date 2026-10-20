@@ -890,7 +890,7 @@ fn unzips_for_real_with_expand_archive_in_a_path_with_a_space() {
 
 // ---- Flare's own ----
 
-fn prism_root_with(fx: &Fx, body: &[u8]) -> PathBuf {
+fn other_root_with(fx: &Fx, body: &[u8]) -> PathBuf {
     let prism = fx._holder.path().join("PrismDictation");
     fs::create_dir_all(prism.join("models")).unwrap();
     fs::write(prism.join("models").join("base.bin"), body).unwrap();
@@ -922,11 +922,11 @@ fn tree(root: &Path) -> Vec<(PathBuf, u64, SystemTime)> {
 #[test]
 fn reuse_links_a_matching_prism_model_and_never_writes_there() {
     let fx = Fx::new();
-    let prism = prism_root_with(&fx, &fx.good);
+    let prism = other_root_with(&fx, &fx.good);
     let before = tree(&prism);
     let s = fx.store(vec![fx.model("base", "/good"), fx.model("small", "/good")]);
     let reused = s
-        .reuse_prism_models(prism.clone())
+        .reuse_models_from(prism.clone())
         .recv_timeout(Duration::from_secs(30))
         .unwrap();
     assert_eq!(reused, vec!["base".to_string()]);
@@ -952,10 +952,10 @@ fn reuse_skips_a_model_whose_hash_differs() {
     let fx = Fx::new();
     let mut other = fx.good.clone();
     other[1000] ^= 0xff; // the right size, the wrong bytes
-    let prism = prism_root_with(&fx, &other);
+    let prism = other_root_with(&fx, &other);
     let s = fx.store(vec![fx.model("base", "/good")]);
     let reused = s
-        .reuse_prism_models(prism)
+        .reuse_models_from(prism)
         .recv_timeout(Duration::from_secs(30))
         .unwrap();
     assert!(reused.is_empty());

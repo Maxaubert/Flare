@@ -95,7 +95,7 @@ mod tests {
             ),
             // The owner's own dictation tool runs its own server: never counted, never touched.
             PathBuf::from(
-                r"C:\Program Files\Prism Terminal\resources\bin\whisper\whisper-server.exe",
+                r"C:\Program Files\Another Dictation App\resources\bin\whisper\whisper-server.exe",
             ),
             // A folder whose name starts the same is a different folder.
             PathBuf::from(

@@ -11,7 +11,7 @@
 //! helper is abandoned: it ends when its socket does (at the latest at the 12 hour ceiling below).
 
 use std::io::Read;
-use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use crate::store::{Failure, Fetch};
