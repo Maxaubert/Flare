@@ -1,0 +1,92 @@
+{
+  "surface": "resume",
+  "pct": 100,
+  "renderer": "pt",
+  "version": "0.58.0.0",
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 201,
+      "file": "000-t00201ms.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 458,
+      "file": "001-t00458ms.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 818,
+      "file": "002-t00818ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 1331,
+      "file": "003-t01331ms.png"
+    },
+    {
+      "n": 4,
+      "t_ms": 1813,
+      "file": "004-t01813ms.png"
+    }
+  ],
+  "timeline": [
+    {
+      "t_ms": 457,
+      "tabs": 3,
+      "front": 1,
+      "cwds": [
+        "alpha~\\AppData\\Local\\Temp\\pt-visual-2zWPRR\\w14",
+        "beta~\\AppData\\Local\\Temp\\pt-visual-2zWPRR\\w14",
+        "gamma~\\AppData\\Local\\Temp\\pt-visual-2zWPRR\\w14"
+      ]
+    }
+  ],
+  "readyAt": 854,
+  "tWindow": 196,
+  "clock": {
+    "startEpoch": 1792510329925.3782,
+    "fcp_since_process_ms": 344.021728515625
+  },
+  "front": 1,
+  "startEpoch": 1792510329925.769,
+  "timing": {
+    "runs": [
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 351.4248046875,
+        "tabs_since_process_ms": 201.671142578125,
+        "prompt_since_process_ms": 778.671142578125
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 341.815673828125,
+        "tabs_since_process_ms": 199.9951171875,
+        "prompt_since_process_ms": 813.9951171875
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 344.36376953125,
+        "tabs_since_process_ms": 194.279541015625,
+        "prompt_since_process_ms": 749.279541015625
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 340.000732421875,
+        "tabs_since_process_ms": 195.99658203125,
+        "prompt_since_process_ms": 760.99658203125
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 341.97998046875,
+        "tabs_since_process_ms": 198.029052734375,
+        "prompt_since_process_ms": 777.029052734375
+      }
+    ],
+    "median": {
+      "fcp_since_process_ms": 341.97998046875,
+      "tabs_since_process_ms": 198.029052734375,
+      "prompt_since_process_ms": 777.029052734375
+    }
+  }
+}

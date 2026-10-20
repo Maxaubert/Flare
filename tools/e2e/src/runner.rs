@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use crate::ctx::{Ctx, Scenario, DEFAULT_EXE};
 use crate::proc::reap_by_profile;
 use crate::report::{self, Row};
-use crate::scenarios::ALL;
+use crate::scenarios::{ALL, OPT_IN};
 
 const POLL: Duration = Duration::from_millis(25);
 /// How long the parent waits for a child's last lines after the child is gone.
@@ -110,6 +110,15 @@ pub fn select<'a>(all: &'a [Scenario], filters: &[String]) -> Vec<&'a Scenario> 
         .collect()
 }
 
+/// What a run runs: the gate's scenarios that match, and (only when a filter names it) an opt-in one.
+pub fn pick(filters: &[String]) -> Vec<&'static Scenario> {
+    let mut picked = select(ALL, filters);
+    if !filters.is_empty() {
+        picked.extend(select(OPT_IN, filters));
+    }
+    picked
+}
+
 /// The app binary for this run: the installed layout with `--packaged`, else `--exe`, else the
 /// release build.
 pub fn exe_path(cli: &Cli) -> PathBuf {
@@ -151,7 +160,7 @@ pub fn require_checks(ctx: &mut Ctx) {
 
 /// The child: runs one scenario in this process and prints its JSON lines. Exit 0 when it passed.
 pub fn run_one(name: &str, cli: &Cli) -> i32 {
-    let Some(s) = ALL.iter().find(|s| s.name == name) else {
+    let Some(s) = ALL.iter().chain(OPT_IN).find(|s| s.name == name) else {
         println!(
             "{}",
             json!({"pass": false, "msg": format!("no scenario named {name}")})
@@ -382,7 +391,7 @@ pub fn run_all(cli: &Cli) -> i32 {
         );
         return 1;
     }
-    let picked = select(ALL, &cli.filters);
+    let picked = pick(&cli.filters);
     if picked.is_empty() {
         println!("no scenario matches {}", cli.filters.join(" "));
         return 1;

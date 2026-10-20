@@ -260,6 +260,9 @@ export component AppWindow inherits Window {
     in property <bool> sidebar-revealed;
     in property <length> sidebar-width: 220px;
     in property <bool> sidebar-sliding;
+    // Where the slide is NOW (the eased slot width and panel x), for the e2e's per-frame series.
+    out property <length> sidebar-slot-visual: sb.slot-visual;
+    out property <length> sidebar-panel-left: sb.panel-left;
     in-out property <string> sidebar-find <=> sb.find-text;
     // ---- start screen ----
     in property <[Place]> places;

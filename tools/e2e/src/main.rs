@@ -2,7 +2,7 @@
 //! [--keep] [perf [name...]]`; `--run-one <name>` is the per-scenario child the parent starts.
 
 use flare_e2e::runner::{run_all, run_one, Cli};
-use flare_e2e::scenarios::ALL;
+use flare_e2e::scenarios::{ALL, OPT_IN};
 
 fn main() {
     let cli = match Cli::parse(std::env::args().skip(1)) {
@@ -24,7 +24,7 @@ fn main() {
         return;
     }
     if cli.list {
-        for s in ALL {
+        for s in ALL.iter().chain(OPT_IN) {
             println!("{}", s.name);
         }
         return;

@@ -34,6 +34,24 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("dpi.state", dpi_state);
     r.add("probe.names", probe_names);
     r.add("memory.breakdown", memory_breakdown);
+    r.add("frames.series", frames_series);
+    r.add("sidebar.anim", sidebar_anim);
+}
+
+/// `frames.series`: every presented frame since the last `Frames` reset, with the sidebar's slide
+/// at that frame (the visual tour's per-frame numbers).
+fn frames_series(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    Ok(crate::e2e_glue::frame_series())
+}
+
+/// `sidebar.anim`: the slide as it is drawn right now (css px), and whether a pin or unpin slide runs.
+fn sidebar_anim(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let a = ctx.app;
+    Ok(json!({
+        "slot": a.get_sidebar_slot_visual(),
+        "panel_left": a.get_sidebar_panel_left(),
+        "sliding": a.get_sidebar_sliding(),
+    }))
 }
 
 /// Where the private working set goes (Task 66): the parts the app can count, and the rest.
@@ -774,9 +792,23 @@ mod tests {
             "dpi.hairlines",
             "render.size",
             "probe.names",
+            "frames.series",
+            "sidebar.anim",
         ] {
             assert!(names.contains(&want), "{want} is missing");
         }
+    }
+
+    #[test]
+    fn the_slide_and_the_frame_series_answer_for_the_visual_tour() {
+        let f = Fx::new(1.0, 1);
+        let a = f.probe("sidebar.anim", Value::Null).unwrap();
+        assert!(a["slot"].is_number(), "{a}");
+        assert!(a["panel_left"].is_number(), "{a}");
+        assert_eq!(a["sliding"], false);
+        let s = f.probe("frames.series", Value::Null).unwrap();
+        assert!(s["frames"].is_array(), "{s}");
+        assert!(s["now_age_ms"].is_number(), "{s}");
     }
 
     #[test]

@@ -81,12 +81,34 @@ fn ms_between(later: Instant, earlier: Instant) -> f64 {
     later.saturating_duration_since(earlier).as_secs_f64() * 1000.0
 }
 
+/// The most frames the series keeps (about eight minutes at 60 fps); later frames are not kept.
+pub const SERIES_CAP: usize = 30_000;
+
+/// One presented frame, for the visual tour (audit 2026-10-20): when it was (ms since the process
+/// started), the gap since the frame before, the time it took, and the sidebar's animated slot width
+/// and panel x at that frame. A value the frame did not have is `None`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameSample {
+    pub age_ms: f64,
+    pub gap_ms: Option<f64>,
+    pub render_ms: Option<f64>,
+    pub slot: Option<f32>,
+    pub panel_left: Option<f32>,
+}
+
 /// The frame series: the gap between frames and the time each frame took.
 pub struct FrameRecorder {
     gaps: FrameStats,
     renders: FrameStats,
     before: Option<Instant>,
     last_after: Option<Instant>,
+    /// The gap and render time of the frame `after` just closed, for the series.
+    cur: (Option<f64>, Option<f64>),
+    series: Vec<FrameSample>,
+    /// The software renderer has no rendering notifier, so its frames are the window's redraw requests
+    /// (`redraw_sample`), and a grid render adds nothing to the series.
+    redraw_series: bool,
+    last_redraw: Option<Instant>,
     on: bool,
 }
 
@@ -103,11 +125,16 @@ impl FrameRecorder {
             renders: FrameStats::new(200_000),
             before: None,
             last_after: None,
+            cur: (None, None),
+            series: Vec::new(),
+            redraw_series: false,
+            last_redraw: None,
             on: false,
         }
     }
 
-    /// Recording starts at the first `Frames` or `Latency` request.
+    /// Recording of the statistics starts at the first `Frames` or `Latency` request (the series
+    /// needs no request: it runs from the first frame, so start-up is in it).
     pub fn start(&mut self) {
         self.on = true;
     }
@@ -117,25 +144,80 @@ impl FrameRecorder {
         self.renders.clear();
         self.before = None;
         self.last_after = None;
+        self.cur = (None, None);
+        self.series.clear();
+        self.last_redraw = None;
+    }
+
+    /// From now on the series is the window's redraw requests (the software renderer).
+    pub fn use_redraw_series(&mut self) {
+        self.redraw_series = true;
+    }
+
+    /// One redraw request of the window, with the slide it will show (software renderer only).
+    pub fn redraw_sample(&mut self, now: Instant, age_ms: f64, slide: Option<(f32, f32)>) {
+        if !self.redraw_series || self.series.len() >= SERIES_CAP {
+            return;
+        }
+        let gap = self.last_redraw.map(|p| ms_between(now, p));
+        self.last_redraw = Some(now);
+        self.series.push(FrameSample {
+            age_ms,
+            gap_ms: gap,
+            render_ms: None,
+            slot: slide.map(|s| s.0),
+            panel_left: slide.map(|s| s.1),
+        });
     }
 
     pub fn before(&mut self, now: Instant) {
-        if self.on {
-            self.before = Some(now);
-        }
+        self.before = Some(now);
     }
 
     pub fn after(&mut self, now: Instant) {
+        let render = self.before.take().map(|b| ms_between(now, b));
+        let gap = self.last_after.map(|p| ms_between(now, p));
+        self.last_after = Some(now);
+        self.cur = (gap, render);
         if !self.on {
             return;
         }
-        if let Some(b) = self.before.take() {
-            self.renders.push_ms(ms_between(now, b));
+        if let Some(r) = render {
+            self.renders.push_ms(r);
         }
-        if let Some(p) = self.last_after {
-            self.gaps.push_ms(ms_between(now, p));
+        if let Some(g) = gap {
+            self.gaps.push_ms(g);
         }
-        self.last_after = Some(now);
+    }
+
+    /// Adds the frame `after` just closed to the series, with the slide it showed.
+    pub fn sample(&mut self, age_ms: f64, slide: Option<(f32, f32)>) {
+        if self.redraw_series || self.series.len() >= SERIES_CAP {
+            return;
+        }
+        self.series.push(FrameSample {
+            age_ms,
+            gap_ms: self.cur.0,
+            render_ms: self.cur.1,
+            slot: slide.map(|s| s.0),
+            panel_left: slide.map(|s| s.1),
+        });
+    }
+
+    /// Every frame since the last reset.
+    #[cfg(test)]
+    pub fn series(&self) -> &[FrameSample] {
+        &self.series
+    }
+
+    /// The series as rows `[age_ms, gap_ms, render_ms, slot, panel_left]` (null for a missing value).
+    pub fn series_json(&self) -> serde_json::Value {
+        let rows: Vec<serde_json::Value> = self
+            .series
+            .iter()
+            .map(|s| serde_json::json!([s.age_ms, s.gap_ms, s.render_ms, s.slot, s.panel_left]))
+            .collect();
+        serde_json::Value::Array(rows)
     }
 
     /// The statistics of everything since the last reset.
@@ -165,6 +247,10 @@ pub struct FrameView {
 pub trait FrameEnv {
     fn view(&self, tab: Option<&str>) -> Result<FrameView, String>;
     fn press_down(&self, chord: &str) -> Result<(), String>;
+    /// The sidebar's animated slot width and panel x (css px) as this frame shows them.
+    fn slide(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 /// A key-to-frame measurement: done at the first frame that holds the text.
@@ -357,6 +443,7 @@ impl FrameState {
     /// One finished frame. Returns the keys to inject (from the event loop).
     pub fn after(&mut self, now: Instant, age_ms: f64, env: &dyn FrameEnv) -> Vec<String> {
         self.rec.after(now);
+        self.rec.sample(age_ms, env.slide());
         if let Some(p) = self.latency.take() {
             match env.view(p.tab.as_deref()) {
                 Err(m) => p.resp.reply(err(m)),
@@ -1309,6 +1396,11 @@ impl FrameEnv for GlueCtx {
     fn press_down(&self, chord: &str) -> Result<(), String> {
         event_from_chord(chord, true).and_then(|e| self.key(&e))
     }
+
+    fn slide(&self) -> Option<(f32, f32)> {
+        let app = self.app.upgrade()?;
+        Some((app.get_sidebar_slot_visual(), app.get_sidebar_panel_left()))
+    }
 }
 
 impl GlueCtx {
@@ -1403,6 +1495,45 @@ fn pixel_reply(x: u32, y: u32) -> Reply {
             },
         },
         Err(_) => err("the frame state is busy"),
+    })
+}
+
+/// The software renderer has no rendering notifier: the series is the window's redraw requests from now on.
+pub fn series_from_redraws() {
+    FRAMES.with(|f| {
+        if let Ok(mut st) = f.try_borrow_mut() {
+            st.rec.use_redraw_series();
+        }
+    });
+}
+
+/// Called for every redraw request of the window (software renderer only; a no-op otherwise).
+pub fn on_redraw() {
+    if !crate::e2e::global().on() {
+        return;
+    }
+    let now = Instant::now();
+    let age = crate::startup_trace::since_process_start().as_secs_f64() * 1000.0;
+    let env = FRAMES.with(|f| f.try_borrow().ok().and_then(|st| st.env.clone()));
+    let slide = env.and_then(|e| e.slide());
+    FRAMES.with(|f| {
+        if let Ok(mut st) = f.try_borrow_mut() {
+            st.rec.redraw_sample(now, age, slide);
+        }
+    });
+}
+
+/// `frames.series`: every presented frame since the last `Frames` reset (or since the start), as
+/// `[age_ms, gap_ms, render_ms, slot, panel_left]` rows, and the process age now.
+pub fn frame_series() -> serde_json::Value {
+    let frames = FRAMES.with(|f| {
+        f.try_borrow()
+            .map(|st| st.rec.series_json())
+            .unwrap_or_else(|_| serde_json::json!([]))
+    });
+    serde_json::json!({
+        "frames": frames,
+        "now_age_ms": crate::startup_trace::since_process_start().as_secs_f64() * 1000.0,
     })
 }
 
@@ -2198,6 +2329,7 @@ mod frame_tests {
     struct FakeEnv {
         view: RefCell<Result<FrameView, String>>,
         pressed: Cell<u32>,
+        slide: Cell<Option<(f32, f32)>>,
     }
 
     impl FakeEnv {
@@ -2208,6 +2340,7 @@ mod frame_tests {
                     cursor_row: row.into(),
                 })),
                 pressed: Cell::new(0),
+                slide: Cell::new(None),
             }
         }
 
@@ -2226,6 +2359,9 @@ mod frame_tests {
         fn press_down(&self, _chord: &str) -> Result<(), String> {
             self.pressed.set(self.pressed.get() + 1);
             Ok(())
+        }
+        fn slide(&self) -> Option<(f32, f32)> {
+            self.slide.get()
         }
     }
 
@@ -2285,6 +2421,96 @@ mod frame_tests {
             assert_eq!(info.height, (100.0 * s).round() as u32, "height at {s}");
             assert!(!snap.is_blank(), "something is drawn at {s}");
         }
+    }
+
+    #[test]
+    fn the_series_keeps_every_frame_with_its_gap_its_render_time_and_the_slide() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        for i in 0..3u64 {
+            env.slide
+                .set(Some((220.0 - 70.0 * i as f32, -10.0 * i as f32)));
+            st.rec.before(at(base, i * 16));
+            st.after(at(base, i * 16 + 2), 1000.0 + (i * 16) as f64, &env);
+        }
+        let s = st.rec.series();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].gap_ms, None, "the first frame has no gap behind it");
+        assert!((s[1].gap_ms.unwrap() - 16.0).abs() < 0.5);
+        assert!((s[2].render_ms.unwrap() - 2.0).abs() < 0.5);
+        assert_eq!(s[1].age_ms, 1016.0);
+        assert_eq!(s[2].slot, Some(80.0));
+        assert_eq!(s[2].panel_left, Some(-20.0));
+    }
+
+    #[test]
+    fn the_series_runs_from_the_first_frame_without_a_frames_request() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.rec.before(at(base, 0));
+        st.after(at(base, 3), 10.0, &env);
+        assert_eq!(
+            st.rec.series().len(),
+            1,
+            "start-up frames are in the series"
+        );
+        assert!(matches!(
+            st.frames_request(false),
+            Reply::Frames { count: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn a_software_series_is_the_redraws_and_not_the_grid_renders() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.rec.use_redraw_series();
+        // A grid render in software mode is not a presented frame: it adds nothing.
+        st.rec.before(at(base, 0));
+        st.after(at(base, 2), 5.0, &env);
+        assert!(st.rec.series().is_empty());
+        st.rec
+            .redraw_sample(at(base, 10), 100.0, Some((200.0, -20.0)));
+        st.rec
+            .redraw_sample(at(base, 27), 117.0, Some((150.0, -70.0)));
+        let s = st.rec.series();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].gap_ms, None);
+        assert!((s[1].gap_ms.unwrap() - 17.0).abs() < 0.5);
+        assert_eq!(s[1].render_ms, None, "a redraw request has no render time");
+        assert_eq!(s[1].slot, Some(150.0));
+    }
+
+    #[test]
+    fn a_frames_reset_empties_the_series_and_the_series_stops_at_its_cap() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.after(at(base, 1), 1.0, &env);
+        assert_eq!(st.rec.series().len(), 1);
+        assert_eq!(st.frames_request(true), Reply::Ok);
+        assert!(st.rec.series().is_empty());
+        for i in 0..(SERIES_CAP as u64 + 5) {
+            st.after(at(base, i), i as f64, &env);
+        }
+        assert_eq!(st.rec.series().len(), SERIES_CAP);
+    }
+
+    #[test]
+    fn the_series_is_json_rows_of_age_gap_render_slot_and_left() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        env.slide.set(Some((150.0, -5.0)));
+        let mut st = FrameState::new();
+        st.after(at(base, 1), 12.5, &env);
+        let v = st.rec.series_json();
+        assert_eq!(v[0][0], 12.5);
+        assert!(v[0][1].is_null() && v[0][2].is_null());
+        assert_eq!(v[0][3], 150.0);
+        assert_eq!(v[0][4], -5.0);
     }
 
     #[test]

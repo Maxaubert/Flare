@@ -25,6 +25,7 @@ pub mod settings_d;
 pub mod strip;
 pub mod update;
 pub mod vertical;
+pub mod visual;
 
 use crate::ctx::Scenario;
 
@@ -499,3 +500,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 300,
     },
 ];
+
+/// Scenarios that are NOT part of the gate: a plain run never picks them, a filter that names one does.
+/// isualTour is the visual comparison capture (audit 2026-10-20); it takes half an hour and writes pictures.
+pub const OPT_IN: &[Scenario] = &[Scenario {
+    name: "visualTour",
+    group: "visual",
+    run: visual::visual_tour,
+    limit_secs: 3_300,
+}];

@@ -774,6 +774,7 @@ pub fn run_window(
     };
     if let Err(e) = notifier_result {
         no_notifier.set(true);
+        crate::e2e_glue::series_from_redraws();
         host.borrow_mut().detach_gpu();
         *note.borrow_mut() = Some(format!("no rendering notifier: {e}"));
         log::info!("grid on the CPU: no rendering notifier ({e})");
@@ -1800,6 +1801,11 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         };
         let scale = f64::from(window.scale_factor()).max(0.01);
         match event {
+            // The software renderer's frames, for the e2e's series (a no-op unless it asked for them).
+            WindowEvent::RedrawRequested => {
+                crate::e2e_glue::on_redraw();
+                EventResult::Propagate
+            }
             WindowEvent::ModifiersChanged(m) => {
                 mods.set(m.state());
                 EventResult::Propagate

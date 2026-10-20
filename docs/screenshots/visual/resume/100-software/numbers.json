@@ -1,0 +1,356 @@
+{
+  "surface": "resume",
+  "pct": 100,
+  "renderer": "software",
+  "hello": {
+    "renderer": "software (fallback: no rendering notifier: The rendering backend does not support rendering notifiers.)",
+    "scale": 1.0,
+    "version": "0.1.0"
+  },
+  "first_window_ms": 58.128899999999994,
+  "first_pipe_ms": 49.4707,
+  "ready_ms": 149.42340000000002,
+  "judged": {
+    "frames": 3,
+    "first_frame_ms": 58.128899999999994,
+    "last_change_ms": 100.562,
+    "blank_frames": 1,
+    "wrong_size_frames": 0,
+    "off_brightness_frames": 0,
+    "wrong_bar_colour_frames": 0,
+    "wrong_foot_colour_frames": 1,
+    "first_size": [
+      1180,
+      780
+    ],
+    "final_size": [
+      1180,
+      780
+    ]
+  },
+  "app_trace": {
+    "line": "startup: main 14 ms, args 14 ms, backend 19 ms, component 24 ms, profile 33 ms, shell_spawn 94 ms, first_frame 44 ms, first_prompt 172 ms",
+    "phases": [
+      {
+        "name": "main",
+        "ms": 14.4276
+      },
+      {
+        "name": "args",
+        "ms": 14.4613
+      },
+      {
+        "name": "backend",
+        "ms": 19.2613
+      },
+      {
+        "name": "component",
+        "ms": 24.3635
+      },
+      {
+        "name": "profile",
+        "ms": 33.907399999999996
+      },
+      {
+        "name": "shell_spawn",
+        "ms": 94.3007
+      },
+      {
+        "name": "first_frame",
+        "ms": 44.7651
+      },
+      {
+        "name": "first_prompt",
+        "ms": 172.6181
+      }
+    ],
+    "prompt_ms": null,
+    "usable_ms": null
+  },
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 18.9376,
+  "first_presented_frames": [
+    [
+      86.2704,
+      null,
+      null
+    ],
+    [
+      105.2094,
+      18.9376,
+      null
+    ],
+    [
+      122.6471,
+      17.4407,
+      null
+    ],
+    [
+      133.0918,
+      10.4368,
+      null
+    ],
+    [
+      137.8384,
+      4.7547,
+      null
+    ],
+    [
+      148.614,
+      10.7691,
+      null
+    ],
+    [
+      155.1778,
+      6.5703000000000005,
+      null
+    ],
+    [
+      165.3913,
+      10.2061,
+      null
+    ],
+    [
+      179.8536,
+      14.468,
+      null
+    ],
+    [
+      193.3073,
+      13.4528,
+      null
+    ],
+    [
+      206.9445,
+      13.638000000000002,
+      null
+    ],
+    [
+      220.9384,
+      13.9934,
+      null
+    ],
+    [
+      234.8984,
+      13.96,
+      null
+    ],
+    [
+      248.965,
+      14.0658,
+      null
+    ],
+    [
+      262.6173,
+      13.6521,
+      null
+    ],
+    [
+      276.725,
+      14.1091,
+      null
+    ],
+    [
+      290.8791,
+      14.1542,
+      null
+    ],
+    [
+      304.76370000000003,
+      13.8837,
+      null
+    ],
+    [
+      318.31140000000005,
+      13.5469,
+      null
+    ],
+    [
+      332.3252,
+      14.014,
+      null
+    ],
+    [
+      346.2055,
+      13.8803,
+      null
+    ],
+    [
+      359.0969,
+      12.8926,
+      null
+    ],
+    [
+      373.3264,
+      14.2283,
+      null
+    ],
+    [
+      387.046,
+      13.7209,
+      null
+    ],
+    [
+      401.6454,
+      14.5982,
+      null
+    ],
+    [
+      416.1946999999999,
+      14.5492,
+      null
+    ],
+    [
+      429.0689,
+      12.8752,
+      null
+    ],
+    [
+      442.7,
+      13.6316,
+      null
+    ],
+    [
+      444.2871,
+      1.5877,
+      null
+    ],
+    [
+      456.4798,
+      12.1923,
+      null
+    ],
+    [
+      470.6889000000001,
+      14.2092,
+      null
+    ],
+    [
+      484.6389,
+      13.9496,
+      null
+    ],
+    [
+      498.1664,
+      13.5245,
+      null
+    ],
+    [
+      512.6156,
+      14.4504,
+      null
+    ],
+    [
+      526.5867,
+      13.9705,
+      null
+    ],
+    [
+      540.4799999999999,
+      13.8939,
+      null
+    ],
+    [
+      554.1902,
+      13.7112,
+      null
+    ],
+    [
+      567.5362,
+      13.346,
+      null
+    ],
+    [
+      581.6418,
+      14.106,
+      null
+    ],
+    [
+      595.5918,
+      13.9503,
+      null
+    ]
+  ],
+  "timeline": [
+    {
+      "t_ms": 94.67830000000001,
+      "tabs": 3,
+      "front": 1,
+      "cwds": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-qdYXh4\\alpha",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-qdYXh4\\beta",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-qdYXh4\\gamma"
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 58.128899999999994,
+      "w": 1180,
+      "h": 780,
+      "blank": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bar": [
+        0,
+        0,
+        0
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "file": "000-t00058ms.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 67.2487,
+      "w": 1180,
+      "h": 780,
+      "blank": false,
+      "mean": [
+        22.434669850782594,
+        21.830057952937956,
+        21.24668786030452
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "file": "001-t00067ms.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 100.562,
+      "w": 1180,
+      "h": 780,
+      "blank": false,
+      "mean": [
+        1.3372602406339837,
+        1.3355794533258294,
+        1.3296168413367202
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "file": "002-t00101ms.png"
+    }
+  ]
+}
