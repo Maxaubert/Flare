@@ -325,12 +325,26 @@ fn write_all(raw: usize, mut bytes: &[u8]) -> bool {
     true
 }
 
-fn send(raw: usize, reply: &Reply) -> bool {
+/// One reply as a wire line. A reply the client could not take whole (over the line limit) is
+/// replaced by an error, so the client never reads half a line and falls out of step (L56).
+fn reply_line(reply: &Reply) -> String {
     let mut line = flare_e2e_proto::encode_reply(reply);
+    if line.len() > MAX_LINE_BYTES {
+        line = flare_e2e_proto::encode_reply(&Reply::Err {
+            message: format!(
+                "the reply was {} bytes, over the {MAX_LINE_BYTES} byte line limit",
+                line.len()
+            ),
+        });
+    }
     if !line.ends_with('\n') {
         line.push('\n');
     }
-    write_all(raw, line.as_bytes())
+    line
+}
+
+fn send(raw: usize, reply: &Reply) -> bool {
+    write_all(raw, reply_line(reply).as_bytes())
 }
 
 fn talk(raw: usize, stop: &AtomicBool, dispatch: &Dispatch) {
@@ -446,6 +460,23 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).unwrap();
         flare_e2e_proto::decode_reply(line.trim_end()).unwrap()
+    }
+
+    // L56: a reply over the line limit would be cut by the client and desync every later call.
+    #[test]
+    fn an_over_long_reply_becomes_an_error_line() {
+        let big = Reply::Value {
+            value: serde_json::Value::String("a".repeat(MAX_LINE_BYTES + 100)),
+        };
+        let line = reply_line(&big);
+        assert!(line.len() <= MAX_LINE_BYTES, "{}", line.len());
+        assert!(line.ends_with('\n'));
+        match flare_e2e_proto::decode_reply(&line).unwrap() {
+            Reply::Err { message } => assert!(message.contains("over"), "{message}"),
+            other => panic!("expected Err, got {other:?}"),
+        }
+        let small = reply_line(&Reply::Ok);
+        assert_eq!(flare_e2e_proto::decode_reply(&small).unwrap(), Reply::Ok);
     }
 
     #[test]

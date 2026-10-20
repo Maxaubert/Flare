@@ -7,6 +7,7 @@
 
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -44,16 +45,20 @@ struct ExtendedLimit {
 const KILL_ON_JOB_CLOSE: u32 = 0x2000;
 const EXTENDED_LIMIT_CLASS: i32 = 9;
 const STILL_ACTIVE: u32 = 259;
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn CreateJobObjectW(attrs: *const c_void, name: *const u16) -> HANDLE;
     fn SetInformationJobObject(job: HANDLE, class: i32, info: *const c_void, len: u32) -> i32;
     fn AssignProcessToJobObject(job: HANDLE, process: HANDLE) -> i32;
+    fn IsProcessInJob(process: HANDLE, job: HANDLE, result: *mut i32) -> i32;
 }
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
+    fn NtResumeProcess(process: HANDLE) -> i32;
     fn NtQueryInformationProcess(
         process: HANDLE,
         class: u32,
@@ -96,6 +101,14 @@ impl Job {
     pub fn assign(&self, child: &std::process::Child) -> bool {
         // SAFETY: both handles are valid for the call.
         unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) != 0 }
+    }
+
+    /// True when the process is inside this job.
+    pub fn contains(&self, child: &std::process::Child) -> bool {
+        let mut r = 0i32;
+        // SAFETY: both handles are valid for the call; r is a plain out value.
+        let ok = unsafe { IsProcessInJob(child.as_raw_handle() as HANDLE, self.0, &mut r) };
+        ok != 0 && r != 0
     }
 }
 
@@ -144,10 +157,25 @@ impl Child {
     }
 
     /// The same job and reaping code for any command (the harness tests use a dummy).
+    ///
+    /// The process starts SUSPENDED, joins the job, and only then runs (so it can never start a
+    /// grandchild outside the job), and a failed assignment is a failure, not a shrug (L57).
     pub fn spawn(mut cmd: Command, profile: &Path) -> Child {
-        let proc = cmd.spawn().expect("spawn");
+        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        let mut proc = cmd.spawn().expect("spawn");
         let job = Job::new();
-        job.assign(&proc);
+        if !job.assign(&proc) {
+            let _ = proc.kill();
+            let _ = proc.wait();
+            panic!("the child could not join its job object, so it was killed");
+        }
+        // SAFETY: the handle is the child's own; NtResumeProcess resumes its suspended threads.
+        let st = unsafe { NtResumeProcess(proc.as_raw_handle() as HANDLE) };
+        if st != 0 {
+            let _ = proc.kill();
+            let _ = proc.wait();
+            panic!("the suspended child could not be resumed (status {st:#x})");
+        }
         Child {
             proc: Mutex::new(proc),
             profile: profile.to_path_buf(),
@@ -171,6 +199,12 @@ impl Child {
     pub fn exited(&self) -> Option<i32> {
         let mut p = self.proc.lock().unwrap_or_else(|e| e.into_inner());
         p.try_wait().ok().flatten().map(|s| s.code().unwrap_or(-1))
+    }
+
+    /// True when the child is inside this harness job.
+    pub fn in_job(&self) -> bool {
+        let p = self.proc.lock().unwrap_or_else(|e| e.into_inner());
+        self._job.contains(&p)
     }
 
     pub fn pid(&self) -> u32 {

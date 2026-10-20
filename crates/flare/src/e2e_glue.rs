@@ -182,12 +182,23 @@ pub enum LatencyStep {
     TimedOut,
 }
 
+/// The longest wait a pipe request may ask for (ten minutes). A larger one would overflow the
+/// deadline `Instant` and panic the app (L59).
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// The most moves one `Drag` request may make; more would build an event list without bound (L59).
+pub const MAX_DRAG_STEPS: u32 = 2_000;
+
+pub fn clamp_timeout_ms(ms: u64) -> u64 {
+    ms.min(MAX_TIMEOUT_MS)
+}
+
 impl LatencyWatch {
     pub fn new(t0: Instant, expect: &str, timeout_ms: u64) -> Self {
         Self {
             t0,
             expect: expect.to_string(),
-            deadline: t0 + Duration::from_millis(timeout_ms),
+            deadline: t0 + Duration::from_millis(clamp_timeout_ms(timeout_ms)),
         }
     }
 
@@ -971,8 +982,49 @@ pub fn wheel_lines(dy: f32) -> f32 {
     (dy / 40.0).clamp(-4096.0, 4096.0)
 }
 
+/// The placement a restore asks for: the normal size and place, shown WITHOUT activation, so a
+/// restore from the pipe can never take the foreground from the user's window (L58).
+fn restore_placement(
+    mut p: windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT,
+) -> windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT {
+    p.showCmd = windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE as u32;
+    p
+}
+
+/// Restores a minimised or maximised window with `SetWindowPlacement(SW_SHOWNOACTIVATE)`; the
+/// Slint calls (`set_minimized(false)`, `set_maximized(false)`) end in `SW_RESTORE`, which activates.
+fn restore_without_activating(app: &AppWindow) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, IsIconic, SW_SHOWNOACTIVATE, SetWindowPlacement, ShowWindow,
+        WINDOWPLACEMENT,
+    };
+    let hwnd = crate::window::hwnd_of(app).ok_or("the window has no handle")?;
+    let h = hwnd as windows_sys::Win32::Foundation::HWND;
+    // SAFETY: WINDOWPLACEMENT is plain data.
+    let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    p.length = size_of::<WINDOWPLACEMENT>() as u32;
+    // SAFETY: `h` is this process's window and `p` is a sized out pointer.
+    if unsafe { GetWindowPlacement(h, &mut p) } == 0 {
+        return Err("GetWindowPlacement failed".into());
+    }
+    let p = restore_placement(p);
+    // SAFETY: as above; `p` is a fully read placement.
+    if unsafe { SetWindowPlacement(h, &p) } == 0 {
+        return Err("SetWindowPlacement failed".into());
+    }
+    // A minimised window can stay minimised under the placement call alone; this shows it, still
+    // without activation.
+    // SAFETY: as above.
+    if unsafe { IsIconic(h) } != 0 {
+        // SAFETY: as above; shows the window in place without activating it.
+        unsafe { ShowWindow(h, SW_SHOWNOACTIVATE) };
+    }
+    Ok(())
+}
+
 /// Press at `from`, `steps` equal moves, release at `to`.
 pub fn drag_events(from: (f32, f32), to: (f32, f32), steps: u32, b: Button) -> Vec<WindowEvent> {
+    let steps = steps.min(MAX_DRAG_STEPS);
     let mut out = pointer_events(from.0, from.1, &PointerAction::Down { button: b });
     for i in 1..=steps {
         let t = i as f32 / steps as f32;
@@ -1141,6 +1193,10 @@ impl GlueCtx {
         match op {
             "minimise" | "minimize" => w.set_minimized(true),
             "restore" => {
+                // The window is restored first without activation; the Slint calls then only bring
+                // its own minimised/maximised state in step (winit does nothing for a window that
+                // is already restored).
+                restore_without_activating(&app)?;
                 w.set_minimized(false);
                 w.set_maximized(false);
             }
@@ -1283,6 +1339,7 @@ impl GlueCtx {
         timeout_ms: u64,
         resp: Responder,
     ) {
+        let timeout_ms = clamp_timeout_ms(timeout_ms);
         FRAMES.with(|f| {
             if let Ok(mut st) = f.try_borrow_mut() {
                 st.rec.start();
@@ -1614,6 +1671,32 @@ pub fn install(
 
 #[cfg(test)]
 mod tests {
+    // L59: pipe input must not panic the app or exhaust memory.
+    #[test]
+    fn a_huge_latency_timeout_does_not_overflow_the_deadline() {
+        let w = LatencyWatch::new(Instant::now(), "x", u64::MAX);
+        assert_eq!(w.frame(Instant::now(), "no"), LatencyStep::Waiting);
+        assert_eq!(clamp_timeout_ms(u64::MAX), MAX_TIMEOUT_MS);
+        assert_eq!(clamp_timeout_ms(500), 500);
+    }
+
+    #[test]
+    fn a_drag_with_absurd_steps_stays_bounded() {
+        let drag = drag_events((0.0, 0.0), (10.0, 0.0), u32::MAX, Button::Left);
+        assert_eq!(drag.len(), 2 + MAX_DRAG_STEPS as usize + 1);
+    }
+
+    // L58: a restore from the pipe must not take the foreground.
+    #[test]
+    fn a_restore_shows_the_window_without_activating_it() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, WINDOWPLACEMENT};
+        // SAFETY: WINDOWPLACEMENT is plain data.
+        let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        p.showCmd = 3; // SW_SHOWMAXIMIZED
+        let r = restore_placement(p);
+        assert_eq!(r.showCmd, SW_SHOWNOACTIVATE as u32);
+    }
+
     // Task 23: a collapsed sidebar is revealed by the cursor, which the real window hears from winit
     // (`CursorMoved`) and an injected Slint pointer event never reaches.
     #[test]

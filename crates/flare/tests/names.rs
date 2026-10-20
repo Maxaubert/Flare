@@ -655,6 +655,8 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_IMPORT_APPDATA",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
+    // Audit A24 (L53): harness-only, the explicit local opt-in for the install scenarios (CI sets GITHUB_ACTIONS).
+    "FLARE_E2E_INSTALL_LOCAL",
     // M3, unchanged: the folder picker answers from this path with no dialog (window.rs reads it as a
     // concatenated name; tools/e2e newTabFolder and spawn set it).
     "FLARE_E2E_PICK",
