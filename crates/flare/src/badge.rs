@@ -48,7 +48,11 @@ impl BadgeClock {
         let Some(t) = self.shown_at else {
             return BadgePhase::Gone;
         };
-        let elapsed = now_ms.saturating_sub(t);
+        if now_ms < t {
+            // The reading is earlier than the copy (a clock stepped back): never hold the badge.
+            return BadgePhase::Gone;
+        }
+        let elapsed = now_ms - t;
         if elapsed < COPIED_BADGE_MS {
             BadgePhase::Shown
         } else if elapsed < COPIED_BADGE_MS + FADE_MS {
@@ -108,6 +112,16 @@ mod tests {
         assert_eq!(c.phase(0), BadgePhase::Gone);
         assert_eq!(c.next_due(0), None);
         assert_eq!(BadgeClock::default(), c);
+    }
+
+    #[test]
+    fn a_reading_before_the_copy_clears_the_badge_instead_of_freezing_it() {
+        // A clock that steps back must not hold the badge on Shown: it is gone, and nothing is due.
+        let mut c = BadgeClock::new();
+        c.copied(5000);
+        assert_eq!(c.phase(4000), BadgePhase::Gone);
+        assert_eq!(c.next_due(4000), None);
+        assert_eq!(c.phase(5000), BadgePhase::Shown);
     }
 
     #[test]

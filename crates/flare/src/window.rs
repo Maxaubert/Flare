@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::stats::{FrameTrace, TracePhase};
@@ -592,15 +592,9 @@ fn settings_deps(
         version: crate::app_facts::version().to_string(),
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),
         e2e: e2e_on,
-        clock: Rc::new(epoch_ms),
+        clock: Rc::new(crate::ui_clock::monotonic_ms),
         still: Rc::new(|| !crate::e2e::animations_enabled()),
     }
-}
-
-fn epoch_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Hands the probes the renderer the run really got (`Hello` and `app.state` report it).
@@ -882,7 +876,7 @@ pub fn run_window(
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
             home: crate::app_facts::home().to_string(),
-            clock: Rc::new(epoch_ms),
+            clock: Rc::new(crate::ui_clock::monotonic_ms),
             post: Arc::clone(&post),
             pick_folder: {
                 let weak = app.as_weak();
@@ -1595,7 +1589,9 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     }
     if ev.pressed {
         // A typed key opens the IME caret hold (Task 24b).
-        kp.caret.borrow_mut().on_key(epoch_ms() as i64);
+        kp.caret
+            .borrow_mut()
+            .on_key(crate::ui_clock::monotonic_ms() as i64);
     }
     let chrome_focus = kp
         .app
@@ -1682,9 +1678,11 @@ fn place_ime(
         })
         .collect();
     caret.borrow_mut().on_stops(&stops);
-    let held = caret
-        .borrow_mut()
-        .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
+    let held = caret.borrow_mut().on_frame(
+        cursor,
+        resized || scrolled || alt,
+        crate::ui_clock::monotonic_ms() as i64,
+    );
     let scale = app.get_scale();
     let origin = (
         (app.get_grid_left() * scale).round() as i32,

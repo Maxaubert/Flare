@@ -47,6 +47,7 @@ mod term_menu;
 mod term_ui;
 mod theme_scene;
 mod timer_registry;
+mod ui_clock;
 mod update_ctl;
 mod window;
 
