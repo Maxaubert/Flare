@@ -1867,6 +1867,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                // The software window reads 1.0 until its first resize at the monitor's scale (audit V6).
+                crate::e2e_hook::set_hello_scale(window.scale_factor());
                 let (maximised, fullscreen) = (window.is_maximized(), window.is_fullscreen());
                 // The look controller keeps the UI and the material in step (D7); without one
                 // the material alone follows.
@@ -1880,7 +1882,9 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Hello reports the window's own scale, not the 1.0 read before the monitor's arrived.
+                crate::e2e_hook::set_hello_scale(*scale_factor as f32);
                 // The saved scale may differ from the monitor the window opened on: set the
                 // saved logical size and physical position once more at the real scale.
                 if let Some(init) = reapply.borrow_mut().take(Instant::now()) {

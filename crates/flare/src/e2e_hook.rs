@@ -98,6 +98,14 @@ pub fn set_hello_info(renderer: &str, scale: f32) {
     }
 }
 
+/// The window's scale changed after the renderer was told (the software window reads 1.0 until winit
+/// delivers the monitor's scale): keeps Hello's scale the window's own (audit V6).
+pub fn set_hello_scale(scale: f32) {
+    if let Ok(mut h) = HELLO.lock() {
+        h.1 = scale;
+    }
+}
+
 /// What Hello reports besides the constants: the renderer word and the scale, empty until the window glue says.
 pub fn hello_info() -> (String, f32) {
     HELLO.lock().map(|h| h.clone()).unwrap_or_default()
@@ -490,6 +498,21 @@ mod tests {
         assert!(matches!(start(dir.path()), Err(HookError::NotEnabled)));
         let name = flare_e2e_proto::pipe_name(dir.path());
         assert!(std::fs::OpenOptions::new().read(true).open(name).is_err()); // sync-ok: test code only
+    }
+
+    #[test]
+    fn hello_scale_follows_a_later_scale_change_and_keeps_the_renderer() {
+        set_hello_info("software", 1.0);
+        set_hello_scale(2.25);
+        match hello() {
+            Reply::Hello {
+                renderer, scale, ..
+            } => {
+                assert_eq!(renderer, "software");
+                assert_eq!(scale, 2.25);
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
     }
 
     #[test]

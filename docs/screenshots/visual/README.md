@@ -84,8 +84,8 @@ from `process.uptime()`, so a few ms apart in kind):
 - Resume: Flare shows all three tabs in one step with the saved middle tab in front (timeline in `numbers.json`: no
   tab popping in, no front change, no folder change afterwards). Prism Terminal likewise. Scrollback is restored by
   neither app (a new shell starts in each tab).
-- Flare's start-up scale is the window's own (100 % for the software path and 225 % for the GPU path on this PC, so the
-  folders are named `100-software` and `225-gpu`); the app cannot start at a chosen scale (the harness changes DPI
+- Flare's start-up scale is the window's own (225 % on this PC for the software and the GPU path alike, so the
+  folders are named `225-software` and `225-gpu`); the app cannot start at a chosen scale (the harness changes DPI
   only after connecting), so only the native one is captured for start-up. Prism Terminal's start-up is captured at 100,
   150 and 225 %.
 
@@ -127,5 +127,8 @@ over a painted window. It is not in the window. Two faults of the copier, both f
 - Left over: a late software picture can still carry the system caption strip ("Flare" and a close box) along the top
   and a one-pixel frame, drawn by `PrintWindow` itself from that same style. The app never shows it (client area and
   window rectangle are equal, `GetClientRect` 2655 x 1755).
-- Also seen: `hello.scale` reads 1.0 for the software window while its window is 2655 x 1755 at the monitor's 225 %,
-  so the cell folder `100-software` is named by that value; the pictures are at the monitor's scale.
+- Audit V6: `hello.scale` read 1.0 for the software window while its window was 2655 x 1755 at the monitor's 225 %, so the
+  start-up and resume cells were wrongly named `100-software`; the software path never starts at 100 %. Cause: the
+  renderer word and scale are noted before the window has its monitor's scale. Fix: `e2e_hook::set_hello_scale` runs on
+  every move, resize and scale change, so Hello reports the window's own scale; the cells are now `225-software` (the old
+  `100-software` start-up and resume folders were removed).

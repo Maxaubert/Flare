@@ -1,0 +1,383 @@
+{
+  "surface": "startup",
+  "pct": 225,
+  "renderer": "software",
+  "hello": {
+    "renderer": "software (fallback: no rendering notifier: The rendering backend does not support rendering notifiers.)",
+    "scale": 2.25,
+    "version": "0.1.0"
+  },
+  "first_window_ms": 77.5372,
+  "first_pipe_ms": 68.70519999999999,
+  "ready_ms": 206.436,
+  "judged": {
+    "frames": 4,
+    "first_frame_ms": 77.5372,
+    "last_change_ms": 214.4756,
+    "blank_frames": 1,
+    "wrong_size_frames": 0,
+    "off_brightness_frames": 0,
+    "wrong_bar_colour_frames": 2,
+    "wrong_foot_colour_frames": 2,
+    "first_size": [
+      2655,
+      1755
+    ],
+    "final_size": [
+      2655,
+      1755
+    ]
+  },
+  "app_trace": {
+    "line": "startup: main 15 ms, args 15 ms, backend 20 ms, component 26 ms, profile 36 ms, shell_spawn 115 ms, first_frame 48 ms, first_prompt 207 ms",
+    "phases": [
+      {
+        "name": "main",
+        "ms": 15.1547
+      },
+      {
+        "name": "args",
+        "ms": 15.1931
+      },
+      {
+        "name": "backend",
+        "ms": 20.6535
+      },
+      {
+        "name": "component",
+        "ms": 26.6861
+      },
+      {
+        "name": "profile",
+        "ms": 36.5626
+      },
+      {
+        "name": "shell_spawn",
+        "ms": 115.8711
+      },
+      {
+        "name": "first_frame",
+        "ms": 48.9194
+      },
+      {
+        "name": "first_prompt",
+        "ms": 207.973
+      }
+    ],
+    "prompt_ms": null,
+    "usable_ms": null
+  },
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 26.6232,
+  "first_presented_frames": [
+    [
+      105.8243,
+      null,
+      null
+    ],
+    [
+      126.7111,
+      20.8855,
+      null
+    ],
+    [
+      142.7972,
+      16.0888,
+      null
+    ],
+    [
+      154.5755,
+      11.7723,
+      null
+    ],
+    [
+      170.1389,
+      15.5692,
+      null
+    ],
+    [
+      191.5915,
+      21.4527,
+      null
+    ],
+    [
+      202.0696,
+      10.4712,
+      null
+    ],
+    [
+      208.1526,
+      6.0869,
+      null
+    ],
+    [
+      221.814,
+      13.6625,
+      null
+    ],
+    [
+      244.5544,
+      22.7405,
+      null
+    ],
+    [
+      267.9571,
+      23.4023,
+      null
+    ],
+    [
+      293.5929,
+      25.6369,
+      null
+    ],
+    [
+      320.2166,
+      26.6232,
+      null
+    ],
+    [
+      346.27619999999996,
+      26.06,
+      null
+    ],
+    [
+      368.2507,
+      21.9747,
+      null
+    ],
+    [
+      389.6618,
+      21.4111,
+      null
+    ],
+    [
+      411.651,
+      21.9892,
+      null
+    ],
+    [
+      433.6646,
+      22.0127,
+      null
+    ],
+    [
+      455.8955,
+      22.2307,
+      null
+    ],
+    [
+      478.3083,
+      22.4136,
+      null
+    ],
+    [
+      489.3125,
+      11.0045,
+      null
+    ],
+    [
+      500.4089,
+      11.0966,
+      null
+    ],
+    [
+      522.1871,
+      21.7739,
+      null
+    ],
+    [
+      544.4906000000001,
+      22.307,
+      null
+    ],
+    [
+      567.0498,
+      22.5583,
+      null
+    ],
+    [
+      588.7518,
+      21.702,
+      null
+    ],
+    [
+      610.4526,
+      21.7021,
+      null
+    ],
+    [
+      632.3533,
+      21.9008,
+      null
+    ],
+    [
+      653.9606,
+      21.6073,
+      null
+    ],
+    [
+      676.0207,
+      22.0591,
+      null
+    ],
+    [
+      698.1431,
+      22.1225,
+      null
+    ],
+    [
+      720.1594,
+      22.0172,
+      null
+    ],
+    [
+      742.3724000000001,
+      22.213,
+      null
+    ],
+    [
+      764.2932999999999,
+      21.9198,
+      null
+    ],
+    [
+      788.9593,
+      24.666,
+      null
+    ],
+    [
+      810.8511000000001,
+      21.8928,
+      null
+    ],
+    [
+      832.8712,
+      22.0187,
+      null
+    ],
+    [
+      855.0716,
+      22.2019,
+      null
+    ],
+    [
+      877.2398000000001,
+      22.1676,
+      null
+    ],
+    [
+      898.6792,
+      21.4392,
+      null
+    ]
+  ],
+  "timeline": [
+    {
+      "t_ms": 130.5634,
+      "tabs": 0,
+      "front": null,
+      "cwds": []
+    },
+    {
+      "t_ms": 169.4522,
+      "tabs": 1,
+      "front": 0,
+      "cwds": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-ySrcaD\\alpha"
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 77.5372,
+      "w": 2655,
+      "h": 1755,
+      "blank": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bar": [
+        0,
+        0,
+        0
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "file": "000-t00078ms.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 99.8543,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        23.060782967548867,
+        23.060097919768285,
+        23.05769574564296
+      ],
+      "bar": [
+        23,
+        23,
+        23
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "file": "001-t00100ms.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 145.6479,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        23.1890897127156,
+        23.157365690824115,
+        23.127686296190024
+      ],
+      "bar": [
+        23,
+        23,
+        23
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "file": "002-t00146ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 214.4756,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        33.522275320102096,
+        34.19836790370872,
+        34.88075060805502
+      ],
+      "bar": [
+        191,
+        206,
+        220
+      ],
+      "foot": [
+        215,
+        227,
+        241
+      ],
+      "file": "003-t00214ms.png"
+    }
+  ]
+}
