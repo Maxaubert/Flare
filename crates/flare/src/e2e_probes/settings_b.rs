@@ -503,6 +503,7 @@ fn settings_row(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
                 "kind": kind,
                 "value": r.value.to_string(),
                 "on": r.on,
+                "capturing": r.capturing,
                 "reset": r.reset,
                 "save_dirty": r.save_dirty,
                 "colour": hex8(r.colour),
