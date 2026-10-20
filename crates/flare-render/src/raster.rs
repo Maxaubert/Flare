@@ -11,7 +11,11 @@ use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     SwashImage, Weight,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Rasterised clusters kept before the cache starts over. A screen needs a few thousand at most;
+/// the cap is what stops a stream of new clusters growing it for the session (audit M1).
+const CACHE_MAX: usize = 8192;
 
 /// The locale the font system is built with (the fallback lists pick Han fonts by it).
 const LOCALE: &str = "en-US";
@@ -28,8 +32,13 @@ pub struct Rasterizer {
     generation: u64,
     units: FontUnits,
     cache: HashMap<GlyphKey, Option<GlyphBitmap>>,
-    /// The lazy fallback families already asked for (loaded or found useless), once each.
-    tried_fallbacks: Vec<&'static str>,
+    /// Entries the cache holds before it starts over (the atlas keeps what is on screen).
+    cache_cap: usize,
+    /// The (lazy family, character) pairs already asked for and found useless: a family is tried
+    /// again for a character it was not asked about, never twice for the same one.
+    rejected: Vec<(&'static str, char)>,
+    /// Characters every lazy family was asked about and none covers, never walked again.
+    uncovered: HashSet<char>,
     /// The ones that were kept, so a rebuilt database brings them back.
     kept_fallbacks: Vec<&'static str>,
     /// (faces, bytes) of the last `font_bytes` count.
@@ -61,7 +70,9 @@ impl Rasterizer {
             generation: 0,
             units,
             cache: HashMap::new(),
-            tried_fallbacks: Vec::new(),
+            cache_cap: CACHE_MAX,
+            rejected: Vec::new(),
+            uncovered: HashSet::new(),
             kept_fallbacks: Vec::new(),
             font_bytes: std::cell::Cell::new(None),
         }
@@ -106,15 +117,23 @@ impl Rasterizer {
         has_family(&self.fs, name)
     }
 
-    /// A character nothing loaded covers: loads, once per family, the next lazy fallback family
-    /// that covers it. True when one was added.
+    #[cfg(test)]
+    fn set_cache_cap(&mut self, cap: usize) {
+        self.cache_cap = cap;
+    }
+
+    /// A character nothing loaded covers: loads the next lazy fallback family that covers it, each
+    /// family at most once per character. True when one was added.
     fn fallback_for(&mut self, ch: char) -> bool {
+        if self.uncovered.contains(&ch) {
+            return false;
+        }
         let faces = installed_faces();
         for &family in LAZY_FALLBACK_FAMILIES {
-            if self.tried_fallbacks.contains(&family) {
+            if self.kept_fallbacks.contains(&family) || self.rejected.contains(&(family, ch)) {
                 continue;
             }
-            self.tried_fallbacks.push(family);
+            self.rejected.push((family, ch));
             let files = files_for_family(&faces, family);
             let mut ids = Vec::new();
             for file in files {
@@ -133,6 +152,7 @@ impl Rasterizer {
                 self.fs.db_mut().remove_face(id);
             }
         }
+        self.uncovered.insert(ch);
         false
     }
 
@@ -234,6 +254,9 @@ impl GlyphSource for Rasterizer {
     fn glyph(&mut self, key: &GlyphKey) -> Option<&GlyphBitmap> {
         if !self.cache.contains_key(key) {
             let bitmap = self.rasterize(key);
+            if self.cache.len() >= self.cache_cap {
+                self.cache.clear();
+            }
             self.cache.insert(key.clone(), bitmap);
         }
         self.cache.get(key).and_then(|bitmap| bitmap.as_ref())
@@ -640,16 +663,53 @@ mod tests {
         r.glyph(&key("\u{A9B3}"));
         r.glyph(&java);
         assert_eq!(r.face_count(), after);
-        let tried = r.tried_fallbacks.len();
+        let tried = r.rejected.len();
         // A character nothing covers tries every lazy family once and keeps none.
         r.glyph(&key("\u{10FFFD}"));
         let after_tofu = r.face_count();
         assert_eq!(after_tofu, after);
-        let tried_after = r.tried_fallbacks.len();
+        let tried_after = r.rejected.len();
         assert!(tried_after >= tried);
-        r.glyph(&key("\u{10FFFC}"));
-        assert_eq!(r.tried_fallbacks.len(), tried_after);
+        // The same character again walks nothing (audit M2: a different one may, see the test
+        // a_char_no_family_covers_does_not_burn_the_families_for_another_script).
+        r.glyph(&key("\u{10FFFD}"));
+        r.glyph(&key("a\u{10FFFD}"));
+        assert_eq!(r.rejected.len(), tried_after);
         assert_eq!(r.face_count(), after);
+    }
+
+    #[test]
+    fn the_glyph_cache_is_bounded() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.set_cache_cap(8);
+        for i in 0..40u32 {
+            // Longer and longer clusters, the shape of a mark flood.
+            let text = format!("e{}", "\u{301}".repeat(i as usize));
+            r.glyph(&key(&text));
+            assert!(r.cached() <= 8, "{} cached after {i}", r.cached());
+        }
+        assert!(r.glyph(&key("M")).is_some(), "still draws after evictions");
+    }
+
+    #[test]
+    fn a_char_no_family_covers_does_not_burn_the_families_for_another_script() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
+            eprintln!("skipped: Javanese Text is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        // Nothing covers this one: every lazy family is asked about it.
+        r.glyph(&key("\u{10FFFD}"));
+        assert!(!r.has_family_loaded("Javanese Text"));
+        let walked = r.rejected.len();
+        assert!(walked > 0);
+        // The same character is never walked again (a prompt icon redrawn every frame).
+        r.glyph(&key("x\u{10FFFD}"));
+        assert_eq!(r.rejected.len(), walked);
+        // A different script still reaches its family.
+        assert!(r.glyph(&key("\u{A9B2}")).is_some());
+        assert!(r.has_family_loaded("Javanese Text"));
     }
 
     #[test]

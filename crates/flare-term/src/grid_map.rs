@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::{Cell as TCell, Flags};
 use alacritty_terminal::term::{Term, TermMode, point_to_viewport};
 use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor};
 use flare_render::color::Color as FColor;
-use flare_render::grid::{Cell as FCell, CellFlags, Cursor as FCursor, Grid};
+use flare_render::grid::{Cell as FCell, CellFlags, Cursor as FCursor, Grid, MAX_MARKS};
 
 /// The viewport as a `flare_render` grid of the same size, with the cursor placed in it.
 pub fn snapshot_grid<T: EventListener>(term: &Term<T>) -> Grid {
@@ -69,7 +69,9 @@ fn map_cell(src: &TCell) -> FCell {
     }
     FCell {
         ch,
-        combining: src.zerowidth().map(|m| m.to_vec().into_boxed_slice()),
+        combining: src
+            .zerowidth()
+            .map(|m| m[..m.len().min(MAX_MARKS)].to_vec().into_boxed_slice()),
         fg,
         bg,
         flags,
@@ -260,6 +262,20 @@ mod tests {
         let g = snapshot_grid(&t);
         assert_eq!(g.cell(0, 0).cluster(), "e\u{301}");
         assert_eq!(g.cell(1, 0).ch, 'x');
+    }
+
+    #[test]
+    fn a_flood_of_combining_marks_is_capped_per_cell() {
+        let mut bytes = b"e".to_vec();
+        for _ in 0..3000 {
+            bytes.extend_from_slice("\u{301}".as_bytes());
+        }
+        let t = term(4, 1, &bytes);
+        let g = snapshot_grid(&t);
+        assert_eq!(
+            g.cell(0, 0).combining.as_ref().map(|m| m.len()),
+            Some(flare_render::grid::MAX_MARKS)
+        );
     }
 
     #[test]

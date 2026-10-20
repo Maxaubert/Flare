@@ -3,6 +3,10 @@
 use crate::color::Color;
 use unicode_width::UnicodeWidthChar;
 
+/// Combining marks one cell keeps. A longer run is output nobody reads (a stack of 16 is already
+/// unreadable); unbounded, each new mark made a longer glyph key to shape and cache (audit M1).
+pub const MAX_MARKS: usize = 16;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CellFlags(pub u8);
 
@@ -60,7 +64,7 @@ impl Cell {
         let mut s = String::new();
         s.push(self.ch);
         if let Some(marks) = &self.combining {
-            s.extend(marks.iter());
+            s.extend(marks.iter().take(MAX_MARKS));
         }
         s
     }
@@ -177,7 +181,9 @@ impl Grid {
                             .take()
                             .map(|b| b.into_vec())
                             .unwrap_or_default();
-                        marks.push(ch);
+                        if marks.len() < MAX_MARKS {
+                            marks.push(ch);
+                        }
                         cell.combining = Some(marks.into_boxed_slice());
                     }
                 }
@@ -287,6 +293,25 @@ mod tests {
         assert_eq!(put(&mut g, 0, 0, "e\u{301}x"), 2);
         assert_eq!(g.cell(0, 0).cluster(), "e\u{301}");
         assert_eq!(g.cell(1, 0).ch, 'x');
+    }
+
+    #[test]
+    fn marks_beyond_the_cap_are_dropped_in_put_str_and_cluster() {
+        let mut g = Grid::new(4, 1);
+        let text = format!("e{}", "\u{301}".repeat(MAX_MARKS + 50));
+        put(&mut g, 0, 0, &text);
+        assert_eq!(
+            g.cell(0, 0).combining.as_ref().map(|m| m.len()),
+            Some(MAX_MARKS)
+        );
+        assert_eq!(g.cell(0, 0).cluster().chars().count(), 1 + MAX_MARKS);
+        // A cell built elsewhere with too many marks still draws a bounded cluster.
+        let wild = Cell {
+            ch: 'e',
+            combining: Some(vec!['\u{301}'; 5000].into_boxed_slice()),
+            ..Cell::default()
+        };
+        assert_eq!(wild.cluster().chars().count(), 1 + MAX_MARKS);
     }
 
     #[test]

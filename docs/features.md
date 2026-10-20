@@ -9,6 +9,14 @@ are added as milestones land.
   and paints the terminal grid on the GPU through a shelf-packed glyph atlas. When the GPU cannot
   start (RDP, a VM, WARP only), Flare falls back to the CPU painter and logs
   `renderer: software (fallback: <reason>)`; the debug overlay shows the same reason.
+- **The glyph caches are bounded** (audit 2026-10-20, M1, M2, L7). A cell keeps at most 16 combining marks
+  (`MAX_MARKS`); the rasteriser's cluster cache starts over at 8192 entries; the glyph atlas starts at
+  2048 px square and doubles to 4096 (or the device limit) when a frame does not fit, keeping what it
+  holds instead of clearing and re-uploading every frame. A lazy fallback font is tried again for a
+  character it was not asked about; a character no family covers is walked once. Held by
+  `marks_beyond_the_cap_are_dropped_in_put_str_and_cluster`, `a_flood_of_combining_marks_is_capped_per_cell`,
+  `the_glyph_cache_is_bounded`, `a_char_no_family_covers_does_not_burn_the_families_for_another_script`,
+  `an_overflowing_atlas_grows_once_and_stops_re_uploading`.
 - **Debug overlay (F12).** Shows the renderer, the grid painter, frame statistics and memory.
 - **Flags and variables.** `--renderer gpu|software` (or `FLARE_RENDERER`, which applies only when
   the flag is absent); `--screenshot <png>` renders headlessly to a PNG for visual checks;

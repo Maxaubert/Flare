@@ -81,6 +81,7 @@ pub struct GpuPainter {
     atlas_tex: wgpu::Texture,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    bgl: wgpu::BindGroupLayout,
     rect_buf: GrowBuf,
     glyph_buf: GrowBuf,
     target: Option<wgpu::Texture>,
@@ -155,6 +156,46 @@ fn straight_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::Bind
     (pipeline, bgl)
 }
 
+fn create_atlas_texture(device: &wgpu::Device, size: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("flare atlas"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn grid_bind_group(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    globals: &wgpu::Buffer,
+    atlas_tex: &wgpu::Texture,
+) -> wgpu::BindGroup {
+    let atlas_view = atlas_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("flare grid bind group"),
+        layout: bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&atlas_view),
+            },
+        ],
+    })
+}
+
 fn vertex_layout<'a>(
     stride: usize,
     attributes: &'a [wgpu::VertexAttribute],
@@ -168,6 +209,11 @@ fn vertex_layout<'a>(
 
 impl GpuPainter {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        Self::with_atlas_size(device, queue, GlyphAtlas::SIZE)
+    }
+
+    /// A painter whose glyph page starts tlas_size pixels square (it still grows when full).
+    pub fn with_atlas_size(device: &wgpu::Device, queue: &wgpu::Queue, atlas_size: u32) -> Self {
         let device = device.clone();
         let queue = queue.clone();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -254,41 +300,14 @@ impl GpuPainter {
             Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
         );
 
-        let atlas_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("flare atlas"),
-            size: wgpu::Extent3d {
-                width: GlyphAtlas::SIZE,
-                height: GlyphAtlas::SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let atlas_tex = create_atlas_texture(&device, atlas_size);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("flare globals"),
             size: size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let atlas_view = atlas_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("flare grid bind group"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: globals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
-                },
-            ],
-        });
+        let bind_group = grid_bind_group(&device, &bgl, &globals, &atlas_tex);
         let (straight_pipeline, straight_bgl) = straight_pipeline(&device);
         let rect_buf = GrowBuf::new(&device, "flare rect instances");
         let glyph_buf = GrowBuf::new(&device, "flare glyph instances");
@@ -297,10 +316,11 @@ impl GpuPainter {
             queue,
             rect_pipeline,
             glyph_pipeline,
-            atlas: GlyphAtlas::new(),
+            atlas: GlyphAtlas::with_size(atlas_size),
             atlas_tex,
             globals,
             bind_group,
+            bgl,
             rect_buf,
             glyph_buf,
             target: None,
@@ -535,7 +555,7 @@ impl GpuPainter {
         };
         GpuMemory {
             atlas_cpu: self.atlas.cpu_bytes(),
-            atlas_gpu: GlyphAtlas::gpu_bytes(),
+            atlas_gpu: self.atlas.gpu_bytes(),
             grid_texture: tex(&self.target) + tex(&self.straight_target),
             buffers: (self.rect_buf.cap + self.glyph_buf.cap) as usize,
         }
@@ -551,14 +571,28 @@ impl GpuPainter {
         self.atlas.clear();
     }
 
-    /// One instance per drawable glyph. A full atlas is cleared once and the list rebuilt; if it is
-    /// full again the remaining glyphs are skipped for this frame.
+    /// A full page doubles (up to GlyphAtlas::MAX_SIZE and the device limit), which keeps what the
+    /// next frames need cached; the texture and its bind group are made again for the new edge.
+    fn grow_atlas(&mut self) -> bool {
+        let cap = GlyphAtlas::MAX_SIZE.min(self.device.limits().max_texture_dimension_2d);
+        if !self.atlas.grow(cap) {
+            return false;
+        }
+        self.atlas_tex = create_atlas_texture(&self.device, self.atlas.size());
+        self.bind_group = grid_bind_group(&self.device, &self.bgl, &self.globals, &self.atlas_tex);
+        true
+    }
+
+    /// One instance per drawable glyph. A full atlas grows (or, at its largest, is cleared once)
+    /// and the list rebuilt; if it is full again at its largest the remaining glyphs are skipped
+    /// for this frame.
     fn build_glyph_instances(
         &mut self,
         scene: &Scene,
         glyphs: &mut dyn GlyphSource,
     ) -> Vec<GlyphInstance> {
-        for attempt in 0..2 {
+        let mut cleared = false;
+        loop {
             let mut out = Vec::with_capacity(scene.glyphs.len());
             let mut full = false;
             let mut skipped = 0usize;
@@ -589,7 +623,7 @@ impl GpuPainter {
                         }
                     }
                     Err(AtlasError::Full) => {
-                        if attempt == 0 {
+                        if !cleared || self.atlas_can_grow() {
                             full = true;
                             break;
                         }
@@ -605,9 +639,15 @@ impl GpuPainter {
                 }
                 return out;
             }
-            self.atlas.clear();
+            if !self.grow_atlas() {
+                self.atlas.clear();
+                cleared = true;
+            }
         }
-        Vec::new()
+    }
+
+    fn atlas_can_grow(&self) -> bool {
+        self.atlas.size() < GlyphAtlas::MAX_SIZE.min(self.device.limits().max_texture_dimension_2d)
     }
 }
 
@@ -704,4 +744,77 @@ pub fn read_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Text
     drop(data);
     buffer.unmap();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::Rgba;
+    use crate::glyph::{FakeGlyphs, GlyphKey};
+    use crate::scene::GlyphDraw;
+
+    fn scene_of(n: usize) -> Scene {
+        Scene {
+            width: 64,
+            height: 64,
+            clear: Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            rects: Vec::new(),
+            glyphs: (0..n)
+                .map(|i| GlyphDraw {
+                    key: GlyphKey {
+                        text: format!("g{i}"),
+                        bold: false,
+                        italic: false,
+                    },
+                    pen_x: 0,
+                    baseline_y: 10,
+                    color: Rgba {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                        a: 255,
+                    },
+                })
+                .collect(),
+            overlays: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_overflowing_atlas_grows_once_and_stops_re_uploading() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        // A 64 px page holds 49 glyphs of 9x9 with padding; the frame wants 200.
+        let mut painter = GpuPainter::with_atlas_size(&device, &queue, 64);
+        let mut fake = FakeGlyphs::new(8, 8);
+        let scene = scene_of(200);
+        let first = painter.build_glyph_instances(&scene, &mut fake);
+        assert_eq!(first.len(), 200, "no glyph is dropped");
+        assert!(painter.atlas.size() > 64, "the page grew");
+        assert_eq!(painter.atlas_tex.width(), painter.atlas.size());
+        assert_eq!(
+            painter.memory().atlas_gpu,
+            (painter.atlas.size() as usize).pow(2) * 4
+        );
+        // The next frame needs no clear and no re-upload.
+        let generation = painter.atlas.generation;
+        let second = painter.build_glyph_instances(&scene, &mut fake);
+        assert_eq!(second.len(), 200);
+        assert_eq!(
+            painter.atlas.generation, generation,
+            "no clear on a steady frame"
+        );
+        assert_eq!(painter.atlas.take_uploads().len(), 200);
+        let _ = painter.paint(&scene, &mut fake);
+        let generation = painter.atlas.generation;
+        let _ = painter.paint(&scene, &mut fake);
+        assert_eq!(painter.atlas.generation, generation);
+    }
 }

@@ -96,19 +96,47 @@ pub struct GlyphAtlas {
     slots: HashMap<GlyphKey, Option<AtlasSlot>>,
     pending: Vec<Upload>,
     pub generation: u64,
+    size: u32,
 }
 
 impl GlyphAtlas {
+    /// The page edge a painter starts with.
     pub const SIZE: u32 = 2048;
+    /// The largest page edge the atlas grows to (4096 x 4096 RGBA is 64 MB), device limit aside.
+    pub const MAX_SIZE: u32 = 4096;
     const PADDING: u32 = 1;
 
     pub fn new() -> Self {
+        Self::with_size(Self::SIZE)
+    }
+
+    pub fn with_size(size: u32) -> Self {
         Self {
-            packer: ShelfPacker::new(Self::SIZE, Self::SIZE, Self::PADDING),
+            packer: ShelfPacker::new(size, size, Self::PADDING),
             slots: HashMap::new(),
             pending: Vec::new(),
             generation: 0,
+            size,
         }
+    }
+
+    /// The page edge in pixels.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Doubles the page edge (up to max) and empties the atlas, so a frame that overflowed fits
+    /// the next time and stays cached after it. False when already at max.
+    pub fn grow(&mut self, max: u32) -> bool {
+        if self.size >= max {
+            return false;
+        }
+        self.size = (self.size * 2).min(max);
+        self.packer = ShelfPacker::new(self.size, self.size, Self::PADDING);
+        self.slots.clear();
+        self.pending.clear();
+        self.generation += 1;
+        true
     }
 
     /// Looks up or inserts the glyph (rasterised through `src`). Ok(None) for nothing to draw.
@@ -130,7 +158,7 @@ impl GlyphAtlas {
             self.slots.insert(key.clone(), None);
             return Ok(None);
         }
-        if w + Self::PADDING > Self::SIZE || h + Self::PADDING > Self::SIZE {
+        if w + Self::PADDING > self.size || h + Self::PADDING > self.size {
             return Err(AtlasError::TooLarge);
         }
         let (x, y) = self.packer.alloc(w, h).ok_or(AtlasError::Full)?;
@@ -165,9 +193,9 @@ impl GlyphAtlas {
         self.slots.capacity() * per_slot + keys + pending
     }
 
-    /// Bytes of the atlas texture on the GPU (RGBA, one page).
-    pub const fn gpu_bytes() -> usize {
-        Self::SIZE as usize * Self::SIZE as usize * 4
+    /// Bytes of the atlas texture on the GPU (RGBA, one page of size x size).
+    pub fn gpu_bytes(&self) -> usize {
+        self.size as usize * self.size as usize * 4
     }
 
     pub fn take_uploads(&mut self) -> Vec<Upload> {
@@ -290,6 +318,24 @@ mod tests {
     }
 
     #[test]
+    fn a_full_atlas_grows_up_to_its_cap_and_keeps_the_new_size() {
+        let mut atlas = GlyphAtlas::with_size(64);
+        assert_eq!(atlas.size(), 64);
+        let g = atlas.generation;
+        assert!(atlas.grow(256));
+        assert_eq!(atlas.size(), 128);
+        assert_eq!(atlas.generation, g + 1);
+        assert!(atlas.grow(256));
+        assert_eq!(atlas.size(), 256);
+        assert!(!atlas.grow(256), "already at the cap");
+        assert_eq!(atlas.size(), 256);
+        assert_eq!(atlas.gpu_bytes(), 256 * 256 * 4);
+        // The grown page really packs more: a 100x100 glyph did not fit 64.
+        let mut fake = FakeGlyphs::new(100, 100);
+        assert!(atlas.get(&key("a"), &mut fake).unwrap().is_some());
+    }
+
+    #[test]
     fn the_atlas_counts_its_bytes() {
         let mut atlas = GlyphAtlas::new();
         let before = atlas.cpu_bytes();
@@ -297,7 +343,7 @@ mod tests {
         atlas.get(&key("a"), &mut fake).unwrap();
         // The slot table and the upload waiting both count.
         assert!(atlas.cpu_bytes() > before + 6 * 9 * 4);
-        assert_eq!(GlyphAtlas::gpu_bytes(), 2048 * 2048 * 4);
+        assert_eq!(atlas.gpu_bytes(), 2048 * 2048 * 4);
     }
 
     #[test]
