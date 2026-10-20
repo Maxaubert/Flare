@@ -3,3 +3,6 @@ docs/theme-sample.txt -text
 # The Claude Code plugin's hook (rule 58) is a batch file: cmd reads it line by line and is only
 # reliable with CRLF, whatever the checkout's own setting is.
 *.cmd text eol=crlf
+
+# Shell scripts run under bash on the runner: a CR breaks them (audit 2026-10-20, H4).
+*.sh text eol=lf
