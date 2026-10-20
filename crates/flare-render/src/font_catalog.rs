@@ -186,7 +186,7 @@ pub fn database_from(faces: &[FaceFile], stack: &[&str], fallbacks: &[&str]) -> 
 
 #[cfg(windows)]
 mod registry {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ, RegCloseKey, RegEnumValueW,
         RegOpenKeyExW,
@@ -213,12 +213,8 @@ mod registry {
         if status != ERROR_SUCCESS {
             return Vec::new();
         }
-        let mut out = Vec::new();
-        let mut index = 0u32;
-        loop {
-            let mut name = vec![0u16; 512];
+        let values = walk_values(|index, name, data| {
             let mut name_len = name.len() as u32;
-            let mut data = vec![0u8; 2048];
             let mut data_len = data.len() as u32;
             let mut kind = 0u32;
             // SAFETY: every buffer is as long as the length passed beside it, `kind` is a valid
@@ -235,29 +231,159 @@ mod registry {
                     &mut data_len,
                 )
             };
-            index += 1;
-            if status == 259 {
-                // ERROR_NO_MORE_ITEMS
-                break;
+            RawValue {
+                status,
+                kind,
+                name_len,
+                data_len,
             }
-            if status != ERROR_SUCCESS || kind != REG_SZ {
+        });
+        // SAFETY: `key` was opened above and is closed once.
+        unsafe { RegCloseKey(key) };
+        values
+    }
+
+    /// One `RegEnumValueW` call, as the walk reads it.
+    pub struct RawValue {
+        pub status: u32,
+        pub kind: u32,
+        /// Characters in the name, and bytes in the data, the call wrote.
+        pub name_len: u32,
+        pub data_len: u32,
+    }
+
+    /// What the walk does with one call's status.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Step {
+        /// Read the value (a value that is not a string is skipped).
+        Value,
+        /// A value too big for the buffers: skipped, and the walk goes on.
+        Skip,
+        /// The end of the list, or any other error: the walk stops. A persistent error would
+        /// otherwise repeat for every index and never end (audit L9).
+        Stop,
+    }
+
+    pub fn step_for(status: u32) -> Step {
+        match status {
+            ERROR_SUCCESS => Step::Value,
+            ERROR_MORE_DATA => Step::Skip,
+            _ => Step::Stop,
+        }
+    }
+
+    /// Walks the value list one index at a time through `enum_at(index, name, data)` and returns
+    /// the string values as (name, data).
+    pub fn walk_values(
+        mut enum_at: impl FnMut(u32, &mut [u16], &mut [u8]) -> RawValue,
+    ) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut name = vec![0u16; 512];
+            let mut data = vec![0u8; 2048];
+            let raw = enum_at(index, &mut name, &mut data);
+            index += 1;
+            match step_for(raw.status) {
+                Step::Stop => break,
+                Step::Skip => continue,
+                Step::Value => {}
+            }
+            if raw.kind != REG_SZ {
                 continue;
             }
-            let wide: Vec<u16> = data[..data_len as usize]
+            let data_len = (raw.data_len as usize).min(data.len());
+            let wide: Vec<u16> = data[..data_len]
                 .as_chunks::<2>()
                 .0
                 .iter()
                 .map(|c| u16::from_le_bytes(*c))
                 .take_while(|&c| c != 0)
                 .collect();
+            let name_len = (raw.name_len as usize).min(name.len());
             out.push((
-                String::from_utf16_lossy(&name[..name_len as usize]),
+                String::from_utf16_lossy(&name[..name_len]),
                 String::from_utf16_lossy(&wide),
             ));
         }
-        // SAFETY: `key` was opened above and is closed once.
-        unsafe { RegCloseKey(key) };
         out
+    }
+
+    #[cfg(test)]
+    mod walk_tests {
+        use super::*;
+
+        #[test]
+        fn a_persistent_error_ends_the_walk() {
+            // Audit L9: any status but "no more items" used to `continue`, so a call that kept
+            // failing never ended. The fake fails the test rather than hanging it.
+            let mut calls = 0u32;
+            let out = walk_values(|_, _, _| {
+                calls += 1;
+                assert!(calls < 1000, "the walk never stopped on a persistent error");
+                RawValue {
+                    status: 6,
+                    kind: 0,
+                    name_len: 0,
+                    data_len: 0,
+                }
+            });
+            assert!(out.is_empty());
+            assert_eq!(calls, 1);
+        }
+
+        #[test]
+        fn more_data_skips_that_value_and_the_walk_goes_on() {
+            let out = walk_values(|index, name, data| match index {
+                0 => RawValue {
+                    status: ERROR_MORE_DATA,
+                    kind: REG_SZ,
+                    name_len: 0,
+                    data_len: 0,
+                },
+                1 => {
+                    name[0] = u16::from(b'A');
+                    data[..4].copy_from_slice(&[b'x', 0, 0, 0]);
+                    RawValue {
+                        status: ERROR_SUCCESS,
+                        kind: REG_SZ,
+                        name_len: 1,
+                        data_len: 4,
+                    }
+                }
+                _ => RawValue {
+                    status: 259,
+                    kind: 0,
+                    name_len: 0,
+                    data_len: 0,
+                },
+            });
+            assert_eq!(out, vec![("A".to_string(), "x".to_string())]);
+        }
+
+        #[test]
+        fn the_end_of_the_list_ends_the_walk() {
+            let mut calls = 0u32;
+            let out = walk_values(|_, _, _| {
+                calls += 1;
+                RawValue {
+                    status: 259,
+                    kind: 0,
+                    name_len: 0,
+                    data_len: 0,
+                }
+            });
+            assert!(out.is_empty());
+            assert_eq!(calls, 1);
+        }
+
+        #[test]
+        fn only_more_data_is_skipped_and_everything_else_but_success_stops() {
+            assert_eq!(step_for(ERROR_SUCCESS), Step::Value);
+            assert_eq!(step_for(ERROR_MORE_DATA), Step::Skip);
+            assert_eq!(step_for(259), Step::Stop);
+            assert_eq!(step_for(6), Step::Stop);
+        }
     }
 }
 

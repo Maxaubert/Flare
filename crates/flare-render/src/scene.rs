@@ -112,6 +112,10 @@ pub fn build_scene_ground(
                 fg = palette.cursor_accent;
             }
 
+            if cell.flags.contains(CellFlags::DIM) {
+                fg = dimmed(fg, bg);
+            }
+
             let w = span * m.cell_w;
             let draw_bg = if by_ui {
                 // An explicit background that equals the ground is still drawn, as xterm does.
@@ -149,9 +153,31 @@ pub fn build_scene_ground(
                     color: fg,
                 });
             }
+            if cell.flags.contains(CellFlags::STRIKE) {
+                // A one-line rule about the middle of the lowercase letters: a fixed share of the
+                // baseline's height above the cell top, the same at every scale.
+                scene.overlays.push(RectFill {
+                    x,
+                    y: y + (m.baseline as f32 * 0.6).round() as i32,
+                    w,
+                    h: m.underline_h,
+                    color: fg,
+                });
+            }
         }
     }
     scene
+}
+
+/// SGR 2 (dim): `fg` halfway to `bg`, channel by channel, keeping `fg`'s alpha.
+fn dimmed(fg: Rgba, bg: Rgba) -> Rgba {
+    let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+    Rgba {
+        r: half(fg.r, bg.r),
+        g: half(fg.g, bg.g),
+        b: half(fg.b, bg.b),
+        a: fg.a,
+    }
 }
 
 #[cfg(test)]
@@ -383,6 +409,93 @@ mod tests {
                 color: p.fg
             }]
         );
+    }
+
+    #[test]
+    fn dim_fades_the_glyph_halfway_to_the_ground() {
+        // Audit L10, SGR 2: the glyph is drawn halfway between its colour and the cell's ground.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        no_cursor(&mut g);
+        g.put_str(
+            0,
+            0,
+            "a",
+            Color::Rgb(255, 255, 255),
+            Color::DefaultBg,
+            CellFlags::DIM,
+        );
+        let s = scene(&g);
+        let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+        assert_eq!(
+            s.glyphs[0].color,
+            Rgba::rgb(half(255, p.bg.r), half(255, p.bg.g), half(255, p.bg.b))
+        );
+    }
+
+    #[test]
+    fn strikethrough_draws_a_line_through_the_glyph() {
+        // Audit L10, SGR 9: a one-line overlay about the middle of the glyph, in its colour.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        no_cursor(&mut g);
+        g.put_str(
+            0,
+            0,
+            "a",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::STRIKE,
+        );
+        let s = scene(&g);
+        let m = metrics();
+        let y = 4 + (m.baseline as f32 * 0.6).round() as i32;
+        assert_eq!(
+            s.overlays,
+            vec![RectFill {
+                x: 4,
+                y,
+                w: 8,
+                h: m.underline_h,
+                color: p.fg
+            }]
+        );
+    }
+
+    #[test]
+    fn strikethrough_stays_inside_its_cell_at_every_scale() {
+        // The rule is cell-relative, so it holds from 100% to 300%.
+        for scale in [1.0_f32, 1.25, 1.5, 2.0, 2.25, 3.0] {
+            let m = cell_metrics(
+                &FontUnits {
+                    units_per_em: 2048.0,
+                    ascent: 1900.0,
+                    descent: -480.0,
+                    leading: 0.0,
+                    advance: 1200.0,
+                },
+                scale,
+            );
+            let mut g = Grid::new(3, 2);
+            no_cursor(&mut g);
+            g.put_str(
+                0,
+                0,
+                "a",
+                Color::DefaultFg,
+                Color::DefaultBg,
+                CellFlags::STRIKE,
+            );
+            let s = build_scene(&g, &Palette::pt_default(), &m, 1000, 1000);
+            let (cx, cy) = cell_origin(0, 0, &m);
+            let r = s.overlays[0];
+            assert!(r.h >= 1, "scale {scale}: {r:?}");
+            assert!(
+                r.y >= cy && r.y + r.h as i32 <= cy + m.cell_h as i32,
+                "scale {scale}: {r:?} outside the cell at {cy}"
+            );
+            assert!(r.x == cx && r.w == m.cell_w, "scale {scale}: {r:?}");
+        }
     }
 
     #[test]

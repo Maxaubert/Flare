@@ -60,7 +60,7 @@ impl Rasterizer {
 
     fn from_system(mut fs: FontSystem, families: &[&str], scale: f32) -> Self {
         let family = pick_family(&fs, families);
-        let units = measure(&mut fs, &family, BASE_FONT_PX);
+        let units = measure(&mut fs, &family, BASE_FONT_PX).unwrap_or(FALLBACK_UNITS);
         Self {
             fs,
             swash: SwashCache::new(),
@@ -297,7 +297,7 @@ impl GlyphSource for Rasterizer {
         if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
             return;
         }
-        self.units = measure(&mut self.fs, &family, base_px);
+        self.units = measure(&mut self.fs, &family, base_px).unwrap_or(FALLBACK_UNITS);
         self.family = family;
         self.base_px = base_px;
         self.cache.clear();
@@ -339,27 +339,41 @@ fn has_family(fs: &FontSystem, name: &str) -> bool {
         .any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
 }
 
-/// Shapes "M" at the base size and reads the font's metrics, in font units.
-fn measure(fs: &mut FontSystem, family: &str, base_px: f32) -> FontUnits {
+/// The metrics used when no font can be measured (the registry yielded nothing, or no face shapes
+/// "M"): a monospace face's usual proportions, so the grid still lays out (audit L8).
+const FALLBACK_UNITS: FontUnits = FontUnits {
+    units_per_em: 2048.0,
+    ascent: 1900.0,
+    descent: -480.0,
+    leading: 0.0,
+    advance: 1200.0,
+};
+
+/// Shapes "M" at the base size and reads the font's metrics, in font units. `None` when no font
+/// shapes it.
+fn measure(fs: &mut FontSystem, family: &str, base_px: f32) -> Option<FontUnits> {
+    // cosmic-text panics ("no default font found") when shaping has no face at all, so an empty
+    // database is answered here, before any shaping.
+    if fs.db().is_empty() {
+        return None;
+    }
     let px = font_px_for(base_px, 1.0);
     let attrs = Attrs::new().family(Family::Name(family));
     let mut buffer = Buffer::new_empty(Metrics::new(px, px));
     buffer.set_text("M", &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
-    let run = buffer.layout_runs().next().expect("a layout run for M");
-    let glyph = &run.glyphs[0];
-    let font = fs
-        .get_font(glyph.font_id, Weight::NORMAL)
-        .expect("the font that shaped M");
+    let run = buffer.layout_runs().next()?;
+    let glyph = run.glyphs.first()?;
+    let font = fs.get_font(glyph.font_id, Weight::NORMAL)?;
     let metrics = font.metrics();
     let upem = metrics.units_per_em as f32;
-    FontUnits {
+    Some(FontUnits {
         units_per_em: upem,
         ascent: metrics.ascent,
         descent: metrics.descent,
         leading: metrics.leading,
         advance: glyph.w / px * upem,
-    }
+    })
 }
 
 /// Composes the glyph images of one cluster into one bitmap. Positions are relative to the pen at
@@ -455,6 +469,17 @@ mod tests {
             bold: false,
             italic: false,
         }
+    }
+
+    #[test]
+    fn a_font_system_with_no_faces_measures_the_fallback() {
+        // Audit L8: the registry yielded nothing, so "M" shapes to no run and measure() used to
+        // panic. It must fall back to the default metrics instead.
+        let fs =
+            FontSystem::new_with_locale_and_db(LOCALE.into(), cosmic_text::fontdb::Database::new());
+        let r = Rasterizer::from_system(fs, &["No Such Font"], 1.0);
+        assert_eq!(r.units, FALLBACK_UNITS);
+        assert!(r.units.units_per_em > 0.0);
     }
 
     fn bold_key(text: &str) -> GlyphKey {
