@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use crate::ctx::{App, Ctx, Launch};
 use crate::fixtures;
 use crate::standins::hooklines::hook_line;
-use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, Shell, World};
+use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, Shell};
 
 /// The clip the microphone plays: the real one is never opened (part 3 starts a recording).
 const CLIP_FIXTURE: &str = "jfk.wav";
@@ -186,10 +186,17 @@ fn say_done(session: &str) -> String {
 }
 
 /// The stand-in Claude: a copy of PowerShell named `claude.exe` runs in the tab (Windows' process tree then says
-/// Claude), and inside it the hook line of a finished turn names a Claude session. **[seam]** PT prints the hook
-/// line first and starts the stand-in after; Flare takes a tab's session back at its next shell prompt (the agent
-/// has left), so the line is printed from inside the stand-in, where no prompt of the app's shell follows it, as a
-/// real Claude's hook does. Leaves the shell inside the stand-in.
+/// Claude), and inside it the hook line of a finished turn names a Claude session.
+///
+/// **ORDER DIFFERS FROM PT, RECORDED AS DIFF-21 (FLARE-DEFECT for the orchestrator to decide).** PT prints the
+/// hook line at the shell prompt (`hookSay`) and starts the stand-in after it; its session survives because
+/// `agentArm.ts` `ArmStep.gone` only drops what the agent asked the terminal for (theme reports). Flare's
+/// `agent_hub.rs::apply_arm` also runs `sessions.remove(tab)` on `gone`, and the next shell prompt (OSC 9;9)
+/// is `gone`, so the PT order loses the session before the stand-in starts and the list is empty. The port keeps
+/// PT's checks and messages and changes only this order (the hook line is printed from inside the stand-in, where
+/// a real Claude's hook prints it and no prompt of the app's shell follows). It is NOT a fix: if the owner wants
+/// PT's behaviour, the hub keeps the session across a prompt and this function goes back to `hookSay` first.
+/// Leaves the shell inside the stand-in.
 fn start_stand_in(
     ctx: &mut Ctx,
     app: &mut App,
@@ -355,8 +362,8 @@ pub fn dictate_anywhere(ctx: &mut Ctx) -> Result<(), String> {
 /// takes over.
 pub fn dictate_two_copies(ctx: &mut Ctx) -> Result<(), String> {
     let clip = fixtures::require(CLIP_FIXTURE)?;
-    let wa = World::new();
-    let wb = World::new();
+    let wa = ctx.new_world();
+    let wb = ctx.new_world();
     seed(&wa.profile)?;
     seed(&wb.profile)?;
     // The scenario's own link: both copies prove they hold the key.

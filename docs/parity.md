@@ -1345,6 +1345,7 @@ A PROPOSED row awaits the owner's yes and is repeated in the PR description (M10
 | DIFF-18 | Chromium WebRTC echo cancellation and auto gain on the mic | WASAPI communications processing, the render endpoint as echo reference where Windows offers it | O13, M8 D7, Q4 | PROPOSED |
 | DIFF-19 | Parakeet host and key hook in Windows PowerShell with compiled C# | `flare-parakeet-host.exe` and an in-app hook thread, same protocol and events | M8 D3, D6, Q5 | PROPOSED |
 | DIFF-20 | One link, lock and key for Prism Terminal copies and Prism | Flare's own pipe, lock and key; Prism and Prism Terminal are not on it | Roadmap Review Focus (side by side), O14, Q2 | PROPOSED |
+| DIFF-21 | A tab's Claude session named by a hook line survives the shell's next prompt (gentArm.ts ArmStep.gone drops only the theme reports; dictateAnywhere and dictateTwoCopies print the hook line at the prompt, then start claude.exe) | gent_hub.rs::apply_arm runs sessions.remove(tab) on gone, and a prompt is gone: the session goes at the next prompt. The two scenarios print the hook line from inside the stand-in claude.exe instead (anywhere.rs start_stand_in). A FLARE-DEFECT candidate: the owner decides to keep the session across a prompt (then the scenarios go back to PT's order) or to accept this | M8 Task 31 review (Opus), N25 | PROPOSED |
 
 ## Deferred to M8
 

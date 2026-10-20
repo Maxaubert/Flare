@@ -266,6 +266,17 @@ impl Ctx {
         self.world.as_ref().expect("world was just created")
     }
 
+    /// A further world the scenario owns (a second copy of the app, `dictateTwoCopies`). A `--run-one`
+    /// child announces its root, as `ensure_world` does, so the supervisor reaps its processes and
+    /// removes its folder even when the scenario overruns and no `Drop` runs.
+    pub fn new_world(&self) -> World {
+        let w = World::new();
+        if self.json {
+            println!("{}", json!({"world": w.root.to_string_lossy()}));
+        }
+        w
+    }
+
     /// Starts the app on this scenario's sandbox (one profile per scenario), connects its pipe,
     /// waits for `Hello`, and sets the scale when asked.
     pub fn launch(&mut self, opts: Launch) -> Result<App, String> {
