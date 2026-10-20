@@ -978,7 +978,7 @@ impl Inner {
         }
         let args: Vec<String> = [
             "-m",
-            &model_path.to_string_lossy(),
+            &crate::ansi_path::engine_safe_path(model_path).to_string_lossy(),
             "--host",
             "127.0.0.1",
             "--port",

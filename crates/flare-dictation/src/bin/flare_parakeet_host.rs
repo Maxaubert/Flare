@@ -228,6 +228,10 @@ extern "system" {
 /// The model's path as the engine opens it: the script marshalled it as ANSI (`LPStr`), the system code
 /// page, so the same bytes go in here. A path the code page cannot spell is handed over as UTF-8.
 fn model_c_string(model: &str) -> Option<CString> {
+    // A path the code page cannot spell goes in as its 8.3 short form (audit L32/L63).
+    let safe = flare_dictation::ansi_path::engine_safe_path(Path::new(model));
+    let model = safe.to_string_lossy();
+    let model: &str = &model;
     let w: Vec<u16> = model.encode_utf16().collect();
     let len = i32::try_from(w.len()).ok()?;
     let mut used_default = 0i32;
@@ -391,6 +395,26 @@ fn run() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_model_path_outside_the_code_page_reaches_the_engine_as_a_path_that_opens() {
+        use std::os::windows::ffi::OsStrExt;
+        let dir = tempfile::Builder::new()
+            .prefix("\u{30e2}\u{30c7}\u{30eb}\u{65e5}\u{672c}\u{8a9e}\u{d55c}")
+            .tempdir()
+            .unwrap();
+        let file = dir.path().join("\u{30e2}\u{30c7}\u{30eb}.bin");
+        std::fs::write(&file, b"weights").unwrap();
+        let w: Vec<u16> = file.as_os_str().encode_wide().collect();
+        if flare_dictation::ansi_path::ansi_clean(&w) {
+            return; // the code page is UTF-8 here
+        }
+        let c = super::model_c_string(&file.to_string_lossy()).unwrap();
+        // What the engine hands to fopen: ASCII here, and it opens the same file.
+        assert!(c.as_bytes().is_ascii(), "{c:?}");
+        let opened = std::fs::read(c.to_str().unwrap()).unwrap();
+        assert_eq!(opened, b"weights");
+    }
+
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
 
