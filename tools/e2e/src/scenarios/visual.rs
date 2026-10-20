@@ -475,6 +475,37 @@ fn startup_cell(
     }
     let front = Tabs::read(&mut app).and_then(|t| t.front_index());
     let judged = judge_frames(&watch.frames);
+    // The copy must be the window's own size in device pixels (audit V2: a copy taken with a
+    // DPI-unaware process came back a crop of the window with a black block where it did not reach).
+    let rect = probe(&mut app, "window.park", Value::Null)["rect"].clone();
+    let own = (
+        (num(&rect[2]) - num(&rect[0])) as u32,
+        (num(&rect[3]) - num(&rect[1])) as u32,
+    );
+    let copied = watch
+        .frames
+        .last()
+        .map_or((0, 0), |f| (num(&f["w"]) as u32, num(&f["h"]) as u32));
+    ctx.ok(
+        own.0 > 0 && copied == own,
+        format!(
+            "{surface} {renderer}: the copy is the window's own size {own:?} (copied {copied:?})"
+        ),
+    );
+    // The last picture is the dark ground with ink on it, never a window-sized block of pure black
+    // (audit V2): its mean colour over the sample is well above black.
+    let mean = watch.frames.last().map_or(vec![0.0; 3], |f| {
+        f["mean"]
+            .as_array()
+            .map(|a| a.iter().map(num).collect())
+            .unwrap_or_default()
+    });
+    ctx.ok(
+        mean.iter().all(|c| *c > 10.0),
+        format!(
+            "{surface} {renderer}: the last picture is painted, not black (mean colour {mean:?})"
+        ),
+    );
     let series_rows = slide::parse_rows(&watch.series);
     let first_frames: Vec<Value> = series_rows
         .iter()

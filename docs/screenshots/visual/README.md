@@ -109,3 +109,23 @@ Prism Terminal is only ever run from `%TEMP%\pt-visual-*\app`, a copy of the ins
 `--user-data-dir` inside that temp folder and `--e2e` (parked, unfocusable); the installed copy and `%APPDATA%` are not
 read or written, and what the script reaps is matched by the temp folder's path. Flare ran from its own worlds with
 the harness's guards. Neither the real microphone, the keyboard hook nor the registry was touched.
+
+## Audit V2: the black block in the software start-up and resume pictures is not the app (2026-10-20)
+
+The earlier software pictures from outside showed a black rectangle from about (13, 65) to the right and bottom edge
+over a painted window. It is not in the window. Two faults of the copier, both fixed in `tools/e2e/src/winshot.rs`:
+
+- The harness is DPI-unaware, so `GetWindowRect` gave the window's size divided by the scale (1180 x 780 for a
+  2655 x 1755 window) and the copy was a crop. The copy now runs with per-monitor-v2 awareness for the call and has the
+  window's own size (a visualTour check compares it with the app's `window.park` rectangle).
+- `PrintWindow` with `PW_RENDERFULLCONTENT` of the software renderer's window (a GDI surface) places the client area
+  by the classic frame the window's style carries (winit's undecorated-shadow `WS_CAPTION`), ignoring the app's own
+  `WM_NCCALCSIZE`, and answers black for it. Sampled from inside the process with `GetPixel` on the window's own
+  device context, the surface was painted everywhere (a 6 x 6 lattice, no black) from the first paint to ready, and
+  stayed so. A new visualTour check fails a last picture whose mean colour is near black. Software windows are now
+  copied with `PrintWindow` and `PW_CLIENTONLY` (`Method::Gdi`); GPU windows keep `PW_RENDERFULLCONTENT`.
+- Left over: a late software picture can still carry the system caption strip ("Flare" and a close box) along the top
+  and a one-pixel frame, drawn by `PrintWindow` itself from that same style. The app never shows it (client area and
+  window rectangle are equal, `GetClientRect` 2655 x 1755).
+- Also seen: `hello.scale` reads 1.0 for the software window while its window is 2655 x 1755 at the monitor's 225 %,
+  so the cell folder `100-software` is named by that value; the pictures are at the monitor's scale.

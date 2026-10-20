@@ -202,6 +202,12 @@ pub fn watch_launch(
     };
     let ms = |t: Instant| (t - began).as_secs_f64() * 1000.0;
     let deadline = began + Duration::from_secs(40);
+    // The software renderer's window is copied from its own surface; a GPU swapchain through PrintWindow.
+    let method = if renderer == "software" {
+        winshot::Method::Gdi
+    } else {
+        winshot::Method::PrintWindow
+    };
     loop {
         let now = Instant::now();
         if hwnd.is_none() {
@@ -210,7 +216,7 @@ pub fn watch_launch(
                 watch.first_window_ms = Some(ms(now));
             }
         }
-        let copy = hwnd.and_then(|h| winshot::capture(h).ok());
+        let copy = hwnd.and_then(|h| winshot::capture_with(h, method).ok());
         if let Some(shot) = copy {
             let l: Look = winshot::look(&shot);
             let key = (l.hash, l.w, l.h);

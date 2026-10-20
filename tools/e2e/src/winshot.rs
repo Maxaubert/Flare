@@ -18,6 +18,31 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 #[link(name = "user32")]
 unsafe extern "system" {
     fn PrintWindow(hwnd: HWND, hdc: HDC, flags: u32) -> i32;
+    fn SetThreadDpiAwarenessContext(context: isize) -> isize;
+}
+
+/// `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`.
+const PER_MONITOR_AWARE_V2: isize = -4;
+
+/// This thread sees device pixels until the guard drops. The app's windows are per-monitor aware; asked
+/// from a DPI-unaware thread, `GetWindowRect` answers a scaled-down size and `PrintWindow` copies a
+/// crop of the window with a black block where the smaller bitmap did not reach (audit V2).
+struct DeviceCoordinates(isize);
+
+impl DeviceCoordinates {
+    fn enter() -> Self {
+        // SAFETY: changes only this thread's DPI awareness, restored on drop.
+        Self(unsafe { SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2) })
+    }
+}
+
+impl Drop for DeviceCoordinates {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            // SAFETY: puts back the context this thread had.
+            unsafe { SetThreadDpiAwarenessContext(self.0) };
+        }
+    }
 }
 
 /// One captured window, straight RGBA8, device pixels.
@@ -85,9 +110,29 @@ pub fn windows_of(pid: u32) -> Vec<WinInfo> {
     found
 }
 
-/// Copies the window `hwnd` as it paints itself now.
+/// How a window is copied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    /// `PrintWindow` with `PW_RENDERFULLCONTENT`: right for a GPU swapchain.
+    PrintWindow,
+    /// `PrintWindow` with `PW_CLIENTONLY` and without `PW_RENDERFULLCONTENT`: the window paints its own
+    /// GDI surface, which is what the software renderer presents. The window keeps a classic caption
+    /// style that a copy with the frame would draw over it. With the full-content flag that window
+    /// comes back with a black block where the client area is, though its surface is fully painted
+    /// (audit V2).
+    Gdi,
+}
+
+/// Copies the window `hwnd` as it paints itself now (`PrintWindow`).
 pub fn capture(hwnd: isize) -> Result<Shot, String> {
+    capture_with(hwnd, Method::PrintWindow)
+}
+
+/// Copies the window `hwnd` as it paints itself now, the way `method` says.
+pub fn capture_with(hwnd: isize, method: Method) -> Result<Shot, String> {
+    const PW_CLIENTONLY: u32 = 1;
     const PW_RENDERFULLCONTENT: u32 = 2;
+    let _device = DeviceCoordinates::enter();
     let h = hwnd as HWND;
     let mut r = RECT {
         left: 0,
@@ -131,7 +176,10 @@ pub fn capture(hwnd: isize) -> Result<Shot, String> {
             return Err("no bitmap".into());
         }
         let old = SelectObject(dc, bmp);
-        let ok = PrintWindow(h, dc, PW_RENDERFULLCONTENT);
+        let ok = match method {
+            Method::PrintWindow => PrintWindow(h, dc, PW_RENDERFULLCONTENT),
+            Method::Gdi => PrintWindow(h, dc, PW_CLIENTONLY),
+        };
         let n = w as usize * hh as usize * 4;
         let src = std::slice::from_raw_parts(bits as *const u8, n);
         let mut rgba = Vec::with_capacity(n);
