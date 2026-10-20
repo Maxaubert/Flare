@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Is this version already released?
         id: ver
@@ -49,10 +49,10 @@ jobs:
         if: steps.ver.outputs.fresh == 'true'
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.ver.outputs.fresh == 'true'
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
         if: steps.ver.outputs.fresh == 'true'
         with:
           tool: cargo-nextest,cargo-deny
@@ -60,11 +60,7 @@ jobs:
       - name: No em-dashes
         if: steps.ver.outputs.fresh == 'true'
         shell: bash
-        run: |
-          dash="$(printf '\342\200\224')"
-          if git grep -n "$dash" -- . ':!Cargo.lock'; then
-            echo "Em-dash found (owner rule: use en-dashes, commas or rephrase)"; exit 1
-          fi
+        run: bash tools/release/check-no-emdash.sh
 
       - name: Format
         if: steps.ver.outputs.fresh == 'true'
@@ -82,7 +78,7 @@ jobs:
         if: steps.ver.outputs.fresh == 'true'
         run: cargo deny check
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         if: steps.ver.outputs.fresh == 'true'
         with:
           dotnet-version: 8.0.x
@@ -109,6 +105,11 @@ jobs:
           if ('${{ vars.FLARE_LIVE_UPDATES }}' -eq 'on') { $features = @('--features', 'live-updates') }
           if (($features.Count -gt 0 -or $flipped) -and $vis -ne 'PUBLIC') {
             throw "the updater is switched on but the repository is $vis; it stays off until the repository is public"
+          }
+          # The zip 8.6 advisory ignores in deny.toml may not survive into a build with live updates.
+          if ($features.Count -gt 0 -or $flipped) {
+            ./tools/release/check-advisory-gate.ps1 -Live
+            if ($LASTEXITCODE -ne 0) { throw "deny.toml still ignores the velopack zip advisories" }
           }
           cargo build --release -p flare @features
           if ($LASTEXITCODE -ne 0) { throw "release build failed" }
@@ -156,7 +157,7 @@ jobs:
 
       - name: Keep the symbols
         if: steps.ver.outputs.fresh == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: flare-symbols-${{ steps.ver.outputs.version }}
           path: target/release/flare.pdb

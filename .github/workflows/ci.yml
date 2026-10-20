@@ -25,11 +25,7 @@ jobs:
           tool: cargo-nextest,cargo-deny
       - name: No em-dashes
         shell: bash
-        run: |
-          dash="$(printf '\342\200\224')"
-          if git grep -I -n "$dash" -- . ':!Cargo.lock'; then
-            echo "Em-dash found (owner rule: use en-dashes, commas or rephrase)"; exit 1
-          fi
+        run: bash tools/release/check-no-emdash.sh
       - name: Format
         run: cargo fmt --check
       - name: Clippy

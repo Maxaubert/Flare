@@ -251,16 +251,20 @@ fn actions_are_pinned_to_major_tags_that_exist() {
         "taiki-e/install-action@v2",
         "actions/upload-artifact@v4",
     ];
-    let used: Vec<&str> = wf
+    let used: Vec<String> = wf
         .lines()
         .filter_map(|l| {
             let t = l.trim().trim_start_matches("- ");
-            t.strip_prefix("uses: ")
+            // `owner/name@<40-hex sha> # vN` (A4 L61): the allow-list names the action and its major.
+            let spec = t.strip_prefix("uses: ")?;
+            let (action, rest) = spec.split_once('@')?;
+            let major = rest.split_once("# ")?.1.trim();
+            Some(format!("{action}@{major}"))
         })
         .collect();
     assert_eq!(used.len(), allowed.len(), "every action use is listed");
     for u in used {
-        assert!(allowed.contains(&u), "unexpected action: {u}");
+        assert!(allowed.contains(&&*u), "unexpected action: {u}");
     }
 }
 
@@ -384,4 +388,131 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
             "THIRD-PARTY-NOTICES.md lacks {entry}"
         );
     }
+}
+
+// ---- Audit 2026-10-20 (A4: H4, L60, L61) ----
+
+const EMDASH_CHECK: &str = "tools/release/check-no-emdash.sh";
+const ADVISORY_GATE: &str = "tools/release/check-advisory-gate.ps1";
+
+#[test]
+fn both_workflows_run_the_one_shared_em_dash_script() {
+    // H4: release.yml's own copy lacked -I and tripped on three PNGs; one script, called by both.
+    let script = read(EMDASH_CHECK);
+    assert!(
+        script.contains("git grep -I -n"),
+        "the shared script must skip binary files (-I)"
+    );
+    for wf in [WF, ".github/workflows/ci.yml"] {
+        let text = read(wf);
+        assert!(
+            text.contains("bash tools/release/check-no-emdash.sh"),
+            "{wf} must call the shared script"
+        );
+        assert!(
+            !text.contains("git grep"),
+            "{wf} must not carry its own copy of the check"
+        );
+    }
+}
+
+#[test]
+fn every_third_party_action_in_the_release_job_is_pinned_to_a_full_sha() {
+    // L61: the job holds contents: write, so a moved tag must not be able to run in it.
+    let wf = read(WF);
+    let mut seen = 0;
+    for line in wf.lines().filter(|l| l.contains("uses:")) {
+        let spec = line.split("uses:").nth(1).unwrap().trim();
+        let (action, rest) = spec.split_once('@').expect("uses: owner/name@ref");
+        let sha = rest.split_whitespace().next().unwrap();
+        assert!(
+            sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "{action} is not pinned to a full commit SHA: {line}"
+        );
+        assert!(
+            rest.contains("# v"),
+            "{action} keeps its version in a comment: {line}"
+        );
+        seen += 1;
+    }
+    assert!(seen >= 5, "expected the five actions, saw {seen}");
+}
+
+#[test]
+fn the_advisory_gate_runs_in_the_release_before_the_updater_can_be_built_in() {
+    // L60: the zip 8.6 ignores in deny.toml may not survive into a build with live updates.
+    let wf = read(WF);
+    assert!(wf.contains("tools/release/check-advisory-gate.ps1"));
+    let gate = at(&wf, "tools/release/check-advisory-gate.ps1");
+    let build = at(&wf, "cargo build --release -p flare @features");
+    assert!(gate < build, "the gate must run before the release build");
+    let script = read(ADVISORY_GATE);
+    for id in [
+        "RUSTSEC-2026-0367",
+        "RUSTSEC-2026-0368",
+        "RUSTSEC-2026-0369",
+    ] {
+        assert!(script.contains(id), "the gate must name {id}");
+    }
+}
+
+fn pwsh() -> Option<&'static str> {
+    ["pwsh", "powershell"].into_iter().find(|p| {
+        std::process::Command::new(p)
+            .args(["-NoProfile", "-Command", "exit 0"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+fn run_gate(deny_toml: &str, live: bool) -> i32 {
+    let dir = std::env::temp_dir().join(format!(
+        "flare-gate-{}-{}",
+        std::process::id(),
+        deny_toml.len()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("deny.toml");
+    fs::write(&file, deny_toml).unwrap();
+    let mut cmd = std::process::Command::new(pwsh().expect("a PowerShell"));
+    cmd.args(["-NoProfile", "-File"])
+        .arg(root().join(ADVISORY_GATE))
+        .arg("-Deny")
+        .arg(&file);
+    if live {
+        cmd.arg("-Live");
+    }
+    let code = cmd.status().unwrap().code().unwrap_or(-1);
+    let _ = fs::remove_dir_all(&dir);
+    code
+}
+
+#[test]
+fn the_advisory_gate_fails_only_for_a_live_build_that_still_ignores_zip_advisories() {
+    if pwsh().is_none() {
+        eprintln!("no PowerShell here; the text tests above still hold");
+        return;
+    }
+    let with = "ignore = [ { id = \"RUSTSEC-2026-0367\", reason = \"x\" } ]\n";
+    let without = "ignore = [ { id = \"RUSTSEC-2026-0192\", reason = \"x\" } ]\n";
+    assert_ne!(run_gate(with, true), 0, "live + ignores present must fail");
+    assert_eq!(
+        run_gate(with, false),
+        0,
+        "updater off: the ignores are allowed"
+    );
+    assert_eq!(run_gate(without, true), 0, "live + ignores gone passes");
+    // The real file: while the updater is off the release must still pass...
+    assert_eq!(
+        std::process::Command::new(pwsh().unwrap())
+            .args(["-NoProfile", "-File"])
+            .arg(root().join(ADVISORY_GATE))
+            .arg("-Deny")
+            .arg(root().join("deny.toml"))
+            .status()
+            .unwrap()
+            .code(),
+        Some(0)
+    );
 }
