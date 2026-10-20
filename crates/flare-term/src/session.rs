@@ -14,7 +14,7 @@ use flare_shells::list::{ShellDef, shell_by_id};
 use flare_shells::resume::{Launch, with_resume};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -151,8 +151,13 @@ struct Session {
     /// Set (under `dest`) when the session ended while it was still a warm spare.
     finished: Mutex<Option<Option<u32>>>,
     writer_tx: Mutex<Option<Sender<Vec<u8>>>>,
+    /// Bytes sent to the writer thread and not yet written (bounds the queue).
+    queued: Arc<AtomicUsize>,
     threads: Mutex<Threads>,
 }
+
+/// The most bytes queued for a child that has stopped reading; past it a write is dropped.
+pub const WRITE_BACKLOG_MAX: usize = 4 << 20;
 
 fn append_capped(buf: &mut Vec<u8>, bytes: &[u8], cap: usize) {
     let room = cap.saturating_sub(buf.len());
@@ -333,11 +338,19 @@ fn pump_loop(s: Arc<Session>) {
     }
 }
 
-fn writer_loop(rx: std::sync::mpsc::Receiver<Vec<u8>>, mut w: Box<dyn std::io::Write + Send>) {
+fn writer_loop(
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    mut w: Box<dyn std::io::Write + Send>,
+    queued: Arc<AtomicUsize>,
+) {
     // sync-ok: the writer thread of a session, ended by dropping the sender
     while let Ok(bytes) = rx.recv() {
         trace_key("write");
-        if w.write_all(&bytes).is_err() {
+        // The chunk leaves the queue once the pty took it, so a stalled child keeps it counted.
+        let n = bytes.len();
+        let ok = w.write_all(&bytes).is_ok();
+        queued.fetch_sub(n, Ordering::SeqCst);
+        if !ok {
             break;
         }
         let _ = w.flush();
@@ -360,6 +373,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
     let reader = proc.take_reader().ok_or("the pty has no reader")?;
     let writer = proc.take_writer().ok_or("the pty has no writer")?;
     let (tx, rx) = channel::<Vec<u8>>();
+    let queued = Arc::new(AtomicUsize::new(0));
     let s = Arc::new(Session {
         token: sh.next_token.fetch_add(1, Ordering::SeqCst),
         tab_token: f.tab_token,
@@ -382,6 +396,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         dest: Mutex::new(f.dest),
         finished: Mutex::new(None),
         writer_tx: Mutex::new(Some(tx)),
+        queued: Arc::clone(&queued),
         threads: Mutex::new(Threads::default()),
     });
     let spawn_err = |e: std::io::Error| {
@@ -402,7 +417,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
         .map_err(spawn_err)?;
     let writer_h = std::thread::Builder::new()
         .name("flare-pty-write".into())
-        .spawn(move || writer_loop(rx, writer))
+        .spawn(move || writer_loop(rx, writer, queued))
         .map_err(spawn_err)?;
     *lk(&s.threads) = Threads {
         reader: Some(reader_h),
@@ -450,7 +465,10 @@ fn finish(sh: &Arc<Shared>, s: &Arc<Session>, code: Option<u32>) {
         }
         std::thread::sleep((sh.opts.exit_grace - idle).min(Duration::from_millis(20))); // sync-ok: the finisher thread
     }
-    drop(lk(&s.proc).take());
+    // Take it out first: the guard of a temporary lives to the end of the statement, and closing a
+    // pseudo console can linger, so a resize must not wait on the proc lock meanwhile.
+    let closing = lk(&s.proc).take();
+    drop(closing);
     s.join_threads(|t| t.reader.take());
     s.stop_io();
     s.join_threads(|t| t.pump.take());
@@ -832,7 +850,18 @@ impl SessionManager {
         if let Some(s) = s
             && let Some(tx) = lk(&s.writer_tx).as_ref()
         {
-            let _ = tx.send(data.to_vec());
+            // A child that stopped reading must not make the queue grow without end: past the
+            // cap a write is dropped (the first one into an empty queue always goes, so a big
+            // paste is not refused).
+            let pending = s.queued.load(Ordering::SeqCst);
+            if pending > 0 && pending + data.len() > WRITE_BACKLOG_MAX {
+                log::warn!("pty {}: write dropped, the child is not reading", s.pid);
+                return;
+            }
+            s.queued.fetch_add(data.len(), Ordering::SeqCst);
+            if tx.send(data.to_vec()).is_err() {
+                s.queued.fetch_sub(data.len(), Ordering::SeqCst);
+            }
         }
     }
 
@@ -1712,6 +1741,47 @@ mod tests {
         assert!(wait_until(|| f.written().len() == 200));
     }
 
+    #[test]
+    fn a_resize_is_not_blocked_by_a_lingering_pty_close() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        assert!(spawn_a(&m));
+        let f = Arc::clone(&sp.made()[0]);
+        f.block_drop();
+        f.exit(0);
+        assert!(
+            wait_until(|| f.drop_parked()),
+            "the finisher never closed the pty"
+        );
+        let m2 = Arc::clone(&m);
+        let h = std::thread::spawn(move || m2.resize("a", 90, 30));
+        let done = settled(&h);
+        f.unblock_drop();
+        assert!(done, "the resize waited on the pty close");
+        let _ = h.join();
+    }
+
+    #[test]
+    fn writes_to_a_child_that_stopped_reading_are_bounded() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        assert!(spawn_a(&m));
+        let f = Arc::clone(&sp.made()[0]);
+        f.block_writes();
+        let chunk = vec![b'x'; 1 << 20];
+        for _ in 0..64 {
+            m.write("a", &chunk);
+        }
+        f.unblock_writes();
+        // the queue drains, and holds at most its cap plus the chunk already in flight
+        assert!(wait_until(|| !f.written().is_empty()));
+        std::thread::sleep(Duration::from_millis(100));
+        let n = f.written().len();
+        assert!(n <= WRITE_BACKLOG_MAX + (2 << 20), "wrote {n} bytes");
+        // and the session still takes input afterwards
+        m.write("a", b"after");
+        assert!(wait_until(|| f.written().ends_with(b"after")));
+    }
     #[test]
     fn write_reaches_the_pty_through_the_writer_thread() {
         let sp = FakeSpawner::new();

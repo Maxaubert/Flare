@@ -85,9 +85,19 @@ impl Scanner {
         }
     }
 
-    fn start_osc(&mut self) {
-        self.osc.clear();
+    /// Forgets the OSC in progress; an over-long one gives its buffer back instead of keeping it
+    /// for the tab's life.
+    fn drop_osc(&mut self) {
+        if self.overflow || self.osc.capacity() > 4096 {
+            self.osc = Vec::new();
+        } else {
+            self.osc.clear();
+        }
         self.overflow = false;
+    }
+
+    fn start_osc(&mut self) {
+        self.drop_osc();
         self.state = State::OscBody;
     }
 
@@ -103,8 +113,7 @@ impl Scanner {
                 payload: std::mem::take(&mut self.osc),
             });
         }
-        self.osc.clear();
-        self.overflow = false;
+        self.drop_osc();
         self.state = State::Ground;
     }
 
@@ -149,8 +158,7 @@ impl Scanner {
                     let seg = &rest[..term.unwrap_or(rest.len())];
                     if let Some(c) = memchr::memchr2(0x18, 0x1a, seg) {
                         i += c + 1;
-                        self.osc.clear();
-                        self.overflow = false;
+                        self.drop_osc();
                         self.state = State::Ground;
                         continue;
                     }
@@ -467,5 +475,21 @@ mod tests {
                 erase: Erase::Screen
             }]
         );
+    }
+
+    #[test]
+    fn an_over_long_osc_gives_its_buffer_back() {
+        let mut s = Scanner::with_limit(100_000);
+        let mut big = b"\x1b]52;c;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', 150_000));
+        big.push(0x07);
+        assert_eq!(s.scan(&big), vec![]);
+        assert!(s.osc.capacity() < 1024, "kept {} bytes", s.osc.capacity());
+        // an aborted over-long OSC (CAN) gives it back too
+        let mut big = b"\x1b]52;c;".to_vec();
+        big.extend(std::iter::repeat_n(b'A', 150_000));
+        assert_eq!(s.scan(&big), vec![]);
+        assert_eq!(s.scan(b"\x18"), vec![]);
+        assert!(s.osc.capacity() < 1024, "kept {} bytes", s.osc.capacity());
     }
 }
