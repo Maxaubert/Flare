@@ -323,6 +323,14 @@ impl Service {
         fx
     }
 
+    /// The e2e seam (`DictRoute`): as if a recording begun with the window of process `front` in front heard
+    /// `text`. Never called outside --e2e.
+    #[doc(hidden)]
+    pub fn route(&mut self, text: String, front: Option<u32>, now_ms: f64) -> Vec<SvcEffect> {
+        self.rec_front = front;
+        self.on(SvcEvent::Routed(RouteResult::Text(text)), now_ms)
+    }
+
     pub fn role(&self) -> Role {
         self.role
     }
@@ -1096,6 +1104,25 @@ mod tests {
         let mut s = serving();
         let fx = s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 6.0);
         assert!(has(&fx, &SvcEffect::Role(Role::Service)));
+    }
+
+    /* ----- the e2e route seam (M8 Task 27) ----- */
+
+    #[test]
+    fn a_route_with_this_copy_in_front_pastes_into_the_front_tab() {
+        let mut s = started();
+        let me = s.opts.self_pid;
+        let fx = s.route("hello there".into(), Some(me), 20.0);
+        assert!(has(&fx, &SvcEffect::PastePage("hello there".into())));
+        assert!(!has(&fx, &SvcEffect::AskTabs));
+    }
+
+    #[test]
+    fn a_route_with_no_front_window_asks_for_the_tabs() {
+        let mut s = started();
+        let fx = s.route("hello there".into(), None, 20.0);
+        assert!(has(&fx, &SvcEffect::AskTabs));
+        assert!(!has(&fx, &SvcEffect::PastePage("hello there".into())));
     }
 
     /* ----- routing ----- */
