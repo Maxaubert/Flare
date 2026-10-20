@@ -881,7 +881,10 @@ start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
             end_pid(*p);
         }
         assert!(gui_alive, "a GUI app the user started outlives the crash");
-        assert!(!con_alive, "a console child still ends with a crash of its terminal");
+        assert!(
+            !con_alive,
+            "a console child still ends with a crash of its terminal"
+        );
     }
     #[test]
     fn shells_die_with_the_process_that_started_them() {
