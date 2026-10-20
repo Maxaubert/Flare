@@ -470,7 +470,9 @@ pub fn production_plugin_dir(e2e: bool) -> Option<String> {
         return None;
     }
     // sync-ok: startup, two small stats
-    flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
+    // The template-folder seam reads only under --e2e (audit L25); a release build never takes it.
+    let env_dir = crate::e2e::global().env(flare_win::names::SEAM_PLUGIN_DIR);
+    flare_agent::plugin::plugin_dir(env_dir.as_deref()).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// True when the plugin seam variable says "1": a test run that wants the real plugin.

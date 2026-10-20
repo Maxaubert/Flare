@@ -51,6 +51,8 @@ static FLAG: OnceLock<E2eFlag> = OnceLock::new();
 /// Sets the process-wide flag once (main, after parsing the arguments); later calls are ignored.
 pub fn init(on: bool) {
     let _ = FLAG.set(E2eFlag::new(on));
+    // The seams below the app crate (dictation folders, NVIDIA answer, plugin folder) share the gate.
+    flare_win::seam::set_open(on);
 }
 
 /// The flag; off when `init` never ran.

@@ -207,15 +207,11 @@ pub fn installed_plugin_path() -> Option<PathBuf> {
 /// `%LOCALAPPDATA%\Flare\claude-plugin` with the absolute System32 `cmd.exe`, and that copy is
 /// returned. None when no template is found or the install fails (then no shell is handed a
 /// plugin; the template itself is never handed out).
-pub fn plugin_dir() -> Option<PathBuf> {
-    let env_dir = std::env::var("FLARE_CLAUDE_PLUGIN_DIR").ok();
+pub fn plugin_dir(env_dir: Option<&str>) -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    let src = plugin_dir_in(&candidate_plugin_dirs(
-        env_dir.as_deref(),
-        exe_dir.as_deref(),
-    ))?;
+    let src = plugin_dir_in(&candidate_plugin_dirs(env_dir, exe_dir.as_deref()))?;
     let dest = installed_plugin_path()?;
     let system = system_directory()?;
     match install_plugin(&src, &dest, &system) {

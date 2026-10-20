@@ -152,7 +152,7 @@ pub fn shipped_catalog() -> Vec<Item> {
 
 /// The models folder: `FLARE_DICTATION_ROOT`, else `%LOCALAPPDATA%\FlareDictation`.
 pub fn default_root() -> PathBuf {
-    if let Some(v) = std::env::var_os(flare_win::names::SEAM_DICTATION_ROOT) {
+    if let Some(v) = flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT) {
         if !v.is_empty() {
             return PathBuf::from(v);
         }

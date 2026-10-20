@@ -192,6 +192,7 @@ mod tests {
             // The GPU card needs NVIDIA: the scene says so, as `run_scene` does.
             // SAFETY: one fixed value, set before the answer is read; no test reads this variable another way.
             unsafe { std::env::set_var(flare_win::names::SEAM_NVIDIA, "1") };
+            flare_win::seam::set_open(true);
             scene.stage_settings(&args).expect("the page stages");
         } else {
             scene.stage(name).expect("the scene stages");

@@ -1,5 +1,5 @@
 //! The NVIDIA probe (Task 17): is there an NVIDIA adapter, answered once per process.
-//! `FLARE_E2E_NVIDIA` (`1` or `0`) overrides the probe; the name is spelled through `flare_win::names`.
+//! `FLARE_E2E_NVIDIA` (`1` or `0`) overrides the probe, under --e2e only (`flare_win::seam`); the name is spelled through `flare_win::names`.
 
 use std::sync::OnceLock;
 
@@ -11,7 +11,7 @@ const NVIDIA_VENDOR: u32 = 0x10DE;
 /// True when an NVIDIA adapter is present (or the e2e seam says so). Answered once per process.
 pub fn has_nvidia() -> bool {
     static CELL: OnceLock<bool> = OnceLock::new();
-    let seam = std::env::var(flare_win::names::SEAM_NVIDIA).ok();
+    let seam = flare_win::seam::var(flare_win::names::SEAM_NVIDIA);
     decide(&CELL, seam.as_deref(), probe)
 }
 

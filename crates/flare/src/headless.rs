@@ -1764,6 +1764,8 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         // page shows the same cards on every PC.
         // SAFETY: the scene runs before any other thread of this process reads the environment.
         unsafe { std::env::set_var(flare_win::names::SEAM_NVIDIA, "1") };
+        // The seam reads only through the gate; a scene run says so for its own fixed answer.
+        flare_win::seam::set_open(true);
     }
     let args = scene_args(name, args);
     let (saved, prep) = setup(name);

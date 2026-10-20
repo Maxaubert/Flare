@@ -2275,8 +2275,16 @@ fn mic_source() -> MicSource {
     if let Some(s) = TEST_MIC.with(|m| m.borrow().clone()) {
         return s;
     }
-    match crate::e2e::global().env(names::SEAM_MIC) {
+    let e2e = crate::e2e::global();
+    mic_source_for(e2e.on(), e2e.env(names::SEAM_MIC))
+}
+
+/// The source given the e2e flag and its mic seam. Under --e2e an unset or empty seam FAILS CLOSED
+/// (a path that cannot open, so the capture reports a failure), never the real microphone (audit L54).
+fn mic_source_for(e2e: bool, seam: Option<String>) -> MicSource {
+    match seam {
         Some(p) if !p.is_empty() => MicSource::File(PathBuf::from(p)),
+        _ if e2e => MicSource::File(PathBuf::new()),
         _ => MicSource::Device,
     }
 }
@@ -2663,7 +2671,7 @@ impl RealCfg {
         let g = crate::e2e::global();
         let mic = mic_source();
         let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-        let engine_dir = std::env::var_os(names::SEAM_WHISPER_DIR)
+        let engine_dir = flare_win::seam::var_os(names::SEAM_WHISPER_DIR)
             .filter(|v| !v.is_empty())
             .map_or_else(|| dir.join(names::ENGINE_FOLDER), PathBuf::from);
         let host_exe = Some(dir.join(names::PARAKEET_HOST_EXE));
@@ -2683,7 +2691,7 @@ impl RealCfg {
                 name: link::copy_name(exe),
             },
             seam_link,
-            neighbour_root: std::env::var_os(flare_win::names::SEAM_DICTATION_ROOT)
+            neighbour_root: flare_win::seam::var_os(flare_win::names::SEAM_DICTATION_ROOT)
                 .filter(|v| !v.is_empty())
                 .is_none()
                 .then(flare_dictation::store::neighbour_root),
@@ -4351,6 +4359,23 @@ mod page_tests {
         assert!(page_switch("dictation-enabled", false));
         assert!(!page_snap().capturing && page_snap().ask.is_none());
         assert_eq!(p.prefs.get(prefs::KEYS[0]).as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn under_e2e_an_unset_mic_seam_fails_closed_never_the_real_microphone() {
+        // Audit L54. Under --e2e no seam (or an empty one) is a path that cannot open.
+        assert!(
+            matches!(mic_source_for(true, None), MicSource::File(p) if p.as_os_str().is_empty())
+        );
+        assert!(matches!(
+            mic_source_for(true, Some(String::new())),
+            MicSource::File(_)
+        ));
+        // The seam's own WAV still plays; without --e2e the device is the answer.
+        assert!(
+            matches!(mic_source_for(true, Some("a.wav".into())), MicSource::File(p) if p == Path::new("a.wav"))
+        );
+        assert!(matches!(mic_source_for(false, None), MicSource::Device));
     }
 
     /// A WAV of a tenth of a second of silence, in the temp folder.
