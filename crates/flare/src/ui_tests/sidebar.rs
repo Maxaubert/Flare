@@ -100,6 +100,60 @@ fn a_row_is_46_tall_8_in_from_the_edges_with_4_between() {
     }
 }
 
+/// PT's title-to-folder baseline gap in a row: 37 device px at 225% (owner's capture, audit V9).
+const PT_BASELINE_GAP_CSS: f32 = 37.0 / 2.25;
+
+/// The runs of text ink in the column strip `x0..x1`, `y0..y1`: each as (first row, last row).
+fn ink_runs(f: &Frame, x0: u32, x1: u32, y0: u32, y1: u32) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for y in y0..y1 {
+        let ink = (x0..x1).any(|x| f.px(x, y)[0] >= 90);
+        match (ink, runs.last_mut()) {
+            (true, Some(run)) if run.1 + 1 == y => run.1 = y,
+            (true, _) => runs.push((y, y)),
+            (false, _) => {}
+        }
+    }
+    runs
+}
+
+#[test]
+fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
+    for scale in SCALES {
+        let h = harness(scale);
+        // One row, the name and folder without a descender, so each run's last row is its baseline.
+        let row = TabRow {
+            id: "t0".into(),
+            label: "web".into(),
+            tip: "C:\\work".into(),
+            folder: "work".into(),
+            kept: true,
+            ..TabRow::default()
+        };
+        h.comp.set_rows(ModelRc::new(VecModel::from(vec![row])));
+        h.advance(0);
+        let f = h.render();
+        let runs = ink_runs(
+            &f,
+            dev(&h, 60.0),
+            dev(&h, 150.0),
+            dev(&h, 50.0),
+            dev(&h, 96.0),
+        );
+        assert_eq!(
+            runs.len(),
+            2,
+            "scale {scale}: a name run and a folder run: {runs:?}"
+        );
+        let gap = i64::from(runs[1].1) - i64::from(runs[0].1);
+        let want = (PT_BASELINE_GAP_CSS * scale).round() as i64;
+        assert!(
+            (gap - want).abs() <= 2,
+            "scale {scale}: name-to-folder baseline {gap} device px, PT {want}"
+        );
+    }
+}
+
 #[test]
 fn the_active_row_is_tinted_with_the_accent_and_the_icon_band_is_square() {
     let h = harness(1.0);

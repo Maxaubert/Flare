@@ -104,12 +104,14 @@ component SideRow inherits Rectangle {
                 color: Theme.side-text;
                 font-size: 13px;
                 font-weight: root.tab.active ? 600 : 400;
+                font-family: Theme.font-ui;
                 overflow: elide;
             }
             if !root.tab.settings && root.tab.folder != "": Text {
                 text: root.tab.folder;
                 color: Theme.side-dim;
                 font-size: 11.5px;
+                font-family: Theme.font-ui;
                 overflow: elide;
             }
         }

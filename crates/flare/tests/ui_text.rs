@@ -285,3 +285,43 @@ fn update_slint_exists() {
         "update.slint exists under ui/"
     );
 }
+
+/// The text of the block that opens at `start` (its `{` is the first brace after it), braces matched.
+fn block_at(text: &str, start: usize) -> &str {
+    let open = start + text[start..].find('{').expect("a block opens");
+    let mut depth = 0_usize;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[start..open + i + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("a block at byte {start} never closes")
+}
+
+#[test]
+fn the_tab_row_text_is_in_the_ui_font_as_prism_terminals_is() {
+    // PT's row text sits in `p-styled-font` (Segoe UI); a Text without its own family takes Slint's
+    // default, which sets the name and folder lines a different distance apart and cuts the folder early.
+    let sidebar = read("sidebar.slint");
+    let mut checked = 0;
+    for (at, _) in sidebar.match_indices("Text {") {
+        let block = block_at(&sidebar, at);
+        if !block.contains("root.tab.") {
+            continue;
+        }
+        assert!(
+            block.contains("font-family: Theme.font-ui;"),
+            "sidebar.slint tab-row Text without Theme.font-ui: {}",
+            block.lines().next().unwrap_or("")
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "the name and the folder line of a tab row");
+}
