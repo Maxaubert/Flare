@@ -12,7 +12,8 @@ use flare_dictation::service::{OverlayState, Tone};
 use slint::{Model, ModelRc, VecModel};
 
 use crate::dictation_widget::{
-    Bounds, bar_scale, bounds_for, face_of, items_of, live_line, set_face, texts, wants_inks, win,
+    Bounds, Display, bar_scale, bounds_for, face_of, items_of, live_line, set_face, texts,
+    wants_inks, win,
 };
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{DictationWidget, WidgetItem};
@@ -531,40 +532,133 @@ fn parked_popup() -> isize {
     h as isize
 }
 
-#[test]
-fn the_window_never_takes_focus() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DestroyWindow, GetForegroundWindow, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
-    };
-    let h = parked_popup();
-    win::prepare(h);
-    let (px, py) = flare_win::window_park::parked_origin();
-    // Parked, at the size of a pick card: it is shown, and no monitor has it.
-    win::place(
-        h,
-        Bounds {
-            x: px,
-            y: py,
-            w: 480,
-            h: 300,
-        },
-    );
-    win::show(h);
-    assert!(win::is_visible(h), "the window shows (parked)");
-    let ex = win::ex_style(h);
-    assert_ne!(ex & WS_EX_NOACTIVATE, 0);
-    assert_ne!(ex & WS_EX_TOPMOST, 0);
-    // SAFETY: reads the foreground window handle.
-    let fg = unsafe { GetForegroundWindow() } as isize;
-    assert_ne!(fg, h, "showing the widget made it the foreground window");
-    win::hide(h);
-    assert!(!win::is_visible(h));
-    // SAFETY: destroys the window this test made, on the thread that made it.
-    unsafe {
-        DestroyWindow(h as _);
+/// Drives the real widget (`dictation_widget::set`) against a stand-in popup whose handle appears only after a few
+/// timer ticks, as the winit window does (it is made in the event loop, after `show()`).
+struct Rig {
+    popup: isize,
+    polls: Rc<std::cell::Cell<u32>>,
+}
+
+impl Rig {
+    fn new(late_by: u32, displays: Rc<RefCell<Display>>) -> Rig {
+        let popup = parked_popup();
+        let polls = Rc::new(std::cell::Cell::new(0u32));
+        let p = Rc::clone(&polls);
+        crate::dictation_widget::test_sources(
+            move |_| {
+                p.set(p.get() + 1);
+                (p.get() > late_by).then_some(popup)
+            },
+            move || Some(*displays.borrow()),
+        );
+        crate::ui_harness::provide_window(480, 196);
+        Rig { popup, polls }
     }
 }
 
+impl Drop for Rig {
+    fn drop(&mut self) {
+        crate::dictation_widget::close();
+        // SAFETY: destroys the window this rig made, on the thread that made it.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(self.popup as _);
+        }
+    }
+}
+
+fn monitor(x: i32, scale: f64) -> Display {
+    Display {
+        work: Bounds {
+            x,
+            y: 0,
+            w: (1920.0 * scale) as i32,
+            h: (1040.0 * scale) as i32,
+        },
+        scale,
+    }
+}
+
+fn show(state: &OverlayState) {
+    crate::dictation_widget::set(Some(state), &|| None, true);
+}
+
+#[test]
+fn the_window_never_takes_focus() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    };
+    let displays = Rc::new(RefCell::new(monitor(0, 1.0)));
+    let rig = Rig::new(3, displays);
+    // SAFETY: reads the foreground window handle.
+    let fg_before = unsafe { GetForegroundWindow() } as isize;
+    show(&listening("", 0.0));
+    // The window has no handle yet: the widget exists, wants to show, and waits.
+    let s = crate::dictation_widget::snapshot();
+    assert!(s.exists && !s.visible, "{s:?}");
+    // The event loop makes the window a few ticks later; the widget picks it up and shows it without being asked again.
+    for _ in 0..10 {
+        crate::ui_harness::advance_clock(10);
+    }
+    assert!(rig.polls.get() > 3, "the handle was never fetched again");
+    let s = crate::dictation_widget::snapshot();
+    assert!(s.visible, "the card never appeared: {s:?}");
+    assert!(!s.focusable && s.topmost, "{s:?}");
+    let ex = win::ex_style(rig.popup);
+    assert_ne!(
+        ex & WS_EX_TRANSPARENT,
+        0,
+        "clicks must pass while listening"
+    );
+    // A pick face catches clicks, and the never-activate bits survive the toggle.
+    show(&pick(vec![row("a", 1, None), row("b", 2, None)]));
+    let ex = win::ex_style(rig.popup);
+    assert_eq!(ex & WS_EX_TRANSPARENT, 0, "the picker must catch clicks");
+    for bit in [WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST] {
+        assert_ne!(ex & bit, 0, "style bit {bit:#x} lost on the pick toggle");
+    }
+    // Something rewrote the style behind our back (winit does on a flag change): the next update puts it back.
+    // SAFETY: sets the extended style of the rig's own window.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
+            rig.popup as _,
+            windows_sys::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE,
+            0,
+        );
+    }
+    show(&pick(vec![row("a", 1, None)]));
+    assert_ne!(win::ex_style(rig.popup) & WS_EX_NOACTIVATE, 0);
+    // SAFETY: reads the foreground window handle.
+    let fg_after = unsafe { GetForegroundWindow() } as isize;
+    assert_eq!(fg_before, fg_after, "the widget changed the foreground");
+    assert_ne!(fg_after, rig.popup);
+    crate::dictation_widget::hide();
+    assert!(!win::is_visible(rig.popup));
+    assert!(!crate::dictation_widget::snapshot().visible);
+}
+
+#[test]
+fn a_height_change_keeps_the_monitor_it_opened_on() {
+    let displays = Rc::new(RefCell::new(monitor(0, 1.0)));
+    let rig = Rig::new(0, Rc::clone(&displays));
+    show(&listening("", 0.0));
+    let first = crate::dictation_widget::snapshot().bounds;
+    assert_eq!(first, bounds_for(monitor(0, 1.0).work, 1.0, 196));
+    // The pointer goes to a second monitor at another scale; the card grows for the picker.
+    *displays.borrow_mut() = monitor(1920, 2.25);
+    show(&pick(vec![row("a", 1, None), row("b", 2, None)]));
+    let grown = crate::dictation_widget::snapshot().bounds;
+    assert_eq!(
+        grown,
+        bounds_for(monitor(0, 1.0).work, 1.0, 196 + 96),
+        "the card jumped monitors in the middle of a session"
+    );
+    // The next show goes where the pointer is.
+    crate::dictation_widget::hide();
+    show(&listening("", 0.0));
+    let again = crate::dictation_widget::snapshot().bounds;
+    assert_eq!(again, bounds_for(monitor(1920, 2.25).work, 2.25, 196));
+    drop(rig);
+}
 #[test]
 fn the_heard_words_have_their_bar_on_the_left() {
     for s in SCALES {

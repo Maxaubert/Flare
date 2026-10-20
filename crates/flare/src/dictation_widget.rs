@@ -8,9 +8,9 @@
 //!   on the monitor under the pointer, 480 css px wide at THAT monitor's scale; hidden with `SW_HIDE` (never closed, so
 //!   the event loop never sees its last window go).
 //! - Never takes focus: the winit attributes ask for an inactive, undecorated, taskbar-less, always-on-top window parked
-//!   off every monitor, and the first thing done with the new handle is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
-//!   WS_EX_TOPMOST` (and no `WS_EX_APPWINDOW`). Clicks pass through it (winit's `set_cursor_hittest(false)`, which is
-//!   `WS_EX_TRANSPARENT | WS_EX_LAYERED`) except while it is picking.
+//!   off every monitor, and the first thing done with the handle (which only exists once the event loop has made the real window, so it is fetched lazily) is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
+//!   WS_EX_TOPMOST` (and no `WS_EX_APPWINDOW`). Clicks pass through it (`WS_EX_TRANSPARENT | WS_EX_LAYERED`, set here and not through winit's `set_cursor_hittest`,
+//!   whose style rewrite drops `WS_EX_NOACTIVATE` and `WS_EX_TOOLWINDOW`) except while it is picking.
 //! - Under `--e2e` it is parked like the main window (M10 D4): it never leaves -32000,-32000, but the bounds it WOULD
 //!   have are computed and readable through [`snapshot`].
 //! - The faces wear the inks the main window hands over at each outside start (N32), not a theme of their own.
@@ -313,7 +313,8 @@ pub mod win {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, HWND_TOPMOST, IsWindowVisible, SW_HIDE,
         SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        ShowWindow, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_EX_TRANSPARENT,
     };
 
     fn raw(hwnd: isize) -> HWND {
@@ -333,6 +334,24 @@ pub mod win {
             let cur = GetWindowLongPtrW(raw(hwnd), GWL_EXSTYLE) as u32;
             SetWindowLongPtrW(raw(hwnd), GWL_EXSTYLE, widget_ex_style(cur) as isize);
         }
+    }
+
+    /// Lets clicks fall through the window (pass) or catches them. The same bits winit's set_cursor_hittest sets, but
+    /// set here so winit never rewrites the whole extended style (which would drop the never-activate bits).
+    pub fn set_click_through(hwnd: isize, pass: bool) {
+        const BITS: u32 = WS_EX_TRANSPARENT | WS_EX_LAYERED;
+        // SAFETY: as prepare.
+        unsafe {
+            let cur = GetWindowLongPtrW(raw(hwnd), GWL_EXSTYLE) as u32;
+            let next = if pass { cur | BITS } else { cur & !BITS };
+            SetWindowLongPtrW(raw(hwnd), GWL_EXSTYLE, next as isize);
+        }
+    }
+
+    /// Whether the window has every bit of the widget's style.
+    pub fn is_prepared(hwnd: isize) -> bool {
+        let cur = ex_style(hwnd);
+        widget_ex_style(cur) == cur
     }
 
     /// Moves and sizes the window, above every window, without activating it.
@@ -473,14 +492,66 @@ struct Widget {
     face: Option<Face>,
     bounds: Bounds,
     e2e: bool,
-    through: Option<bool>,
+    /// Whether clicks should pass through (wanted) and whether the window has been told so (applied).
+    through: bool,
+    applied_through: Option<bool>,
+    /// The monitor chosen at the last show: a height change keeps the card there (Appendix E).
+    display: Option<Display>,
     model: Rc<VecModel<WidgetItem>>,
     rise: slint::Timer,
     settle: slint::Timer,
+    /// Polls for the real window until the event loop has made it.
+    attach: slint::Timer,
 }
 
 thread_local! {
     static WIDGET: RefCell<Option<Widget>> = const { RefCell::new(None) };
+}
+
+/// Where the widget gets its window handle and its monitor from. Production reads winit and Windows; the tests put
+/// their own in (a window that appears only after a few polls, a pointer that moves between monitors).
+#[cfg(test)]
+type HandleSource = Rc<dyn Fn(&slint::Window) -> Option<isize>>;
+
+#[derive(Default)]
+struct Sources {
+    #[cfg(test)]
+    handle: Option<HandleSource>,
+    #[cfg(test)]
+    display: Option<Rc<dyn Fn() -> Option<Display>>>,
+}
+
+thread_local! {
+    static SOURCES: RefCell<Sources> = RefCell::new(Sources::default());
+}
+
+#[cfg(test)]
+pub fn test_sources(
+    handle: impl Fn(&slint::Window) -> Option<isize> + 'static,
+    display: impl Fn() -> Option<Display> + 'static,
+) {
+    SOURCES.with(|s| {
+        *s.borrow_mut() = Sources {
+            handle: Some(Rc::new(handle)),
+            display: Some(Rc::new(display)),
+        }
+    });
+}
+
+fn source_handle(w: &slint::Window) -> Option<isize> {
+    #[cfg(test)]
+    if let Some(f) = SOURCES.with(|s| s.borrow().handle.clone()) {
+        return f(w);
+    }
+    hwnd_of(w)
+}
+
+fn source_display() -> Option<Display> {
+    #[cfg(test)]
+    if let Some(f) = SOURCES.with(|s| s.borrow().display.clone()) {
+        return f();
+    }
+    win::display_under_cursor()
 }
 
 fn hwnd_of(w: &slint::Window) -> Option<isize> {
@@ -541,27 +612,85 @@ impl Widget {
             log::warn!("dictation widget: cannot show the window: {e}");
             return None;
         }
-        let hwnd = hwnd_of(comp.window());
-        if let Some(h) = hwnd {
-            win::prepare(h);
-            win::hide(h);
-        } else {
-            log::warn!("dictation widget: the window has no handle");
-        }
         Some(Widget {
             comp,
-            hwnd,
+            hwnd: None,
             shown: false,
             face: None,
             bounds: Bounds::default(),
             e2e,
-            through: None,
+            through: true,
+            applied_through: None,
+            display: None,
             model,
             rise: slint::Timer::default(),
             settle: slint::Timer::default(),
+            attach: slint::Timer::default(),
         })
     }
 
+    /// Takes the window's handle once the event loop has made the window (show() only registers it). Styles it, tells
+    /// it whether clicks pass, and hides it or shows it as the card is meant to be. True once it has a handle.
+    fn attach(&mut self) -> bool {
+        if self.hwnd.is_none() {
+            self.hwnd = source_handle(self.comp.window());
+        }
+        let Some(h) = self.hwnd else { return false };
+        self.attach.stop();
+        win::prepare(h);
+        self.sync_through();
+        if self.shown {
+            self.move_to_bounds();
+            self.show_now();
+        } else {
+            win::hide(h);
+        }
+        true
+    }
+
+    /// Keeps trying to attach on a short timer, for a while.
+    fn start_attach_timer(&mut self) {
+        if self.attach.running() {
+            return;
+        }
+        let tries = std::cell::Cell::new(0u32);
+        self.attach.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(10),
+            move || {
+                tries.set(tries.get() + 1);
+                WIDGET.with(|cell| {
+                    let mut slot = cell.borrow_mut();
+                    let Some(w) = slot.as_mut() else { return };
+                    if w.attach() {
+                        return;
+                    }
+                    if tries.get() > 400 {
+                        w.attach.stop();
+                        log::warn!("dictation widget: the window has no handle");
+                    }
+                });
+            },
+        );
+    }
+
+    /// Tells the window whether clicks pass, when it has a handle and has not been told yet.
+    fn sync_through(&mut self) {
+        let Some(h) = self.hwnd else { return };
+        if self.applied_through != Some(self.through) {
+            win::set_click_through(h, self.through);
+            self.applied_through = Some(self.through);
+        }
+    }
+
+    /// Puts the never-activate style back if anything took it off (cheap, run on every update).
+    fn keep_style(&self) {
+        if let Some(h) = self.hwnd
+            && !win::is_prepared(h)
+        {
+            win::prepare(h);
+        }
+    }
     fn apply_inks(&self, i: Inks) {
         self.comp.set_ground(i.ground);
         self.comp.set_ink(i.ink);
@@ -593,9 +722,9 @@ impl Widget {
         self.face = Some(f.clone());
     }
 
-    /// Computes where the widget goes now and moves it there (parked under `--e2e`).
+    /// Computes where the widget goes on the monitor chosen at show and moves it there (parked under --e2e).
     fn place(&mut self, height: u32) {
-        let d = win::display_under_cursor().unwrap_or(Display {
+        let d = self.display.unwrap_or(Display {
             work: Bounds {
                 x: 0,
                 y: 0,
@@ -606,8 +735,10 @@ impl Widget {
         });
         self.bounds = bounds_for(d.work, d.scale, height);
         self.move_to_bounds();
+        if self.shown {
+            self.start_settle();
+        }
     }
-
     fn move_to_bounds(&self) {
         let Some(h) = self.hwnd else { return };
         let mut b = self.bounds;
@@ -620,22 +751,20 @@ impl Widget {
     }
 
     fn click_through(&mut self, pass: bool) {
-        if self.through == Some(pass) {
-            return;
-        }
-        self.through = Some(pass);
-        self.comp.window().with_winit_window(|w| {
-            let _ = w.set_cursor_hittest(!pass);
-        });
+        self.through = pass;
+        self.sync_through();
     }
-
     fn show_now(&mut self) {
         let Some(h) = self.hwnd else { return };
         win::place(h, self.bounds_applied());
         win::show(h);
-        // A DPI change on the way onto another monitor can make winit move the window to its own suggestion: put it
-        // back a moment later, where it was meant to go.
-        let hw = h;
+        self.start_settle();
+    }
+
+    /// A DPI change on the way onto another monitor can make winit move the window to its own suggestion: put it back a
+    /// moment later, where it was meant to go.
+    fn start_settle(&self) {
+        let Some(hw) = self.hwnd else { return };
         let target = self.bounds_applied();
         self.settle.start(
             slint::TimerMode::SingleShot,
@@ -645,7 +774,6 @@ impl Widget {
             },
         );
     }
-
     fn bounds_applied(&self) -> Bounds {
         if self.e2e {
             let (px, py) = flare_win::window_park::parked_origin();
@@ -680,8 +808,16 @@ pub fn set(face: Option<&OverlayState>, inks: &dyn Fn() -> Option<Inks>, e2e: bo
             w.apply_inks(i);
         }
         let height_changed = w.face.as_ref().is_none_or(|p| p.height != f.height);
+        if w.hwnd.is_none() {
+            w.attach();
+        } else {
+            w.keep_style();
+        }
         w.draw(&f);
         w.click_through(f.phase != 3);
+        if !was_shown {
+            w.display = source_display();
+        }
         if !was_shown || height_changed {
             w.place(f.height);
         }
@@ -700,6 +836,9 @@ pub fn set(face: Option<&OverlayState>, inks: &dyn Fn() -> Option<Inks>, e2e: bo
                 },
             );
         }
+        if w.hwnd.is_none() {
+            w.start_attach_timer();
+        }
     });
 }
 
@@ -714,6 +853,7 @@ pub fn hide() {
         w.shown = false;
         w.rise.stop();
         w.settle.stop();
+        w.display = None;
         w.face = None;
         w.comp.set_phase(0);
         if let Some(h) = w.hwnd {
@@ -726,6 +866,7 @@ pub fn hide() {
 pub fn close() {
     WIDGET.with(|cell| {
         if let Some(w) = cell.borrow_mut().take() {
+            w.attach.stop();
             if let Some(h) = w.hwnd {
                 win::hide(h);
             }
