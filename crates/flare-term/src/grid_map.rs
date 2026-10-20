@@ -43,11 +43,13 @@ pub fn snapshot_grid_into<T: EventListener>(term: &Term<T>, out: &mut Grid) {
             col: p.column.0,
             row: p.line,
             visible: shown,
+            hollow: false,
         },
         _ => FCursor {
             col: point.column.0,
             row: 0,
             visible: false,
+            hollow: false,
         },
     };
 }
@@ -168,7 +170,8 @@ mod tests {
             flare_render::grid::Cursor {
                 col: 2,
                 row: 0,
-                visible: true
+                visible: true,
+                hollow: false,
             }
         );
     }
@@ -310,7 +313,8 @@ mod tests {
             flare_render::grid::Cursor {
                 col: 1,
                 row: 1,
-                visible: true
+                visible: true,
+                hollow: false,
             }
         );
     }

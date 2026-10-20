@@ -75,6 +75,9 @@ pub struct Cursor {
     pub col: usize,
     pub row: usize,
     pub visible: bool,
+    /// Drawn as an outline, not a filled block: the terminal has lost the keyboard to a popup or a
+    /// field (PT's xterm `cursorInactiveStyle` outline). The glyph keeps its own colours.
+    pub hollow: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +106,7 @@ impl Grid {
                 col: 0,
                 row: 0,
                 visible: true,
+                hollow: false,
             },
         }
     }
@@ -258,7 +262,8 @@ mod tests {
             Cursor {
                 col: 0,
                 row: 0,
-                visible: true
+                visible: true,
+                hollow: false
             }
         );
         assert_eq!(g.cell(3, 1).ch, ' ');

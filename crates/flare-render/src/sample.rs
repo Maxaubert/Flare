@@ -87,6 +87,7 @@ pub fn sample_grid(cols: usize, rows: usize) -> Grid {
             col: prompt_end.min(cols - 1),
             row: 14,
             visible: true,
+            hollow: false,
         };
     } else {
         g.cursor.visible = false;

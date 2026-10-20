@@ -2,10 +2,10 @@
 
     python tools/visual/summarize.py [--root docs/screenshots/visual]
 
-Reads `<root>/<surface>/<pct>-<gpu|software>/` (Flare) and `<root>/pt/<surface>/<pct>-pt/` (Prism Terminal),
+Reads `<root>/<surface>/<pct>-<gpu|software>/` (Flare) and `<root>/pt/<surface>/<pct>-pt/` (PT),
 each with `frames/*.png` and `numbers.json`. It writes
   - `sheet.png` in every cell folder (sheet.py),
-  - `<root>/<surface>/compare-<pct>.png`: Flare's cells and Prism Terminal's stacked, per scaling,
+  - `<root>/<surface>/compare-<pct>.png`: Flare's cells and PT's stacked, per scaling,
   - `<root>/numbers.md`: the tables the README quotes.
 The start-up pictures of both sides are judged HERE, from the PNG files, with one definition: the final picture
 is the last one kept; a frame is blank when it is one colour; "off brightness" is a mean more than 60 grey levels
@@ -73,7 +73,7 @@ def load(path):
 
 
 def cells(root, surface):
-    """(label, folder) pairs, Flare first then Prism Terminal."""
+    """(label, folder) pairs, Flare first then PT."""
     out = []
     for d in sorted(glob.glob(os.path.join(root, surface, "*-*"))):
         out.append(("flare " + os.path.basename(d), d))

@@ -4,7 +4,7 @@
 
 A cell folder is `docs/screenshots/visual/<surface>/<scale>-<renderer>/` and holds `frames/*.png`. Every
 folder gets a captioned strip of its frames in file-name order (the names carry the time), tiled `--cols`
-across; several folders stack under each other, so Flare's cell and Prism Terminal's sit in one sheet.
+across; several folders stack under each other, so Flare's cell and PT's sit in one sheet.
 The sheet is written beside the first folder as `sheet.png` unless `--out` says otherwise, reduced to a
 256-colour palette (a terminal window is flat colour; the sheet is a third of the size).
 """

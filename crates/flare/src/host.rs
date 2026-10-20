@@ -92,6 +92,8 @@ pub struct GridHost {
     families: Vec<String>,
     base_px: f32,
     dirty: bool,
+    /// The caret is an outline (the keyboard is on a popup or a field): audit V11.
+    hollow_cursor: bool,
     pub stats: FrameStats,
 }
 
@@ -114,6 +116,7 @@ impl GridHost {
             families: Vec::new(),
             base_px: BASE_FONT_PX,
             dirty: true,
+            hollow_cursor: false,
             stats: FrameStats::new(120),
         }
     }
@@ -143,6 +146,15 @@ impl GridHost {
         }
         self.palette = palette;
         self.ground = ground;
+        self.dirty = true;
+    }
+
+    /// Draws the caret as an outline (on) or a block; marks dirty only when it changes.
+    pub fn set_hollow_cursor(&mut self, on: bool) {
+        if self.hollow_cursor == on {
+            return;
+        }
+        self.hollow_cursor = on;
         self.dirty = true;
     }
 
@@ -261,6 +273,7 @@ impl GridHost {
             self.dims = Some((cols, rows));
         }
         self.source.grid_into(&mut self.grid_buf);
+        self.grid_buf.cursor.hollow = self.hollow_cursor;
         let decor = self.source.decor();
         let mut scene = FrameTrace::global().time(TracePhase::Scene, || {
             build_scene_decor(
@@ -427,7 +440,7 @@ mod tests {
     #[test]
     fn an_opaque_grid_image_goes_to_slint_as_rgb() {
         let mut img = RgbaImage::new(3, 2);
-        for p in img.data.chunks_exact_mut(4) {
+        for p in img.data.as_chunks_mut::<4>().0 {
             p.copy_from_slice(&[10, 20, 30, 255]);
         }
         let s = slint_image(&img);
@@ -439,7 +452,7 @@ mod tests {
     #[test]
     fn a_see_through_grid_image_stays_premultiplied_rgba() {
         let mut img = RgbaImage::new(3, 2);
-        for p in img.data.chunks_exact_mut(4) {
+        for p in img.data.as_chunks_mut::<4>().0 {
             p.copy_from_slice(&[10, 20, 30, 255]);
         }
         img.data[3] = 128;
@@ -510,6 +523,20 @@ mod tests {
         assert_eq!(img.pixel(8, 12), [0xde, 0xda, 0xcf, 0xff]);
     }
 
+    #[test]
+    fn the_hollow_caret_redraws_only_when_it_changes() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        let _ = h.render();
+        assert!(!h.is_dirty());
+        h.set_hollow_cursor(false);
+        assert!(!h.is_dirty(), "the same state is no change");
+        h.set_hollow_cursor(true);
+        assert!(h.is_dirty(), "a popup took the keys: the caret redraws");
+        let _ = h.render();
+        h.set_hollow_cursor(true);
+        assert!(!h.is_dirty());
+    }
     #[test]
     fn dirty_follows_the_source() {
         let calls = Calls::default();

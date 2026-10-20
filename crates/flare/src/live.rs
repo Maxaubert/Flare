@@ -101,6 +101,12 @@ pub fn cell_at(
     )
 }
 
+/// Whether the caret is drawn as an outline: a popup, a dialog or a field holds the keyboard, so the
+/// terminal has lost it (PT's inactive xterm cursor; audit V11).
+pub fn caret_is_hollow(chrome_focus: bool, find_focus: bool, menu_open: bool) -> bool {
+    chrome_focus || find_focus || menu_open
+}
+
 /// What decides whether a wheel turn belongs to the terminal in front.
 #[derive(Debug, Clone, Copy)]
 pub struct WheelGate {
@@ -263,6 +269,17 @@ mod tests {
         assert_eq!(w.add_lines(0.0), 0);
     }
 
+    #[test]
+    fn the_caret_is_hollow_while_a_popup_or_a_field_holds_the_keys() {
+        // Audit V11: PT shows the caret as an outline while the keyboard is elsewhere.
+        assert!(!caret_is_hollow(false, false, false));
+        assert!(caret_is_hollow(false, false, true), "a menu is open");
+        assert!(
+            caret_is_hollow(true, false, false),
+            "a dialog or a chrome field"
+        );
+        assert!(caret_is_hollow(false, true, false), "the find field");
+    }
     fn gate() -> WheelGate {
         WheelGate {
             front_is_grid: true,

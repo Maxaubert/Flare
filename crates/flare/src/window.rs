@@ -681,6 +681,7 @@ pub fn run_window(
         move || {
             crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
             let Some(app) = weak.upgrade() else { return };
+            sync_caret_shape(&app, &host);
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 FrameTrace::global().time(TracePhase::SetImage, || app.set_grid_image(image));
@@ -740,6 +741,7 @@ pub fn run_window(
                         }
                     }
                     let Some(app) = weak.upgrade() else { return };
+                    sync_caret_shape(&app, &host);
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
@@ -1230,11 +1232,17 @@ pub fn run_window(
     if no_notifier.get() {
         // When the grid was last painted, by the timer or by a wake-up.
         let last_paint = Rc::new(Cell::new(std::time::Instant::now()));
+        // The caret shape is read here too: a popup opening does not dirty the grid by itself.
+        let caret_weak = app.as_weak();
         frame_timer.start(slint::TimerMode::Repeated, FRAME_POLL, {
             let host = host.clone();
             let render_now = render_now.clone();
             let last_paint = last_paint.clone();
+            let caret_weak = caret_weak.clone();
             move || {
+                if let Some(app) = caret_weak.upgrade() {
+                    sync_caret_shape(&app, &host);
+                }
                 if repaint_due(host.borrow().is_dirty()) {
                     last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
@@ -1244,7 +1252,11 @@ pub fn run_window(
         let hook: Rc<dyn Fn()> = {
             let host = host.clone();
             let render_now = render_now.clone();
+            let caret_weak = caret_weak.clone();
             Rc::new(move || {
+                if let Some(app) = caret_weak.upgrade() {
+                    sync_caret_shape(&app, &host);
+                }
                 if paint_on_wake(last_paint.get().elapsed(), host.borrow().is_dirty()) {
                     last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
@@ -1637,6 +1649,16 @@ pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     } else {
         kp.with_ctl(&mut |c| c.on_focus_lost());
     }
+}
+
+/// The caret follows the keyboard: an outline while a popup, a dialog or a field holds it (audit V11).
+fn sync_caret_shape(app: &AppWindow, host: &RefCell<GridHost>) {
+    let hollow = crate::live::caret_is_hollow(
+        app.get_chrome_has_focus(),
+        app.get_find_input_focused(),
+        app.get_menu_open(),
+    );
+    host.borrow_mut().set_hollow_cursor(hollow);
 }
 
 /// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
