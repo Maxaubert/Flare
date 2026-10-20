@@ -50,3 +50,14 @@ export struct HelpRowData {
 export struct HelpChip { id: string, name: string, on: bool }
 // one colour well of the theme editor
 export struct EditorWell { key: string, label: string, text: string, colour: color, wide: bool, open: bool }
+
+// What one Dictation model row drew, for the e2e (and the row's own tests): its mark and name, and each of its
+// two buttons' rectangle (in the row) and look. Lengths are css px, relative to the row.
+export struct RowLook {
+    id: string, row-h: length,
+    mark-x: length, mark-y: length, mark-w: length, mark-h: length, name-x: length,
+    b0-id: string, b0-x: length, b0-y: length, b0-w: length, b0-h: length,
+    b0-fill: color, b0-edge: color, b0-radius: length, b0-ink: color,
+    b1-id: string, b1-x: length, b1-y: length, b1-w: length, b1-h: length,
+    b1-fill: color, b1-edge: color, b1-radius: length, b1-ink: color,
+}

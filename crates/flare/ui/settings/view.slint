@@ -4,7 +4,7 @@
 // below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
 // For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
 import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
-import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell } from "types.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell, RowLook } from "types.slint";
 import { SetFrame } from "frame.slint";
 import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
 import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink } from "controls.slint";
@@ -140,6 +140,8 @@ export global SettingsBridge {
     callback frame-resized(length, length);
     callback escape-unhandled();
     callback tip(string, length, length, length, length);
+    // A Dictation model row says what it drew (its mark, name and buttons); the e2e reads it.
+    callback row-look(RowLook);
     // out, for Rust and the tests
     in-out property <length> pane-w;
     in-out property <length> pane-h;
@@ -488,6 +490,7 @@ export component SettingsView inherits Rectangle {
                         data: row;
                         pressed(b) => { SettingsBridge.row-button(row.id, b); }
                         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                        look(l) => { SettingsBridge.row-look(l); }
                     }
                     if row.block == BlockKind.wall: SetBlockFrame {
                         width: parent.width;

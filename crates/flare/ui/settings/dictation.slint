@@ -5,7 +5,7 @@
 // The accent is PT's own here: the capture ring, the meter and the download bar are accent-hi, the Active badge
 // is the accent fill (DictationPage.tsx ModelRow), and Recommended is an accent-hi outline.
 import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
-import { SetOption, SetRow, SetButton } from "types.slint";
+import { SetOption, SetRow, SetButton, RowLook } from "types.slint";
 import { SetRowButton } from "controls.slint";
 import { SetSelect } from "select.slint";
 import { SetSubtext } from "row.slint";
@@ -248,6 +248,8 @@ export component DictModelRow inherits Rectangle {
     // The id of the button pressed.
     callback pressed(string);
     callback tip(string, length, length, length, length);
+    // What the row drew, said once it is built and again whenever any of it changes (the e2e reads it).
+    callback look(RowLook);
     property <bool> active: root.data.state == "active";
     property <bool> off: root.data.off;
     out property <length> mark-x: mark.absolute-position.x - root.absolute-position.x;
@@ -259,6 +261,18 @@ export component DictModelRow inherits Rectangle {
     out property <length> text-right-x: text-col.absolute-position.x - root.absolute-position.x + text-col.width;
     out property <length> buttons-w: ctrls.width;
     out property <bool> downloading: root.data.state == "downloading";
+    property <RowLook> now: {
+        id: root.data.id, row-h: root.height,
+        mark-x: root.mark-x, mark-y: root.mark-y, mark-w: root.mark-w, mark-h: root.mark-h, name-x: root.name-x,
+        b0-id: ctrls.has0 ? root.data.buttons[0].id : "",
+        b0-x: b0.absolute-position.x - root.absolute-position.x, b0-y: b0.absolute-position.y - root.absolute-position.y,
+        b0-w: b0.width, b0-h: b0.height, b0-fill: b0.fill, b0-edge: b0.edge, b0-radius: b0.radius, b0-ink: b0.ink,
+        b1-id: ctrls.has1 ? root.data.buttons[1].id : "",
+        b1-x: b1.absolute-position.x - root.absolute-position.x, b1-y: b1.absolute-position.y - root.absolute-position.y,
+        b1-w: b1.width, b1-h: b1.height, b1-fill: b1.fill, b1-edge: b1.edge, b1-radius: b1.radius, b1-ink: b1.ink,
+    };
+    init => { root.look(root.now); }
+    changed now => { root.look(root.now); }
 
     // A whisper of a fill for the row in use (PT: text 2.5 percent).
     Rectangle {
@@ -560,6 +574,8 @@ export component DictationPageControls inherits Window {
     in-out property <SetRow> row-a;
     in-out property <SetRow> row-b;
     in-out property <SetRow> row-c;
+    out property <RowLook> look-a;
+    out property <RowLook> look-c;
     in-out property <bool> ask-open: false;
     in-out property <string> ask-text: "This model doesn't support all languages.";
     // what the controls reported, newest last, joined with a space
@@ -670,6 +686,7 @@ export component DictationPageControls inherits Window {
             first: true;
             data: root.row-a;
             pressed(b) => { root.log += " a:" + b; }
+            look(l) => { root.look-a = l; }
             tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
         }
         rb := DictModelRow {
@@ -690,6 +707,7 @@ export component DictationPageControls inherits Window {
             first: false;
             data: root.row-c;
             pressed(b) => { root.log += " c:" + b; }
+            look(l) => { root.look-c = l; }
             tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
         }
     }

@@ -17,7 +17,76 @@ use super::diag::button_json;
 use super::{ProbeCtx, ProbeRegistry};
 use crate::dictation_ctl::{self, DictView};
 use crate::dictation_widget::{self, Snapshot};
-use crate::{BlockKind as SlintBlock, SettingsBridge};
+use crate::{BlockKind as SlintBlock, RowLook, SettingsBridge};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+thread_local! {
+    /// What each Dictation model row last said it drew (SettingsBridge.row-look), by row id.
+    static LOOKS: RefCell<HashMap<String, RowLook>> = RefCell::new(HashMap::new());
+}
+
+/// Keeps what a model row drew; the latest word of a row replaces its earlier one.
+pub fn note_look(l: RowLook) {
+    LOOKS.with(|m| m.borrow_mut().insert(l.id.to_string(), l));
+}
+
+fn hex(c: slint::Color) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        c.red(),
+        c.green(),
+        c.blue(),
+        c.alpha()
+    )
+}
+
+/// One button of a row's look: its rectangle in the row and its fill, border, radius and ink (css px, #rrggbbaa).
+#[allow(clippy::too_many_arguments)]
+fn button_look(
+    id: &str,
+    r: [f32; 4],
+    fill: slint::Color,
+    edge: slint::Color,
+    radius: f32,
+    ink: slint::Color,
+) -> Value {
+    json!({
+        "id": id, "x": r[0], "y": r[1], "w": r[2], "h": r[3],
+        "fill": hex(fill), "border": hex(edge), "radius": radius, "ink": hex(ink),
+    })
+}
+
+/// A row's look as dict.rows carries it: the mark's and the name's place in the row, and each button present.
+pub fn look_json(l: &RowLook) -> Value {
+    let mut buttons = Vec::new();
+    if !l.b0_id.is_empty() {
+        buttons.push(button_look(
+            &l.b0_id,
+            [l.b0_x, l.b0_y, l.b0_w, l.b0_h],
+            l.b0_fill,
+            l.b0_edge,
+            l.b0_radius,
+            l.b0_ink,
+        ));
+    }
+    if !l.b1_id.is_empty() {
+        buttons.push(button_look(
+            &l.b1_id,
+            [l.b1_x, l.b1_y, l.b1_w, l.b1_h],
+            l.b1_fill,
+            l.b1_edge,
+            l.b1_radius,
+            l.b1_ink,
+        ));
+    }
+    json!({
+        "row_h": l.row_h,
+        "mark": { "x": l.mark_x, "y": l.mark_y, "w": l.mark_w, "h": l.mark_h },
+        "name_x": l.name_x,
+        "buttons": buttons,
+    })
+}
 
 /// Whether the pill is in the window's tree: it is mounted over the terminal area in `app.slint` and fed from
 /// `dictation_ctl::view()` by the host's `view_changed`.
@@ -238,7 +307,7 @@ fn dict_rows(ctx: &ProbeCtx, _: &Value) -> Result<Value, String> {
                     )
                 })
                 .collect();
-            out.push(row_json(&RowFacts {
+            let mut row = row_json(&RowFacts {
                 id: r.id.as_str(),
                 state: r.state.as_str(),
                 badge: r.badge.as_str(),
@@ -249,7 +318,10 @@ fn dict_rows(ctx: &ProbeCtx, _: &Value) -> Result<Value, String> {
                 buttons,
                 name: r.label.as_str(),
                 sub: r.sub.as_str(),
-            }));
+            });
+            row["look"] =
+                LOOKS.with(|m| m.borrow().get(r.id.as_str()).map_or(Value::Null, look_json));
+            out.push(row);
         }
     }
     Ok(Value::Array(out))
@@ -404,6 +476,31 @@ mod tests {
         assert_eq!(option_name(&opts, "no"), "Norwegian");
         assert_eq!(option_name(&opts, "auto"), "Auto-detect");
         assert_eq!(option_name(&opts, "xx"), "xx");
+    }
+
+    #[test]
+    fn a_look_names_the_mark_the_name_and_each_button_present() {
+        let mut l = RowLook {
+            row_h: 64.0,
+            mark_x: 14.0,
+            mark_y: 14.0,
+            mark_w: 36.0,
+            mark_h: 36.0,
+            name_x: 64.0,
+            b0_id: "uninstall".into(),
+            b0_w: 90.0,
+            b0_fill: slint::Color::from_argb_u8(255, 30, 30, 29),
+            b0_radius: 8.0,
+            ..Default::default()
+        };
+        let j = look_json(&l);
+        assert_eq!(j["mark"]["w"], 36.0);
+        assert_eq!(j["name_x"], 64.0);
+        assert_eq!(j["buttons"].as_array().unwrap().len(), 1);
+        assert_eq!(j["buttons"][0]["id"], "uninstall");
+        assert_eq!(j["buttons"][0]["fill"], "#1e1e1dff");
+        l.b1_id = "cancel".into();
+        assert_eq!(look_json(&l)["buttons"].as_array().unwrap().len(), 2);
     }
 
     #[test]

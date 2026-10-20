@@ -343,3 +343,42 @@ fn rows_hold_at_every_scale() {
         assert_eq!(past, 0, "scale {scale}: ink past the panel");
     }
 }
+
+#[test]
+fn a_row_reports_its_look_with_the_mark_and_its_buttons() {
+    for scale in SCALES {
+        let h = harness(scale);
+        let c = &h.comp;
+        let (a, rc) = (c.get_look_a(), c.get_look_c());
+        assert_eq!(a.id.as_str(), "base", "scale {scale}: the row names itself");
+        assert!(
+            a.mark_x < a.name_x && (a.mark_w - 36.0).abs() < 0.01,
+            "scale {scale}: mark {} to {} wide, name {}",
+            a.mark_x,
+            a.mark_w,
+            a.name_x
+        );
+        assert!(
+            (a.mark_y + a.mark_h / 2.0 - a.row_h / 2.0).abs() <= 1.0 / scale + 0.01,
+            "scale {scale}: the mark is centred on the row"
+        );
+        assert_eq!(a.b0_id.as_str(), "uninstall");
+        assert_eq!(rc.b0_id.as_str(), "download");
+        let text = c.global::<Theme>().get_text();
+        assert_eq!(a.b0_ink, text, "scale {scale}: the ink");
+        assert_eq!(
+            a.b0_fill, rc.b0_fill,
+            "scale {scale}: one fill for every button"
+        );
+        assert_eq!(a.b0_edge, rc.b0_edge, "scale {scale}: one border");
+        assert_eq!(a.b0_radius, rc.b0_radius, "scale {scale}: one radius");
+        assert!(a.b0_radius > 0.0 && a.b0_w > 0.0 && a.b0_h > 0.0);
+        // The button sits where the row's controls begin, so a click can be aimed at it.
+        assert!(
+            a.b0_x >= c.get_a_right_x() - 0.01,
+            "scale {scale}: b0 x {}",
+            a.b0_x
+        );
+        assert_eq!(a.b1_id.as_str(), "", "scale {scale}: no second button");
+    }
+}

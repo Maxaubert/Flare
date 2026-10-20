@@ -990,6 +990,9 @@ impl AppCtl {
                 },
             );
         }
+        // untimed: a model row's look is noted in a map and returns at once
+        app.global::<SettingsBridge>()
+            .on_row_look(crate::e2e_probes::dictation::note_look);
         {
             let weak = Rc::downgrade(rc);
             // untimed: a tooltip request only records the hover and returns at once
