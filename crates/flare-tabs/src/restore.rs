@@ -259,10 +259,12 @@ pub fn settle_restore(
     new_id: &mut dyn FnMut() -> String,
 ) -> Settled {
     let mut spawn = Vec::new();
-    let mut restored_ids: Vec<String> = Vec::new();
+    // The tab at `r.active` in the answer's own order; a tab closed meanwhile leaves no id, so counting
+    // the spawned ones would shift the front onto its neighbour (audit 2026-10-20, L18).
+    let mut front_id: Option<String> = None;
     let mut claims: HashMap<String, String> = HashMap::new(); // slot id -> restored cwd
     let mut extras: Vec<Tab> = Vec::new();
-    for rt in &r.tabs {
+    for (at, rt) in r.tabs.iter().enumerate() {
         let id = match rt.from {
             Some(f) => {
                 let Some(slot_id) = slots.get(f) else {
@@ -289,7 +291,9 @@ pub fn settle_restore(
                 id
             }
         };
-        restored_ids.push(id.clone());
+        if at == r.active {
+            front_id = Some(id.clone());
+        }
         spawn.push(Spawn {
             id,
             cwd: rt.cwd.clone(),
@@ -315,7 +319,7 @@ pub fn settle_restore(
     });
     let active_id = picked
         .cloned()
-        .or_else(|| restored_ids.get(r.active).cloned())
+        .or(front_id)
         .or_else(|| tabs.last().map(|t| t.id.clone()));
     Settled {
         state: TabState { tabs, active_id },
@@ -766,6 +770,26 @@ mod tests {
         assert_eq!(tab_ids(&s.state), vec!["t3"]);
         let spawned: Vec<_> = s.spawn.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(spawned, vec!["t3"]);
+    }
+
+    #[test]
+    fn the_front_tab_is_the_one_at_active_even_when_an_earlier_placeholder_was_closed() {
+        let b = boot_abc();
+        let mut state = b.state.clone();
+        state.tabs.retain(|t| t.id != "t1");
+        state.active_id = None;
+        let r = Restored {
+            tabs: vec![
+                rt("C:\\a", None, Some(0)),
+                rt("C:\\c", None, Some(2)),
+                rt("D:\\handed", None, None),
+            ],
+            active: 1,
+        };
+        let mut n = || "new".to_string();
+        let s = settle_restore(&state, &b.slots, &r, &mut n);
+        assert_eq!(tab_ids(&s.state), vec!["t3", "new"]);
+        assert_eq!(s.state.active_id.as_deref(), Some("t3"));
     }
 
     #[test]

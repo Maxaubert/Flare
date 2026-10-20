@@ -7,6 +7,7 @@
 //! ceiling, shared by every candidate's read (M10 Task 53).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -136,10 +137,25 @@ fn record_ceiling(_: Duration) {}
 
 /// Runs the whole import within `ceiling`, the budget shared by every Prism profile.
 pub fn run_once(prefs: &PrefStore, paths: &ImportPaths, ceiling: Duration) -> ImportReport {
-    run_once_with(prefs, paths, ceiling, Arc::new(real_reader))
+    run_once_cancellable(prefs, paths, ceiling, Arc::new(real_cancellable_reader))
 }
 
 pub type Reader = Arc<dyn Fn(&Path, &Path) -> Result<LocalStorage, ReadError> + Send + Sync>;
+
+/// A reader that watches the flag: the run sets it once its ceiling has passed (audit 2026-10-20, L19).
+pub type CancellableReader =
+    Arc<dyn Fn(&Path, &Path, &AtomicBool) -> Result<LocalStorage, ReadError> + Send + Sync>;
+
+/// A copy folder older than this is a killed run's leftover and is swept at the start of a run.
+const STALE_COPY: Duration = Duration::from_secs(600);
+
+pub fn real_cancellable_reader(
+    profile: &Path,
+    temp_root: &Path,
+    cancel: &AtomicBool,
+) -> Result<LocalStorage, ReadError> {
+    ldb::read_local_storage_cancellable(profile, temp_root, &|d| std::thread::sleep(d), cancel) // sync-ok: import worker
+}
 
 /// (profile, temp_root)
 pub fn real_reader(profile: &Path, temp_root: &Path) -> Result<LocalStorage, ReadError> {
@@ -154,20 +170,26 @@ enum Got {
 
 /// Runs the read on its own thread and waits at most `ceiling`. A late answer is dropped.
 fn read_with_ceiling(
-    reader: &Reader,
+    reader: &CancellableReader,
     profile: PathBuf,
     temp_root: PathBuf,
     ceiling: Duration,
 ) -> Got {
     let (tx, rx) = mpsc::channel();
     let reader = Arc::clone(reader);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
     std::thread::spawn(move || {
-        let _ = tx.send(reader(&profile, &temp_root));
+        let _ = tx.send(reader(&profile, &temp_root, &flag));
     });
     match rx.recv_timeout(ceiling) {
         // sync-ok: the import worker waits for its own read
         Ok(answer) => Got::Read(answer),
-        Err(_) => Got::Late,
+        Err(_) => {
+            // Late: the read stops copying at its next file and removes its folder.
+            cancel.store(true, Ordering::SeqCst);
+            Got::Late
+        }
     }
 }
 
@@ -193,6 +215,20 @@ pub fn run_once_with(
     ceiling: Duration,
     reader: Reader,
 ) -> ImportReport {
+    run_once_cancellable(
+        prefs,
+        paths,
+        ceiling,
+        Arc::new(move |profile: &Path, temp: &Path, _: &AtomicBool| reader(profile, temp)),
+    )
+}
+
+pub fn run_once_cancellable(
+    prefs: &PrefStore,
+    paths: &ImportPaths,
+    ceiling: Duration,
+    reader: CancellableReader,
+) -> ImportReport {
     let started = Instant::now();
     let mut report = run_inner(prefs, paths, ceiling, &reader);
     report.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -203,11 +239,12 @@ fn run_inner(
     prefs: &PrefStore,
     paths: &ImportPaths,
     ceiling: Duration,
-    reader: &Reader,
+    reader: &CancellableReader,
 ) -> ImportReport {
     if !should_run(prefs) {
         return ImportReport::new(Status::AlreadyDone);
     }
+    ldb::sweep_stale(&paths.temp_root, STALE_COPY);
     let mut winner: Option<(Origin, LocalStorage)> = None;
     let mut failed = false;
     let deadline = Deadline::after(ceiling, Instant::now());
@@ -731,6 +768,39 @@ mod tests {
             seen[1]
         );
         assert_eq!(r.status, Status::Nothing);
+    }
+
+    #[test]
+    fn a_read_past_the_ceiling_is_told_to_stop_copying() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        two_empty_profiles(a.path());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&stopped);
+        let reader: CancellableReader = Arc::new(move |_: &Path, _: &Path, cancel: &AtomicBool| {
+            let t0 = Instant::now();
+            while !cancel.load(Ordering::SeqCst) && t0.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(5)); // sync-ok: a test reader
+            }
+            seen.store(cancel.load(Ordering::SeqCst), Ordering::SeqCst);
+            Ok(LocalStorage::default())
+        });
+        let prefs = PrefStore::memory();
+        let r = run_once_cancellable(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(60),
+            reader,
+        );
+        assert_eq!(r.status, Status::Retry);
+        let t0 = Instant::now();
+        while !stopped.load(Ordering::SeqCst) && t0.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5)); // sync-ok: test wait
+        }
+        assert!(
+            stopped.load(Ordering::SeqCst),
+            "the late read saw the cancel flag"
+        );
     }
 
     #[test]
