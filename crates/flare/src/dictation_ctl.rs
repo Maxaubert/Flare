@@ -3647,6 +3647,35 @@ mod tests {
     }
 
     #[test]
+    fn the_outside_level_is_sent_at_most_every_66_ms() {
+        // N20: the outside recording's face reaches the service, its level at most every 66 ms.
+        let mut r = Rig::on_with_model(false);
+        let v = r.d.ctl.view().clone();
+        assert_eq!(LEVEL_EVERY_MS, 66.0);
+        r.at(1000.0);
+        r.d.send_live(&v, false);
+        assert_eq!(r.d.live_sent_ms, 1000.0, "the first look goes at once");
+        r.at(1065.0);
+        r.d.send_live(&v, false);
+        assert_eq!(
+            r.d.live_sent_ms, 1000.0,
+            "65 ms after the last send it is held back"
+        );
+        r.at(1066.0);
+        r.d.send_live(&v, false);
+        assert_eq!(
+            r.d.live_sent_ms, 1066.0,
+            "66 ms after the last send it goes"
+        );
+        r.at(1067.0);
+        r.d.send_live(&v, true);
+        assert_eq!(
+            r.d.live_sent_ms, 1067.0,
+            "a forced send (a phase change) is never held back"
+        );
+    }
+
+    #[test]
     fn switching_off_mid_recording_pastes_nothing_and_resumes_media() {
         let mut r = Rig::on_with_model(false);
         r.set("flare.dictation.pauseMedia", "1");
