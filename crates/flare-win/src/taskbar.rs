@@ -354,6 +354,11 @@ mod win {
     }
 
     impl super::OverlayShell for WinShell {
+        fn reset(&mut self) {
+            self.list = None;
+            self.tried = false;
+        }
+
         fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool {
             if self.hwnd == 0 {
                 return false;
@@ -412,6 +417,61 @@ pub fn chosen_face(size: u32) -> String {
 pub trait OverlayShell {
     /// `None` clears the overlay. True when the shell took it.
     fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool;
+
+    /// The taskbar was recreated (Explorer restarted): forget the COM object made for the old one.
+    fn reset(&mut self) {}
+}
+
+/// Whether `msg` is the registered `TaskbarButtonCreated` message (`registered` 0 means the
+/// registration failed, which matches nothing).
+pub fn is_button_created(msg: u32, registered: u32) -> bool {
+    registered != 0 && msg == registered
+}
+
+/// Listens on `hwnd` for the shell's `TaskbarButtonCreated` broadcast (sent when Explorer makes the
+/// window's button, again after it restarts). The window procedure only sets a flag; the UI tick
+/// redraws the badge. Safe to call again.
+#[cfg(windows)]
+pub fn watch_button_created(hwnd: isize) -> bool {
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+    const ID: usize = 0x464C_5442;
+    static REGISTERED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    unsafe extern "system" fn proc(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+        msg: u32,
+        wparam: windows_sys::Win32::Foundation::WPARAM,
+        lparam: windows_sys::Win32::Foundation::LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> windows_sys::Win32::Foundation::LRESULT {
+        if is_button_created(msg, REGISTERED.load(std::sync::atomic::Ordering::SeqCst)) {
+            note_button_created();
+        }
+        // SAFETY: the next procedure in the chain, with the arguments this one was given.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+    let name: Vec<u16> = "TaskbarButtonCreated"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `name` is NUL-terminated and outlives the call.
+    let id = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+    REGISTERED.store(id, std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: subclasses a window of this process from its own thread; the procedure is a plain function.
+    id != 0 && unsafe { SetWindowSubclass(hwnd as _, Some(proc), ID, 0) != 0 }
+}
+
+static BUTTON_CREATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Notes that the taskbar button was (re)created; the UI tick takes it with [`take_button_created`].
+pub fn note_button_created() {
+    BUTTON_CREATED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// True once per `TaskbarButtonCreated`: the overlay must be drawn again.
+pub fn take_button_created() -> bool {
+    BUTTON_CREATED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
 /// A shell that takes every overlay and shows it nowhere: an `--e2e` run has a badge to read
@@ -509,6 +569,15 @@ impl TaskbarBadge {
             self.cleared = false;
         }
         ok
+    }
+
+    /// The taskbar button was created again (Explorer restarted, audit L14): the shell lost the
+    /// overlay and its COM object is stale. The shell starts afresh and the next `set` of the same
+    /// count draws again.
+    pub fn refresh(&mut self) {
+        self.shell.reset();
+        self.last = None;
+        self.cleared = false;
     }
 
     pub fn clear(&mut self) -> bool {
@@ -744,5 +813,62 @@ mod tests {
         assert_eq!(log.borrow().len(), 3);
         assert!(b.set(1, 1.0));
         assert_eq!(log.borrow()[3].1, "1 tab needs a look");
+    }
+
+    /// L14 (audit 2026-10-20): Explorer restarting recreates the taskbar buttons and the overlay is
+    /// gone. The refresh makes the shell start afresh and the next `set` of the SAME count draw again.
+    #[test]
+    fn a_refresh_after_an_explorer_restart_draws_the_same_badge_again() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let resets = Rc::new(RefCell::new(0u32));
+        struct Counting(Log, Rc<RefCell<u32>>);
+        impl OverlayShell for Counting {
+            fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool {
+                self.0
+                    .borrow_mut()
+                    .push((icon.map(|d| d.size), text.to_string()));
+                true
+            }
+            fn reset(&mut self) {
+                *self.1.borrow_mut() += 1;
+            }
+        }
+        let mut b = TaskbarBadge::with_shell(Box::new(Counting(log.clone(), resets.clone())));
+        for scale in [1.0, 2.25, 3.0] {
+            log.borrow_mut().clear();
+            assert!(b.set(2, scale));
+            assert!(b.set(2, scale));
+            assert_eq!(log.borrow().len(), 1, "a repeat is free");
+            b.refresh();
+            assert!(b.set(2, scale));
+            assert_eq!(
+                log.borrow().len(),
+                2,
+                "the badge is drawn again after the refresh"
+            );
+            assert_eq!(
+                log.borrow()[1],
+                (Some(badge_px(scale)), "2 tabs need a look".to_string())
+            );
+        }
+        assert_eq!(
+            *resets.borrow(),
+            3,
+            "the shell was told to start afresh each time"
+        );
+    }
+
+    #[test]
+    fn the_button_created_message_is_matched_only_by_its_registered_id() {
+        assert!(is_button_created(0xC123, 0xC123));
+        assert!(!is_button_created(0x0001, 0xC123));
+        assert!(
+            !is_button_created(0xC123, 0),
+            "an id of 0 (registration failed) matches nothing"
+        );
+        assert!(!take_button_created());
+        note_button_created();
+        assert!(take_button_created());
+        assert!(!take_button_created(), "taken once");
     }
 }

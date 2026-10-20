@@ -119,6 +119,13 @@ are added as milestones land.
   and the scale it was saved at. Minimum 560 x 400, default 1180 x 780. A position off every
   monitor is dropped; a negative position on a second monitor is kept. Held by the `window_state`
   tests and `the_overlap_check_uses_device_pixels`.
+  A size is capped at a quarter over the virtual screen (all monitors) at the saved scale, never below the
+  minimum (audit 2026-10-20, L16). Held by `window_state_clamps_the_size_to_the_virtual_screen_at_every_scale`.
+- **Diagnostics and hand-off hardening (audit 2026-10-20).** A panic line keeps the payload's length and hash, never its
+  text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance
+  still shows its lock to a normal launch (L11). A hand-off server that is not this user in this session
+  refuses the launch instead of starting a second instance on the same profile (L41). The taskbar badge is
+  drawn again on `TaskbarButtonCreated` (L14). The stack sampler's abandon wait is bounded (L15).
 - **Close.** One rule, not a setting: a plain shell closes unasked; a tab with an agent asks; the
   window close is held only while an agent is working. Held by the `close` tests (flare-agent) and
   `close_flow` (flare-tabs). The shells are killed and waited for, with a 3 s cap.

@@ -1341,6 +1341,7 @@ pub fn run_window(
                 flare_win::taskbar::RecordShell,
             )));
         } else if let Some(hwnd) = hwnd_of(&app) {
+            flare_win::taskbar::watch_button_created(hwnd);
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }

@@ -63,12 +63,26 @@ fn opt_str(v: Option<&str>) -> Value {
 
 fn payload_text(p: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
-        (*s).to_owned()
+        payload_summary(s)
     } else if let Some(s) = p.downcast_ref::<String>() {
-        s.clone()
+        payload_summary(s)
     } else {
         "non-string panic payload".to_owned()
     }
+}
+
+/// What the log keeps of a panic's payload: its length and an FNV-1a hash, never the text (a payload
+/// can hold what the user pasted or said; audit L12). The hash lets two lines of one panic be matched.
+pub fn payload_summary(msg: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in msg.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!(
+        "panic payload withheld ({} bytes, hash {h:016x})",
+        msg.len()
+    )
 }
 
 fn record(h: &HookState, info: &PanicHookInfo<'_>) {
@@ -251,5 +265,23 @@ mod tests {
             hang_fields(Some(3500)),
             json!({"ms": 3500}).as_object().cloned().expect("an object")
         );
+    }
+
+    #[test]
+    fn a_payload_is_summarised_by_length_and_hash_only() {
+        let a = payload_summary("my secret text");
+        assert!(!a.contains("secret"), "{a}");
+        assert!(a.contains("14 bytes") && a.contains("hash "), "{a}");
+        assert_eq!(
+            a,
+            payload_summary("my secret text"),
+            "the same text, the same hash"
+        );
+        assert_ne!(
+            a,
+            payload_summary("my secret tex7"),
+            "another text, another hash"
+        );
+        assert!(payload_summary("").contains("0 bytes"));
     }
 }

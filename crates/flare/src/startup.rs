@@ -21,8 +21,8 @@ use flare_tabs::tabs_store::TabsStore;
 use flare_win::material::{Support, support};
 use flare_win::os_build::OsVersion;
 use flare_win::single_instance::{
-    Acquired, Handoff, InstanceGuard, InstanceNames, acquire, encode_handoff, instance_names,
-    send_handoff, serve,
+    Acquired, Handoff, IdentitySource, InstanceGuard, InstanceNames, WindowsIdentity, acquire,
+    encode_handoff, instance_names, send_handoff_with, serve,
 };
 use flare_win::window_state::WindowStateStore;
 use std::path::{Path, PathBuf};
@@ -88,6 +88,16 @@ pub enum Launch {
 /// A failed hand-off retries the lock ONCE (the first instance may have been quitting): First runs as
 /// the first instance, still Second is an error (exit 1).
 pub fn launch(profile: &Profile, argv: &[String], wait: Duration) -> Result<Launch, String> {
+    launch_with(profile, argv, wait, &WindowsIdentity)
+}
+
+/// `launch` with the identity source made explicit, so a test can stand in another user.
+pub fn launch_with(
+    profile: &Profile,
+    argv: &[String],
+    wait: Duration,
+    source: &dyn IdentitySource,
+) -> Result<Launch, String> {
     let names = instance_names(&profile.dir);
     match acquire(&names) {
         Err(e) => {
@@ -109,18 +119,15 @@ pub fn launch(profile: &Profile, argv: &[String], wait: Duration) -> Result<Laun
                 cwd,
                 args: argv.to_vec(),
             };
-            match send_handoff(&names, &handoff, wait) {
+            match send_handoff_with(&names, &handoff, wait, source) {
                 Ok(()) => Ok(Launch::HandedOver),
                 Err(flare_win::single_instance::HandoffError::Untrusted(e)) => {
-                    // Something answered the name that is not this user in this session: write
-                    // nothing to it and run as a normal instance (no lock to hold).
-                    log::warn!(
-                        "the hand-off server was not trusted ({e}); running as a normal instance"
-                    );
-                    Ok(Launch::First {
-                        guard: None,
-                        server_names: names,
-                    })
+                    // Something answered the name that is not this user in this session. Writing to
+                    // it is refused, and so is a second instance on the SAME profile with no lock
+                    // (two writers on tabs.json and window.json): the launch stops here (audit L41).
+                    Err(format!(
+                        "the running Flare's hand-off was not trusted ({e}); not starting a second one on this profile"
+                    ))
                 }
                 Err(e) => match acquire(&names) {
                     Ok(Acquired::First(guard)) => {
@@ -728,6 +735,47 @@ mod tests {
         assert_eq!(got.args, argv);
         assert!(!got.cwd.is_empty());
         std::thread::sleep(Duration::from_millis(150)); // sync-ok: test, the worker must be listening again
+        server.stop();
+    }
+
+    /// L41 (audit 2026-10-20): an answer that is not this user in this session used to start a
+    /// normal instance on the SAME profile without the lock (two writers on tabs.json). Now the
+    /// launch refuses, and nothing is written to the stranger.
+    #[test]
+    fn a_hand_off_server_that_is_not_trusted_refuses_the_launch() {
+        struct Stranger;
+        impl IdentitySource for Stranger {
+            fn of_pid(&self, _pid: u32) -> Option<flare_win::single_instance::Identity> {
+                Some(flare_win::single_instance::Identity {
+                    sid: "S-1-5-21-9999".into(),
+                    session: 1,
+                })
+            }
+        }
+        let (_d, profile) = temp_profile();
+        let argv = vec!["C:\\work".to_string()];
+        let Launch::First {
+            guard: _guard,
+            server_names,
+        } = launch(&profile, &argv, Duration::from_millis(200)).unwrap()
+        else {
+            panic!("the first launch must be First");
+        };
+        let (tx, rx) = mpsc::channel();
+        let server = flare_win::single_instance::serve(&server_names, move |h| {
+            let _ = tx.send(h);
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only, never the app
+        let r = launch_with(&profile, &argv, Duration::from_secs(3), &Stranger);
+        let Err(message) = r else {
+            panic!("an untrusted server must refuse the launch");
+        };
+        assert!(message.contains("not trusted"), "{message}");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "nothing was written"
+        );
         server.stop();
     }
 

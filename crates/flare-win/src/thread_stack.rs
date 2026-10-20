@@ -184,8 +184,11 @@ impl ThreadSampler {
                 abandon.store(true, Ordering::SeqCst);
                 // The helper leaves START at once: nothing it does before or in SuspendThread
                 // waits on the sampled thread.
-                while state.load(Ordering::SeqCst) == START {
-                    std::thread::sleep(Duration::from_millis(1)); // sync-ok: the watchdog thread
+                // Bounded (audit L15): a helper stuck before it reached SuspendThread must not
+                // hang the watchdog. It sees `abandon` and resumes at once if the suspend lands
+                // later (see `walk_suspended`).
+                if !helper_left_start(&state, ABANDON_WAIT) {
+                    return None;
                 }
                 if state
                     .compare_exchange(SUSPENDED, RESUMED, Ordering::SeqCst, Ordering::SeqCst)
@@ -198,6 +201,21 @@ impl ThreadSampler {
             }
         }
     }
+}
+
+/// The longest the abandon path waits for the helper to leave START.
+const ABANDON_WAIT: Duration = Duration::from_secs(2);
+
+/// Waits up to `limit` for the helper to leave START; false when it did not.
+fn helper_left_start(state: &AtomicU8, limit: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while state.load(Ordering::SeqCst) == START {
+        if started.elapsed() >= limit {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1)); // sync-ok: the watchdog thread, bounded by `limit`
+    }
+    true
 }
 
 /// The longest a sample may hold the sampled thread.
@@ -233,6 +251,10 @@ where
     }
     state.store(SUSPENDED, Ordering::SeqCst);
     let _resume = ResumeGuard { h: h.0, state };
+    // The caller gave up while this suspend was still pending: resume at once (the guard).
+    if abandon.load(Ordering::SeqCst) {
+        return None;
+    }
     // ---- nothing below allocates, logs or formats until the guard drops ----
     // SAFETY: ctx is a valid CONTEXT for the thread's architecture.
     if unsafe { GetThreadContext(h.0, &mut ctx) } == 0 {
@@ -473,5 +495,36 @@ mod tests {
     #[test]
     fn describe_an_unknown_address_is_hex() {
         assert_eq!(describe(0x10), "0x10");
+    }
+
+    /// L15 (audit 2026-10-20): the abandon path waited for the helper to leave START with no
+    /// bound; a helper stuck before it ever reached `SuspendThread` hung the watchdog (and the quit
+    /// that joins it). The wait is bounded and says whether the helper moved on.
+    #[test]
+    fn the_wait_for_a_stuck_helper_is_bounded() {
+        let state = AtomicU8::new(START);
+        let t = Instant::now();
+        assert!(!helper_left_start(&state, Duration::from_millis(80)));
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(80) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+        state.store(SUSPENDED, Ordering::SeqCst);
+        assert!(helper_left_start(&state, Duration::from_millis(80)));
+    }
+
+    #[test]
+    fn the_wait_ends_as_soon_as_the_helper_moves() {
+        let state = Arc::new(AtomicU8::new(START));
+        let s2 = state.clone();
+        let mover = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            s2.store(SKIPPED, Ordering::SeqCst);
+        });
+        let t = Instant::now();
+        assert!(helper_left_start(&state, Duration::from_secs(5)));
+        assert!(t.elapsed() < Duration::from_secs(2));
+        mover.join().unwrap();
     }
 }

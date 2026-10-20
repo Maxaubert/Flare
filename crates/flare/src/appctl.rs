@@ -1376,6 +1376,10 @@ impl AppCtl {
         let on = taskbar_badge_on(&self.prefs);
         let scale = self.scale;
         let Some(b) = self.badge.as_mut() else { return };
+        // Explorer made the taskbar button again (it restarted): the overlay is gone, draw it anew.
+        if flare_win::taskbar::take_button_created() {
+            b.refresh();
+        }
         if !on || n == 0 {
             b.clear();
         } else {
