@@ -381,6 +381,9 @@ pub struct FrameState {
     prompt: Option<(PromptWatch, String)>,
     seq: u64,
     snap: Option<Snap>,
+    /// The sidebar's slot and panel x read right after the last snapshot's picture was taken, so a
+    /// label made from it names the frame the picture shows (not the frame before or after).
+    snap_slide: Option<(f32, f32)>,
     marks: (Option<f64>, Option<f64>),
     env: Option<Rc<dyn FrameEnv>>,
 }
@@ -399,8 +402,22 @@ impl FrameState {
             prompt: None,
             seq: 0,
             snap: None,
+            snap_slide: None,
             marks: (None, None),
             env: None,
+        }
+    }
+
+    /// Keeps the slide the last snapshot's picture shows.
+    pub fn set_snap_slide(&mut self, slide: Option<(f32, f32)>) {
+        self.snap_slide = slide;
+    }
+
+    /// The last picture's slide as `[slot, panel_left]`, or null when it had none.
+    pub fn snap_slide_json(&self) -> serde_json::Value {
+        match self.snap_slide {
+            Some((slot, left)) => serde_json::json!([slot, left]),
+            None => serde_json::Value::Null,
         }
     }
 
@@ -1354,9 +1371,12 @@ impl GlueCtx {
             w: snap.w,
             h: snap.h,
         };
+        // Read now, on the UI thread, straight after the picture: the slide the picture shows (audit V14).
+        let slide = self.slide();
         FRAMES.with(|f| {
             if let Ok(mut st) = f.try_borrow_mut() {
                 st.snap = Some(snap);
+                st.set_snap_slide(slide);
             }
         });
         reply
@@ -1526,13 +1546,13 @@ pub fn on_redraw() {
 /// `frames.series`: every presented frame since the last `Frames` reset (or since the start), as
 /// `[age_ms, gap_ms, render_ms, slot, panel_left]` rows, and the process age now.
 pub fn frame_series() -> serde_json::Value {
-    let frames = FRAMES.with(|f| {
-        f.try_borrow()
-            .map(|st| st.rec.series_json())
-            .unwrap_or_else(|_| serde_json::json!([]))
+    let (frames, snap_slide) = FRAMES.with(|f| match f.try_borrow() {
+        Ok(st) => (st.rec.series_json(), st.snap_slide_json()),
+        Err(_) => (serde_json::json!([]), serde_json::Value::Null),
     });
     serde_json::json!({
         "frames": frames,
+        "snap_slide": snap_slide,
         "now_age_ms": crate::startup_trace::since_process_start().as_secs_f64() * 1000.0,
     })
 }
@@ -2511,6 +2531,16 @@ mod frame_tests {
         assert!(v[0][1].is_null() && v[0][2].is_null());
         assert_eq!(v[0][3], 150.0);
         assert_eq!(v[0][4], -5.0);
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_slide_its_picture_shows() {
+        let mut st = FrameState::new();
+        assert!(st.snap_slide_json().is_null(), "no picture taken yet");
+        st.set_snap_slide(Some((66.0, 12.0)));
+        assert_eq!(st.snap_slide_json(), serde_json::json!([66.0, 12.0]));
+        st.set_snap_slide(None);
+        assert!(st.snap_slide_json().is_null(), "a picture with no slide");
     }
 
     #[test]

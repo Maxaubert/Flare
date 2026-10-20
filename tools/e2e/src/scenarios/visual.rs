@@ -174,6 +174,14 @@ fn save_numbers(dir: &Path, v: &Value) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// The slot and panel x the last snapshot's picture shows (the app reads them right after it takes the
+/// picture), `None` when the app did not say.
+fn picture_slide(app: &mut App) -> Option<(f64, f64)> {
+    let series = app.session.probe_str("frames.series").ok()?;
+    let shown = series.get("snap_slide")?.as_array()?;
+    Some((shown.first()?.as_f64()?, shown.get(1)?.as_f64()?))
+}
+
 fn shot_to(app: &mut App, path: &Path) -> bool {
     if let Some(d) = path.parent() {
         let _ = fs::create_dir_all(d);
@@ -359,17 +367,23 @@ fn sidebar_cell(
             let t0 = Instant::now();
             app.session.key("Ctrl+Shift+B")?;
             wait_until(t0 + Duration::from_millis(*off));
-            let anim = probe(&mut app, "sidebar.anim", Value::Null);
             let at = t0.elapsed().as_secs_f64() * 1000.0;
+            // The picture comes first; its label is the slide the app read straight after taking it, so
+            // the number names the frame the picture shows (a probe before the snapshot is a frame early).
+            let staged = dir
+                .join("frames")
+                .join(format!("{name}-{k:02}-t{:03}ms.png", at.round() as i64));
+            let taken = shot_to(&mut app, &staged);
+            let shown = picture_slide(&mut app);
+            let slot = shown.map_or(0, |s| s.0.round() as i64);
             let file = dir.join("frames").join(format!(
-                "{name}-{k:02}-t{:03}ms-slot{:03}.png",
-                at.round() as i64,
-                num(&anim["slot"]).round() as i64
+                "{name}-{k:02}-t{:03}ms-slot{slot:03}.png",
+                at.round() as i64
             ));
-            let taken = shot_to(&mut app, &file);
+            let taken = taken && fs::rename(&staged, &file).is_ok();
             shots.push(json!({
                 "name": name, "k": k, "target_ms": off, "at_ms": at,
-                "slot": anim["slot"], "panel_left": anim["panel_left"], "taken": taken,
+                "slot": shown.map(|s| s.0), "panel_left": shown.map(|s| s.1), "taken": taken,
                 "file": file.file_name().map(|f| f.to_string_lossy()),
             }));
             // Back to the state this pass started from, settled.
