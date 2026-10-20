@@ -13,7 +13,7 @@ are added as milestones land.
   (`MAX_MARKS`); the rasteriser's cluster cache starts over at 8192 entries; the glyph atlas starts at
   2048 px square and doubles to 4096 (or the device limit) when a frame does not fit, keeping what it
   holds instead of clearing and re-uploading every frame. A lazy fallback font is tried again for a
-  character it was not asked about; a character no family covers is walked once. Held by
+  character it was not asked about; a character no family covers is walked once. The walk (cmap reads, font file parsing) runs on a worker\n  thread: a paint never waits on it, the cell is blank until the family arrives, and the host then\n  repaints both painters from the same source (audit M2). Held by paint_never_blocks_on_a_family_load,\n  _family_that_arrives_repaints_the_blank_cell, _fallback_font_that_arrives_repaints_without_any_other_change,
   `marks_beyond_the_cap_are_dropped_in_put_str_and_cluster`, `a_flood_of_combining_marks_is_capped_per_cell`,
   `the_glyph_cache_is_bounded`, `a_char_no_family_covers_does_not_burn_the_families_for_another_script`,
   `an_overflowing_atlas_grows_once_and_stops_re_uploading`.

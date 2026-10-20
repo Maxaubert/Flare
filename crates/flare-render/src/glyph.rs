@@ -50,6 +50,16 @@ pub trait GlyphSource {
     /// Changes the face (first installed of `families`, else a monospace face) and the base size
     /// in logical pixels. Default: nothing to change.
     fn set_font(&mut self, _families: &[&str], _base_px: f32) {}
+    /// A lazily found fallback font has arrived and pply_fallbacks has something to take
+    /// (audit M2). Default: never.
+    fn fallback_ready(&self) -> bool {
+        false
+    }
+    /// Takes the fallback fonts found off the UI thread; true when cells drawn blank before must be
+    /// painted again (the caller drops every atlas copy). Default: nothing.
+    fn apply_fallbacks(&mut self) -> bool {
+        false
+    }
     /// What this source holds. Default: nothing counted.
     fn memory(&self) -> GlyphMemory {
         GlyphMemory::default()

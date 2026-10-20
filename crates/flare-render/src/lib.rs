@@ -6,6 +6,7 @@ pub mod color;
 pub mod cpu;
 pub mod decor;
 pub mod device_pixels;
+pub mod fallback;
 pub mod font_catalog;
 pub mod glyph;
 pub mod gpu;

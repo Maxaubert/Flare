@@ -2,6 +2,7 @@
 //! to the painters through `GlyphSource`.
 
 use crate::blend::blend_premul;
+use crate::fallback;
 use crate::font_catalog::{
     FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
 };
@@ -46,12 +47,14 @@ pub struct Rasterizer {
     kept_fallbacks: Vec<&'static str>,
     /// (faces, bytes) of the last `font_bytes` count.
     font_bytes: std::cell::Cell<Option<(usize, usize)>>,
-    /// Codepoint ranges each lazy family covers, read from its font files once (audit R5).
-    coverage: HashMap<&'static str, Vec<(u32, u32)>>,
+    /// Characters sent to the fallback worker and not answered yet (audit M2).
+    pending: HashSet<char>,
+    /// The worker that reads cmaps and parses font files off the UI thread, started on first need.
+    worker: Option<fallback::Worker>,
+    /// What the worker shares: the answer-waiting flag, its cmap read count, the test gate.
+    shared: fallback::Shared,
     /// How many font files were loaded into the database for a fallback walk.
     family_loads: usize,
-    /// How many families had their cmap read.
-    cmap_reads: usize,
 }
 
 impl Rasterizer {
@@ -84,9 +87,10 @@ impl Rasterizer {
             uncovered: HashSet::new(),
             kept_fallbacks: Vec::new(),
             font_bytes: std::cell::Cell::new(None),
-            coverage: HashMap::new(),
+            pending: HashSet::new(),
+            worker: None,
+            shared: fallback::Shared::default(),
             family_loads: 0,
-            cmap_reads: 0,
         }
     }
 
@@ -134,102 +138,88 @@ impl Rasterizer {
         self.cache_cap = cap;
     }
 
-    /// Codepoint ranges the font files of `family` cover, read once and kept (no database load).
-    fn coverage_of(&mut self, family: &'static str, files: &[std::path::PathBuf]) -> &[(u32, u32)] {
-        if !self.coverage.contains_key(family) {
-            self.cmap_reads += 1;
-            let mut points: Vec<u32> = Vec::new();
-            for file in files {
-                // sync-ok: once per lazy family per session, to read its cmap
-                let Ok(data) = std::fs::read(file) else {
-                    continue;
-                };
-                let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
-                for index in 0..count {
-                    let Ok(face) = ttf_parser::Face::parse(&data, index) else {
-                        continue;
-                    };
-                    let Some(cmap) = face.tables().cmap else {
-                        continue;
-                    };
-                    for sub in cmap.subtables {
-                        if sub.is_unicode() {
-                            sub.codepoints(|c| points.push(c));
-                        }
-                    }
-                }
-            }
-            points.sort_unstable();
-            points.dedup();
-            let mut ranges: Vec<(u32, u32)> = Vec::new();
-            for c in points {
-                match ranges.last_mut() {
-                    Some(last) if last.1 + 1 == c => last.1 = c,
-                    _ => ranges.push((c, c)),
-                }
-            }
-            self.coverage.insert(family, ranges);
+    /// Asks the worker for a family for a character nothing loaded covers. Never blocks: the cell
+    /// stays blank until `apply_fallbacks` has the answer. Each character is walked once.
+    fn request_fallback(&mut self, ch: char) {
+        if self.uncovered.contains(&ch) || self.pending.contains(&ch) {
+            return;
         }
-        &self.coverage[family]
+        self.pending.insert(ch);
+        self.send_request(ch);
     }
 
-    /// A character nothing loaded covers: loads the next lazy fallback family whose cmap has it
-    /// and that shapes it, each family at most once per character. True when one was added.
-    fn fallback_for(&mut self, ch: char) -> bool {
-        if self.uncovered.contains(&ch) {
-            return false;
-        }
-        let faces = installed_faces();
-        for &family in LAZY_FALLBACK_FAMILIES {
-            if self.kept_fallbacks.contains(&family) || self.rejected.contains(&(family, ch)) {
-                continue;
-            }
-            let files = files_for_family(&faces, family);
-            let c = ch as u32;
-            let has = self
-                .coverage_of(family, &files)
-                .binary_search_by(|&(lo, hi)| {
-                    if c < lo {
-                        std::cmp::Ordering::Greater
-                    } else if c > hi {
-                        std::cmp::Ordering::Less
+    fn send_request(&mut self, ch: char) {
+        let mut skip: Vec<&'static str> = self.kept_fallbacks.clone();
+        skip.extend(
+            LAZY_FALLBACK_FAMILIES
+                .iter()
+                .copied()
+                .filter(|f| self.rejected.contains(&(*f, ch))),
+        );
+        let shared = self.shared.clone();
+        self.worker
+            .get_or_insert_with(|| fallback::Worker::spawn(shared))
+            .send(fallback::Request { ch, skip });
+    }
+
+    /// Takes the worker's answers: pushes a found family's parsed faces into the database, keeps it
+    /// when it shapes the character, and drops the cached blanks of that character. True when
+    /// something changed and the cells must be painted again.
+    fn take_fallbacks(&mut self) -> bool {
+        self.shared
+            .ready
+            .store(false, std::sync::atomic::Ordering::Release);
+        let mut changed = false;
+        while let Some(answer) = self.worker.as_ref().and_then(|w| w.try_recv()) {
+            match answer {
+                fallback::Answer::Found { ch, family, faces } => {
+                    if self.kept_fallbacks.contains(&family) {
+                        self.evict(ch);
+                        self.pending.remove(&ch);
+                        changed = true;
+                        continue;
+                    }
+                    self.rejected.insert((family, ch));
+                    let ids: Vec<_> = faces
+                        .into_iter()
+                        .map(|f| self.fs.db_mut().push_face_info(f))
+                        .collect();
+                    self.family_loads += ids.len();
+                    if self.covers(ch) {
+                        self.kept_fallbacks.push(family);
+                        self.evict(ch);
+                        self.pending.remove(&ch);
+                        changed = true;
                     } else {
-                        std::cmp::Ordering::Equal
+                        for id in ids {
+                            self.fs.db_mut().remove_face(id);
+                        }
+                        // Next family for the same character.
+                        self.send_request(ch);
                     }
-                })
-                .is_ok();
-            if !has {
-                continue;
-            }
-            self.rejected.insert((family, ch));
-            let mut ids = Vec::new();
-            for file in files {
-                self.family_loads += 1;
-                ids.extend(
-                    self.fs
-                        .db_mut()
-                        .load_font_source(cosmic_text::fontdb::Source::File(file)),
-                );
-            }
-            let covers = self.covers(ch);
-            if covers {
-                self.kept_fallbacks.push(family);
-                return true;
-            }
-            for id in ids {
-                self.fs.db_mut().remove_face(id);
+                }
+                fallback::Answer::None { ch } => {
+                    if self.uncovered.len() >= UNCOVERED_MAX {
+                        self.uncovered.clear();
+                    }
+                    if self.rejected.len() >= UNCOVERED_MAX {
+                        self.rejected.clear();
+                    }
+                    self.uncovered.insert(ch);
+                    self.pending.remove(&ch);
+                    // It draws the missing-glyph box from here on.
+                    self.evict(ch);
+                    changed = true;
+                }
             }
         }
-        if self.uncovered.len() >= UNCOVERED_MAX {
-            self.uncovered.clear();
-        }
-        if self.rejected.len() >= UNCOVERED_MAX {
-            self.rejected.clear();
-        }
-        self.uncovered.insert(ch);
-        false
+        changed
     }
 
+    /// Forgets the cached bitmaps of clusters holding `ch` (they were drawn before its font came).
+    fn evict(&mut self, ch: char) {
+        self.cache.retain(|k, _| !k.text.contains(ch));
+    }
     /// Whether shaping `ch` in the current stack draws a real glyph (not the missing-glyph box).
     fn covers(&mut self, ch: char) -> bool {
         let px = font_px_for(self.base_px, 1.0);
@@ -297,14 +287,13 @@ impl Rasterizer {
         let mut buffer = Buffer::new_empty(Metrics::new(px, px));
         buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.fs, false);
-        // A glyph id of 0 is the missing-glyph box: ask for one more fallback family and shape
-        // again, until the text is covered or no lazy family is left.
-        while let Some(missing) = missing_char(&buffer) {
-            if !self.fallback_for(missing) {
-                break;
+        // A glyph id of 0 is the missing-glyph box. The family that covers it is found on the
+        // worker (audit M2): until it answers the cell stays blank, and the paint goes on.
+        if let Some(missing) = missing_char(&buffer) {
+            self.request_fallback(missing);
+            if self.pending.contains(&missing) {
+                return None;
             }
-            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut self.fs, false);
         }
         let run = buffer.layout_runs().next()?;
 
@@ -338,6 +327,14 @@ impl GlyphSource for Rasterizer {
 
     fn font_units(&self) -> FontUnits {
         self.units
+    }
+
+    fn fallback_ready(&self) -> bool {
+        self.shared.ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn apply_fallbacks(&mut self) -> bool {
+        self.take_fallbacks()
     }
 
     fn set_scale(&mut self, scale: f32) {
@@ -556,6 +553,29 @@ mod tests {
         assert!(r.units.units_per_em > 0.0);
     }
 
+    /// Waits for every fallback the worker was asked for and applies the answers (the UI thread
+    /// does this on its next frame).
+    impl Rasterizer {
+        fn settle(&mut self) {
+            let start = std::time::Instant::now();
+            while !self.pending.is_empty() {
+                assert!(
+                    start.elapsed().as_secs() < 60,
+                    "the fallback worker never answered"
+                );
+                self.take_fallbacks();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// The glyph as it is once any fallback font has arrived.
+    fn glyph_settled(r: &mut Rasterizer, k: &GlyphKey) -> Option<GlyphBitmap> {
+        r.glyph(k);
+        r.settle();
+        r.glyph(k).cloned()
+    }
+
     fn bold_key(text: &str) -> GlyphKey {
         GlyphKey {
             text: text.to_string(),
@@ -608,7 +628,7 @@ mod tests {
     fn cjk_falls_back() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         let m_width = r.glyph(&key("M")).expect("M").width;
-        match r.glyph(&key("中")).map(|g| g.width) {
+        match glyph_settled(&mut r, &key("中")).map(|g| g.width) {
             Some(w) => assert!(w > m_width, "CJK is wider than M"),
             None => {
                 if installed("Microsoft YaHei UI") {
@@ -622,7 +642,7 @@ mod tests {
     #[test]
     fn emoji_is_color() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
-        match r.glyph(&key("😀")).map(|g| g.kind) {
+        match glyph_settled(&mut r, &key("😀")).map(|g| g.kind) {
             Some(kind) => assert_eq!(kind, GlyphKind::Color),
             None => {
                 if installed("Segoe UI Emoji") {
@@ -731,8 +751,8 @@ mod tests {
             for ch in text.chars().filter(|c| !c.is_whitespace()) {
                 let k = key(&ch.to_string());
                 assert_eq!(
-                    old.glyph(&k).cloned(),
-                    new.glyph(&k).cloned(),
+                    glyph_settled(&mut old, &k),
+                    glyph_settled(&mut new, &k),
                     "U+{:04X} differs at scale {scale}",
                     ch as u32
                 );
@@ -754,25 +774,25 @@ mod tests {
         assert!(!r.has_family_loaded("Javanese Text"));
         let before = r.face_count();
         let java = key("\u{A9B2}");
-        assert!(r.glyph(&java).is_some());
+        assert!(glyph_settled(&mut r, &java).is_some());
         assert!(r.has_family_loaded("Javanese Text"));
         let after = r.face_count();
         assert!(after > before);
         // The same family is not loaded again, by this character or another of its script.
-        r.glyph(&key("\u{A9B3}"));
-        r.glyph(&java);
+        glyph_settled(&mut r, &key("\u{A9B3}"));
+        glyph_settled(&mut r, &java);
         assert_eq!(r.face_count(), after);
         let tried = r.rejected.len();
         // A character nothing covers tries every lazy family once and keeps none.
-        r.glyph(&key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{10FFFD}"));
         let after_tofu = r.face_count();
         assert_eq!(after_tofu, after);
         let tried_after = r.rejected.len();
         assert!(tried_after >= tried);
         // The same character again walks nothing (audit M2: a different one may, see the test
         // a_char_no_family_covers_does_not_burn_the_families_for_another_script).
-        r.glyph(&key("\u{10FFFD}"));
-        r.glyph(&key("a\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("a\u{10FFFD}"));
         assert_eq!(r.rejected.len(), tried_after);
         assert_eq!(r.face_count(), after);
     }
@@ -786,12 +806,18 @@ mod tests {
         for i in 0..40u32 {
             r.glyph(&key(&char::from_u32(0x10FF00 + i).unwrap().to_string()));
         }
+        r.settle();
         assert_eq!(
             r.family_loads, 0,
             "a family was loaded for an uncovered char"
         );
         assert_eq!(r.face_count(), faces);
-        assert!(r.cmap_reads <= LAZY_FALLBACK_FAMILIES.len());
+        assert!(
+            r.shared
+                .cmap_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+                <= LAZY_FALLBACK_FAMILIES.len()
+        );
     }
 
     #[test]
@@ -800,6 +826,7 @@ mod tests {
         for i in 0..(UNCOVERED_MAX as u32 + 50) {
             r.glyph(&key(&char::from_u32(0x100000 + i).unwrap().to_string()));
         }
+        r.settle();
         assert!(r.uncovered.len() <= UNCOVERED_MAX);
     }
 
@@ -825,16 +852,77 @@ mod tests {
         }
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         // Nothing covers this one: every lazy family is asked about it.
-        r.glyph(&key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{10FFFD}"));
         assert!(!r.has_family_loaded("Javanese Text"));
         let walked = r.rejected.len();
         assert!(r.uncovered.contains(&'\u{10FFFD}'));
         // The same character is never walked again (a prompt icon redrawn every frame).
-        r.glyph(&key("x\u{10FFFD}"));
+        glyph_settled(&mut r, &key("x\u{10FFFD}"));
         assert_eq!(r.rejected.len(), walked);
         // A different script still reaches its family.
-        assert!(r.glyph(&key("\u{A9B2}")).is_some());
+        assert!(glyph_settled(&mut r, &key("\u{A9B2}")).is_some());
         assert!(r.has_family_loaded("Javanese Text"));
+    }
+
+    /// A gate that holds the fallback worker, standing in for a slow disk.
+    fn gated() -> (Rasterizer, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.shared.gate = Some(gate.clone());
+        (r, gate)
+    }
+
+    #[test]
+    fn paint_never_blocks_on_a_family_load() {
+        // Audit M2: a character no loaded font covers used to read cmaps and load a family inside
+        // glyph(), on the UI thread. With the worker held shut, glyph() must still return, draw
+        // blank, load nothing and read nothing; it only asks.
+        let (mut r, gate) = gated();
+        let faces = r.face_count();
+        assert!(
+            r.glyph(&key("\u{10FFFD}")).is_none(),
+            "blank while it waits"
+        );
+        r.glyph(&key("\u{A9B2}"));
+        assert_eq!(r.face_count(), faces, "nothing was loaded by the paint");
+        assert_eq!(r.family_loads, 0);
+        assert_eq!(
+            r.shared
+                .cmap_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(r.pending.contains(&'\u{10FFFD}'));
+        assert!(!r.fallback_ready(), "nothing has answered yet");
+        // The same character asked again while it waits is not sent twice.
+        r.glyph(&key("x\u{10FFFD}"));
+        assert_eq!(r.pending.len(), 2);
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        r.settle();
+        assert!(r.uncovered.contains(&'\u{10FFFD}'));
+    }
+
+    #[test]
+    fn a_family_that_arrives_repaints_the_blank_cell() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
+            eprintln!("skipped: Javanese Text is not installed");
+            return;
+        }
+        let (mut r, gate) = gated();
+        let java = key("\u{A9B2}");
+        assert!(r.glyph(&java).is_none());
+        assert!(!r.has_family_loaded("Javanese Text"));
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        let start = std::time::Instant::now();
+        while !r.fallback_ready() {
+            assert!(start.elapsed().as_secs() < 60, "no answer");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(r.apply_fallbacks(), "the host is told to paint again");
+        assert!(r.has_family_loaded("Javanese Text"));
+        assert!(!r.fallback_ready(), "the flag is taken with the answers");
+        assert!(r.glyph(&java).is_some(), "the cell now draws");
     }
 
     #[test]

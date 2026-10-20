@@ -232,7 +232,7 @@ impl GridHost {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty || self.source.dirty()
+        self.dirty || self.source.dirty() || self.glyphs.fallback_ready()
     }
 
     /// Replaces the grid source; the next render tells it the size again.
@@ -265,6 +265,13 @@ impl GridHost {
         let (w, h) = self.size;
         if w == 0 || h == 0 {
             return None;
+        }
+        // A fallback font found off the UI thread (audit M2): cells drawn blank get their glyphs,
+        // and the GPU atlas forgets the blanks it holds. The CPU painter reads the same source.
+        if self.glyphs.apply_fallbacks()
+            && let Some(gpu) = self.gpu.as_mut()
+        {
+            gpu.on_font_change();
         }
         let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
         let (cols, rows) = grid_dims(w, h, &metrics);
@@ -681,6 +688,54 @@ mod tests {
         GridHost::new(Box::new(FakeGlyphs::new(8, 16)), painter)
     }
 
+    /// A glyph source whose fallback font arrives later (audit M2).
+    struct Late {
+        inner: FakeGlyphs,
+        ready: Rc<std::cell::Cell<bool>>,
+        applied: Rc<std::cell::Cell<u32>>,
+    }
+
+    impl flare_render::glyph::GlyphSource for Late {
+        fn glyph(
+            &mut self,
+            key: &flare_render::glyph::GlyphKey,
+        ) -> Option<&flare_render::glyph::GlyphBitmap> {
+            self.inner.glyph(key)
+        }
+        fn font_units(&self) -> flare_render::metrics::FontUnits {
+            self.inner.font_units()
+        }
+        fn set_scale(&mut self, scale: f32) {
+            self.inner.set_scale(scale);
+        }
+        fn fallback_ready(&self) -> bool {
+            self.ready.get()
+        }
+        fn apply_fallbacks(&mut self) -> bool {
+            self.applied.set(self.applied.get() + 1);
+            self.ready.replace(false)
+        }
+    }
+
+    #[test]
+    fn a_fallback_font_that_arrives_repaints_without_any_other_change() {
+        let ready = Rc::new(std::cell::Cell::new(false));
+        let applied = Rc::new(std::cell::Cell::new(0));
+        let late = Late {
+            inner: FakeGlyphs::new(8, 16),
+            ready: ready.clone(),
+            applied: applied.clone(),
+        };
+        let mut h = GridHost::new(Box::new(late), GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        h.render();
+        assert!(!h.is_dirty());
+        ready.set(true);
+        assert!(h.is_dirty(), "the worker's answer asks for a frame");
+        h.render();
+        assert_eq!(applied.get(), 2, "the frame took the answer");
+        assert!(!h.is_dirty());
+    }
     #[test]
     fn cpu_render_returns_image_of_size() {
         let mut h = host(GridPainter::Cpu);
