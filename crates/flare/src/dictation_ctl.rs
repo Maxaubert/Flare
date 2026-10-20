@@ -2228,8 +2228,11 @@ fn finish_download(id: &str, end: Result<(), flare_dictation::store::Failure>) {
             page_put(7, id);
         }
     }
-    // After a download the engine stops, so the next pass starts from what is on disk now.
-    stop_engine_now();
+    // A download that succeeded stops the engine, so the next pass starts from what is on disk now. A failure or a
+    // cancel leaves it running: a dictation pass in flight on it keeps its server or resident host (M8 review F5).
+    if end.is_ok() {
+        stop_engine_now();
+    }
     page_changed();
 }
 
@@ -3481,6 +3484,66 @@ mod tests {
             r.inbox.lock().unwrap().pop_front(),
             Some(DictMsg::Paste { .. })
         ));
+    }
+
+    /// How many times the engine was stopped.
+    fn engine_stops(s: &Shared) -> usize {
+        s.calls
+            .borrow()
+            .iter()
+            .filter(|c| *c == "stop_engine")
+            .count()
+    }
+
+    #[test]
+    fn only_a_download_that_succeeds_stops_the_engine() {
+        // A failed or cancelled download leaves the engine (and any pass in flight on it) alone (F5); a good one
+        // stops it, so the next pass starts from what is on disk now.
+        use super::fixture::pump_until;
+        let (store, _dir, _calls) = fixture::fake_store(["fail", "stall", "b"]);
+        fixture::install_store(store);
+        register_page(
+            flare_settings::kv::PrefStore::memory(),
+            Rc::new(|| {}),
+            Rc::new(|_: f32| {}),
+        );
+        let r = Rig::on_with_model(false);
+        assert!(r.d.has_parts(), "the engine is up while dictation is on");
+        let s = Rc::clone(&r.s);
+        DICT.with(|c| *c.borrow_mut() = Some(r.d));
+        assert_eq!(engine_stops(&s), 0);
+        // A download that fails.
+        download_item("base");
+        pump_until("the failure", || run_view("base", 5).1.is_some());
+        assert_eq!(
+            engine_stops(&s),
+            0,
+            "a failed download does not stop the engine"
+        );
+        // A download that is cancelled.
+        download_item("small");
+        pump_until("the download under way", || {
+            run_view("small", 5).0.is_some()
+        });
+        page_store().unwrap().cancel("small");
+        pump_until("the cancelled end", || run_view("small", 5).0.is_none());
+        assert_eq!(
+            engine_stops(&s),
+            0,
+            "a cancelled download does not stop the engine"
+        );
+        // A download that succeeds.
+        download_item("parakeet-v3");
+        pump_until("the good download", || {
+            run_view("parakeet-v3", 5).0.is_none()
+        });
+        assert_eq!(
+            engine_stops(&s),
+            1,
+            "a download that succeeds stops the engine once"
+        );
+        let mut d = DICT.with(|c| c.borrow_mut().take()).unwrap();
+        d.stop();
     }
 
     #[test]
