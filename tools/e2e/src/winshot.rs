@@ -202,7 +202,11 @@ pub enum Method {
     /// GDI surface, which is what the software renderer presents. The window keeps a classic caption
     /// style that a copy with the frame would draw over it. With the full-content flag that window
     /// comes back with a black block where the client area is, though its surface is fully painted
-    /// (audit V2).
+    /// (audit V2). Even so, once the window is on the screen this copy carries the classic caption strip
+    /// and frame that `PrintWindow` draws from the style bits (`PW_RENDERFULLCONTENT` of a parked GDI window
+    /// is black and `BitBlt` from its device context is black, tried 2026-10-21): the tour tags those
+    /// pictures `copyframe` (`tour::frame_tag`), leaves them out of the judging and takes the last picture of
+    /// a software launch from the app's own snapshot (`tour::watch_launch`).
     Gdi,
 }
 

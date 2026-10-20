@@ -297,15 +297,11 @@ fn sidebar_cell(
             ("flare.window.sidebar", "open"),
         ],
     )?;
+    // Like Prism Terminal's sidebar cell: a saved session of alpha, beta and gamma with the middle tab
+    // selected (its `prepResume` writes `active: 1`), so both apps show the same tab in front.
     let g = gamma(&w);
-    let mut app = start(
-        ctx,
-        &w,
-        renderer,
-        Some(dpi),
-        vec![w.alpha.clone(), w.beta.clone(), g],
-        Vec::new(),
-    )?;
+    seed_tabs(&w.profile, &[&w.alpha, &w.beta, &g], 1)?;
+    let mut app = start(ctx, &w, renderer, Some(dpi), Vec::new(), Vec::new())?;
     let ok = ready(ctx, &mut app, 3);
     ctx.ok(
         ok,
@@ -315,6 +311,11 @@ fn sidebar_cell(
         app.close();
         return Ok(());
     }
+    let front = Tabs::read(&mut app).and_then(|t| t.front_index());
+    ctx.ok(
+        front == Some(1),
+        format!("sidebar {pct}-{renderer}: the saved middle tab is in front, as in Prism Terminal ({front:?})"),
+    );
     let open = ctx.until("the sidebar open", 6_000, &mut || {
         probe(&mut app, "sidebar.state", Value::Null)["open"] == json!(true)
     });
@@ -850,15 +851,18 @@ fn general_cell(
         &w2.profile,
         &[("flare.term.shell", "cmd"), ("flare.term.seeThrough", "40")],
     )?;
+    // Prism Terminal's see-through frame is taken in its three-tab session, so this one has the same
+    // three tabs (alpha, beta, gamma), not one.
+    let g2 = gamma(&w2);
     let mut app = start(
         ctx,
         &w2,
         renderer,
         Some(dpi),
-        vec![w2.alpha.clone()],
+        vec![w2.alpha.clone(), w2.beta.clone(), g2],
         Vec::new(),
     )?;
-    let ok = ready(ctx, &mut app, 1);
+    let ok = ready(ctx, &mut app, 3);
     ctx.ok(ok, format!("{label}: see-through 40 launched"));
     if ok {
         take(ctx, &mut app, &mut n, "see-through-40", &mut notes);

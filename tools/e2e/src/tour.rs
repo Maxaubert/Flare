@@ -82,6 +82,30 @@ pub fn write_png(path: &Path, shot: &Shot) -> Result<(), String> {
     w.write_image_data(&shot.rgba).map_err(|e| e.to_string())
 }
 
+/// Reads a PNG written by `write_png` or by the app's snapshot back into straight RGBA8.
+pub fn read_png(path: &Path) -> Result<Shot, String> {
+    let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut dec = png::Decoder::new(std::io::BufReader::new(file));
+    dec.set_transformations(png::Transformations::EXPAND);
+    let mut reader = dec.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("picture too large")?];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        other => return Err(format!("unexpected colour type {other:?}")),
+    };
+    Ok(Shot {
+        w: info.width,
+        h: info.height,
+        rgba,
+    })
+}
+
 /// Wakes the monitor so frame pacing does not drop while the display sleeps: a mouse move of zero
 /// distance. It touches no window and moves nothing.
 pub fn wake_display() {
@@ -325,6 +349,27 @@ pub fn watch_launch(
             problems.join("; ")
         ));
     }
+    if renderer == "software" {
+        // The window's own copy of a software window carries the classic caption and frame that
+        // `PrintWindow` draws from the style bits (audit V2; the screen shows none, GetClientRect is the
+        // whole window), and the DWM surface of a parked GDI window is black. So the LAST picture is the
+        // app's own render, the same picture every other tour surface uses, taken once the launch is still.
+        let n = watch.frames.len();
+        let at = ms(Instant::now());
+        let file = frames_dir.join(format!("{n:03}-t{:05}ms-app.png", at.round() as i64));
+        if app.session.snapshot(&file).is_ok() {
+            if let Ok(shot) = read_png(&file) {
+                let l: Look = winshot::look(&shot);
+                watch.frames.push(json!({
+                    "n": n, "t_ms": at, "w": l.w, "h": l.h, "blank": l.blank,
+                    "mean": l.mean, "bar": l.bar, "foot": l.foot,
+                    "on_screen": true, "framed": false, "tag": "", "client": [l.w, l.h],
+                    "source": "app snapshot",
+                    "file": file.file_name().map(|f| f.to_string_lossy()),
+                }));
+            }
+        }
+    }
     Ok((watch, app))
 }
 
@@ -438,6 +483,21 @@ fn judge_all(frames: &[Value]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_written_picture_reads_back_the_same() {
+        let dir = tempfile::tempdir().expect("a temp folder");
+        let p = dir.path().join("a.png");
+        let mut rgba = Vec::new();
+        for i in 0..12u8 {
+            rgba.extend_from_slice(&[i, i * 2, 255 - i, 255]);
+        }
+        let shot = Shot { w: 4, h: 3, rgba };
+        write_png(&p, &shot).expect("written");
+        let back = read_png(&p).expect("read");
+        assert_eq!((back.w, back.h), (4, 3));
+        assert_eq!(back.rgba, shot.rgba);
+    }
 
     #[test]
     fn the_judge_counts_blank_flash_and_wrong_size_frames() {
