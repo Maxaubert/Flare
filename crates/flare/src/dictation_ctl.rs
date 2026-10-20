@@ -722,6 +722,13 @@ impl Dict {
         for p in self.media.pending.values() {
             p.abandoned.store(true, Ordering::SeqCst);
         }
+        // A recording whose microphone is still opening (audit L43): the controller waits for the open to finish
+        // the cancel it was given, but the answer is dropped once the machinery is gone. Tell it the open is over
+        // so it ends the recording and resumes the media; the late capture is let go by `on_mic_done`.
+        if self.mic.wanted && self.mic.cap.is_none() {
+            let fx = self.ctl_on(Event::MicOpened);
+            self.run(fx);
+        }
         self.svc_on(SvcEvent::Stop);
         self.svc = None;
         self.ctl.set_sink(false);
@@ -1703,6 +1710,9 @@ thread_local! {
 struct Run {
     done: u64,
     active: bool,
+    /// Which download started this run (audit L47): the end of an older flight, one that was cancelled and then
+    /// asked for again, must not mark the new one inactive.
+    flight: u64,
     failure: Option<flare_dictation::store::Failure>,
 }
 
@@ -1771,6 +1781,46 @@ pub fn page_mics() -> Vec<(String, String)> {
     have
 }
 
+/// How long a "not installed" answer is believed (audit L46). The store believes a yes for 30 s but never a no, and a
+/// download's progress rebuilds the page up to ten times a second, so every absent model was a file check on the UI
+/// thread each time. A download or removal ending forgets the answers at once.
+const ABSENT_MEMO: Duration = Duration::from_secs(3);
+
+thread_local! {
+    /// Catalogue ids found not installed, and when.
+    static ABSENT: RefCell<HashMap<String, Instant>> = RefCell::new(HashMap::new());
+}
+
+/// Whether `id` was found not installed a moment ago.
+fn absent_recently(id: &str) -> bool {
+    ABSENT.with(|a| {
+        a.borrow()
+            .get(id)
+            .is_some_and(|t| t.elapsed() < ABSENT_MEMO)
+    })
+}
+
+fn forget_absent(id: &str) {
+    ABSENT.with(|a| {
+        a.borrow_mut().remove(id);
+    });
+}
+
+/// Whether the page may show `id` as installed: the answer of `check` (a file check), except that a recent "no" is
+/// not asked again.
+pub(crate) fn installed_for_page(id: &str, check: impl FnOnce() -> bool) -> bool {
+    if absent_recently(id) {
+        return false;
+    }
+    let yes = check();
+    if !yes {
+        ABSENT.with(|a| {
+            a.borrow_mut().insert(id.to_string(), Instant::now());
+        });
+    }
+    yes
+}
+
 /// The download state of a catalogue entry: its percentage while it runs, the failure of its last end.
 pub fn run_view(id: &str, bytes: u64) -> (Option<u32>, Option<&'static str>) {
     let r = runs().get(id).cloned().unwrap_or_default();
@@ -1819,6 +1869,7 @@ pub(crate) fn scene_page(
             Run {
                 done: bytes / 100 * u64::from(pct),
                 active: true,
+                flight: 0,
                 failure: None,
             },
         );
@@ -2175,6 +2226,8 @@ fn fetch_model(id: &str) {
     }
 }
 
+static NEXT_FLIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Starts the download of a catalogue id (ids come from the catalogue only, never from the page).
 fn download_item(id: &str) {
     use flare_dictation::catalog;
@@ -2182,11 +2235,14 @@ fn download_item(id: &str) {
     let Some(store) = page_store().filter(|_| known) else {
         return;
     };
+    forget_absent(id);
+    let flight = NEXT_FLIGHT.fetch_add(1, Ordering::Relaxed);
     runs().insert(
         id.to_string(),
         Run {
             done: 0,
             active: true,
+            flight,
             failure: None,
         },
     );
@@ -2194,7 +2250,7 @@ fn download_item(id: &str) {
     let rx = store.download(
         id,
         Box::new(move |p| {
-            if let Some(r) = runs().get_mut(&for_progress) {
+            if let Some(r) = runs().get_mut(&for_progress).filter(|r| r.flight == flight) {
                 r.done = p.done;
             }
             post_ui(page_changed);
@@ -2208,18 +2264,19 @@ fn download_item(id: &str) {
             let end = rx
                 .recv()
                 .unwrap_or(Err(flare_dictation::store::Failure::Network));
-            post_ui(move || finish_download(&id, end));
+            post_ui(move || finish_download(&id, flight, end));
         })
         .ok();
 }
 
 /// A download ended. The first model anyone downloads is the one they meant to use: read NOW, not when the press
 /// was made, so a second download finishing after the first had become the model never replaces it unasked.
-fn finish_download(id: &str, end: Result<(), flare_dictation::store::Failure>) {
-    if let Some(r) = runs().get_mut(id) {
+fn finish_download(id: &str, flight: u64, end: Result<(), flare_dictation::store::Failure>) {
+    if let Some(r) = runs().get_mut(id).filter(|r| r.flight == flight) {
         r.active = false;
         r.failure = end.err();
     }
+    forget_absent(id);
     if end.is_ok() && flare_dictation::catalog::model(id).is_some() {
         let current = active_model();
         let installed =
@@ -2252,6 +2309,7 @@ fn remove_item(id: &str) {
             let _ = rx.recv();
             post_ui(move || {
                 runs().remove(&id);
+                forget_absent(&id);
                 if active_model() == id {
                     page_put(7, "");
                 }
@@ -4043,6 +4101,41 @@ mod tests {
         assert_eq!(r.count("transcribe_final"), 0);
         let _ = right_alt();
     }
+
+    /// Audit L43: switching dictation off while the microphone is still opening must end the recording at once.
+    /// Before, the controller kept a recording nobody could finish (the late open is dropped), so the widget stayed
+    /// up and the paused media stayed paused until restart.
+    #[test]
+    fn switching_off_while_the_mic_is_opening_ends_the_recording_and_resumes_media() {
+        let mut r = Rig::on_with_model(false);
+        r.set("flare.dictation.pauseMedia", "1");
+        r.d.apply_prefs();
+        r.at(1000.0);
+        r.key("AltRight", false);
+        r.at(1210.0);
+        r.d.on_timer(TimerKey::WindowKey);
+        assert_eq!(r.count("pause_media"), 1);
+        r.pump();
+        assert!(
+            r.d.view.active,
+            "the recording has begun, the mic is opening"
+        );
+        assert!(r.s.done.borrow().is_some(), "the open has not answered");
+        r.set("flare.dictation.enabled", "0");
+        r.d.apply_prefs();
+        assert!(!r.d.view.active, "the recording is over, not stuck");
+        assert_eq!(
+            r.count("resume_media"),
+            1,
+            "what dictation paused plays again"
+        );
+        // The late open is let go and changes nothing.
+        let done = r.s.done.borrow_mut().take().unwrap();
+        done(Ok(Box::new(FakeCapture)));
+        r.pump();
+        assert!(r.d.mic.cap.is_none());
+        assert!(!r.d.view.active);
+    }
 }
 
 /// The Dictation page's controls (M8 Task 25): the key field's capture, the models' actions, the microphone's Test.
@@ -4307,6 +4400,51 @@ mod page_tests {
         assert_eq!(p.calls.load(Ordering::SeqCst), before);
         assert!(!owns_row("../x"));
         assert!(owns_row("dictation-model") && owns_row("gpu-pack") && owns_row("base"));
+    }
+
+    /// Audit L47: the end of a cancelled flight arrives after the same model was asked for again.
+    #[test]
+    fn the_end_of_an_old_flight_does_not_mark_the_new_download_inactive() {
+        let p = page(["stall", "b", "c"]);
+        assert!(page_button("base", "download"));
+        let old = runs().get("base").unwrap().flight;
+        // Cancel, then Retry before the old end has been delivered.
+        assert!(page_button("base", "cancel"));
+        assert!(page_button("base", "download"));
+        let new = runs().get("base").unwrap().flight;
+        assert_ne!(old, new, "each download is its own flight");
+        finish_download("base", old, Err(flare_dictation::store::Failure::Cancelled));
+        assert!(
+            run_view("base", 5).0.is_some(),
+            "the new download is still running"
+        );
+        assert!(runs().get("base").unwrap().failure.is_none());
+        // Its own end is heard.
+        finish_download("base", new, Err(flare_dictation::store::Failure::Network));
+        assert_eq!(run_view("base", 5), (None, Some("The download failed.")));
+        assert!(page_button("base", "cancel"));
+        let _ = &p;
+    }
+
+    /// Audit L46: a "not installed" answer is not asked of the disk again at once, and a download ending clears it.
+    #[test]
+    fn a_missing_model_is_not_checked_again_until_something_changes() {
+        let _p = page(["a", "b", "c"]);
+        let mut checks = 0;
+        for _ in 0..10 {
+            assert!(!installed_for_page("base", || {
+                checks += 1;
+                false
+            }));
+        }
+        assert_eq!(checks, 1, "ten page builds, one file check");
+        // A yes is never remembered here (the store has its own memo for it).
+        assert!(installed_for_page("small", || true));
+        assert!(!absent_recently("small"));
+        // A download ending forgets the no.
+        finish_download("base", 0, Ok(()));
+        assert!(!absent_recently("base"));
+        assert!(installed_for_page("base", || true));
     }
 
     #[test]
@@ -4590,10 +4728,10 @@ pub(crate) mod fixture {
         static TEST_QUEUE_GUARD: RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { RefCell::new(None) };
     }
 
-    /// Puts `store` in place of the real one and the page's state back to nothing.
-    pub(crate) fn install_store(store: Store) {
-        // The posted-work queue is one process-wide list, so two tests that use it at once would run (and clear)
-        // each other's posts. A test that installs a store holds this lock until its thread ends.
+    /// Holds the lock on the process-wide page state (the posted-work queue and the download runs) until this test's
+    /// thread ends. A scene test that stages a download takes it too, or a page test clearing the runs under it makes
+    /// the scene flaky.
+    pub(crate) fn hold_page_state() {
         TEST_QUEUE_GUARD.with(|g| {
             let mut g = g.borrow_mut();
             if g.is_none() {
@@ -4604,6 +4742,13 @@ pub(crate) mod fixture {
                 );
             }
         });
+    }
+
+    /// Puts `store` in place of the real one and the page's state back to nothing.
+    pub(crate) fn install_store(store: Store) {
+        // The posted-work queue is one process-wide list, so two tests that use it at once would run (and clear)
+        // each other's posts. A test that installs a store holds this lock until its thread ends.
+        hold_page_state();
         TEST_STORE.with(|s| *s.borrow_mut() = Some(store));
         TEST_MIC.with(|m| *m.borrow_mut() = None);
         TEST_POSTS.lock().unwrap().clear();

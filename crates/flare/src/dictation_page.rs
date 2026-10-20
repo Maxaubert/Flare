@@ -78,12 +78,16 @@ pub fn page_data(env: &PageEnv<'_>) -> DictationData {
     for m in catalog::visible_models() {
         // sync-ok: a file check per model, answered from the store's 30 s memo while the page is open
         let yes = crate::dictation_ctl::scene_installed(m.id)
-            || store.as_ref().is_some_and(|s| s.model_path(m.id).is_some());
+            || crate::dictation_ctl::installed_for_page(m.id, || {
+                store.as_ref().is_some_and(|s| s.model_path(m.id).is_some())
+            });
         items.push((m.id.to_string(), item(m.id, m.bytes, yes)));
     }
     // sync-ok: the pack's marker file, checked once per page build
     let pack = crate::dictation_ctl::scene_installed(GPU_PACK_ID)
-        || store.as_ref().is_some_and(|s| s.gpu_engine_dir().is_some());
+        || crate::dictation_ctl::installed_for_page(GPU_PACK_ID, || {
+            store.as_ref().is_some_and(|s| s.gpu_engine_dir().is_some())
+        });
     items.push((
         GPU_PACK_ID.to_string(),
         item(GPU_PACK_ID, catalog::GPU_PACK.bytes, pack),
