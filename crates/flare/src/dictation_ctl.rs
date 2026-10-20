@@ -1550,6 +1550,7 @@ pub fn stop_all() {
     page_left();
     with_dict(Dict::stop);
     ARMED.with(|a| a.set(false));
+    crate::dictation_widget::close();
 }
 
 /// A row clicked in the widget (M8 Task 26): it reaches the service on the next turn of the event loop.
@@ -2430,6 +2431,15 @@ impl DictHost for AppHost {
 
     fn crumb(&self, name: &str, fields: &[(&str, Value)]) {
         crate::diag_ctl::crumb(name, fields);
+    }
+
+    fn widget(&self, face: Option<&OverlayState>) {
+        let app = self.app.clone();
+        crate::dictation_widget::set(
+            face,
+            &move || app.upgrade().map(|a| crate::dictation_widget::inks_of(&a)),
+            crate::e2e::global().on(),
+        );
     }
 }
 

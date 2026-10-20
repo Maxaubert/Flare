@@ -294,11 +294,17 @@ fn with_window_attributes(
     e2e: bool,
     plan: GlassPlan,
 ) -> slint::BackendSelector {
-    if !e2e && !plan.transparent {
-        return selector;
-    }
+    // The dictation widget (M8 Task 26) is a second window made by the same backend: it asks whether its surface has alpha
+    // and, while it is being made, gets its own attributes from this one hook.
+    crate::dictation_widget::set_alpha_surface(plan.transparent);
     let transparent = plan.transparent;
     selector.with_winit_window_attributes_hook(move |attributes| {
+        if crate::dictation_widget::creating() {
+            return crate::dictation_widget::attributes(attributes);
+        }
+        if !e2e && !transparent {
+            return attributes;
+        }
         let attributes = attributes.with_transparent(transparent);
         if e2e {
             e2e_attributes(attributes)
