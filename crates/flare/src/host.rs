@@ -12,7 +12,7 @@ use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dim
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GroundPaint, Scene};
 use flare_render::stats::{FrameStats, FrameTrace, TracePhase};
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
 
 /// Where the grid on screen comes from: the sample, or a live terminal.
 pub trait GridSource {
@@ -314,13 +314,7 @@ impl GridHost {
                 FrameTrace::global().time(TracePhase::Paint, || {
                     paint_scene(&scene, self.glyphs.as_mut(), &mut self.cpu_image);
                 });
-                let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                    &self.cpu_image.data,
-                    self.cpu_image.width,
-                    self.cpu_image.height,
-                );
-                // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
-                Image::from_rgba8_premultiplied(buffer)
+                slint_image(&self.cpu_image)
             }
         };
         self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
@@ -349,6 +343,30 @@ impl GridHost {
         self.dirty = false;
         Some(&self.cpu_image)
     }
+}
+
+/// The grid image Slint shows. A picture with every pixel opaque (the software renderer's, which has no
+/// glass) goes over as RGB: Slint's software renderer copies an RGB image and blends an RGBA one pixel by
+/// pixel, which is the cost of repainting a 2.25x window on every frame of the sidebar slide (audit V4).
+/// A picture with any see-through pixel stays premultiplied RGBA.
+fn slint_image(img: &RgbaImage) -> Image {
+    let (w, h) = (img.width, img.height);
+    if img.data.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
+        let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
+        let out = buffer.make_mut_bytes();
+        for (dst, src) in out
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(img.data.as_chunks::<4>().0)
+        {
+            dst.copy_from_slice(&src[..3]);
+        }
+        return Image::from_rgb8(buffer);
+    }
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&img.data, w, h);
+    // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
+    Image::from_rgba8_premultiplied(buffer)
 }
 
 #[cfg(test)]
@@ -404,6 +422,30 @@ mod tests {
             x: false,
             flag: None,
         })
+    }
+
+    #[test]
+    fn an_opaque_grid_image_goes_to_slint_as_rgb() {
+        let mut img = RgbaImage::new(3, 2);
+        for p in img.data.chunks_exact_mut(4) {
+            p.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        let s = slint_image(&img);
+        let rgb = s.to_rgb8().expect("an opaque picture is an RGB image");
+        assert_eq!((rgb.width(), rgb.height()), (3, 2));
+        assert_eq!(rgb.as_bytes()[..3], [10, 20, 30]);
+    }
+
+    #[test]
+    fn a_see_through_grid_image_stays_premultiplied_rgba() {
+        let mut img = RgbaImage::new(3, 2);
+        for p in img.data.chunks_exact_mut(4) {
+            p.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        img.data[3] = 128;
+        let s = slint_image(&img);
+        assert!(s.to_rgb8().is_none());
+        assert_eq!(s.to_rgba8_premultiplied().expect("rgba").as_bytes()[3], 128);
     }
 
     #[test]
