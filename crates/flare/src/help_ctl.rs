@@ -200,7 +200,10 @@ impl HelpCtl {
                     // Tests join every worker, so a late one cannot rebuild the shared index
                     // under a test that just released it (audit R4).
                     #[cfg(test)]
-                    tests::WORKERS.lock().unwrap_or_else(|e| e.into_inner()).push(h);
+                    tests::WORKERS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(h);
                     #[cfg(not(test))]
                     drop(h);
                 },
