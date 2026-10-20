@@ -249,6 +249,7 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
         row_tip: r.row_tip.as_str().into(),
         warn: r.warn,
         off: r.off,
+        live: r.live,
         tap: r.tap,
         block: SlintBlock::Row,
         kind: control_kind(&r.control),
@@ -2363,6 +2364,7 @@ mod tests {
             sub: "Sub".to_string(),
             warn: false,
             off: false,
+            live: false,
             tap: false,
             row_tip: "Tip".to_string(),
             control,
@@ -3064,6 +3066,10 @@ mod tests {
         assert!(
             f.row("dictation-mic").unwrap().off,
             "off dims every row under the switch"
+        );
+        assert!(
+            f.row("dictation-mic").unwrap().live,
+            "the microphone's control stays bright while off (audit V12)"
         );
         switch_dictation_on(&f);
         assert_eq!(f.prefs.get("flare.dictation.enabled").as_deref(), Some("1"));

@@ -89,6 +89,9 @@ pub struct RowModel {
     pub sub: String,
     pub warn: bool,
     pub off: bool,
+    /// Off, but the control stays bright and live: the label and icon dim, the control does not (PT's
+    /// microphone and language pickers while dictation is off, audit V12). Only read with `off`.
+    pub live: bool,
     /// A press anywhere on the row flips it (switch rows).
     pub tap: bool,
     pub row_tip: String,
@@ -238,6 +241,7 @@ pub(crate) fn plain_row(def: &RowDef, control: Control) -> RowModel {
         sub: def.sub.to_string(),
         warn: false,
         off: false,
+        live: false,
         tap: false,
         row_tip: String::new(),
         control,

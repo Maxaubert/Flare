@@ -9,7 +9,7 @@ export struct SetOption { id: string, name: string, face: string }
 export struct SetButton { id: string, label: string, label-alt: string, off: bool, alt: bool }
 export struct SetRow {
     id: string, icon: string, label: string, sub: string, sub-tip: string, row-tip: string,
-    warn: bool, off: bool, tap: bool,
+    warn: bool, off: bool, live: bool, tap: bool,
     block: BlockKind, kind: SetKind,
     on: bool,                                   // a switch
     value: string, options: [SetOption],        // segmented and select: the chosen id; pill: the text
