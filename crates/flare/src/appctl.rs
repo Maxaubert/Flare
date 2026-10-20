@@ -5239,7 +5239,10 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
+        // Wait for each tab's own shell: a count of spawns says nothing about whose they are, and `say`
+        // reads the first shell of a cwd.
+        f.wait_made("C:\\c");
+        f.wait_made("C:\\d");
         f.ctl.borrow_mut().hub_mut().set_looking(None, false);
         f.say("C:\\c", TITLE_IDLE);
         f.say("C:\\d", TITLE_IDLE);

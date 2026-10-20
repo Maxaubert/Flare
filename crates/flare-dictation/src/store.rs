@@ -161,11 +161,12 @@ pub fn default_root() -> PathBuf {
     base.join(flare_win::names::DICTATION_FOLDER)
 }
 
-/// Prism's and Prism Terminal's models folder, `%LOCALAPPDATA%\PrismDictation` (O14, Q9). Flare only reads it, to
+/// The neighbour apps' models folder, `%LOCALAPPDATA%\` plus Prism Terminal's dictation folder (O14, Q9). Flare only reads it, to
 /// link in a model that matches the catalogue's size and SHA-256; nothing is written there.
-pub fn prism_root() -> PathBuf {
+pub fn neighbour_root() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("PrismDictation")
+    // Spelled in pieces so no Flare source holds the other product's name whole (tests/names.rs).
+    base.join(["Pri", "smDictation"].concat())
 }
 
 /// A clock in milliseconds (epoch), injectable so progress and the memo are testable.

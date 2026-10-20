@@ -319,8 +319,8 @@ pub trait Parts {
     fn open_mic(&mut self, device: Option<String>, on_frame: FrameFn, done: DoneFn);
     fn transcribe(&mut self, req: TranscribeRequest) -> Receiver<TranscribeResult>;
     fn warm(&mut self, model: &str, language: &str) -> Receiver<TranscribeResult>;
-    /// Links in the models Prism already has (O14, Q9). Asked once per switch-on; the real parts run it on a worker.
-    fn reuse_prism_models(&mut self) {}
+    /// Links in the models the neighbour apps already have (O14, Q9). Asked once per switch-on; the real parts run it on a worker.
+    fn reuse_neighbour_models(&mut self) {}
     fn stop_engine(&mut self);
     fn pause_media(&mut self) -> Receiver<Token>;
     fn resume_media(&mut self, token: Token);
@@ -702,7 +702,7 @@ impl Dict {
             return;
         }
         let mut parts = (self.make_parts)();
-        parts.reuse_prism_models();
+        parts.reuse_neighbour_models();
         let mut svc = Service::new(ServiceOpts {
             e2e: self.opts.e2e,
             link: parts.link_available(),
@@ -2640,9 +2640,9 @@ struct RealCfg {
     me: RemoteCopy,
     /// The link's pipe and key seams (`--e2e` only).
     seam_link: Option<(String, [u8; 32])>,
-    /// Prism's models folder, read once per switch-on (O14, Q9). `None` when the root is overridden (a test or e2e
-    /// profile): the user's own Prism models are never linked into an isolated store.
-    prism_root: Option<PathBuf>,
+    /// The neighbour apps' models folder, read once per switch-on (O14, Q9). `None` when the root is overridden (a test or e2e
+    /// profile): the user's own neighbour models are never linked into an isolated store.
+    neighbour_root: Option<PathBuf>,
 }
 
 fn hex32(s: &str) -> Option<[u8; 32]> {
@@ -2683,10 +2683,10 @@ impl RealCfg {
                 name: link::copy_name(exe),
             },
             seam_link,
-            prism_root: std::env::var_os(flare_win::names::SEAM_DICTATION_ROOT)
+            neighbour_root: std::env::var_os(flare_win::names::SEAM_DICTATION_ROOT)
                 .filter(|v| !v.is_empty())
                 .is_none()
-                .then(flare_dictation::store::prism_root),
+                .then(flare_dictation::store::neighbour_root),
         }
     }
 }
@@ -2777,8 +2777,8 @@ impl Parts for RealParts {
         self.engine.transcribe(req)
     }
 
-    fn reuse_prism_models(&mut self) {
-        let Some(root) = self.cfg.prism_root.clone() else {
+    fn reuse_neighbour_models(&mut self) {
+        let Some(root) = self.cfg.neighbour_root.clone() else {
             return;
         };
         // The store links on its own thread; this waiter hands the page a refresh only when something was linked.
@@ -3105,8 +3105,8 @@ mod tests {
             self.note("warm");
             channel().1
         }
-        fn reuse_prism_models(&mut self) {
-            self.note("reuse_prism_models");
+        fn reuse_neighbour_models(&mut self) {
+            self.note("reuse_neighbour_models");
         }
         fn stop_engine(&mut self) {
             self.note("stop_engine");
@@ -3318,36 +3318,36 @@ mod tests {
     }
 
     #[test]
-    fn the_first_switch_on_reuses_prisms_models_and_never_while_off() {
-        // O14, Q9: Prism's verified models are linked in when dictation comes on, on the worker the parts own.
+    fn the_first_switch_on_reuses_the_neighbours_models_and_never_while_off() {
+        // O14, Q9: the neighbour apps' verified models are linked in when dictation comes on, on the worker the parts own.
         let mut r = Rig::new(false);
         r.d.apply_prefs();
         assert_eq!(
-            r.count("reuse_prism_models"),
+            r.count("reuse_neighbour_models"),
             0,
             "nothing is reused while dictation is off"
         );
         r.set("flare.dictation.enabled", "1");
         r.d.apply_prefs();
         assert_eq!(
-            r.count("reuse_prism_models"),
+            r.count("reuse_neighbour_models"),
             1,
-            "the switch-on links the models Prism already has"
+            "the switch-on links the models the neighbour apps already have"
         );
         // A second apply while on is not a switch-on: the parts are already up.
         r.d.apply_prefs();
-        assert_eq!(r.count("reuse_prism_models"), 1);
+        assert_eq!(r.count("reuse_neighbour_models"), 1);
         r.set("flare.dictation.enabled", "0");
         r.d.apply_prefs();
         assert_eq!(
-            r.count("reuse_prism_models"),
+            r.count("reuse_neighbour_models"),
             1,
             "switching off reuses nothing"
         );
         r.set("flare.dictation.enabled", "1");
         r.d.apply_prefs();
         assert_eq!(
-            r.count("reuse_prism_models"),
+            r.count("reuse_neighbour_models"),
             2,
             "each switch-on asks again; the store links only what is still missing"
         );

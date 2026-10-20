@@ -42,6 +42,11 @@ Set the dictation key to Right Alt in Settings > Dictation for checks 1 and 2 (t
    and pick that tab with its number. **Pass when:** the words are typed into the Claude prompt and sent once, and
    the widget says "Sent to" that tab.
 
+8. **Pass times (parity line 923).** With a Whisper Base model and the Parakeet model downloaded, dictate a short
+   sentence three times on each engine (Parakeet on CPU, Parakeet on GPU, Whisper Base) and note the time from letting
+   go to the text arriving. **Pass when:** Parakeet takes about 0.72 to 0.86 s on CPU and 0.76 to 0.78 s on GPU, and
+   Whisper Base about 0.9 s (Prism Terminal's numbers, docs/two-apps.md). Record what you saw in the PR description.
+
 ## The ignored tests (run them by hand, not in the gate)
 
 Five tests are `#[ignore]` because they send real input, install the real keyboard hook, play a sound, or need the

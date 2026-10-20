@@ -1,6 +1,6 @@
 //! The parity ratchet (M10 Task 4): reads `docs/parity.md` and holds its lines to three rules.
 //! A pure file reader; it links nothing of the `flare` binary. Open lines may only go down
-//! (`docs/parity-ratchet.txt`), every tick in M1 to M7 names a test or a recorded difference,
+//! (`docs/parity-ratchet.txt`), every tick in M1 to M8 names a test or a recorded difference,
 //! and every difference a tick names has a row with a basis in the "Deliberate differences" table.
 
 use std::fs;
@@ -63,19 +63,24 @@ fn is_tick(text: &str) -> bool {
     trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]")
 }
 
-fn is_m8_or_m9(section: &str) -> bool {
-    section == "M8" || section == "M9"
+/// M9's open lines (the update window, the installer, the icon) are M9's own work, so the sweep
+/// holds every other section to zero. M8 is no longer exempt.
+fn is_m9(section: &str) -> bool {
+    section == "M9"
 }
 
-fn is_m1_to_m7(section: &str) -> bool {
-    matches!(section, "M1" | "M2" | "M3" | "M4" | "M5" | "M6" | "M7")
+fn is_m1_to_m8(section: &str) -> bool {
+    matches!(
+        section,
+        "M1" | "M2" | "M3" | "M4" | "M5" | "M6" | "M7" | "M8"
+    )
 }
 
-/// Open lines that the sweep must close: outside M8 and M9, and not tagged `[M8]`.
+/// Open lines that the sweep must close: every section except M9.
 fn open_sweep_lines(lines: &[Line]) -> Vec<&Line> {
     lines
         .iter()
-        .filter(|l| is_open(&l.text) && !is_m8_or_m9(&l.section) && !l.text.contains("[M8]"))
+        .filter(|l| is_open(&l.text) && !is_m9(&l.section))
         .collect()
 }
 
@@ -133,18 +138,18 @@ fn the_open_count_never_rises_above_the_ratchet() {
 }
 
 #[test]
-fn every_tick_in_m1_to_m7_names_a_test_or_a_difference() {
+fn every_tick_in_m1_to_m8_names_a_test_or_a_difference() {
     let doc = read_parity();
     let lines = lines_with_sections(&doc);
     let bad: Vec<String> = lines
         .iter()
-        .filter(|l| is_m1_to_m7(&l.section) && is_tick(&l.text))
+        .filter(|l| is_m1_to_m8(&l.section) && is_tick(&l.text))
         .filter(|l| !has_milestone_or_diff_tag(&l.text))
         .map(|l| format!("  docs/parity.md:{} {}", l.number, l.text))
         .collect();
     assert!(
         bad.is_empty(),
-        "ticks in M1 to M7 must name a test as (M<n>: ...) or a DIFF-<n>. Lines:\n{}",
+        "ticks in M1 to M8 must name a test as (M<n>: ...) or a DIFF-<n>. Lines:\n{}",
         bad.join("\n")
     );
 }
@@ -188,23 +193,25 @@ fn every_difference_has_a_register_row_and_a_basis() {
 }
 
 #[test]
-fn m1_to_m7_have_no_open_lines() {
+fn m1_to_m8_have_no_open_lines() {
     let doc = read_parity();
     let lines = lines_with_sections(&doc);
     let open: Vec<String> = lines
         .iter()
-        .filter(|l| is_m1_to_m7(&l.section) && is_open(&l.text) && !l.text.contains("[M8]"))
+        .filter(|l| is_m1_to_m8(&l.section) && is_open(&l.text))
         .map(|l| format!("  docs/parity.md:{} {}", l.number, l.text))
         .collect();
     assert!(
         open.is_empty(),
-        "M1 to M7 must have no open lines after the sweep (the [M8] dictation lines excepted). Open:\n{}",
+        "M1 to M8 must have no open lines. Open:\n{}",
         open.join("\n")
     );
 }
 
+/// Every section but M9 is closed: no open line anywhere the M8 sweep reaches. M9 is excluded
+/// until its own lines are ticked (the update, installer and icon lines are not M8's).
 #[test]
-fn only_dictation_lines_may_stay_open_after_the_sweep() {
+fn no_line_is_open_anywhere() {
     let doc = read_parity();
     let lines = lines_with_sections(&doc);
     let open: Vec<String> = open_sweep_lines(&lines)
@@ -213,7 +220,7 @@ fn only_dictation_lines_may_stay_open_after_the_sweep() {
         .collect();
     assert!(
         open.is_empty(),
-        "only [M8] dictation lines may stay open after the sweep. Open:\n{}",
+        "no parity line outside M9 may stay open. Open:\n{}",
         open.join("\n")
     );
 }
