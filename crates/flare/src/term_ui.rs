@@ -7,12 +7,12 @@
 //! handler, `pasteHere`), `App.tsx` (the menu, the drop, the find chord), xterm `SelectionService`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -45,8 +45,8 @@ use flare_win::dblclick::DoubleClick;
 
 use crate::badge::{BadgeClock, BadgePhase};
 use crate::clip_flow::{
-    AppCopyAdapter, PasteAction, PasteMode, PasteReq, copy_async, is_small_copy, paste_action,
-    read_async,
+    AppCopyAdapter, LatestCopier, PasteAction, PasteMode, PasteReq, copy_async, is_small_copy,
+    paste_action, read_async,
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
@@ -63,6 +63,9 @@ pub enum CursorKind {
 pub enum TermMsg {
     Clip(PasteReq, ClipboardState),
     Copied(bool),
+    /// A big copy's answer: the tab and copy number it began with, and `Some(ok)` when the copy
+    /// ran (`None` when it was dropped). The UI frees that tab's pending copy when it handles it.
+    BigCopied(String, u64, Option<bool>),
     PathAnswer(Ask, Option<Vec<Option<PathHit>>>),
 }
 
@@ -268,9 +271,17 @@ pub struct TermUi {
     stale: HashSet<String>,
     /// Counts the big copies started; a finished read whose number is no longer the last is dropped.
     copy_gen: Arc<AtomicU64>,
-    /// True from a big copy's start until the UI has its answer: Ctrl+C in between is still a copy.
-    copy_pending: Arc<AtomicBool>,
+    /// The tabs with a big copy in flight, each with the number of that copy and when it began:
+    /// Ctrl+C on such a tab is still a copy until the answer. Per tab (audit 2026-10-20, L49), so
+    /// one tab's copy never turns another tab's Ctrl+C into a copy, and a closed tab or a copy that
+    /// never answers (`COPY_PENDING_MAX_MS`) cannot hold it for good.
+    copy_pending: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
+    /// The one worker for OSC 52 writes: latest wins.
+    osc_copier: LatestCopier,
 }
+
+/// The longest a big copy may keep Ctrl+C a copy.
+const COPY_PENDING_MAX_MS: u64 = 30_000;
 
 fn mods(e: &PointerIn) -> MouseMods {
     MouseMods {
@@ -298,6 +309,7 @@ impl TermUi {
             Rc::clone(&mouse_flag),
             announce,
         ));
+        let osc_copier = LatestCopier::new(Arc::clone(&deps.clipboard));
         let gate = Arc::new(StatGate::new(
             Arc::clone(&deps.stat),
             StatGateOptions::default(),
@@ -336,7 +348,8 @@ impl TermUi {
             recheck: false,
             stale: HashSet::new(),
             copy_gen: Arc::new(AtomicU64::new(0)),
-            copy_pending: Arc::new(AtomicBool::new(false)),
+            copy_pending: Arc::new(Mutex::new(HashMap::new())),
+            osc_copier,
         }
     }
 
@@ -429,22 +442,29 @@ impl TermUi {
             return;
         }
         let mine = self.copy_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        self.copy_pending.store(true, Ordering::SeqCst);
+        self.copy_pending
+            .lock()
+            .unwrap()
+            .insert(tab.id.to_string(), (mine, Instant::now()));
+        let tab_id = tab.id.to_string();
         let latest = Arc::clone(&self.copy_gen);
         let post = Arc::clone(&self.deps.post);
         let clip = Arc::clone(&self.deps.clipboard);
         let handle = Arc::clone(tab.handle);
         tab.handle.selection_text_async(Box::new(move |text| {
             if latest.load(Ordering::SeqCst) != mine {
+                post(TermMsg::BigCopied(tab_id, mine, None));
                 return;
             }
             let Some(text) = text else {
                 // The selection changed while it was read: nothing is copied and no badge shows.
-                post(TermMsg::Copied(false));
+                post(TermMsg::BigCopied(tab_id, mine, Some(false)));
                 return;
             };
             handle.with_emu(|em| em.sel_clear());
-            copy_async(clip, text, COPY_MAX, move |ok| post(TermMsg::Copied(ok)));
+            copy_async(clip, text, COPY_MAX, move |ok| {
+                post(TermMsg::BigCopied(tab_id, mine, Some(ok)))
+            });
         }));
     }
     fn read_clipboard(&self, tab: &str, mode: PasteMode) {
@@ -870,9 +890,17 @@ impl TermUi {
         self.watch.selecting()
     }
 
+    /// Whether a big copy begun on this tab is still waiting for its answer.
+    pub fn copy_is_pending(&self, tab: &str) -> bool {
+        self.copy_pending
+            .lock()
+            .unwrap()
+            .get(tab)
+            .is_some_and(|(_, since)| since.elapsed().as_millis() < u128::from(COPY_PENDING_MAX_MS))
+    }
+
     pub fn has_selection(&self, tab: &TabInfo) -> bool {
-        self.copy_pending.load(Ordering::SeqCst)
-            || tab.handle.with_emu_quiet(|em| em.has_selection())
+        self.copy_is_pending(tab.id) || tab.handle.with_emu_quiet(|em| em.has_selection())
     }
 
     // ---- find ----
@@ -966,10 +994,16 @@ impl TermUi {
 
     // ---- events and messages ----
 
-    /// An OSC 52 write from ANY tab. Nothing is ever written back to the program.
-    pub fn on_term_event(&mut self, _tab: &str, ev: &TermEvent) {
+    /// An OSC 52 write. Only the tab in front (`front`) may replace the clipboard: a background
+    /// tab's write is dropped (audit 2026-10-20, L4, pastejacking). The writes of a flood share one
+    /// worker and the last wins. Nothing is ever written back to the program.
+    pub fn on_term_event(&mut self, tab: &str, front: Option<&str>, ev: &TermEvent) {
         if let TermEvent::ClipboardWrite(t) = ev {
-            self.copy(t.clone(), OSC52_MAX);
+            if front != Some(tab) {
+                return;
+            }
+            let done = self.post_copied();
+            self.osc_copier.submit(t.clone(), OSC52_MAX, done);
         }
     }
 
@@ -996,8 +1030,19 @@ impl TermUi {
                 }
             }
             TermMsg::Copied(ok) => {
-                self.copy_pending.store(false, Ordering::SeqCst);
                 if ok {
+                    self.badge.borrow_mut().copied(now);
+                    self.redraw();
+                }
+            }
+            TermMsg::BigCopied(tab_id, gen_no, ok) => {
+                {
+                    let mut p = self.copy_pending.lock().unwrap();
+                    if p.get(&tab_id).is_some_and(|(g, _)| *g == gen_no) {
+                        p.remove(&tab_id);
+                    }
+                }
+                if ok == Some(true) {
                     self.badge.borrow_mut().copied(now);
                     self.redraw();
                 }
@@ -1096,6 +1141,7 @@ impl TermUi {
             i.paths.unsubscribe(id);
         }
         self.stale.remove(id);
+        self.copy_pending.lock().unwrap().remove(id);
         if self.find.tab.as_deref() == Some(id) {
             self.find_close();
         }
@@ -1831,7 +1877,7 @@ mod tests {
         r.key(ctrl("c", "KeyC"));
         until("the answer", || {
             r.pump();
-            !r.ui.copy_pending.load(Ordering::SeqCst)
+            !r.ui.copy_is_pending("a")
         });
         assert_eq!(r.badge(), BadgePhase::Gone);
     }
@@ -2510,19 +2556,115 @@ mod tests {
     // ---- OSC 52 and the program's own copy ----
 
     #[test]
-    fn osc_52_from_a_background_tab_copies_and_badges() {
+    fn osc_52_from_the_front_tab_copies_and_badges() {
         let mut r = Rig::new(1.0);
-        r.ui.on_term_event("b", &TermEvent::ClipboardWrite("OSC52 \u{e6}".into()));
+        r.ui.on_term_event(
+            "b",
+            Some("b"),
+            &TermEvent::ClipboardWrite("OSC52 \u{e6}".into()),
+        );
         r.pump();
         assert_eq!(r.clip.read_text().as_deref(), Some("OSC52 \u{e6}"));
         assert_eq!(r.badge(), BadgePhase::Shown);
         assert!(r.written().is_empty(), "nothing is written back");
     }
 
+    // Audit 2026-10-20 (L4): a background tab can no longer replace the clipboard (pastejacking).
+    #[test]
+    fn osc_52_from_a_background_tab_is_ignored() {
+        let mut r = Rig::new(1.0);
+        r.clip.set_text("mine");
+        r.ui.on_term_event("b", Some("a"), &TermEvent::ClipboardWrite("evil".into()));
+        r.ui.on_term_event("b", None, &TermEvent::ClipboardWrite("evil".into()));
+        thread::sleep(Duration::from_millis(60));
+        assert_eq!(r.clip.read_text().as_deref(), Some("mine"));
+        assert!(r.msgs.lock().unwrap().is_empty(), "no copy was started");
+        assert_eq!(r.badge(), BadgePhase::Gone);
+    }
+
+    // Audit 2026-10-20 (L39, L48): a flood runs on one worker and the last write wins.
+    #[test]
+    fn an_osc_52_flood_uses_one_worker_and_the_last_write_wins() {
+        let probe = Arc::new(Probe::default());
+        let mut r = Rig::with_port(1.0, probe.clone());
+        for i in 0..200 {
+            r.ui.on_term_event("a", Some("a"), &TermEvent::ClipboardWrite(format!("t{i}")));
+        }
+        until("the last write", || {
+            probe.inner.read_text().as_deref() == Some("t199")
+        });
+        r.msgs.lock().unwrap().clear();
+        let me = thread::current().id();
+        let seen = probe.threads.lock().unwrap().clone();
+        let mut ids: Vec<String> = seen.iter().map(|t| format!("{t:?}")).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 1, "{} threads wrote", ids.len());
+        assert!(seen.iter().all(|t| *t != me));
+    }
+
+    /// A clipboard whose writes wait until the test lets them through.
+    struct Gated {
+        inner: MemoryClipboard,
+        open: Mutex<bool>,
+        cv: std::sync::Condvar,
+    }
+    impl Gated {
+        fn new() -> Self {
+            Self {
+                inner: MemoryClipboard::new(),
+                open: Mutex::new(false),
+                cv: std::sync::Condvar::new(),
+            }
+        }
+        fn release(&self) {
+            *self.open.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+    impl ClipboardPort for Gated {
+        fn write_text(&self, t: &str, m: usize) -> Result<(), String> {
+            let mut g = self.open.lock().unwrap();
+            while !*g {
+                g = self.cv.wait(g).unwrap();
+            }
+            drop(g);
+            self.inner.write_text(t, m)
+        }
+        fn read_text(&self) -> Option<String> {
+            self.inner.read_text()
+        }
+        fn read_state(&self) -> ClipboardState {
+            self.inner.read_state()
+        }
+        fn sequence(&self) -> u32 {
+            self.inner.sequence()
+        }
+    }
+
+    // Audit 2026-10-20 (L49): the pending big copy belongs to its tab, and closing the tab frees it.
+    #[test]
+    fn a_pending_big_copy_belongs_to_its_tab_and_a_closed_tab_frees_it() {
+        let gate = Arc::new(Gated::new());
+        let mut r = Rig::with_port(1.0, gate.clone());
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        r.key(ctrl("c", "KeyC"));
+        until("the copy is pending", || r.ui.copy_is_pending("a"));
+        assert!(!r.ui.copy_is_pending("b"), "another tab is not copying");
+        r.ui.tab_closed("a");
+        assert!(
+            !r.ui.copy_is_pending("a"),
+            "a closed tab cannot stick the flag"
+        );
+        gate.release();
+        r.pump();
+    }
+
     #[test]
     fn osc_52_failure_raises_no_badge() {
         let mut r = Rig::with_port(1.0, Arc::new(Refusing));
-        r.ui.on_term_event("a", &TermEvent::ClipboardWrite("x".into()));
+        r.ui.on_term_event("a", Some("a"), &TermEvent::ClipboardWrite("x".into()));
         r.pump();
         assert_eq!(r.badge(), BadgePhase::Gone);
     }
@@ -2577,7 +2719,7 @@ mod tests {
         probe.inner.set_text("paste me");
         r.key(ctrl("v", "KeyV"));
         r.pump();
-        r.ui.on_term_event("a", &TermEvent::ClipboardWrite("x".into()));
+        r.ui.on_term_event("a", Some("a"), &TermEvent::ClipboardWrite("x".into()));
         r.pump();
         let me = thread::current().id();
         let seen = probe.threads.lock().unwrap().clone();

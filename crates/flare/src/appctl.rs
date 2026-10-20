@@ -136,6 +136,7 @@ impl std::fmt::Debug for TermMsgBox {
         f.write_str(match self.0 {
             TermMsg::Clip(..) => "TermMsg::Clip",
             TermMsg::Copied(_) => "TermMsg::Copied",
+            TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
         })
     }
@@ -3326,8 +3327,12 @@ impl AppCtl {
                     }
                 }
                 HostEvent::ClipboardWrite { id, text } => {
-                    self.term
-                        .on_term_event(&id, &TermEvent::ClipboardWrite(text));
+                    let front = self.front_id();
+                    self.term.on_term_event(
+                        &id,
+                        front.as_deref(),
+                        &TermEvent::ClipboardWrite(text),
+                    );
                     terminal_news = true;
                 }
                 // The handle lets one bell through a second per tab: the button flashes, no sound.

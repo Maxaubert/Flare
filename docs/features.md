@@ -292,6 +292,7 @@ are added as milestones land.
   `under_e2e_the_clipboard_is_in_memory_and_openers_record`.
 - **OSC 52.** Write-only; a read query is swallowed and never answered; the accepted write shows the
   badge. Held by `osc_52_lands_with_utf8_intact_says_copied_and_a_read_gets_no_reply`.
+  Only the tab in front may write the clipboard; a background tab's OSC 52 is dropped, and a flood shares one worker where the last wins (audit 2026-10-20, L4 L39 L48). Held by `osc_52_from_a_background_tab_is_ignored` and `an_osc_52_flood_uses_one_worker_and_the_last_write_wins`.
 - **Regression rules.** `docs/regression-rules.md` rules 154 to 159 (cell boundaries, the typed drop,
   mouse reports, link opening and no held UI, the off-thread clipboard, opaque decorations in whole
   pixels). Rules 8 and 19 are amended with their native meaning. The plan's numbers 142 to 147 were
