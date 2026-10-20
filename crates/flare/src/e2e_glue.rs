@@ -964,22 +964,11 @@ pub fn pointer_events(x: f32, y: f32, action: &PointerAction) -> Vec<WindowEvent
     }
 }
 
-/// The notches an injected wheel of `dy` css px makes (positive is up, winit's convention): a notch
-/// is 40 px, at least one for any movement. The real window counts the cell height instead; the
-/// e2e only needs "far enough" and a stable sign.
-pub fn wheel_notches(dy: f32) -> i32 {
-    if dy == 0.0 {
-        return 0;
-    }
-    match (dy / 40.0).round() as i32 {
-        0 => dy.signum() as i32,
-        n => n.clamp(-4096, 4096),
-    }
-}
-
-/// Whether the point (css px) lies inside the rectangle (left, top, width, height).
-pub fn in_rect(p: (f32, f32), r: (f32, f32, f32, f32)) -> bool {
-    p.0 >= r.0 && p.0 <= r.0 + r.2 && p.1 >= r.1 && p.1 <= r.1 + r.3
+/// The wheel lines an injected wheel of `dy` css px makes (positive is up, winit's convention): a
+/// notch is 40 px. It goes to the shared wheel as lines, so a small movement adds up in the
+/// accumulator and is never rounded up to a notch (audit 2026-10-20: M6); only the size is capped.
+pub fn wheel_lines(dy: f32) -> f32 {
+    (dy / 40.0).clamp(-4096.0, 4096.0)
 }
 
 /// Press at `from`, `steps` equal moves, release at `to`.
@@ -1099,31 +1088,18 @@ impl GlueCtx {
     }
 
     /// An injected Slint wheel never reaches winit's `MouseWheel`, where the real window scrolls the
-    /// terminal. Over the grid, the front tab gets the same call that handler makes.
+    /// terminal. It takes the same path the real one does (`KeyPath::wheel`: the grid gate, the
+    /// accumulated notches, the cell under the pointer, the redraw), so the two cannot drift.
     fn term_wheel(&self, x: f32, y: f32, dy: f32) {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        let k = app.window().scale_factor().max(0.01);
-        let grid = (
-            app.get_grid_left(),
-            app.get_grid_top(),
-            app.get_grid_phys_width() as f32 / k,
-            app.get_grid_phys_height() as f32 / k,
+        let k = f64::from(app.window().scale_factor()).max(0.01);
+        self.kp.wheel(
+            crate::window::WheelDelta::Lines(wheel_lines(dy)),
+            (f64::from(x) * k, f64::from(y) * k),
+            false,
         );
-        let on_settings = self.ctl.upgrade().is_some_and(|rc| {
-            rc.try_borrow().is_ok_and(|c| {
-                c.model().state.active_id.as_deref() == Some(flare_tabs::tabs::SETTINGS_ID)
-            })
-        });
-        if on_settings || app.get_chrome_has_focus() || !in_rect((x, y), grid) {
-            return;
-        }
-        if let Some(handle) = self.kp.front.borrow().clone()
-            && handle.wheel(wheel_notches(dy), 0, 0)
-        {
-            app.window().request_redraw();
-        }
     }
 
     /// One key through the path a real key takes; a key the app leaves to Slint reaches it too,
@@ -1664,23 +1640,18 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_wheel_is_whole_notches_up_for_positive_dy() {
-        assert_eq!(wheel_notches(0.0), 0);
-        assert_eq!(wheel_notches(1.0), 1);
-        assert_eq!(wheel_notches(-1.0), -1);
-        assert_eq!(wheel_notches(120.0), 3);
-        assert_eq!(wheel_notches(-120.0), -3);
-        assert_eq!(wheel_notches(20_000.0), 500);
-    }
-
-    #[test]
-    fn a_wheel_is_the_terminals_only_inside_the_grid() {
-        let grid = (100.0, 40.0, 800.0, 500.0);
-        assert!(in_rect((300.0, 200.0), grid));
-        assert!(!in_rect((99.0, 200.0), grid));
-        assert!(!in_rect((300.0, 39.0), grid));
-        assert!(!in_rect((901.0, 200.0), grid));
-        assert!(!in_rect((300.0, 541.0), grid));
+    fn an_injected_wheel_keeps_what_is_less_than_a_notch() {
+        use crate::live::WheelAccum;
+        assert_eq!(wheel_lines(0.0), 0.0);
+        assert_eq!(wheel_lines(120.0), 3.0);
+        assert_eq!(wheel_lines(-120.0), -3.0);
+        assert_eq!(wheel_lines(20_000.0), 500.0);
+        assert_eq!(wheel_lines(1.0e9), 4096.0);
+        // 1 px used to count as a whole notch; now it adds up, as a touchpad's fractions do.
+        let mut acc = WheelAccum::new();
+        assert_eq!(acc.add_lines(wheel_lines(1.0)), 0);
+        let total: i32 = (0..4).map(|_| acc.add_lines(wheel_lines(10.0))).sum();
+        assert_eq!(total, 1, "four 10 px turns are one notch");
     }
 
     #[test]
