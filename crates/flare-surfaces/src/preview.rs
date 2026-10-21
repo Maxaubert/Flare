@@ -84,6 +84,8 @@ pub enum Reason {
     NotText,
     NotAnImage,
     TooManyPixels,
+    /// The user moved on while it was being read; never shown.
+    Superseded,
     Other(String),
 }
 
@@ -96,6 +98,7 @@ impl fmt::Display for Reason {
             Reason::NotText => f.write_str("This file is not text."),
             Reason::NotAnImage => f.write_str("Flare cannot read this picture."),
             Reason::TooManyPixels => f.write_str("The picture is too large to show."),
+            Reason::Superseded => f.write_str("Opening…"),
             Reason::Other(m) => write!(f, "The file could not be read ({m})."),
         }
     }
@@ -115,8 +118,43 @@ pub struct TextDoc {
     pub lines: Vec<String>,
     /// More of the file exists than is shown (the byte cap or the line cap).
     pub truncated: bool,
-    /// Bytes read.
-    pub bytes: usize,
+    /// Which cap cut it, when one did.
+    pub cut: Option<Cut>,
+    /// The file's real length (the bytes read are capped).
+    pub bytes: u64,
+}
+
+/// The cap that cut a text file short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cut {
+    Bytes,
+    Lines,
+}
+
+/// Text from bytes: a UTF-16 file (a BOM, as Windows PowerShell 5.1 writes for `>`) is decoded as
+/// such, a UTF-8 BOM is dropped, and any other byte shows as a replacement mark.
+fn decode_text(buf: &[u8]) -> std::borrow::Cow<'_, str> {
+    let utf16 = |rest: &[u8], le: bool| {
+        let units: Vec<u16> = rest
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| {
+                if le {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                }
+            })
+            .collect();
+        std::borrow::Cow::Owned(String::from_utf16_lossy(&units))
+    };
+    match buf {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8_lossy(rest),
+        _ => String::from_utf8_lossy(buf),
+    }
 }
 
 /// Reads up to `cap` bytes of a text file. Bytes that are not UTF-8 show as replacement marks; a
@@ -137,24 +175,25 @@ pub fn read_text(path: &Path, cap: usize) -> Result<TextDoc, Reason> {
     if more {
         buf.truncate(cap);
     }
-    if buf.iter().take(8192).any(|b| *b == 0) {
+    let bom16 = matches!(buf.as_slice(), [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..]);
+    if !bom16 && buf.iter().take(8192).any(|b| *b == 0) {
         return Err(Reason::NotText);
     }
-    let bytes = buf.len();
-    let text = String::from_utf8_lossy(&buf);
+    let text = decode_text(&buf);
     let mut lines = Vec::new();
-    let mut cut = more;
+    let mut cut = more.then_some(Cut::Bytes);
     for raw in text.lines() {
         if lines.len() >= LINES_MAX {
-            cut = true;
+            cut = Some(Cut::Lines);
             break;
         }
         lines.push(shape_line(raw));
     }
     Ok(TextDoc {
         lines,
-        truncated: cut,
-        bytes,
+        truncated: cut.is_some(),
+        cut,
+        bytes: meta.len(),
     })
 }
 
@@ -193,8 +232,9 @@ pub struct Decoded {
     pub scaled: bool,
 }
 
-/// Reads and decodes an image file.
-pub fn decode_image(path: &Path) -> Result<Decoded, Reason> {
+/// Reads and decodes an image file. `stale` is asked between the stages (size, decode, resize): a
+/// true answer abandons the work, so a picture the user has left costs no more memory.
+pub fn decode_image(path: &Path, stale: &dyn Fn() -> bool) -> Result<Decoded, Reason> {
     // sync-ok: runs on a worker thread only
     let meta = std::fs::metadata(path).map_err(|e| io_reason(&e))?;
     if !meta.is_file() {
@@ -212,7 +252,13 @@ pub fn decode_image(path: &Path) -> Result<Decoded, Reason> {
     if u64::from(w) * u64::from(h) > IMAGE_PIXELS_MAX {
         return Err(Reason::TooManyPixels);
     }
+    if stale() {
+        return Err(Reason::Superseded);
+    }
     let img = open()?.decode().map_err(|_| Reason::NotAnImage)?;
+    if stale() {
+        return Err(Reason::Superseded);
+    }
     let mut scaled = false;
     let img = if w > IMAGE_SIDE_MAX || h > IMAGE_SIDE_MAX {
         scaled = true;
@@ -224,7 +270,7 @@ pub fn decode_image(path: &Path) -> Result<Decoded, Reason> {
     } else {
         img
     };
-    let rgba = img.to_rgba8();
+    let rgba = img.into_rgba8();
     let has_alpha = rgba.pixels().any(|p| p.0[3] < 255);
     Ok(Decoded {
         width: rgba.width(),
@@ -347,10 +393,56 @@ mod tests {
         let p = write(d.path(), "big.txt", &b"abcdefghij\n".repeat(100));
         let doc = read_text(&p, 55).unwrap();
         assert!(doc.truncated);
-        assert_eq!(doc.bytes, 55);
+        assert_eq!(doc.bytes, 1100, "the file's own length");
+        assert_eq!(doc.cut, Some(Cut::Bytes));
         assert_eq!(doc.lines.len(), 5);
         let exact = read_text(&p, 1100).unwrap();
         assert!(!exact.truncated, "a file exactly at the cap is whole");
+    }
+
+    #[test]
+    fn a_file_with_many_lines_is_cut_by_lines_not_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let p = write(d.path(), "many.txt", &b"x\n".repeat(LINES_MAX + 50));
+        let doc = read_text(&p, TEXT_CAP).unwrap();
+        assert_eq!(doc.lines.len(), LINES_MAX);
+        assert_eq!(doc.cut, Some(Cut::Lines));
+    }
+
+    #[test]
+    fn a_utf16_file_with_a_bom_is_text() {
+        // Windows PowerShell 5.1 writes this for `>` and Out-File.
+        let d = tempfile::tempdir().unwrap();
+        let mut le = vec![0xFF, 0xFE];
+        for u in "one\r\ntwo \u{e6}".encode_utf16() {
+            le.extend_from_slice(&u.to_le_bytes());
+        }
+        let p = write(d.path(), "le.txt", &le);
+        assert_eq!(
+            read_text(&p, TEXT_CAP).unwrap().lines,
+            ["one", "two \u{e6}"]
+        );
+        let mut be = vec![0xFE, 0xFF];
+        for u in "hi".encode_utf16() {
+            be.extend_from_slice(&u.to_be_bytes());
+        }
+        let p = write(d.path(), "be.txt", &be);
+        assert_eq!(read_text(&p, TEXT_CAP).unwrap().lines, ["hi"]);
+        let p = write(d.path(), "bom8.txt", b"\xEF\xBB\xBFhello");
+        assert_eq!(read_text(&p, TEXT_CAP).unwrap().lines, ["hello"]);
+        let p = write(d.path(), "bin.txt", b"ab\0cd");
+        assert_eq!(read_text(&p, TEXT_CAP), Err(Reason::NotText));
+    }
+
+    #[test]
+    fn a_stale_decode_is_abandoned() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&p)
+            .unwrap();
+        assert_eq!(decode_image(&p, &|| true), Err(Reason::Superseded));
+        assert!(decode_image(&p, &|| false).is_ok());
     }
 
     #[test]
@@ -402,7 +494,7 @@ mod tests {
         );
         // Opening a folder as a file is refused by Windows; either way it is a reason, not a crash.
         assert!(read_text(d.path(), TEXT_CAP).is_err());
-        assert!(decode_image(&d.path().join("nope.png")).is_err());
+        assert!(decode_image(&d.path().join("nope.png"), &|| false).is_err());
     }
 
     #[test]
@@ -435,7 +527,7 @@ mod tests {
     fn a_png_decodes_to_rgba() {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "a.png", &png_bytes(3, 2, 255));
-        let got = decode_image(&p).unwrap();
+        let got = decode_image(&p, &|| false).unwrap();
         assert_eq!((got.width, got.height), (3, 2));
         assert_eq!(got.rgba.len(), 3 * 2 * 4);
         assert_eq!(&got.rgba[..4], &[200, 30, 40, 255]);
@@ -446,7 +538,7 @@ mod tests {
     fn a_transparent_png_says_it_has_alpha() {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "t.png", &png_bytes(2, 2, 128));
-        assert!(decode_image(&p).unwrap().has_alpha);
+        assert!(decode_image(&p, &|| false).unwrap().has_alpha);
     }
 
     #[test]
@@ -473,7 +565,7 @@ mod tests {
             };
             r.unwrap_or_else(|e| panic!("{name}: {e}"));
             let p = write(d.path(), name, &out.into_inner());
-            let got = decode_image(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let got = decode_image(&p, &|| false).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!((got.width, got.height), (4, 4), "{name}");
         }
     }
@@ -482,7 +574,7 @@ mod tests {
     fn a_file_that_is_not_a_picture_is_refused_with_a_reason() {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "fake.png", b"this is not a picture at all");
-        assert_eq!(decode_image(&p), Err(Reason::NotAnImage));
+        assert_eq!(decode_image(&p, &|| false), Err(Reason::NotAnImage));
     }
 
     #[test]
@@ -501,14 +593,14 @@ mod tests {
         bmp.extend_from_slice(&[0u8; 24]);
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "huge.bmp", &bmp);
-        assert_eq!(decode_image(&p), Err(Reason::TooManyPixels));
+        assert_eq!(decode_image(&p, &|| false), Err(Reason::TooManyPixels));
     }
 
     #[test]
     fn a_wide_picture_is_scaled_to_the_side_limit() {
         let d = tempfile::tempdir().unwrap();
         let p = write(d.path(), "w.png", &png_bytes(IMAGE_SIDE_MAX + 100, 2, 255));
-        let got = decode_image(&p).unwrap();
+        let got = decode_image(&p, &|| false).unwrap();
         assert!(got.scaled);
         assert_eq!(got.width, IMAGE_SIDE_MAX);
         assert!(got.height >= 1);

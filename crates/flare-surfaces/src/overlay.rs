@@ -37,11 +37,15 @@ pub enum Overlay {
     Help,
     /// The find bar.
     Find,
+    /// The F12 diagnostics card, drawn at the page's top right.
+    Diagnostics,
+    /// A tab being dragged: its ghost follows the pointer over the page.
+    TabDrag,
 }
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 13] = [
+    pub const ALL: [Overlay; 15] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::Dialog,
@@ -55,6 +59,8 @@ impl Overlay {
         Overlay::ColourPicker,
         Overlay::Help,
         Overlay::Find,
+        Overlay::Diagnostics,
+        Overlay::TabDrag,
     ];
 }
 

@@ -12,10 +12,11 @@
 
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use flare_surfaces::PanelKind;
-use flare_surfaces::preview::{self, Decoded, Reason, TEXT_CAP, TextDoc};
+use flare_surfaces::preview::{self, Cut, Decoded, LINES_MAX, Reason, TEXT_CAP};
 use flare_surfaces::state::TabPanels;
 use flare_surfaces::store::{PanelStore, SavedTabPanel, is_blank, match_restored};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -33,9 +34,47 @@ pub enum PanelMsg {
     Text {
         generation: u64,
         tab: String,
-        result: Result<TextDoc, Reason>,
+        result: Result<TextRows, Reason>,
     },
 }
+
+/// A text file ready for the window: the rows and the numbers are made on the worker, so the UI
+/// thread only wraps them.
+pub struct TextRows {
+    pub rows: Vec<SharedString>,
+    /// The widest row, in characters.
+    pub cols: usize,
+    /// The file's real length.
+    pub bytes: u64,
+    /// The foot's words when a cap cut the file short, else empty.
+    pub foot: String,
+}
+
+impl TextRows {
+    pub fn from_doc(doc: preview::TextDoc) -> Self {
+        let cols = doc
+            .lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+        let foot = match doc.cut {
+            Some(Cut::Bytes) => format!("Only the first {} are shown.", human_bytes(TEXT_CAP)),
+            Some(Cut::Lines) => format!("Only the first {LINES_MAX} lines are shown."),
+            None => String::new(),
+        };
+        Self {
+            rows: doc.lines.into_iter().map(SharedString::from).collect(),
+            cols,
+            bytes: doc.bytes,
+            foot,
+        }
+    }
+}
+
+/// One picture is decoded at a time: a decode at the pixel limit holds hundreds of megabytes, so a
+/// second one waits (and is dropped unread when the user has moved on by then).
+static DECODE: Mutex<()> = Mutex::new(());
 
 /// A decoded picture, already in the buffer Slint draws from (made on the worker, so the UI thread
 /// copies nothing).
@@ -73,7 +112,7 @@ enum Content {
         count: usize,
         cols: usize,
         foot: String,
-        bytes: usize,
+        bytes: u64,
     },
 }
 
@@ -97,6 +136,10 @@ pub struct PanelCtl {
     file_had_panels: bool,
     shown: Option<Shown>,
     generation: u64,
+    /// The newest generation, shared with the workers: one that is not it stops at its next look.
+    current: Arc<AtomicU64>,
+    /// The same file was shown again (a click on the path once more): read it afresh.
+    reload: bool,
     post: Post,
     checker: Option<Image>,
 }
@@ -149,6 +192,8 @@ impl PanelCtl {
             file_had_panels: false,
             shown: None,
             generation: 0,
+            current: Arc::new(AtomicU64::new(0)),
+            reload: false,
             post,
             checker: None,
         }
@@ -183,6 +228,11 @@ impl PanelCtl {
         if kind.is_built() && !preview::loadable(target, &kind) {
             return false;
         }
+        // The file may have changed since it was read, or failed and now exist: a click on what
+        // is on show reads it again.
+        if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
+            self.reload = true;
+        }
         self.panels.show(tab, kind, target)
     }
 
@@ -196,6 +246,11 @@ impl PanelCtl {
 
     pub fn is_open(&self, tab: &str) -> bool {
         self.panels.open_on(tab).is_some()
+    }
+
+    /// The tab has a panel (open or closed) of a kind this build draws.
+    pub fn has_built(&self, tab: &str) -> bool {
+        self.panels.get(tab).is_some_and(|p| p.kind.is_built())
     }
 
     pub fn forget(&mut self, tab: &str) {
@@ -256,27 +311,39 @@ impl PanelCtl {
         app.set_panel_share(want.as_ref().and_then(|w| w.3).unwrap_or(0.0));
         let Some((tab, kind, target, _)) = want else {
             if self.shown.take().is_some() {
+                self.generation += 1;
+                self.current.store(self.generation, Ordering::SeqCst);
                 self.clear(app);
             }
+            self.reload = false;
             return;
         };
         let same = self
             .shown
             .as_ref()
             .is_some_and(|s| s.tab == tab && s.kind == kind && s.target == target);
-        if same {
+        if same && !std::mem::take(&mut self.reload) {
             return;
         }
+        self.reload = false;
         self.generation += 1;
         let generation = self.generation;
-        self.shown = Some(Shown {
-            tab: tab.clone(),
-            kind: kind.clone(),
-            target: target.clone(),
-            generation,
-            content: Content::Reading,
-        });
-        self.push(app);
+        self.current.store(generation, Ordering::SeqCst);
+        if same {
+            // What is on show stays until the new read answers (no flash of "Opening").
+            if let Some(s) = self.shown.as_mut() {
+                s.generation = generation;
+            }
+        } else {
+            self.shown = Some(Shown {
+                tab: tab.clone(),
+                kind: kind.clone(),
+                target: target.clone(),
+                generation,
+                content: Content::Reading,
+            });
+            self.push(app);
+        }
         self.spawn_load(&tab, &kind, &target, generation);
     }
 
@@ -308,29 +375,13 @@ impl PanelCtl {
                 Err(r) => Content::Failed(r.to_string()),
             },
             PanelMsg::Text { result, .. } => match result {
-                Ok(doc) => {
-                    let cols = doc
-                        .lines
-                        .iter()
-                        .map(|l| l.chars().count())
-                        .max()
-                        .unwrap_or(0);
-                    let count = doc.lines.len();
-                    let foot = if doc.truncated {
-                        format!("Only the first {} are shown.", human_bytes(TEXT_CAP))
-                    } else {
-                        String::new()
-                    };
-                    let rows: Vec<SharedString> =
-                        doc.lines.into_iter().map(SharedString::from).collect();
-                    Content::Text {
-                        lines: ModelRc::from(Rc::new(VecModel::from(rows))),
-                        count,
-                        cols,
-                        foot,
-                        bytes: doc.bytes,
-                    }
-                }
+                Ok(t) => Content::Text {
+                    count: t.rows.len(),
+                    lines: ModelRc::from(Rc::new(VecModel::from(t.rows))),
+                    cols: t.cols,
+                    foot: t.foot,
+                    bytes: t.bytes,
+                },
                 Err(r) => Content::Failed(r.to_string()),
             },
         };
@@ -399,7 +450,13 @@ impl PanelCtl {
                 } else {
                     format!("{count} lines")
                 };
-                app.set_panel_sub(format!("{n}, {}", human_bytes(*bytes)).into());
+                app.set_panel_sub(
+                    format!(
+                        "{n}, {}",
+                        human_bytes(usize::try_from(*bytes).unwrap_or(usize::MAX))
+                    )
+                    .into(),
+                );
                 app.set_panel_note(
                     if *count == 0 {
                         "The file is empty."
@@ -437,17 +494,48 @@ impl PanelCtl {
         let tab = tab.to_string();
         let target = target.to_string();
         let kind = kind.clone();
+        let current = Arc::clone(&self.current);
         let job = move || {
-            let msg = match kind {
-                PanelKind::Image => PanelMsg::Image {
+            let stale = || current.load(Ordering::SeqCst) != generation;
+            // Every load, a click's or one restored from panels.json, is vetted the same way.
+            let result = vetted(&target, &kind).and_then(|real| match kind {
+                PanelKind::Image => {
+                    // A poisoned lock only means an earlier decode panicked; the guard still guards.
+                    let _one = DECODE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if stale() {
+                        return Err(Reason::Superseded);
+                    }
+                    preview::decode_image(Path::new(&real), &stale)
+                        .map(|d| Loaded::Image(into_loaded(d)))
+                }
+                _ => preview::read_text(Path::new(&real), TEXT_CAP)
+                    .map(|d| Loaded::Text(TextRows::from_doc(d))),
+            });
+            if stale() {
+                return;
+            }
+            let msg = match result {
+                Ok(Loaded::Image(l)) => PanelMsg::Image {
                     generation,
                     tab,
-                    result: preview::decode_image(Path::new(&target)).map(into_loaded),
+                    result: Ok(l),
                 },
-                _ => PanelMsg::Text {
+                Ok(Loaded::Text(t)) => PanelMsg::Text {
                     generation,
                     tab,
-                    result: preview::read_text(Path::new(&target), TEXT_CAP),
+                    result: Ok(t),
+                },
+                Err(r) if kind == PanelKind::Image => PanelMsg::Image {
+                    generation,
+                    tab,
+                    result: Err(r),
+                },
+                Err(r) => PanelMsg::Text {
+                    generation,
+                    tab,
+                    result: Err(r),
                 },
             };
             post(UiMsg::Panel(PanelMsgBox(msg)));
@@ -459,6 +547,32 @@ impl PanelCtl {
             log::warn!("could not start the panel reader: {e}");
         }
     }
+}
+
+enum Loaded {
+    Image(LoadedImage),
+    Text(TextRows),
+}
+
+/// What a load re-checks before it reads, whether the target came from a click or from the file
+/// anyone can edit: the path as the file system names it (a mapped drive becomes a network name, a
+/// link its target) must be on the click allowlist and of the same kind. Gives the path to read.
+fn vetted(target: &str, kind: &PanelKind) -> Result<String, Reason> {
+    let no = || Reason::Other("not allowed".to_string());
+    // sync-ok: runs on a worker thread only
+    if !Path::new(target).exists() {
+        return Err(Reason::Missing);
+    }
+    let dir = Path::new(target)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (abs, real) =
+        flare_term::path_open::resolve_openable_file(&dir, target, "").ok_or_else(no)?;
+    (preview::classify_resolved(&abs, &real).as_ref() == Some(kind)
+        && preview::loadable(&real, kind))
+    .then_some(real)
+    .ok_or_else(no)
 }
 
 fn into_loaded(d: Decoded) -> LoadedImage {

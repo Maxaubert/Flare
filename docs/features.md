@@ -748,11 +748,22 @@ Plan: `docs/superpowers/plans/2026-10-21-surfaces.md`, stage 1. Decisions and ho
   `a_panel_of_a_kind_this_stage_cannot_draw_is_kept_in_the_file_and_not_shown`,
   `a_session_that_never_opens_a_panel_writes_no_file_and_starts_no_writer`,
   `an_answer_for_a_file_no_longer_on_show_is_dropped` and the `store.rs` unit tests (damaged files, unknown kinds, widths).
-- **One property says an overlay is open.** `overlay-open` is true while any of the 13 overlays is (menu, tab list, dialog,
-  update window and notice, Settings page, its dropdown, theme editor and questions, colour picker, Command help, find bar).
+- **One property says an overlay is open.** `overlay-open` is true while any of the 15 overlays is (menu, tab list, dialog,
+  update window and notice, Settings page, its dropdown, theme editor and questions, colour picker, Command help, find bar,
+  the F12 card, a tab being dragged).
   Native panels ignore it; stage 3's web panel hides while it is true. Held by
   `every_overlay_turns_overlay_open_on_and_off_again` (no catch-all arm: a new overlay fails to compile until counted) and
   `overlay_open_is_read_only_for_rust_and_computed_in_the_window_file`.
+- **Reviewed and tightened (2026-10-21).** `panels.json` is flushed at logoff, shutdown and quit with the other stores; a click on
+  the file already on show reads it again (a rewritten log, a file that failed and now exists); one picture decodes at a time and a
+  decode the user has left stops; every load, a restored one included, is vetted like a click; UTF-16 files with a BOM are text; the
+  foot names the cap that cut a file and the header shows its real size; the chord leaves a panel of a kind not drawn yet alone.
+  Held by `a_session_end_flushes_the_panels_file_too`, `a_click_on_the_file_already_shown_reads_it_again`,
+  `a_file_that_was_missing_shows_when_it_exists_and_is_clicked_again`, `a_restored_target_that_fails_the_clicks_checks_is_not_read`,
+  `a_utf16_file_with_a_bom_is_text`, `a_file_with_many_lines_is_cut_by_lines_not_bytes`, `a_stale_decode_is_abandoned`,
+  `the_keys_return_to_the_terminal_when_the_tab_changes_or_the_close_button_is_pressed`,
+  `a_display_scaling_change_with_the_panel_open_keeps_the_layout_and_the_one_to_one_zoom`,
+  `every_previewable_type_is_on_the_click_allowlist` and `the_panel_chord_does_nothing_for_a_kind_this_build_cannot_draw`.
 - **End to end:** `panelImage` (100 and 225 percent) prints a picture and a text path, clicks them, and checks the slot against
   the layout maths, the painted pixels, the 1:1 zoom, both chords, the splitter, an overlay, the close button and that the
   terminal refits and answers. The `panel.state` probe and the `ui.rect` names `panel`, `splitter`, `panel-body`, `panel-image`

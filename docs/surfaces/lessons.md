@@ -49,3 +49,23 @@ Newest last.
 - **Regenerating `THIRD-PARTY-NOTICES.md` writes an em-dash** into the Unicode licence text (the ICU4X line). The no-em-dash
   scan fails on it; replace that one line with `-` after `cargo about generate about.hbs -o THIRD-PARTY-NOTICES.md` (use `-o`: PowerShell
   redirection is refused). A regenerated file also carries the version bumps the lock had gathered since the last time.
+- **Flush every store you add (rule 36).** A new debounced store is easy to create inline and forget at logoff: the
+  session-end closure and the end of `run` both need a handle. Keep one function that flushes all of them and test it.
+  Electron: `app.on('before-quit')` and the session-end event both need to flush the new file.
+- **A cache key that says "same" must have a way to say "again".** The controller skipped the load when the tab, kind
+  and target matched, so a click on the same path never refreshed. Keep an explicit reload request next to the
+  "already shown" check.
+- **A superseded worker must be stoppable, not only ignorable.** Dropping the answer by generation number is not
+  enough for work that holds hundreds of megabytes: share the newest generation with the worker and check it between
+  stages, and serialise the heavy stage. Electron: abort the read with an `AbortController` and decode in one worker.
+- **`TextDoc.bytes` was the bytes read, not the file size.** Capped reads make a header lie; take the length from the
+  metadata and keep a reason for each cap.
+- **Windows PowerShell 5.1 writes UTF-16LE with a BOM** for redirection and `Out-File`; a "NUL means binary" test refuses
+  those logs. Look for a BOM first. Node: check the first two bytes before `toString('utf8')`.
+- **A target read back from a file is untrusted input, so it gets the click's checks**, not only string checks:
+  canonical form, allowlist on both names, same kind. Do it in the one place that reads, so no caller can skip it.
+- **The harness had no way to change the scale after the window was made.** `Harness::set_scale` sends the scale
+  change and resizes to the same css size; a layout that only works at the scale it was built at fails there.
+- **Overlay lists drift.** The F12 diagnostics card and the tab-drag ghost were drawn over the page but not counted.
+  The test that reads the property's line counts terms against `Overlay::ALL`, so adding to both keeps them together.
+- **Clippy 1.99 wants `as_chunks::<2>()`** over `chunks_exact(2)` with a constant size.

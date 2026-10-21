@@ -74,10 +74,37 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
   replaces the panel; an answer for an older one is dropped by a generation number.
 - 2026-10-21, stage 1, the overlay flag: one `out` property of the window, `overlay-open`, the OR of every overlay:
   menu, tab list, dialog, update window, update notice, the Settings page in front, Settings dropdown, theme
-  editor, theme question, Dictation question, colour picker, Command help, find bar. `flare-surfaces`
+  editor, theme question, Dictation question, colour picker, Command help, find bar, the F12 diagnostics card and a
+  tab being dragged (its ghost crosses the page; added after the stage 1 review). `flare-surfaces`
   `overlay::Overlay::ALL` names them; a test opens each and checks the flag; the match in that test has no
   catch-all arm, so a new overlay cannot be added without being counted; another test reads the property's line
   from `app.slint` and counts its terms. Native panels ignore the flag (Slint orders them with the rest); stage 3's
   web panel hides while it is true. The find bar spans the terminal only, so it never overlaps the slot, but it
   counts (it is one of the overlays the task names). The Copied badge and tooltips are not counted: they are small
   and brief; stage 3 should check them against a child window.
+
+### Stage 1 review fixes (2026-10-21)
+
+- 2026-10-21, stage 1, rule 36: `panels.json` is flushed with the other stores at logoff, shutdown and quit. The
+  window keeps a handle to the `PanelStore` and one function (`flush_stores`) writes all four, for the session-end
+  closure and for the end of `run`; a test holds that a change still inside its debounce lands on the disk.
+- 2026-10-21, stage 1, a click on the file already on show reads it again. A panel that never re-read would show a
+  log the agent has since rewritten, and a file that first failed could never be retried. The old content stays on
+  show until the new read answers (no flash of "Opening").
+- 2026-10-21, stage 1, one picture decodes at a time, and a decode the user has left stops. A shared "newest
+  generation" number is checked before the decode, between decode and resize, and before the answer is posted; a
+  mutex lets one decode run at once. A decode at the 100 megapixel limit is about 400 MB, so several at once was
+  the real danger. The decoded image is turned into RGBA by value (no clone) and dropped as soon as the pixel buffer
+  has its copy.
+- 2026-10-21, stage 1, every load is vetted the way a click is, including a target restored from `panels.json`: the
+  worker canonicalises it, both names must be on the click allowlist and of the same kind, and the real name must be
+  a local drive path. A mapped drive (which canonicalises to a network name) or a link that now points at another
+  kind is refused with "not allowed". A missing file still says "The file is gone."
+- 2026-10-21, stage 1, text files: a UTF-16 file with a BOM (what Windows PowerShell 5.1 writes for redirection) is
+  decoded as UTF-16, a UTF-8 BOM is dropped, and only then does a NUL in the first 8 KB mean "not text". The header
+  shows the file's real length, and the foot names the cap that cut it ("Only the first 4.0 MB are shown." or "Only
+  the first 100000 lines are shown.").
+- 2026-10-21, stage 1, the rows and the widest line are built on the worker; the UI thread wraps them in a model.
+- 2026-10-21, stage 1, Ctrl+Shift+P on a panel of a kind this build cannot draw (web, changes, tasks, board, mod,
+  restored from the file) does nothing and leaves the stored entry alone, so the chord never flips an invisible state.
+

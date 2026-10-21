@@ -307,7 +307,7 @@ export component AppWindow inherits Window {
     // True while any Flare overlay is open. A web panel (stage 3) is a child window and paints
     // above Slint, so it hides while this is true. `flare_surfaces::overlay::Overlay::ALL` names the
     // terms; a test opens each one and a scan counts the terms.
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying;
 
     // ---- tabs ----
     in property <[TabRow]> tab-rows;

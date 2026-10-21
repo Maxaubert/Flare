@@ -492,6 +492,40 @@ fn a_big_picture_fits_the_slot_and_a_click_shows_it_at_one_pixel_to_one_pixel() 
 }
 
 #[test]
+fn a_display_scaling_change_with_the_panel_open_keeps_the_layout_and_the_one_to_one_zoom() {
+    for (from, to) in [(1.0f32, 2.25f32), (2.25, 1.0), (1.5, 3.0)] {
+        let mut h = window(from);
+        open_picture(&h, 2400, 1200, [200, 30, 40, 255], false);
+        let (cx, cy) = image_centre(&h);
+        h.click(cx, cy);
+        h.advance(0);
+        assert!(h.comp.get_panel_image_zoomed(), "{from}: zoomed");
+        h.set_scale(to);
+        h.advance(0);
+        let at = format!("{from} -> {to}");
+        let page = (h.comp.get_page_w() * to).round() as i32;
+        let want = layout::slot_layout(page, f64::from(to), None);
+        let got = (h.comp.get_panel_slot_w() * to).round() as i32;
+        assert!(
+            (got - want.slot_w).abs() <= 1,
+            "{at}: slot {got}, maths {}",
+            want.slot_w
+        );
+        let grid = h.comp.get_grid_phys_width();
+        assert!(
+            (grid - want.grid_w).abs() <= 1,
+            "{at}: grid {grid}, maths {}",
+            want.grid_w
+        );
+        assert!(
+            ((h.comp.get_panel_image_w() * to).round() - 2400.0).abs() <= 1.0,
+            "{at}: one image pixel is one device pixel, not {}",
+            h.comp.get_panel_image_w() * to
+        );
+    }
+}
+
+#[test]
 fn a_small_picture_is_shown_as_it_is_and_a_click_changes_nothing() {
     for s in [1.0f32, 2.25] {
         let h = window(s);
@@ -560,6 +594,8 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         Overlay::ColourPicker => c.global::<SettingsBridge>().set_picker_open(on),
         Overlay::Help => c.global::<HelpBridge>().set_open(on),
         Overlay::Find => c.set_find_open(on),
+        Overlay::Diagnostics => c.set_overlay_visible(on),
+        Overlay::TabDrag => c.set_carrying(on),
     }
 }
 
@@ -619,6 +655,8 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
         "SettingsBridge.picker-open",
         "HelpBridge.open",
         "root.find-open",
+        "root.overlay-visible",
+        "root.carrying",
     ] {
         assert!(line.contains(term), "overlay-open misses {term}");
     }
