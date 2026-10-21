@@ -324,6 +324,23 @@ pub fn path_kinds(
     results.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A file a click may show inside the app: where the text names it, and the same file as the file
+/// system names it (links and 8.3 names resolved). Resolved again here, in the backend (rule 13), with
+/// one unmetered stat. None for a folder, a name that does not exist, a network path, and any file
+/// that is not on the click allowlist either as named or as the file system names it (rule 14):
+/// the caller then decides by extension what, if anything, the file may be shown as.
+pub fn resolve_openable_file(cwd: &str, text: &str, home: &str) -> Option<(String, String)> {
+    let gate = StatGate::unmetered(Arc::new(FsStat));
+    let hit = path_kinds(cwd, &[text.to_string()], &gate, home)
+        .into_iter()
+        .next()??;
+    if hit.kind != PathKind::File || !may_open(&hit.abs) {
+        return None;
+    }
+    let real = canonical(&hit.abs)?;
+    may_open(&real).then_some((hit.abs, real))
+}
+
 pub trait PathOpeners {
     /// The app Windows gives it.
     fn open_path(&self, abs: &str);
@@ -408,6 +425,25 @@ mod tests {
         fn reveal_path(&self, abs: &str) {
             lock(&self.revealed).push(abs.into());
         }
+    }
+
+    #[test]
+    fn an_openable_file_resolves_to_itself_and_its_canonical_form() {
+        let (_d, root) = tree();
+        let got = resolve_openable_file(&root, "docs/sign-off/rapport.pdf", "").unwrap();
+        assert!(got.0.ends_with("rapport.pdf") && got.1.ends_with("rapport.pdf"));
+        assert!(std::path::Path::new(&got.0).is_file());
+    }
+
+    #[test]
+    fn a_folder_a_missing_file_a_script_and_a_network_path_resolve_to_nothing() {
+        let (_d, root) = tree();
+        assert!(resolve_openable_file(&root, "docs/sign-off", "").is_none());
+        assert!(resolve_openable_file(&root, "docs/none.pdf", "").is_none());
+        assert!(resolve_openable_file(&root, "run.bat", "").is_none());
+        assert!(resolve_openable_file(&root, r"\\server\share\a.png", "").is_none());
+        assert!(resolve_openable_file(&root, "a\0b.png", "").is_none());
+        assert!(resolve_openable_file("", "a.png", "").is_none());
     }
 
     #[test]

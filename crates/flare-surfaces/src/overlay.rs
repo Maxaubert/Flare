@@ -5,8 +5,8 @@
 //! place. Native panels are Slint and need none of this.
 //!
 //! The window computes one Slint property, `overlay-open`, from the same list. `Overlay::ALL` is
-//! the list; a test in `flare` opens each one and checks the property, and another checks that the
-//! `.slint` file mentions every name here, so a new overlay cannot be added without being counted.
+//! the list; a test in `flare` opens each one and checks the property, and the match in that test
+//! has no catch-all arm, so a new overlay cannot be added without being counted.
 
 /// Every overlay that can cover the panel slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -56,25 +56,6 @@ impl Overlay {
         Overlay::Help,
         Overlay::Find,
     ];
-
-    /// The name the `.slint` file uses for this overlay's term in `overlay-open`.
-    pub fn slint_name(self) -> &'static str {
-        match self {
-            Overlay::Menu => "menu-open",
-            Overlay::Overflow => "overflow-open",
-            Overlay::Dialog => "dialog-open",
-            Overlay::UpdateWindow => "update-open",
-            Overlay::UpdateNotice => "update-notice",
-            Overlay::Settings => "settings-front",
-            Overlay::SettingsSelect => "select-open",
-            Overlay::ThemeEditor => "editor-open",
-            Overlay::SettingsAsk => "ask-open",
-            Overlay::DictationAsk => "dict-ask-open",
-            Overlay::ColourPicker => "picker-open",
-            Overlay::Help => "help-open",
-            Overlay::Find => "find-open",
-        }
-    }
 }
 
 /// Which overlays are open now.
@@ -170,13 +151,5 @@ mod tests {
         o.set(Overlay::Dialog, true);
         o.set(Overlay::Dialog, false);
         assert!(!o.any());
-    }
-
-    #[test]
-    fn the_list_and_the_names_are_complete_and_distinct() {
-        let mut names: Vec<&str> = Overlay::ALL.iter().map(|o| o.slint_name()).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), Overlay::ALL.len());
     }
 }

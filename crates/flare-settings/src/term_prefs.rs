@@ -8,6 +8,7 @@ use crate::kv::{PrefStore, Subscription, bool_pref_get, bool_pref_set};
 
 const SHELL_KEY: &str = "flare.term.shell";
 const AGENT_KEYS: &str = "flare.window.agentKeys";
+const OPEN_PREVIEWS: &str = "flare.window.openPreviews";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -20,6 +21,16 @@ pub fn agent_keys(s: &PrefStore) -> bool {
 
 pub fn set_agent_keys(s: &PrefStore, on: bool) {
     bool_pref_set(s, AGENT_KEYS, on);
+}
+
+/// Open previews in Flare (Surfaces stage 1): a left click on a path to a picture or a text file
+/// shows it in the tab's panel instead of handing it to Windows. Default ON; only a stored "0" is off.
+pub fn open_previews(s: &PrefStore) -> bool {
+    bool_pref_get(s, OPEN_PREVIEWS, true)
+}
+
+pub fn set_open_previews(s: &PrefStore, on: bool) {
+    bool_pref_set(s, OPEN_PREVIEWS, on);
 }
 
 /// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
@@ -41,6 +52,19 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn previews_are_on_until_a_stored_zero() {
+        let s = PrefStore::memory();
+        assert!(open_previews(&s));
+        set_open_previews(&s, false);
+        assert!(!open_previews(&s));
+        assert_eq!(s.get("flare.window.openPreviews").as_deref(), Some("0"));
+        set_open_previews(&s, true);
+        assert!(open_previews(&s));
+        s.set("flare.window.openPreviews", "junk");
+        assert!(open_previews(&s), "an unknown value reads as the default");
+    }
 
     #[test]
     fn saved_shell_id_is_none_until_chosen() {

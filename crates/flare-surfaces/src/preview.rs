@@ -19,8 +19,7 @@ pub const IMAGE_EXTS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "
 pub const TEXT_EXTS: [&str; 38] = [
     "txt", "md", "markdown", "rst", "log", "json", "jsonc", "yaml", "yml", "toml", "csv", "tsv",
     "ini", "cfg", "conf", "xml", "lock", "diff", "patch", "rs", "ts", "tsx", "c", "h", "cpp",
-    "hpp", "cc", "cs", "go", "java", "kt", "swift", "css", "scss", "sql", "slint", "vue",
-    "svelte",
+    "hpp", "cc", "cs", "go", "java", "kt", "swift", "css", "scss", "sql", "slint", "vue", "svelte",
 ];
 
 /// The most bytes of a text file shown (4 MB).
@@ -61,6 +60,19 @@ pub fn classify(path: &str) -> Option<PanelKind> {
 pub fn classify_resolved(abs: &str, canonical: &str) -> Option<PanelKind> {
     let a = classify(abs)?;
     (classify(canonical)? == a).then_some(a)
+}
+
+/// True when a panel may load this path as `kind`: a path on a local drive (`C:\\...`, never a
+/// network path, which would make Windows reach out), with no NUL, whose name is of that kind. The
+/// controller asks this before it starts a read, for a target that came from a click and for one
+/// that came back from `panels.json`, a file anyone can edit.
+pub fn loadable(path: &str, kind: &PanelKind) -> bool {
+    let b = path.as_bytes();
+    let local = b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/');
+    local && !path.contains('\0') && classify(path).as_ref() == Some(kind)
 }
 
 /// Why a file could not be shown: plain words for the panel.
@@ -196,9 +208,7 @@ pub fn decode_image(path: &Path) -> Result<Decoded, Reason> {
             .and_then(image::ImageReader::with_guessed_format)
             .map_err(|e| io_reason(&e))
     };
-    let (w, h) = open()?
-        .into_dimensions()
-        .map_err(|_| Reason::NotAnImage)?;
+    let (w, h) = open()?.into_dimensions().map_err(|_| Reason::NotAnImage)?;
     if u64::from(w) * u64::from(h) > IMAGE_PIXELS_MAX {
         return Err(Reason::TooManyPixels);
     }
@@ -236,10 +246,18 @@ mod tests {
         assert_eq!(classify("notes.md"), Some(PanelKind::Text));
         assert_eq!(classify("main.RS"), Some(PanelKind::Text));
         for ext in IMAGE_EXTS {
-            assert_eq!(classify(&format!("a.{ext}")), Some(PanelKind::Image), "{ext}");
+            assert_eq!(
+                classify(&format!("a.{ext}")),
+                Some(PanelKind::Image),
+                "{ext}"
+            );
         }
         for ext in TEXT_EXTS {
-            assert_eq!(classify(&format!("a.{ext}")), Some(PanelKind::Text), "{ext}");
+            assert_eq!(
+                classify(&format!("a.{ext}")),
+                Some(PanelKind::Text),
+                "{ext}"
+            );
         }
     }
 
@@ -262,6 +280,30 @@ mod tests {
         assert_eq!(classify_resolved("a.png", "b.txt"), None);
         assert_eq!(classify_resolved("a.txt", "b.md"), Some(PanelKind::Text));
         assert_eq!(classify_resolved("a.exe", "b.png"), None);
+    }
+
+    #[test]
+    fn only_a_local_file_of_the_right_kind_is_loadable() {
+        let img = PanelKind::Image;
+        let txt = PanelKind::Text;
+        assert!(loadable(r"C:\a\p.png", &img));
+        assert!(loadable("d:/a/p.JPG", &img));
+        assert!(loadable(r"C:\a\n.md", &txt));
+        assert!(!loadable(r"C:\a\n.md", &img), "the wrong kind");
+        assert!(!loadable(r"C:\a\run.exe", &img));
+        for bad in [
+            r"\\server\share\p.png",
+            "//server/share/p.png",
+            r"\\?\C:\p.png",
+            r"\\.\C:\p.png",
+            "p.png",
+            r"a\p.png",
+            "C:p.png",
+            "C:\\p\0.png",
+            "",
+        ] {
+            assert!(!loadable(bad, &img), "{bad:?}");
+        }
     }
 
     #[test]

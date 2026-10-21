@@ -53,6 +53,11 @@ impl Profile {
         self.dir.join("window.json")
     }
 
+    /// Which tab had which panel (Surfaces stage 1), kept next to `tabs.json`.
+    pub fn panels_file(&self) -> PathBuf {
+        self.dir.join("panels.json")
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.dir.join("settings.json")
     }

@@ -28,6 +28,7 @@ pub mod input_b;
 pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
+pub mod panel;
 pub mod resize;
 pub mod settings_a;
 pub mod settings_b;
@@ -105,6 +106,7 @@ pub fn register_all(r: &mut ProbeRegistry) {
     input_c::register(r);
     input_d::register(r);
     lifecycle::register(r);
+    panel::register(r);
     resize::register(r);
     settings_a::register(r);
     settings_b::register(r);

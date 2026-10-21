@@ -2,7 +2,7 @@
 //!
 //! Source: Prism Terminal's `TerminalPage.tsx`, `ShellSection`, `TerminalTextSection` and
 //! `HelpSection`. Sections in order: shell (only once the detected list is in), opening, keys,
-//! text, help.
+//! links (this app's, Surfaces stage 1), text, help.
 
 use super::{
     BlockModel, Button, Control, Opt, PageEnv, PageModel, RowModel, SectionModel, opts, plain_row,
@@ -12,7 +12,7 @@ use crate::agent_prefs::agent_guard;
 use crate::help_prefs::help_enabled;
 use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use crate::rows::{RowDef, row};
-use crate::term_prefs::{agent_keys, saved_shell_id};
+use crate::term_prefs::{agent_keys, open_previews, saved_shell_id};
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
 
@@ -142,6 +142,17 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
     )
 }
 
+/// The Links section: one switch, on by default (Surfaces stage 1).
+fn links_section(env: &PageEnv<'_>) -> SectionModel {
+    section(
+        "links",
+        vec![BlockModel::Row(switch_row(
+            def("open-previews"),
+            open_previews(env.prefs),
+        ))],
+    )
+}
+
 /// The Text section: the face (each name in its own face) and the size, 50 to 200 in tens.
 fn text_section(env: &PageEnv<'_>) -> SectionModel {
     let faces = TERM_FONTS
@@ -194,6 +205,7 @@ pub fn build_terminal(env: &PageEnv<'_>) -> PageModel {
     sections.extend(shell_section(env));
     sections.push(opening_section(env));
     sections.push(keys_section(env));
+    sections.push(links_section(env));
     sections.push(text_section(env));
     sections.push(help_section(env));
     PageModel {
@@ -323,7 +335,7 @@ mod tests {
         assert_eq!(page.id, "terminal");
         assert_eq!(
             section_ids(&page),
-            vec!["shell", "opening", "keys", "text", "help"]
+            vec!["shell", "opening", "keys", "links", "text", "help"]
         );
         assert_eq!(
             all_row_ids(&page),
@@ -333,10 +345,30 @@ mod tests {
                 "explorer-verb",
                 "agent-keys",
                 "agent-guard",
+                "open-previews",
                 "term-font-family",
                 "term-font",
                 "help-enabled",
             ]
+        );
+    }
+
+    #[test]
+    fn the_previews_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let e = env(&prefs, &look, face);
+        let page = build_terminal(&e);
+        assert_eq!(
+            the_row(&page, "open-previews").control,
+            Control::Switch { on: true }
+        );
+        crate::term_prefs::set_open_previews(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "open-previews").control,
+            Control::Switch { on: false }
         );
     }
 

@@ -32,6 +32,7 @@ mod material_ctl;
 mod memory;
 mod menus_ui;
 mod openers;
+mod panel_ctl;
 mod picker_ctl;
 mod scrollbar;
 mod sessions;

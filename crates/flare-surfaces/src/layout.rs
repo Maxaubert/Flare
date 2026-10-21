@@ -198,7 +198,11 @@ mod tests {
             let slot = drag_to(page, scale, page - px(500.0, scale));
             let share = share_of(slot, page).unwrap();
             let l = slot_layout(page, scale, Some(share));
-            assert!((l.slot_w - slot).abs() <= 1, "{scale}: {} vs {slot}", l.slot_w);
+            assert!(
+                (l.slot_w - slot).abs() <= 1,
+                "{scale}: {} vs {slot}",
+                l.slot_w
+            );
         }
         assert_eq!(share_of(10, 0), None);
         assert_eq!(share_of(0, 100), Some(0.01));

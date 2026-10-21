@@ -77,7 +77,8 @@ pub fn panels_json(tabs: &[SavedTabPanel]) -> String {
         .take(MAX_TABS)
         .map(|t| match &t.panel {
             Some(p) => {
-                let mut panel = json!({ "kind": p.kind.name(), "target": p.target, "open": p.open });
+                let mut panel =
+                    json!({ "kind": p.kind.name(), "target": p.target, "open": p.open });
                 if let Some(w) = p.width {
                     // Four places are far finer than a pixel and keep the file stable.
                     panel["width"] = json!((f64::from(w) * 10_000.0).round() / 10_000.0);
@@ -268,13 +269,18 @@ mod tests {
         let got = parse_panels(raw);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].panel, None);
-        assert_eq!(got[1].panel.as_ref().map(|p| p.kind.clone()), Some(PanelKind::Image));
+        assert_eq!(
+            got[1].panel.as_ref().map(|p| p.kind.clone()),
+            Some(PanelKind::Image)
+        );
     }
 
     #[test]
     fn a_panel_without_a_usable_target_is_dropped() {
         for target in [r#""""#, "5", "null", r#""a\u0000b""#] {
-            let raw = format!(r#"{{"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"image","target":{target}}}}}]}}"#);
+            let raw = format!(
+                r#"{{"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"image","target":{target}}}}}]}}"#
+            );
             assert_eq!(parse_panels(&raw)[0].panel, None, "{target}");
         }
     }
@@ -307,7 +313,9 @@ mod tests {
 
     #[test]
     fn at_most_fifty_tabs_are_read() {
-        let tabs: Vec<Value> = (0..80).map(|i| json!({ "cwd": format!(r"C:\t{i}") })).collect();
+        let tabs: Vec<Value> = (0..80)
+            .map(|i| json!({ "cwd": format!(r"C:\t{i}") }))
+            .collect();
         let raw = json!({ "tabs": tabs }).to_string();
         assert_eq!(parse_panels(&raw).len(), MAX_TABS);
     }

@@ -187,6 +187,7 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "taskbar-badge" => agent_prefs::set_taskbar_badge_on(p, on),
         "agent-guard" => agent_prefs::set_agent_guard(p, on),
         "agent-keys" => term_prefs::set_agent_keys(p, on),
+        "open-previews" => term_prefs::set_open_previews(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         _ => {}
     }

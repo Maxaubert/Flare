@@ -35,6 +35,7 @@ use flare_term::osc52::OSC52_MAX;
 use flare_term::path_links::{Ask, BATCH_MS, Found, PathLinks};
 use flare_term::path_open::{
     OpenMode, PathHit, PathOpeners, StatFn, StatGate, StatGateOptions, open_term_path, path_kinds,
+    resolve_openable_file,
 };
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
@@ -67,6 +68,12 @@ pub enum TermMsg {
     /// ran (`None` when it was dropped). The UI frees that tab's pending copy when it handles it.
     BigCopied(String, u64, Option<bool>),
     PathAnswer(Ask, Option<Vec<Option<PathHit>>>),
+    /// A click resolved to a file the panel may show: the tab, what to show it as, and the path.
+    Preview {
+        tab: String,
+        kind: flare_surfaces::PanelKind,
+        abs: String,
+    },
 }
 
 /// Everything TermUi needs from the outside, injected.
@@ -278,6 +285,9 @@ pub struct TermUi {
     copy_pending: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
     /// The one worker for OSC 52 writes: latest wins.
     osc_copier: LatestCopier,
+    /// "Open previews in Flare" (Surfaces stage 1): a click on a path to a picture or a text file
+    /// asks the app to show it in the tab's panel. Set from the setting on every refresh.
+    previews: bool,
 }
 
 /// The longest a big copy may keep Ctrl+C a copy.
@@ -350,6 +360,7 @@ impl TermUi {
             copy_gen: Arc::new(AtomicU64::new(0)),
             copy_pending: Arc::new(Mutex::new(HashMap::new())),
             osc_copier,
+            previews: true,
         }
     }
 
@@ -477,6 +488,39 @@ impl TermUi {
             },
             move |req, state| post(TermMsg::Clip(req, state)),
         );
+    }
+
+    /// A plain click on a path. With previews on, a worker re-resolves the path (rule 13) and, when
+    /// it is a picture or a text file on the click allowlist (rule 14), tells the app to show it in
+    /// the tab's panel; everything else (a folder, a document, a script) goes the way it always
+    /// went. Never runs anything.
+    fn click_path_async(&self, tab: String, base: String, text: String) {
+        if !self.previews {
+            self.open_path_async(base, text, OpenMode::Open);
+            return;
+        }
+        let openers = Arc::clone(&self.deps.openers);
+        let home = self.deps.home.clone();
+        let post = Arc::clone(&self.deps.post);
+        thread::spawn(move || {
+            if let Some((abs, real)) = resolve_openable_file(&base, &text, &home)
+                && let Some(kind) = flare_surfaces::preview::classify_resolved(&abs, &real)
+                && flare_surfaces::preview::loadable(&real, &kind)
+            {
+                post(TermMsg::Preview {
+                    tab,
+                    kind,
+                    abs: real,
+                });
+                return;
+            }
+            let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+        });
+    }
+
+    /// Whether a click on a picture or a text file shows it in the panel.
+    pub fn set_previews(&mut self, on: bool) {
+        self.previews = on;
     }
 
     /// The only way a path is opened: a worker re-resolves it and applies the allowlist.
@@ -827,7 +871,7 @@ impl TermUi {
         match click_action(&mark.target, shown.as_deref(), base.as_deref(), 0) {
             LinkAction::OpenUrl(u) => self.open_link(&u),
             LinkAction::OpenPath { base, text } => {
-                self.open_path_async(base, text, OpenMode::Open);
+                self.click_path_async(tab.id.to_string(), base, text);
             }
             LinkAction::Nothing => {}
         }
@@ -1047,6 +1091,8 @@ impl TermUi {
                     self.redraw();
                 }
             }
+            // The app shows it (AppCtl::on_msg takes this before it gets here).
+            TermMsg::Preview { .. } => {}
             TermMsg::PathAnswer(ask, hits) => {
                 let woken = self.inputs.borrow_mut().paths.answer(&ask, hits, now);
                 self.recheck = true;
@@ -2059,11 +2105,11 @@ mod tests {
     #[test]
     fn a_path_link_click_opens_through_the_allowlist_on_a_worker() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("a.pdf"), "x").unwrap();
         std::fs::write(dir.path().join("run.bat"), "x").unwrap();
         std::fs::create_dir(dir.path().join("x.d")).unwrap();
         let mut r = Rig::with_cwd(1.0, dir.path());
-        light_up(&mut r, "a.txt run.bat x.d");
+        light_up(&mut r, "a.pdf run.bat x.d");
         r.frame();
         r.click(2, 0);
         r.click(8, 0);
@@ -2073,7 +2119,7 @@ mod tests {
         let rec = r.openers.records();
         let has = |f: &dyn Fn(&OpenedRecord) -> bool| rec.iter().any(f);
         assert!(
-            has(&|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("a.txt"))),
+            has(&|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("a.pdf"))),
             "{rec:?}"
         );
         assert!(
@@ -2087,6 +2133,68 @@ mod tests {
         assert!(!has(
             &|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("run.bat"))
         ));
+    }
+
+    /// The Preview messages posted so far: (tab, kind name, path).
+    fn previews(r: &Rig) -> Vec<(String, String, String)> {
+        r.msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                TermMsg::Preview { tab, kind, abs } => {
+                    Some((tab.clone(), kind.name(), abs.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("p.png"), "x").unwrap();
+        std::fs::write(dir.path().join("run.bat"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        light_up(&mut r, "a.txt p.png run.bat");
+        r.frame();
+        r.click(2, 0);
+        r.click(8, 0);
+        r.click(15, 0);
+        until("two previews and a reveal", || {
+            previews(&r).len() >= 2 && !r.openers.records().is_empty()
+        });
+        let got = previews(&r);
+        assert!(
+            got.iter()
+                .any(|(_, k, p)| k == "text" && p.ends_with("a.txt")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|(_, k, p)| k == "image" && p.ends_with("p.png")),
+            "{got:?}"
+        );
+        let rec = r.openers.records();
+        assert_eq!(rec.len(), 1, "{rec:?}");
+        assert!(
+            matches!(&rec[0], OpenedRecord::Reveal(p) if p.ends_with("run.bat")),
+            "{rec:?}"
+        );
+    }
+
+    #[test]
+    fn with_previews_off_no_preview_is_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.ui.set_previews(false);
+        light_up(&mut r, "a.txt");
+        r.frame();
+        r.click(2, 0);
+        until("the open", || !r.openers.records().is_empty());
+        assert!(previews(&r).is_empty());
     }
 
     #[test]

@@ -1001,6 +1001,12 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The panels' file is read here, at start, before the restore gives the tabs their panels.
+        rc.borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                inst.profile.panels_file(),
+                SAVE_DELAY,
+            )));
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
