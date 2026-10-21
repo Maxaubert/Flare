@@ -13,8 +13,8 @@
 //! server; the cursor-at-the-edge watch for a collapsed sidebar.
 #![allow(dead_code)] // the window (Task 30b) is the caller
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -23,8 +23,19 @@ use std::time::Duration;
 use flare_agent::close::holds_window_close;
 use flare_agent::keys::AgentView;
 use flare_agent::kinds::{AgentKind, CODEX_RESUME, DetectedAgent};
+use flare_agent::mark_motion::{MarkPhase, MarksPause, STILL, mark_phase, needs_clock, pulse_at};
+use flare_agent::resume::valid_resume;
+use flare_agent::tab_look::{Switches, TabSets};
+use flare_agent::tab_mark::MarkState;
+use flare_diag::agent_diag::NullSink;
 use flare_render::metrics::CellMetrics;
+use flare_settings::agent_prefs::{
+    agent_done_on, agent_failed_on, agent_guard, agent_question_on, agent_rainbow,
+    on_agent_look_change, taskbar_badge_on,
+};
 use flare_settings::kv::PrefStore;
+use flare_settings::kv::Subscription;
+use flare_settings::look::LookStore;
 use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use flare_settings::recent_roots::{pinned_roots, recent_roots};
 use flare_settings::sidebar::{SidebarMode, sidebar_mode};
@@ -42,7 +53,7 @@ use flare_tabs::restore::{
 };
 use flare_tabs::reveal::Point;
 use flare_tabs::tab_drag::Release;
-use flare_tabs::tabs::TabKind;
+use flare_tabs::tabs::{Pending, TabKind};
 use flare_tabs::tabs_store::TabsStore;
 use flare_tabs::tip_place::{BoxF, TipSide};
 use flare_term::click_caret::MouseTracking;
@@ -50,15 +61,21 @@ use flare_term::emulator::TermEvent;
 use flare_term::handle::TermHandle;
 use flare_term::keys::{KeyEvent, KeyState, term_key_action};
 use flare_term::path_open::{PathOpeners, StatFn};
+use flare_theme::agent_colours::theme_agent_colours;
+use flare_theme::look::apply_look;
+use flare_theme::resolve::preset_accent;
 use flare_win::argv::{folders_from_argv, own_files};
 use flare_win::clipboard_port::ClipboardPort;
 use flare_win::dblclick::DoubleClick;
 use flare_win::single_instance::Handoff;
+use flare_win::taskbar::TaskbarBadge;
 use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
+use crate::agent_hub::{AgentHub, HubDeps, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::font_ctl::{FontCtl, effective_px};
+use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
 use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
@@ -67,13 +84,14 @@ use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
 use crate::tabs_ui::{
-    GeomData, MarkRole, SideDrag, StripDrag, View, ViewInput, build_view, slot_to_model, sync_rows,
+    AgentRows, GeomData, RowData, SideDrag, StripDrag, View, ViewInput, build_view, needs_of,
+    slot_to_model, sync_rows,
 };
 use crate::term_menu::to_menu_row;
 use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
-use crate::{AppWindow, MenuRow, OverflowRow, Place, StripGeom, TabRow};
+use crate::{AppWindow, MarkMotion, MenuRow, OverflowRow, Place, StripGeom, TabRow};
 use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
@@ -93,6 +111,8 @@ pub enum UiMsg {
     HostWake,
     /// A worker's answer for the terminal controller (clipboard read, copy result, path stats).
     Term(TermMsgBox),
+    /// The theme, the indicator, a colour pick or an attention switch changed.
+    LookChanged,
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -145,8 +165,9 @@ pub struct TermPorts {
     pub clip_port: Arc<dyn ClipboardPort>,
     /// Production `WinOpeners`; `RecordingOpeners` under `--e2e`.
     pub openers: Arc<dyn PathOpeners + Send + Sync>,
-    /// The agent the keyboard path asks about (M6 implements it; `NoAgent` until then).
-    pub agent: Rc<dyn AgentView>,
+    /// The agent view the keyboard path asks about. None: the hub's arm state (production). A test
+    /// may pass its own.
+    pub agent: Option<Rc<dyn AgentView>>,
     pub dbl: DoubleClick,
     /// The stat behind the path-link questions (`FsStat` in production).
     pub stat: Arc<dyn StatFn>,
@@ -189,6 +210,93 @@ const BAR_H: f32 = 36.0;
 const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
+/// The mark clock's frame (about 60 per second); it runs only while a mark moves.
+const MARK_FRAME_MS: u64 = 16;
+
+/// The one clock behind every moving mark, the skeleton's pulse included. The timer runs only
+/// while something moves, a window is showing and Windows' animation effects are on.
+struct MarkClock {
+    timer: slint::Timer,
+    /// Shared with the timer's body: a minimised window moves no mark.
+    pause: Rc<RefCell<MarksPause>>,
+    /// The pause clock's reading when the marks started moving; `None` while nothing moves, so a
+    /// restart after a pure stop begins at phase zero and a restore after minimising goes on.
+    start: Option<u64>,
+}
+
+impl MarkClock {
+    fn new() -> Self {
+        Self {
+            timer: slint::Timer::default(),
+            pause: Rc::new(RefCell::new(MarksPause::new())),
+            start: None,
+        }
+    }
+}
+
+/// A row's mark state integer back to the state (0 is none).
+fn mark_state_of(n: i32) -> Option<MarkState> {
+    match n {
+        1 => Some(MarkState::Working),
+        2 => Some(MarkState::Question),
+        3 => Some(MarkState::Done),
+        4 => Some(MarkState::Failed),
+        _ => None,
+    }
+}
+
+/// Puts one instant of every moving mark on the window.
+fn push_frame(app: &AppWindow, p: MarkPhase, pulse: f32) {
+    let g = app.global::<MarkMotion>();
+    g.set_still(p.still);
+    g.set_spin(p.spin_deg);
+    g.set_breathe(p.breathe);
+    g.set_run(p.run_t);
+    g.set_flow(p.flow_px);
+    g.set_pulse(pulse);
+}
+
+/// The marks the look and the picks give now.
+fn compute_marks(prefs: &PrefStore) -> UiMarks {
+    let store = LookStore::new(prefs.clone());
+    let snap = store.input_snapshot();
+    let look = apply_look(&snap.as_input(false));
+    let accent = preset_accent(
+        &look.theme_id,
+        &look.theme_id,
+        snap.custom.as_ref(),
+        snap.draft.as_ref(),
+    );
+    let themed = theme_agent_colours(
+        &look.term,
+        accent.as_deref(),
+        snap.background.as_deref(),
+        snap.accent.as_deref(),
+    );
+    let rainbow = agent_rainbow(prefs);
+    let text = look
+        .chrome
+        .vars
+        .get("--p-text")
+        .cloned()
+        .unwrap_or_default();
+    ui_marks(
+        &current_palette(&look, &themed, &picks_from(&store), rainbow),
+        rainbow,
+        &text,
+    )
+}
+
+/// The attention switches and the indicator style now.
+fn switches_of(prefs: &PrefStore) -> Switches {
+    Switches {
+        indicator: indicator_of(&LookStore::new(prefs.clone())),
+        done_on: agent_done_on(prefs),
+        question_on: agent_question_on(prefs),
+        failed_on: agent_failed_on(prefs),
+        rainbow: agent_rainbow(prefs),
+    }
+}
 
 pub struct AppCtl {
     weak: slint::Weak<AppWindow>,
@@ -235,6 +343,54 @@ pub struct AppCtl {
     term_hot: u8,
     /// The find bar was shown at the last push (focus follows it opening and closing).
     find_shown: bool,
+    /// The agent indicator, the arm state, the poll and the question watches (Task 28).
+    hub: AgentHub,
+    /// The tabs the hub has been given a handle for; one that goes away is forgotten.
+    hub_known: HashSet<String>,
+    /// The hub's view of the host's handles, refreshed before every hub call.
+    handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>>,
+    /// The colours the marks wear, from the look and the picks.
+    marks: UiMarks,
+    /// The rainbow switch `marks` was made with.
+    marks_rainbow: bool,
+    _look_subs: Vec<Subscription>,
+    /// The mark clock (Task 29).
+    clock: MarkClock,
+    /// Windows' "animation effects" switch; tests inject it.
+    animations: Rc<dyn Fn() -> bool>,
+    /// The window is minimised: no mark moves.
+    minimised: bool,
+    /// The resume skeleton shows over the front tab (it pulses on the mark clock).
+    skeleton: Rc<Cell<bool>>,
+    /// Where the skeleton is in its life (shown, fading, gone).
+    skel: Skel,
+    /// The skeleton has seen a real resume (so it fades instead of vanishing).
+    skel_resumed: bool,
+    /// The arm state as the keyboard path sees it (the hub's, unless a test passed its own).
+    agent_view: Rc<dyn AgentView>,
+    /// The window has the keyboard focus (a look needs it).
+    focused: bool,
+    /// What the hub was last told is being looked at.
+    looked: Option<(Option<String>, bool)>,
+    /// The taskbar overlay, made once the window has a handle.
+    badge: Option<TaskbarBadge>,
+    /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
+    /// agent's icon from the first frame and are saved as that agent until the hub takes over.
+    restoring: HashMap<String, (AgentKind, u64)>,
+}
+
+/// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
+const SKELETON_FADE_MS: u64 = 180;
+/// A restored tab keeps its saved agent this long without the hub having seen it.
+const RESTORE_GRACE_MS: u64 = 15_000;
+
+/// The resume skeleton over the front tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Skel {
+    Gone,
+    Shown,
+    /// Fading; gone at the moment given.
+    Leaving(u64),
 }
 
 /// The front shell tab as owned pieces; `info` lends them to the terminal controller.
@@ -264,7 +420,7 @@ impl TermPorts {
         Self {
             clip_port: Arc::new(flare_win::clipboard_port::MemoryClipboard::new()),
             openers: Arc::new(crate::openers::RecordingOpeners::new()),
-            agent: Rc::new(flare_agent::keys::NoAgent),
+            agent: None,
             dbl: flare_win::dblclick::FALLBACK,
             stat: Arc::new(flare_term::path_open::FsStat),
             metrics: Rc::new(|| {
@@ -351,19 +507,6 @@ macro_rules! bind {
     }};
 }
 
-fn role_colour(role: MarkRole) -> slint::Color {
-    match role {
-        MarkRole::Working => slint::Color::from_rgb_u8(0xd9, 0xa4, 0x41),
-        MarkRole::Done => slint::Color::from_rgb_u8(0x6f, 0xb3, 0x6f),
-        MarkRole::Question => slint::Color::from_rgb_u8(0x5b, 0x9b, 0xd5),
-        MarkRole::Failed => slint::Color::from_rgb_u8(0xd9, 0x5b, 0x5b),
-    }
-}
-
-fn mark_colour(role: Option<MarkRole>) -> slint::Color {
-    role.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), role_colour)
-}
-
 fn menu_row(r: &MenuRowData) -> MenuRow {
     MenuRow {
         label: r.label.as_str().into(),
@@ -377,7 +520,8 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
     }
 }
 
-fn overflow_row(r: &OverflowRowData) -> OverflowRow {
+fn overflow_row(r: &OverflowRowData, rows: &[RowData]) -> OverflowRow {
+    let row = rows.iter().find(|x| x.id == r.id);
     OverflowRow {
         id: r.id.as_str().into(),
         label: r.label.as_str().into(),
@@ -385,6 +529,9 @@ fn overflow_row(r: &OverflowRowData) -> OverflowRow {
         needs: r.needs,
         loading: r.loading,
         settings: r.settings,
+        mark_state: row.map_or(0, |x| x.mark_state),
+        mark_color: row.map_or(slint::Color::from_argb_u8(0, 0, 0, 0), |x| x.mark_color),
+        agent: row.map_or(0, |x| x.agent),
     }
 }
 
@@ -404,10 +551,53 @@ impl AppCtl {
         let prefs = deps.prefs.clone();
         let now = (deps.clock)();
         let boot_saved = deps.tabs_store.load(); // sync-ok: startup read of tabs.json
-        let term = Self::make_term(app, &deps);
-        let model = TabModel::boot(&boot_saved, now);
+        let mut model = TabModel::boot(&boot_saved, now);
+        // A placeholder comes back to the agent it was saved with: its icon and ring from the first
+        // frame. (The placeholders are in the saved order.)
+        let slot_ids: Vec<String> = model.state.tabs.iter().map(|t| t.id.clone()).collect();
+        for (id, saved) in slot_ids.iter().zip(&boot_saved.tabs) {
+            if saved.agent.is_some() {
+                model.set_agent(id, saved.agent);
+            }
+        }
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
+        let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
+        let hub = {
+            let mgr = deps.host.manager();
+            let by_id = Rc::clone(&handles);
+            let post = Arc::clone(&deps.post);
+            AgentHub::new(HubDeps {
+                prefs: prefs.clone(),
+                now: Rc::clone(&deps.clock),
+                handle: Rc::new(move |id| by_id.borrow().get(id).cloned()),
+                token: Rc::new(move |id| mgr.tab_token(id)),
+                // Under --e2e and in tests nothing is posted to a real Sonara.
+                post_question: if deps.e2e {
+                    Arc::new(|_, _| {})
+                } else {
+                    sonara_post()
+                },
+                diag: Arc::new(NullSink),
+                wake: Arc::new(move || post(UiMsg::HostWake)),
+                reports_off: Rc::new(|_| {}),
+            })
+        };
+        let agent_view: Rc<dyn AgentView> = deps.term.agent.clone().unwrap_or_else(|| hub.view());
+        let term = Self::make_term(app, &deps, Rc::clone(&agent_view));
+        let marks = compute_marks(&prefs);
+        let marks_rainbow = agent_rainbow(&prefs);
+        let look_subs = {
+            let on_change = {
+                let post = Arc::clone(&deps.post);
+                move || post(UiMsg::LookChanged)
+            };
+            vec![
+                LookStore::new(prefs.clone()).on_look_change(on_change.clone()),
+                on_agent_look_change(&prefs, on_change),
+            ]
+        };
+        Self::push_rainbow(app, &marks);
         let ctl = AppCtl {
             weak: app.as_weak(),
             me: Weak::new(),
@@ -458,6 +648,23 @@ impl AppCtl {
             term_due: None,
             term_hot: 0,
             find_shown: false,
+            hub,
+            hub_known: HashSet::new(),
+            handles,
+            marks,
+            marks_rainbow,
+            _look_subs: look_subs,
+            clock: MarkClock::new(),
+            animations: Rc::new(flare_win::motion::animations_enabled),
+            minimised: false,
+            skeleton: Rc::new(Cell::new(false)),
+            skel: Skel::Gone,
+            skel_resumed: false,
+            agent_view,
+            focused: true,
+            looked: None,
+            badge: None,
+            restoring: HashMap::new(),
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -567,7 +774,7 @@ impl AppCtl {
 
     /// The terminal controller over this window: its closures reach the window only through a weak
     /// handle, so a message or a redraw after the window is gone does nothing.
-    fn make_term(app: &AppWindow, deps: &Deps) -> TermUi {
+    fn make_term(app: &AppWindow, deps: &Deps, agent: Rc<dyn AgentView>) -> TermUi {
         let weak = app.as_weak();
         let dirty = Rc::clone(&deps.term.mark_grid_dirty);
         let redraw: Rc<dyn Fn()> = {
@@ -596,7 +803,7 @@ impl AppCtl {
             clock_ms: Rc::clone(&deps.clock),
             redraw,
             set_cursor,
-            agent: Rc::clone(&deps.term.agent),
+            agent,
             home: deps.home.clone(),
             dbl: deps.term.dbl,
             stat: Arc::clone(&deps.term.stat),
@@ -683,18 +890,68 @@ impl AppCtl {
             1.0
         };
         let strip_phys = app.get_strip_phys_width();
+        self.sync_hub();
+        if self.prune_restoring(now) {
+            self.sync_model_agents();
+        }
+        self.sync_looking();
+        self.sync_marks(&app);
         let none: HashMap<String, f32> = HashMap::new();
-        let needs: HashMap<String, MarkRole> = HashMap::new();
-        let base = build_view(&ViewInput {
-            model: &self.model,
-            home: &self.deps.home,
-            query: &self.query,
-            strip_phys,
-            scale: self.scale,
-            needs: &needs,
-            offsets: &none,
-            carried: None,
-        });
+        let base = {
+            let ind = self.hub.indicator();
+            let mut kinds = HashMap::new();
+            let mut failed_kinds = HashMap::new();
+            // The agents the hub knows, plus the tabs coming back to one: a placeholder with a
+            // saved agent and a restored tab whose agent has not painted yet wear the agent's icon
+            // and the loading ring from the first frame (they are not new work: no mark).
+            let mut agents: HashSet<String> = ind.agent_ids().clone();
+            let mut loading = HashSet::new();
+            for t in &self.model.state.tabs {
+                if let Some(k) = self.hub.agent_kind(&t.id) {
+                    kinds.insert(t.id.clone(), k);
+                } else if let Some((k, _)) = self.restoring.get(&t.id) {
+                    kinds.insert(t.id.clone(), detected(Some(*k)));
+                    agents.insert(t.id.clone());
+                    if self.deps.host.handle(&t.id).is_some_and(|h| h.resuming()) {
+                        loading.insert(t.id.clone());
+                    }
+                } else if t.pending.is_some()
+                    && let Some(k) = self.model.agent_kind(&t.id)
+                {
+                    kinds.insert(t.id.clone(), detected(Some(k)));
+                    agents.insert(t.id.clone());
+                }
+                if let Some(f) = self.hub.failed_kind(&t.id) {
+                    failed_kinds.insert(t.id.clone(), f.to_string());
+                }
+            }
+            let agent = AgentRows {
+                sets: TabSets {
+                    agents: &agents,
+                    working: ind.working_ids(),
+                    question: ind.question_ids(),
+                    failed: ind.failed_ids(),
+                    done: ind.done_ids(),
+                },
+                sw: switches_of(&self.prefs),
+                marks: &self.marks,
+                kinds,
+                failed_kinds,
+                loading,
+            };
+            let needs = needs_of(self.model.state.tabs.iter().map(|t| t.id.as_str()), &agent);
+            build_view(&ViewInput {
+                model: &self.model,
+                home: &self.deps.home,
+                query: &self.query,
+                strip_phys,
+                scale: self.scale,
+                needs: &needs,
+                offsets: &none,
+                carried: None,
+                agent: &agent,
+            })
+        };
         let mut offsets = HashMap::new();
         if self.strip_drag.carrying() {
             offsets = self.strip_drag.offsets(&base);
@@ -712,9 +969,9 @@ impl AppCtl {
             r.carried = carried.as_deref() == Some(r.id.as_str());
         }
 
-        sync_rows(&self.rows_model, &view.rows, &mark_colour);
+        sync_rows(&self.rows_model, &view.rows);
         if self.last_geom.as_ref() != Some(&view.geom) {
-            let dots: Vec<slint::Color> = view.geom.dots.iter().copied().map(role_colour).collect();
+            let dots: Vec<slint::Color> = view.geom.dots.iter().map(|d| d.colour).collect();
             app.set_strip_geom(StripGeom {
                 more_x: view.geom.more_x,
                 more_w: view.geom.more_w,
@@ -806,8 +1063,361 @@ impl AppCtl {
         }
 
         self.push_term();
+        self.update_skeleton(now);
+        self.update_clock();
+        self.update_badge();
         app.window().request_redraw();
         self.kick();
+    }
+
+    // ---- the agent hub and the mark clock -----------------------------------------------------
+
+    /// Starts the process poll (production; a test world has none).
+    pub fn start_agent_poll(&mut self) {
+        self.hub
+            .start_poll(crate::agent_hub::PollSource::Real(self.deps.host.manager()));
+    }
+
+    /// The overlay icon on the taskbar button, made once the window has a handle.
+    pub fn set_taskbar_badge(&mut self, badge: TaskbarBadge) {
+        self.badge = Some(badge);
+        self.update_badge();
+    }
+
+    /// The count of tabs that want a look, on the taskbar button; cleared when none, or when the
+    /// setting is off. A repeat of the same count at the same size draws nothing.
+    fn update_badge(&mut self) {
+        let n = self.hub.attention(&switches_of(&self.prefs)).count;
+        let on = taskbar_badge_on(&self.prefs);
+        let scale = self.scale;
+        let Some(b) = self.badge.as_mut() else { return };
+        if !on || n == 0 {
+            b.clear();
+        } else {
+            b.set(n, scale);
+        }
+    }
+
+    /// The agent a tab hosts, as far as anything knows: the indicator, or the saved agent of a tab
+    /// coming back.
+    fn agent_present(&self, id: &str) -> bool {
+        self.hub.agent_here(id) || self.model.has_agent(id)
+    }
+
+    fn agent_named(&self, id: &str) -> DetectedAgent {
+        self.hub
+            .agent_kind(id)
+            .filter(|_| self.hub.agent_here(id))
+            .unwrap_or_else(|| detected(self.model.agent_kind(id)))
+    }
+
+    /// How long the agent in the tab has been working, if it is.
+    fn working_for_ms(&self, id: &str) -> Option<u64> {
+        if self.hub.working(id) {
+            return self.hub.working_for(id);
+        }
+        self.working
+            .get(id)
+            .map(|since| self.now().saturating_sub(*since))
+    }
+
+    /// `tabs.json` records an agent only for a present Claude or Codex (never `other`), and for a
+    /// tab coming back to one until the hub has seen it.
+    fn sync_model_agents(&mut self) {
+        let ids: Vec<String> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter(|t| t.kind == TabKind::Shell && t.pending.is_none())
+            .map(|t| t.id.clone())
+            .collect();
+        for id in ids {
+            let want = self
+                .hub
+                .saved_agent(&id)
+                .or_else(|| self.restoring.get(&id).map(|(k, _)| *k));
+            if self.model.agent_kind(&id) != want {
+                self.model.set_agent(&id, want);
+            }
+        }
+    }
+
+    /// A restored tab stops wearing its saved agent once the hub has seen the agent, or once the
+    /// resume is over and the grace has run out. True when one was dropped.
+    fn prune_restoring(&mut self, now: u64) -> bool {
+        let gone: Vec<String> = self
+            .restoring
+            .iter()
+            .filter(|(id, (_, at))| {
+                let tab = self.model.state.tabs.iter().any(|t| &t.id == *id);
+                let resuming = self.deps.host.handle(id).is_some_and(|h| h.resuming());
+                !tab || self.hub.agent_here(id)
+                    || (!resuming && now.saturating_sub(*at) >= RESTORE_GRACE_MS)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let any = !gone.is_empty();
+        for id in gone {
+            self.restoring.remove(&id);
+        }
+        any
+    }
+
+    /// What the hub is told is being looked at: the shell in front, and whether the window has the
+    /// keyboard focus. Told on a change only.
+    fn sync_looking(&mut self) {
+        let front = self.model.active_shell().map(|t| t.id.clone());
+        let now = (front, self.focused);
+        if self.looked.as_ref() == Some(&now) {
+            return;
+        }
+        self.hub.set_looking(now.0.as_deref(), now.1);
+        self.looked = Some(now);
+    }
+
+    /// The window gained or lost the keyboard focus. Coming back is a look.
+    pub fn on_focus(&mut self, focused: bool) {
+        if focused == self.focused {
+            return;
+        }
+        self.focused = focused;
+        self.sync_looking();
+        if self.hub.take_changed() {
+            self.sync_model_agents();
+            self.refresh();
+        }
+    }
+
+    /// The resume skeleton: shown while the tab in front resumes (or is a placeholder for an
+    /// agent), faded for 180 ms once the agent has painted, then gone.
+    fn update_skeleton(&mut self, now: u64) {
+        let front_resuming = self.front_handle().is_some_and(|h| h.resuming());
+        let front_placeholder = self
+            .model
+            .state
+            .active_id
+            .as_deref()
+            .and_then(|a| self.model.state.tabs.iter().find(|t| t.id == a))
+            .is_some_and(|t| t.pending == Some(Pending::Agent));
+        let want = front_resuming || front_placeholder;
+        let before = self.skel;
+        if front_resuming {
+            self.skel_resumed = true;
+        }
+        self.skel = match (self.skel, want) {
+            (_, true) => Skel::Shown,
+            // The agent painted: the page fades. A placeholder whose tab turned out to be a plain
+            // shell (no session to resume) goes at once.
+            (Skel::Shown, false) if self.skel_resumed => Skel::Leaving(now + SKELETON_FADE_MS),
+            (Skel::Shown, false) => Skel::Gone,
+            (Skel::Leaving(t), false) if now >= t => Skel::Gone,
+            (s, false) => s,
+        };
+        if self.skel == Skel::Gone {
+            self.skel_resumed = false;
+        }
+        if self.skel == before {
+            return;
+        }
+        self.skeleton.set(self.skel != Skel::Gone);
+        if let Some(app) = self.app() {
+            app.set_skeleton_shown(self.skel != Skel::Gone);
+            app.set_skeleton_leaving(matches!(self.skel, Skel::Leaving(_)));
+        }
+    }
+
+    /// When the skeleton's fade ends, if one is running.
+    fn skeleton_due(&self) -> Option<u64> {
+        match self.skel {
+            Skel::Leaving(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The hub sees the host's handles as they are now, and forgets a tab that has gone.
+    fn sync_hub(&mut self) {
+        let live: HashMap<String, Arc<TermHandle>> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter_map(|t| self.deps.host.handle(&t.id).map(|h| (t.id.clone(), h)))
+            .collect();
+        let gone: Vec<String> = self
+            .hub_known
+            .iter()
+            .filter(|id| !live.contains_key(*id))
+            .cloned()
+            .collect();
+        *self.handles.borrow_mut() = live;
+        for id in gone {
+            self.hub.on_closed(&id);
+        }
+        self.hub_known = self.handles.borrow().keys().cloned().collect();
+    }
+
+    /// The rainbow switch moves the stops with it; the other changes arrive as `LookChanged`.
+    fn sync_marks(&mut self, app: &AppWindow) {
+        let rainbow = agent_rainbow(&self.prefs);
+        if rainbow != self.marks_rainbow {
+            self.marks_rainbow = rainbow;
+            self.marks = compute_marks(&self.prefs);
+            Self::push_rainbow(app, &self.marks);
+        }
+    }
+
+    fn push_rainbow(app: &AppWindow, marks: &UiMarks) {
+        app.global::<MarkMotion>()
+            .set_rainbow(ModelRc::new(VecModel::from(marks.rainbow.clone())));
+    }
+
+    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours.
+    pub fn on_look_changed(&mut self) {
+        self.marks = compute_marks(&self.prefs);
+        self.marks_rainbow = agent_rainbow(&self.prefs);
+        if let Some(app) = self.app() {
+            Self::push_rainbow(&app, &self.marks);
+        }
+        self.refresh();
+    }
+
+    /// Windows' animation-effects switch (tests inject one).
+    pub fn set_animations_source(&mut self, f: Rc<dyn Fn() -> bool>) {
+        self.animations = f;
+        self.update_clock();
+    }
+
+    /// The resume skeleton shows (or no longer shows) over the front tab.
+    pub fn set_skeleton_shown(&mut self, shown: bool) {
+        self.skeleton.set(shown);
+        self.update_clock();
+    }
+
+    /// The window was minimised or restored: nothing moves while it is down, and the marks go on
+    /// from where they stood.
+    pub fn on_minimised(&mut self, minimised: bool) {
+        if minimised == self.minimised {
+            return;
+        }
+        self.minimised = minimised;
+        let now = self.now();
+        self.clock.pause.borrow_mut().set_minimized(minimised, now);
+        self.update_clock();
+    }
+
+    /// Whether the mark clock's timer is running (it must not while no mark moves).
+    pub fn mark_clock_running(&self) -> bool {
+        self.clock.timer.running()
+    }
+
+    /// Decides after every refresh whether the clock runs: a mark that moves, a window that shows
+    /// and Windows' animation effects on. Otherwise the timer is stopped and the marks stand still.
+    fn update_clock(&mut self) {
+        let Some(app) = self.app() else { return };
+        let states: Vec<MarkState> = self
+            .view
+            .rows
+            .iter()
+            .filter_map(|r| mark_state_of(r.mark_state))
+            .collect();
+        let loading = self.view.rows.iter().any(|r| r.loading) || self.skeleton.get();
+        let sw = switches_of(&self.prefs);
+        let need = needs_clock(&states, sw.indicator, sw.rainbow, loading) && (self.animations)();
+        if !need {
+            self.clock.timer.stop();
+            self.clock.start = None;
+            push_frame(&app, STILL, 1.0);
+            return;
+        }
+        if self.minimised {
+            // Frozen where they stood.
+            self.clock.timer.stop();
+            return;
+        }
+        let now = self.now();
+        let start = *self
+            .clock
+            .start
+            .get_or_insert_with(|| self.clock.pause.borrow().clock(now));
+        if !self.clock.timer.running() {
+            let weak = app.as_weak();
+            let pause = Rc::clone(&self.clock.pause);
+            let clock = Rc::clone(&self.deps.clock);
+            let skeleton = Rc::clone(&self.skeleton);
+            self.clock.timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(MARK_FRAME_MS),
+                move || {
+                    let Some(app) = weak.upgrade() else { return };
+                    let now = clock();
+                    if app.window().is_minimized() {
+                        pause.borrow_mut().set_minimized(true, now);
+                        return;
+                    }
+                    Self::mark_frame(&app, &pause.borrow(), now, start, skeleton.get());
+                },
+            );
+        }
+        Self::mark_frame(
+            &app,
+            &self.clock.pause.borrow(),
+            now,
+            start,
+            self.skeleton.get(),
+        );
+    }
+
+    /// One frame of every moving mark at `now`.
+    fn mark_frame(app: &AppWindow, pause: &MarksPause, now: u64, start: u64, skeleton: bool) {
+        let ms = pause.clock(now).saturating_sub(start);
+        let pulse = if skeleton { pulse_at(ms) } else { 1.0 };
+        push_frame(app, mark_phase(ms), pulse);
+    }
+
+    /// Runs the clock's body once at the controller's clock (the timer's own tick, for tests).
+    #[cfg(test)]
+    pub(crate) fn mark_frame_now(&self) {
+        let Some(app) = self.app() else { return };
+        if let Some(start) = self.clock.start {
+            Self::mark_frame(
+                &app,
+                &self.clock.pause.borrow(),
+                self.now(),
+                start,
+                self.skeleton.get(),
+            );
+        }
+    }
+
+    /// The hub, for the tests and the headless scenes (a scene answers the process poll itself).
+    pub(crate) fn hub_mut(&mut self) -> &mut AgentHub {
+        &mut self.hub
+    }
+
+    /// The live terminal of a tab (window flow tests send keys through it, as the window does).
+    #[cfg(test)]
+    pub(crate) fn handle_of(&self, id: &str) -> Option<Arc<TermHandle>> {
+        self.deps.host.handle(id)
+    }
+
+    /// The close question as the dialog shows it: title, body text and primary button.
+    #[cfg(test)]
+    pub(crate) fn ask_text(&self) -> Option<(String, String, String)> {
+        self.ask.as_ref().map(|a| {
+            let v = crate::startup::ask_view(a, "#ffffff");
+            (
+                v.title.to_string(),
+                v.body.to_string(),
+                v.primary.to_string(),
+            )
+        })
+    }
+
+    /// Which agent the keyboard path believes is armed in the tab.
+    #[cfg(test)]
+    pub(crate) fn armed_agent(&self, id: &str) -> Option<AgentKind> {
+        self.agent_view.armed(id)
     }
 
     // ---- the restore ----------------------------------------------------------------------------
@@ -845,12 +1455,19 @@ impl AppCtl {
     fn restored(&mut self, mut plan: Restored) {
         with_launch_folders(&mut plan, &self.deps.launch_folders);
         let spawns = self.model.settle(&plan);
+        let now = self.now();
         for s in spawns {
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
-            match s.resume.as_deref() {
-                Some(CODEX_RESUME) => self.model.set_agent(&s.id, Some(AgentKind::Codex)),
-                Some(_) => self.model.set_agent(&s.id, Some(AgentKind::Claude)),
-                None => {}
+            self.hub.on_spawned(&s.id, &s.cwd, s.resume.as_deref());
+            // Only an id that passed the check is a resume; the rest is a plain shell.
+            let kind = match valid_resume(s.resume.as_deref()) {
+                Some(CODEX_RESUME) => Some(AgentKind::Codex),
+                Some(_) => Some(AgentKind::Claude),
+                None => None,
+            };
+            self.model.set_agent(&s.id, kind);
+            if let Some(k) = kind {
+                self.restoring.insert(s.id.clone(), (k, now));
             }
         }
         let queued = self.pending.restored();
@@ -864,9 +1481,10 @@ impl AppCtl {
     // ---- opening and closing tabs -----------------------------------------------------------------
 
     /// A new tab in `dir`, shell started. Never blocks.
-    fn open_folder(&mut self, dir: &str) -> String {
+    pub(crate) fn open_folder(&mut self, dir: &str) -> String {
         let id = self.model.open_tab(dir);
         self.deps.host.spawn(&id, dir, None);
+        self.hub.on_spawned(&id, dir, None);
         self.refresh();
         id
     }
@@ -922,7 +1540,7 @@ impl AppCtl {
         if !self.model.state.tabs.iter().any(|t| t.id == id) {
             return;
         }
-        if flare_agent::close::asks_before_closing_tab(self.model.has_agent(id)) {
+        if flare_agent::close::asks_before_closing_tab(self.agent_present(id)) {
             let label = self
                 .model
                 .state
@@ -931,16 +1549,8 @@ impl AppCtl {
                 .position(|t| t.id == id)
                 .and_then(|i| self.model.labels().get(i).cloned())
                 .unwrap_or_default();
-            let for_ms = self
-                .working
-                .get(id)
-                .map(|since| self.now().saturating_sub(*since));
-            self.ask = Some(tab_ask(
-                id,
-                &label,
-                detected(self.model.agent_kind(id)),
-                for_ms,
-            ));
+            let for_ms = self.working_for_ms(id);
+            self.ask = Some(tab_ask(id, &label, self.agent_named(id), for_ms));
             self.show_ask();
             return;
         }
@@ -1240,7 +1850,7 @@ impl AppCtl {
             Some(o) => {
                 let rows: Vec<OverflowRow> = overflow_rows(&self.view, o.all, &o.query)
                     .iter()
-                    .map(overflow_row)
+                    .map(|r| overflow_row(r, &self.view.rows))
                     .collect();
                 app.set_overflow_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
                 app.set_overflow_open(true);
@@ -1524,7 +2134,7 @@ impl AppCtl {
         };
         let info = front.info();
         let has_selection = self.term.has_selection(&info);
-        let agent_here = self.deps.term.agent.armed(&front.id).is_some();
+        let agent_here = self.agent_view.armed(&front.id).is_some();
         let action = {
             let term = &mut self.term;
             let mut delete = || term.selection_delete(&info);
@@ -1552,10 +2162,28 @@ impl AppCtl {
         let term = self
             .term_due
             .or_else(|| (self.term_hot > 0).then(|| self.now()));
-        [self.sidebar.next_due(), self.tips.next_due(), term]
-            .into_iter()
-            .flatten()
-            .min()
+        // A resuming tab asks to be stepped on every round until its reveal.
+        let reveal = self.resuming_any().then(|| self.now());
+        [
+            self.sidebar.next_due(),
+            self.tips.next_due(),
+            term,
+            self.hub.next_due(),
+            self.skeleton_due(),
+            reveal,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// Some tab's shell is still resuming (its reveal has not happened).
+    fn resuming_any(&self) -> bool {
+        self.deps
+            .host
+            .live_ids()
+            .iter()
+            .any(|id| self.deps.host.handle(id).is_some_and(|h| h.resuming()))
     }
 
     /// Starts the 50 ms timer when something is pending; an idle Flare wakes up for nothing.
@@ -1581,8 +2209,11 @@ impl AppCtl {
     /// The timer's body; stops the timer when nothing is pending.
     pub fn tick(&mut self) {
         let now = self.now();
+        if let Some(app) = self.app() {
+            self.on_minimised(app.window().is_minimized());
+        }
         let events = self.sidebar.tick(now);
-        let changed = !events.is_empty();
+        let mut changed = !events.is_empty();
         for ev in events {
             if ev == SidebarEvent::FitDue
                 && let Some(app) = self.app()
@@ -1593,6 +2224,30 @@ impl AppCtl {
         }
         self.tip_tick(now);
         self.term_tick();
+        // The agent: its deadlines, and every resuming tab's reveal clock (a key, an exit or a
+        // failed spawn reveal through the handle itself).
+        self.hub.tick();
+        if self.hub.take_changed() {
+            self.sync_model_agents();
+            changed = true;
+        }
+        let resuming: Vec<_> = self
+            .deps
+            .host
+            .live_ids()
+            .iter()
+            .filter_map(|id| self.deps.host.handle(id))
+            .filter(|h| h.resuming())
+            .collect();
+        for h in &resuming {
+            h.reveal_tick();
+        }
+        if resuming.iter().any(|h| !h.resuming()) {
+            changed = true;
+        }
+        if matches!(self.skel, Skel::Leaving(t) if now >= t) {
+            changed = true;
+        }
         if changed {
             self.refresh();
         }
@@ -1606,6 +2261,7 @@ impl AppCtl {
 
     /// The chord context (PT App.tsx onKey): command help is M7's, the agent fields are M6's.
     pub fn key_context(&self) -> KeyContext {
+        let front = self.model.active_shell().map(|t| t.id.as_str());
         KeyContext {
             help: false,
             vertical: self.vertical(),
@@ -1615,10 +2271,10 @@ impl AppCtl {
                 m.alt_screen || m.mouse != MouseTracking::None
             }),
             agent_keys: agent_keys(&self.prefs),
-            agent_guard: false,
-            agent_here: false,
-            agent_working: false,
-            agent_selecting: false,
+            agent_guard: agent_guard(&self.prefs),
+            agent_here: front.is_some_and(|f| self.hub.agent_here(f)),
+            agent_working: front.is_some_and(|f| self.hub.working(f)),
+            agent_selecting: self.term.program_selecting(),
         }
     }
 
@@ -1667,6 +2323,7 @@ impl AppCtl {
         self.model.commit_walk();
         self.clear_tip();
         self.close_menu();
+        self.on_focus(false);
     }
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
@@ -1675,6 +2332,14 @@ impl AppCtl {
     pub fn on_cursor(&mut self, x_css: f32, y_css: f32) {
         if self.tips.shown() {
             self.clear_tip();
+        }
+        if !self.focused {
+            // A pointer moving over an unfocused window is a look (the indicator throttles it).
+            self.hub.pointer_moved();
+            if self.hub.take_changed() {
+                self.sync_model_agents();
+                self.refresh();
+            }
         }
         let now = self.now();
         self.sidebar.pointer(
@@ -1765,6 +2430,7 @@ impl AppCtl {
     pub fn on_geometry(&mut self, o: Observed) {
         self.bounds.observe(&o);
         self.maximised = o.maximised;
+        self.on_minimised(o.minimised);
         if let Some(state) = self.bounds.state(o.maximised) {
             self.deps.window_store.save(&state);
         }
@@ -1854,29 +2520,29 @@ impl AppCtl {
         }
     }
 
+    /// The agents at work now: the tab's label, the agent, and for how long.
+    fn busy_agents(&self) -> Vec<(String, DetectedAgent, u64)> {
+        let labels = self.model.labels();
+        self.model
+            .state
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind == TabKind::Shell && self.agent_present(&t.id))
+            .filter_map(|(i, t)| {
+                let for_ms = self.working_for_ms(&t.id)?;
+                Some((
+                    labels.get(i).cloned().unwrap_or_default(),
+                    self.agent_named(&t.id),
+                    for_ms,
+                ))
+            })
+            .collect()
+    }
+
     /// Every route out of the window ends here. A working agent vetoes the close and asks.
     pub fn on_close_requested(&mut self) -> CloseDecision {
-        let now = self.now();
-        let busy: Vec<(String, DetectedAgent, u64)> = self
-            .working
-            .iter()
-            .filter(|(id, _)| self.model.has_agent(id))
-            .map(|(id, since)| {
-                let label = self
-                    .model
-                    .state
-                    .tabs
-                    .iter()
-                    .position(|t| &t.id == id)
-                    .and_then(|i| self.model.labels().get(i).cloned())
-                    .unwrap_or_default();
-                (
-                    label,
-                    detected(self.model.agent_kind(id)),
-                    now.saturating_sub(*since),
-                )
-            })
-            .collect();
+        let busy = self.busy_agents();
         self.close_flow.set_busy(holds_window_close(busy.len()));
         match self.close_flow.on_close() {
             CloseVerdict::Ask => {
@@ -1993,6 +2659,7 @@ impl AppCtl {
             }
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
+            UiMsg::LookChanged => self.on_look_changed(),
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
@@ -2012,8 +2679,18 @@ impl AppCtl {
         let events = self.deps.host.drain_events();
         let mut changed = false;
         let mut terminal_news = false;
+        self.sync_hub();
+        self.hub.on_host_events(&events);
+        self.hub.drain_poll();
+        if self.hub.take_changed() {
+            self.sync_model_agents();
+            self.close_flow
+                .set_busy(holds_window_close(self.hub.working_count()));
+            changed = true;
+        }
         for ev in events {
             match ev {
+                HostEvent::Revealed { .. } => changed = true,
                 HostEvent::Cwd { id, path } => {
                     if !is_unsafe_restore_folder(&path) && self.model.set_cwd(&id, &path) {
                         changed = true;
@@ -2135,7 +2812,7 @@ impl ChordTarget for Target<'_> {
 mod tests {
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
-    use crate::ui_harness::Harness;
+    use crate::ui_harness::{Frame, Harness};
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
     use flare_render::metrics::cell_metrics;
     use flare_settings::new_tab::set_new_tab_mode;
@@ -2165,13 +2842,6 @@ mod tests {
         picks: Vec<Option<PathBuf>>,
     }
 
-    struct TestAgent(Cell<Option<AgentKind>>);
-    impl AgentView for TestAgent {
-        fn armed(&self, _tab: &str) -> Option<AgentKind> {
-            self.0.get()
-        }
-    }
-
     #[derive(Default)]
     struct Opts {
         shells: Option<Vec<ShellDef>>,
@@ -2180,6 +2850,12 @@ mod tests {
         launch: Vec<String>,
         real_fs: bool,
         pick_answer: Option<PathBuf>,
+        /// The window's display scale; 0 is 1.
+        scale: f32,
+        /// The restore's Claude session lookup (None: no sessions).
+        lookup: Option<Arc<dyn SessionLookup>>,
+        /// The plugin folder the host hands new shells (None: the environment is untouched).
+        plugin_dir: Option<String>,
     }
 
     struct Fx {
@@ -2193,7 +2869,6 @@ mod tests {
         prefs: PrefStore,
         clip: Arc<MemoryClipboard>,
         openers: Arc<RecordingOpeners>,
-        agent: Rc<TestAgent>,
     }
 
     fn fx_with(opts: Opts) -> Fx {
@@ -2232,10 +2907,15 @@ mod tests {
             Some(defs) => FakeShells::with(defs),
             None => FakeShells::new(),
         };
-        let host = TabHost::new(sp.clone(), shells, prefs.clone(), waker);
+        let host = TabHost::new(
+            sp.clone(),
+            shells,
+            prefs.clone(),
+            waker,
+            opts.plugin_dir.clone(),
+        );
         let clip = Arc::new(MemoryClipboard::new());
         let openers = Arc::new(RecordingOpeners::new());
-        let agent = Rc::new(TestAgent(Cell::new(None)));
         let clock = Rc::new(Cell::new(0u64));
         let log: Rc<RefCell<Log>> = Rc::default();
         let real_fs = opts.real_fs;
@@ -2256,7 +2936,7 @@ mod tests {
                 Duration::from_millis(30),
             )),
             host,
-            lookup: Arc::new(NoSessions),
+            lookup: opts.lookup.clone().unwrap_or_else(|| Arc::new(NoSessions)),
             is_dir,
             home: "C:\\home".to_string(),
             clock: {
@@ -2302,14 +2982,15 @@ mod tests {
             term: TermPorts {
                 clip_port: clip.clone(),
                 openers: openers.clone(),
-                agent: agent.clone(),
+                agent: None,
                 dbl: flare_win::dblclick::FALLBACK,
                 stat: Arc::new(flare_term::path_open::FsStat),
                 metrics: Rc::new(|| cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)),
                 mark_grid_dirty: Rc::new(|| {}),
             },
         };
-        let h = Harness::new(1.0, 1000, 640, || AppWindow::new().unwrap());
+        let scale = if opts.scale > 0.0 { opts.scale } else { 1.0 };
+        let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
         Fx {
             h,
@@ -2322,7 +3003,6 @@ mod tests {
             prefs,
             clip,
             openers,
-            agent,
         }
     }
 
@@ -3240,5 +3920,797 @@ mod tests {
         f.ctl.borrow_mut().request_close(&id);
         f.pump();
         assert_eq!(inputs.borrow().paths.owners_kept(), 0);
+    }
+
+    // ---- the marks on the rows, the mark clock, reduced motion and minimise (Task 29) -------------
+
+    const OSC_WORKING: &str = "\x1b]777;flare-agent;state=working\x07";
+    const OSC_QUESTION: &str = "\x1b]777;flare-agent;state=question\x07";
+    const OSC_DONE: &str = "\x1b]777;flare-agent;state=done\x07";
+    const OSC_FAILED: &str = "\x1b]777;flare-agent;state=failed;kind=rate_limit\x07";
+
+    impl Fx {
+        /// Opens `paths` as tabs (the last in front), all away from the user's eyes.
+        fn open_tabs(&self, paths: &[&str]) -> Vec<String> {
+            let mut ids = Vec::new();
+            for p in paths {
+                ids.push(self.ctl.borrow_mut().open_folder(p));
+                self.wait_made(p);
+            }
+            self.ctl.borrow_mut().hub_mut().set_looking(None, false);
+            ids
+        }
+
+        /// What the shell of `cwd` prints (an agent's hook signal, say).
+        fn say(&self, cwd: &str, text: &str) {
+            self.made_with(cwd)[0].feed(text.as_bytes());
+        }
+
+        fn row(&self, i: usize) -> TabRow {
+            self.h.comp.get_tab_rows().row_data(i).expect("a row")
+        }
+
+        fn motion(&self) -> (bool, f32, f32, f32) {
+            let g = self.h.comp.global::<MarkMotion>();
+            (g.get_still(), g.get_spin(), g.get_breathe(), g.get_pulse())
+        }
+
+        fn clock_running(&self) -> bool {
+            self.ctl.borrow().mark_clock_running()
+        }
+    }
+
+    #[test]
+    fn a_hook_signal_marks_the_row_in_place() {
+        let f = fx();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        let model = f.h.comp.get_tab_rows();
+        let ptr = |m: &ModelRc<TabRow>| m.as_any() as *const dyn std::any::Any as *const ();
+        let before = ptr(&model);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("a working row", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).agent, 1, "the indicator knows an agent is here");
+        assert_eq!(f.row(0).mark_kind, 1, "Ring is the default");
+        assert_eq!(f.row(1).mark_state, 0);
+        assert_eq!(
+            ptr(&f.h.comp.get_tab_rows()),
+            before,
+            "the model is never replaced"
+        );
+        assert_eq!(f.rows(), 2);
+    }
+
+    #[test]
+    fn the_clock_runs_only_while_something_moves() {
+        let f = fx();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        assert!(!f.clock_running(), "idle");
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.clock.set(100);
+        f.ctl.borrow().mark_frame_now();
+        let (still, spin_a, ..) = f.motion();
+        assert!(!still);
+        f.clock.set(400);
+        f.ctl.borrow().mark_frame_now();
+        let (_, spin_b, ..) = f.motion();
+        assert_ne!(spin_a, spin_b, "the spinner turns with the clock");
+        // Finished under Ring is a still mark: no clock.
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished", |f| f.row(0).mark_state == 3);
+        assert!(!f.clock_running());
+        assert!(f.motion().0, "the marks stand still");
+    }
+
+    #[test]
+    fn the_clock_is_stopped_while_minimised_and_goes_on_after() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.clock.set(1300);
+        f.ctl.borrow().mark_frame_now();
+        let shown = f.motion().1;
+        f.clock.set(1400);
+        f.ctl.borrow_mut().on_minimised(true);
+        assert!(!f.clock_running());
+        assert_eq!(f.motion().1, shown, "values frozen while minimised");
+        f.clock.set(9000);
+        // Even a frame asked for later reads the paused clock: 400 ms in, not 8000.
+        f.ctl.borrow().mark_frame_now();
+        assert_eq!(
+            f.motion().1,
+            flare_agent::mark_motion::mark_phase(400).spin_deg
+        );
+        f.ctl.borrow_mut().on_minimised(false);
+        assert!(f.clock_running());
+        // 1400 ms stood for 7600 ms: the clock reads 1400 now, 400 ms after it started at 1000.
+        let want = flare_agent::mark_motion::mark_phase(400).spin_deg;
+        assert_eq!(f.motion().1, want, "goes on from where it stood");
+    }
+
+    #[test]
+    fn animation_effects_off_stills_every_mark() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(!f.clock_running());
+        let (still, spin, breathe, pulse) = f.motion();
+        assert!(still);
+        assert_eq!((spin, breathe, pulse), (0.0, 1.0, 1.0));
+        // Back on: the clock runs again.
+        f.ctl.borrow_mut().set_animations_source(Rc::new(|| true));
+        assert!(f.clock_running());
+        assert!(!f.motion().0);
+    }
+
+    #[test]
+    fn a_loading_tab_needs_the_clock_and_a_skeleton_needs_the_pulse() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", Some(AgentKind::Claude))],
+            ..Opts::default()
+        });
+        assert!(f.row(0).loading);
+        assert!(f.clock_running(), "a tab coming back needs the clock");
+        assert_eq!(f.motion().3, 1.0, "no skeleton, no pulse");
+        f.clock.set(500);
+        f.ctl.borrow_mut().set_skeleton_shown(true);
+        assert_eq!(f.motion().3, flare_agent::mark_motion::pulse_at(500));
+        f.ctl.borrow_mut().set_skeleton_shown(false);
+        assert_eq!(f.motion().3, 1.0);
+    }
+
+    #[test]
+    fn a_palette_change_recolours_the_rows() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        let before = f.row(0).mark_color;
+        let store = flare_settings::look::LookStore::new(f.prefs.clone());
+        let other = if store.theme_id() == "paper" {
+            "pt-default"
+        } else {
+            "paper"
+        };
+        store.set_theme_id(other);
+        f.pump_until("the new colour", |f| f.row(0).mark_color != before);
+    }
+
+    #[test]
+    fn the_indicator_pick_turns_a_ring_row_into_a_run_bar() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).mark_kind, 1);
+        flare_settings::look::LookStore::new(f.prefs.clone())
+            .set_agent_indicator(flare_settings::look::AgentIndicator::Minimal);
+        f.pump_until("a run bar", |f| f.row(0).mark_kind == 3);
+    }
+
+    #[test]
+    fn a_failed_row_carries_the_kind_in_its_tip() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.say("C:\\a", OSC_FAILED);
+        f.pump_until("failed", |f| f.row(0).mark_state == 4);
+        assert_eq!(f.row(0).tip.as_str(), "C:\\a\nFailed: rate limit");
+    }
+
+    #[test]
+    fn eight_scales() {
+        // Three marked tabs under Bar: question, failed and finished lines, standing still.
+        for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            let f = fx_with_prefs(
+                Opts {
+                    scale,
+                    ..Opts::default()
+                },
+                |p| {
+                    flare_settings::look::LookStore::new(p.clone())
+                        .set_agent_indicator(flare_settings::look::AgentIndicator::Minimal);
+                    flare_settings::agent_prefs::set_agent_rainbow(p, false);
+                },
+            );
+            f.ctl.borrow_mut().set_animations_source(Rc::new(|| false));
+            f.open_tabs(&["C:\\a", "C:\\b", "C:\\c", "C:\\d"]);
+            f.say("C:\\a", OSC_QUESTION);
+            f.say("C:\\b", OSC_FAILED);
+            f.say("C:\\c", OSC_DONE);
+            f.pump_until("three marks", |f| (0..3).all(|i| f.row(i).mark_kind == 2));
+            f.h.advance(50);
+            let frame = f.h.render();
+            let want = (3.0 * scale).round() as u32;
+            for i in 0..3 {
+                let row = f.row(i);
+                let c = row.mark_color;
+                let target = [c.red(), c.green(), c.blue(), 255];
+                let top = (40.0 * scale) as u32;
+                let bb = frame
+                    .bbox_where(0, 0, frame.w, top, |p| Frame::near(p, target, 2))
+                    .unwrap_or_else(|| panic!("no band for tab {i} at {scale}"));
+                assert_eq!(
+                    bb.3 - bb.1 + 1,
+                    want,
+                    "tab {i} at {scale}: the foot band is round(3 * scale) device pixels"
+                );
+            }
+        }
+    }
+
+    // ---- restore with resume, the plugin, the close question, keys and the badge (Task 30) ----
+
+    use crate::sessions::FixedSessions;
+    use flare_win::taskbar::{Disc, OverlayShell};
+
+    const SESSION_A: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+    const SESSION_B: &str = "0f0e0d0c-2222-4333-8444-955566667777";
+    const TITLE_IDLE: &str = "\u{1b}]0;\u{2733} Claude Code\u{7}";
+    const TITLE_CODEX: &str = "\u{1b}]0;[ ! ] Action Required | proj\u{7}";
+
+    /// A pwsh that has a startup command to add the resume to (as the real one has).
+    fn resume_pwsh() -> ShellDef {
+        ShellDef {
+            id: "pwsh".to_string(),
+            name: "PowerShell 7".to_string(),
+            exe: "pwsh.exe".to_string(),
+            args: ["-NoLogo", "-NoExit", "-Command", "boot"]
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        }
+    }
+
+    fn env_of(m: &flare_term::fake::FakeState, key: &str) -> Option<String> {
+        m.spec()
+            .env
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.clone())
+    }
+
+    fn lookup_of(l: &Arc<FixedSessions>) -> Option<Arc<dyn SessionLookup>> {
+        let l: Arc<dyn SessionLookup> = l.clone();
+        Some(l)
+    }
+
+    /// Records every overlay the taskbar was given: the disc size (None: cleared) and the words.
+    #[derive(Clone, Default)]
+    struct BadgeLog(Rc<RefCell<Vec<Overlay>>>);
+
+    type Overlay = (Option<u32>, String);
+
+    struct RecShell(BadgeLog);
+
+    impl OverlayShell for RecShell {
+        fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool {
+            (self.0)
+                .0
+                .borrow_mut()
+                .push((icon.map(|d| d.size), text.to_string()));
+            true
+        }
+    }
+
+    impl Fx {
+        fn with_badge(&self) -> BadgeLog {
+            let log = BadgeLog::default();
+            self.ctl
+                .borrow_mut()
+                .set_taskbar_badge(TaskbarBadge::with_shell(Box::new(RecShell(log.clone()))));
+            log
+        }
+
+        /// The tab ids in strip order.
+        fn ids(&self) -> Vec<String> {
+            self.ctl
+                .borrow()
+                .model()
+                .state
+                .tabs
+                .iter()
+                .map(|t| t.id.clone())
+                .collect()
+        }
+
+        /// Steps the controller's timer body until `cond` holds (the reveal clock runs on it).
+        fn tick_until(&self, what: &str, mut cond: impl FnMut(&Fx) -> bool) {
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(5) {
+                self.pump();
+                self.ctl.borrow_mut().tick();
+                if cond(self) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("timed out waiting for {what}");
+        }
+
+        fn agent_here(&self, id: &str) -> bool {
+            self.ctl.borrow().hub.agent_here(id)
+        }
+
+        /// A Claude title in `cwd`'s shell, and the wait until the hub knows the agent.
+        fn claude_in(&self, cwd: &str) -> String {
+            let id = self.ids()[self
+                .cwds()
+                .iter()
+                .position(|c| c == cwd)
+                .expect("a tab in that folder")]
+            .clone();
+            self.say(cwd, TITLE_IDLE);
+            self.pump_until("the agent to be here", |f| f.agent_here(&id));
+            id
+        }
+    }
+
+    #[test]
+    fn the_restore_asks_the_lookup_for_claude_tabs_in_present_folders_only() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![
+                ("C:\\c", Some(AgentKind::Claude)),
+                ("C:\\gone", Some(AgentKind::Claude)),
+                ("C:\\p", None),
+                ("C:\\x", Some(AgentKind::Codex)),
+            ],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| f.sp.made().len() >= 3);
+        assert_eq!(
+            lookup.asked(),
+            ["C:\\c"],
+            "asked once, for the present Claude folder"
+        );
+        let claude = &f.made_with("C:\\c")[0];
+        assert_eq!(
+            env_of(claude, "FLARE_RESUME_ID").as_deref(),
+            Some(SESSION_A)
+        );
+        let plain = &f.made_with("C:\\p")[0];
+        assert!(env_of(plain, "FLARE_RESUME_ID").is_none());
+        assert_eq!(plain.spec().args, resume_pwsh().args);
+        let codex = &f.made_with("C:\\x")[0];
+        assert!(env_of(codex, "FLARE_RESUME_ID").is_none());
+        assert!(
+            codex
+                .spec()
+                .args
+                .last()
+                .is_some_and(|a| a.ends_with("codex resume --last"))
+        );
+    }
+
+    #[test]
+    fn two_claude_tabs_in_one_folder_resume_the_newest_two() {
+        let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
+        let f = fx_with(Opts {
+            saved: vec![
+                ("C:\\c", Some(AgentKind::Claude)),
+                ("C:\\c", Some(AgentKind::Claude)),
+            ],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
+        let got: Vec<Option<String>> = f
+            .made_with("C:\\c")
+            .iter()
+            .map(|m| env_of(m, "FLARE_RESUME_ID"))
+            .collect();
+        assert_eq!(
+            got,
+            [Some(SESSION_A.to_string()), Some(SESSION_B.to_string())]
+        );
+    }
+
+    #[test]
+    fn no_session_means_a_plain_shell() {
+        let lookup = FixedSessions::new(&[]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\c", Some(AgentKind::Claude))],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\c");
+        assert!(env_of(&f.made_with("C:\\c")[0], "FLARE_RESUME_ID").is_none());
+        assert!(!f.h.comp.get_skeleton_shown(), "no skeleton");
+        let id = f.ids()[0].clone();
+        assert!(f.ctl.borrow().model().agent_kind(&id).is_none());
+    }
+
+    #[test]
+    fn a_bad_resume_id_never_reaches_a_command_line_from_the_lookup() {
+        let lookup = FixedSessions::new(&["x; rm -rf"]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\c", Some(AgentKind::Claude))],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\c");
+        let m = &f.made_with("C:\\c")[0];
+        assert!(env_of(m, "FLARE_RESUME_ID").is_none());
+        assert_eq!(m.spec().args, resume_pwsh().args, "plain args");
+        assert!(!f.h.comp.get_skeleton_shown());
+    }
+
+    #[test]
+    fn the_front_agent_tab_wears_the_skeleton_until_the_agent_paints() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\c", Some(AgentKind::Claude))],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        assert!(f.h.comp.get_skeleton_shown(), "from the first frame");
+        f.start_restore_and_wait();
+        f.wait_made("C:\\c");
+        assert!(f.h.comp.get_skeleton_shown());
+        assert!(!f.h.comp.get_skeleton_leaving());
+        // The shell's own text comes first, then the agent paints.
+        f.say("C:\\c", "PS C:\\c> claude --resume\r\n");
+        f.say("C:\\c", "\u{1b}]0;claude\u{7}");
+        f.say("C:\\c", TITLE_IDLE);
+        f.tick_until("the fade to start", |f| f.h.comp.get_skeleton_leaving());
+        assert!(f.h.comp.get_skeleton_shown(), "still there while it fades");
+        let id = f.ids()[0].clone();
+        let handle = f.ctl.borrow().deps.host.handle(&id).expect("a handle");
+        let grid = handle.snapshot();
+        let text: String = (0..grid.rows())
+            .flat_map(|r| (0..grid.cols()).map(move |c| (c, r)))
+            .map(|(c, r)| grid.cell(c, r).ch)
+            .collect();
+        assert!(
+            !text.contains("PS C:"),
+            "the clear left no shell text: {text:?}"
+        );
+        let at = f.clock.get();
+        f.clock.set(at + 181);
+        f.tick_until("the skeleton to go", |f| !f.h.comp.get_skeleton_shown());
+        assert!(!f.h.comp.get_skeleton_leaving());
+    }
+
+    #[test]
+    fn a_tab_behind_shows_its_agent_icon_and_ring_at_once() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![
+                ("C:\\c", Some(AgentKind::Claude)),
+                ("C:\\x", Some(AgentKind::Codex)),
+            ],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        let behind = f.row(1);
+        assert_eq!(behind.agent, 2, "the saved agent from the first frame");
+        assert!(behind.loading);
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
+        let behind = f.row(1);
+        assert_eq!(behind.agent, 2);
+        assert!(behind.loading, "the ring until the agent paints");
+        assert!(
+            f.h.comp.get_skeleton_shown(),
+            "the skeleton is for the front tab"
+        );
+    }
+
+    #[test]
+    fn restored_tabs_carry_no_done_question_or_failed() {
+        let lookup = FixedSessions::new(&[SESSION_A, SESSION_B]);
+        let f = fx_with(Opts {
+            saved: vec![
+                ("C:\\c", Some(AgentKind::Claude)),
+                ("C:\\d", Some(AgentKind::Claude)),
+            ],
+            lookup: lookup_of(&lookup),
+            shells: Some(vec![resume_pwsh()]),
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
+        f.ctl.borrow_mut().hub_mut().set_looking(None, false);
+        f.say("C:\\c", TITLE_IDLE);
+        f.say("C:\\d", TITLE_IDLE);
+        f.clock.set(f.clock.get() + 3_000);
+        std::thread::sleep(Duration::from_millis(100));
+        f.pump();
+        f.ctl.borrow_mut().hub_mut().tick();
+        let c = f.ctl.borrow();
+        let i = c.hub.indicator();
+        assert!(i.done_ids().is_empty(), "no Finished from a resume");
+        assert!(i.question_ids().is_empty());
+        assert!(i.failed_ids().is_empty());
+        assert!(i.working_ids().is_empty());
+    }
+
+    #[test]
+    fn the_saved_strip_records_an_agent_only_for_claude_and_codex() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.claude_in("C:\\a");
+        f.pump_until("the saved agent", |f| {
+            f.ctl.borrow().model().agent_kind(&ids[0]) == Some(AgentKind::Claude)
+        });
+        let saved = f.ctl.borrow().model().saved();
+        assert_eq!(saved.tabs[0].agent, Some(AgentKind::Claude));
+        assert_eq!(saved.tabs[1].agent, None);
+    }
+
+    #[test]
+    fn a_tab_hosting_an_agent_asks_naming_it_and_working_for() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a"]);
+        f.claude_in("C:\\a");
+        f.ctl.borrow_mut().request_close(&ids[0]);
+        assert_eq!(
+            f.h.comp.get_dialog_title().as_str(),
+            "Close the tab and end the agent?"
+        );
+        let body = {
+            let c = f.ctl.borrow();
+            ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body
+        };
+        assert!(body.contains("Claude"), "{body}");
+        f.h.comp.invoke_dialog_cancel();
+
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.ctl.borrow().hub.working(&ids[0]));
+        f.clock.set(f.clock.get() + 125_000);
+        f.ctl.borrow_mut().request_close(&ids[0]);
+        assert_eq!(
+            f.h.comp.get_dialog_title().as_str(),
+            "Stop the agent and close?"
+        );
+        let body = {
+            let c = f.ctl.borrow();
+            ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body
+        };
+        assert!(body.contains("2 minutes"), "{body}");
+        f.h.comp.invoke_dialog_cancel();
+        assert_eq!(f.rows(), 1, "Cancel keeps the tab");
+    }
+
+    #[test]
+    fn a_codex_tab_asks_naming_codex() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a"]);
+        // Codex has no hooks: it is found by the poll, whose answer this stands in for.
+        f.ctl
+            .borrow_mut()
+            .model_mut()
+            .set_agent(&ids[0], Some(AgentKind::Codex));
+        f.ctl.borrow_mut().request_close(&ids[0]);
+        let body = {
+            let c = f.ctl.borrow();
+            ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body
+        };
+        assert!(body.contains("Codex"), "{body}");
+    }
+
+    #[test]
+    fn the_window_close_is_held_only_while_an_agent_works_by_the_hub() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.claude_in("C:\\a");
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::Close,
+            "idle"
+        );
+        let f = fx();
+        let ids2 = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.say("C:\\a", OSC_WORKING);
+        f.say("C:\\b", OSC_WORKING);
+        f.pump_until("both working", |f| {
+            let c = f.ctl.borrow();
+            c.hub.working(&ids2[0]) && c.hub.working(&ids2[1])
+        });
+        f.clock.set(f.clock.get() + 5_000);
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::KeepOpen
+        );
+        assert_eq!(
+            f.h.comp.get_dialog_title().as_str(),
+            "Stop the agent and close the window?"
+        );
+        let c = f.ctl.borrow();
+        assert_eq!(
+            c.ask.as_ref().expect("an ask").others,
+            1,
+            "the other is counted"
+        );
+        drop(c);
+        let _ = ids;
+    }
+
+    #[test]
+    fn keep_agent_sessions_open() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        let a = f.ids()[0].clone();
+        let d = || ctrl("d", "KeyD");
+        let c = || ctrl("c", "KeyC");
+        // A plain shell: both pass.
+        assert_eq!(f.key(d()), KeyOutcome::Pty);
+        assert_eq!(f.key(c()), KeyOutcome::Pty);
+        f.claude_in("C:\\a");
+        assert_eq!(
+            f.key(d()),
+            KeyOutcome::Consumed,
+            "Ctrl+D never reaches an idle agent"
+        );
+        assert_eq!(
+            f.key(c()),
+            KeyOutcome::Consumed,
+            "Ctrl+C is taken while idle"
+        );
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.ctl.borrow().hub.working(&a));
+        assert_eq!(f.key(c()), KeyOutcome::Pty, "Ctrl+C passes while working");
+        flare_settings::agent_prefs::set_agent_guard(&f.prefs, false);
+        assert_eq!(f.key(d()), KeyOutcome::Pty, "the guard off: both pass");
+    }
+
+    #[test]
+    fn agent_hotkeys() {
+        let f = fx();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        assert_eq!(f.ctl.borrow().model().active().unwrap().cwd, "C:\\b");
+        assert_eq!(f.key(ctrl("PageUp", "PageUp")), KeyOutcome::Consumed);
+        assert_eq!(f.ctl.borrow().model().active().unwrap().cwd, "C:\\a");
+        set_agent_keys(&f.prefs, false);
+        assert_eq!(f.key(ctrl("PageDown", "PageDown")), KeyOutcome::Pty);
+        assert_eq!(
+            f.ctl.borrow().model().active().unwrap().cwd,
+            "C:\\a",
+            "with the hotkeys off it reaches the shell"
+        );
+    }
+
+    #[test]
+    fn shift_enter_is_a_newline_only_where_an_agent_is_armed() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        let m = f.made_with("C:\\a")[0].clone();
+        let shift_enter = || KeyEvent::new("Enter", "Enter").shift();
+        let wait_for = |want: &[u8]| {
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(5) {
+                if m.written().ends_with(want) {
+                    return;
+                }
+                f.pump();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("{:?} was not written: {:?}", want, m.written());
+        };
+        // No agent here: the key goes to the shell as an ordinary Enter (the window sends it).
+        assert_eq!(f.key(shift_enter()), KeyOutcome::Pty);
+        assert!(m.written().is_empty());
+        // An agent only the indicator knows (no arm yet): still Enter.
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("the hook", |f| f.agent_here(&f.ids()[0]));
+        assert_eq!(f.key(shift_enter()), KeyOutcome::Pty);
+        f.say("C:\\a", TITLE_IDLE);
+        f.pump_until("claude armed", |f| {
+            f.ctl.borrow().agent_view.armed(&f.ids()[0]) == Some(AgentKind::Claude)
+        });
+        assert_eq!(f.key(shift_enter()), KeyOutcome::Consumed);
+        wait_for(b"\n");
+        f.say("C:\\a", TITLE_CODEX);
+        f.pump_until("codex armed", |f| {
+            f.ctl.borrow().agent_view.armed(&f.ids()[0]) == Some(AgentKind::Codex)
+        });
+        assert_eq!(f.key(shift_enter()), KeyOutcome::Consumed);
+        wait_for(b"\\\r");
+    }
+
+    #[test]
+    fn the_badge_counts_marked_tabs_and_clears() {
+        let f = fx_with(Opts {
+            scale: 2.0,
+            ..Opts::default()
+        });
+        let log = f.with_badge();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b", "C:\\c"]);
+        f.say("C:\\a", OSC_DONE);
+        f.say("C:\\b", OSC_QUESTION);
+        f.pump_until("two marks", |f| {
+            let c = f.ctl.borrow();
+            c.hub.indicator().done_ids().contains(&ids[0])
+                && c.hub.indicator().question_ids().contains(&ids[1])
+        });
+        let last = log.0.borrow().last().cloned().expect("an overlay");
+        assert_eq!(last.1, "2 tabs need a look");
+        assert_eq!(last.0, Some(32), "the disc is 16 x the scale");
+        // Looking at one of them.
+        f.ctl
+            .borrow_mut()
+            .hub_mut()
+            .set_looking(Some(&ids[0]), true);
+        f.ctl.borrow_mut().refresh();
+        let last = log.0.borrow().last().cloned().expect("an overlay");
+        assert_eq!(last.1, "1 tab needs a look");
+        // The setting off.
+        flare_settings::agent_prefs::set_taskbar_badge_on(&f.prefs, false);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(log.0.borrow().last().cloned(), Some((None, String::new())));
+        // On again, and nothing marked: cleared.
+        flare_settings::agent_prefs::set_taskbar_badge_on(&f.prefs, true);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(
+            log.0.borrow().last().map(|l| l.1.clone()).as_deref(),
+            Some("1 tab needs a look")
+        );
+        f.say("C:\\b", OSC_WORKING);
+        f.pump_until("the answer", |f| {
+            f.ctl.borrow().hub.indicator().question_ids().is_empty()
+        });
+        f.ctl
+            .borrow_mut()
+            .hub_mut()
+            .set_looking(Some(&ids[2]), true);
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(
+            log.0.borrow().last().cloned().map(|l| l.0),
+            Some(None),
+            "nothing marked: the overlay is cleared"
+        );
+    }
+
+    #[test]
+    fn looking_and_coming_back() {
+        // A pointer moving over an unfocused window is a look.
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a"]);
+        f.ctl.borrow_mut().on_focus_lost();
+        f.say("C:\\a", OSC_WORKING);
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("the finished mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        f.clock.set(f.clock.get() + 2_000);
+        f.ctl.borrow_mut().on_cursor(10.0, 10.0);
+        f.ctl.borrow_mut().on_cursor(20.0, 20.0);
+        assert!(
+            !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "a pointer move is a look"
+        );
+        // Coming back to the window is a look.
+        let g = fx();
+        let ids = g.open_tabs(&["C:\\a"]);
+        g.ctl.borrow_mut().on_focus_lost();
+        g.say("C:\\a", OSC_WORKING);
+        g.say("C:\\a", OSC_DONE);
+        g.pump_until("the finished mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        g.clock.set(g.clock.get() + 2_000);
+        assert!(
+            g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "blurred: the mark stays"
+        );
+        g.ctl.borrow_mut().on_focus(true);
+        assert!(!g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
     }
 }

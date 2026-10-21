@@ -5,5 +5,15 @@ edition = "2024"
 license.workspace = true
 publish = false
 
+[dependencies]
+regex.workspace = true
+serde_json.workspace = true
+log.workspace = true
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde.workspace = true
+
 [lints]
 workspace = true

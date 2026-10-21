@@ -5,9 +5,12 @@
 
 #![allow(dead_code)] // wired by AppCtl (a later task); remove this line then
 
+use flare_agent::resume::valid_resume;
+use flare_settings::agent_prefs::agent_hooks_on;
 use flare_settings::kv::PrefStore;
 use flare_settings::recent_roots::remember_root;
 use flare_settings::term_prefs::saved_shell_id;
+use flare_shells::env::PluginEnv;
 use flare_term::emulator::TermEvent;
 use flare_term::handle::{StartOptions, TermHandle};
 use flare_term::pty::PtySpawner;
@@ -48,6 +51,32 @@ pub enum HostEvent {
         id: String,
         text: String,
     },
+    /// An OSC 777 payload (everything after `777;`); the agent code parses it.
+    Osc777 {
+        id: String,
+        data: String,
+    },
+    /// The pty printed (one per drained batch).
+    Output {
+        id: String,
+    },
+    /// A person typed in the tab.
+    Typed {
+        id: String,
+    },
+    /// Enter, Esc, Ctrl+C or a digit was sent by a user key.
+    AnswerKey {
+        id: String,
+        key: String,
+    },
+    /// A refit ran.
+    Resized {
+        id: String,
+    },
+    /// A resuming tab's terminal is shown now.
+    Revealed {
+        id: String,
+    },
 }
 
 pub struct TabHost {
@@ -59,6 +88,9 @@ pub struct TabHost {
     dims: (usize, usize),
     waker: Arc<dyn Fn() + Send + Sync>,
     prefs: PrefStore,
+    /// Where the Claude plugin lives, found once at startup. None: no shell's environment is
+    /// touched.
+    plugin_dir: Option<String>,
     /// Ctrl+wheel zoom per tab, in pixels. Never saved (`tabs.json` is unchanged).
     font_override: HashMap<String, i32>,
 }
@@ -69,17 +101,47 @@ impl TabHost {
         shells: Arc<dyn ShellSource>,
         prefs: PrefStore,
         waker: Arc<dyn Fn() + Send + Sync>,
+        plugin_dir: Option<String>,
+    ) -> Self {
+        Self::with_options(
+            spawner,
+            shells,
+            prefs,
+            waker,
+            plugin_dir,
+            SessionOptions::default(),
+        )
+    }
+
+    /// `new` with the session manager's options (tests give a base environment).
+    pub fn with_options(
+        spawner: Arc<dyn PtySpawner>,
+        shells: Arc<dyn ShellSource>,
+        prefs: PrefStore,
+        waker: Arc<dyn Fn() + Send + Sync>,
+        plugin_dir: Option<String>,
+        options: SessionOptions,
     ) -> Self {
         Self {
-            mgr: SessionManager::new(spawner, shells, SessionOptions::default()),
+            mgr: SessionManager::new(spawner, shells, options),
             handles: HashMap::new(),
             order: Vec::new(),
             shell_ids: HashMap::new(),
             dims: (80, 24),
             waker,
             prefs,
+            plugin_dir,
             font_override: HashMap::new(),
         }
+    }
+
+    /// The plugin handed to a NEW shell: the folder found at startup, switched by the setting
+    /// read now (only a new shell sees a change).
+    pub fn plugin_env(&self) -> Option<PluginEnv> {
+        self.plugin_dir.as_ref().map(|dir| PluginEnv {
+            dir: dir.clone(),
+            on: agent_hooks_on(&self.prefs),
+        })
     }
 
     /// Remembers the folder, makes a handle at the CURRENT grid size and starts its shell on a
@@ -93,11 +155,20 @@ impl TabHost {
         let handle = TermHandle::new(id, Arc::clone(&self.mgr), cols, rows);
         handle.set_waker(Arc::clone(&self.waker));
         let shell_id = saved_shell_id(&self.prefs);
+        // The second of the three validations of a resume id (rule 2): only a session id or the
+        // Codex marker ever reaches a command line.
+        let valid = valid_resume(resume);
+        if resume.is_some() && valid.is_none() {
+            log::warn!(
+                "a resume id of {} bytes is not a session id: no resume",
+                resume.map_or(0, str::len)
+            );
+        }
         handle.start(StartOptions {
             root: cwd.to_string(),
             shell_id: shell_id.clone(),
-            resume: resume.map(str::to_string),
-            plugin: None,
+            resume: valid.map(str::to_string),
+            plugin: self.plugin_env(),
         });
         self.handles.insert(id.to_string(), handle);
         self.order.push(id.to_string());
@@ -161,10 +232,11 @@ impl TabHost {
     pub fn prewarm(&self, cwd: &str) {
         let mgr = Arc::clone(&self.mgr);
         let shell_id = saved_shell_id(&self.prefs);
+        let plugin = self.plugin_env();
         let cwd = cwd.to_string();
         let r = std::thread::Builder::new()
             .name("flare-prewarm".into())
-            .spawn(move || mgr.prewarm(&cwd, shell_id.as_deref(), None));
+            .spawn(move || mgr.prewarm(&cwd, shell_id.as_deref(), plugin.as_ref()));
         if let Err(e) = r {
             log::warn!("could not start the prewarm worker: {e}");
         }
@@ -215,11 +287,24 @@ impl TabHost {
                     TermEvent::ClipboardWrite(text) => {
                         out.push(HostEvent::ClipboardWrite { id, text });
                     }
+                    TermEvent::Osc { ident: 777, data } => {
+                        out.push(HostEvent::Osc777 { id, data });
+                    }
+                    TermEvent::Output => out.push(HostEvent::Output { id }),
+                    TermEvent::Typed => out.push(HostEvent::Typed { id }),
+                    TermEvent::AnswerKey(key) => out.push(HostEvent::AnswerKey { id, key }),
+                    TermEvent::Resized => out.push(HostEvent::Resized { id }),
+                    TermEvent::Revealed => out.push(HostEvent::Revealed { id }),
                     _ => {}
                 }
             }
         }
         out
+    }
+
+    /// The session manager, for the agent poll (live pids, output ticks) and the tab tokens.
+    pub fn manager(&self) -> Arc<SessionManager> {
+        Arc::clone(&self.mgr)
     }
 
     pub fn live_ids(&self) -> Vec<String> {
@@ -270,7 +355,7 @@ mod tests {
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             n.fetch_add(1, Ordering::SeqCst);
         });
-        let h = TabHost::new(sp.clone(), shells, prefs.clone(), waker);
+        let h = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
         (h, sp, prefs)
     }
 
@@ -447,6 +532,27 @@ mod tests {
     }
 
     #[test]
+    fn osc_777_and_the_activity_events_reach_the_host_and_other_oscs_do_not() {
+        let (mut h, sp, _p) = host();
+        h.spawn("t1", "C:\\a", None);
+        made(&sp, 1);
+        sp.made()[0].feed(b"\x1b]777;flare-agent;state=done\x07\x1b]1337;SetMark\x07x");
+        let evs = events_until(&h, |e| {
+            e.iter().any(|x| matches!(x, HostEvent::Output { .. }))
+        });
+        assert!(evs.contains(&HostEvent::Osc777 {
+            id: "t1".into(),
+            data: "flare-agent;state=done".into()
+        }));
+        assert_eq!(
+            evs.iter()
+                .filter(|e| matches!(e, HostEvent::Osc777 { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn a_shell_that_exits_becomes_an_exited_event() {
         let (mut h, sp, _p) = host();
         h.spawn("t1", "C:\\a", None);
@@ -550,5 +656,209 @@ mod tests {
             e.iter().any(|x| matches!(x, HostEvent::StartFailed { .. }))
         });
         assert!(evs.contains(&HostEvent::StartFailed { id: "bad".into() }));
+    }
+
+    // ---- resume and the plugin (M6, Task 30) ---------------------------------------------------
+
+    const SESSION: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+    const SESSION_B: &str = "0f0e0d0c-2222-4333-8444-955566667777";
+
+    fn shell_def(id: &str, exe: &str, args: &[&str]) -> ShellDef {
+        ShellDef {
+            id: id.to_string(),
+            name: id.to_string(),
+            exe: exe.to_string(),
+            args: args.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn pwsh_def() -> ShellDef {
+        shell_def(
+            "pwsh",
+            "pwsh.exe",
+            &["-NoLogo", "-NoExit", "-Command", "boot"],
+        )
+    }
+
+    fn powershell_def() -> ShellDef {
+        shell_def(
+            "powershell",
+            "powershell.exe",
+            &["-NoLogo", "-NoExit", "-Command", "boot"],
+        )
+    }
+
+    fn cmd_def() -> ShellDef {
+        shell_def("cmd", "cmd.exe", &[])
+    }
+
+    /// A host over one shell kind, with a plugin folder and a base environment.
+    fn host_over(
+        def: ShellDef,
+        plugin_dir: Option<&str>,
+        base_env: Option<Vec<(String, String)>>,
+    ) -> (TabHost, Arc<FakeSpawner>, PrefStore) {
+        let sp = FakeSpawner::new();
+        let prefs = PrefStore::memory();
+        prefs.set("flare.term.shell", &def.id);
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let opts = SessionOptions {
+            base_env,
+            ..SessionOptions::default()
+        };
+        let h = TabHost::with_options(
+            sp.clone(),
+            FakeShells::with(vec![def]),
+            prefs.clone(),
+            waker,
+            plugin_dir.map(str::to_string),
+            opts,
+        );
+        (h, sp, prefs)
+    }
+
+    fn env_of(m: &flare_term::fake::FakeState, key: &str) -> Option<String> {
+        m.spec()
+            .env
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn a_bad_resume_id_never_reaches_a_command_line() {
+        let (mut h, sp, _p) = host_over(pwsh_def(), None, Some(Vec::new()));
+        h.spawn("a", "C:\\a", Some("x; rm -rf"));
+        made(&sp, 1);
+        let m = &sp.made()[0];
+        assert!(env_of(m, "FLARE_RESUME_ID").is_none());
+        assert_eq!(m.spec().args, pwsh_def().args, "plain args");
+        assert!(m.written().is_empty());
+    }
+
+    #[test]
+    fn a_cmd_resume_carries_only_hex_into_the_environment() {
+        let ids = [
+            "a&calc",
+            "a|b",
+            "%PATH%",
+            "x\"y",
+            SESSION,
+            "codex:last",
+            "",
+            "12345678&calc",
+        ];
+        for (n, id) in ids.iter().enumerate() {
+            let (mut h, sp, _p) = host_over(cmd_def(), None, Some(Vec::new()));
+            h.spawn("a", "C:\\a", Some(id));
+            made(&sp, 1);
+            let m = &sp.made()[0];
+            let spec = m.spec();
+            match env_of(m, "FLARE_RESUME_ID") {
+                None => {}
+                Some(v) => {
+                    assert!(
+                        !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'),
+                        "case {n}: {v:?}"
+                    );
+                }
+            }
+            for a in &spec.args {
+                assert!(
+                    id.is_empty() || !a.contains(id),
+                    "case {n}: the id is in an argument"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_resume_is_the_only_write_and_it_is_not_a_write() {
+        let (mut h, sp, _p) = host_over(pwsh_def(), None, Some(Vec::new()));
+        h.spawn("a", "C:\\a", Some(SESSION));
+        made(&sp, 1);
+        let m = &sp.made()[0];
+        assert!(m.written().is_empty(), "nothing is typed into the shell");
+        assert_eq!(env_of(m, "FLARE_RESUME_ID").as_deref(), Some(SESSION));
+        let last = m.spec().args.last().cloned().unwrap_or_default();
+        assert!(
+            last.ends_with("Remove-Item Env:FLARE_RESUME_ID; claude --resume $r }"),
+            "{last}"
+        );
+        assert!(!last.contains(SESSION));
+    }
+
+    #[test]
+    fn no_resume_command_line_uses_an_encoded_command() {
+        for def in [pwsh_def(), powershell_def(), cmd_def()] {
+            for resume in [SESSION, "codex:last"] {
+                let (mut h, sp, _p) = host_over(def.clone(), None, Some(Vec::new()));
+                h.spawn("a", "C:\\a", Some(resume));
+                made(&sp, 1);
+                let spec = sp.made()[0].spec();
+                for a in &spec.args {
+                    let low = a.to_lowercase();
+                    assert!(
+                        !low.starts_with("-enc") && !low.contains("-encodedcommand"),
+                        "{a}"
+                    );
+                    assert!(!a.contains(SESSION), "the id is in an argument: {a}");
+                }
+                let want = flare_shells::resume::with_resume(&def, resume).args;
+                assert_eq!(spec.args, want, "{} {resume}", def.id);
+                if def.id == "cmd" {
+                    assert_eq!(spec.args.first().map(String::as_str), Some("/K"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_restored_shell_of_a_kind_has_the_same_command_line() {
+        for def in [pwsh_def(), cmd_def()] {
+            let (mut h, sp, _p) = host_over(def.clone(), None, Some(Vec::new()));
+            h.spawn("a", "C:\\a", Some(SESSION));
+            h.spawn("b", "C:\\b", Some(SESSION_B));
+            made(&sp, 2);
+            let made = sp.made();
+            assert_eq!(made[0].spec().args, made[1].spec().args, "{}", def.id);
+            assert_eq!(made[0].spec().exe, made[1].spec().exe);
+        }
+    }
+
+    #[test]
+    fn a_new_shell_gets_the_plugin_while_the_setting_is_on() {
+        let dir = "C:\\Flare\\claude-plugin";
+        let (mut h, sp, prefs) = host_over(pwsh_def(), Some(dir), Some(Vec::new()));
+        h.spawn("a", "C:\\a", None);
+        made(&sp, 1);
+        let first = env_of(&sp.made()[0], "CLAUDE_CODE_PLUGIN_DIRS").unwrap_or_default();
+        assert!(first.ends_with(dir), "{first}");
+        flare_settings::agent_prefs::set_agent_hooks_on(&prefs, false);
+        h.spawn("b", "C:\\b", None);
+        made(&sp, 2);
+        let second = sp.made()[1].clone();
+        assert!(env_of(&second, "CLAUDE_CODE_PLUGIN_DIRS").is_none());
+        // The shell that was running keeps what it started with.
+        assert!(
+            env_of(&sp.made()[0], "CLAUDE_CODE_PLUGIN_DIRS")
+                .unwrap_or_default()
+                .ends_with(dir)
+        );
+    }
+
+    #[test]
+    fn no_plugin_folder_means_the_environment_is_untouched() {
+        let base = vec![(
+            "CLAUDE_CODE_PLUGIN_DIRS".to_string(),
+            "D:\\mine".to_string(),
+        )];
+        let (mut h, sp, _p) = host_over(pwsh_def(), None, Some(base));
+        h.spawn("a", "C:\\a", None);
+        made(&sp, 1);
+        assert_eq!(
+            env_of(&sp.made()[0], "CLAUDE_CODE_PLUGIN_DIRS").as_deref(),
+            Some("D:\\mine")
+        );
     }
 }

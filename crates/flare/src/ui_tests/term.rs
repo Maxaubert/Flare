@@ -739,7 +739,7 @@ mod flow {
                 }]),
                 None => FakeShells::new(),
             };
-            let tab_host = TabHost::new(sp.clone(), shells, prefs.clone(), waker);
+            let tab_host = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
             let clip = Arc::new(MemoryClipboard::new());
             let openers = Arc::new(RecordingOpeners::new());
             let agent = Rc::new(TestAgent(Cell::new(None)));
@@ -810,7 +810,7 @@ mod flow {
                 term: TermPorts {
                     clip_port: clip.clone(),
                     openers: openers.clone(),
-                    agent: agent.clone(),
+                    agent: Some(agent.clone()),
                     dbl: flare_win::dblclick::FALLBACK,
                     stat: Arc::new(flare_term::path_open::FsStat),
                     metrics: {

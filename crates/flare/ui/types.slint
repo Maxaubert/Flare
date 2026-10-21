@@ -14,8 +14,12 @@ export struct TabRow {
     offset: length,     // the carry offset along the axis; 0 at rest
     carried: bool,      // this is the tab being carried
     kept: bool,         // sidebar find: false hides the row
-    mark-kind: int,     // 0 none; M6 fills 1 ring, 2 line, 3 run
+    mark-kind: int,     // 0 none; 1 ring, 2 line, 3 run
     mark-color: color,
+    mark-state: int,    // 0 none, 1 working, 2 question, 3 finished, 4 failed
+    mark-rainbow: bool, // a finished Bar line wears the flowing rainbow
+    agent: int,         // 0 shell, 1 claude, 2 codex (the tab icon)
+    failed-tip: string, // "Failed: rate limit" while failed, else ""
 }
 
 export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, more-count: int, dots: [color] }
@@ -25,4 +29,5 @@ export struct Place { path: string, name: string, near: string, label: string, p
 export struct MenuRow { label: string, hint: string, icon: string, filled-icon: bool, disabled: bool,
                         trailing-icon: string, trailing-filled: bool, trailing-tip: string }
 
-export struct OverflowRow { id: string, label: string, folder: string, needs: bool, loading: bool, settings: bool }
+export struct OverflowRow { id: string, label: string, folder: string, needs: bool, loading: bool, settings: bool,
+                            mark-state: int, mark-color: color, agent: int }

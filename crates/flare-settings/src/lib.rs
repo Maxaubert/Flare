@@ -1,6 +1,7 @@
 //! flare-settings: atomic file writes, the debounced file, and the preference store that holds
 //! the settings of the window (tabs, sidebar, new tab, recent and pinned folders).
 
+pub mod agent_prefs;
 pub mod atomic;
 pub mod custom_theme;
 pub mod debounce;

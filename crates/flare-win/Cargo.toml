@@ -15,6 +15,7 @@ log.workspace = true
 windows-sys.workspace = true
 rfd.workspace = true
 raw-window-handle.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

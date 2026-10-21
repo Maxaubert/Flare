@@ -1,0 +1,464 @@
+{
+  "description": "Flare reads the agent state from these. Each runs hook.cmd, which prints one fixed OSC 777 line through terminalSequence. The command is a placeholder that Flare replaces with the absolute System32 cmd.exe when it installs the plugin; this template is never valid as-is. Exec form (args): no shell, so it runs the same with Git Bash or PowerShell, in a folder with spaces or brackets.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "working"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "question"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "question"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "question"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "question"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "elicitation_url_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "question"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "done"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "rate_limit"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "overloaded",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "overloaded"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "authentication_failed",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "authentication_failed"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "oauth_org_not_allowed",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "oauth_org_not_allowed"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "account_on_hold",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "account_on_hold"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "billing_error",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "billing_error"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "invalid_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "invalid_request"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "model_not_found",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "model_not_found"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "server_error",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "server_error"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "max_output_tokens",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "max_output_tokens"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "cloud_credential_error",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "cloud_credential_error"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "unknown",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed",
+              "unknown"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@@FLARE_SYSTEM_CMD@@",
+            "args": [
+              "/d",
+              "/c",
+              "call",
+              "${CLAUDE_PLUGIN_ROOT}/hook.cmd",
+              "failed"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

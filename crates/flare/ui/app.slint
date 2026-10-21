@@ -10,8 +10,12 @@ import { Dialog, DialogPreview } from "dialog.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
+import { MarkMotion } from "tabmark.slint";
+import { ResumeSkeleton } from "skeleton.slint";
 
 export { Theme, Px } from "theme.slint";
+export { MarkMotion, MarkPreview } from "tabmark.slint";
+export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
 export { BadgePreview } from "badge.slint";
 export { TabStripPreview } from "tabs.slint";
@@ -138,6 +142,9 @@ export component AppWindow inherits Window {
     in property <bool> has-tabs;
     in property <int> front-kind;
     in property <length> grid-frozen-width;
+    // The resume skeleton over the front agent tab while its conversation resumes (M6).
+    in property <bool> skeleton-shown: false;
+    in property <bool> skeleton-leaving: false;
     // ---- tabs ----
     in property <[TabRow]> tab-rows;
     in property <StripGeom> strip-geom;
@@ -407,6 +414,15 @@ export component AppWindow inherits Window {
                             source: root.grid-image;
                             image-fit: fill;
                             image-rendering: pixelated;
+                        }
+                        if root.skeleton-shown: ResumeSkeleton {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            leaving: root.skeleton-leaving;
+                            ground: Theme.ground;
+                            ink: Theme.text;
                         }
                         grid-touch := TouchArea {
                             mouse-cursor: root.grid-cursor;

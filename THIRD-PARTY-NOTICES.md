@@ -6046,7 +6046,7 @@ authorization of the copyright holder.
 
 SPDX-License-Identifier: Unicode-3.0
 
--
+–
 
 Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
@@ -6140,3 +6140,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Bundled artwork
+
+- OpenAI mark (Codex tab icon): the path data is Simple Icons 15 (CC0 1.0, https://simpleicons.org). The mark itself is OpenAI's trademark, shown only to name Codex. Copied from Prism Terminal's agentIcon.ts.
+- Clawd (Claude tab icon): the start-screen character of Claude Code, drawn here as an 18 x 6 pixel grid in #d77757. The artwork belongs to Anthropic, shown only to name Claude. Copied from Prism Terminal's CLAWD_PIXELS.

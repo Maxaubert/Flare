@@ -369,6 +369,7 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
         Arc::new(RealShells),
         prefs,
         waker,
+        None,
     );
 
     let saved = tabs.load();
@@ -429,6 +430,21 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
         eprintln!("flare: the quit gave up waiting for the shells");
         1
     }
+}
+
+/// The folder of the Claude plugin, found ONCE at startup (two small stats and the install of the
+/// plugin copy). None under `--e2e`: a test run never installs into the real profile folder.
+pub fn production_plugin_dir(e2e: bool) -> Option<String> {
+    if e2e {
+        return None;
+    }
+    // sync-ok: startup, two small stats
+    flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The restore's Claude session lookup: the real transcript store of the home folder.
+pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::from_env())
 }
 
 #[cfg(test)]

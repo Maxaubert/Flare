@@ -8,10 +8,10 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | Crate | PT test file | Action | Note |
 |---|---|---|---|
 | flare-tabs | `core/renderer/components/Modal.test.ts` | port (split: flare-tabs T9, flare T24) | one modal frame rules; the aria-modal source scan is dropped |
-| flare | `core/renderer/components/TabMark.test.ts` | port (partial) | mark assertions as render-model tests; DOM attribute and CSS class checks dropped |
+| flare-agent | `core/renderer/components/TabMark.test.ts` | port (partial) | `tab_mark.rs` (M6 T13) and 19 pixel tests in `ui_tests/marks.rs`; the DOM attribute and CSS class checks are dropped, their facts are pixel tests; the Prompt, Full and Off cells are dropped (D6) |
 | flare-tabs | `core/renderer/lib/fitHold.test.ts` | port | hold the terminal size while the sidebar animates |
 | flare-tabs | `core/renderer/lib/hiddenTitle.test.ts` | port | tooltip only when text is cut or the label is hidden |
-| flare | `core/renderer/lib/tabMark.test.ts` | port | which mark a tab wears for each indicator, state, front or back, rainbow |
+| flare-agent | `core/renderer/lib/tabMark.test.ts` | port | `tab_mark.rs` (M6 T13): which mark a tab wears for each indicator, state, front or back, rainbow; the Prompt, Full and Off cells are dropped (D6) |
 | flare-tabs | `core/renderer/lib/tipPlace.test.ts` | port | tooltip placement: centred under, inside right edge, above, beside and flip |
 | flare | `core/renderer/styles/marks.test.ts` | dropped | CSS stylesheet test; its rules (every motion has a rule, reduced motion stills all, minimised pauses, transform-only motion) are re-pinned as Slint animation tests |
 | flare-tabs | `src/main/closeFlow.test.ts` | port | window close question state: veto, go-ahead, quit resume, install pre-agree |
@@ -51,7 +51,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-agent | `core/renderer/lib/termActivity.test.ts` | port | input echo window, suppression, looksTyped, idleAtPrompt, forgetSession; injected clock |
 | flare-agent | `core/renderer/questionWatch.test.ts` | port | change-only reports, settle delay, scrollback reads, dispose; xterm slice becomes a grid trait |
 | flare-agent | `core/renderer/questionWidget.test.ts` | port | extractQuestion, wrapped and multi-select questions, review, stale frame |
-| flare-agent | `src/renderer/src/lib/taskbarBadge.test.ts` | port (split) | attentionCount and badgeText in flare-agent; badgePixels and overlay in flare-win; the taskbar switch in flare-settings |
+| flare-agent | `src/renderer/src/lib/taskbarBadge.test.ts` | port (split) | `badge.rs` in flare-agent (M6 T14): attentionCount, badgeText and badgePixels; the disc itself (the pixels, GDI text and `ITaskbarList3`) in `flare-win/taskbar.rs` (M6 T20); the taskbar switch in flare-settings |
 | flare-diag | `core/main/crashHooks.test.ts` | port | observe-only exception and rejection logging, 10 s repeat, gone line, listener removal; panic hook and exit observers |
 | flare-diag | `core/main/diagIpc.test.ts` | port (partial) | pageLine allowlist, batch cap, -slow rule, verbose-only kinds, openFolder limited to the log dir; IPC plumbing dropped |
 | flare-diag | `core/main/diagLog.test.ts` | port | batching, rotation at 2 MB keeping 4, queue cap, logger-error once, failed rotation retry, flushSync |
@@ -133,7 +133,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-term | `src/main/nodePtyPin.test.ts` | dropped | node-pty pin; Flare pins portable-pty and the bundled conpty.dll in Cargo.lock and adds a test for the bundled DLL instead |
 | flare-theme | `core/renderer/lib/colour.test.ts` | port | all 39 in flare-theme (M4 D3): colour maths, legibility, alpha steps, colourCommit, alphaPct and snapAlphaStep (the ledger's flare-settings part moved here) |
 | flare-theme | `core/renderer/lib/ground.test.ts` | port | DEFAULT_GROUND, prism preset equality, ground constants |
-| flare-theme | `core/renderer/lib/markColours.test.ts` | port | rainbow seven, floorMark on light and dark grounds, unreachable floor, gradients, opaqueOver |
+| flare-theme | `core/renderer/lib/markColours.test.ts` | port (M4, consumed by M6 T27) | rainbow seven, floorMark on light and dark grounds, unreachable floor, gradients, opaqueOver |
 | flare-theme | `core/renderer/lib/markPalette.test.ts` | port | palette lines, ink, fills, rainbow fill, loops |
 | flare-theme | `core/renderer/lib/nameInk.test.ts` | port | NAME_FLIP name ink, consumed by tab names |
 | flare-theme | `core/renderer/lib/switchKnob.test.ts` | port | knob black on dark, white on light, flip under 2:1 |
@@ -146,7 +146,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-theme | `core/renderer/lib/themeDraft.test.ts` | port | draft worn while open, Cancel drops it, origin accent kept on Custom |
 | flare-theme | `core/renderer/lib/themeOrder.test.ts` | port | achromatic, neutral-then-coloured black to white, stable ties, 0.001 gap guard |
 | flare-theme | `src/renderer/src/lib/accentLift.test.ts` | port | near-black accent lifted to a visible red |
-| flare-theme | `src/renderer/src/lib/agentColors.test.ts` | port | working = accent, finished, question and failed colours per theme preset; marksApart |
+| flare-theme | `src/renderer/src/lib/agentColors.test.ts` | port (M4, consumed by M6 T27) | working = accent, finished, question and failed colours per theme preset; marksApart |
 | flare-theme | `src/renderer/src/lib/chromeTheme.opacity.test.ts` | port | ground alpha as a byte, opacity migration snapshot values (case list not enumerated; read the file) |
 | flare-theme | `src/renderer/src/lib/chromeTheme.test.ts` | port | 30 cases (M4 T12; was 21): chromeTokens, edges, see-through accent, custom floors, secondary, light controls, switch knob |
 | flare-theme | `src/renderer/src/lib/sidebarGround.test.ts` | port | sidebar ground one OKLab step darker, black kept (case list not enumerated; read the file) |
@@ -172,7 +172,7 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-win | `src/main/verbSwitch.test.ts` | port | default on, off marker, reconcile, dev/test write gate, boolean guard |
 | flare-win | `src/main/windowEdge.test.ts` | port | DWM border step and edges setting; pure edgeFor beside the border call |
 | flare-win | `src/main/windowState.test.ts` | port | window.json parse, defaults, minimum size, off-screen position drop |
-| flare-win | `src/renderer/src/lib/marksPause.test.ts` | port | minimise sets the pause flag, restore clears it; DOM attribute check dropped |
+| flare-agent | `src/renderer/src/lib/marksPause.test.ts` | port | `mark_motion.rs` (M6 T14, `MarksPause`): minimise sets the pause, restore clears it; flare-win only answers the animation switch (`motion.rs`); the DOM attribute check is dropped |
 
 Totals: 166 test files mapped, 160 ported (some in part or split), 6 dropped.
 
@@ -344,3 +344,43 @@ Prism Terminal v0.55.6 test files that the M5 areas map to (Appendix A of the M5
 | xterm.js `src/browser/input/MoveToCell.test.ts` (Alt+click, `altClickMovesCursor`) | 4 | flare-term `alt_click.rs`, M5 final review | all 4 (the 24-target normal table, application cursor, alt buffer) + 10 new; wired in `term_ui.rs` (O25) |
 
 Rows changed by M5 (the M5 plan's Task 28 list): `imagePasteKey` and `newlineKey` (termPaste.test) now belong to flare-agent, M5 (D13); `termMenu.test` to flare, M5; `termLinkPaint.test` and `linkScanPlan.test` to flare-term (`link_scan.rs`, `scan_plan.rs`) instead of flare-render (their DOM-decoration part does not exist in Flare, D5); the `shellOfShellId` group of `catalogue.test` to flare-shells (`path_shell_of`).
+
+## M6 ledger
+
+Appendix A of the M6 plan, copied verbatim: Prism Terminal test ledger (every file `docs/test-port.md` maps to the M6 areas; 263 `it` blocks in 28 files)
+
+| PT test file | `it` | Flare home | Tests | Note |
+|---|---|---|---|---|
+| `core/main/agentDetect.test.ts` | 16 | `flare-agent/detect.rs` (T8) | 11 + 3 new | the compact process listing group (5) dropped: native rows (D4); a four-deep tree test replaces it |
+| `core/main/agentKinds.test.ts` | 3 | `detect.rs` (T8) + M3's `kinds.rs` | 3 | the poll-prefilter-by-reading-source group becomes `the_resumable_agents_pass_the_prefilter` |
+| `core/main/agentPoll.test.ts` | 14 | `poll.rs` (T9) | 14 + 3 new | `agentBusy` disappears (D3); the in-flight ask test uses `PollHandle` |
+| `core/main/agentResume.test.ts` | 10 | `resume.rs` (T10) | 8 + 2 new | sync and async walks are one function; the 60-file test checks the same answer |
+| `core/main/sonaraLink.test.ts` | 3 | `sonara.rs` (T12) | 3 + 3 new | a std TCP fake server replaces node's http |
+| `core/main/terminal.test.ts` (`isOurPlugin` 2) | 2 | `plugin.rs` (T3) | 3 | + the inherited-copy drop in T23 |
+| `core/renderer/lib/agentArm.test.ts` | 20 | `arm.rs` (T4) | 20 | |
+| `core/renderer/lib/agentBackground.test.ts` | 5 | `background.rs` (T6) | 5 | fixtures copied byte for byte |
+| `core/renderer/lib/agentClock.test.ts` | 10 | `clock.rs` (T7) + M3's three `human_for` tests | 7 + 3 (M3) | |
+| `core/renderer/lib/agentClose.test.ts` | 3 | M3 (`close.rs`, Task 12) | 3 | ported in M3 |
+| `core/renderer/lib/agentHookSignal.test.ts` | 10 | `signal.rs` (T2), `plugin.rs` (T3) | 6 + 7 | the real-run test uses the real hook.cmd |
+| `core/renderer/lib/agentHookState.test.ts` | 31 | `hook_state.rs` (T5) | 31 | |
+| `core/renderer/lib/agentHookState.timelines.test.ts` | 7 | `tests/timelines.rs` (T5), `indicator.rs` (T18) | 7 + 7 | replayed twice: through `hook_step` and through the whole indicator |
+| `core/renderer/lib/agentIcon.test.ts` | 2 | `icon.rs` (T13) | 2 + 1 | |
+| `core/renderer/lib/agentQuestion.test.ts` | 12 | `question.rs` (T6) | 12 | |
+| `core/renderer/lib/agentTitle.test.ts` | 14 | `title.rs` (T4) | 12 | the two `titleAgent` groups are 2 tests each |
+| `core/renderer/lib/resumeReveal.test.ts` | 9 | `reveal.rs` (T11) | 9 + 1 | |
+| `core/renderer/lib/termActivity.born.test.ts` | 5 | `activity.rs` (T7) | 5 | |
+| `core/renderer/lib/termActivity.test.ts` | 9 | `activity.rs` (T7) | 9 | |
+| `core/renderer/questionWatch.test.ts` | 6 | `question_watch.rs` (T6) | 6 | |
+| `core/renderer/questionWidget.test.ts` | 8 | `question_widget.rs` (T6) | 8 + 1 | |
+| `src/renderer/src/lib/taskbarBadge.test.ts` | 7 | `badge.rs` (T14), `flare-win/taskbar.rs` (T20) | 7 + 6 | `badgePixels` and `badgeText` in `badge.rs`; the disc is Flare's own pixels |
+| `core/renderer/lib/agentDiag.test.ts` | 21 | `flare-diag/agent_diag.rs` (T15) | 21 + 1 | |
+| `core/renderer/lib/tabMark.test.ts` | 8 | `tab_mark.rs` (T13) | 5 + 3 new | the Prompt, Full and Off cells are dropped (D6) |
+| `core/renderer/components/TabMark.test.ts` | 10 | `tab_mark.rs` (T13), `ui_tests/marks.rs` (T24, T25) | 1 + 19 pixel tests | DOM and CSS class checks dropped; their facts are pixel tests |
+| `core/renderer/styles/marks.test.ts` | 5 | `mark_motion.rs` (T14), `ui_tests/marks.rs` | 4 | every motion has a rule, reduced motion stills all, minimised pauses, transform-only (a text scan: `MarkMotion` is the only animation source) |
+| `src/renderer/src/lib/marksPause.test.ts` | 2 | `mark_motion.rs` (T14) | 1 | the DOM attribute check is dropped |
+| `core/renderer/lib/markColours.test.ts` | 8 | M4 (`flare-theme/marks.rs`) | M4 | consumed by T27 |
+| `src/renderer/src/lib/agentColors.test.ts` | 5 | M4 (`agent_colours.rs`) | M4 | consumed by T27 |
+| `termPaste.test.ts` (`imagePasteKey`, `newlineKey`) | 5 | M5 (`keys.rs`, Task 9) | M5 | M6 supplies the `AgentView` (T28) |
+| `core/main/terminal.test.ts` (`ptyEnv` plugin 9, `withResume` 5) | 14 | M2 (`flare-shells`) | M2 | M6 adds the guard in front of `with_resume` (T23) and wires `is_ours` |
+
+Tests with no Prism Terminal source (new in M6): the indicator's own unit tests (Tasks 17 and 18, about 50), the mark component and flow pixel tests (Tasks 24, 25, 29, 31), the real-process tests (Task 32), the hub tests (Task 28), the restore and badge wiring tests (Task 30).

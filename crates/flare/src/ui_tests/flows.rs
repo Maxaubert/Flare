@@ -147,7 +147,7 @@ impl Fx {
             let post = post.clone();
             Arc::new(move || post(UiMsg::HostWake))
         };
-        let host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker);
+        let host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker, None);
         let clock = Rc::new(Cell::new(0u64));
         let log: Rc<RefCell<Log>> = Rc::default();
         let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> = if opts.real_fs {

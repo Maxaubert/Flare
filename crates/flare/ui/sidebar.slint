@@ -4,6 +4,8 @@
 import { Theme, Px } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { TabRow } from "types.slint";
+import { MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
+import { LoadingRing } from "tabs.slint";
 
 // One 46 px slot of the column; the visible card moves inside it by the carry offset.
 component SideRow inherits Rectangle {
@@ -20,8 +22,15 @@ component SideRow inherits Rectangle {
     property <bool> left-held: false;
     property <bool> hov: ta.has-hover || xta.has-hover;
     // The ring of a tab coming back; the X slides in beside it on hover.
-    property <length> x-w: root.tab.loading ? (root.hov ? 18px : 0px) : 18px;
-    property <length> end-w: root.tab.loading ? (18px + (root.hov ? 20px : 0px)) : 18px;
+    property <int> ring-state: root.tab.mark-kind == 1 ? root.tab.mark-state : 0;
+    property <bool> has-ring: root.tab.loading || root.ring-state != 0;
+    property <length> x-w: root.has-ring ? (root.hov ? 18px : 0px) : 18px;
+    property <length> end-w: root.has-ring ? (18px + (root.hov ? 20px : 0px)) : 18px;
+    // Where the card's 8 px corner curve ends on the bar's bottom device row, rounded up to a whole device pixel.
+    // The software renderer ignores a clip's border-radius, so the Bar starts and ends here instead of
+    // being clipped by the corner: no bar pixel ever lies outside the rounded card, in either renderer.
+    property <float> inset-css: 8 - Math.sqrt(64 - Math.pow(8 - 0.5 / Px.scale, 2));
+    property <length> bar-inset: Math.ceil(root.inset-css * Px.scale) / Px.scale * 1px;
     height: 46px;
 
     card := Rectangle {
@@ -73,19 +82,11 @@ component SideRow inherits Rectangle {
             width: 46px;
             height: 46px;
             background: Theme.text.with-alpha(0.05);
-            Path {
-                width: 18px;
-                height: 18px;
+            AgentIcon {
                 x: (46px - 18px) / 2;
                 y: (46px - 18px) / 2;
-                viewbox-width: 24;
-                viewbox-height: 24;
-                commands: root.tab.settings ? Glyphs.cog : Glyphs.prompt;
-                fill: transparent;
-                stroke: Theme.side-text;
-                stroke-width: (root.tab.settings ? 1.7 : 2.2) * 18px / 24;
-                stroke-line-cap: round;
-                stroke-line-join: round;
+                kind: root.tab.settings ? 3 : root.tab.agent;
+                ink: Theme.side-text;
             }
         }
 
@@ -113,7 +114,18 @@ component SideRow inherits Rectangle {
             }
         }
 
-        // The end: the loading ring when the tab is coming back, and the X.
+        // The Bar mark along the row's foot, inside the card's rounded corners.
+        if root.tab.mark-kind >= 2 : MarkBar {
+            x: root.bar-inset;
+            y: card.height - self.height;
+            width: card.width - 2 * root.bar-inset;
+            kind: root.tab.mark-kind;
+            state: root.tab.mark-state;
+            colour: root.tab.mark-color;
+            rainbow: root.tab.mark-rainbow;
+        }
+
+        // The end: the loading ring or the mark ring when there is one, and the X.
         end := Rectangle {
             x: card.width - 8px - root.end-w;
             y: (46px - 18px) / 2;
@@ -122,49 +134,24 @@ component SideRow inherits Rectangle {
             clip: true;
             animate width { duration: 150ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
 
-            if root.tab.loading: Rectangle {
+            if root.tab.loading: LoadingRing {
                 x: 0px;
                 width: 18px;
                 height: 18px;
-                Path {
-                    x: 4.5px;
-                    y: 4.5px;
-                    width: 9px;
-                    height: 9px;
-                    viewbox-width: 9;
-                    viewbox-height: 9;
-                    commands: "M4.5 0.75a3.75 3.75 0 1 0 0 7.5a3.75 3.75 0 1 0 0-7.5z";
-                    fill: transparent;
-                    stroke: Theme.text.with-alpha(0.22);
-                    stroke-width: 1.5px;
-                }
-                Path {
-                    x: 4.5px;
-                    y: 4.5px;
-                    width: 9px;
-                    height: 9px;
-                    viewbox-width: 9;
-                    viewbox-height: 9;
-                    property <angle> a: Math.mod(animation-tick() / 1s, 1.0) * 360deg;
-                    fill: transparent;
-                    stroke: Theme.accent-solid;
-                    stroke-width: 1.5px;
-                    stroke-line-cap: round;
-                    MoveTo {
-                        x: 4.5 + 3.75 * Math.cos(a);
-                        y: 4.5 + 3.75 * Math.sin(a);
-                    }
-                    ArcTo {
-                        x: 4.5 + 3.75 * Math.cos(a + 90deg);
-                        y: 4.5 + 3.75 * Math.sin(a + 90deg);
-                        radius-x: 3.75;
-                        radius-y: 3.75;
-                        sweep: true;
-                    }
+            }
+            if !root.tab.loading && root.ring-state != 0: Rectangle {
+                x: 0px;
+                width: 18px;
+                height: 18px;
+                MarkRing {
+                    x: Px.snap((parent.width - self.width) / 2);
+                    y: Px.snap((parent.height - self.height) / 2);
+                    state: root.ring-state;
+                    ink: Theme.side-text;
                 }
             }
             Rectangle {
-                x: root.tab.loading ? 20px : 0px;
+                x: root.has-ring ? 20px : 0px;
                 width: root.x-w;
                 height: 18px;
                 clip: true;
@@ -196,9 +183,9 @@ component SideRow inherits Rectangle {
         xta := TouchArea {
             x: end.x + (root.tab.loading ? 20px : 0px);
             y: end.y;
-            width: root.tab.loading ? root.x-w : 18px;
+            width: root.has-ring ? root.x-w : 18px;
             height: 18px;
-            enabled: root.tab.active || root.hov || root.tab.loading;
+            enabled: root.tab.active || root.hov || root.has-ring;
             clicked => { root.closed(); }
         }
     }

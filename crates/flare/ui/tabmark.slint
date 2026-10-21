@@ -1,0 +1,287 @@
+// The tab marks (M6 Task 24). Source: PT TabMark.tsx, AgentIcon.tsx, marks.css.
+// Every thickness and edge is a whole number of device pixels (Px.snap); the motion values come from
+// the Rust mark clock through MarkMotion, so a still window draws a still mark.
+import { Theme, Px } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+
+// Slint fits a Path's viewbox into (width - stroke) x (height - stroke), inset by half the stroke, so a stroked
+// Path below is made one stroke wider than its mark and placed half a stroke up and left: the viewbox then maps
+// exactly onto the mark's own pixels, as an SVG would.
+
+export global MarkMotion {
+    in property <bool> still: false;
+    in property <angle> spin: 0deg;
+    in property <float> breathe: 1.0;
+    // The run bar's eased travel, 0..1.
+    in property <float> run: 0.0;
+    // The rainbow's slide in css px, 0..114.
+    in property <float> flow: 0.0;
+    in property <float> pulse: 1.0;
+    // The seven floored stops, or empty.
+    in property <[color]> rainbow: [];
+}
+
+// ONE mono mark at a tab's end (Ring). state: 1 working (spinner), 2 question (breathing dot),
+// 3 finished (check), 4 failed (cross). ink is the name's ink. It is a 12 x 12 px slot; the parent
+// centres it in its own box (the strip's end box is 16, the sidebar's 18, the icon tab's corner disc 15).
+export component MarkRing inherits Rectangle {
+    in property <int> state;
+    in property <color> ink;
+    width: 12px;
+    height: 12px;
+
+    // The spinner: a 12 px circle (centreline radius 5, line 2), the top quarter turning; still, the
+    // top and right quarters stand.
+    property <angle> arc-from: MarkMotion.still ? -135deg : MarkMotion.spin - 135deg;
+    property <angle> arc-to: MarkMotion.still ? 44.9deg : MarkMotion.spin - 45deg;
+
+    if root.state == 1 : Path {
+        x: -1px;
+        y: -1px;
+        width: 14px;
+        height: 14px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M11 6a5 5 0 1 1-10 0a5 5 0 1 1 10 0z";
+        fill: transparent;
+        stroke: root.ink.with-alpha(0.24);
+        stroke-width: 2px;
+    }
+    if root.state == 1 : Path {
+        x: -1px;
+        y: -1px;
+        width: 14px;
+        height: 14px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M" + (6 + 5 * cos(root.arc-from)) + " " + (6 + 5 * sin(root.arc-from))
+            + "A5 5 0 0 1 " + (6 + 5 * cos(root.arc-to)) + " " + (6 + 5 * sin(root.arc-to));
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 2px;
+        stroke-line-cap: butt;
+    }
+    // The question: a 7 px dot that breathes.
+    if root.state == 2 : Rectangle {
+        width: Px.snap(7px);
+        height: Px.snap(7px);
+        x: Px.snap((12px - self.width) / 2);
+        y: Px.snap((12px - self.height) / 2);
+        border-radius: self.width / 2;
+        background: root.ink;
+        opacity: MarkMotion.still ? 1.0 : MarkMotion.breathe;
+    }
+    // The check: 12 px, line 2.4 of 16 units.
+    if root.state == 3 : Path {
+        x: -0.9px;
+        y: -0.9px;
+        width: 13.8px;
+        height: 13.8px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: Glyphs.check;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 2.4 * 12px / 16;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    // The cross: 10 px centred in the slot, line 2.4 of 16 units.
+    if root.state == 4 : Path {
+        x: Px.snap(1px) - 0.75px;
+        y: Px.snap(1px) - 0.75px;
+        width: 11.5px;
+        height: 11.5px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: Glyphs.cross;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 2.4 * 10px / 16;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// The Bar mark along a tab's foot. kind 2 line, 3 run. The parent places it at the foot and gives it
+// the tab's width.
+export component MarkBar inherits Rectangle {
+    in property <int> kind;
+    in property <int> state;
+    in property <color> colour;
+    in property <bool> rainbow;
+    clip: true;
+    height: Px.snap(3px);
+
+    property <length> w: root.width;
+    // The seven stops of the rainbow, or the line colour when there are none.
+    property <bool> ribbon-on: root.kind == 2 && root.rainbow && root.state == 3;
+    property <bool> have: MarkMotion.rainbow.length >= 7;
+    property <color> s0: root.have ? MarkMotion.rainbow[0] : root.colour;
+    property <color> s1: root.have ? MarkMotion.rainbow[1] : root.colour;
+    property <color> s2: root.have ? MarkMotion.rainbow[2] : root.colour;
+    property <color> s3: root.have ? MarkMotion.rainbow[3] : root.colour;
+    property <color> s4: root.have ? MarkMotion.rainbow[4] : root.colour;
+    property <color> s5: root.have ? MarkMotion.rainbow[5] : root.colour;
+    property <color> s6: root.have ? MarkMotion.rainbow[6] : root.colour;
+
+    // Stop k of the tile; stop 7 is stop 0 again so the tile loops.
+    pure function stop(k: int) -> color {
+        return k == 0 ? root.s0 : k == 1 ? root.s1 : k == 2 ? root.s2 : k == 3 ? root.s3
+            : k == 4 ? root.s4 : k == 5 ? root.s5 : k == 6 ? root.s6 : root.s0;
+    }
+
+    // The run: a bar 42% of the line, round ended, travelling from one bar left of the line to its end.
+    if root.kind == 3 : Rectangle {
+        width: MarkMotion.still ? root.w : Px.snap(root.w * 0.42);
+        x: MarkMotion.still ? 0px : Px.snap(-0.42 * root.w + MarkMotion.run * 1.42 * root.w);
+        y: 0px;
+        height: root.height;
+        border-radius: self.height / 2;
+        background: root.colour;
+    }
+    // The line: the whole width in the colour; a question line breathes.
+    if root.kind == 2 && !root.ribbon-on : Rectangle {
+        width: root.w;
+        height: root.height;
+        background: root.colour;
+        opacity: (root.state == 2 && !MarkMotion.still) ? MarkMotion.breathe : 1.0;
+    }
+    // The finished rainbow: six tiles of one tab (114 px) each sliding right one tile per lap.
+    // Every edge of the ribbon and its 42 pieces is a whole device pixel (Task 34: at 175% a piece
+    // ending mid-pixel left a column of the ground between two pieces in the software renderer).
+    if root.ribbon-on : Rectangle {
+        x: Px.snap((MarkMotion.still || !root.have) ? -114px : -114px + MarkMotion.flow * 1px);
+        y: 0px;
+        width: 6 * 114px;
+        height: root.height;
+        // One two-stop gradient per seventh of a tile: the software renderer drops the spans of a
+        // gradient with eight stops, a two-stop one is exact in both renderers.
+        for i in 42 : Rectangle {
+            x: Px.snap(i * (114px / 7));
+            width: Px.snap((i + 1) * (114px / 7)) - Px.snap(i * (114px / 7));
+            height: root.height;
+            background: @linear-gradient(90deg, root.stop(mod(i, 7)), root.stop(mod(i, 7) + 1));
+        }
+    }
+}
+
+// The agent's icon on a tab, 18 px: kind 0 shell (the >_ prompt, stroke 2.2, ink), 1 claude (Clawd,
+// Theme.clawd), 2 codex (the OpenAI mark, ink), 3 settings (the cog, stroke 1.7, ink).
+export component AgentIcon inherits Rectangle {
+    in property <int> kind;
+    in property <color> ink;
+    in property <length> size: 18px;
+    width: size;
+    height: size;
+
+    if root.kind == 0 : Path {
+        x: -2.2 * root.size / 48;
+        y: -2.2 * root.size / 48;
+        width: root.size + 2.2 * root.size / 24;
+        height: root.size + 2.2 * root.size / 24;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Glyphs.prompt;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 2.2 * root.size / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    if root.kind == 1 : Path {
+        width: root.size;
+        height: root.size;
+        viewbox-x: 0.5;
+        viewbox-y: -2.5;
+        viewbox-width: 17;
+        viewbox-height: 17;
+        commands: Glyphs.clawd;
+        fill: Theme.clawd;
+    }
+    if root.kind == 2 : Path {
+        width: root.size;
+        height: root.size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Glyphs.openai;
+        fill: root.ink;
+    }
+    if root.kind == 3 : Path {
+        x: -1.7 * root.size / 48;
+        y: -1.7 * root.size / 48;
+        width: root.size + 1.7 * root.size / 24;
+        height: root.size + 1.7 * root.size / 24;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Glyphs.cog;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 1.7 * root.size / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// The test window: a tab (tab-w x 36) with a Bar at its foot when mark-kind >= 2, a 16 px end box at
+// (100, 10) holding a Ring when mark-kind == 1, the icon tab's 15 px corner disc at (300, 10) holding a
+// Ring, and an AgentIcon at (340, 9).
+export component MarkPreview inherits Window {
+    in property <int> mark-kind;
+    in property <int> mark-state;
+    in property <color> mark-color: Theme.accent;
+    in property <bool> mark-rainbow;
+    in property <color> ink: Theme.text;
+    in property <color> ground: Theme.ground;
+    in property <length> tab-w: 150px;
+    in property <int> icon-kind;
+    width: 400px;
+    height: 36px;
+    background: root.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    if root.mark-kind >= 2 : MarkBar {
+        x: 0px;
+        y: 36px - self.height;
+        width: Px.snap(root.tab-w);
+        kind: root.mark-kind;
+        state: root.mark-state;
+        colour: root.mark-color;
+        rainbow: root.mark-rainbow;
+    }
+    if root.mark-kind == 1 : Rectangle {
+        x: 100px;
+        y: 10px;
+        width: 16px;
+        height: 16px;
+        MarkRing {
+            x: Px.snap((parent.width - self.width) / 2);
+            y: Px.snap((parent.height - self.height) / 2);
+            state: root.mark-state;
+            ink: root.ink;
+        }
+    }
+    Rectangle {
+        x: 300px;
+        y: 10px;
+        width: 15px;
+        height: 15px;
+        border-radius: 7.5px;
+        background: Theme.tabs;
+        if root.mark-kind == 1 : MarkRing {
+            x: Px.snap((parent.width - self.width) / 2);
+            y: Px.snap((parent.height - self.height) / 2);
+            state: root.mark-state;
+            ink: root.ink;
+        }
+    }
+    AgentIcon {
+        x: 340px;
+        y: 9px;
+        kind: root.icon-kind;
+        ink: root.ink;
+    }
+}

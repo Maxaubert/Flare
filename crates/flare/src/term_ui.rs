@@ -801,6 +801,12 @@ impl TermUi {
         true
     }
 
+    /// A program in the front tab owns a selection it made itself (the agent guard leaves Ctrl+C
+    /// to it).
+    pub fn program_selecting(&self) -> bool {
+        self.watch.selecting()
+    }
+
     pub fn has_selection(&self, tab: &TabInfo) -> bool {
         tab.handle.with_emu_quiet(|em| em.has_selection())
     }

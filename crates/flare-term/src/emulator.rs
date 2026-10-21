@@ -77,6 +77,16 @@ pub enum TermEvent {
     Started,
     StartFailed,
     Exited(Option<u32>),
+    /// One per drained batch of pty output (the handle queues it, never the emulator).
+    Output,
+    /// A person typed: a key, text or a paste (PT `markTouched`).
+    Typed,
+    /// The encoded bytes of Enter, Esc, Ctrl+C or a digit 1 to 9 that a user key sent.
+    AnswerKey(String),
+    /// `TermHandle::resize` ran (output we caused by a refit is not work).
+    Resized,
+    /// A resuming tab's terminal is shown now (the agent painted, a key, an exit, the ceiling).
+    Revealed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,6 +346,36 @@ impl Emulator {
             }
         }
         s.trim_end().to_string()
+    }
+
+    /// PT `setScreenTail`: scan from the bottom screen line up through the history for the last
+    /// line whose text is not blank; return the `rows` lines ending at it (trailing blanks
+    /// trimmed, blanks above it kept), clipped at the top of the buffer. Every line blank: the
+    /// single top line.
+    pub fn text_tail(&self, rows: usize) -> Vec<String> {
+        let top = -(self.history_size() as i32);
+        let bottom = self.rows() as i32 - 1;
+        let mut last = None;
+        for line in (top..=bottom).rev() {
+            let t = self.row_text(line);
+            if !t.trim().is_empty() {
+                last = Some(line);
+                break;
+            }
+        }
+        let Some(last) = last else {
+            return vec![self.row_text(top)];
+        };
+        let start = (last - rows.max(1) as i32 + 1).max(top);
+        (start..=last).map(|l| self.row_text(l)).collect()
+    }
+
+    /// The question watch's rows: the live screen and a screen of scrollback above it, whatever
+    /// the viewport shows.
+    pub fn watch_rows(&self) -> Vec<String> {
+        let rows = self.rows();
+        let top = -(self.history_size().min(rows) as i32);
+        (top..rows as i32).map(|l| self.row_text(l)).collect()
     }
 
     pub fn term(&self) -> &Term<Listener> {
@@ -1431,6 +1471,108 @@ mod tests {
         assert_eq!(e.display_offset(), 2);
         e.scroll_to_bottom();
         assert_eq!(e.display_offset(), 0);
+    }
+
+    fn lines(e: &mut Emulator, n: usize) {
+        let all: Vec<String> = (1..=n).map(|i| format!("line{i}")).collect();
+        e.feed(all.join("\r\n").as_bytes());
+    }
+
+    #[test]
+    fn an_empty_title_is_reported_as_an_empty_title() {
+        // Recorded behaviour of alacritty-terminal: an empty OSC 0/2 reaches us as the event
+        // checked below; either way the app sees Title("").
+        let mut e = Emulator::new(80, 24);
+        e.feed(b"\x1b]0;x\x07");
+        assert_eq!(
+            e.feed(b"\x1b]0;\x07"),
+            vec![TermEvent::Title(String::new())]
+        );
+        assert_eq!(
+            e.feed(b"\x1b]2;\x07"),
+            vec![TermEvent::Title(String::new())]
+        );
+    }
+
+    #[test]
+    fn a_real_reset_title_is_still_a_reset() {
+        let mut e = Emulator::new(80, 24);
+        e.feed(b"\x1b[22t");
+        e.feed(b"\x1b]0;other\x07");
+        assert_eq!(e.feed(b"\x1b[23t"), vec![TermEvent::ResetTitle]);
+    }
+
+    #[test]
+    fn the_tail_ends_at_the_last_text_not_the_bottom_of_the_screen() {
+        let mut e = Emulator::new(20, 10);
+        e.feed(b"a\r\nb\r\nc");
+        assert_eq!(e.text_tail(16), vec!["a", "b", "c"]);
+        let mut e = Emulator::new(20, 10);
+        lines(&mut e, 30);
+        assert_eq!(e.history_size(), 20);
+        assert_eq!(e.text_tail(4), vec!["line27", "line28", "line29", "line30"]);
+        let t = e.text_tail(16);
+        assert_eq!((t[0].as_str(), t[15].as_str()), ("line15", "line30"));
+        assert_eq!(t.len(), 16);
+    }
+
+    #[test]
+    fn an_all_blank_buffer_gives_the_single_top_line() {
+        let e = Emulator::new(20, 10);
+        assert_eq!(e.text_tail(16), vec![String::new()]);
+    }
+
+    #[test]
+    fn blanks_above_the_last_line_are_kept() {
+        let mut e = Emulator::new(20, 10);
+        e.feed(b"first\x1b[6;1Hlast");
+        assert_eq!(e.text_tail(16), vec!["first", "", "", "", "", "last"]);
+    }
+
+    #[test]
+    fn wide_characters_and_trailing_blanks_are_trimmed() {
+        let mut e = Emulator::new(20, 10);
+        e.feed("日本 ".as_bytes());
+        assert_eq!(e.text_tail(4), vec!["日本"]);
+    }
+
+    #[test]
+    fn the_watch_rows_are_the_live_screen_and_one_screen_of_history() {
+        let mut e = Emulator::new(20, 10);
+        lines(&mut e, 25);
+        let w = e.watch_rows();
+        assert_eq!(w.len(), 20);
+        assert_eq!(w.last().map(String::as_str), Some("line25"));
+        e.scroll_view(5);
+        assert_eq!(e.watch_rows(), w);
+    }
+
+    #[test]
+    fn a_widget_taller_than_the_pane_is_found() {
+        // The `run2-02-right` widget rows of question_widget_screens.json.
+        let widget = [
+            "←  ☐ Colour  ☐ Size  ☐ Shape  ✔ Submit  →",
+            "",
+            "Pick a size?",
+            "",
+            "❯ 1. Small",
+            "     Small",
+            "  2. Large",
+            "     Large",
+            "  3. Type something.",
+            "  4. Chat about this",
+            "",
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+        ];
+        let mut e = Emulator::new(80, 8);
+        e.feed(widget.join("\r\n").as_bytes());
+        let found = flare_agent::question_widget::extract_question(&e.watch_rows());
+        assert_eq!(
+            found,
+            Some(flare_agent::question_widget::ShownQuestion::Text(
+                "Pick a size?".into()
+            ))
+        );
     }
 
     #[test]
