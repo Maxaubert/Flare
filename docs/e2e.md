@@ -142,6 +142,32 @@ variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 
 `visualTour` is an opt-in scenario (`OPT_IN`; a plain run never picks it, a filter that names it does) that captures Flare's start-up, session resume, sidebar slide and a general pass at 100, 150 and 225 percent on both renderers into `docs/screenshots/visual/`, with per-frame numbers from the `frames.series` and `sidebar.anim` probes. `tools/pt-shot/pt-visual.mjs` captures Prism Terminal from a copy of its folder, `tools/visual/summarize.py` makes the sheets and tables. How to run it and what it found: `docs/screenshots/visual/README.md`.
 
+## Web panel scenarios (Surfaces stage 3)
+
+`webPanel`, `webVideo` and `webNoRuntime` (`tools/e2e/src/scenarios/web.rs`) need a machine with the Microsoft Edge WebView2 Runtime
+(Windows 11 has it) and, for `webVideo`, `ffmpeg` on the PATH (it makes a 6 second clip into the world's folder; a missing
+`ffmpeg` fails the scenario with the install hint). Nothing is fetched from the network: local pages are served by a WebView2
+virtual host mapping, `https://flare-test.local/`, to a folder of the world. The two seams exist only under `--e2e` (read through
+`ship_ctl::e2e_var`): `WEB_ROOT` (that folder) and `WEBVIEW_RUNTIME=missing` (the runtime check fails). The browser's profile is
+`<world profile>\WebView2`, so the owner's Edge is never touched, and the run's own browser process is the only one
+the scenario waits for.
+
+- `webPanel` runs at 100 and 225 percent: no browser before a panel opens; `browser.open` through a real pipe answers once the page
+  has loaded; the controller's bounds (asked of the browser), the child window of Flare's window, the box Slint drew and the
+  layout maths are the same rectangle; a script reads the page; a terminal menu hides the window and a still takes its place and
+  both undo when it closes; `browser.navigate` to a url, back, forward and reload; refused addresses (`file:`, `javascript:`,
+  `data:`, a login) and wrong parameters; `target=_blank` stays in the panel and `window.open` makes no window of its own; a
+  geolocation request is denied; the splitter moves the page with it; a change of display scale (to 150 percent from 100, to 100 from 225) puts the page where the new layout says; a second tab hides the page and coming back shows it; closing
+  the panel frees the controller, the browser object and the browser process; Ctrl+Shift+P brings the page back at its address.
+  The test hook has one request for a page, `WebScript` (runs a script in the front page), and two probes: `web.state` and `web.script.result`.
+- `webVideo` plays the clip and checks that its clock advances at 1.0 times the wall clock (0.85 to 1.15) and that frames are
+  decoded at 24 or more a second.
+- `webNoRuntime` pretends the runtime is missing: `browser.open` answers `unavailable` with the link, the panel shows the note and
+  the button, no controller exists, the terminal answers and a text panel still opens.
+
+What it cannot see: the pixels of the page (the snapshot probe sees what Slint drew, not the browser's child window) and real
+input. The hand list is at the end of `docs/surfaces/lessons.md`.
+
 ## Panel scenario (Surfaces stage 1)
 
 `panelImage` (`tools/e2e/src/scenarios/panel.rs`) prints a picture path and a text path, clicks them, and checks the panel

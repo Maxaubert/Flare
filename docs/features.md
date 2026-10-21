@@ -861,10 +861,10 @@ the notes for the port: `docs/surfaces/lessons.md` (Stage 2). Issues #18 and #19
   `install_writes_the_mcp_server_only_when_the_program_exists`, `without_the_server_s_pid_the_real_channel_never_connects`,
   `a_pipe_served_by_another_process_is_never_given_the_secret`,
   `has_a_manifest_claude_code_accepts` (`flare-agent`), `show_text_routes_to_view_text_with_its_title`,
-  `tools_list_has_the_four_tools_with_object_schemas`, `a_tool_call_reaches_the_server_with_the_tab`,
+  `tools_list_has_the_five_tools_with_object_schemas`, `a_tool_call_reaches_the_server_with_the_tab`,
   `an_unknown_tab_token_is_reported_as_flare_refusing` (`flare-mcp`),
   `the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_builds_it` (`release_files.rs`) and the e2e `mcpRoundTrip`.
-- **End to end (the release exe, its own profile, offscreen):** `ctlChannel` (44 checks) reads a tab's secret through the `ctl.info`
+- **End to end (the release exe, its own profile, offscreen):** `ctlChannel` (45 checks) reads a tab's secret through the `ctl.info`
   probe and from inside a real shell, connects to the pipe, opens a picture, a text and a file in the panel, reads them back with
   `panel.state`, is refused for a wrong secret, the tab's id, a tab named in `hello`, a missing file, a program, a program named like a
   picture, a network path, a picture through `view.file`, over-long text, `browser.eval` and `shell.input`, stores a behind tab's panel
@@ -877,3 +877,80 @@ the notes for the port: `docs/surfaces/lessons.md` (Stage 2). Issues #18 and #19
   only once the server runs, plus `FLARE_CTL_PID` so `flare-mcp` talks only to the app's own pipe (a squatter gets no secret) and a
   refusal's text is cleaned; one deadline per call with the UI dropping a late request; the manifest rendered at install; tests that
   prove what they say (a panels file that must exist, folders told apart by picture size). See `decisions.md` and `lessons.md`.
+
+## Surfaces: the web panel (stage 3), 2026-10-21
+
+A real browser beside the terminal, per tab. Issues #20 (the browser panel) and #21 (video). Choices: `docs/surfaces/decisions.md`
+(Stage 3); the notes for the port: `docs/surfaces/lessons.md` (Stage 3); the contract: `docs/surfaces/protocol.md`
+(`browser.open`, `browser.navigate`, `panel.open`, the address rules). Engine: Microsoft Edge WebView2 through `webview2-com`,
+one controller per tab with an open web panel, parented to Flare's window.
+
+- **Nothing exists until a web panel opens.** No browser object, no process, no handler; the environment is made by the first
+  panel and goes with the last controller; a closed panel, a closed tab and Ctrl+Shift+P free the controller (the browser's own
+  process ends). Held by `nothing_exists_before_a_web_panel_opens`,
+  `a_web_panel_makes_its_controller_at_the_slot_and_frees_it_when_closed`, `closing_a_tab_frees_its_page`,
+  `the_toggle_chord_brings_the_page_back_at_its_last_address` (`appctl/tests/web_tests.rs`) and the e2e `webPanel` (it watches
+  the controller count, the browser object and the browser process).
+- **The page sits exactly on the slot.** The controller's rectangle is the box Slint lays out inside the panel body less the slot's
+  hairline, in physical pixels, after every layout change, splitter step, scale change and monitor move; at 100 and 225
+  percent the controller's own bounds, the child window of Flare's window, Slint's box and `flare_surfaces::web::web_rect` agree.
+  Held by `the_page_fills_the_body_less_the_slots_hairline_at_every_scale`,
+  `the_page_rectangle_equals_the_layout_maths_at_every_scale_width_and_share`, `the_page_follows_the_splitter_while_it_moves`
+  (`ui_tests/panel.rs`), `it_sits_on_the_slot_at_every_display_scale`, `the_controller_follows_the_slot_when_the_splitter_moves`
+  (`web_tests.rs`), the unit tests of `web.rs` (`a_logical_rect_rounds_by_its_edges`, `the_web_rect_is_the_slot_less_the_header_and_the_hairline`)
+  and the e2e `webPanel`.
+- **Airspace.** While any of the 15 overlays is open the browser window is hidden and a still of its last frame (taken before it
+  hides) is drawn in its place; it shows again and the still is let go when the overlay closes; a tab behind hides its window and
+  keeps its page. Held by `an_overlay_takes_a_still_and_then_hides_the_window`, `a_still_that_cannot_be_taken_still_hides_the_window`,
+  `a_late_still_after_the_overlay_closed_is_dropped`, `a_tab_behind_keeps_its_page_but_hides_the_window`,
+  `the_still_is_drawn_in_the_page_box_and_only_while_it_is_set`, the phase tests of `web.rs`
+  (`an_overlay_takes_a_still_before_it_hides_the_window`, `a_late_still_is_dropped`, `leaving_the_tab_hides_from_any_phase`),
+  the existing `overlay-open` term scan, and the e2e `webPanel` (a terminal menu hides the window and the still is 401 by 540 px
+  at 100 percent and 900 by 1215 at 225).
+- **The browser bar.** Back, forward, reload (stop while loading), an address field (Enter opens it; text with no scheme becomes
+  https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a line in the header; Escape
+  restores the page's address and gives the keys back) and the page title as the header title. Held by
+  `the_address_field_opens_what_is_typed`, `the_address_field_refuses_what_a_panel_may_not_open`,
+  `the_bar_buttons_drive_the_page_only_when_they_can`, `the_bar_follows_the_page`,
+  `a_refused_navigation_is_said_in_the_header_and_leaves_the_page`, `the_address_field_shows_the_page_and_enter_and_escape_do_their_part`,
+  `the_bar_buttons_call_back_and_a_dead_one_does_not`, `the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else`, and the
+  `normalize_url` tests (`text_with_no_scheme_becomes_https`, `a_local_host_with_no_scheme_becomes_http`,
+  `every_other_scheme_is_refused`, `bad_text_is_refused`, `a_login_in_the_address_is_refused`).
+- **Keys.** The page has its keys; the app's chords (the table less Ctrl+F and the agent guard) are taken from it by
+  `AcceleratorKeyPressed`; a second Escape within 600 ms gives the keys back; Ctrl+Shift+O moves them both ways; a press on the
+  window takes them back. Held by `the_app_takes_its_chords_from_the_page`, `the_page_keeps_every_other_key`,
+  `the_hook_takes_only_the_second_escape_and_resets_on_another_key`, `virtual_keys_become_the_keys_the_chord_table_knows`
+  (`web_ctl.rs`), `a_chord_the_page_hands_back_is_the_apps`, `the_second_escape_gives_the_keys_back_to_the_terminal`,
+  `the_focus_chord_hands_the_keys_to_the_page_and_back`, `a_press_on_the_window_takes_the_keys_back_from_the_page` (`web_tests.rs`).
+  By hand: real keys in a real page (below).
+- **What a page may not do.** Permissions are denied (the e2e's geolocation request is answered with the denied code), new
+  windows go to the same panel (`target=_blank` navigates the panel; `window.open` never makes a window), only http, https and
+  about:blank open whoever asks, the profile is the run's own folder and never Edge's (`the_profile_lives_under_the_named_profile_or_local_appdata`,
+  `the_profile_is_never_an_edge_folder`), downloads use WebView2's own prompt (S6). Held by the e2e `webPanel` for the page
+  behaviours and the unit tests above for the rest.
+- **The channel and the tool.** `browser.open`, `browser.navigate` and `panel.open` (web) answer when the page has loaded, bound to
+  the browser's own navigation id; MCP `open_page`. Held by `browser_open_vets_the_address_before_the_ui_hears_of_it`,
+  `browser_navigate_takes_a_url_or_an_action`, `panel_open_web_opens_a_page_and_anything_else_is_refused`,
+  `what_this_build_can_do_is_listed_and_the_grants_still_apply` (`ctl_app.rs`), `browser_open_answers_when_the_page_has_loaded_and_not_before`,
+  `a_load_that_finishes_before_the_calls_own_navigation_is_not_its_answer`, `a_redirect_rebinds_the_wait_to_the_last_navigation`,
+  `a_refused_navigation_answers_a_waiting_call`, `a_second_call_replaces_the_first_and_the_first_is_told`,
+  `an_answer_after_the_callers_deadline_is_not_sent`, `navigate_sends_the_page_on_and_back_needs_history`,
+  `a_tab_behind_answers_at_once_with_what_is_stored`, `the_panel_reports_the_url_and_no_path` (`web_tests.rs`),
+  `open_page_routes_to_browser_open_and_reports_what_loaded` and `open_page_needs_a_url_and_a_refusal_reaches_the_model` (`flare-mcp`),
+  and the e2e `webPanel`, which does it through a real pipe.
+- **Video.** A local clip plays in the panel at the clip's own rate: the e2e `webVideo` reads 1.00 times real time and 30.6
+  frames a second from the page's clock and frame counter in the parked window. YouTube and the like need no code of ours and are
+  by hand (below).
+- **No runtime.** `GetAvailableCoreWebView2BrowserVersionString` is asked at every open; when it fails the panel shows why with
+  Microsoft's download address and a button that opens it, the channel answers `unavailable` with the address, nothing else is
+  touched and the next open asks again. Held by `a_missing_runtime_is_a_message_with_the_link_and_nothing_else_breaks`,
+  `a_build_with_no_browser_at_all_says_so_without_a_crash`, `the_download_button_shows_only_for_a_missing_runtime` and the e2e
+  `webNoRuntime` (the seam `WEBVIEW_RUNTIME=missing`).
+- **Stored.** A web panel is stored with its current address and comes back with its tab; a stored address that is not exactly its
+  own normal form is dropped. Held by `a_stored_web_address_comes_back_and_a_bad_stored_address_is_dropped` and
+  `set_target_follows_a_page_without_reopening_it`.
+- **End to end (the release exe, its own profile, offscreen):** `webPanel` (90 checks, at 100 and 225 percent, including a change of display scale with the page open), `webVideo` (7) and
+  `webNoRuntime` (7).
+- **Not built in this stage:** the agent's hands on the page (look, click, type, press, scroll, wait, eval; the ribbon) are
+  stage 4; mini-apps and diagrams stage 5; "open this localhost address" offered from the terminal stage 7. By hand, not
+  machine-tested: the list at the end of `docs/surfaces/lessons.md` (Stage 3).

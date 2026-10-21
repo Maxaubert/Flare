@@ -18,6 +18,7 @@ flare-agent = { path = "../flare-agent" }
 flare-diag = { path = "../flare-diag" }
 flare-help = { path = "../flare-help" }
 flare-surfaces = { path = "../flare-surfaces" }
+flare-web = { path = "../flare-web" }
 flare-ctl = { path = "../flare-ctl" }
 flare-dictation = { path = "../flare-dictation" }
 flare-e2e-proto = { path = "../flare-e2e-proto" }
@@ -25,6 +26,7 @@ slint.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 png.workspace = true
+image.workspace = true
 log.workspace = true
 env_logger.workspace = true
 windows-sys.workspace = true

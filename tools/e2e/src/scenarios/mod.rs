@@ -29,6 +29,7 @@ pub mod strip;
 pub mod update;
 pub mod vertical;
 pub mod visual;
+pub mod web;
 
 use crate::ctx::Scenario;
 
@@ -537,6 +538,24 @@ pub const ALL: &[Scenario] = &[
         group: "ctl",
         run: ctl::mcp_round_trip,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "webPanel",
+        group: "web",
+        run: web::web_panel,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "webVideo",
+        group: "web",
+        run: web::web_video,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "webNoRuntime",
+        group: "web",
+        run: web::web_no_runtime,
+        limit_secs: 120,
     },
 ];
 

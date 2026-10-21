@@ -142,8 +142,10 @@ pub struct PanelSnap {
     /// The kind's name on the wire: `image`, `text`, ...
     pub kind: String,
     pub title: String,
-    /// The file shown; None for text that was handed over.
+    /// The file shown; None for text that was handed over and for a web page.
     pub path: Option<String>,
+    /// The address of a web panel's page.
+    pub url: Option<String>,
     pub open: bool,
     /// The slot's share of the page the user dragged it to, if they did.
     pub width: Option<f32>,
@@ -199,6 +201,15 @@ fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
+/// Whether a panel of `kind` may point at `target`: a file on a local drive of the right kind, or
+/// (a web panel) an address exactly as it normalises, so a stored one is vetted like a typed one.
+fn target_ok(kind: &PanelKind, target: &str) -> bool {
+    match kind {
+        PanelKind::Web => flare_surfaces::web::normalize_url(target).as_deref() == Ok(target),
+        _ => preview::loadable(target, kind),
+    }
+}
+
 /// "12 KB", "3.4 MB": plain units, one decimal from a megabyte up.
 pub fn human_bytes(n: usize) -> String {
     const KB: usize = 1024;
@@ -247,7 +258,7 @@ impl PanelCtl {
         for ((id, _), panel) in tabs.iter().zip(found) {
             // A restored target is checked as a click's is: the file is anyone's to edit.
             if let Some(p) = panel
-                && (!p.kind.is_built() || preview::loadable(&p.target, &p.kind))
+                && (!p.kind.is_built() || target_ok(&p.kind, &p.target))
             {
                 self.panels.restore(id, p);
             }
@@ -258,7 +269,7 @@ impl PanelCtl {
 
     /// Shows `kind` / `target` on the tab and opens it. False for a target the panel will not load.
     pub fn show(&mut self, tab: &str, kind: PanelKind, target: &str) -> bool {
-        if kind.is_built() && !preview::loadable(target, &kind) {
+        if kind.is_built() && !target_ok(&kind, target) {
             return false;
         }
         // The file may have changed since it was read, or failed and now exist: a click on what
@@ -288,6 +299,49 @@ impl PanelCtl {
     /// The tab has a panel (open or closed) of a kind this build draws.
     pub fn has_built(&self, tab: &str) -> bool {
         self.panels.get(tab).is_some_and(|p| p.kind.is_built())
+    }
+
+    /// The address of the tab's OPEN web panel.
+    pub fn web_target(&self, tab: &str) -> Option<String> {
+        self.panels
+            .open_on(tab)
+            .filter(|p| p.kind == PanelKind::Web)
+            .map(|p| p.target.clone())
+    }
+
+    /// The page of the tab's web panel moved: the panel points at it from now on (it is what a
+    /// restart and the toggle chord bring back). Only an address a panel may open is kept, in its
+    /// normal form.
+    pub fn set_web_url(&mut self, tab: &str, url: &str) -> bool {
+        let Ok(url) = flare_surfaces::web::normalize_url(url) else {
+            return false;
+        };
+        if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Web) {
+            return false;
+        }
+        self.panels.set_target(tab, &url)
+    }
+
+    /// The page of the tab's web panel has a title: the channel names the panel by it (an empty one
+    /// goes back to the host's name).
+    pub fn set_web_title(&mut self, tab: &str, title: &str) -> bool {
+        if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Web) {
+            return false;
+        }
+        let one_line: String = title
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(200)
+            .collect();
+        let one_line = one_line.trim();
+        if one_line.is_empty() {
+            self.titles.remove(tab).is_some()
+        } else {
+            self.titles
+                .insert(tab.to_string(), one_line.to_string())
+                .as_deref()
+                != Some(one_line)
+        }
     }
 
     pub fn forget(&mut self, tab: &str) {
@@ -342,14 +396,18 @@ impl PanelCtl {
     pub fn snap(&self, tab: &str) -> Option<PanelSnap> {
         let p = self.panels.get(tab)?;
         let inline = p.target.starts_with(INLINE);
+        let web = p.kind == PanelKind::Web;
         Some(PanelSnap {
             kind: p.kind.name(),
-            title: self
-                .titles
-                .get(tab)
-                .cloned()
-                .unwrap_or_else(|| file_name(&p.target).to_string()),
-            path: (!inline).then(|| p.target.clone()),
+            title: self.titles.get(tab).cloned().unwrap_or_else(|| {
+                if web {
+                    flare_surfaces::web::host_label(&p.target)
+                } else {
+                    file_name(&p.target).to_string()
+                }
+            }),
+            path: (!inline && !web).then(|| p.target.clone()),
+            url: web.then(|| p.target.clone()),
             open: p.open,
             width: p.width,
         })
@@ -404,15 +462,18 @@ impl PanelCtl {
     /// The window shows the front tab's panel (or none). Starts the read when the front panel is not
     /// the one on show.
     pub fn sync(&mut self, app: &AppWindow, front: Option<&str>) {
+        let open = front.and_then(|t| self.panels.open_on(t).filter(|p| p.kind.is_built()));
+        app.set_panel_open(open.is_some());
+        app.set_panel_share(open.and_then(|p| p.width).unwrap_or(0.0));
+        // A web panel is not read from disk: the web controller owns its content (and the window's
+        // `panel-*` properties for it).
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
-                .filter(|p| p.kind.is_built())
-                .map(|p| (t.to_string(), p.kind.clone(), p.target.clone(), p.width))
+                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web)
+                .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
-        app.set_panel_open(want.is_some());
-        app.set_panel_share(want.as_ref().and_then(|w| w.3).unwrap_or(0.0));
-        let Some((tab, kind, target, _)) = want else {
+        let Some((tab, kind, target)) = want else {
             if self.shown.take().is_some() {
                 self.generation += 1;
                 self.current.store(self.generation, Ordering::SeqCst);

@@ -27,6 +27,9 @@ pub const TEXT_MAX: usize = preview::TEXT_CAP;
 /// How long a call waits for the UI thread before it answers `timeout`. Under the channel's own 15 s,
 /// so the answer is ours, with a reason, and not the server's.
 pub const UI_WAIT: Duration = Duration::from_secs(10);
+/// How long a browser call waits for its page to load before it answers `timeout`: under the 60 s the
+/// channel allows `browser.*`, so the answer is ours, with a reason.
+pub const BROWSER_WAIT: Duration = Duration::from_secs(30);
 /// How often a waiting call looks at the stop flag.
 const STOP_SLICE: Duration = Duration::from_millis(50);
 /// The longest title a caller may give a panel (the header shows one line).
@@ -62,6 +65,26 @@ pub enum CtlOp {
         text: String,
         title: Option<String>,
     },
+    /// `browser.open` and `panel.open` web: the page is already vetted (`normalize_url`). Answered when
+    /// the page has loaded.
+    BrowserOpen {
+        tab: String,
+        url: String,
+    },
+    /// `browser.navigate`. Answered when the page has loaded.
+    BrowserNavigate {
+        tab: String,
+        to: NavTo,
+    },
+}
+
+/// Where `browser.navigate` sends the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavTo {
+    Url(String),
+    Back,
+    Forward,
+    Reload,
 }
 
 /// A request for the UI thread with the channel its answer goes back on.
@@ -86,6 +109,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::PanelClose { .. } => "CtlOp::PanelClose",
             CtlOp::ShowFile { .. } => "CtlOp::ShowFile",
             CtlOp::ShowText { .. } => "CtlOp::ShowText",
+            CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
+            CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
         })
     }
 }
@@ -265,6 +290,16 @@ fn str_param<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, CtlErr
     }
 }
 
+/// A `url` param, vetted: http, https or about:blank, no login, no spaces (`normalize_url`).
+fn web_url(u: &str) -> Result<String, CtlError> {
+    flare_surfaces::web::normalize_url(u).map_err(|e| {
+        CtlError::new(
+            code::BAD_PARAMS,
+            format!("that is not an address to open: {e}"),
+        )
+    })
+}
+
 /// The optional `title`: one line, trimmed, at most [`TITLE_MAX`] characters (cut, not refused).
 fn title_param(params: &Value) -> Result<Option<String>, CtlError> {
     Ok(str_param(params, "title")?
@@ -297,6 +332,9 @@ impl Dispatcher for AppDispatcher {
             Method::TabsList,
             Method::PanelClose,
             Method::PanelState,
+            Method::PanelOpen,
+            Method::BrowserOpen,
+            Method::BrowserNavigate,
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
@@ -327,18 +365,61 @@ impl Dispatcher for AppDispatcher {
                 tab: Self::tab_of_call(ctx)?,
             }),
             Method::PanelOpen => {
-                Self::tab_of_call(ctx)?;
+                let tab = Self::tab_of_call(ctx)?;
                 match str_param(&params, "kind")? {
                     None => Err(CtlError::new(code::BAD_PARAMS, "kind is required")),
-                    Some("web") => Err(CtlError::new(
-                        code::UNAVAILABLE,
-                        "the web panel is not built yet",
-                    )),
+                    Some("web") => {
+                        let url = match str_param(&params, "url")? {
+                            Some(u) => web_url(u)?,
+                            None => "about:blank".to_string(),
+                        };
+                        self.ask_by(
+                            CtlOp::BrowserOpen { tab, url },
+                            Instant::now() + BROWSER_WAIT,
+                        )
+                    }
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
                         "panel.open takes kind web; use view.image, view.file or view.text",
                     )),
                 }
+            }
+            Method::BrowserOpen => {
+                let tab = Self::tab_of_call(ctx)?;
+                let url = str_param(&params, "url")?
+                    .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "url is required"))?;
+                let url = web_url(url)?;
+                self.ask_by(
+                    CtlOp::BrowserOpen { tab, url },
+                    Instant::now() + BROWSER_WAIT,
+                )
+            }
+            Method::BrowserNavigate => {
+                let tab = Self::tab_of_call(ctx)?;
+                let url = str_param(&params, "url")?;
+                let action = str_param(&params, "action")?;
+                let to = match (url, action) {
+                    (Some(u), None) => NavTo::Url(web_url(u)?),
+                    (None, Some("back")) => NavTo::Back,
+                    (None, Some("forward")) => NavTo::Forward,
+                    (None, Some("reload")) => NavTo::Reload,
+                    (None, Some(_)) => {
+                        return Err(CtlError::new(
+                            code::BAD_PARAMS,
+                            "action is back, forward or reload",
+                        ));
+                    }
+                    _ => {
+                        return Err(CtlError::new(
+                            code::BAD_PARAMS,
+                            "give either url or action, not both and not neither",
+                        ));
+                    }
+                };
+                self.ask_by(
+                    CtlOp::BrowserNavigate { tab, to },
+                    Instant::now() + BROWSER_WAIT,
+                )
             }
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
             Method::ViewFile => self.view_file(ctx, PanelKind::Text, &params),
@@ -520,6 +601,146 @@ mod tests {
         r.expect_err("an error").code
     }
 
+    /// The ops the UI was asked for, with the address each carried.
+    fn browser_rig() -> (Rig, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let a = asked.clone();
+        let r = rig(
+            move |op| {
+                match op {
+                    CtlOp::BrowserOpen { tab, url } => {
+                        a.lock().unwrap().push(format!("open {tab} {url}"));
+                    }
+                    CtlOp::BrowserNavigate { tab, to } => {
+                        a.lock().unwrap().push(format!("navigate {tab} {to:?}"));
+                    }
+                    _ => {}
+                }
+                Ok(json!({"url": "x"}))
+            },
+            false,
+            FILES,
+        );
+        (r, asked)
+    }
+
+    #[test]
+    fn browser_open_vets_the_address_before_the_ui_hears_of_it() {
+        let (r, asked) = browser_rig();
+        for bad in [
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "ftp://a.example/",
+            "https://user:pw@a.example/",
+            "two words",
+            "",
+        ] {
+            let e =
+                r.d.call(&agent_in_tab(), Method::BrowserOpen, json!({"url": bad}))
+                    .expect_err(bad);
+            assert_eq!(e.code, code::BAD_PARAMS, "{bad:?}");
+        }
+        for (given, want) in [
+            ("example.com", "https://example.com/"),
+            ("localhost:3000/app", "http://localhost:3000/app"),
+            ("HTTP://Example.COM/a", "http://example.com/a"),
+            ("about:blank", "about:blank"),
+        ] {
+            r.d.call(&agent_in_tab(), Method::BrowserOpen, json!({"url": given}))
+                .unwrap();
+            assert_eq!(
+                asked.lock().unwrap().pop().unwrap(),
+                format!("open tab-1 {want}")
+            );
+        }
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "the refused ones asked nothing"
+        );
+        for p in [json!({}), json!({"url": 5}), json!({"url": null})] {
+            let e =
+                r.d.call(&agent_in_tab(), Method::BrowserOpen, p.clone())
+                    .expect_err("no url");
+            assert_eq!(e.code, code::BAD_PARAMS, "{p}");
+        }
+    }
+
+    #[test]
+    fn browser_navigate_takes_a_url_or_an_action() {
+        let (r, asked) = browser_rig();
+        r.d.call(
+            &agent_in_tab(),
+            Method::BrowserNavigate,
+            json!({"url": "a.example/x"}),
+        )
+        .unwrap();
+        for action in ["back", "forward", "reload"] {
+            r.d.call(
+                &agent_in_tab(),
+                Method::BrowserNavigate,
+                json!({"action": action}),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            [
+                "navigate tab-1 Url(\"https://a.example/x\")",
+                "navigate tab-1 Back",
+                "navigate tab-1 Forward",
+                "navigate tab-1 Reload"
+            ]
+        );
+        let before = asked.lock().unwrap().len();
+        for p in [
+            json!({}),
+            json!({"url": "a.example", "action": "back"}),
+            json!({"action": "sideways"}),
+            json!({"action": 3}),
+            json!({"url": "file:///C:/x"}),
+        ] {
+            let e =
+                r.d.call(&agent_in_tab(), Method::BrowserNavigate, p.clone())
+                    .expect_err("refused");
+            assert_eq!(e.code, code::BAD_PARAMS, "{p}");
+        }
+        assert_eq!(asked.lock().unwrap().len(), before, "none reached the UI");
+    }
+
+    #[test]
+    fn panel_open_web_opens_a_page_and_anything_else_is_refused() {
+        let (r, asked) = browser_rig();
+        r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": "web"}))
+            .unwrap();
+        r.d.call(
+            &agent_in_tab(),
+            Method::PanelOpen,
+            json!({"kind": "web", "url": "https://a.example/"}),
+        )
+        .unwrap();
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            ["open tab-1 about:blank", "open tab-1 https://a.example/"]
+        );
+        for p in [
+            json!({}),
+            json!({"kind": "image"}),
+            json!({"kind": "web", "url": "file:///C:/x"}),
+        ] {
+            let e =
+                r.d.call(&agent_in_tab(), Method::PanelOpen, p.clone())
+                    .expect_err("refused");
+            assert_eq!(e.code, code::BAD_PARAMS, "{p}");
+        }
+    }
+
+    #[test]
+    fn a_browser_call_waits_longer_than_a_view_call() {
+        assert!(BROWSER_WAIT > UI_WAIT);
+        assert!(BROWSER_WAIT < Method::BrowserOpen.timeout());
+    }
+
     #[test]
     fn the_token_decides_the_tab() {
         let r = rig(ok_all, false, FILES);
@@ -536,15 +757,24 @@ mod tests {
         let caps = r.d.capabilities();
         for m in [
             Method::TabsList,
+            Method::PanelOpen,
             Method::PanelClose,
             Method::PanelState,
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
+            Method::BrowserOpen,
+            Method::BrowserNavigate,
         ] {
             assert!(caps.contains(&m), "{}", m.name());
         }
-        for m in [Method::PanelOpen, Method::BrowserLook, Method::ConvoState] {
+        // The agent's hands on the page are stage 4.
+        for m in [
+            Method::BrowserLook,
+            Method::BrowserClick,
+            Method::BrowserEval,
+            Method::ConvoState,
+        ] {
             assert!(!caps.contains(&m), "{}", m.name());
         }
     }
@@ -559,6 +789,9 @@ mod tests {
             (Method::ViewImage, json!({"path": "C:\\work\\a.png"})),
             (Method::ViewFile, json!({"path": "C:\\work\\a.txt"})),
             (Method::ViewText, json!({"text": "x"})),
+            (Method::BrowserOpen, json!({"url": "https://a.example/"})),
+            (Method::BrowserNavigate, json!({"action": "reload"})),
+            (Method::PanelOpen, json!({"kind": "web"})),
         ] {
             assert_eq!(code_of(r.d.call(&c, m, p)), code::NO_TAB, "{}", m.name());
         }
@@ -788,29 +1021,15 @@ mod tests {
     }
 
     #[test]
-    fn panel_open_is_unavailable_for_web_and_bad_for_anything_else() {
-        let r = rig(ok_all, false, FILES);
-        let c = agent_in_tab();
-        assert_eq!(
-            code_of(r.d.call(&c, Method::PanelOpen, json!({"kind": "web"}))),
-            code::UNAVAILABLE
-        );
-        assert_eq!(
-            code_of(r.d.call(&c, Method::PanelOpen, json!({"kind": "image"}))),
-            code::BAD_PARAMS
-        );
-        assert_eq!(
-            code_of(r.d.call(&c, Method::PanelOpen, json!({}))),
-            code::BAD_PARAMS
-        );
-    }
-
-    #[test]
     fn methods_this_build_does_not_have_are_unavailable() {
         let r = rig(ok_all, false, FILES);
         for m in [
-            Method::BrowserOpen,
             Method::BrowserLook,
+            Method::BrowserClick,
+            Method::BrowserType,
+            Method::BrowserPress,
+            Method::BrowserScroll,
+            Method::BrowserWait,
             Method::ConvoState,
             Method::ToolsRespond,
         ] {

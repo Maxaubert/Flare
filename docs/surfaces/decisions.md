@@ -266,3 +266,88 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
   and a handler still running when the 2 s stop wait ends may outlive the stop. They touch only the `post` function (which fails once
   the loop has ended), the stop flag and their own pipe. A call that arrives after the stop is never posted (pinned by
   `an_unanswered_call_times_out_and_a_stop_ends_the_wait_within_a_slice`).
+
+## Stage 3: the web panel (`surfaces-3-web`, issues #20 and #21)
+
+- 2026-10-21, stage 3, engine: WebView2 through `webview2-com` 0.39.1 (released 2026-03-11), whose `-sys` crate links
+  Microsoft's STATIC loader, so there is no `WebView2Loader.dll` to ship and none is imported (the exe is checked for the name).
+  The `windows` crate stays at the workspace's `=0.62.2`. The loader is BSD 3-Clause and has its own entry under "Bundled
+  binaries" in `about.hbs`. Why not `wry`: it brings its own event loop and window model; Flare already has winit through Slint
+  and only needs a child controller. Flare never installs or updates the runtime (safe rule and owner's machine): it asks
+  `GetAvailableCoreWebView2BrowserVersionString` at every open and shows a message when that fails.
+- 2026-10-21, stage 3, threading: everything runs on the UI thread, which winit has already made a single-threaded COM apartment
+  with the message loop WebView2 needs (`CoInitializeEx` is called anyway and its answer ignored). Nothing waits for the browser:
+  the environment and each controller are created with completion handlers; a handler only parks its result in an inbox and
+  posts `WebEvent::Pump`; `pump()` takes the inbox in. No WebView2 callback touches the host's state, so a callback that fires
+  while a call into the browser is still on the stack (COM can re-enter in an STA) cannot re-enter the host. Every other
+  callback only posts a `WebEvent` (`UiMsg::Web`); a message is `Debug` by kind, never by address or title.
+- 2026-10-21, stage 3, rule 34: the one slow question, whether the runtime is installed (a registry and disk read), is asked on a
+  worker thread when a browser is first needed and answered as a `WebEvent::Runtime`; the environment's folder is made by WebView2
+  itself, not by a `create_dir_all` on the UI thread. A scan like the one in `flare-surfaces` runs over `flare-web/src`.
+- 2026-10-21, stage 3, life: one controller per tab with an OPEN web panel, made when its tab is in front and the slot has room
+  (a restored or channel-opened panel of a tab behind waits for its tab). A tab that goes behind keeps its controller, hidden
+  (the page stays loaded, its video keeps its place); a closed panel, a closed tab or `Ctrl+Shift+P` frees the controller
+  (`Close()`), and the browser environment goes with the last one, so with no web panel open there is no browser object, no
+  process and no handler. Reopening makes a new controller at the last address; back history and scroll are not kept (the
+  owner's spec: closing frees it). The e2e watches the browser's own process end.
+- 2026-10-21, stage 3, address of a restored panel: `panels.json` keeps the page's CURRENT address (updated on every
+  `SourceChanged` and `NavigationCompleted`, in normal form), and a stored address is accepted on load only if
+  `normalize_url(target) == target`, so a hand-edited file cannot make a web panel open `file:` or a login URL.
+- 2026-10-21, stage 3, profile: ONE WebView2 user data folder per Flare profile, shared by all tabs (so a login persists and one
+  browser process group serves every controller): `<profile>\WebView2` when the run was given `--user-data-dir` (every e2e
+  world), else `%LOCALAPPDATA%\Flare\WebView2`. Never the user's Edge profile (S4). Mini-apps and mods get their own folders in
+  stages 5 and 8; the agent's page is the user's page in v1.
+- 2026-10-21, stage 3, where the page sits: the controller's rectangle is the `web-box` Slint lays out inside the panel body
+  (the body less the slot's one-pixel hairline, so the splitter's visible line stays drawn), converted by rounding both
+  edges (`phys_rect`), and it follows on `changed` callbacks of the box's four numbers and of the scale, so a window resize, a
+  sidebar slide, a splitter move at every pointer step, a DPI change and a monitor move all move it. Why Slint's box and not
+  the layout maths alone: it is exactly what is drawn, including mid-drag. The maths (`web_rect`) is held equal to it by a
+  unit test at four scales, three widths and three shares and by the e2e at 100 and 225 percent, where the controller's own
+  bounds, the child window's rectangle, Slint's box and the maths must all agree.
+- 2026-10-21, stage 3, head of the panel: a web panel's head is two rows, the 32 px header (title, close) and a 32 px bar
+  (back, forward, reload or stop while loading, the address). The title is the page's; a line that says why something did not
+  happen ("Not opened here: ...", an address the field refused) goes where the size goes for a picture. Back and forward are
+  dimmed until the page has that history, as the browser reports it.
+- 2026-10-21, stage 3, airspace: `web_show(front, shown, overlay-open)` and the phase machine `step` in `flare_surfaces::web`.
+  An overlay opening asks for a still (`CapturePreview`, PNG into a memory stream) and only when it arrives hides the window;
+  the PNG is decoded on a worker and drawn in the web box. The overlay closing shows the window and lets the picture go. A
+  capture that comes back after the overlay closed (or for another tab) is dropped by its token. A capture that fails still
+  hides the window (an empty panel is better than a menu under a browser). A window made while an overlay is open starts
+  hidden with no picture. A tab behind and a slot with no room are `Hidden`, not `Still`.
+- 2026-10-21, stage 3, keys (record of the question the plan left open): while the page has the keyboard WebView2's
+  `AcceleratorKeyPressed` is asked, before the page sees a key, whether the app wants it, and answers at once. The app takes
+  the chord table (`flare_tabs::keymap`) less two chords whose key a page has its own use for: Ctrl+F (the page's find;
+  Ctrl+Shift+F is still the terminal's) and the agent guard's Ctrl+D and Ctrl+C. So F1, F11, Ctrl+Tab, Ctrl+1..9, Ctrl+,,
+  Ctrl+Shift+K and B, Ctrl+T, Ctrl+W, Alt+Space, Ctrl+Shift+P and Ctrl+Shift+O are the app's even inside a page. **Escape: the
+  first is the page's, a second within 600 ms (with no other key between) gives the keys back to the terminal.** A page that
+  uses Escape keeps it; the cost is two presses to leave. Ctrl+Shift+O moves the keys both ways as for any panel. Enter in the
+  address field sends the page there and gives the page the keys, as a browser does. A press on Flare's own window takes the
+  Windows focus back from the page (`SetFocus`), or the terminal would type into the page; and the page taking the keyboard
+  is not the window losing it (the foreground window is still Flare's), so "focus lost" is ignored while it is.
+- 2026-10-21, stage 3, what a page may not do: every permission request (camera, microphone, location, notifications,
+  clipboard, sensors) is denied without asking; `window.open` and `target=_blank` go to the same panel (no second window,
+  ever); `window.close()` and full screen of the whole window do nothing; the page-to-app message channel and host objects are
+  off; a navigation to anything but http, https and about:blank is cancelled whoever started it (a link, a redirect, a
+  script). Downloads are left to WebView2's own prompt and its own default folder, the user's Downloads (S6): Flare adds no
+  handler and saves nothing silently. Script dialogs (`alert`) keep WebView2's own.
+- 2026-10-21, stage 3, the channel: `browser.open`, `browser.navigate` and `panel.open` (kind web) are real and listed in
+  `capabilities`; the rest of `browser.*` stays `unavailable` until stage 4. They wait for the page: the call is bound to the
+  first navigation the browser starts after it (rebinding on a redirect) and answered on that navigation's completion, up to
+  30 s (`BROWSER_WAIT`, inside the channel's 60 s). First version answered on the first completion of ANY navigation; the first
+  e2e run showed a `back` issued while the previous page was still loading being answered by that page's completion and the
+  next steps racing the real navigation, so the browser's navigation id now decides. A tab behind answers at once.
+- 2026-10-21, stage 3, MCP: one new tool, `open_page {url}`. The title it reports comes from a web page, so it is cleaned like a
+  refusal's words. The `browser_*` tools are stage 4's.
+- 2026-10-21, stage 3, no runtime: the panel keeps its place and shows the reason and the download address
+  (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`) with a button that opens that page in the user's own browser; the
+  channel answers `unavailable` with the link. Nothing is remembered: the next open asks again, so a runtime installed meanwhile
+  is found without a restart (a first draft kept the failure and would have asked the user to restart).
+- 2026-10-21, stage 3, tests that need a browser: two seams read only under `--e2e`: `WEB_ROOT` (a folder served as
+  `https://flare-test.local/` by a WebView2 virtual host mapping, so no page is a `file:` address and no network is touched) and
+  `WEBVIEW_RUNTIME=missing` (the runtime check fails). The probe `web.state` reports the controller's own numbers; a script in the front
+  page is a test-hook REQUEST (`WebScript`), not a probe, because a probe only looks (a scan holds that), and its answer is the probe
+  `web.script.result`. The pages tell the scenario what they did through their own title (`geo:err1`, `pop:blocked`, the video's
+  clock as JSON), so a scenario waits with `until` and never loops.
+- 2026-10-21, stage 3, video: nothing special is done for it. The e2e plays a 6 second clip made with `ffmpeg` and reads the
+  clock and the frame counter: 1.00 times real time and 30.6 frames per second in the parked window. YouTube and other
+  streaming sites need the network and are by hand (below); they need no code of ours.

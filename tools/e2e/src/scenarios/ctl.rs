@@ -362,12 +362,26 @@ fn channel_on(ctx: &mut Ctx, app: &mut App, alpha: &Path, beta: &Path) -> Result
         remote_code(&big) == "bad_params",
         format!("text over 4 MB is bad_params ({})", remote_code(&big)),
     );
-    let web = f.call(Method::PanelOpen, json!({"kind": "web"}), WAIT);
+    // panel.open opens a web page (stage 3, `webPanel` holds it); anything else, or an address a panel may not
+    // open, is refused.
+    let not_web = f.call(Method::PanelOpen, json!({"kind": "image"}), WAIT);
     ctx.ok(
-        remote_code(&web) == "unavailable",
+        remote_code(&not_web) == "bad_params",
         format!(
-            "panel.open web is unavailable in this build ({})",
-            remote_code(&web)
+            "panel.open of another kind is bad_params ({})",
+            remote_code(&not_web)
+        ),
+    );
+    let file_url = f.call(
+        Method::PanelOpen,
+        json!({"kind": "web", "url": "file:///C:/Windows/win.ini"}),
+        WAIT,
+    );
+    ctx.ok(
+        remote_code(&file_url) == "bad_params",
+        format!(
+            "panel.open web refuses a file: address ({})",
+            remote_code(&file_url)
         ),
     );
     let eval = f.call(Method::BrowserEval, json!({"expression": "1"}), WAIT);
@@ -653,8 +667,15 @@ fn mcp_on(
         })
         .unwrap_or_default();
     ctx.ok(
-        names == ["show_image", "show_file", "show_text", "close_panel"],
-        format!("tools/list names the four tools ({names:?})"),
+        names
+            == [
+                "show_image",
+                "show_file",
+                "show_text",
+                "open_page",
+                "close_panel",
+            ],
+        format!("tools/list names the five tools ({names:?})"),
     );
     ctx.ok(
         replies

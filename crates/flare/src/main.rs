@@ -52,6 +52,7 @@ mod theme_scene;
 mod timer_registry;
 mod ui_clock;
 mod update_ctl;
+mod web_ctl;
 mod window;
 
 #[cfg(test)]

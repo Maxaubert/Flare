@@ -168,6 +168,11 @@ pub enum Request {
     DictRouted {
         result: RouteResult,
     },
+    /// Surfaces stage 3: runs a script in the front tab's web page; replies Ok once it is started and
+    /// the answer is read with the `web.script.result` probe. The only way a scenario looks inside a page.
+    WebScript {
+        js: String,
+    },
 }
 
 /// The routed result of one dictation (M8): the heard text, or a message for the user.

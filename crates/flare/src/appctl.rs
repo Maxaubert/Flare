@@ -97,6 +97,7 @@ use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
 use crate::update_ctl::{AskInstall, Spawn, UpdateCtl, UpdateDeps, UpdateMsg};
+use crate::web_ctl::{WebCtl, WebMsgBox};
 use crate::{
     AppWindow, HelpBridge, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom,
     TabRow,
@@ -137,7 +138,11 @@ pub enum UiMsg {
     /// worker waits on the request's reply channel, so this is answered at once, never queued behind
     /// anything slow.
     Ctl(CtlRequestBox),
+    /// The web panel's browser told the window something, or a still was decoded (Surfaces stage 3).
+    Web(WebMsgBox),
 }
+
+mod web_glue;
 
 /// Publishes a control channel event: name, params, and the tab it is about (its connections only).
 pub type CtlEvents = Arc<dyn Fn(&str, serde_json::Value, Option<&str>) + Send + Sync>;
@@ -465,6 +470,8 @@ pub struct AppCtl {
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
     /// The tabs' panels (Surfaces stage 1).
     panels: PanelCtl,
+    /// The web panel's browser (made by the first web panel; nothing exists while none is open).
+    web: WebCtl,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
     /// Where control channel events go (None: no channel, in tests and headless runs).
@@ -711,6 +718,7 @@ impl AppCtl {
         let prefs_dirty = Arc::new(AtomicBool::new(false));
         let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
         let panels = PanelCtl::new(Arc::clone(&deps.post));
+        let web = WebCtl::new(Arc::clone(&deps.post));
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
             let clock = Rc::clone(&deps.clock);
@@ -805,6 +813,7 @@ impl AppCtl {
             crumbed_front: None,
             spawn_marks: HashMap::new(),
             panels,
+            web,
             panel_focus_seen: false,
             ctl_events: None,
             ctl_info: None,
@@ -1134,6 +1143,19 @@ impl AppCtl {
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
             .panel_splitter_released(share));
+        bind!(app, rc, on_panel_web_back, |c| c
+            .web_nav(flare_web::Nav::Back));
+        bind!(app, rc, on_panel_web_forward, |c| c
+            .web_nav(flare_web::Nav::Forward));
+        bind!(app, rc, on_panel_web_reload, |c| c
+            .web_nav(flare_web::Nav::Reload));
+        bind!(app, rc, on_panel_web_stop, |c| c
+            .web_nav(flare_web::Nav::Stop));
+        bind!(app, rc, on_panel_web_submit, |c, text: SharedString| c
+            .web_submit(&text));
+        bind!(app, rc, on_panel_web_download, |c| c.web_download());
+        bind!(app, rc, on_panel_web_moved, |c| c.web_moved());
+        bind!(app, rc, on_overlay_changed, |c| c.web_moved());
     }
 
     /// The terminal controller over this window: its closures reach the window only through a weak
@@ -1237,8 +1259,11 @@ impl AppCtl {
         self.term.inputs()
     }
 
-    fn focus_terminal(&self) {
+    fn focus_terminal(&mut self) {
         if let Some(app) = self.app() {
+            // The page may hold the Windows keyboard focus: take it back, or the terminal types nothing.
+            let hwnd = crate::window::hwnd_of(&app);
+            self.web.release_focus(hwnd);
             app.invoke_focus_terminal();
         }
     }
@@ -2125,6 +2150,7 @@ impl AppCtl {
         self.model.close(id);
         self.term.tab_closed(id);
         self.panels.forget(id);
+        self.web.close_tab(id);
         self.refresh();
     }
 
@@ -2778,6 +2804,8 @@ impl AppCtl {
     fn sync_panels(&mut self, app: &AppWindow) {
         let front = self.model.active_shell().map(|t| t.id.clone());
         self.panels.sync(app, front.as_deref());
+        let ctx = self.key_context();
+        self.web.sync(app, &self.panels, front.as_deref(), ctx);
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
         if had && !app.get_panel_shown() {
@@ -2838,6 +2866,9 @@ impl AppCtl {
         let mut v = serde_json::json!({"kind": snap.kind, "title": snap.title});
         if let Some(p) = &snap.path {
             v["path"] = serde_json::json!(p);
+        }
+        if let Some(u) = &snap.url {
+            v["url"] = serde_json::json!(u);
         }
         v
     }
@@ -2941,6 +2972,11 @@ impl AppCtl {
                 }
                 self.after_ctl_show(&tab)
             }
+            // Answered by the browser's message, never here (see `ctl_browser`).
+            CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. } => Err(CtlError::new(
+                code::INTERNAL,
+                "a browser call reached the wrong handler",
+            )),
         }
     }
 
@@ -2996,6 +3032,18 @@ impl AppCtl {
         let Some(app) = self.app() else { return false };
         if !app.get_panel_shown() {
             return false;
+        }
+        // A web page: the keys go to the page, or back to the terminal when it has them.
+        if let Some(id) = self.front_id()
+            && self.panels.web_target(&id).is_some()
+        {
+            if self.web.has_focus() {
+                self.panel_focus_seen = false;
+                self.focus_terminal();
+            } else if self.web.focus_page(&id) {
+                self.panel_focus_seen = false;
+            }
+            return true;
         }
         if app.get_panel_has_focus() {
             self.panel_focus_seen = false;
@@ -3334,6 +3382,11 @@ impl AppCtl {
     /// The window lost the keyboard: a Most recent walk ends, tips go, a right-click menu shuts
     /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
+        // The keyboard moving into the page's child window sends this window a kill-focus too, but the
+        // window is still the one in use: nothing to let go of.
+        if self.web.has_backend() && self.window_is_foreground() {
+            return;
+        }
         crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
@@ -3386,6 +3439,13 @@ impl AppCtl {
     pub fn on_pointer_down(&mut self) {
         // A press anywhere ends a key capture on the Dictation page (the field's own click follows it).
         crate::dictation_ctl::on_press();
+        // A press on Flare's own window (the page's window takes its own) is a press away from the page.
+        if self.web.has_focus()
+            && let Some(app) = self.app()
+        {
+            let hwnd = crate::window::hwnd_of(&app);
+            self.web.release_focus(hwnd);
+        }
         self.clear_tip();
         if self.flight.on() {
             self.flight.pointer_down();
@@ -3819,6 +3879,13 @@ impl AppCtl {
                     self.panels.on_msg(&app, m);
                 }
             }
+            UiMsg::Web(WebMsgBox(m)) => {
+                if let Some(app) = self.app() {
+                    let outs = self.web.on_msg(&app, m);
+                    self.apply_web(outs);
+                    self.web_moved();
+                }
+            }
             UiMsg::Ctl(CtlRequestBox(req)) => {
                 // The caller stopped waiting at its deadline and was told `timeout`: a request that
                 // arrives later changes nothing (and the late answer has no reader).
@@ -3828,8 +3895,16 @@ impl AppCtl {
                         "Flare's window did not answer in time",
                     )));
                 } else {
-                    let answer = self.ctl_op(req.op);
-                    let _ = req.reply.send(answer);
+                    match req.op {
+                        // These wait for the page to load: the browser's message answers them.
+                        op @ (CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. }) => {
+                            self.ctl_browser(op, req.reply, req.deadline);
+                        }
+                        op => {
+                            let answer = self.ctl_op(op);
+                            let _ = req.reply.send(answer);
+                        }
+                    }
                 }
             }
             UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
@@ -4046,6 +4121,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod web_tests;
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::{Frame, Harness};
@@ -5662,7 +5738,7 @@ mod tests {
         let file = f.dir.path().join("panels.json");
         std::fs::write(
             &file,
-            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"web","target":"https://example.com/"}}]}"#,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"board","target":"x"}}]}"#,
         )
         .unwrap(); // sync-ok: test code only
         f.ctl
@@ -6243,7 +6319,7 @@ mod tests {
         let file = f.dir.path().join("panels.json");
         std::fs::write(
             &file,
-            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"web","target":"https://example.com/"}}]}"#,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"board","target":"x"}}]}"#,
         )
         .unwrap(); // sync-ok: test code only
         let store = Arc::new(flare_surfaces::store::PanelStore::new(
@@ -6258,7 +6334,7 @@ mod tests {
         let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
         assert_eq!(
             back[0].panel.as_ref().map(|p| p.kind.name()),
-            Some("web".to_string())
+            Some("board".to_string())
         );
     }
 

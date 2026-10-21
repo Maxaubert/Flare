@@ -15,6 +15,7 @@ members = [
     "crates/flare-tabs",
     "crates/flare-help",
     "crates/flare-surfaces",
+    "crates/flare-web",
     "crates/flare-ctl",
     "crates/flare-mcp",
     "crates/flare-e2e-proto",
@@ -72,6 +73,9 @@ velopack = "=1.2.161"
 embed-resource = "=3.0.11"
 ureq = "=3.4.2"
 libloading = "=0.8.9"
+# The web panel's browser (Surfaces stage 3): the WebView2 COM bindings. 0.39.1 (2026-03-11) is well over two
+# weeks old. Its sys crate links Microsoft's STATIC loader, so no WebView2Loader.dll ships beside flare.exe.
+webview2-com = "=0.39.1"
 # The GPU pack's unzip (M8 D5). 9.0.0 (2026-10-09) is the OLDEST release patched for RUSTSEC-2026-0367/0368/0369
 # (every one says patched >= 9.0.0; 9.0.0-pre3 is NOT). No fixed release is 14 days old yet (9.0.0 is 10 days old on
 # 2026-10-19), so the age rule gives way to the advisory rule. Never 8.6 (velopack's; ignored in deny.toml for it only).

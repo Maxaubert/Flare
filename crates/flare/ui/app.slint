@@ -297,6 +297,38 @@ export component AppWindow inherits Window {
     callback panel-close();
     callback panel-escape();
     callback panel-pressed();
+    // The web panel (stage 3): what the bar shows, the still, and where the page sits.
+    in property <string> panel-web-url;
+    in property <bool> panel-web-loading;
+    in property <bool> panel-web-can-back;
+    in property <bool> panel-web-can-forward;
+    in property <image> panel-web-still;
+    in property <bool> panel-web-has-still;
+    in property <bool> panel-web-missing-runtime;
+    out property <length> panel-web-x: panel-slot.web-x;
+    out property <length> panel-web-y: panel-slot.web-y;
+    out property <length> panel-web-w: panel-slot.web-w;
+    out property <length> panel-web-h: panel-slot.web-h;
+    out property <length> panel-bar-h: panel-slot.bar-h;
+    out property <bool> panel-web-input-focused: panel-slot.web-input-focused;
+    out property <string> panel-web-draft: panel-slot.web-draft;
+    out property <length> panel-web-field-x: panel-slot.web-field-x;
+    out property <length> panel-web-field-w: panel-slot.web-field-w;
+    public function focus-address() { panel-slot.focus-address(); }
+    callback panel-web-back();
+    callback panel-web-forward();
+    callback panel-web-reload();
+    callback panel-web-stop();
+    callback panel-web-submit(string);
+    callback panel-web-download();
+    // The page moved or resized in the window (a layout change, a splitter drag, a new scale): the
+    // browser window follows. And an overlay opened or closed: the browser window hides or shows.
+    callback panel-web-moved();
+    callback overlay-changed();
+    changed panel-web-x => { root.panel-web-moved(); }
+    changed panel-web-y => { root.panel-web-moved(); }
+    changed panel-web-w => { root.panel-web-moved(); }
+    changed panel-web-h => { root.panel-web-moved(); }
     // The splitter was let go: the slot share of the page.
     callback panel-splitter-released(float);
     // The page (right of the sidebar) in the window, for the probes and the layout tests.
@@ -308,6 +340,7 @@ export component AppWindow inherits Window {
     // above Slint, so it hides while this is true. `flare_surfaces::overlay::Overlay::ALL` names the
     // terms; a test opens each one and a scan counts the terms.
     out property <bool> overlay-open: root.menu-open || root.overflow-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying;
+    changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
     in property <[TabRow]> tab-rows;
@@ -443,7 +476,7 @@ export component AppWindow inherits Window {
     in property <string> find-readout;
     in property <bool> find-can-step;
     // A Slint text field has the keys: the find box or the Command help panel.
-    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused;
+    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused || panel-slot.web-input-focused;
     out property <length> help-sheet-w: help-panel.sheet-w;
     in-out property <length> help-viewport-y <=> help-panel.viewport-y;
     out property <length> title-buttons-w: top-buttons.width;
@@ -542,6 +575,7 @@ export component AppWindow inherits Window {
     changed scale => {
         Px.scale = root.scale;
         root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale);
+        root.panel-web-moved();
     }
     changed grid-phys-width => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }
     changed grid-phys-height => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }
@@ -800,6 +834,19 @@ export component AppWindow inherits Window {
                         lines: root.panel-lines;
                         max-cols: root.panel-max-cols;
                         foot: root.panel-foot;
+                        web-url: root.panel-web-url;
+                        web-loading: root.panel-web-loading;
+                        web-can-back: root.panel-web-can-back;
+                        web-can-forward: root.panel-web-can-forward;
+                        web-still: root.panel-web-still;
+                        web-has-still: root.panel-web-has-still;
+                        web-missing-runtime: root.panel-web-missing-runtime;
+                        web-back => { root.panel-web-back(); }
+                        web-forward => { root.panel-web-forward(); }
+                        web-reload => { root.panel-web-reload(); }
+                        web-stop => { root.panel-web-stop(); }
+                        web-submit(text) => { root.panel-web-submit(text); }
+                        web-download => { root.panel-web-download(); }
                         close => { root.panel-close(); }
                         escape => { root.panel-escape(); }
                         pressed => { root.focus-panel(); root.panel-pressed(); }
