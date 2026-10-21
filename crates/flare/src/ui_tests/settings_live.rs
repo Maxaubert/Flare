@@ -259,11 +259,37 @@ fn the_tab_position_moves_the_tabs_while_settings_is_open() {
 }
 
 /// The keys the window reads when a key is pressed (agent hotkeys, keep agent sessions open).
+/// The chord context reads the store on every key, so the value is live by itself; what the row
+/// needs is for the main window to hear the change (its refresh re-pushes whatever the view shows
+/// from it). No label the view pushes depends on these two rows (only Next tab and Sidebar have an
+/// agent variant, and they are not shown in the window), so the proof is the message the window's
+/// own listener receives, per key of each row, with Settings in front.
 #[test]
 fn the_key_rows_hold_for_the_next_key_while_settings_is_open() {
     for s in SCALES {
         let f = Fx::new(s);
         f.page("terminal");
+        for id in ["agent-keys", "agent-guard"] {
+            let row = flare_settings::rows::all_rows()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("row {id}"));
+            assert!(!row.keys.is_empty(), "{id} stores a key");
+            for key in row.keys {
+                f.pump();
+                f.q.lock().unwrap().clear();
+                let now = f.prefs.get(key).unwrap_or_default();
+                f.prefs.set(key, if now == "1" { "0" } else { "1" });
+                assert!(
+                    f.q.lock()
+                        .unwrap()
+                        .iter()
+                        .any(|m| matches!(m, UiMsg::PrefsChanged)),
+                    "scale {s}: the main window hears {key} ({id}) with Settings open"
+                );
+                f.pump();
+            }
+        }
+        // And through the real controls the window's key context follows.
         let before = f.ctl.borrow().key_context();
         f.switch("agent-keys", !before.agent_keys);
         f.switch("agent-guard", !before.agent_guard);
@@ -273,7 +299,6 @@ fn the_key_rows_hold_for_the_next_key_while_settings_is_open() {
         f.still_open("the key rows");
     }
 }
-
 /// The look rows: panel edges, a window colour and a theme are worn by the window at once.
 #[test]
 fn the_look_rows_change_the_window_while_settings_is_open() {
@@ -386,6 +411,8 @@ fn the_diagnostics_rows_act_while_settings_is_open() {
 
 /// The sweep's guard: every key a row stores and the look, the help panel and the dictation
 /// controller do not own reaches the tab view's own listener, so a row added later is live too.
+/// The owned keys are checked from the other side: the look keys are heard as a look change, and
+/// none of them is also taken by the generic refresh.
 #[test]
 fn every_other_row_key_reaches_the_main_window() {
     let f = Fx::new(1.0);
@@ -401,15 +428,34 @@ fn every_other_row_key_reaches_the_main_window() {
         .filter(|k| !owned.contains(k))
         .collect();
     assert!(keys.contains("flare.window.tabLayout"));
+    let heard = |f: &Fx, want: fn(&UiMsg) -> bool| f.q.lock().unwrap().iter().any(want);
     for key in keys {
         f.pump();
         f.q.lock().unwrap().clear();
         f.prefs.set(key, "x");
-        let heard =
-            f.q.lock()
-                .unwrap()
-                .iter()
-                .any(|m| matches!(m, UiMsg::PrefsChanged));
-        assert!(heard, "{key}: the main window hears it");
+        assert!(
+            heard(&f, |m| matches!(m, UiMsg::PrefsChanged)),
+            "{key}: the main window hears it"
+        );
     }
+    // The look keys are the window's own through the look message, not the generic refresh.
+    for key in flare_settings::look::LOOK_KEYS
+        .iter()
+        .chain(flare_settings::agent_prefs::AGENT_LOOK_KEYS.iter())
+    {
+        f.pump();
+        f.q.lock().unwrap().clear();
+        f.prefs.set(key, "x");
+        assert!(
+            heard(&f, |m| matches!(m, UiMsg::LookChanged)),
+            "{key}: the window hears it as a look change"
+        );
+        assert!(
+            !heard(&f, |m| matches!(m, UiMsg::PrefsChanged)),
+            "{key}: and the generic refresh does not also take it"
+        );
+    }
+    // The help and dictation groups are named, so a key moved between owners is a deliberate edit.
+    assert_eq!(flare_settings::help_prefs::HELP_KEYS.len(), 3);
+    assert_eq!(flare_dictation::prefs::KEYS.len(), 9);
 }
