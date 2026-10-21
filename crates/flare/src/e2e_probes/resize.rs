@@ -32,6 +32,7 @@ fn window_edges(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         "rect": rep.rect,
         "dpi": rep.dpi,
         "band": [rep.band.0, rep.band.1],
+        "corner": rep.corner,
         "sizebox": rep.sizebox,
         "min_track": [rep.min_track.0, rep.min_track.1],
         "codes": codes,

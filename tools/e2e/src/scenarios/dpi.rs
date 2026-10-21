@@ -889,9 +889,9 @@ const HT_BOTTOMRIGHT: u32 = 17;
 const MIN_CSS: (f32, f32) = (560.0, 400.0);
 
 /// The points of a `w` x `h` window (device px, from its top-left) a resize band is checked at,
-/// with the code each answers: the middle of each edge, each corner's outermost pixel, a point
-/// just inside a band, the middle, and the spot of the top-right window buttons just below the band.
-fn edge_points(w: i32, h: i32, band: i32) -> Vec<((i32, i32), u32, &'static str)> {
+/// with the code each answers: the middle of each edge, each corner's outermost pixel and reach, a
+/// point just inside a band, the middle, and the Close button's right edge (client, not a handle).
+fn edge_points(w: i32, h: i32, band: i32, corner: i32) -> Vec<((i32, i32), u32, &'static str)> {
     vec![
         ((0, h / 2), HT_LEFT, "left edge"),
         ((w - 1, h / 2), HT_RIGHT, "right edge"),
@@ -901,19 +901,46 @@ fn edge_points(w: i32, h: i32, band: i32) -> Vec<((i32, i32), u32, &'static str)
         ((w - 1, 0), HT_TOPRIGHT, "top-right corner"),
         ((0, h - 1), HT_BOTTOMLEFT, "bottom-left corner"),
         ((w - 1, h - 1), HT_BOTTOMRIGHT, "bottom-right corner"),
+        (
+            (corner - 1, 0),
+            HT_TOPLEFT,
+            "the corner's last pixel along the top",
+        ),
+        (
+            (corner, 0),
+            HT_TOP,
+            "one pixel past the corner along the top",
+        ),
+        (
+            (0, corner - 1),
+            HT_TOPLEFT,
+            "the corner's last pixel down the left",
+        ),
+        (
+            (0, corner),
+            HT_LEFT,
+            "one pixel past the corner down the left",
+        ),
+        ((w - band, h / 2), HT_RIGHT, "the right band's inner pixel"),
+        (
+            (w - band - 1, h / 2),
+            HT_CLIENT,
+            "one pixel inside the right band",
+        ),
+        ((band - 1, h / 2), HT_LEFT, "the left band's inner pixel"),
         ((band, h / 2), HT_CLIENT, "one pixel inside the left band"),
         ((w / 2, band), HT_CLIENT, "one pixel inside the top band"),
         ((w / 2, h / 2), HT_CLIENT, "the middle"),
         (
-            (w - 3 * band, 2 * band),
+            (w - band - 1, 2 * band),
             HT_CLIENT,
-            "the window buttons, below the band",
+            "the Close button's right edge, inside the band",
         ),
     ]
 }
 
 /// `window.edges` for the points, as `(rect, dpi, band, sizebox, min_track, codes)`.
-type Edges = ([i64; 4], u32, i64, bool, (i64, i64), Vec<u32>);
+type Edges = ([i64; 4], u32, (i64, i64), bool, (i64, i64), Vec<u32>);
 
 fn window_edges(app: &mut App, points: &[(i32, i32)]) -> Option<Edges> {
     let pts: Vec<Value> = points.iter().map(|p| json!([p.0, p.1])).collect();
@@ -933,7 +960,7 @@ fn window_edges(app: &mut App, points: &[(i32, i32)]) -> Option<Edges> {
     Some((
         rect,
         v["dpi"].as_u64()? as u32,
-        n(&v["band"][0])?,
+        (n(&v["band"][0])?, n(&v["corner"])?),
         v["sizebox"].as_bool()?,
         (n(&m[0])?, n(&m[1])?),
         codes,
@@ -971,14 +998,15 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
             format!("{at}: the window can be sized (WS_SIZEBOX, so Snap works)"),
         );
         // The band follows the window's own DPI (the simulated change moves the app's scale, not the
-        // monitor's): Windows' frame plus padded border, about 6 to 9 px per 96 dpi.
-        let (lo, hi) = (
-            (6.0 * f64::from(got_dpi) / 96.0).floor() as i64,
-            (9.0 * f64::from(got_dpi) / 96.0).ceil() as i64,
-        );
+        // monitor's) and is Prism Terminal's: 5 px edges and 16 px corners per 96 dpi.
+        let s = f64::from(got_dpi) / 96.0;
+        let (want_band, want_corner) = ((5.0 * s).round() as i64, (16.0 * s).round() as i64);
         ctx.ok(
-            (lo..=hi).contains(&band),
-            format!("{at}: the band is {band} px at {got_dpi} dpi (between {lo} and {hi})"),
+            band.0 == want_band && band.1 == want_corner,
+            format!(
+                "{at}: the edge is {} px and the corner {} px at {got_dpi} dpi (want {want_band} and {want_corner})",
+                band.0, band.1
+            ),
         );
         let want_min = (
             (MIN_CSS.0 * scale).round() as i64,
@@ -988,7 +1016,7 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
             (min.0 - want_min.0).abs() <= 1 && (min.1 - want_min.1).abs() <= 1,
             format!("{at}: the minimum is {min:?} (about {want_min:?})"),
         );
-        let pts = edge_points(w, h, band as i32);
+        let pts = edge_points(w, h, band.0 as i32, band.1 as i32);
         let xy: Vec<(i32, i32)> = pts.iter().map(|p| p.0).collect();
         let codes = window_edges(&mut app, &xy).map(|e| e.5).unwrap_or_default();
         for (i, (_, want, what)) in pts.iter().enumerate() {
@@ -1027,8 +1055,8 @@ mod edge_tests {
 
     #[test]
     fn the_edge_points_lie_inside_the_window_and_cover_every_handle() {
-        for (w, h, band) in [(1000, 640, 8), (3000, 1920, 24)] {
-            let pts = edge_points(w, h, band);
+        for (w, h, band, corner) in [(1000, 640, 5, 16), (3000, 1920, 15, 48)] {
+            let pts = edge_points(w, h, band, corner);
             let codes: Vec<u32> = pts.iter().map(|p| p.1).collect();
             for want in [
                 HT_LEFT,

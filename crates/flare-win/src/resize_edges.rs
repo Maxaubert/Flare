@@ -4,16 +4,16 @@
 //! Snap and the snap layouts work) but answers `WM_NCCALCSIZE` with the whole window as client area,
 //! so there is no non-client border and `DefWindowProc` answers `WM_NCHITTEST` with `HTCLIENT`
 //! everywhere: no handles, no resize cursors. Prism Terminal (Electron frameless) resizes from
-//! invisible edges; this subclass gives Flare the same behaviour (not the same pixel sizes) without any visible frame. It answers
+//! invisible edges; this subclass gives Flare the same behaviour and sizes without any visible frame. It answers
 //! `WM_NCHITTEST` with `HTLEFT`..`HTBOTTOMRIGHT` inside a band along the window's edge and passes
 //! everything else on, so the title-bar drag, the window buttons, the tab strip and the terminal are
 //! untouched. `DefWindowProc` then supplies the resize cursors and the sizing loop, and
 //! `WM_GETMINMAXINFO` (winit, from Slint's `min-width`/`min-height`, 560 x 400 as Prism Terminal)
 //! keeps the minimum.
 //!
-//! The band is `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` at the window's own DPI (8 px at 100 percent,
-//! the size Windows gives a sizable window's border), read on every hit test, so a `WM_DPICHANGED` needs
-//! no work. A corner reaches twice as far along each edge as the edge is thick. No band while
+//! The sizes are Prism Terminal's Electron frameless zones: an edge band of `round(5 * dpi / 96)`
+//! device px and a corner `round(16 * dpi / 96)` long, both inside the window, at the window's own
+//! DPI read on every hit test, so a `WM_DPICHANGED` and a monitor move need no work. No band while
 //! maximized, minimized or full screen.
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -21,45 +21,47 @@ use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
-    HTTOPRIGHT, IsIconic, IsZoomed, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME, SWP_NOSIZE,
-    WINDOWPOS, WM_NCDESTROY, WM_NCHITTEST, WM_WINDOWPOSCHANGING,
+    HTTOPRIGHT, IsIconic, IsZoomed, SWP_NOSIZE, WINDOWPOS, WM_NCDESTROY, WM_NCHITTEST,
+    WM_WINDOWPOSCHANGING,
 };
 
 /// The subclass id (one per window).
 const RESIZE_ID: usize = 0x464C_5253;
 
-/// The thickness of the resize band, in device px.
+/// The thickness of the resize band and the reach of a corner, in device px.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Band {
-    /// Left, right and bottom edges, and the top edge.
+    /// Left, right and bottom edges.
     pub x: i32,
+    /// The top edge.
     pub y: i32,
+    /// How far a corner reaches along each edge.
+    pub corner: i32,
 }
 
+/// Prism Terminal's (Electron frameless) resize zones, in css px at 96 dpi.
+const EDGE_PX: f64 = 5.0;
+const CORNER_PX: f64 = 16.0;
+
 impl Band {
-    /// The band for the frame metrics (`SM_C?SIZEFRAME` plus `SM_CXPADDEDBORDER`), at least 1 px.
-    pub fn from_metrics(frame_x: i32, frame_y: i32, padded: i32) -> Self {
+    /// The band at a DPI: `round(5 * dpi / 96)` for an edge, `round(16 * dpi / 96)` for a corner
+    /// (at least 1 px), as Prism Terminal's window has them.
+    pub fn for_dpi(dpi: u32) -> Self {
+        let s = f64::from(dpi.max(1)) / 96.0;
+        let edge = ((EDGE_PX * s).round() as i32).max(1);
         Self {
-            x: (frame_x + padded).max(1),
-            y: (frame_y + padded).max(1),
+            x: edge,
+            y: edge,
+            corner: ((CORNER_PX * s).round() as i32).max(edge),
         }
     }
 
-    /// The band at a DPI from the metrics Windows gives for it.
+    /// The band at a DPI.
     pub fn at_dpi(dpi: u32) -> Self {
-        // SAFETY: plain metric reads.
-        let (fx, fy, p) = unsafe {
-            (
-                GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi),
-                GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi),
-                GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi),
-            )
-        };
-        Self::from_metrics(fx, fy, p)
+        Self::for_dpi(dpi)
     }
 }
 
@@ -70,10 +72,10 @@ pub fn hit_test(w: i32, h: i32, x: i32, y: i32, band: Band) -> Option<u32> {
     if x < 0 || y < 0 || x >= w || y >= h {
         return None;
     }
-    // A corner reaches twice as far as the edge is thick, but never past the middle.
+    // A corner reaches its own length along each edge, but never past the middle.
     let (bx, by) = (band.x.min(w / 2), band.y.min(h / 2));
-    let cx = (band.x * 2).min(w / 2);
-    let cy = (band.y * 2).min(h / 2);
+    let cx = band.corner.min(w / 2);
+    let cy = band.corner.min(h / 2);
     let left = x < bx;
     let right = x >= w - bx;
     let top = y < by;
@@ -250,6 +252,8 @@ pub struct EdgeReport {
     pub dpi: u32,
     /// The band thickness in device px (edge, top edge).
     pub band: (i32, i32),
+    /// How far a corner reaches along each edge, in device px.
+    pub corner: i32,
     /// The window carries `WS_SIZEBOX` (it can be sized, and Snap works).
     pub sizebox: bool,
     /// `ptMinTrackSize` as the window procedure answers `WM_GETMINMAXINFO`.
@@ -286,6 +290,7 @@ pub fn report(hwnd: isize) -> EdgeReport {
             rect: [r.left, r.top, r.right, r.bottom],
             dpi,
             band: (band.x, band.y),
+            corner: band.corner,
             sizebox: GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_SIZEBOX != 0,
             min_track: min_track(hwnd),
         }
@@ -303,9 +308,7 @@ mod tests {
     const H: i32 = 640;
 
     fn band(pct: i32) -> Band {
-        // The metrics Windows gives: 4 + 4 at 100 percent, scaled.
-        let s = |v: i32| v * pct / 100;
-        Band::from_metrics(s(4), s(4), s(4))
+        Band::for_dpi((96 * pct / 100) as u32)
     }
 
     #[test]
@@ -324,21 +327,23 @@ mod tests {
         assert_eq!(hit_test(W, H, W - 1, 1, b), Some(HTTOPRIGHT));
         assert_eq!(hit_test(W, H, 1, H - 1, b), Some(HTBOTTOMLEFT));
         assert_eq!(hit_test(W, H, W - 1, H - 1, b), Some(HTBOTTOMRIGHT));
-        // Along the edge the corner reaches 2 x band (16), past the 8 px edge.
-        assert_eq!(hit_test(W, H, 12, 2, b), Some(HTTOPLEFT));
-        assert_eq!(hit_test(W, H, 2, 12, b), Some(HTTOPLEFT));
-        assert_eq!(hit_test(W, H, 20, 2, b), Some(HTTOP));
-        assert_eq!(hit_test(W, H, 2, 20, b), Some(HTLEFT));
-        assert_eq!(hit_test(W, H, W - 12, H - 2, b), Some(HTBOTTOMRIGHT));
-        assert_eq!(hit_test(W, H, W - 20, H - 2, b), Some(HTBOTTOM));
+        // Along the edge the corner reaches 16 px (Prism Terminal's), past the 5 px edge.
+        assert_eq!(hit_test(W, H, 15, 2, b), Some(HTTOPLEFT));
+        assert_eq!(hit_test(W, H, 2, 15, b), Some(HTTOPLEFT));
+        assert_eq!(hit_test(W, H, 16, 2, b), Some(HTTOP));
+        assert_eq!(hit_test(W, H, 2, 16, b), Some(HTLEFT));
+        assert_eq!(hit_test(W, H, W - 16, H - 2, b), Some(HTBOTTOMRIGHT));
+        assert_eq!(hit_test(W, H, W - 17, H - 2, b), Some(HTBOTTOM));
     }
 
     #[test]
     fn the_inside_is_the_client_and_outside_is_nothing() {
         let b = band(100);
         assert_eq!(hit_test(W, H, W / 2, H / 2, b), None);
-        assert_eq!(hit_test(W, H, 8, 8, b), None);
-        assert_eq!(hit_test(W, H, W - 9, H - 9, b), None);
+        assert_eq!(hit_test(W, H, 5, 5, b), None);
+        assert_eq!(hit_test(W, H, W - 6, H - 6, b), None);
+        // The Close button's right edge is the client at 100 percent (it was a resize edge at 8 px).
+        assert_eq!(hit_test(W, H, W - 6, 20, b), None);
         assert_eq!(hit_test(W, H, -1, 5, b), None);
         assert_eq!(hit_test(W, H, W, 5, b), None);
         assert_eq!(hit_test(W, H, 5, H, b), None);
@@ -348,8 +353,14 @@ mod tests {
     fn the_band_scales_with_the_dpi_from_100_to_300_percent() {
         for pct in [100, 150, 225, 300] {
             let b = band(pct);
-            assert_eq!(b.x, 8 * pct / 100, "4 + 4 px at 100 percent, scaled");
-            let e = b.x;
+            let dpi = 96.0 * pct as f64 / 100.0;
+            assert_eq!(
+                b.x as f64,
+                (5.0 * dpi / 96.0).round(),
+                "5 px at 100 percent, scaled"
+            );
+            assert_eq!(b.corner as f64, (16.0 * dpi / 96.0).round(), "{pct}%");
+            let (e, c) = (b.x, b.corner);
             // The last pixel of the edge is the edge; the first inside is the client.
             assert_eq!(hit_test(W * 3, H * 3, e - 1, H, b), Some(HTLEFT), "{pct}%");
             assert_eq!(hit_test(W * 3, H * 3, e, H, b), None, "{pct}%");
@@ -359,18 +370,18 @@ mod tests {
                 "{pct}%"
             );
             assert_eq!(hit_test(W * 3, H * 3, W * 3 - e - 1, H, b), None, "{pct}%");
-            // The corner reaches 2 x the edge.
+            // The corner reaches its own length.
             assert_eq!(
-                hit_test(W * 3, H * 3, 2 * e - 1, 0, b),
+                hit_test(W * 3, H * 3, c - 1, 0, b),
                 Some(HTTOPLEFT),
                 "{pct}%"
             );
-            assert_eq!(hit_test(W * 3, H * 3, 2 * e, 0, b), Some(HTTOP), "{pct}%");
+            assert_eq!(hit_test(W * 3, H * 3, c, 0, b), Some(HTTOP), "{pct}%");
         }
-        // The real metrics are non-zero at every one of those DPIs and never shrink as it grows.
+        // The band is non-zero at every one of those DPIs and never shrinks as it grows.
         let mut last = 0;
         for dpi in [96u32, 144, 216, 288] {
-            let b = Band::at_dpi(dpi);
+            let b = Band::for_dpi(dpi);
             assert!(b.x >= 1 && b.y >= 1 && b.x >= last, "{dpi} dpi: {b:?}");
             last = b.x;
         }
@@ -488,7 +499,7 @@ mod tests {
         assert!(install(h as isize));
         // SAFETY: reads the DPI of the window made above.
         let dpi = unsafe { GetDpiForWindow(h) };
-        let b = Band::at_dpi(if dpi == 0 { 96 } else { dpi });
+        let b = Band::for_dpi(if dpi == 0 { 96 } else { dpi });
         let (l, t, r, bo) = (100, 100, 900, 600);
         let mid_y = (t + bo) / 2;
         let mid_x = (l + r) / 2;
@@ -513,11 +524,11 @@ mod tests {
         assert_eq!(nchittest(h, r - b.x - 1, mid_y), HTCLIENT);
         assert_eq!(nchittest(h, mid_x, t + b.y - 1), HTTOP);
         assert_eq!(nchittest(h, mid_x, t + b.y), HTCLIENT);
-        // A corner reaches twice the band along the edge.
-        assert_eq!(nchittest(h, l + 2 * b.x - 1, t), HTTOPLEFT);
-        assert_eq!(nchittest(h, l + 2 * b.x, t), HTTOP);
-        assert_eq!(nchittest(h, l, t + 2 * b.y - 1), HTTOPLEFT);
-        assert_eq!(nchittest(h, l, t + 2 * b.y), HTLEFT);
+        // A corner reaches its own length along the edge.
+        assert_eq!(nchittest(h, l + b.corner - 1, t), HTTOPLEFT);
+        assert_eq!(nchittest(h, l + b.corner, t), HTTOP);
+        assert_eq!(nchittest(h, l, t + b.corner - 1), HTTOPLEFT);
+        assert_eq!(nchittest(h, l, t + b.corner), HTLEFT);
         // SAFETY: destroys the window made above.
         unsafe { DestroyWindow(h) };
     }
