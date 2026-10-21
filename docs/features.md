@@ -697,3 +697,35 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   front, and a real dictation at 225%.
 - **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
   not measured at this commit, so this entry gives none yet.
+## Surfaces: the control channel and the MCP server (stage 2, library part), 2026-10-21
+
+Two new crates and no UI. Nothing in `crates/flare` uses them yet (stage 2 proper wires them after the
+panels land). Contract: `docs/surfaces/protocol.md`. Choices: `docs/surfaces/decisions.md`.
+
+- **Decision (stage 2 library, 2026-10-21): one channel for everything that drives a panel.** The UI,
+  the agent tools and mods use the same versioned JSON-lines protocol over a per-user named pipe; no
+  private back door (design spec, goal 2).
+- **S1, owner-only pipe, first instance.** `\\.\pipe\flare-ctl-<hash of SID>`, descriptor
+  `D:P(A;;GA;;;<SID>)`, remote clients rejected, created first-instance; a client refuses a server of
+  another user. Held by `the_pipe_is_closed_to_other_users`, `a_second_server_on_the_same_name_fails_to_start`,
+  `the_pipe_name_is_per_user_and_per_scope` and `this_process_has_a_sid_and_it_matches_by_pid`.
+- **S3, the agent cannot type into a shell, change settings or enable mods.** Held by
+  `rule_s3_the_agent_cannot_type_into_shells_change_settings_or_enable_mods`,
+  `nothing_over_the_pipe_reaches_the_ui_namespace` and `the_agent_cannot_reach_ui_methods_or_eval`.
+- **S4 and S5 at the channel.** `browser.eval` needs the user's switch (agent) or `browser` and `eval`
+  (mod); a disabled mod's token kills its open connection on the next request. Held by
+  `browser_eval_needs_both_browser_and_eval` and `disabling_a_mod_kills_its_open_connection`.
+- **Limits.** 16 MB per line, 64 clients (the 65th is told `too_many_clients`), a 10 s hello deadline,
+  15 s and 60 s request timeouts, 100/s rate with a burst of 200, an event outbox of 256. Held by
+  `the_65th_client_is_refused_and_the_first_64_keep_working`, `a_line_over_the_cap_is_too_long_with_or_without_newline`,
+  `an_oversize_line_closes_only_that_client`, `a_slow_call_times_out_and_the_connection_survives`,
+  `too_many_stuck_calls_refuse_new_ones`, `the_rate_limit_answers_without_closing`,
+  `silence_before_hello_closes_the_client` and `the_outbox_drops_the_oldest_past_its_cap`.
+- **A broken client closes only itself.** Not JSON, not a request, or too large closes that connection
+  after one error line. Held by `a_malformed_line_closes_only_that_client` (real pipe) and
+  `malformed_json_closes_only_this_client`.
+- **flare-mcp.** A stdio MCP server (`initialize`, `ping`, `tools/list`, `tools/call`) with the tools
+  `show_image`, `show_file`, `close_panel`; outside Flare every tool answers `isError`. Held by the unit
+  tests in `crates/flare-mcp/src/lib.rs` and the end-to-end `crates/flare-mcp/tests/stdio.rs`, which runs
+  the built exe against a real in-process server (`a_tool_call_reaches_the_server_with_the_tab`,
+  `outside_flare_every_tool_says_so_and_the_handshake_still_works`).

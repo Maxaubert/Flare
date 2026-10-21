@@ -14,6 +14,8 @@ members = [
     "crates/flare-diag",
     "crates/flare-tabs",
     "crates/flare-help",
+    "crates/flare-ctl",
+    "crates/flare-mcp",
     "crates/flare-e2e-proto",
     "tools/e2e",
     "tools/material-spike",
