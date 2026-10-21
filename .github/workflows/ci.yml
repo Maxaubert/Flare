@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup 1.28+ no longer installs on `rustup show`; this reads rust-toolchain.toml.
+      - name: Toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny
+      - name: No em-dashes
+        shell: bash
+        run: |
+          dash="$(printf '\342\200\224')"
+          if git grep -n "$dash" -- . ':!Cargo.lock'; then
+            echo "Em-dash found (owner rule: use en-dashes, commas or rephrase)"; exit 1
+          fi
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo nextest run --workspace --no-tests=pass
+      - name: Deny
+        run: cargo deny check

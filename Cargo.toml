@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/flare",
+    "crates/flare-render",
+    "crates/flare-term",
+    "crates/flare-shells",
+    "crates/flare-agent",
+    "crates/flare-theme",
+    "crates/flare-settings",
+    "crates/flare-dictation",
+    "crates/flare-update",
+    "crates/flare-win",
+    "crates/flare-diag",
+    "tools/e2e",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Flare-Proprietary"
+rust-version = "1.99"
+
+[workspace.lints.rust]
+# Unsafe is allowed only where a SAFETY comment explains it (Win32 glue, mostly).
+unsafe_code = "allow"
+
+[workspace.lints.clippy]
+# Pedantic stays off; the default set plus a check that every unsafe block is explained.
+undocumented_unsafe_blocks = "warn"
