@@ -7,7 +7,8 @@ use crate::font_catalog::{
     FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
 };
 use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
-use crate::metrics::{BASE_FONT_PX, FontUnits, font_px_for};
+use crate::metrics::{BASE_FONT_PX, FontUnits, cell_metrics_at, font_px_for};
+use crate::shapes;
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     SwashImage, Weight,
@@ -31,6 +32,8 @@ pub struct Rasterizer {
     fs: FontSystem,
     swash: SwashCache,
     family: String,
+    /// The whole stack, in order: a private-use character is looked up in each of these and never\n    /// in a symbol font that happens to map it to something else.
+    stack: Vec<String>,
     scale: f32,
     base_px: f32,
     generation: u64,
@@ -77,6 +80,7 @@ impl Rasterizer {
             fs,
             swash: SwashCache::new(),
             family,
+            stack: families.iter().map(|f| (*f).to_string()).collect(),
             scale,
             base_px: BASE_FONT_PX,
             generation: 0,
@@ -275,6 +279,17 @@ impl Rasterizer {
         if key.text.chars().all(|c| c == ' ') {
             return None;
         }
+        let mut chars = key.text.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next())
+            && shapes::has_shape(ch)
+        {
+            // Drawn here, cell-exact, never from a font (owner bug 2026-10-21).
+            let m = cell_metrics_at(&self.units, self.base_px, self.scale);
+            return shapes::shape_bitmap(ch, m.cell_w, m.cell_h, m.baseline, self.scale.max(1.0));
+        }
+        if key.text.chars().next().is_some_and(is_private_use) {
+            return self.rasterize_private_use(key);
+        }
         let px = font_px_for(self.base_px, self.scale);
         let family = self.family.clone();
         let mut attrs = Attrs::new().family(Family::Name(&family));
@@ -311,6 +326,63 @@ impl Rasterizer {
         }
         compose(&images)
     }
+}
+
+impl Rasterizer {
+    /// A private-use character (Nerd Font icons and the like) has no meaning outside the font that
+    /// was made for it, and a symbol font in the fallback list maps some of them to unrelated
+    /// drawings (a star for a Powerline cap). Like Prism Terminal's stack, it is looked up in the
+    /// stack's own faces in order; where none has it, the cell stays blank.
+    fn rasterize_private_use(&mut self, key: &GlyphKey) -> Option<GlyphBitmap> {
+        let px = font_px_for(self.base_px, self.scale);
+        for name in self.stack.clone() {
+            if !has_family(&self.fs, &name) {
+                continue;
+            }
+            let mut attrs = Attrs::new().family(Family::Name(&name));
+            if key.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if key.italic {
+                attrs = attrs.style(Style::Italic);
+            }
+            let mut buffer = Buffer::new_empty(Metrics::new(px, px));
+            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut self.fs, false);
+            let Some(run) = buffer.layout_runs().next() else {
+                continue;
+            };
+            let own = run.glyphs.iter().all(|g| {
+                g.glyph_id != 0
+                    && self.fs.db().face(g.font_id).is_some_and(|f| {
+                        f.families
+                            .iter()
+                            .any(|(n, _)| n.eq_ignore_ascii_case(&name))
+                    })
+            });
+            if !own {
+                continue;
+            }
+            let mut images: Vec<(i32, i32, SwashImage)> = Vec::new();
+            for glyph in run.glyphs.iter() {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                if let Some(image) = self
+                    .swash
+                    .get_image(&mut self.fs, physical.cache_key)
+                    .clone()
+                {
+                    images.push((physical.x, physical.y, image));
+                }
+            }
+            return compose(&images);
+        }
+        None
+    }
+}
+
+/// The private-use areas: U+E000 to U+F8FF and the two supplementary planes.
+fn is_private_use(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
 }
 
 impl GlyphSource for Rasterizer {
@@ -364,6 +436,7 @@ impl GlyphSource for Rasterizer {
             // The stack's first installed family is not loaded: swap the database for the new stack.
             self.rebuild_for(families);
         }
+        self.stack = families.iter().map(|f| (*f).to_string()).collect();
         let family = pick_family(&self.fs, families);
         if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
             return;
@@ -784,15 +857,15 @@ mod tests {
         assert_eq!(r.face_count(), after);
         let tried = r.rejected.len();
         // A character nothing covers tries every lazy family once and keeps none.
-        glyph_settled(&mut r, &key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
         let after_tofu = r.face_count();
         assert_eq!(after_tofu, after);
         let tried_after = r.rejected.len();
         assert!(tried_after >= tried);
         // The same character again walks nothing (audit M2: a different one may, see the test
         // a_char_no_family_covers_does_not_burn_the_families_for_another_script).
-        glyph_settled(&mut r, &key("\u{10FFFD}"));
-        glyph_settled(&mut r, &key("a\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
+        glyph_settled(&mut r, &key("a\u{3FFFD}"));
         assert_eq!(r.rejected.len(), tried_after);
         assert_eq!(r.face_count(), after);
     }
@@ -852,12 +925,12 @@ mod tests {
         }
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         // Nothing covers this one: every lazy family is asked about it.
-        glyph_settled(&mut r, &key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
         assert!(!r.has_family_loaded("Javanese Text"));
         let walked = r.rejected.len();
-        assert!(r.uncovered.contains(&'\u{10FFFD}'));
+        assert!(r.uncovered.contains(&'\u{3FFFD}'));
         // The same character is never walked again (a prompt icon redrawn every frame).
-        glyph_settled(&mut r, &key("x\u{10FFFD}"));
+        glyph_settled(&mut r, &key("x\u{3FFFD}"));
         assert_eq!(r.rejected.len(), walked);
         // A different script still reaches its family.
         assert!(glyph_settled(&mut r, &key("\u{A9B2}")).is_some());
@@ -879,10 +952,7 @@ mod tests {
         // blank, load nothing and read nothing; it only asks.
         let (mut r, gate) = gated();
         let faces = r.face_count();
-        assert!(
-            r.glyph(&key("\u{10FFFD}")).is_none(),
-            "blank while it waits"
-        );
+        assert!(r.glyph(&key("\u{3FFFD}")).is_none(), "blank while it waits");
         r.glyph(&key("\u{A9B2}"));
         assert_eq!(r.face_count(), faces, "nothing was loaded by the paint");
         assert_eq!(r.family_loads, 0);
@@ -892,14 +962,14 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-        assert!(r.pending.contains(&'\u{10FFFD}'));
+        assert!(r.pending.contains(&'\u{3FFFD}'));
         assert!(!r.fallback_ready(), "nothing has answered yet");
         // The same character asked again while it waits is not sent twice.
-        r.glyph(&key("x\u{10FFFD}"));
+        r.glyph(&key("x\u{3FFFD}"));
         assert_eq!(r.pending.len(), 2);
         gate.store(true, std::sync::atomic::Ordering::Release);
         r.settle();
-        assert!(r.uncovered.contains(&'\u{10FFFD}'));
+        assert!(r.uncovered.contains(&'\u{3FFFD}'));
     }
 
     #[test]
@@ -960,5 +1030,70 @@ mod tests {
             all.db().len()
         );
         assert!(new_ms < 150, "{new_ms} ms");
+    }
+
+    #[test]
+    fn powerline_shapes_are_drawn_to_the_cell_at_every_scale() {
+        // Owner bug 2026-10-21: U+E0B1 was a tofu box and U+E0B4 / U+E0B6 a star (Segoe UI Symbol).
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 2.25, 3.0] {
+            r.set_scale(scale);
+            let m = cell_metrics_at(&r.font_units(), r.base_px(), scale);
+            for ch in ["\u{E0B0}", "\u{E0B1}", "\u{E0B4}", "\u{E0B6}", "\u{E0BF}"] {
+                let b = r.glyph(&key(ch)).cloned().expect("a built-in shape");
+                assert_eq!(b.kind, GlyphKind::Mask);
+                assert_eq!(
+                    (b.width, b.height, b.left),
+                    (m.cell_w, m.cell_h, 0),
+                    "{ch:?} at {scale}"
+                );
+                assert_eq!(b.top, m.baseline as i32);
+                assert!(
+                    b.data.iter().any(|&v| v >= 100),
+                    "{ch:?} has solid or stroke ink"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_statusline_pill_has_no_seam_between_cap_and_bar() {
+        // chevron, cap, bar cell, cap: the cap's flat side is solid, so painted over the bar's
+        // background it leaves no gap column.
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 2.25);
+        let m = cell_metrics_at(&r.font_units(), r.base_px(), 2.25);
+        let open = r.glyph(&key("\u{E0B6}")).cloned().unwrap();
+        let close = r.glyph(&key("\u{E0B4}")).cloned().unwrap();
+        for y in 0..m.cell_h {
+            let i = (y * open.width + open.width - 1) as usize;
+            assert!(open.data[i] >= 200, "left cap meets the bar at row {y}");
+            assert!(
+                close.data[(y * close.width) as usize] >= 200,
+                "right cap meets the bar at row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_private_use_character_is_never_a_symbol_fonts_unrelated_glyph() {
+        // U+E0C0 is not a built-in shape. Segoe UI Symbol must not answer it; the stack's own
+        // faces may (JetBrainsMono NF has it), and with none that has it the cell is blank.
+        let mut plain = Rasterizer::new(&["Cascadia Mono"], 1.0);
+        assert!(glyph_settled(&mut plain, &key("\u{E0C0}")).is_none());
+        assert!(glyph_settled(&mut plain, &key("\u{F8FF}")).is_none());
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        if r.has_family_loaded("JetBrainsMono NF") {
+            assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
+        } else {
+            eprintln!("skipped: JetBrainsMono NF is not installed");
+        }
+    }
+
+    #[test]
+    fn box_drawing_and_shades_still_come_from_the_font() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for ch in ["\u{2500}", "\u{253C}", "\u{2591}", "\u{2593}"] {
+            assert!(glyph_settled(&mut r, &key(ch)).is_some(), "{ch:?}");
+        }
     }
 }

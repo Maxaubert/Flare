@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use flare_e2e_proto::{Button, PointerAction, Request};
+use flare_e2e_proto::{Button, PointerAction, Reply, Request};
 use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
@@ -1098,6 +1098,203 @@ fn osc8_on(ctx: &mut Ctx, app: &mut App, script: &Path) -> Result<(), String> {
     let dialog = probe(app, "app.state", Value::Null)["dialog"]["open"] == json!(true);
     ctx.ok(!dialog, "no dialog ever");
     Ok(())
+}
+
+/// The colour of the device pixel (x, y) of the last snapshot.
+fn device_pixel(app: &mut App, x: f64, y: f64) -> Option<Rgb> {
+    let (x, y) = (x.round().max(0.0) as u32, y.round().max(0.0) as u32);
+    match app.session.call(&Request::Pixel { x, y }) {
+        Ok(Reply::Pixel { rgba }) => Some([rgba[0], rgba[1], rgba[2]]),
+        _ => None,
+    }
+}
+
+/// The sum of the channel gaps between two colours.
+fn gap(a: Rgb, b: Rgb) -> i32 {
+    (0..3)
+        .map(|i| (i32::from(a[i]) - i32::from(b[i])).abs())
+        .sum()
+}
+
+/// Owner bug 2026-10-21: Claude Code's status line (Powerline chevron, round caps, a bar cell) drew
+/// a tofu box and a star. Prints the exact sequence (thin chevron on red, left cap, one bar cell,
+/// right cap) and reads the pixels: the shapes are Flare's own, edge to edge, in the cell's colours,
+/// with no seam between a cap and the bar. Both renderers.
+pub fn powerline_glyphs(ctx: &mut Ctx) -> Result<(), String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    for renderer in renderers(true) {
+        with_app(ctx, renderer, &alpha, Vec::new(), |ctx, app| {
+            powerline_on(ctx, app, renderer)
+        })?;
+    }
+    Ok(())
+}
+
+fn powerline_on(ctx: &mut Ctx, app: &mut App, renderer: &str) -> Result<(), String> {
+    prompt(app)?;
+    type_line(
+        app,
+        "cls; $e = [char]27; Write-Host (\"$e[38;2;255;255;255;48;2;200;0;0m\" + [char]0xE0B1 + \"$e[0m$e[38;2;64;160;255m\" + [char]0xE0B6 + \"$e[0m$e[48;2;64;160;255m $e[0m$e[38;2;64;160;255m\" + [char]0xE0B4 + \"$e[0m\")",
+    )?;
+    let tab = front_tab(app);
+    let mut at = None;
+    let shown = ctx.until("the status line row", 8_000, &mut || {
+        let grid = probe(app, "grid.text", json!({ "tab": tab }));
+        at = grid["rows"].as_array().and_then(|rows| {
+            rows.iter().enumerate().find_map(|(i, r)| {
+                let col = r.as_str()?.chars().position(|c| c == '\u{E0B1}')?;
+                Some((i, col))
+            })
+        });
+        at.is_some()
+    });
+    ctx.ok(
+        shown,
+        format!("{renderer}: the status line sequence is on screen (tab {tab}, tabs {:?}, front {:?}, at {at:?})", app.session.state().ok().map(|s| s.tabs.len()), app.session.state().ok().and_then(|s| s.front)),
+    );
+    let (Some((row, col)), true) = (at, shown) else {
+        return Ok(());
+    };
+    // A software snapshot can lag the grid by a frame, so take snapshots until the whole check holds.
+    let mut result = (false, String::new());
+    let (shots, scenario) = (ctx.shots.clone(), ctx.name);
+    ctx.until(
+        "the snapshot to show the whole status line",
+        4_000,
+        &mut || {
+            let name = format!("powerline-{renderer}");
+            if crate::ctx::shot_file(&shots, scenario, &name, |p| app.session.snapshot(p)).is_none()
+            {
+                return false;
+            }
+            result = powerline_measure(app, row, col);
+            result.0
+        },
+    );
+    let (ok, note) = result;
+    ctx.ok(
+        ok,
+        format!("{renderer}: chevron, cap, bar, cap are drawn as shapes in the cell colours with no seam ({note})"),
+    );
+    Ok(())
+}
+
+/// Reads the status line's four cells off the last snapshot: (all as wanted, what was not).
+fn powerline_measure(app: &mut App, row: usize, col: usize) -> (bool, String) {
+    const BLUE: Rgb = [64, 160, 255];
+    const RED: Rgb = [200, 0, 0];
+    let d = probe(app, "dpi.state", Value::Null);
+    let (pad, cw, ch, k) = (
+        d["padding"].as_f64().unwrap_or(0.0),
+        d["cell_w"].as_f64().unwrap_or(0.0),
+        d["cell_h"].as_f64().unwrap_or(0.0),
+        d["scale"].as_f64().unwrap_or(1.0),
+    );
+    let (gx, gy, _, _) = css(&probe(app, "ui.rect", json!({ "name": "grid" }))).unwrap_or_default();
+    let cell = |c: usize| {
+        (
+            gx * k + pad + (col + c) as f64 * cw,
+            gy * k + pad + row as f64 * ch,
+        )
+    };
+    let px = |app: &mut App, c: usize, fx: f64, fy: f64| {
+        let (ox, oy) = cell(c);
+        device_pixel(
+            app,
+            ox + (fx * cw).clamp(0.0, cw - 1.0),
+            oy + (fy * ch).clamp(0.0, ch - 1.0),
+        )
+    };
+    let mut ok = true;
+    let mut note = String::new();
+    let mut check = |name: &str, pass: bool, v: String| {
+        if !pass {
+            ok = false;
+            note.push_str(&format!(" {name}={v}"));
+        }
+    };
+
+    // Cell 0, the thin chevron: ink at the tip, none in the open side's middle, the cell's colours.
+    let tip = px(app, 0, 1.0, 0.5).or(px(app, 0, 1.0, 0.45));
+    let open = px(app, 0, 0.0, 0.5);
+    check(
+        "chevron open side is the cell bg",
+        open.is_some_and(|p| gap(p, RED) < 30),
+        format!("{open:?}"),
+    );
+    check(
+        "chevron tip is ink",
+        tip.is_some_and(|p| gap(p, RED) > 150),
+        format!("{tip:?}"),
+    );
+    // Ink count in the cell: a stroke, not a filled box or an outlined tofu.
+    let (ox, oy) = cell(0);
+    let mut inked = 0u32;
+    let mut total = 0u32;
+    for y in 0..ch as u32 {
+        for x in 0..cw as u32 {
+            if let Some(p) = device_pixel(app, ox + f64::from(x), oy + f64::from(y)) {
+                total += 1;
+                if gap(p, RED) > 150 {
+                    inked += 1;
+                }
+            }
+        }
+    }
+    check(
+        "chevron ink share",
+        inked > 0 && inked * 3 < total,
+        format!("{inked}/{total}"),
+    );
+
+    // Cell 1, the left cap: round, its flat side on the bar.
+    let ground = px(app, 1, 0.0, 0.0);
+    let mid = px(app, 1, 0.5, 0.5);
+    check(
+        "left cap middle is fg",
+        mid.is_some_and(|p| gap(p, BLUE) < 40),
+        format!("{mid:?}"),
+    );
+    check(
+        "left cap corner is ground",
+        matches!((ground, mid), (Some(g), Some(m)) if gap(g, m) > 150),
+        format!("{ground:?}"),
+    );
+    for fy in [0.1, 0.25, 0.5, 0.75, 0.9] {
+        let edge = px(app, 1, 1.0, fy);
+        check(
+            "left cap flat side meets the bar",
+            edge.is_some_and(|p| gap(p, BLUE) < 60),
+            format!("{fy}:{edge:?}"),
+        );
+    }
+    // Cell 2, the bar: its background, and no seam against either cap.
+    for fy in [0.1, 0.5, 0.9] {
+        for fx in [0.0, 0.5, 1.0] {
+            let p = px(app, 2, fx, fy);
+            check(
+                "bar cell is its bg",
+                p.is_some_and(|p| gap(p, BLUE) < 30),
+                format!("{fx},{fy}:{p:?}"),
+            );
+        }
+    }
+    // Cell 3, the right cap.
+    for fy in [0.1, 0.25, 0.5, 0.75, 0.9] {
+        let edge = px(app, 3, 0.0, fy);
+        check(
+            "right cap flat side meets the bar",
+            edge.is_some_and(|p| gap(p, BLUE) < 60),
+            format!("{fy}:{edge:?}"),
+        );
+    }
+    let far = px(app, 3, 1.0, 0.0);
+    check(
+        "right cap far corner is ground",
+        matches!((far, mid), (Some(g), Some(m)) if gap(g, m) > 150),
+        format!("{far:?}"),
+    );
+    (ok, note)
 }
 
 #[cfg(test)]

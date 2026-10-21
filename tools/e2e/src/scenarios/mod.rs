@@ -261,6 +261,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
+        name: "powerlineGlyphs",
+        group: "input_b",
+        run: input_b::powerline_glyphs,
+        limit_secs: 180,
+    },
+    Scenario {
         name: "pathLinks",
         group: "input_b",
         run: input_b::path_links,

@@ -17,6 +17,7 @@ are added as milestones land.
   `marks_beyond_the_cap_are_dropped_in_put_str_and_cluster`, `a_flood_of_combining_marks_is_capped_per_cell`,
   `the_glyph_cache_is_bounded`, `a_char_no_family_covers_does_not_burn_the_families_for_another_script`,
   `an_overflowing_atlas_grows_once_and_stops_re_uploading`.
+- **Powerline symbols are Flare's own shapes** (owner bug 2026-10-21). U+E0B0 to U+E0BF (arrows, thin chevrons, half circles, corner triangles) are drawn by `shapes.rs` to the exact cell at every scale, in the cell's foreground, by both painters through the same glyph path, so a status line's caps meet the bar with no seam and never show a tofu box or a symbol font's star. Other private-use characters come from the stack's own families only. Held by the shapes tests, `powerline_shapes_are_drawn_to_the_cell_at_every_scale`, `the_statusline_pill_paints_the_same_on_both_painters` and e2e `powerlineGlyphs`. Details and Prism Terminal's behaviour: `docs/parity.md` (Audit additions).
 - **Debug overlay (F12).** Shows the renderer, the grid painter, frame statistics and memory.
 - **Flags and variables.** `--renderer gpu|software` (or `FLARE_RENDERER`, which applies only when
   the flag is absent); `--screenshot <png>` renders headlessly to a PNG for visual checks;

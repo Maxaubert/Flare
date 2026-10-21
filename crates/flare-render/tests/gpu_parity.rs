@@ -246,3 +246,63 @@ fn atlas_full_recovers() {
     // Glyph 0 alone covers (0,0); it has a valid slot only if the rebuild after the clear worked.
     assert_eq!(px[..4], [p.fg.r, p.fg.g, p.fg.b, 255]);
 }
+
+#[test]
+fn the_statusline_pill_paints_the_same_on_both_painters() {
+    // Owner bug 2026-10-21: chevron, left cap, bar cell, right cap, through the real rasteriser.
+    let (device, queue) = device_or_skip!();
+    for scale in [1.0f32, 1.5, 2.25, 3.0] {
+        let mut glyphs = Rasterizer::new(DEFAULT_FAMILIES, scale);
+        glyphs.set_scale(scale);
+        let m = cell_metrics(&glyphs.font_units(), scale);
+        let (w, h) = (m.cell_w * 6 + 2 * m.padding, m.cell_h + 2 * m.padding);
+        let blue = flare_render::color::Rgba::rgb(64, 160, 255);
+        let mut scene = empty_scene(w, h);
+        let draw = |text: &str, col: u32| GlyphDraw {
+            key: GlyphKey {
+                text: text.to_string(),
+                bold: false,
+                italic: false,
+            },
+            pen_x: (m.padding + col * m.cell_w) as i32,
+            baseline_y: (m.padding + m.baseline) as i32,
+            color: blue,
+        };
+        scene.rects.push(RectFill {
+            x: (m.padding + 2 * m.cell_w) as i32,
+            y: m.padding as i32,
+            w: m.cell_w,
+            h: m.cell_h,
+            color: blue,
+        });
+        scene.glyphs.push(draw("\u{E0B1}", 0));
+        scene.glyphs.push(draw("\u{E0B6}", 1));
+        scene.glyphs.push(draw("\u{E0B4}", 3));
+        let mut gpu = GpuPainter::new(&device, &queue);
+        let tex = gpu.paint(&scene, &mut glyphs);
+        let got = read_texture(&device, &queue, &tex);
+        let mut cpu = RgbaImage::new(w, h);
+        paint_scene(&scene, &mut glyphs, &mut cpu);
+        let d = max_diff(&got, &cpu.data);
+        assert!(d <= 2, "pill at {scale}: max channel diff {d}");
+        // The cap's flat side meets the bar cell: no ground-coloured column between them.
+        let at = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [cpu.data[i], cpu.data[i + 1], cpu.data[i + 2]]
+        };
+        let bar_left = m.padding + 2 * m.cell_w;
+        let y = m.padding + m.cell_h / 2;
+        for dx in [
+            bar_left - 1,
+            bar_left,
+            bar_left + m.cell_w - 1,
+            bar_left + m.cell_w,
+        ] {
+            let p = at(dx, y);
+            assert!(
+                p[2] > 240 && p[0] < 80,
+                "seam at x {dx} scale {scale}: {p:?}"
+            );
+        }
+    }
+}

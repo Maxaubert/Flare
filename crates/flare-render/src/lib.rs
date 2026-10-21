@@ -16,4 +16,5 @@ pub mod metrics;
 pub mod raster;
 pub mod sample;
 pub mod scene;
+pub mod shapes;
 pub mod stats;
