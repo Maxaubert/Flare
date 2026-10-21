@@ -729,3 +729,17 @@ panels land). Contract: `docs/surfaces/protocol.md`. Choices: `docs/surfaces/dec
   tests in `crates/flare-mcp/src/lib.rs` and the end-to-end `crates/flare-mcp/tests/stdio.rs`, which runs
   the built exe against a real in-process server (`a_tool_call_reaches_the_server_with_the_tab`,
   `outside_flare_every_tool_says_so_and_the_handshake_still_works`).
+- **Review hardening (2026-10-21).** The wire layer refuses a `ui` grant from the app and any `ui`
+  method (`a_ui_token_is_refused_at_hello`, `a_ui_grant_for_the_agent_is_refused_at_hello`,
+  `a_grant_that_turns_into_ui_mid_connection_reaches_nothing`); only timed-out calls count as stuck
+  (`slow_calls_inside_their_timeout_are_not_stuck`, `a_stuck_call_stops_counting_when_it_finishes`);
+  stop frees a worker blocked writing and waiting calls give way
+  (`stop_frees_a_worker_blocked_writing_to_a_client_that_never_reads`,
+  `a_waiting_call_gives_way_when_the_server_stops`); a 16 MB line in small pieces is read once
+  (`a_huge_line_in_small_pieces_is_not_rescanned`); events never interleave a half-read request
+  (`idle_runs_between_messages_but_not_inside_one`); every request takes a rate token
+  (`forbidden_unknown_and_hello_requests_spend_rate_tokens_too`); the live pipe carries the owner-only
+  descriptor (`the_live_pipe_carries_the_owner_only_descriptor`); the pipe name has known answers for
+  the port (`the_pipe_name_has_known_answers`); the hello permissions match the grant
+  (`permission_names_agree_with_what_each_grant_can_call`); `flare-mcp` waits the method's timeout plus
+  5 s (`the_client_waits_longer_than_the_server_lets_a_call_run`).

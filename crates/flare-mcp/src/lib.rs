@@ -20,6 +20,13 @@ pub const SERVER_NAME: &str = "flare-mcp";
 /// How long a tool call waits for Flare (a connect, then the answer).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long to wait for the answer to `method`: the server's own timeout for it plus a margin, so
+/// a legitimate 60 s `browser.wait` is not given up on at 20 s. `CALL_TIMEOUT` stays for connecting
+/// and `hello`.
+pub fn call_wait(method: Method) -> Duration {
+    method.timeout() + Duration::from_secs(5)
+}
+
 /// JSON-RPC error codes.
 mod rpc {
     pub const PARSE_ERROR: i64 = -32700;
@@ -32,7 +39,7 @@ mod rpc {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Content {
     Text(String),
-    /// Base64 data and its MIME type. Used by `browser_look` (stage 3); the type is here so the
+    /// Base64 data and its MIME type. Used by `browser_look` (stage 4); the type is here so the
     /// result shape does not change when it lands.
     Image {
         data: String,
@@ -384,7 +391,7 @@ impl Channel for FlareChannel {
         for attempt in 0..2 {
             self.connect()?;
             let client = self.client.as_mut().expect("connected above");
-            match client.call(method, params.clone(), CALL_TIMEOUT) {
+            match client.call(method, params.clone(), call_wait(method)) {
                 Ok(v) => return Ok(v),
                 Err(ClientError::Remote(r)) => {
                     return Err(ChannelError::Remote {
@@ -409,6 +416,14 @@ impl Channel for FlareChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_client_waits_longer_than_the_server_lets_a_call_run() {
+        for m in Method::ALL {
+            assert!(call_wait(m) > m.timeout(), "{}", m.name());
+        }
+        assert!(call_wait(Method::BrowserWait) > Duration::from_secs(60));
+    }
 
     /// Records calls and answers from a script.
     #[derive(Default)]

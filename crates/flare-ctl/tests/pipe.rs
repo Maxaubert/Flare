@@ -273,6 +273,30 @@ fn the_pipe_name_is_per_user_and_per_scope() {
     assert!(flare_ctl::pipe::user_pipe_name(None).is_some());
 }
 
+/// Known answers, copied into docs/surfaces/protocol.md section 1 for the Node port to check its
+/// FNV-1a 64 against. FNV-1a 64 of "a" is af63dc4c8601ec8c and of "" is the offset basis.
+#[test]
+fn the_pipe_name_has_known_answers() {
+    assert_eq!(
+        pipe_name("S-1-5-21-1", None),
+        "\\\\.\\pipe\\flare-ctl-81be4daa4a464916"
+    );
+    assert_eq!(
+        pipe_name("S-1-5-21-1", Some("e2e")),
+        "\\\\.\\pipe\\flare-ctl-81be4daa4a464916-f1179b09"
+    );
+    assert_eq!(
+        pipe_name("S-1-5-21-1111111111-2222222222-3333333333-1001", None),
+        "\\\\.\\pipe\\flare-ctl-df660900cac14fc2"
+    );
+    // Both the SID and the scope are lower-cased before hashing.
+    assert_eq!(pipe_name("s-1-5-21-1", None), pipe_name("S-1-5-21-1", None));
+    assert_eq!(
+        pipe_name("S-1-5-21-1", Some("E2E")),
+        pipe_name("S-1-5-21-1", Some("e2e"))
+    );
+}
+
 #[test]
 fn the_pipe_is_closed_to_other_users() {
     // One protected ACE for the current user. Reading the live pipe's descriptor back would need the
@@ -283,4 +307,89 @@ fn the_pipe_is_closed_to_other_users() {
         format!("D:P(A;;GA;;;{sid})")
     );
     assert!(flare_ctl::pipe::dacl_sddl(&sid).starts_with("D:P(A;;GA;;;S-1-"));
+}
+
+/// The descriptor on the LIVE pipe, read back through the security APIs: one protected ACE for the
+/// current user. (A server that forgot to pass its attributes would leave the default DACL.)
+#[test]
+fn the_live_pipe_carries_the_owner_only_descriptor() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_KERNEL_OBJECT,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+    let (server, name) = start(ServerConfig::default());
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&name)
+        .expect("open the pipe");
+    let mut sd = std::ptr::null_mut();
+    // SAFETY: the handle is the open pipe; `sd` receives a descriptor freed below.
+    let rc = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle() as _,
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    assert_eq!(rc, 0, "GetSecurityInfo failed");
+    let mut text: *mut u16 = std::ptr::null_mut();
+    let mut len = 0u32;
+    // SAFETY: `sd` is the descriptor just read; `text` receives a LocalAlloc'd string.
+    let ok = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut text,
+            &mut len,
+        )
+    };
+    assert_ne!(ok, 0);
+    // SAFETY: `text` is `len` UTF-16 units including the NUL.
+    let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len as usize) })
+        .trim_end_matches('\0')
+        .to_string();
+    // SAFETY: both came from the calls above and are freed once.
+    unsafe {
+        LocalFree(text as _);
+        LocalFree(sd);
+    }
+    let sid = flare_ctl::pipe::user_sid().unwrap();
+    // Generic-all reads back as file-all; there is exactly one ACE and the DACL is protected.
+    assert_eq!(sddl, format!("D:P(A;;FA;;;{sid})"));
+    drop(file);
+    server.stop();
+}
+
+/// A client that never reads, with more queued events than the pipe holds: the worker is parked in
+/// a write. Stopping must still finish well inside its wait, with nothing left running.
+#[test]
+fn stop_frees_a_worker_blocked_writing_to_a_client_that_never_reads() {
+    let (server, name) = start(ServerConfig::default());
+    let c = hello(&name, Some("t1"), None);
+    assert!(wait_for(|| server.client_count() == 1));
+    let big = "x".repeat(200_000);
+    for _ in 0..20 {
+        server.publish("panel.changed", json!({"pad": big}), None);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let t = std::time::Instant::now();
+    let left = server.stop();
+    assert!(
+        t.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(left, 0);
+    drop(c);
 }

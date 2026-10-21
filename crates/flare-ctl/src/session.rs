@@ -2,13 +2,13 @@
 //! The pipe code (`pipe.rs`) hands it a [`Wire`]; tests hand it an in-memory one.
 //!
 //! The order of checks on every request is part of the contract (`docs/surfaces/protocol.md`):
-//! parse, method name, hello first, token still valid, grant, rate limit, then the dispatcher with a
+//! parse, rate limit, method name, hello first, token still valid, grant, then the dispatcher with a
 //! timeout. Only the thread that runs [`serve_connection`] ever touches the wire; events published
 //! by the app wait in the connection's outbox and are written from that thread.
 
 use std::collections::VecDeque;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::framing::{LineReader, ReadError, Wire, write_line};
 use crate::grant::Grant;
-use crate::method::{DEFAULT_TIMEOUT, Method};
+use crate::method::{DEFAULT_TIMEOUT, Method, Namespace};
 use crate::proto::{
     CtlError, Event, MAX_LINE, PROTOCOL, Request, Response, code, parse_request, to_line,
 };
@@ -41,6 +41,10 @@ pub trait Dispatcher: Send + Sync + 'static {
     }
 
     /// Runs one request. The grant was checked; `params` is an object. Anything but `hello`.
+    ///
+    /// Runs on its own thread and may still be running, or start, after `Server::stop`: it must
+    /// return quickly once the app is shutting down, and must not touch the UI thread in a way that
+    /// can panic or block then (answer `unavailable` instead).
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError>;
 
     /// A connection ended (clean close, error or server stop).
@@ -131,6 +135,8 @@ pub struct ConnHandle {
     tab: Mutex<Option<String>>,
     said_hello: AtomicBool,
     outbox: Mutex<VecDeque<Vec<u8>>>,
+    /// Unblocks a worker stuck in a write to a client that never reads (set by the pipe code).
+    abort: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// Events queued per connection before the oldest is dropped (a client that never reads).
@@ -143,7 +149,25 @@ impl ConnHandle {
             tab: Mutex::new(None),
             said_hello: AtomicBool::new(false),
             outbox: Mutex::new(VecDeque::new()),
+            abort: Mutex::new(None),
         })
+    }
+
+    /// Sets (or, with None, clears) the hook that cancels this connection's blocked I/O. Clearing
+    /// waits for a running hook, so the transport may close its handle right after.
+    pub fn set_abort(&self, f: Option<Box<dyn Fn() + Send + Sync>>) {
+        *self.abort.lock().unwrap_or_else(|e| e.into_inner()) = f;
+    }
+
+    fn abort(&self) {
+        if let Some(f) = self
+            .abort
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            f();
+        }
     }
 
     fn push(&self, line: Vec<u8>) {
@@ -183,6 +207,15 @@ impl Hub {
             .retain(|c| c.id != id);
     }
 
+    /// Cancels the blocked I/O of every connection (server stop).
+    pub fn abort_all(&self) {
+        let all: Vec<Arc<ConnHandle>> =
+            self.conns.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for c in all {
+            c.abort();
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.conns.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
@@ -220,7 +253,10 @@ pub struct Shared {
     pub dispatcher: Arc<dyn Dispatcher>,
     pub config: ServerConfig,
     pub hub: Hub,
+    /// Calls that passed their timeout and are still running (capped by `max_stuck_calls`).
     pub stuck: Arc<AtomicUsize>,
+    /// Every call thread that has not finished, timed out or not (reported by `Server::stop`).
+    pub in_flight: Arc<AtomicUsize>,
     pub stop: AtomicBool,
 }
 
@@ -231,21 +267,39 @@ impl Shared {
             config,
             hub: Hub::default(),
             stuck: Arc::new(AtomicUsize::new(0)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
             stop: AtomicBool::new(false),
         })
     }
 }
 
-struct StuckGuard(Arc<AtomicUsize>);
+/// Where a call is: running in time, past its timeout and counted as stuck, or done.
+const RUNNING: u8 = 0;
+const STUCK: u8 = 1;
+const DONE: u8 = 2;
 
-impl Drop for StuckGuard {
+/// Ends a call thread's bookkeeping, however it ends.
+struct CallGuard {
+    state: Arc<AtomicU8>,
+    stuck: Arc<AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for CallGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        if self.state.swap(DONE, Ordering::SeqCst) == STUCK {
+            self.stuck.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
+/// How often a waiting connection looks at the stop flag.
+const STOP_SLICE: Duration = Duration::from_millis(50);
+
 /// Runs the dispatcher on its own thread so a hung call cannot hold the connection past its timeout.
-/// The thread is left to finish by itself; `stuck` counts them and caps the damage.
+/// The thread is left to finish by itself; only calls past their timeout count as `stuck`, and that
+/// count caps the damage. Slow calls still inside their timeout (a 60 s `browser.wait`) never do.
 fn call_with_timeout(
     shared: &Shared,
     ctx: &CallContext,
@@ -263,8 +317,13 @@ fn call_with_timeout(
         .timeout_override
         .unwrap_or_else(|| method.timeout());
     let (tx, rx) = mpsc::channel();
-    shared.stuck.fetch_add(1, Ordering::SeqCst);
-    let guard = StuckGuard(shared.stuck.clone());
+    let state = Arc::new(AtomicU8::new(RUNNING));
+    shared.in_flight.fetch_add(1, Ordering::SeqCst);
+    let guard = CallGuard {
+        state: state.clone(),
+        stuck: shared.stuck.clone(),
+        in_flight: shared.in_flight.clone(),
+    };
     let d = shared.dispatcher.clone();
     let ctx = ctx.clone();
     let spawned = std::thread::Builder::new()
@@ -278,20 +337,44 @@ fn call_with_timeout(
         // The closure (and its guard) was dropped with the failed spawn.
         return Err(CtlError::new(code::INTERNAL, "could not start the call"));
     }
-    match rx.recv_timeout(timeout) {
-        Ok(r) => r,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(CtlError::new(
-            code::TIMEOUT,
-            format!(
-                "{} did not answer within {} ms",
-                method.name(),
-                timeout.as_millis()
-            ),
-        )),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(CtlError::new(
-            code::INTERNAL,
-            "the call failed unexpectedly",
-        )),
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left.min(STOP_SLICE)) {
+            Ok(r) => return r,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(CtlError::new(
+                    code::INTERNAL,
+                    "the call failed unexpectedly",
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let stopping = shared.stop.load(Ordering::SeqCst);
+                if !stopping && !left.is_zero() && Instant::now() < deadline {
+                    continue;
+                }
+                // Count it as stuck unless it finished in the meantime.
+                // (Counted first, so the finishing thread's decrement can never come before it.)
+                shared.stuck.fetch_add(1, Ordering::SeqCst);
+                if state
+                    .compare_exchange(RUNNING, STUCK, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    shared.stuck.fetch_sub(1, Ordering::SeqCst);
+                }
+                if stopping {
+                    return Err(CtlError::new(code::UNAVAILABLE, "Flare is shutting down"));
+                }
+                return Err(CtlError::new(
+                    code::TIMEOUT,
+                    format!(
+                        "{} did not answer within {} ms",
+                        method.name(),
+                        timeout.as_millis()
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -333,6 +416,20 @@ struct Hello {
     token: Option<String>,
 }
 
+/// A grant from the app, checked to be one that may exist over the pipe: never `ui` (S3). A bug on
+/// the app side (a manifest permission mapped to `ui`, a cached `ui` grant) must not open the `ui`
+/// namespace to a socket.
+fn pipe_grant(g: Grant, from_token: bool) -> Result<Grant, CtlError> {
+    if matches!(g, Grant::Ui) {
+        return Err(if from_token {
+            CtlError::new(code::UNAUTHORIZED, "a token cannot hold the ui grant")
+        } else {
+            CtlError::new(code::INTERNAL, "the app gave a pipe caller the ui grant")
+        });
+    }
+    Ok(g)
+}
+
 fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlError> {
     let str_param = |k: &str| req.params.get(k).and_then(Value::as_str);
     let Some(client) = str_param("client") else {
@@ -358,11 +455,14 @@ fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlE
         Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "token must be a string")),
     };
     let grant = match &token {
-        Some(t) => shared
-            .dispatcher
-            .resolve_token(t)
-            .ok_or_else(|| CtlError::new(code::UNAUTHORIZED, "unknown or disabled token"))?,
-        None => shared.dispatcher.agent_grant(),
+        Some(t) => pipe_grant(
+            shared
+                .dispatcher
+                .resolve_token(t)
+                .ok_or_else(|| CtlError::new(code::UNAUTHORIZED, "unknown or disabled token"))?,
+            true,
+        )?,
+        None => pipe_grant(shared.dispatcher.agent_grant(), false)?,
     };
     let tab = match req.params.get("tab") {
         None | Some(Value::Null) => None,
@@ -450,6 +550,14 @@ fn answer(
         let close = code::closes_client(&e.code);
         (Response::err(id.clone(), e), close)
     };
+    // Every request costs a token, forbidden and unknown ones and hello retries included, before the
+    // app is asked anything: a spammer cannot drive unlimited callbacks into it.
+    if !bucket.take(Instant::now()) {
+        return fail(CtlError::new(
+            code::RATE_LIMITED,
+            "too many requests; slow down",
+        ));
+    }
     let Some(method) = Method::parse(&req.method) else {
         return fail(CtlError::new(
             code::UNKNOWN_METHOD,
@@ -476,26 +584,30 @@ fn answer(
     };
     // The grant is read again on every request: a disabled mod loses its connection, and the user's
     // eval switch takes effect without a reconnect.
-    match &h.token {
+    let regranted = match &h.token {
         Some(t) => match shared.dispatcher.resolve_token(t) {
-            Some(g) => h.ctx.grant = g,
-            None => {
-                return fail(CtlError::new(
-                    code::UNAUTHORIZED,
-                    "the token is no longer valid",
-                ));
-            }
+            Some(g) => pipe_grant(g, true),
+            None => Err(CtlError::new(
+                code::UNAUTHORIZED,
+                "the token is no longer valid",
+            )),
         },
-        None => h.ctx.grant = shared.dispatcher.agent_grant(),
+        None => pipe_grant(shared.dispatcher.agent_grant(), false),
+    };
+    match regranted {
+        Ok(g) => h.ctx.grant = g,
+        Err(e) => return fail(e),
+    }
+    // The ui namespace is closed to the pipe whatever the grant says (belt and braces for S3).
+    if method.namespace() == Namespace::Ui {
+        return fail(
+            h.ctx.grant.check(method).err().unwrap_or_else(|| {
+                CtlError::new(code::FORBIDDEN, "ui methods are not on the pipe")
+            }),
+        );
     }
     if let Err(e) = h.ctx.grant.check(method) {
         return fail(e);
-    }
-    if !bucket.take(Instant::now()) {
-        return fail(CtlError::new(
-            code::RATE_LIMITED,
-            "too many requests; slow down",
-        ));
     }
     match call_with_timeout(shared, &h.ctx, method, req.params.clone()) {
         Ok(v) => (Response::ok(id, v), false),
@@ -520,16 +632,25 @@ mod tests {
         pub revoked: AtomicBool,
         pub eval: AtomicBool,
         pub hang: AtomicBool,
+        /// Token `ui` resolves to the ui grant; with `ui_agent` the agent grant is the ui grant.
+        pub ui_agent: AtomicBool,
+        pub promote: AtomicBool,
     }
 
     impl Dispatcher for Fake {
         fn resolve_token(&self, token: &str) -> Option<Grant> {
+            if token == "ui" || (token == "good" && self.promote.load(Ordering::SeqCst)) {
+                return Some(Grant::Ui);
+            }
             (token == "good" && !self.revoked.load(Ordering::SeqCst)).then(|| Grant::Mod {
                 id: "m".into(),
                 permissions: vec![crate::grant::Permission::View],
             })
         }
         fn agent_grant(&self) -> Grant {
+            if self.ui_agent.load(Ordering::SeqCst) {
+                return Grant::Ui;
+            }
             Grant::Agent {
                 eval: self.eval.load(Ordering::SeqCst),
             }
@@ -540,6 +661,9 @@ mod tests {
         fn call(&self, ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
             if self.hang.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(400));
+            }
+            if p.get("slow").is_some() {
+                std::thread::sleep(Duration::from_millis(150));
             }
             self.calls.lock().unwrap().push((
                 m,
@@ -567,10 +691,15 @@ mod tests {
 
     impl Rig {
         pub fn new(cfg: ServerConfig) -> Rig {
-            let (server_end, client) = pair();
             let fake = Arc::new(Fake::default());
             let shared = Shared::new(fake.clone(), cfg);
-            let handle = ConnHandle::new(1);
+            Rig::on(fake, shared, 1)
+        }
+
+        /// A connection on a server that other rigs share.
+        pub fn on(fake: Arc<Fake>, shared: Arc<Shared>, id: u64) -> Rig {
+            let (server_end, client) = pair();
+            let handle = ConnHandle::new(id);
             shared.hub.add(handle.clone());
             let (s2, h2) = (shared.clone(), handle.clone());
             let thread = std::thread::spawn(move || {
@@ -873,7 +1002,7 @@ mod tests {
     #[test]
     fn the_rate_limit_answers_without_closing() {
         let mut r = Rig::new(ServerConfig {
-            rate_burst: 3.0,
+            rate_burst: 4.0, // hello takes one
             rate_per_sec: 0.001,
             ..ServerConfig::default()
         });
@@ -884,8 +1013,129 @@ mod tests {
         }
         let v = r.ask(r#"{"id":9,"method":"panel.state"}"#);
         assert_eq!(code_of(&v), code::RATE_LIMITED);
-        let v = r.ask(r#"{"id":10,"method":"hello"}"#);
-        assert_eq!(code_of(&v), code::ALREADY_HELLO);
+        r.finish();
+    }
+
+    #[test]
+    fn forbidden_unknown_and_hello_requests_spend_rate_tokens_too() {
+        let mut r = Rig::new(ServerConfig {
+            rate_burst: 4.0,
+            rate_per_sec: 0.001,
+            ..ServerConfig::default()
+        });
+        r.hello("");
+        for (i, m) in ["shell.input", "browser.fly", "hello"].iter().enumerate() {
+            let v = r.ask(&format!(r#"{{"id":{i},"method":"{m}"}}"#));
+            assert_ne!(code_of(&v), code::RATE_LIMITED, "{m}");
+        }
+        let v = r.ask(r#"{"id":9,"method":"shell.input"}"#);
+        assert_eq!(code_of(&v), code::RATE_LIMITED);
+        r.finish();
+    }
+
+    #[test]
+    fn a_ui_token_is_refused_at_hello() {
+        let mut r = rig();
+        let v = r.hello(r#","token":"ui""#);
+        assert_eq!(code_of(&v), code::UNAUTHORIZED);
+        assert!(r.closed());
+        r.finish();
+    }
+
+    #[test]
+    fn a_ui_grant_for_the_agent_is_refused_at_hello() {
+        let mut r = rig();
+        r.fake.ui_agent.store(true, Ordering::SeqCst);
+        assert_eq!(code_of(&r.hello("")), code::INTERNAL);
+        r.finish();
+    }
+
+    #[test]
+    fn a_grant_that_turns_into_ui_mid_connection_reaches_nothing() {
+        let mut r = rig();
+        r.hello(r#","token":"good""#);
+        r.fake.promote.store(true, Ordering::SeqCst);
+        let v = r.ask(r#"{"id":1,"method":"shell.input","params":{"data":"rm"}}"#);
+        assert_eq!(code_of(&v), code::UNAUTHORIZED);
+        assert!(r.closed());
+        assert!(r.fake.calls.lock().unwrap().is_empty());
+        r.finish();
+        let mut r = rig();
+        r.hello("");
+        r.fake.ui_agent.store(true, Ordering::SeqCst);
+        for m in ["shell.input", "settings.set", "mods.enable", "panel.state"] {
+            let v = r.ask(&format!(r#"{{"id":1,"method":"{m}"}}"#));
+            assert_eq!(code_of(&v), code::INTERNAL, "{m}");
+        }
+        assert!(r.fake.calls.lock().unwrap().is_empty());
+        r.finish();
+    }
+
+    #[test]
+    fn slow_calls_inside_their_timeout_are_not_stuck() {
+        let fake = Arc::new(Fake::default());
+        let shared = Shared::new(
+            fake.clone(),
+            ServerConfig {
+                max_stuck_calls: 32,
+                ..ServerConfig::default()
+            },
+        );
+        let rigs: Vec<Rig> = (0..40)
+            .map(|i| Rig::on(fake.clone(), shared.clone(), 100 + i))
+            .collect();
+        let workers: Vec<_> = rigs
+            .into_iter()
+            .map(|mut r| {
+                std::thread::spawn(move || {
+                    r.hello("");
+                    let v = r.ask(r#"{"id":1,"method":"panel.state","params":{"slow":1}}"#);
+                    let ok = v["result"].is_object();
+                    r.finish();
+                    ok
+                })
+            })
+            .collect();
+        for w in workers {
+            assert!(w.join().unwrap(), "a slow call in time was refused");
+        }
+        assert_eq!(shared.stuck.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_stuck_call_stops_counting_when_it_finishes() {
+        let mut r = Rig::new(ServerConfig {
+            timeout_override: Some(Duration::from_millis(30)),
+            ..ServerConfig::default()
+        });
+        r.hello("");
+        r.fake.hang.store(true, Ordering::SeqCst);
+        assert_eq!(
+            code_of(&r.ask(r#"{"id":1,"method":"panel.state"}"#)),
+            code::TIMEOUT
+        );
+        assert_eq!(r.shared.stuck.load(Ordering::SeqCst), 1);
+        let t = Instant::now();
+        while r.shared.in_flight.load(Ordering::SeqCst) > 0 && t.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(r.shared.stuck.load(Ordering::SeqCst), 0);
+        r.finish();
+    }
+
+    #[test]
+    fn a_waiting_call_gives_way_when_the_server_stops() {
+        let mut r = Rig::new(ServerConfig::default());
+        r.hello("");
+        r.fake.hang.store(true, Ordering::SeqCst);
+        // The call waits up to 15 s; the stop flag ends the wait within a slice.
+        let t = Instant::now();
+        r.send(r#"{"id":1,"method":"panel.state"}"#);
+        std::thread::sleep(Duration::from_millis(100));
+        r.shared.stop.store(true, Ordering::SeqCst);
+        let _ = r.closed();
+        assert!(t.elapsed() < Duration::from_secs(3));
         r.finish();
     }
 

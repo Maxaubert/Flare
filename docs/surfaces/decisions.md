@@ -22,8 +22,10 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
   app publishes wait in a per-connection outbox (256, drop oldest) and are written between requests and
   while idle. A client that never reads can only stall its own worker, never the app.
 - 2026-10-21, stage 2 library: the dispatcher runs on a short-lived thread per request so a hung handler
-  cannot hold a connection past its timeout (15 s, 60 s for `browser.*`). Timed-out handlers are counted;
-  past 32 new calls answer `unavailable`.
+  cannot hold a connection past its timeout (15 s, 60 s for `browser.*`). Only handlers past their
+  timeout count as stuck (a three-state flag per call); past 32 new calls answer `unavailable`.
+  (Review fix: the first version counted every in-flight call, which would have refused 33 legitimate
+  concurrent `browser.wait`s.)
 - 2026-10-21, stage 2 library: the grant is re-read on every request, not only at hello. This makes
   "a disabled mod's token is dead" (S5) true for open connections, and makes the user's eval switch live.
 - 2026-10-21, stage 2 library: grants are a pure function (`Grant::may_call`) over an exhaustive method
@@ -45,3 +47,24 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
 - 2026-10-21, stage 2 library: not yet wired. flare.exe does not start the server, the shells do not get
   `FLARE_TAB_ID`/`FLARE_CTL_PIPE` from this crate, the `flare-status` plugin manifest does not list
   `flare-mcp`, and the pack script does not ship it. That is stage 2 proper, after the panels land.
+- 2026-10-21, stage 2 library review fixes: the library refuses a `ui` grant from the app over the
+  pipe (token: `unauthorized`, agent: `internal`) and refuses `ui`-namespace methods whatever the grant.
+  The app is trusted to decide grants, but a single app-side bug must not open `shell.input` to a
+  socket, so the wire layer does not rely on it.
+- 2026-10-21, stage 2 library review fixes: every request takes a rate token before the app is asked
+  anything (including `unknown_method`, `forbidden` and `hello` retries). Cost: `hello` spends one of
+  the 200 burst tokens. Gain: a spammer cannot drive unlimited grant callbacks into the app.
+- 2026-10-21, stage 2 library review fixes: stopping the server cancels blocked pipe writes
+  (`CancelIoEx` from the stopping thread, repeated until the workers are out), makes waiting calls
+  answer `unavailable` within 50 ms, and returns how many handler threads are still running. Rule 28:
+  nothing that calls into the app may outlive teardown unnoticed; the app waits on the count inside
+  its quit cap and the handlers are told (in the `Dispatcher` docs) to return quickly after stop.
+- 2026-10-21, stage 2 library review fixes: queued events are written only between whole messages
+  (never while half a request line is buffered), otherwise a 4 MB `view.text` request against more
+  than 64 KB of queued events deadlocks both sides on full pipe buffers.
+- 2026-10-21, stage 2 library review fixes: the tab of a connection is advisory and grants are not a
+  sandbox against the user's own processes (the agent has Bash as that user). Methods act on
+  `ctx.tab` only. Written into protocol.md section 4 so a port does not read S3 as enforced by the
+  channel.
+- 2026-10-21, stage 2 library review fixes: `flare-mcp` waits for a call as long as the method's server
+  timeout plus 5 s; a fixed 20 s dropped the connection on a legitimate 60 s `browser.wait`.

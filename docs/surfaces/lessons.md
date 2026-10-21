@@ -35,3 +35,24 @@ Newest last.
   the stream silently. The stdio test parses every stdout line as JSON to pin this.
 - **Notifications never get a reply**, including ones a client invents (`notifications/cancelled`). A
   reply to a notification is a protocol error that some clients treat as fatal.
+- **A line reader must remember where it already looked.** Searching the whole buffer for a newline
+  after every chunk is quadratic: a 16 MB screenshot answer in 4 KB pieces took 44 s in a debug build.
+  Keep a `scanned` offset, reuse one read scratch buffer instead of zero-filling a chunk per idle poll,
+  and pin it with a 16 MB trickle test. (The first fix attempt silently did nothing because the edit
+  script's pattern did not match; the test caught it.)
+- **A blocked write is not interrupted by a stop flag.** The worker was parked in `WriteFile` to a client
+  that never reads, so `stop()` waited its full 2 s and abandoned the thread. `CancelIoEx` on the
+  handle from the stopping thread fails the write at once; clear the hook before the handle closes so
+  it can never hit a recycled handle value. Node: destroy the socket.
+- **Count what you cap.** "Stuck handlers" was incremented for every call, so the cap measured
+  concurrency, not timeouts. Increment on the timeout edge, decrement on the finish edge, and order
+  the two atomically (count first, then compare-and-swap the state, undo if it lost).
+- **Do not write events while a request is half-read.** Both sides can block on 64 KB pipe buffers.
+  Flush the outbox only between whole messages.
+- **A known-answer test beats an equality test for anything a port must reproduce.** The pipe-name
+  test only compared names with each other; a Node FNV with a different truncation would have passed
+  its own tests and connected to nothing. The vectors are now in protocol.md section 1.
+- **Read the live object back, not the string you built it from.** The DACL test now opens the running
+  pipe and reads its descriptor (`GetSecurityInfo`). `GA` reads back as `FA`.
+- **Tooling note**: when scripting edits, assert that every replacement matched; a silent no-op
+  hides behind a green compile.

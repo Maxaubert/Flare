@@ -8,8 +8,9 @@ code disagree, that is a bug in one of them: fix both in the same commit.
 
 Status of the methods in Flare: the framework (transport, hello, grants, errors, limits, timeouts,
 events) is built and tested in `flare-ctl` (stage 2, library part). The app wiring and the behaviour of
-`panel.*` and `view.*` land with the panels (stage 2, proper), `browser.*` with the browser (stage 3),
-`convo.state` with the conversation reader (stage 4), `tools.respond` with mods (stage 5). Each method
+`panel.*` and `view.*` land with the panels (stage 2, proper), `browser.*` with the web panel (stage 3)
+and the agent driving it (stage 4), `convo.state` with the conversation reader (stage 6),
+`tools.respond` with mods (stage 8). Each method
 below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -21,8 +22,18 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   lower-cased string form of the current user's SID (`S-1-5-21-...`). With a **scope** (a profile
   folder, an e2e run) append `-<s>`: 8 hex digits of the low 32 bits of FNV-1a 64 over the lower-cased
   scope. FNV-1a 64: offset `0xcbf29ce484222325`, prime `0x100000001b3`, per byte
-  `h = (h ^ byte) * prime` modulo 2^64. Test vectors are in `crates/flare-ctl/tests/pipe.rs`
-  (`the_pipe_name_is_per_user_and_per_scope`: same inputs give the same name, any change gives another).
+  `h = (h ^ byte) * prime` modulo 2^64. Known answers (a port pastes these into its own test; they are
+  also asserted in `crates/flare-ctl/tests/pipe.rs`, `the_pipe_name_has_known_answers`):
+
+  | Input | Result |
+  |---|---|
+  | FNV-1a 64 of `""` | `cbf29ce484222325` |
+  | FNV-1a 64 of `"a"` | `af63dc4c8601ec8c` |
+  | SID `S-1-5-21-1` | `\\.\pipe\flare-ctl-81be4daa4a464916` |
+  | SID `S-1-5-21-1`, scope `e2e` | `\\.\pipe\flare-ctl-81be4daa4a464916-f1179b09` |
+  | SID `S-1-5-21-1111111111-2222222222-3333333333-1001` | `\\.\pipe\flare-ctl-df660900cac14fc2` |
+
+  `s-1-5-21-1` (lower case) and scope `E2E` give the same names as `S-1-5-21-1` and `e2e`.
 - **Discovery for a client**: environment variable `FLARE_CTL_PIPE` when set and non-empty, else the
   user's default name. The app sets `FLARE_CTL_PIPE` and `FLARE_TAB_ID` in every shell it starts, so a
   child finds the right app even when the owner runs two profiles.
@@ -34,6 +45,10 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 - **Client check**: before sending a byte a client reads the server process id of the pipe
   (`GetNamedPipeServerProcessId`) and refuses a server that runs as another user. It opens the pipe
   with `SECURITY_IDENTIFICATION`, so a server can learn who the client is but never act as it.
+- **Reading**: the server never parks in a blocking read: it asks the pipe how many bytes are ready
+  (`PeekNamedPipe`) and sleeps a few milliseconds when none are. A Node port gets the same from its
+  event loop. While half a request line is buffered the server does not write queued events, so a big
+  request and a big event write can never block each other on full pipe buffers.
 - Byte mode, duplex, up to 255 instances; the app keeps one waiting and makes the next before it
   serves the one that just connected.
 
@@ -62,23 +77,37 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 4. The connection ends when either side closes, on an error marked "closes" in section 6, or when the
    server stops. Nothing survives a reconnect: a client says `hello` again.
 
-### Order of checks for every request after hello
+### Order of checks for every request
 
 1. Parse the line. Not JSON: `parse_error` (null id, closes). Not an object, bad id, no method,
    `params` not an object: `invalid_request` (closes).
-2. Method name in the protocol? No: `unknown_method` (stays).
-3. `hello` again: `already_hello` (stays).
-4. **Re-resolve the grant**: a connection with a token asks the app for the token's grant again; a
+2. **Rate limit**: a token bucket per connection, **100 requests/s sustained, burst 200**. Every
+   request takes a token, refused ones and `hello` retries included, and it is checked before the app
+   is asked anything, so a spammer cannot drive unlimited callbacks into the app. Empty bucket:
+   `rate_limited` (stays).
+3. Method name in the protocol? No: `unknown_method` (stays).
+4. `hello` again: `already_hello` (stays). `hello` itself resolves the grant (below) and answers.
+   Any other method before `hello`: `hello_required` (stays).
+5. **Re-resolve the grant**: a connection with a token asks the app for the token's grant again; a
    token that is gone or whose mod is disabled answers `unauthorized` and closes (rule S5: a disabled
    mod's token is dead, also for connections already open). A connection with no token takes the
-   app's current agent grant, so the user's `eval` switch is live without a reconnect.
-5. Grant allows the method? No: `forbidden` (stays). The reason text names the rule.
-6. Rate limit: a token bucket per connection, **100 requests/s sustained, burst 200**. Empty bucket:
-   `rate_limited` (stays).
+   app's current agent grant, so the user's `eval` switch is live without a reconnect. **A grant of
+   kind `ui` from the app is never accepted over the pipe**: a token resolving to `ui` answers
+   `unauthorized` (closes), an agent grant of `ui` answers `internal`. Belt and braces for S3: the
+   library, not only the app, keeps the `ui` namespace off the pipe.
+6. Grant allows the method? No: `forbidden` (stays). The reason text names the rule. A method in the
+   `ui` namespace is refused here whatever the grant says.
 7. Run the method with its **timeout**: 15 s, and 60 s for every `browser.*` method. The app's
    handler runs off the connection's thread; when the timeout passes the client gets `timeout` and the
-   late result is discarded. If more than 32 timed-out handlers are still running, new calls answer
-   `unavailable` until they finish.
+   late result is discarded. Only handlers **past their timeout** that are still running count as
+   stuck: if more than 32 are, new calls answer `unavailable` until they finish. Slow calls still
+   inside their timeout (many agents in a `browser.wait`) never count. When the server stops, a
+   waiting call answers `unavailable` at once.
+
+The handler (`Dispatcher::call`) may still be running, or start, after the server is told to stop. The
+app must make it return quickly then, and must not touch its UI thread in a way that can panic or
+block (answer `unavailable`). `Server::stop` reports how many handlers are still running so the app
+can wait on them inside its quit cap.
 
 ### Limits
 
@@ -105,7 +134,15 @@ Three kinds. A grant is decided at `hello` and re-read on every request (check 4
 | `ui` | The app's own code | **in process only**, never over the pipe. No token can mean `ui`. |
 
 Permissions of a `mod` grant: `panel`, `view`, `browser`, `eval`, `convo`, `tools`. The `agent` grant
-holds `panel`, `view` and `browser`, plus `eval` only when the user has turned `browser_eval` on (S4).
+holds `panel`, `view`, `browser` and `convo`, plus `eval` only when the user has turned `browser_eval`
+on (S4). The `permissions` list in the `hello` answer always agrees with what the grant can call
+(`permission_names_agree_with_what_each_grant_can_call`).
+
+**The tab is advisory, and a grant is not a sandbox.** `tab` in `hello` is asserted by the client: any
+client of this user can name any tab (`tabs.list` hands the ids out), and the agent can run Bash as
+that same user anyway. Grants limit what the MCP tool surface and mods can do; they do not defend one
+process of the user against another. A method must therefore act only on the connection's own `tab`
+(`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants alike.
 
 | Method | agent | mod needs | ui |
 |---|---|---|---|
@@ -201,7 +238,7 @@ first 8 MB and says so in the panel. Result and other errors as `view.image`. St
 Params: `text` (string, required, at most 4 MB), `title`, `language` (string, optional syntax hint).
 Result `{"panel": PanelInfo}`. Errors: `bad_params`, `no_tab`. Stage 2.
 
-### browser.* (stage 3)
+### browser.* (stage 3 for the panel, stage 4 for the agent driving it)
 
 All act on the tab's web panel and take up to 60 s. They answer `unavailable` when no web panel is open
 (except `browser.open`, which opens it) or no WebView2 runtime is installed. While one runs the panel
@@ -224,12 +261,12 @@ until the next `browser.look` or navigation, and a stale one answers `not_found`
 `https` URLs open (and `about:blank`); `file:`, `javascript:` and custom schemes answer `bad_params`.
 The web panel never uses the user's own browser profile (S4).
 
-### convo.state (stage 4, reserved)
+### convo.state (stage 6, reserved)
 
 Params: none. Result: `{"session"?: string, "tasks": [...], "changes": [...]}`. Until the reader
 exists it answers `unavailable`.
 
-### tools.respond (stage 5, reserved)
+### tools.respond (stage 8, reserved)
 
 A mod answers a tool call the agent made through `flare-mcp`. UI-routed in v1; named now so the grant
 table is complete.
@@ -299,7 +336,9 @@ connection), says `hello` with `tab` from `FLARE_TAB_ID`, then calls:
 | `show_file` | `path` | `view.file` |
 | `close_panel` | none | `panel.close` |
 
-(`show_diagram`, `show_html`, `open_page`, `browser_*` follow with their stages.) Results are MCP
+(`show_diagram`, `show_html`, `open_page` follow in stage 5, `browser_*` in stages 3 and 4.) A tool
+call waits for the method's own timeout plus 5 s (`call_wait`), not a fixed 20 s, so a 60 s
+`browser.wait` is not given up on early; 20 s bounds only connecting and `hello`. Results are MCP
 content: text, and image content (`{"type":"image","data","mimeType"}`) reserved for `browser_look`.
 Outside Flare (no `FLARE_TAB_ID`, no pipe, no server) every tool answers `isError: true` with "Flare is
 not running this session ...". A channel error `forbidden` or `not_found` becomes `isError` text

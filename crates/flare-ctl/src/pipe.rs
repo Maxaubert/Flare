@@ -26,6 +26,7 @@ use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
 };
+use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
@@ -264,16 +265,19 @@ impl Server {
         &self.name
     }
 
-    /// Stops accepting, tells every worker to leave and waits briefly for them.
-    pub fn stop(mut self) {
-        self.shutdown();
+    /// Stops accepting, tells every worker to leave (cancelling writes that block on a client that
+    /// never reads) and waits briefly for them and for in-flight calls. Returns how many dispatcher
+    /// calls are still running, so the app can wait on them inside its own quit cap.
+    pub fn stop(mut self) -> usize {
+        self.shutdown()
     }
 
-    fn shutdown(&mut self) {
+    fn shutdown(&mut self) -> usize {
         let Some(accept) = self.accept.take() else {
-            return;
+            return self.shared.in_flight.load(Ordering::SeqCst);
         };
         self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.hub.abort_all();
         // A connect unblocks the accept thread's ConnectNamedPipe.
         let started = Instant::now();
         while !accept.is_finished() && started.elapsed() < STOP_WAIT {
@@ -288,15 +292,25 @@ impl Server {
         } else {
             log::warn!("flare-ctl: the accept thread did not stop; leaving it behind");
         }
+        // A cancel only hits I/O that is blocked right now, so it repeats until the workers are out.
         while self.active.load(Ordering::SeqCst) > 0 && started.elapsed() < STOP_WAIT {
+            self.shared.hub.abort_all();
             std::thread::sleep(Duration::from_millis(10)); // sync-ok: quit, bounded by STOP_WAIT
         }
+        while self.shared.in_flight.load(Ordering::SeqCst) > 0 && started.elapsed() < STOP_WAIT {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: quit, bounded by STOP_WAIT
+        }
+        let left = self.shared.in_flight.load(Ordering::SeqCst);
+        if left > 0 {
+            log::warn!("flare-ctl: {left} call(s) still running at stop");
+        }
+        left
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.shutdown();
+        let _ = self.shutdown();
     }
 }
 
@@ -360,12 +374,20 @@ fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) {
         return; // dropping the handle closes it; the client still reads what was written
     }
     let (shared, active2) = (shared.clone(), active.clone());
+    let raw = end.0.as_raw_handle() as usize;
     let spawned = std::thread::Builder::new()
         .name("flare-ctl-client".into())
         .spawn(move || {
             let handle = ConnHandle::new(NEXT_CONN.fetch_add(1, Ordering::SeqCst));
             shared.hub.add(handle.clone());
+            handle.set_abort(Some(Box::new(move || {
+                // SAFETY: the hook is cleared (waiting for a running call) before `end` closes the
+                // handle, so `raw` is a live pipe handle whenever this runs. No OVERLAPPED: cancel all
+                // of the pipe's I/O issued by any thread, which fails a blocked write at once.
+                unsafe { CancelIoEx(raw as _, std::ptr::null()) };
+            })));
             serve_connection(&end, &shared, &handle);
+            handle.set_abort(None);
             shared.hub.remove(handle.id);
             active2.fetch_sub(1, Ordering::SeqCst);
         });

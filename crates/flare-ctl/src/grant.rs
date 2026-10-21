@@ -80,7 +80,7 @@ impl Grant {
     pub fn permission_names(&self) -> Vec<&'static str> {
         match self {
             Grant::Agent { eval } => {
-                let mut v = vec!["panel", "view", "browser"];
+                let mut v = vec!["panel", "view", "browser", "convo"];
                 if *eval {
                     v.push("eval");
                 }
@@ -278,7 +278,43 @@ mod tests {
         assert_eq!(Permission::parse("root"), None);
         assert_eq!(
             Grant::agent().permission_names(),
-            ["panel", "view", "browser"]
+            ["panel", "view", "browser", "convo"]
         );
+    }
+
+    /// What a grant says it holds must match what it can call (the `hello` answer shows both).
+    #[test]
+    fn permission_names_agree_with_what_each_grant_can_call() {
+        let all = [P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools];
+        let grants = [
+            Grant::agent(),
+            Grant::Agent { eval: true },
+            mod_with(&[]),
+            mod_with(&[P::View, P::Convo]),
+            mod_with(&all),
+            Grant::Ui,
+        ];
+        for g in grants {
+            let names = g.permission_names();
+            for m in Method::ALL {
+                let need = match m.namespace() {
+                    Namespace::Hello | Namespace::Tabs => continue,
+                    Namespace::Panel => "panel",
+                    Namespace::View => "view",
+                    Namespace::Browser if m == Method::BrowserEval => "eval",
+                    Namespace::Browser => "browser",
+                    Namespace::Convo => "convo",
+                    Namespace::Tools => "tools",
+                    Namespace::Ui => "ui",
+                };
+                assert_eq!(
+                    g.may_call(m),
+                    names.contains(&need),
+                    "{} {} needs {need}",
+                    g.kind(),
+                    m.name()
+                );
+            }
+        }
     }
 }

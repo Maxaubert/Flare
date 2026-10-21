@@ -51,6 +51,11 @@ const CHUNK: usize = 64 * 1024;
 /// Splits a byte stream into lines, keeping what it has read past the last newline for next time.
 pub struct LineReader {
     buf: Vec<u8>,
+    /// Bytes at the front of `buf` already searched for a newline (none found), so a long line that
+    /// arrives in pieces is scanned once, not once per piece.
+    scanned: usize,
+    /// Reused read scratch, so an idle poll does not zero-fill a fresh chunk.
+    scratch: Box<[u8]>,
     cap: usize,
 }
 
@@ -59,8 +64,16 @@ impl LineReader {
     pub fn new(cap: usize) -> Self {
         Self {
             buf: Vec::new(),
+            scanned: 0,
+            scratch: vec![0u8; CHUNK].into_boxed_slice(),
             cap,
         }
+    }
+
+    /// Whether part of a line has been read but not its end. The server holds queued events back
+    /// while this is true, so a big request is never interleaved with a big write of its own.
+    pub fn has_partial(&self) -> bool {
+        !self.buf.is_empty()
     }
 
     /// The next non-empty line (newline and a trailing `\r` stripped).
@@ -73,8 +86,9 @@ impl LineReader {
         self.read_line_with(wire, deadline, stop, &mut || Ok(()))
     }
 
-    /// `read_line`, calling `idle` before every nap. The server uses it to flush queued events to
-    /// the client from the one thread that touches the wire.
+    /// `read_line`, calling `idle` before every nap that falls between whole messages (never while
+    /// part of a line is buffered). The server uses it to flush queued events to the client from
+    /// the one thread that touches the wire.
     pub fn read_line_with(
         &mut self,
         wire: &impl Wire,
@@ -84,8 +98,10 @@ impl LineReader {
     ) -> Result<Vec<u8>, ReadError> {
         let mut nap = Duration::from_millis(1);
         loop {
-            while let Some(pos) = self.buf.iter().position(|b| *b == b'\n') {
+            while let Some(off) = self.buf[self.scanned..].iter().position(|b| *b == b'\n') {
+                let pos = self.scanned + off;
                 let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
+                self.scanned = 0;
                 line.pop();
                 if line.last() == Some(&b'\r') {
                     line.pop();
@@ -97,6 +113,7 @@ impl LineReader {
                     return Ok(line);
                 }
             }
+            self.scanned = self.buf.len();
             if self.buf.len() > self.cap {
                 return Err(ReadError::TooLong);
             }
@@ -106,26 +123,20 @@ impl LineReader {
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Err(ReadError::Timeout);
             }
-            let start = self.buf.len();
-            self.buf.resize(start + CHUNK, 0);
-            let polled = wire.poll_read(&mut self.buf[start..]);
-            match polled {
-                Err(e) => {
-                    self.buf.truncate(start);
-                    return Err(ReadError::Io(e));
-                }
-                Ok(None) => {
-                    self.buf.truncate(start);
-                    return Err(ReadError::Closed);
-                }
+            match wire.poll_read(&mut self.scratch) {
+                Err(e) => return Err(ReadError::Io(e)),
+                Ok(None) => return Err(ReadError::Closed),
                 Ok(Some(0)) => {
-                    self.buf.truncate(start);
-                    idle().map_err(ReadError::Io)?;
+                    // Not while half a line is in: a big request being written must never meet a
+                    // big event write from this side (both would block on full pipe buffers).
+                    if !self.has_partial() {
+                        idle().map_err(ReadError::Io)?;
+                    }
                     std::thread::sleep(nap); // sync-ok: a channel worker thread, never the UI thread
                     nap = (nap * 2).min(POLL_MAX);
                 }
                 Ok(Some(got)) => {
-                    self.buf.truncate(start + got);
+                    self.buf.extend_from_slice(&self.scratch[..got]);
                     nap = Duration::from_millis(1);
                 }
             }
@@ -315,6 +326,83 @@ mod tests {
             Err(ReadError::Timeout)
         ));
         assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Hands out a fixed line in 4 KB pieces.
+    struct Trickle {
+        left: std::cell::Cell<usize>,
+        sent_nl: std::cell::Cell<bool>,
+    }
+
+    impl Wire for Trickle {
+        fn poll_read(&self, buf: &mut [u8]) -> io::Result<Option<usize>> {
+            let left = self.left.get();
+            if left > 0 {
+                let n = left.min(4096).min(buf.len());
+                buf[..n].fill(b'x');
+                self.left.set(left - n);
+                return Ok(Some(n));
+            }
+            if !self.sent_nl.replace(true) {
+                buf[0] = b'\n';
+                return Ok(Some(1));
+            }
+            Ok(None)
+        }
+        fn write_all(&self, _: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_huge_line_in_small_pieces_is_not_rescanned() {
+        let len = 16 * 1024 * 1024;
+        let w = Trickle {
+            left: std::cell::Cell::new(len),
+            sent_nl: std::cell::Cell::new(false),
+        };
+        let mut r = LineReader::new(len);
+        let t = Instant::now();
+        let line = r.read_line(&w, None, &stop()).unwrap();
+        assert_eq!(line.len(), len);
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn idle_runs_between_messages_but_not_inside_one() {
+        let (a, b) = pair();
+        let mut r = LineReader::new(1024);
+        let calls = std::cell::Cell::new(0);
+        let soon = || Some(Instant::now() + Duration::from_millis(40));
+        let _ = r.read_line_with(&a, soon(), &stop(), &mut || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        assert!(calls.get() > 0);
+        calls.set(0);
+        b.write_all(b"half a line").unwrap();
+        let _ = r.read_line_with(&a, soon(), &stop(), &mut || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn has_partial_tells_a_half_read_line_from_an_empty_buffer() {
+        let (a, b) = pair();
+        let mut r = LineReader::new(1024);
+        assert!(!r.has_partial());
+        b.write_all(b"half").unwrap();
+        let _ = r.read_line(
+            &a,
+            Some(Instant::now() + Duration::from_millis(20)),
+            &stop(),
+        );
+        assert!(r.has_partial());
+        b.write_all(b"\n").unwrap();
+        r.read_line(&a, soon(), &stop()).unwrap();
+        assert!(!r.has_partial());
     }
 
     #[test]
