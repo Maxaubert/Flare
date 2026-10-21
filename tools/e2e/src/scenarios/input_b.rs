@@ -769,7 +769,7 @@ fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), 
     let notes_s = notes.to_string_lossy().into_owned();
     type_line(
         app,
-        "cls; $w = $Host.UI.RawUI.WindowSize.Width; $s = ('word ' * 40).Substring(0, $w - 21) + ' ' + (Resolve-Path scratchpad\\flare-pack\\Releases\\Flare-notes.txt).Path; Write-Host $s.Substring(0, $w); Write-Host $s.Substring($w)",
+        "cls; $w = $Host.UI.RawUI.WindowSize.Width; $s = ('word ' * 100).Substring(0, $w - 21) + ' ' + (Resolve-Path scratchpad\\flare-pack\\Releases\\Flare-notes.txt).Path; Write-Host $s.Substring(0, $w); Write-Host $s.Substring($w)",
     )?;
     let mut seen = String::new();
     let one_link = ctx.until(

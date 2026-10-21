@@ -242,7 +242,12 @@ fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &mut LinkCtx) -
             continue;
         };
         let mut j = i + 1;
-        while j < links.len() && links[j].as_ref() == Some(link) {
+        // A run stops where a hand break starts a row: two labels there, as the stream spans
+        // Prism Terminal paints from are, and `mark_chars` reads one row.
+        while j < links.len()
+            && links[j].as_ref() == Some(link)
+            && !(j % cols == 0 && ll.index.get(j).is_some_and(|c| ll.joins.contains(c)))
+        {
             j += 1;
         }
         let uri = &link.1;
@@ -641,6 +646,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_osc8_label_cut_by_hand_is_a_mark_per_row() {
+        let mut h = H::new();
+        h.runs.push((0, 3, 12, "1", "https://x.io/a"));
+        h.runs.push((1, 0, 9, "1", "https://x.io/a"));
+        let b = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", false)]);
+        let m = h.scan(&b, 12, 0, 1);
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert!(m.iter().all(|k| k.pieces.len() == 1), "{m:?}");
+    }
     #[test]
     fn a_hyperlink_that_repeats_a_web_link_is_one_mark() {
         let mut h = H::new();

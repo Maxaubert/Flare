@@ -294,9 +294,10 @@ are added as milestones land.
   and `a_path_menu_open_and_show_go_through_the_allowlist`. A path a program breaks at the window's
   edge by hand (Claude Code writes each row on its own, so the next row is not marked wrapped) is
   read across the break and is ONE link on both rows, for the paint, the click and the menu; a web
-  link never is (owner 2026-10-21, PT #250, core 0.44.2; `cells::by_hand`). Held by
-  `a_path_broken_by_hand_at_the_edge_is_one_link`, `a_web_link_is_never_carried_across_a_row_broken_by_hand`
-  and e2e `pathLinks` (`path_cut_at_the_edge`).
+  link never is, and an OSC 8 label cut that way stays one mark per row (owner 2026-10-21, PT #250,
+  core 0.44.2; `cells::by_hand`). Held by
+  `a_path_broken_by_hand_at_the_edge_is_one_link`, `a_web_link_is_never_carried_across_a_row_broken_by_hand`,
+  `an_osc8_label_cut_by_hand_is_a_mark_per_row` and e2e `pathLinks` (`path_cut_at_the_edge`).
 - **Terminal menu.** Right click opens the menu for what was clicked: path rows, link rows, Copy with a
   selection, Paste, Find in scrollback, and Command help last while it is on (M7). No Close tab. It is
   bound to the tab it opened on. Held by `the_menu_fits_what_was_clicked_and_copies_exactly` and the
