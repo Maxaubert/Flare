@@ -245,6 +245,14 @@ over a painted window. It is not in the window. Two faults of the copier, both f
   After: the pill's left edge is 711.0 at 100 percent on both apps.
 - The theme preview's text sat 1.3 to 1.8 css px under PT's baselines; line 2's baseline is now at 473.0 on both at
   100 percent (472.3 at 300 percent).
+- 225 percent re-check (audit V13-preview, 2026-10-21): real, about 2 device px. In 05-settings-appearance the Pitch card's
+  line 2 to 4 ink bottoms were 75/111/146 px under the card's ground against PT's 77/113/148 (the pitch was the same, 36 and 35;
+  the offset was constant, not growing). The 3 px of padding under each run was too much at 225 percent only; it is 2 px now.
+  After: software 77/112/147, GPU 76/112/147 (within 1 px of PT, the rest is the GPU glyph rasteriser's rounding); 100 percent
+  software matches PT exactly (33/49/65), GPU is 1 px low on lines 2 and 3; 150 percent is within 1 px. The unit test holds
+  225 percent to 0.2 css px (it passed at 0.56 under the old 0.6 band). The general cells at all three scales were re-taken and
+  their sheets and compare pictures regenerated; 
+umbers.md has no baseline figure and did not change.
 - FLARE_VISUAL_CELLS=300-gpu runs the 300 percent cell (opt-in; `all` keeps the three PT also has).
 - See-through 40 (audit re-check): Flare GPU's ground read (14,14,14, alpha 153) against PT's (23,23,23, alpha 153)
   because Slint's snapshot is premultiplied and the PNG says straight. The window itself was right (the grid is

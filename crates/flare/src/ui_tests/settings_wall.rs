@@ -352,11 +352,13 @@ fn the_previews_text_sits_on_pts_baselines() {
     // percent, 34.67 at 150 and 35.67 at 225 (Chromium puts a baseline on a device pixel; 300 percent was not measured, its 35.5 is the middle). Flare's sat
     // 1.3 to 1.8 css px lower (audit V13, 2026-10-21): the same Cascadia Mono, a different centring
     // inside the 15.75 px line.
-    for (scale, want) in [
-        (1.0_f32, 35.0_f32),
-        (1.5, 34.67),
-        (2.25, 35.67),
-        (3.0, 35.5),
+    for (scale, want, tol) in [
+        (1.0_f32, 35.0_f32, 0.2_f32),
+        (1.5, 34.67, 0.2),
+        // 225 percent sat 0.56 css px high under the old 0.6 tolerance (audit V13-preview, 2026-10-21)
+        (2.25, 35.67, 0.2),
+        // 300 percent was not measured: its 35.5 is the middle, so the band stays wide
+        (3.0, 35.5, 0.6),
     ] {
         let h = harness(scale);
         h.comp.set_solo(card("s", "Solo", false, false, 0.0, 0.0));
@@ -383,7 +385,7 @@ fn the_previews_text_sits_on_pts_baselines() {
         let last = last.expect("line 2 has ink");
         let baseline = (last + 1) as f32 / scale - h.comp.get_solo_y();
         assert!(
-            close(baseline, want, 0.6),
+            close(baseline, want, tol),
             "line 2's baseline is {baseline} css px under the card's top at {scale}, PT's is {want}"
         );
     }
