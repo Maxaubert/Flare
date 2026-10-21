@@ -46,6 +46,11 @@ switches, see-through 40), `dictation` (Flare only: the pill listening, with liv
   frames (06-settings-dictation): the buttons' ink right edge is 2207 for both at 225 percent (was 2207 / 2212), 1471
   / 1471 at 150 (1471 / 1473), 980 / 981 at 100 (one pixel of glyph rounding); the settings card's right edge is
   2150 for both at 225 (was 2150 / 2155). The sidebar PT cells were re-taken later the same day (see the recorder note below); their numbers are in css px.
+  Dictation page master row (2026-10-21, general 225-gpu re-taken): both frames now read "Speech to text on this PC,
+  never sent." in grey. It was not an environment difference (neither world has a speech model): PT warns only when the
+  switch is ON and no model is installed (`noModelYet = d.enabled && d.noModel`), Flare warned whenever no model was
+  installed, so with the switch off it showed the amber "Needs a speech model before it works." that PT does not.
+  Fixed in `crates/flare-settings/src/page/dictation.rs`; with the switch on and no model both still warn.
   Dictation page pickers (V12, 2026-10-21, general 225-gpu re-taken): the brightest pixel in the Microphone and Spoken
   language picker boxes is 116 for both, the dimmed labels 116 for both, the Test button 73 for both (Flare was 72 / 72
   against PT's 115 / 115 before: the picker dimmed twice, once with the row and once on its own).
