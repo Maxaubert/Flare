@@ -56,6 +56,8 @@ fn card(id: &str, name: &str, on: bool, edit: bool, x: f32, y: f32) -> WallCard 
         red: colour(RED),
         x,
         y,
+        // 0: the card's own 196 (no wall laid it out)
+        w: 0.0,
     }
 }
 

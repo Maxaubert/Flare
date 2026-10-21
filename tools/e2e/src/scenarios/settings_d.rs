@@ -583,6 +583,41 @@ pub fn theme_cards(ctx: &mut Ctx) -> Result<(), String> {
         tops.len() >= 2,
         format!("the wall has two rows to pick across ({})", tops.len()),
     );
+    // THE COMPACT WALL (owner 2026-10-21, PT PR #251): columns = floor((wall + 12) / (172 + 12)), the
+    // cards stretch, and the strip right of the last card of a row is 0 to 2 css px.
+    let wall_rect = rect_of(&wall(&mut app)["rect"]);
+    let row_cards: Vec<R> = wall_cards(&mut app).into_iter().map(|c| c.1).collect();
+    if let (Some(w), true) = (wall_rect, row_cards.len() > 1) {
+        let first_y = row_cards[0].1;
+        let one_row: Vec<&R> = row_cards
+            .iter()
+            .filter(|r| (r.1 - first_y).abs() < 0.5)
+            .collect();
+        let cols = one_row.len();
+        let want = (((w.2 + 12.0) / 184.0).floor() as usize).max(1);
+        let right = one_row.iter().map(|r| r.0 + r.2).fold(f64::MIN, f64::max);
+        let strip = w.0 + w.2 - right;
+        ctx.ok(
+            cols == want && want >= 1,
+            format!(
+                "the wall has floor((width + 12) / 184) columns ({cols} of {want} at {:.1} px)",
+                w.2
+            ),
+        );
+        ctx.ok(
+            (-0.01..=2.0).contains(&strip),
+            format!("the strip right of the last card of a row is 0 to 2 css px ({strip:.2})"),
+        );
+        ctx.ok(
+            w.2 < 724.0 || cols >= 4,
+            format!(
+                "a wall wide enough for four at 172 shows four ({cols} at {:.1} px)",
+                w.2
+            ),
+        );
+    } else {
+        ctx.ok(false, "the wall's box and a row of cards are measured");
+    }
     let in_row = |top: f64| {
         first
             .cards

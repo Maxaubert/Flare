@@ -56,7 +56,7 @@ export component ThemeCard inherits Rectangle {
     out property <length> pencil-w: pencil.width;
     out property <length> pencil-h: pencil.height;
 
-    width: SettingsShape.card-w;
+    width: root.card.w > 0px ? root.card.w : SettingsShape.card-w;
     height: 124px + 2 * root.hair;
 
     accessible-role: button;

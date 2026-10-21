@@ -42,6 +42,8 @@ export struct WallCard {
     id: string, name: string, on: bool, edit: bool, edit-name: string,
     bg: color, fg: color, cursor: color, green: color, yellow: color, blue: color, cyan: color, red: color,
     x: length, y: length,
+    // the laid-out width (whole device pixel edges); 0 draws the card's own 196
+    w: length,
 }
 export struct HelpRowData {
     key: string, name: string, command: string, header: string,

@@ -102,7 +102,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
 }
 
 /// The wall's layout in a frame `frame_w` wide, the way `SettingsCtl::wall_for` computes it.
-pub(super) fn wall_at(frame_w: f64, expanded: bool, custom: bool) -> (WallLayout, f64) {
+pub(super) fn wall_at(frame_w: f64, expanded: bool, custom: bool, scale: f64) -> (WallLayout, f64) {
     let m = layout::Metrics::reference();
     let narrow = layout::is_narrow(frame_w);
     let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
@@ -110,8 +110,8 @@ pub(super) fn wall_at(frame_w: f64, expanded: bool, custom: bool) -> (WallLayout
     let content = (m.column_max.min(pane) - 2.0 * pad_x).max(0.0);
     let width = (content - 2.0 * m.border - WALL_SIDE_PADS).max(0.0);
     let total = wall::total_themes(custom);
-    let base = wall::layout(width, total, expanded);
-    let full = wall::layout(width, total, true);
+    let base = wall::layout(width, total, expanded, scale);
+    let full = wall::layout(width, total, true, scale);
     (base, full.full_h)
 }
 
@@ -131,7 +131,7 @@ impl Scene {
         let look = LookStore::new(prefs.clone());
         let model = build(page, &prefs, &look);
         let (fw, fh, sc) = (f64::from(frame_w), f64::from(frame_h), f64::from(scale));
-        let (wall, wall_full_h) = wall_at(fw, false, look.custom().is_some());
+        let (wall, wall_full_h) = wall_at(fw, false, look.custom().is_some(), sc);
         let lay = layout_page(&model, fw, sc, &wall, wall_full_h, BADGE_H);
         let rail = rail_layout(fw, sc, PAGES.len());
         let h = Harness::new(scale, frame_w, frame_h, || {
@@ -187,8 +187,8 @@ impl Scene {
         b.set_wall_full_h(wall_full_h as f32);
         let cards: Vec<WallCard> = wall::wall_cards(&look)
             .iter()
-            .zip(&wall.positions)
-            .map(|(c, (x, y))| WallCard {
+            .zip(wall.positions.iter().zip(&wall.widths))
+            .map(|(c, ((x, y), w))| WallCard {
                 id: c.id.as_str().into(),
                 name: c.name.as_str().into(),
                 on: c.on,
@@ -204,6 +204,7 @@ impl Scene {
                 red: colour_of(&c.red),
                 x: *x as f32,
                 y: *y as f32,
+                w: *w as f32,
             })
             .collect();
         b.set_wall_cards(ModelRc::new(VecModel::from(cards)));

@@ -472,7 +472,7 @@ the icon. Every size is held to a layout test (`layout::rows_match_prism_termina
 - **D10** The Select menu is an overlay at the window root, placed by `layout::place_menu`.
 - **D11** The colour popover is an overlay inside the window, placed by `picker::place_popover`; a left-open picker comes back when Settings is shown again.
 - **D12** The eyedropper freezes the screen with a Win32 snapshot; the seam answers under `--e2e`.
-- **D13** The theme wall's cards are laid out by Rust; the expand animation is 240 ms with Prism Terminal's curve, none under reduced motion.
+- **D13** The theme wall's cards are laid out by Rust (columns = floor((width + 12) / 184), cards stretched to fill the row and never under 172 px, edges on whole device pixels, PT PR #251); the expand animation is 240 ms with Prism Terminal's curve, none under reduced motion.
 - **D14** Import runs once, before the first paint, with a 1.5 s ceiling. A failed copy is retried on the next three launches, then recorded as given up. A profile that is absent or empty is done. There is no "import again" button.
 - **D15** `mic` is not imported (Chromium device ids mean nothing to Flare). Retired keys and the registry-backed verb state are never imported.
 - **D16** The F8 and F9 developer chords of M4 are removed; the look flags stay for headless scenes.

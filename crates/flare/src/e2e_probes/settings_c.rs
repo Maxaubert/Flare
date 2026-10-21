@@ -32,7 +32,6 @@ const SLIDER_H: f64 = 32.0;
 const WALL_PAD_X: f64 = 16.0;
 const WALL_TOP: f64 = 14.0;
 /// A wall card, and its pencil's inset (`ThemeCard`).
-const CARD_W: f64 = 196.0;
 const CARD_H: f64 = 124.0;
 const PENCIL: f64 = 20.0;
 const TOGGLE_W: f64 = 40.0;
@@ -187,11 +186,11 @@ pub fn wall_box(row: Rect) -> Rect {
 }
 
 /// A wall card at wall-relative `(cx, cy)`, and its pencil.
-pub fn wall_card(wall: Rect, cx: f64, cy: f64, k: f64) -> (Rect, Rect) {
+pub fn wall_card(wall: Rect, cx: f64, cy: f64, cw: f64, k: f64) -> (Rect, Rect) {
     let card = Rect {
         x: wall.x + cx,
         y: wall.y + cy,
-        w: CARD_W,
+        w: cw,
         h: CARD_H + 2.0 * hair(k),
     };
     let pencil = Rect {
@@ -538,7 +537,7 @@ fn picker_wall(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .get_wall_cards()
         .iter()
         .map(|c| {
-            let (card, pencil) = wall_card(wall, c.x as f64, c.y as f64, f.k);
+            let (card, pencil) = wall_card(wall, c.x as f64, c.y as f64, c.w as f64, f.k);
             // A card is hit only while the clip shows it, and while it is inside the pane.
             let shown = c.y as f64 + CARD_H <= shown_h + 8.0;
             json!({
@@ -750,7 +749,7 @@ mod tests {
             let f = frame(1600.0, k);
             let row = f.row(f.panel(100.0, 900.0), 0.0, 400.0);
             let wall = wall_box(row);
-            let (card, pencil) = wall_card(wall, 208.0, 138.0, k);
+            let (card, pencil) = wall_card(wall, 208.0, 138.0, 196.0, k);
             assert!(pencil.x >= card.x && pencil.right() <= card.right(), "{k}");
             assert!(
                 pencil.y >= card.y && pencil.bottom() <= card.bottom(),
