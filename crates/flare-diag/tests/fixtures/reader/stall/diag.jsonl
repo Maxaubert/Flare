@@ -1,0 +1,22 @@
+{"t":"2026-10-17T09:00:00.000Z","up":60000,"src":"main","k":"session","app":"PrismTerminal","version":"0.55.6","pid":4343,"verbose":true}
+{"t":"2026-10-17T09:00:00.500Z","up":60500,"src":"main","k":"crumb","a":"tab-open","id":"t1","cwd":"C:\\proj","resume":false}
+{"t":"2026-10-17T09:00:01.500Z","up":61500,"src":"main","k":"crumb","a":"tab-open","id":"t2","cwd":"C:\\other","resume":false}
+{"t":"2026-10-17T09:00:01.600Z","up":61600,"src":"main","k":"crumb","a":"tab-switch","id":"t2"}
+{"t":"2026-10-17T09:00:02.000Z","up":62000,"src":"main","k":"crumb","a":"shell-spawn","id":"t1","pid":5001,"shell":"pwsh","cwd":"C:\\proj","resume":false,"ms":220,"warm":false}
+{"t":"2026-10-17T09:01:00.000Z","up":120000,"src":"main","k":"crumb","a":"update-open","version":"0.56.0","preview":true}
+{"t":"2026-10-17T09:01:10.000Z","up":130000,"src":"main","k":"crumb","a":"tab-close","id":"t2","kind":"closed"}
+{"t":"2026-10-17T09:01:20.000Z","up":140000,"src":"page","k":"mark","note":"the scroll froze"}
+{"t":"2026-10-17T09:01:21.000Z","up":141000,"src":"page","k":"page-stall","ms":910,"blocking":880,"scripts":[{"fn":"render","src":"app.js","invoker":"timer","ms":880}]}
+{"t":"2026-10-17T09:01:22.000Z","up":142000,"src":"main","k":"main-lag","ms":640,"inflight":[{"ch":"file:text","ms":600,"done":false},{"ch":"tabs:save","ms":30,"done":true}]}
+{"t":"2026-10-17T09:01:22.500Z","up":142500,"src":"main","k":"ipc-slow","ch":"file:list","ms":250,"sync":true,"args":["C:\\Users",{"x":1}]}
+{"t":"2026-10-17T09:01:23.000Z","up":143000,"src":"main","k":"ipc-error","ch":"shell:write","err":"pipe closed"}
+{"t":"2026-10-17T09:01:24.000Z","up":144000,"src":"page","k":"page-stack","ms":1500,"unresponsive":true,"stack":"at a (x.js:1)\n at b (y.js:2)"}
+{"t":"2026-10-17T09:01:25.000Z","up":145000,"src":"page","k":"page-error","msg":"Cannot read x","loc":"app.js:10","repeats":3,"stack":"Error: Cannot read x\n    at f (app.js:10)"}
+{"t":"2026-10-17T09:01:26.000Z","up":146000,"src":"main","k":"main-rejection","msg":"boom"}
+{"t":"2026-10-17T09:01:27.000Z","up":147000,"src":"main","k":"fs-slow","ms":1200,"what":"stat"}
+{"t":"2026-10-17T09:01:28.000Z","up":148000,"src":"main","k":"work-slow","ms":800,"what":"thumb"}
+{"t":"2026-10-17T09:01:29.000Z","up":149000,"src":"main","k":"logger-dropped","n":12}
+{"t":"2026-10-17T09:01:30.000Z","up":150000,"src":"main","k":"crumb","a":"memory","appMb":230,"gpuMb":44,"childrenMb":61,"workingSetMb":330}
+{"t":"2026-10-17T09:01:35.000Z","up":155000,"src":"main","k":"gone","reason":"crashed"}
+{"t":"2026-10-17T09:01:36.000Z","up":156000,"src":"main","k":"crumb","a":"shell-exit","id":"t1","pid":5001,"exitCode":0}
+{"t":"2026-10-17T09:01:40.000Z","up":160000,"src":"main","k":"quit","ms":3}

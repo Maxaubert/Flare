@@ -17,6 +17,8 @@ rfd.workspace = true
 raw-window-handle.workspace = true
 windows.workspace = true
 
+uuid.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

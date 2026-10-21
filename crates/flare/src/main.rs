@@ -8,6 +8,7 @@ mod chords;
 mod chrome_apply;
 mod clip_flow;
 mod config;
+mod diag_ctl;
 mod drop_flow;
 mod e2e;
 mod font_ctl;
@@ -27,6 +28,7 @@ mod picker_ctl;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
+mod ship_ctl;
 mod sidebar_ui;
 mod startup;
 mod tab_host;
@@ -34,6 +36,7 @@ mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
+mod update_ctl;
 mod window;
 
 #[cfg(test)]
@@ -46,6 +49,8 @@ mod ui_tests;
 slint::include_modules!();
 
 fn main() {
+    // Velopack's hooks may end the process here, before anything else starts.
+    ship_ctl::bootstrap();
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -190,6 +195,15 @@ fn main() {
         outcome.effective,
         outcome.fallback_reason
     );
+    // The diagnostics log starts here: the profile is known, this run is the first instance, and no
+    // window or tab exists yet. The session line says which renderer won.
+    if let Some(inst) = &instance {
+        let backend = match outcome.effective {
+            config::RendererChoice::Gpu => "gpu",
+            config::RendererChoice::Software => "software",
+        };
+        startup::start_diagnostics(&inst.profile, backend, args.e2e);
+    }
     if let Err(e) = flare_term::conpty::verify_bundled() {
         show_fatal("Flare cannot start", &e.to_string(), true);
         std::process::exit(3);

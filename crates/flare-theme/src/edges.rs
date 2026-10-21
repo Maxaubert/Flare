@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn numbers_match_the_prism_terminal_tables() {
+    fn numbers_match_the_reference_tables() {
         let h = edge_alpha(WindowEdges::Hairline);
         assert_eq!((h.divider.dark, h.divider.light), (7.0, 15.0));
         assert_eq!((h.line.dark, h.line.light), (9.0, 17.0));

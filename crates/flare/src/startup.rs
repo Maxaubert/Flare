@@ -56,6 +56,22 @@ impl Profile {
     pub fn settings_file(&self) -> PathBuf {
         self.dir.join("settings.json")
     }
+
+    /// The diagnostics log folder (M9 Task 31): `<profile>\logs`, whichever way the profile was chosen.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.dir.join("logs")
+    }
+}
+
+/// Starts the diagnostics (M9 Task 31): the log, the session line, the panic hooks, the watchdog and the
+/// memory watch. Called once the profile folder is known and this run is the first instance, before the
+/// window and the tabs. `backend` is the renderer's name.
+pub fn start_diagnostics(profile: &Profile, backend: &str, e2e: bool) {
+    // sync-ok: startup, before any window; a registry read and a memory query, microseconds
+    let facts = crate::diag_ctl::SystemFacts::gather();
+    let ctl = crate::diag_ctl::start(&profile.dir, facts, backend, e2e);
+    crate::diag_ctl::install(ctl);
+    crate::diag_ctl::install_kill_hook();
 }
 
 /// How this process starts: as the first instance, or its folders were handed to a running one.
@@ -448,6 +464,14 @@ pub fn production_plugin_dir(e2e: bool) -> Option<String> {
     }
     // sync-ok: startup, two small stats
     flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Puts the exe's own icon on the window (M9 Task 32): once its handle exists, and again on every
+/// scale-factor change (the icon sizes follow the monitor's DPI).
+pub fn apply_window_icon(hwnd: Option<isize>) {
+    if let Some(hwnd) = hwnd {
+        crate::ship_ctl::set_window_icon(hwnd);
+    }
 }
 
 /// The restore's Claude session lookup: the real transcript store of the home folder.
@@ -1007,6 +1031,22 @@ mod m7_start_tests {
             glass_support(RendererChoice::Gpu, os(22621)),
             GlassSupport::Ok
         );
+    }
+
+    #[test]
+    fn the_log_folder_follows_the_profile() {
+        let appdata = Some("C:\\Users\\x\\AppData\\Roaming");
+        let default = Profile {
+            dir: profile_dir(None, appdata),
+        };
+        assert_eq!(
+            default.logs_dir(),
+            PathBuf::from("C:\\Users\\x\\AppData\\Roaming\\Flare\\logs")
+        );
+        let custom = Profile {
+            dir: profile_dir(Some(Path::new("D:\\data")), appdata),
+        };
+        assert_eq!(custom.logs_dir(), PathBuf::from("D:\\data\\logs"));
     }
 
     #[test]

@@ -1,0 +1,85 @@
+# The update applied for real, against packages on disk (M9 Task 38). Pull requests that touch the
+# update code, the release scripts or the e2e harness build a live-updates binary into its OWN target
+# folder, pack the same exe as 0.0.1 and 0.0.2, install 0.0.1 on this throwaway runner and apply 0.0.2.
+# Nothing here touches the network beyond the toolchain downloads: the feeds are folders and a loopback
+# server. The shipped release build never has live-updates (release.yml); this job is the only place
+# the feature is built in CI.
+name: update-e2e
+
+on:
+  pull_request:
+    paths:
+      - 'crates/flare-update/**'
+      - 'tools/release/**'
+      - 'tools/e2e/**'
+      - '.github/workflows/update-e2e.yml'
+
+concurrency:
+  group: update-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  VPK_VERSION: 1.2.161
+
+jobs:
+  update-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            . -> target-update
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: vpk
+        run: dotnet tool install -g vpk --version $env:VPK_VERSION
+
+      - name: Build with live-updates, into its own target folder
+        run: cargo build --release -p flare --features live-updates --target-dir target-update
+
+      - name: Pack 0.0.1 and 0.0.2 (the same exe; the version comes from the package manifest)
+        shell: pwsh
+        run: |
+          $notes = "$env:RUNNER_TEMP\notes.md"
+          "- Add a thing`n- Fix a thing" | Set-Content -NoNewline -Encoding utf8 -LiteralPath $notes
+          $exe = "target-update/release/flare.exe"
+          foreach ($v in '0.0.1', '0.0.2') {
+            ./tools/release/pack.ps1 -Version $v -Exe $exe -Notes $notes -Out "$env:RUNNER_TEMP\Releases"
+            if ($LASTEXITCODE -ne 0) { throw "pack $v failed" }
+          }
+          ./tools/release/verify-pack.ps1 -Out "$env:RUNNER_TEMP\Releases" -Version 0.0.2
+          if ($LASTEXITCODE -ne 0) { throw "verify-pack failed" }
+          "FLARE_PACKED_DIR=$env:RUNNER_TEMP\Releases" >> $env:GITHUB_ENV
+
+      - name: Pack a big 0.0.2 for the cancel case (120 MB of incompressible filler)
+        shell: pwsh
+        run: |
+          # pack.ps1 copies claude-plugin\ whole, so a filler file inside that folder of this throwaway
+          # checkout lands in the package. Fixed seed, so every run packs the same bytes.
+          $filler = "crates\flare-agent\claude-plugin\filler.bin"
+          python -c "import random,sys; open(sys.argv[1],'wb').write(random.Random(38).randbytes(120*1024*1024))" $filler
+          if ($LASTEXITCODE -ne 0) { throw "could not make the filler" }
+          ./tools/release/pack.ps1 -Version 0.0.2 -Exe "target-update/release/flare.exe" -Notes "$env:RUNNER_TEMP\notes.md" -Out "$env:RUNNER_TEMP\ReleasesBig"
+          $code = $LASTEXITCODE
+          Remove-Item -Force $filler
+          if ($code -ne 0) { throw "big pack failed" }
+          "FLARE_PACKED_BIG_DIR=$env:RUNNER_TEMP\ReleasesBig" >> $env:GITHUB_ENV
+
+      - name: The real feed over the real packages
+        run: cargo test -p flare-update --test packed_feed -- --ignored
+
+      - name: Install 0.0.1, apply 0.0.2, no auto-apply, cancel leaves nothing
+        env:
+          FLARE_E2E_INSTALL: '1'
+        run: cargo test -p flare-e2e --test update_apply -- --include-ignored --test-threads=1

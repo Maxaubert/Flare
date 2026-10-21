@@ -7,7 +7,7 @@ import { StartScreen, StartScreenPreview } from "start.slint";
 import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
-import { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
+import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "types.slint";
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { MarkMotion } from "tabmark.slint";
@@ -17,6 +17,7 @@ import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { HelpPanel } from "settings/help_panel.slint";
+import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 export { Theme, Px, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview } from "tabmark.slint";
@@ -43,6 +44,7 @@ export { WallPreview, ThemeEditor, AskThree } from "settings/wall.slint";
 export { AboutPreview } from "settings/about.slint";
 export { HelpPanelPreview, HelpPanel, HelpBridge } from "settings/help_panel.slint";
 export { SettingsPreview, SettingsView, SettingsBridge } from "settings/view.slint";
+export { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 // One of the title bar's buttons (PT TitleBar.tsx: h-7 w-8, rounded, an
 // SVG icon on a 24-unit viewbox drawn with a round-capped stroke).
@@ -63,9 +65,11 @@ component TitleButton inherits Rectangle {
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
+    // Slint fits the path into its box LESS the stroke, so the box is the icon grown by one stroke
+    // (still centred): the 24 units then cover `icon-size` as the svg does (M9 Task 41).
     Path {
-        width: root.icon-size;
-        height: root.icon-size;
+        width: root.icon-size + self.stroke-width;
+        height: root.icon-size + self.stroke-width;
         viewbox-width: 24;
         viewbox-height: 24;
         commands: root.commands;
@@ -230,6 +234,42 @@ export component AppWindow inherits Window {
     in property <length> overflow-right;
     in property <length> overflow-bottom;
     in-out property <string> overflow-query <=> ov.query;
+    // The update chip, its notice and the update window (M9 Task 30). UpdateCtl pushes all of it.
+    in property <bool> update-chip-shown;
+    in property <string> update-chip-label;
+    in property <string> update-chip-aria;
+    in property <string> update-chip-tip;
+    in property <bool> update-chip-busy;
+    in property <string> update-notice;
+    in property <bool> update-open;
+    in property <string> update-title;
+    in property <string> update-sub;
+    in property <[NoteSection]> update-sections;
+    in property <string> update-empty-note;
+    in property <string> update-more;
+    in property <string> update-status;
+    in property <int> update-pct;
+    in property <string> update-pct-text;
+    in property <bool> update-running;
+    in property <bool> update-active;
+    in property <string> update-cancel-label: "Cancel";
+    in property <bool> update-cancel-enabled: true;
+    in property <string> update-cancel-tip;
+    in property <bool> update-install-enabled: true;
+    in property <length> update-notes-max-h: 184.8px;
+    callback update-chip-clicked();
+    callback update-install();
+    callback update-cancel();
+    callback update-abort();
+    callback update-notice-dismissed();
+    // Where the chip is now (the notice hangs under it), whichever bar holds it.
+    out property <length> update-chip-x: root.side-mode ? side-chip.absolute-position.x : top-chip.absolute-position.x;
+    out property <length> update-chip-y: root.side-mode ? side-chip.absolute-position.y : top-chip.absolute-position.y;
+    out property <length> update-chip-w: root.side-mode ? side-chip.width : top-chip.width;
+    out property <length> update-chip-h: top-chip.height;
+    out property <length> update-notice-w: unote.width;
+    out property <length> update-notice-h: unote.height;
+    out property <bool> update-window-focus: uwin.chrome-has-focus;
     in property <bool> dialog-open;
     in property <string> dialog-title;
     in property <styled-text> dialog-body;
@@ -245,7 +285,7 @@ export component AppWindow inherits Window {
     out property <length> tip-h: tipbox.tip-h;
     // ---- focus ----
     // The overflow list focuses its field when it opens, so "open" stands for "its field has the keys".
-    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open;
+    out property <bool> chrome-has-focus: sb.find-has-focus || root.overflow-open || root.dialog-open || root.update-open;
     public function focus-terminal() { keys.focus(); }
     public function focus-find() { find.focus-input(); }
     public function focus-sidebar-find() { sb.focus-find(); }
@@ -399,6 +439,26 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // The update chip (M9 Task 30): 10 px left of the first BUTTON (PT `toNextControl`),
+                    // in a slot that takes its width from the strip while an offer exists. The buttons'
+                    // block opens with its own 8 px padding, so the slot adds only the other 2 (M9 Task
+                    // 41: with the full 10 the chip sat 8 px further left than Prism Terminal's).
+                    Rectangle {
+                        width: (root.update-chip-shown && !root.side-mode) ? top-chip.chip-width + Px.snap(10px - 8px) : 0px;
+                        top-chip := UpdateChip {
+                            x: 0px;
+                            y: Px.snap((Theme.bar-height - self.height) / 2);
+                            width: self.chip-width;
+                            height: 24px;
+                            shown: root.update-chip-shown && !root.side-mode;
+                            label: root.update-chip-label;
+                            aria: root.update-chip-aria;
+                            tip: root.update-chip-tip;
+                            busy: root.update-chip-busy;
+                            clicked => { root.update-chip-clicked(); }
+                            tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                        }
+                    }
                     top-buttons := TitleButtons {
                         help-visible: root.help-visible;
                         help-tip: "Command help (" + root.help-key + ")";
@@ -435,7 +495,20 @@ export component AppWindow inherits Window {
                     y: (parent.height - self.height) / 2;
                     size: 17px;
                 }
-                TitleButtons {
+                side-chip := UpdateChip {
+                    x: side-buttons.x - Px.snap(10px - 8px) - self.width;
+                    y: Px.snap((Theme.bar-height - self.height) / 2);
+                    width: self.chip-width;
+                    height: 24px;
+                    shown: root.update-chip-shown && root.side-mode;
+                    label: root.update-chip-label;
+                    aria: root.update-chip-aria;
+                    tip: root.update-chip-tip;
+                    busy: root.update-chip-busy;
+                    clicked => { root.update-chip-clicked(); }
+                    tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                }
+                side-buttons := TitleButtons {
                     x: parent.width - self.width;
                     help-visible: root.help-visible;
                     help-tip: "Command help (" + root.help-key + ")";
@@ -759,6 +832,40 @@ export component AppWindow inherits Window {
             outside-pressed => { SettingsBridge.picker-outside(); }
             focus-left => { SettingsBridge.picker-focus-left(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+        // The update notice under the chip, then the update window: above the page and the Settings
+        // overlays, below the close question (M9 Task 30).
+        unote := UpdateNotice {
+            text: root.update-notice;
+            x: root.update-chip-x + root.update-chip-w - self.width;
+            y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
+            dismissed => { root.update-notice-dismissed(); }
+        }
+        uwin := UpdateWindow {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: root.update-open;
+            title: root.update-title;
+            current-text: root.update-sub;
+            sections: root.update-sections;
+            empty-note: root.update-empty-note;
+            more-text: root.update-more;
+            status: root.update-status;
+            pct-text: root.update-pct-text;
+            pct: root.update-pct;
+            running: root.update-running;
+            active: root.update-active;
+            cancel-label: root.update-cancel-label;
+            cancel-enabled: root.update-cancel-enabled;
+            cancel-tip: root.update-cancel-tip;
+            install-enabled: root.update-install-enabled;
+            notes-max-h: root.update-notes-max-h;
+            install => { root.update-install(); }
+            cancel => { root.update-cancel(); }
+            abort => { root.update-abort(); }
+            tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
         Dialog {
             x: 0px;

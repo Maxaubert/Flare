@@ -88,6 +88,8 @@ pub struct Args {
     pub live_tabs: Option<u32>,
     /// `--instance-probe`: answers whether this process was the first instance.
     pub instance_probe: bool,
+    /// `--preview-update`: show the update chip and window with the sample offer (exact spelling only).
+    pub preview_update: bool,
     /// `--settings-page <id>`: the page the settings scene shows (default appearance).
     pub settings_page: Option<String>,
     /// `--settings-find <text>`: typed into the settings scene's Find field.
@@ -122,6 +124,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         scene: None,
         live_tabs: None,
         instance_probe: false,
+        preview_update: false,
         settings_page: None,
         settings_find: None,
         settings_open: SettingsOpen::None,
@@ -159,6 +162,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             "--e2e" => out.e2e = true,
             "--no-import" => out.no_import = true,
             "--instance-probe" => out.instance_probe = true,
+            "--preview-update" => out.preview_update = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
             "--live-tabs" => {
                 let n: u32 = value(args, &mut i, flag)?
@@ -535,5 +539,19 @@ mod tests {
             "the flags need the settings scene"
         );
         assert!(parse_args(&a(&["--scene", "tip", "--settings-open", "ask"]), None).is_err());
+    }
+
+    #[test]
+    fn preview_flag_is_parsed() {
+        let args = parse_args(&["--preview-update".to_string()], None).unwrap();
+        assert!(args.preview_update);
+        assert!(!parse_args(&[], None).unwrap().preview_update);
+    }
+
+    #[test]
+    fn a_near_miss_is_an_error() {
+        for bad in ["--preview-updates", "--preview_update", "--Preview-Update"] {
+            assert!(parse_args(&[bad.to_string()], None).is_err(), "{bad}");
+        }
     }
 }

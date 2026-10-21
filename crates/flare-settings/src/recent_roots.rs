@@ -226,8 +226,8 @@ mod tests {
 
     #[test]
     fn labels_use_the_name_alone() {
-        let labels = recent_labels(&v(&["C:\\work\\prism", "C:\\pics"]));
-        assert_eq!(labels[0].label, "prism");
+        let labels = recent_labels(&v(&["C:\\work\\atlas", "C:\\pics"]));
+        assert_eq!(labels[0].label, "atlas");
         assert_eq!(labels[1].label, "pics");
     }
 

@@ -276,8 +276,8 @@ fn the_entrance_plays_once() {
 
 #[test]
 fn the_mark_is_the_accent_at_84_px() {
-    // The mark's ink is 800-unit box geometry: x 134.5..896 and y 212..818 of the box, so at
-    // 84 px it is about 80 wide and 63.6 tall (the box is 84; the ink does not fill it).
+    // The mark is the owner's flame (M9 Task 26): its ink is 728 x 817 units of the 818-unit square
+    // box, so at 84 px it is about 75 wide and 84 tall (the box is 84; the width does not fill it).
     let h = screen(1.0, vec![]);
     let f = h.render();
     let (x0, y0, x1, y1) = f
@@ -285,8 +285,8 @@ fn the_mark_is_the_accent_at_84_px() {
         .expect("the mark is drawn");
     let w = (x1 - x0 + 1) as f32;
     let ht = (y1 - y0 + 1) as f32;
-    assert!((w - 80.0).abs() <= 4.0, "mark ink {w} wide");
-    assert!((ht - 63.6).abs() <= 4.0, "mark ink {ht} tall");
+    assert!((w - 74.8).abs() <= 4.0, "mark ink {w} wide");
+    assert!((ht - 83.9).abs() <= 4.0, "mark ink {ht} tall");
 }
 
 #[test]

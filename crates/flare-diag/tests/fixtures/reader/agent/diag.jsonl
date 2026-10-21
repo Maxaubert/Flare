@@ -1,0 +1,16 @@
+{"t":"2026-10-17T09:00:00.000Z","up":60000,"src":"main","k":"session","app":"PrismTerminal","version":"0.55.6","pid":4444,"verbose":false}
+{"t":"2026-10-17T09:00:00.100Z","up":60100,"src":"main","k":"crumb","a":"tab-open","id":"t3","cwd":"C:\\proj","resume":true}
+{"t":"2026-10-17T09:00:00.120Z","up":60120,"src":"main","k":"crumb","a":"shell-spawn","id":"t3","pid":5100,"shell":"pwsh","cwd":"C:\\proj","resume":true,"ms":200,"warm":false}
+{"t":"2026-10-17T09:00:00.200Z","up":60200,"src":"main","k":"agent-hook","id":"t3","state":"working","kind":"start"}
+{"t":"2026-10-17T09:00:00.300Z","up":60300,"src":"main","k":"agent-title","id":"t3","state":"idle","agent":"claude"}
+{"t":"2026-10-17T09:00:00.400Z","up":60400,"src":"main","k":"agent-mark","id":"t3","from":"idle","to":"working","held":["idle"],"why":"hook start"}
+{"t":"2026-10-17T09:00:00.900Z","up":60900,"src":"main","k":"agent-hook","id":"t3","state":"working","kind":"tool","repeats":2}
+{"t":"2026-10-17T09:00:02.000Z","up":62000,"src":"main","k":"agent-mark","id":"t3","from":"working","to":"done","held":["working","done"],"why":"idle timeout","restored":1500}
+{"t":"2026-10-17T09:00:02.100Z","up":62100,"src":"main","k":"agent-hook","id":"t3","state":"idle","kind":"stop","dropped":4}
+{"t":"2026-10-17T09:00:05.000Z","up":65000,"src":"main","k":"agent-restore","id":"t3","cwd":"C:\\proj"}
+{"t":"2026-10-17T09:00:05.100Z","up":65100,"src":"main","k":"crumb","a":"tab-open","id":"t4","cwd":"C:\\other","resume":false}
+{"t":"2026-10-17T09:00:05.200Z","up":65200,"src":"main","k":"agent-hook","id":"t4","state":"working"}
+{"t":"2026-10-17T09:00:05.300Z","up":65300,"src":"main","k":"agent-title","id":"t4","state":"working","agent":"codex"}
+{"t":"2026-10-17T09:00:06.000Z","up":66000,"src":"main","k":"crumb","a":"tab-close","id":"t4","kind":"closed"}
+{"t":"2026-10-17T09:00:06.100Z","up":66100,"src":"page","k":"mark","note":"agent stuck"}
+{"t":"2026-10-17T09:00:07.000Z","up":67000,"src":"main","k":"quit","ms":3}

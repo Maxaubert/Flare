@@ -27,3 +27,6 @@ mod skeleton;
 mod start;
 mod strip;
 mod term;
+mod update_chip;
+mod update_flows;
+mod update_window;

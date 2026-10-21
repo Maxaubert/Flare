@@ -1,0 +1,6 @@
+{"t":"2026-10-17T09:00:00.000Z","up":60000,"src":"main","k":"session","app":"PrismTerminal","version":"0.55.6","pid":4242,"verbose":false}
+{"t":"2026-10-17T09:00:01.000Z","up":61000,"src":"main","k":"crumb","a":"tab-open","id":"t1","cwd":"C:\\Users\\Admin","resume":false}
+{"t":"2026-10-17T09:00:01.200Z","up":61200,"src":"main","k":"crumb","a":"shell-spawn","id":"t1","pid":5001,"shell":"pwsh","cwd":"C:\\Users\\Admin","resume":false,"ms":180,"warm":false}
+{"t":"2026-10-17T09:05:00.000Z","up":360000,"src":"main","k":"crumb","a":"memory","appMb":210,"gpuMb":40,"childrenMb":60,"workingSetMb":310}
+{"t":"2026-10-17T10:00:00.000Z","up":3660000,"src":"main","k":"crumb","a":"update-check","offered":false,"fetchMs":412,"offerMs":3,"rssMb":201}
+{"t":"2026-10-17T11:00:00.000Z","up":7260000,"src":"main","k":"quit","ms":3}

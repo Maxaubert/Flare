@@ -384,3 +384,39 @@ Appendix A of the M6 plan, copied verbatim: Prism Terminal test ledger (every fi
 | `core/main/terminal.test.ts` (`ptyEnv` plugin 9, `withResume` 5) | 14 | M2 (`flare-shells`) | M2 | M6 adds the guard in front of `with_resume` (T23) and wires `is_ours` |
 
 Tests with no Prism Terminal source (new in M6): the indicator's own unit tests (Tasks 17 and 18, about 50), the mark component and flow pixel tests (Tasks 24, 25, 29, 31), the real-process tests (Task 32), the hub tests (Task 28), the restore and badge wiring tests (Task 30).
+
+## M9 ledger (Updates, installer, Windows integration, diagnostics)
+
+Appendix A of the M9 plan, the test ledger for the M9 areas. The Flare counts are the plan's per-file figures;
+the real totals from `cargo nextest list -p <crate>` on 2026-10-18 are **flare-update 188, flare-win 226, flare-diag 142**
+(the per-file figures were planned, not recounted, and the `Notes` column keeps each drop and re-expression with its reason).
+
+| PT file | PT tests | Flare file (task) | Notes |
+|---|---|---|---|
+| `src/main/update.test.ts` | 15 | `version.rs`/`oracle_version.rs` (4), `velopack_feed.rs` (11), `feed.rs` (9), `engine.rs` (10) | 3 `newerVersion`; 3 URL/installer guards become `package_is_ours`; 2 asset-scan tests (58, 62) DROPPED (Velopack's feed is the index); 7 release-parse and call tests |
+| `src/main/updateGate.test.ts` | 4 | `gate.rs` (8) | |
+| `src/main/updateHandoff.test.ts` | 6 | `handoff.rs` (8) | 2 ported (profile argument); 4 DROPPED (stable copy x2, PowerShell quote doubling, curly apostrophe): no PowerShell handoff, no stable copy |
+| `core/main/updatePreview.test.ts` | 12 | `preview.rs` (4) | |
+| `core/renderer/lib/updateFlow.test.ts` | 28 | `flow.rs` (7) | + oracle sequences |
+| `core/shared/releaseGroups.test.ts` | 12 | `groups.rs` (6) | |
+| `core/shared/releaseNotes.test.ts` | 31 | `notes.rs` (5) | + 450 oracle bodies |
+| `src/main/shellVerb.test.ts` | 24 | `verb_keys.rs` (14), `verb.rs` (15) | 3 re-expressed for the registry API (forces every write, carries the reg verb, asks about the folder verb) |
+| `src/main/shellVerbParity.test.ts` | 2 | `ship_ctl.rs` (32) | the hook, not an NSIS script |
+| `src/main/shellVerbRelabel.test.ts` | 7 | `verb.rs` (15) | |
+| `src/main/verbSwitch.test.ts` | 9 | `verb_switch.rs` (16) | `refuses anything that is not a boolean` is unrepresentable in Rust: documented |
+| `core/main/diagLog.test.ts` | 16 | `writer.rs` (18) | `keeps one flush waiting` re-expressed as the queue cap |
+| `core/main/diagSummary.test.ts` | 12 | `summary.rs` (17) | + oracle vectors |
+| `core/shared/diagGate.test.ts` | 3 | `gate.rs` (17) | + oracle sequences |
+| `core/main/diagnostics.test.ts` | 2 | `session.rs` (19) | |
+| `core/main/crashHooks.test.ts` | 6 | `crash.rs` (19), `stall.rs` (20) | rejection test DROPPED (no Rust equivalent); `unresponsive` in `stall.rs` |
+| `core/main/stallWatch.test.ts` | 11 | `stall.rs` (20) | `page-stack` becomes `ui-stack` |
+| `core/main/ipcTiming.test.ts` | 13 | `stall.rs` `WorkTimer` (20) | 2 `removeListener`/`wraps once` tests DROPPED (Electron `ipcMain`), 2 merged |
+| `core/main/memWatch.test.ts` | 5 | `mem.rs` (21) | thresholds re-based to the app |
+| `core/main/diagIpc.test.ts` | 13 | `summary.rs` `sink_allows`, `clamp_time`, `mark_fields` (17) | 6 ported; 7 DROPPED (Electron IPC, Document-Policy header, page batch cap); `openFolder limited to the log dir` is M7's (`OpenDiagFolder` opens `diag.dir()` only) and stays there; `mark` with a note re-expressed as `a_mark_carries_no_note` (D12) |
+| `core/renderer/lib/diag.test.ts` | 11 | `stall.rs` `CrumbRing`, `crash.rs`, `gate.rs` | 7 ported; 4 DROPPED (shortSrc, LoAF script entries, page batching) |
+| `core/renderer/lib/agentDiag.test.ts` | 21 | M6 `agent_diag.rs` | already ported |
+| `UpdateChip.tsx`, `UpdateDialog.tsx` (no unit tests) | - | `ui_tests/update_chip.rs`, `update_window.rs`, `update_flows.rs` (24, 25, 33, 34) | covered by the e2e scenarios below |
+| e2e `updateWindow`, `updateGuard`, `updateNotes`, `updateQuiet` | 4 scenarios | Tasks 34 (in-process), 39 (out of process) | |
+| e2e `diagLog` | 1 scenario | Task 31 (in-process); the out-of-process run is M10 | |
+| `tools/diag.mjs`, `tools/make-icon.py` (no tests) | - | Task 23 goldens, Task 26 | |
+| Installer side by side | 1 line of parity | Task 37 | |

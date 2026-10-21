@@ -19,7 +19,7 @@ pub const PRESETS: [Preset; 39] = [
     },
     Preset {
         id: "prism",
-        name: "Prism",
+        name: "Indigo",
         bg: "#0b0b0f",
         fg: "#e7e7ee",
         cursor: "#7c7cf0",

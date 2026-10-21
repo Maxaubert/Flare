@@ -457,6 +457,10 @@ fn finish(sh: &Arc<Shared>, s: &Arc<Session>, code: Option<u32>) {
     s.join_threads(|t| t.writer.take());
 }
 
+/// Told once per stuck kill with the shell's pid and how long the kill had waited, in ms. The host sets
+/// it (the diagnostics log's `kill-stuck` crumb); this crate does not know the log.
+pub static KILL_STUCK_HOOK: std::sync::OnceLock<fn(u32, u64)> = std::sync::OnceLock::new();
+
 /// Ends a session for good (the death is ours: no flush, no sink calls). Counted in `dying` until
 /// the process is gone and its threads are joined.
 fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
@@ -482,12 +486,18 @@ fn kill_pty(sh: &Arc<Shared>, s: Arc<Session>) {
                 p.kill();
                 let t0 = Instant::now();
                 let mut poller = ExitPoller::new();
+                let mut told = false;
                 loop {
                     match poller.step(t0.elapsed(), p.exit_code().is_some()) {
                         PollStep::Done => break,
                         PollStep::Wait(d) => std::thread::sleep(d), // sync-ok: the killer thread
                         PollStep::Stuck(d) => {
                             log::warn!("kill-stuck: pid {} has not exited", s2.pid);
+                            if !std::mem::replace(&mut told, true)
+                                && let Some(hook) = KILL_STUCK_HOOK.get()
+                            {
+                                hook(s2.pid, t0.elapsed().as_millis() as u64);
+                            }
                             std::thread::sleep(d); // sync-ok: the killer thread
                         }
                     }

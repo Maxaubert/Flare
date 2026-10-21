@@ -5,5 +5,15 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+windows-sys.workspace = true
+flare-win = { path = "../../crates/flare-win" }
+flare-agent = { path = "../../crates/flare-agent" }
+flare-update = { path = "../../crates/flare-update" }
+
 [lints]
 workspace = true

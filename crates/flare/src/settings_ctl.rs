@@ -417,7 +417,9 @@ macro_rules! on {
             if let Some(rc) = weak.upgrade()
                 && let Ok(mut $c) = rc.try_borrow_mut()
             {
-                $body;
+                crate::diag_ctl::timed(stringify!($reg), || {
+                    $body;
+                });
             }
         });
     }};
@@ -662,6 +664,10 @@ impl SettingsCtl {
     /// Settings came to the front: rebuild, recall a kept picker, focus nothing.
     pub fn show(&mut self) {
         self.visible = true;
+        crate::diag_ctl::crumb(
+            "settings-page",
+            &[("page", crate::diag_ctl::txt(self.page))],
+        );
         self.diag_verbose.set(None);
         self.ask_verb();
         self.rebuild();
@@ -841,7 +847,7 @@ impl SettingsCtl {
 
     /// The wall's layout at this frame: the cards as they sit now, the clip as it is now.
     fn wall_for(&self, frame_w: f64) -> (WallLayout, f64) {
-        let m = layout::Metrics::prism_terminal();
+        let m = layout::Metrics::reference();
         let narrow = layout::is_narrow(frame_w);
         let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
         let pane = frame_w - rail_width(frame_w);
@@ -1149,6 +1155,10 @@ impl SettingsCtl {
 
     fn page_chosen(&mut self, id: &str) {
         self.page = page_static(id);
+        crate::diag_ctl::crumb(
+            "settings-page",
+            &[("page", crate::diag_ctl::txt(self.page))],
+        );
         self.watch = None;
         if let Some(app) = self.weak.upgrade() {
             app.global::<SettingsBridge>().set_scroll_y(0.0);

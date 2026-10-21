@@ -98,7 +98,7 @@ impl Picker {
         }
     }
 
-    /// The host's own alpha steps (Prism Primary's glass levels).
+    /// The host's own alpha steps (Prism Terminal's glass levels).
     pub fn set_snap(&mut self, snap: Option<fn(f64) -> f64>) {
         self.snap = snap;
     }
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn place_popover_matches_prism_terminals_rules() {
+    fn place_popover_matches_the_reference_rules() {
         let win = (800.0, 600.0);
         let size = (POPOVER_W, 240.0);
         let at_right = Rect {

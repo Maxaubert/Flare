@@ -10,6 +10,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 ## Features
 
 - Terminal tabs with a shell per tab, restore, single instance and 39 themes.
+- Updates (one click, per user, off until the repository is public), the Explorer verb "Open in Flare", and a local diagnostics log (`cargo diag`; nothing leaves the PC).
 - Selection on the grid: character, word, line and block (Alt drag), drag scroll and Shift to extend.
 - Copy (Ctrl+C with a selection, the Copied badge, OSC 52), paste (Ctrl+V, Ctrl+Shift+V, right-click Paste) and file drop (a quoted path, never Enter).
 - Find in scrollback (Ctrl+F, Ctrl+Shift+F) with highlights, the count and wrap-around.
@@ -32,6 +33,8 @@ cargo nextest run --workspace
 
 Also run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
 `cargo deny check` before a PR.
+
+To read the diagnostics log after a run: `cargo diag` (the newest problems, with the crumbs before each), or `cargo diag -- --since 10m --all`. The flags and what each stall kind means are in [docs/diagnostics.md](docs/diagnostics.md).
 
 ## Dependencies
 
@@ -67,6 +70,9 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `sha2`: checks the bundled ConPTY files against their pinned hashes at start.
 - `tempfile` (dev only): temporary folders for the tests; never shipped.
 - Bundled ConPTY 1.25.260303002 (`conpty.dll`, `OpenConsole.exe`): MIT licence, (c) Microsoft Corporation, https://github.com/microsoft/terminal. Loaded by absolute path before the first pty opens.
+- `velopack`: the installer, the one-click per-user update and the first-run and uninstall hooks (`flare-update`, `crates/flare`). Its update source is switched off until the repository is public: the `live-updates` cargo feature is off by default (M9 D1, O28).
+- `ureq`: pulled in by `velopack` for its HTTP source; it is compiled in only with `live-updates`, so an ordinary build makes no request.
+- `embed-resource` (build only): compiles the icon and the version resource into `Flare.exe` from `crates/flare/build.rs` (M9, Task 26).
 
 M4 adds no new crate: the theme, fonts and material need only what M1 to M3 already ship. The
 Win32 features `Win32_Graphics_Dwm`, `Win32_UI_Controls`, `Wdk_System_SystemServices` and
@@ -93,7 +99,12 @@ Development tools in `tools/`, never shipped in the installer:
 - `tools/pt-shot/pt-settings.mjs`: Playwright (from Prism's `node_modules`) takes Prism Terminal's
   Settings screenshots for the comparison (M7).
 - `tools/settings-matrix`: PowerShell scripts that take Flare's Settings screenshots beside Prism
+- `tools/make-icon.py`: builds the icon files (`build/icon.ico`, `build/icon-source.png`, `docs/assets/flare-icon.png`) from the owner's artwork, `assets/icon/flare-color.svg`. Regenerate with `python tools/make-icon.py` (needs ImageMagick, whose SVG reader is librsvg); `python -I tools/test_make_icon.py` checks it.
   Terminal's at every display scaling and compose them (M7).
+
+## Release
+
+A push to `main` with a new `version` in the root `Cargo.toml` publishes a GitHub release `v<version>` (the workflow is `.github/workflows/release.yml`). The steps, the gates, the installer and the signing state are in [docs/shipping.md](docs/shipping.md).
 
 ## Licence
 

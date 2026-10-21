@@ -482,3 +482,89 @@ the icon. Every size is held to a layout test (`layout::rows_match_prism_termina
     in debug only (10 times looser there). Release figures are open.
   - The metrics comparison of Task 45 (the largest difference), the idle CPU of the Settings tab over 10 s, and
     the ported-case count against Appendix A (about 200) are not recounted in this run.
+
+## Updates, installer, Windows integration, diagnostics (M9), 2026-10-18
+
+Updates are a one-click, per-user install through Velopack, switched off until the repository is public. The
+Explorer folder menu says "Open in Flare", the log is a local file with no typed text in it, and the icon is
+the owner's own artwork. The owner decided these on 2026-10-17 (O15, O17, O4, the update line in the brief);
+the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O43 in `docs/parity.md`.
+
+- **Updates are off until public (the owner, 2026-10-17).** The check, the feed and the install exist and
+  are tested every day, but the GitHub source is compiled in only with the `live-updates` cargo feature,
+  which is off by default. A build without it has no check, no request and no chip. The flip is one reviewed
+  line, a `PRIVACY.md` edit and a release (D1). Test: `a_default_build_has_no_live_mode`, `velopack_feed`'s
+  `no_network_source_exists_without_the_feature`, and `release_files::live_updates_need_a_public_repository`.
+- **One click, per user.** No licence page and no folder choice; a Start menu shortcut and no desktop shortcut;
+  unsigned; win-x64 only; the uninstaller keeps the user data (D8, D14, O15). The install runs only the
+  package Velopack offered, named by an opaque token the UI cannot forge (D2). Test: `installs_only_the_current_offer`,
+  `refuses_any_other_token_a_none_and_everything_with_no_offer`.
+- **Install, cancel and restart.** The close question is answered before the download, so a running agent is
+  asked about once, at the start (`installs_the_offer_it_made_handing_the_installer_the_close_pre_answer`). A
+  cancel wins even after the last byte and leaves nothing (`cancel_wins_even_after_the_last_byte`). A failed
+  download is said once in the window, and the chip offers again (`updateGuard_a_failed_download_shows_could_not_be_downloaded_once_and_the_chip_offers_again`).
+  The app quits 400 ms after a successful hand-off; Velopack applies and restarts (`the_app_quits_400_ms_after_a_successful_handoff`).
+- **Preview.** `--preview-update` previews the window in the running app or in an unpackaged build, with the next
+  minor version and the sample notes, and touches no network, file or process (`preview_version_is_the_next_minor`,
+  `updateQuiet` in `tools/e2e`).
+- **Update window and chip.** The chip is `Update <version>` in `--p-sel-bg` with on-accent text at 4.5:1 or
+  more, leftmost in the right group, and its width never changes between phases. The window is a 460 px box with
+  the release notes capped at 20 entries and 160 characters each, grouped as New features, Improvements, Bug
+  fixes and Under the hood, and it is plain text only: a hostile body becomes no element and runs no handler
+  (`updateNotes_a_hostile_body_becomes_no_element_and_runs_no_handler`). Tests: `ui_tests::update_chip`,
+  `ui_tests::update_window` (eight scales), `ui_tests::update_flows`.
+- **The Explorer verb.** Two HKCU keys, `Directory\shell\Flare` and `Directory\Background\shell\Flare`, label
+  "Open in Flare", pointing at `<install root>\current\Flare.exe` (D4). Written through the Win32 registry API,
+  never `reg.exe` (D3). Written only when packaged and not under `--e2e` (D5). Windows 11 shows the classic verb
+  under "Show more options", not on the first menu. Test: `verb_keys`, `verb`, `verb_switch`, `registry` in flare-win.
+- **Two apps side by side.** Different app id, verb key, single-instance mutex and pipe, profile, plugin name,
+  hook signal and tab-id variable. `side_by_side::flare_runs_beside_the_neighbour_and_shares_nothing` runs on this
+  PC (Layer A); the real install of both runs on a clean CI runner (Layer B).
+- **The log.** `%APPDATA%\Flare\logs\diag.jsonl`, one JSON object per line, rotated at 2 MB into four old files,
+  written by a thread that never blocks the UI (a queue of 2000 lines, dropped and counted when full). It holds
+  no typed text, clipboard, audio or conversation, and `mark` carries no note (D12). Read it with `cargo diag`
+  (D13). The stall kinds and the crumbs are in [docs/diagnostics.md](diagnostics.md). Tests: `writer`, `stall_flow`,
+  `summary`, `gate`, `reader`, `control` in flare-diag; the privacy scan in `crates/flare/tests/privacy.rs`.
+- **The icon.** The owner's artwork (`assets/icon/flare-color.svg`) is the app icon, the taskbar and the Explorer
+  icon, rendered as it is with no badge and no outline (O17, 2026-10-17). `tools/make-icon.py` builds the
+  frames; `tools/test_make_icon.py` checks them.
+- **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
+  repository is public. A new network call without a line in `PRIVACY.md` fails the build
+  (`a_new_file_with_a_network_call_fails_the_scan`).
+
+### Decisions the M9 plan records (planner D1 to D16, summarised in `docs/parity.md` as O28 to O43)
+
+The planner decided the mechanics: a compile-time feature for the update switch (D1), an opaque token (D2),
+the registry API (D3), the verb path (D4), the write gate (D5), cooperative cancel (D6), the notes from the feed
+(D7), the vpk flags (D8), "packaged" by the Velopack layout (D9), the hooks (D10), the preview mode (D11), the
+native diagnostics kinds (D12), the `cargo diag` alias (D13), one-click with no licence page (D14), the release
+tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D16, superseded by O17).
+
+### Not in this milestone (open)
+
+- The out-of-process `diagLog` e2e belongs to M10. The dictation rows and the dictation engine files are M8,
+  which this branch does not contain (the owner moved dictation to the end).
+- The installer is not yet run on a clean machine: Layer B and the real install of both apps run in CI.
+- The e2e scenarios updateWindow, updateGuard and updateNotes are in-process here (Task 34), not run out of process.
+
+### Numbers for the M9 PR (measured 2026-10-18 on this PC; release build unless said)
+
+- **Tests.** `cargo nextest run --workspace` on the final tree: 3751 run, 3750 passed, 17 skipped (the hand-run tests). One test failed on the first full pass: `flare::agent_real quit_waits_for_every_agent_shell` (two real shells still dying 10 s after a kill, a timing check on real processes). It passed on two reruns (6 of 6 in its binary), and the file is unchanged on this branch, so it is a load-sensitive test, not a regression from M9. It is open, not retried away.
+  Per crate for the M9 areas: flare-update 188, flare-win 226, flare-diag 142 (`cargo nextest list -p <crate>`).
+- **Gates.** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo deny check`
+  pass. The names test found one unlisted e2e switch (`FLARE_E2E_INSTALL`, a test-harness flag); it is now listed.
+- **Cold start.** Ten launches of the release exe with a fresh profile, to the first window handle: median 416 ms
+  (range 402 to 975 ms; the first run was the slowest). This is the window, not a usable shell prompt; the
+  prompt time is not measured here. M8 has no recorded number on this branch to compare with, so the cost of
+  `VelopackApp::run` and the log start is not isolated.
+- **Idle memory.** Private bytes after 10 s: 321 MB; after 70 s: 320.8 MB. M8 comparison not available (above).
+- **Idle CPU of the watchdog.** The whole process over 60 s with no input: 0.234 percent of one core.
+- **`DiagLog::write` on the calling thread.** 100,000 calls in a tight loop: mean 110 ns, median 100 ns, p99
+  1.3 us, max 42 us. The queue holds 2000 lines, so 98,000 of the 100,000 were dropped (and counted) in that burst;
+  the cost measured is the enqueue, not the disk.
+- **Installer (Task 29, recorded on 2026-10-17).** `Flare-win-Setup.exe` 24,800,965 bytes; the full package
+  17,230,541 bytes; the delta 59,060 bytes (0.34 percent of the full package, a floor because the build was
+  unchanged); the portable zip 17,174,711 bytes. Not re-packed for this PR.
+- **Release build time.** `cargo build --release -p flare` took 1 min 52 s here, rebuilding `slint` from source.
+- **Not measured in this run (honest gaps).** The usable-prompt time and the M8 comparisons (M8 is not on this
+  branch); the sampler and the stall watchdog on a real hang; the installer on a clean machine (CI, Layer B).

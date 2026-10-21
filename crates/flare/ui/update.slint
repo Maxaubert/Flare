@@ -1,0 +1,675 @@
+// The update chip, its notice and the update window (M9). Task 24 fills the chip and the notice;
+// Task 25 fills the window. Every colour comes from Theme (theme.slint); no hex literal lives here
+// except the notice's shadow, which Prism Terminal fixes the same way.
+// Source: PT core/renderer/components/UpdateChip.tsx (Appendix C of the plan).
+import { Theme, Px } from "theme.slint";
+import { NoteSection } from "types.slint";
+import { DialogButton } from "dialog.slint";
+
+// The update chip: a 24 px pill in the title bar, label "Update <version>", an arrow-down-to-tray icon.
+// The parent sets the width (chip-width) and the height (24 px) and places it with geom::chip_rect.
+export component UpdateChip inherits Rectangle {
+    in property <bool> shown;                 // an offer exists
+    in property <string> label;               // "Update 0.56.0"
+    in property <string> aria;                // "Update to 0.56.0"
+    in property <string> tip;                 // the tooltip text (chip_tip)
+    in property <bool> busy;                  // phase != idle (accessible state only; the look never changes)
+    // Width from the measured label: 10 pad + 11 icon + 6 gap + label + 10 pad, snapped to a device pixel.
+    out property <length> chip-width: Px.snap(10px + 11px + 6px + label-measure.preferred-width + 10px);
+    out property <length> icon-x: Px.snap(10px);
+    out property <length> label-x: Px.snap(10px + 11px + 6px);
+    out property <length> icon-y: Px.snap((root.height - 11px) / 2);
+    out property <length> icon-h: 11px;
+    callback clicked();
+    callback tip-request(string, length, length, length, length);
+
+    // Measures the label only; it draws nothing and takes no input.
+    label-measure := Text {
+        opacity: 0;
+        text: root.label;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        font-weight: 600;
+    }
+
+    // The 1 px gap between the chip and its focus ring, in side-flat.
+    if root.shown && focus.has-focus : gap := Rectangle {
+        x: -1px;
+        y: -1px;
+        width: root.width + 2px;
+        height: root.height + 2px;
+        border-radius: 7px;
+        background: Theme.side-flat;
+    }
+
+    if root.shown : face := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        border-radius: 6px;
+        background: touch.has-hover ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg;
+
+        // Slint's Path fits its geometry into its box LESS the stroke width (and shifts it by half the
+        // stroke), so the box is the 11 px icon grown by one stroke: the 24 units then map onto 11 px
+        // exactly as the svg does in Prism Terminal (M9 Task 41: the arrow was drawn 10 percent small).
+        icon := Path {
+            x: root.icon-x - self.stroke-width / 2;
+            y: root.icon-y - self.stroke-width / 2;
+            width: root.icon-h + self.stroke-width;
+            height: root.icon-h + self.stroke-width;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14";
+            fill: transparent;
+            stroke: Theme.on-accent;
+            stroke-width: 2.4 * 11 / 24 * 1px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+
+        label-text := Text {
+            x: root.label-x;
+            y: 0px;
+            width: root.width - root.label-x;
+            height: root.height;
+            vertical-alignment: center;
+            text: root.label;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: Theme.on-accent;
+        }
+
+        // The focus ring: 2 px accent-hi drawn 1 px outside the gap.
+        if focus.has-focus : Rectangle {
+            x: -3px;
+            y: -3px;
+            width: root.width + 6px;
+            height: root.height + 6px;
+            border-radius: 9px;
+            border-width: 2px;
+            border-color: Theme.accent-hi;
+            background: transparent;
+        }
+
+        touch := TouchArea {
+            width: parent.width;
+            height: parent.height;
+            mouse-cursor: pointer;
+            clicked => {
+                focus.focus();
+                root.clicked();
+            }
+            changed has-hover => {
+                if (self.has-hover) {
+                    root.tip-request(root.tip, root.absolute-position.x, root.absolute-position.y + root.height, root.width, root.height);
+                }
+            }
+        }
+    }
+
+    // Zero-sized, so it never takes a pointer; a click moves the keyboard focus here (touch below).
+    focus := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.aria;
+    accessible-description: root.tip;
+}
+
+// The notice under the chip: a flat surface with a hairline, the text in text-soft. A click anywhere
+// dismisses it. Hidden while its text is empty. The parent places it by geom::notice_rect.
+export component UpdateNotice inherits Rectangle {
+    in property <string> text;                // "" hides it
+    callback dismissed();                     // a click anywhere on it
+    out property <length> notice-w: Px.snap(body.preferred-width + 20px + 2 * Px.hair());
+    out property <length> notice-h: Px.snap(body.preferred-height + 12px + 2 * Px.hair());
+
+    visible: root.text != "";
+    width: root.notice-w;
+    height: root.notice-h;
+
+    // The surface is a child: Slint drops a shadow set on a component's root element (M9 Task 41,
+    // the notice was drawn flat in the GPU chrome).
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #00000073;
+    }
+
+    body := Text {
+        x: Px.snap(10px) + Px.hair();
+        y: Px.snap(6px) + Px.hair();
+        text: root.text;
+        wrap: no-wrap;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: Theme.text-soft;
+    }
+
+    TouchArea {
+        clicked => { root.dismissed(); }
+    }
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+}
+
+// The chip, its notice and the title-bar buttons' block in a 1000 x 120 window (the bar is 36 px high).
+// The chip sits 10 px left of a 154 px button block; positions use the same snapping as geom.rs.
+export component UpdateChipPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 120px;
+    background: Theme.ground;
+
+    in-out property <bool> shown: true;
+    in-out property <string> label: "Update 0.56.0";
+    in-out property <string> aria: "Update to 0.56.0";
+    in-out property <string> tip: "See what is new in 0.56.0";
+    in-out property <bool> busy: false;
+    in-out property <string> notice: "";
+    out property <int> clicks: 0;
+    out property <int> tip-requests: 0;
+    out property <string> last-tip: "";
+    out property <int> dismissals: 0;
+
+    out property <length> buttons-left: 1000px - 154px;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    bar := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: 36px;
+        background: Theme.tabs;
+    }
+
+    chip := UpdateChip {
+        width: chip.chip-width;
+        height: 24px;
+        x: Px.snap(root.buttons-left - 10px) - Px.snap(self.width);
+        y: Px.snap((bar.height - self.height) / 2);
+        shown: root.shown;
+        label: root.label;
+        aria: root.aria;
+        tip: root.tip;
+        busy: root.busy;
+        clicked => { root.clicks += 1; }
+        tip-request(text, x, y, w, h) => {
+            root.tip-requests += 1;
+            root.last-tip = text;
+        }
+    }
+
+    nt := UpdateNotice {
+        text: root.notice;
+        x: Px.snap(chip.x + chip.width) - self.width;
+        y: Px.snap(chip.y + chip.height + 8px);
+        dismissed => { root.dismissals += 1; }
+    }
+
+    out property <length> chip-x: chip.x;
+    out property <length> chip-y: chip.y;
+    out property <length> chip-w: chip.width;
+    out property <length> chip-h: chip.height;
+    out property <length> icon-x: chip.icon-x;
+    out property <length> icon-y: chip.icon-y;
+    out property <length> icon-h: chip.icon-h;
+    out property <length> label-x: chip.label-x;
+    out property <length> notice-x: nt.x;
+    out property <length> notice-y: nt.y;
+    out property <length> notice-w: nt.width;
+    out property <length> notice-h: nt.height;
+}
+
+// The update window (Task 25). PT core/renderer/components/UpdateDialog.tsx on Modal.tsx: the question
+// frame of dialog.slint (scrim, box, buttons), the release notes as plain strings, and a progress block
+// that is always in the layout and only fades in, so the box never changes size while an install runs.
+// The notes are Text fed plain strings: nothing here parses, renders or opens what a release body says.
+export component UpdateWindow inherits Rectangle {
+    in property <bool> open;
+    in property <string> title;
+    in property <string> current-text;
+    in property <[NoteSection]> sections;
+    in property <string> empty-note;
+    in property <string> more-text;
+    in property <string> status;
+    in property <string> pct-text;
+    in property <int> pct;
+    in property <bool> running;
+    in property <bool> active;
+    in property <string> cancel-label;
+    in property <bool> cancel-enabled;
+    in property <string> cancel-tip;
+    in property <bool> install-enabled;
+    in property <length> notes-max-h;
+    callback install();
+    callback cancel();
+    callback abort();
+    callback tip-request(string, length, length, length, length);
+
+    // The focused button: 0 Cancel, 1 Install, -1 the box itself (while running).
+    out property <int> focus-idx: 1;
+    out property <bool> chrome-has-focus: fs.has-focus;
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> track-x: track.absolute-position.x;
+    out property <length> track-y: track.absolute-position.y;
+    out property <length> track-w: track.width;
+    out property <length> notes-y: notes.absolute-position.y;
+    out property <length> fill-w: fill.width;
+    out property <length> install-x: install-btn.absolute-position.x;
+    out property <length> install-y: install-btn.absolute-position.y;
+    out property <length> install-w: install-btn.width;
+    out property <length> install-h: install-btn.height;
+    out property <length> cancel-x: cancel-btn.absolute-position.x;
+    out property <length> cancel-y: cancel-btn.absolute-position.y;
+    out property <length> cancel-w: cancel-btn.width;
+    out property <length> cancel-h: cancel-btn.height;
+    out property <length> notes-h: notes.height;
+    out property <length> notes-content-h: content.preferred-height;
+
+    function land() {
+        if root.running {
+            root.focus-idx = -1;
+        } else if root.install-enabled {
+            root.focus-idx = 1;
+        } else if root.cancel-enabled {
+            root.focus-idx = 0;
+        } else {
+            root.focus-idx = -1;
+        }
+        fs.focus();
+    }
+    function press-cancel() {
+        if root.running {
+            root.abort();
+        } else {
+            root.cancel();
+        }
+    }
+    // Moves the keyboard focus one step through the buttons that are enabled.
+    function step(back: bool) {
+        if root.cancel-enabled && root.install-enabled {
+            if root.focus-idx == 0 {
+                root.focus-idx = 1;
+            } else if root.focus-idx == 1 {
+                root.focus-idx = 0;
+            } else {
+                root.focus-idx = back ? 1 : 0;
+            }
+        } else if root.cancel-enabled {
+            root.focus-idx = 0;
+        } else if root.install-enabled {
+            root.focus-idx = 1;
+        }
+    }
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            root.land();
+        }
+    }
+    changed running => {
+        if root.open {
+            root.land();
+        }
+    }
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.scrim;
+    }
+    // A press outside the box cancels, unless an install is running.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && !root.running {
+                root.cancel();
+            }
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if !root.running {
+                    root.cancel();
+                }
+                return accept;
+            }
+            if e.text == Key.Return {
+                if root.focus-idx == 0 && root.cancel-enabled {
+                    root.press-cancel();
+                } else if root.focus-idx == 1 && root.install-enabled {
+                    root.install();
+                }
+                return accept;
+            }
+            if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                root.step(e.text == Key.Backtab || e.modifiers.shift);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    box := Rectangle {
+        width: Px.snap(min(460px, root.width - 48px));
+        height: col.preferred-height;
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 24px;
+        drop-shadow-blur: 70px;
+        drop-shadow-color: #00000099;
+        // Swallows presses inside the box, so they never reach the scrim.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+        col := VerticalLayout {
+            padding: 20px;
+            Text {
+                text: root.title;
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 14.5px;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Rectangle { height: 4px; }
+            Text {
+                text: root.current-text;
+                wrap: word-wrap;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                color: Theme.dim;
+            }
+            Rectangle { height: 16px; }
+            notes := Rectangle {
+                height: min(content.preferred-height, root.notes-max-h);
+                clip: true;
+                flick := Flickable {
+                    width: parent.width;
+                    height: parent.height;
+                    content-height: holder.height;
+                    holder := Rectangle {
+                    width: parent.width;
+                    height: content.preferred-height;
+                    content := VerticalLayout {
+                        width: parent.width;
+                        padding-right: 8px;
+                        spacing: 12px;
+                        if root.sections.length > 0 : VerticalLayout {
+                            spacing: 16px;
+                            for section in root.sections : VerticalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: section.heading;
+                                    wrap: word-wrap;
+                                    font-family: Theme.font-ui;
+                                    font-size: 12.5px;
+                                    font-weight: 600;
+                                    color: Theme.text;
+                                }
+                                // Not a HorizontalLayout: through one, a wrapping Text reports its
+                                // one-line height, the list measured short of what it drew and the
+                                // last entry was clipped beyond the scroller's reach (M9 Task 41).
+                                // Here the Text has its width first and the row takes its height.
+                                for entry in section.entries : Rectangle {
+                                    height: entry-text.preferred-height;
+                                    Rectangle {
+                                        x: 0px;
+                                        y: 6px;
+                                        width: 4px;
+                                        height: 4px;
+                                        border-radius: 2px;
+                                        background: Theme.accent-hi;
+                                    }
+                                    entry-text := Text {
+                                        x: 12px;
+                                        y: 0px;
+                                        width: parent.width - 12px;
+                                        text: entry;
+                                        wrap: word-wrap;
+                                        font-family: Theme.font-ui;
+                                        font-size: 12.5px;
+                                        color: Theme.text-soft;
+                                    }
+                                }
+                            }
+                        }
+                        if root.more-text != "" : Text {
+                            text: root.more-text;
+                            wrap: word-wrap;
+                            font-family: Theme.font-ui;
+                            font-size: 12px;
+                            color: Theme.dim;
+                        }
+                        if root.empty-note != "" : Text {
+                            text: root.empty-note;
+                            wrap: word-wrap;
+                            font-family: Theme.font-ui;
+                            font-size: 12.5px;
+                            color: Theme.dim;
+                        }
+                    }
+                    }
+                }
+            }
+            Rectangle { height: 16px; }
+            // Always in the layout; only the opacity changes.
+            VerticalLayout {
+                spacing: 6px;
+                opacity: root.active ? 1 : 0;
+                animate opacity { duration: 200ms; }
+                Rectangle {
+                    height: max(18px, status-text.preferred-height);
+                    status-text := Text {
+                        x: 0px;
+                        width: parent.width - pct-label.preferred-width - 12px;
+                        vertical-alignment: center;
+                        text: root.status;
+                        overflow: elide;
+                        font-family: Theme.font-ui;
+                        font-size: 12px;
+                        color: Theme.text-soft;
+                    }
+                    pct-label := Text {
+                        x: parent.width - self.width;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        visible: root.running;
+                        text: root.pct-text;
+                        font-family: Theme.font-ui;
+                        font-size: 12px;
+                        color: Theme.dim;
+                    }
+                }
+                track := Rectangle {
+                    height: 6px;
+                    border-radius: 3px;
+                    visible: root.running;
+                    background: Theme.text.with-alpha(0.12);
+                    clip: true;
+                    fill := Rectangle {
+                        x: 0px;
+                        height: parent.height;
+                        border-radius: 3px;
+                        background: Theme.accent-solid;
+                        width: root.running ? (root.pct >= 100 ? parent.width : min(parent.width, Px.snap(parent.width * root.pct / 100))) : 0px;
+                        animate width { duration: root.running ? 300ms : 0ms; easing: ease-out; }
+                    }
+                }
+            }
+            Rectangle { height: 20px; }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                Rectangle {
+                    width: cancel-btn.width;
+                    height: cancel-btn.height;
+                    // Under the button: it only hears the pointer when the button is disabled.
+                    TouchArea {
+                        changed has-hover => {
+                            if (self.has-hover && !root.cancel-enabled && root.cancel-tip != "") {
+                                root.tip-request(root.cancel-tip, cancel-btn.absolute-position.x, cancel-btn.absolute-position.y + cancel-btn.height, cancel-btn.width, cancel-btn.height);
+                            }
+                        }
+                    }
+                    cancel-btn := DialogButton {
+                        label: root.cancel-label;
+                        enabled: root.cancel-enabled;
+                        ringed: root.focus-idx == 0;
+                        clicked => { root.press-cancel(); }
+                    }
+                }
+                install-btn := DialogButton {
+                    label: "Install";
+                    is-primary: true;
+                    enabled: root.install-enabled;
+                    ringed: root.focus-idx == 1;
+                    clicked => { root.install(); }
+                }
+            }
+        }
+    }
+
+    accessible-role: AccessibleRole.groupbox;
+    accessible-label: root.title;
+}
+
+export global UpdateBridge {}
+
+// The window over a 1000 x 640 stand-in terminal (it holds the focus until the window opens), the
+// counts of what the window reported, and a TouchArea behind it that must never be reached.
+export component UpdateWindowPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    background: Theme.ground;
+
+    in-out property <bool> open;
+    in-out property <string> window-title: "Update to 0.56.0";
+    in-out property <string> current-text: "You have 0.55.6";
+    in-out property <[NoteSection]> sections;
+    in-out property <string> empty-note;
+    in-out property <string> more-text;
+    in-out property <string> status;
+    in-out property <string> pct-text;
+    in-out property <int> pct;
+    in-out property <bool> running;
+    in-out property <bool> active;
+    in-out property <string> cancel-label: "Cancel";
+    in-out property <bool> cancel-enabled: true;
+    in-out property <string> cancel-tip;
+    in-out property <bool> install-enabled: true;
+    in-out property <length> notes-max-h: 281.6px;
+    in-out property <int> installs;
+    in-out property <int> cancels;
+    in-out property <int> aborts;
+    in-out property <int> behind-clicks;
+    in-out property <int> term-keys;
+    in-out property <string> term-key;
+    in-out property <int> tip-requests;
+    in-out property <string> last-tip;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    out property <bool> chrome-has-focus: uw.chrome-has-focus;
+    out property <int> focus-idx: uw.focus-idx;
+    out property <length> box-x: uw.box-x;
+    out property <length> box-y: uw.box-y;
+    out property <length> box-w: uw.box-w;
+    out property <length> box-h: uw.box-h;
+    out property <length> track-x: uw.track-x;
+    out property <length> track-y: uw.track-y;
+    out property <length> track-w: uw.track-w;
+    out property <length> notes-y: uw.notes-y;
+    out property <length> fill-w: uw.fill-w;
+    out property <length> install-x: uw.install-x;
+    out property <length> install-y: uw.install-y;
+    out property <length> install-w: uw.install-w;
+    out property <length> install-h: uw.install-h;
+    out property <length> cancel-x: uw.cancel-x;
+    out property <length> cancel-y: uw.cancel-y;
+    out property <length> cancel-w: uw.cancel-w;
+    out property <length> cancel-h: uw.cancel-h;
+    out property <length> notes-h: uw.notes-h;
+    out property <length> notes-content-h: uw.notes-content-h;
+
+    public function focus-terminal() {
+        term.focus();
+    }
+
+    behind := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.behind-clicks += 1; }
+    }
+    term := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            root.term-keys += 1;
+            root.term-key = e.text;
+            accept
+        }
+    }
+    uw := UpdateWindow {
+        open: root.open;
+        title: root.window-title;
+        current-text: root.current-text;
+        sections: root.sections;
+        empty-note: root.empty-note;
+        more-text: root.more-text;
+        status: root.status;
+        pct-text: root.pct-text;
+        pct: root.pct;
+        running: root.running;
+        active: root.active;
+        cancel-label: root.cancel-label;
+        cancel-enabled: root.cancel-enabled;
+        cancel-tip: root.cancel-tip;
+        install-enabled: root.install-enabled;
+        notes-max-h: root.notes-max-h;
+        install => { root.installs += 1; }
+        cancel => { root.cancels += 1; }
+        abort => { root.aborts += 1; }
+        tip-request(text, x, y, w, h) => {
+            root.tip-requests += 1;
+            root.last-tip = text;
+        }
+    }
+}

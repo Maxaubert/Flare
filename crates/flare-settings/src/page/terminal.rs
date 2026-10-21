@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn sections_and_rows_are_in_prism_terminals_order() {
+    fn sections_and_rows_are_in_the_reference_order() {
         let prefs = PrefStore::memory();
         let look = LookStore::new(prefs.clone());
         let face: &dyn Fn(&str) -> String = &face_of_test;

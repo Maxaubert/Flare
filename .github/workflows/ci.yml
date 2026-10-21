@@ -34,6 +34,8 @@ jobs:
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy with the updater built in (the flip must keep compiling)
+        run: cargo clippy -p flare-update -p flare --all-targets --features flare/live-updates,flare-update/live-updates -- -D warnings
       - name: Tests
         run: cargo nextest run --workspace --no-tests=pass
       - name: Deny

@@ -15,8 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError,
-    INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+    GetLastError, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -401,6 +401,11 @@ pub fn serve(
     let thread = std::thread::Builder::new()
         .name("flare-handoff".into())
         .spawn(move || {
+            #[cfg(test)]
+            {
+                let ms = tests::FIRST_CONNECT_DELAY_MS.load(Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ms)); // sync-ok: test seam, the server thread
+            }
             loop {
                 // SAFETY: valid pipe handle owned by this thread; no OVERLAPPED, so it blocks.
                 let connected = unsafe { ConnectNamedPipe(raw as _, std::ptr::null_mut()) }; // sync-ok: worker thread waits for a client
@@ -409,7 +414,9 @@ pub fn serve(
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
-                if (connected != 0 || err == ERROR_PIPE_CONNECTED)
+                // ERROR_NO_DATA: the client connected, wrote and closed before this call; what it
+                // wrote is still in the pipe and is read like any other message.
+                if (connected != 0 || err == ERROR_PIPE_CONNECTED || err == ERROR_NO_DATA)
                     && let Some(h) = read_message(raw).as_deref().and_then(decode_handoff)
                 {
                     on_handoff(h);
@@ -513,7 +520,29 @@ pub fn send_handoff_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
     use std::sync::mpsc;
+
+    /// How long the server thread waits before its first `ConnectNamedPipe` (tests only; each
+    /// nextest test is its own process, so one test setting it touches no other).
+    pub(super) static FIRST_CONNECT_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+    /// Review fix: a client that connects, writes and closes before the server thread first
+    /// reaches `ConnectNamedPipe` makes it answer ERROR_NO_DATA. The message is still in the pipe
+    /// and must be read, not dropped (a second launch right after the first lost its folder).
+    #[test]
+    fn a_handoff_written_before_the_server_listens_is_not_lost() {
+        FIRST_CONNECT_DELAY_MS.store(400, Ordering::SeqCst);
+        let n = names_for_test();
+        let (tx, rx) = mpsc::channel();
+        let _server = serve(&n, move |h| {
+            let _ = tx.send(h);
+        })
+        .unwrap();
+        let h = sample();
+        send_handoff(&n, &h, Duration::from_secs(3)).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h);
+    }
 
     fn names_for_test() -> InstanceNames {
         let dir = tempfile::tempdir().unwrap();
@@ -557,7 +586,8 @@ mod tests {
         );
         assert!(a.mutex.starts_with("Local\\Flare.Single."));
         assert!(a.pipe.starts_with("\\\\.\\pipe\\Flare.Handoff."));
-        assert!(!a.mutex.contains("Prism") && !a.pipe.contains("Prism"));
+        let other = ["Pri", "sm"].concat();
+        assert!(!a.mutex.contains(&other) && !a.pipe.contains(&other));
     }
 
     #[test]

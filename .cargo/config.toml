@@ -1,3 +1,6 @@
 # rust-lld links much faster than link.exe and ships with the toolchain (2026-10-17).
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+[alias]
+diag = "run -q -p flare-diag --bin diag --"

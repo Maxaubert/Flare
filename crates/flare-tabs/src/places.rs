@@ -58,10 +58,10 @@ mod tests {
     #[test]
     fn whereabouts_shows_the_last_two_folders_above() {
         assert_eq!(
-            whereabouts(r"C:\Users\Admin\Documents\Claude\Github\Prism"),
+            whereabouts(r"C:\Users\Admin\Documents\Claude\Github\Atlas"),
             "\u{2026}\\Claude\\Github"
         );
-        assert_eq!(whereabouts(r"C:\work\prism"), r"C:\work");
+        assert_eq!(whereabouts(r"C:\work\atlas"), r"C:\work");
         assert_eq!(whereabouts(r"C:\a"), "C:");
         assert_eq!(whereabouts(r"D:\"), "");
     }

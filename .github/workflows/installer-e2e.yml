@@ -1,0 +1,67 @@
+# Flare beside Prism Terminal, installed for real on a clean runner (M9 Task 37).
+# Runs on pull requests that touch the packaging, the verb, the update or the e2e code. It builds the release
+# exe, packs 0.0.1 with the pinned vpk into a temp folder and runs the side-by-side test with the install
+# switch on. No publish step: release.yml runs the same test before it publishes.
+name: installer-e2e
+
+on:
+  pull_request:
+    paths:
+      - 'tools/release/**'
+      - 'tools/e2e/**'
+      - 'crates/flare-win/**'
+      - 'crates/flare-update/**'
+      - 'crates/flare/src/ship_ctl.rs'
+      - 'crates/flare/src/update_ctl.rs'
+      - 'crates/flare/build.rs'
+      - 'Cargo.toml'
+      - '.github/workflows/installer-e2e.yml'
+      - '.github/workflows/release.yml'
+
+concurrency:
+  group: installer-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  VPK_VERSION: 1.2.161
+
+jobs:
+  side-by-side:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: vpk
+        run: dotnet tool install -g vpk --version $env:VPK_VERSION
+
+      - name: Build
+        run: cargo build --release -p flare
+
+      - name: Pack 0.0.1 into a temp folder
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'Releases'
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          '- Side-by-side check' | Set-Content -Path $notes -Encoding utf8
+          ./tools/release/pack.ps1 -Version '0.0.1' -Exe target/release/flare.exe -Notes $notes -Out $out
+          if ($LASTEXITCODE -ne 0) { throw 'pack failed' }
+          "FLARE_RELEASES=$out" >> $env:GITHUB_ENV
+
+      - name: Flare beside Prism Terminal, installed for real
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLARE_E2E_INSTALL: '1'
+          FLARE_EXE: target/release/flare.exe
+        run: cargo test -p flare-e2e --test side_by_side -- --include-ignored

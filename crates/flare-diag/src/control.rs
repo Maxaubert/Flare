@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flare_settings::atomic::write_atomic;
 
 use crate::agent_diag::{DiagSink, DiagValue};
+use crate::summary::mark_fields;
+use crate::writer::DiagLog;
 
 const FLAG_FILE: &str = "diag.json";
 
@@ -19,6 +21,8 @@ const FLAG_FILE: &str = "diag.json";
 pub struct DiagControl {
     profile: PathBuf,
     sink: Option<Arc<dyn DiagSink>>,
+    /// The running app log (M9 Task 31): it owns `diag.json` and takes the mark.
+    log: Option<DiagLog>,
 }
 
 impl DiagControl {
@@ -26,16 +30,40 @@ impl DiagControl {
         Self {
             profile: profile.to_path_buf(),
             sink,
+            log: None,
         }
+    }
+
+    /// The control over the running app log: the log owns `diag.json` (rule 85), so `verbose` and
+    /// `set_verbose` delegate to it, `mark` writes the `mark` line itself and `dir` is the log folder.
+    /// A null log (no folder) falls back to the flag file, so the Settings switch still works.
+    pub fn with_log(profile: &Path, log: DiagLog) -> Self {
+        Self {
+            profile: profile.to_path_buf(),
+            sink: None,
+            log: Some(log),
+        }
+    }
+
+    fn live_log(&self) -> Option<&DiagLog> {
+        self.log
+            .as_ref()
+            .filter(|l| !l.dir().as_os_str().is_empty())
     }
 
     /// The log folder: `<profile>/logs`. Never created here.
     pub fn dir(&self) -> PathBuf {
-        self.profile.join("logs")
+        match self.live_log() {
+            Some(log) => log.dir().to_path_buf(),
+            None => self.profile.join("logs"),
+        }
     }
 
     /// Reads `diag.json`; a missing, corrupt or non-bool file is off.
     pub fn verbose(&self) -> bool {
+        if let Some(log) = self.live_log() {
+            return log.verbose();
+        }
         let Ok(text) = std::fs::read_to_string(self.profile.join(FLAG_FILE)) else {
             return false; // sync-ok: one small flag file, read when the page opens
         };
@@ -48,6 +76,10 @@ impl DiagControl {
     /// Writes the flag atomically, then re-reads it and returns what is stored, so the page shows
     /// the truth even when the write was refused.
     pub fn set_verbose(&self, on: bool) -> bool {
+        if let Some(log) = self.live_log() {
+            log.set_verbose(on);
+            return log.verbose();
+        }
         let body = serde_json::json!({ "verbose": on }).to_string();
         let _ = write_atomic(&self.profile.join(FLAG_FILE), &body); // sync-ok: a user click on the diagnostics page, one small file
         self.verbose()
@@ -55,6 +87,10 @@ impl DiagControl {
 
     /// Forwards one `mark` record to the sink. No sink: nothing happens.
     pub fn mark(&self) {
+        if let Some(log) = self.live_log() {
+            log.write("app", "mark", mark_fields());
+            return;
+        }
         if let Some(sink) = &self.sink {
             let at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -177,6 +213,62 @@ mod tests {
         let _ = c.verbose();
         let _ = c.dir();
         assert!(entries(&s.0).is_empty());
+    }
+
+    fn started(s: &Scratch) -> DiagLog {
+        let mut opts = crate::writer::DiagLogOptions::new(s.0.join("logs"));
+        opts.flush_ms = 10;
+        DiagLog::start(opts)
+    }
+
+    fn log_lines(s: &Scratch) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(s.0.join("logs").join(crate::writer::DIAG_FILE)) // sync-ok: test code
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("one JSON object per line"))
+            .collect()
+    }
+
+    #[test]
+    fn with_log_the_log_owns_the_verbose_flag() {
+        let s = Scratch::new("owns");
+        let log = started(&s);
+        let c = DiagControl::with_log(&s.0, log.clone());
+        assert!(!c.verbose());
+        assert!(c.set_verbose(true));
+        assert!(log.verbose());
+        assert!(c.verbose());
+        log.flush();
+        // The log wrote diag.json next to the logs folder; a new log reads it back.
+        assert!(DiagControl::new(&s.0, None).verbose());
+        assert_eq!(c.dir(), s.0.join("logs"));
+    }
+
+    #[test]
+    fn with_log_the_mark_is_one_bare_line() {
+        let s = Scratch::new("bare-mark");
+        let log = started(&s);
+        let c = DiagControl::with_log(&s.0, log.clone());
+        c.mark();
+        log.flush();
+        let marks: Vec<_> = log_lines(&s)
+            .into_iter()
+            .filter(|l| l["k"] == "mark")
+            .collect();
+        assert_eq!(marks.len(), 1);
+        let keys: Vec<&String> = marks[0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["t", "up", "src", "k"]);
+        assert_eq!(marks[0]["src"], "app");
+    }
+
+    #[test]
+    fn with_a_null_log_the_flag_file_still_works() {
+        let s = Scratch::new("null-log");
+        let c = DiagControl::with_log(&s.0, DiagLog::null());
+        assert!(c.set_verbose(true));
+        assert!(DiagControl::new(&s.0, None).verbose());
+        assert_eq!(c.dir(), s.0.join("logs"));
+        c.mark();
     }
 
     #[test]

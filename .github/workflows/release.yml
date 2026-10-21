@@ -1,0 +1,174 @@
+# Every merge to main is a release when it carries a new version (D15).
+# Gates first, then vpk pack, then the side-by-side run against Prism Terminal on this clean runner,
+# then the release v<version> on this (private) repository. A version that is already released
+# publishes nothing and says so, without failing. The updater inside the app is switched off until
+# the repository is public (docs/updater-flip.md); FLARE_LIVE_UPDATES=on builds it in.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  VPK_VERSION: 1.2.161
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is this version already released?
+        id: ver
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $toml = Get-Content Cargo.toml -Raw
+          if ($toml -notmatch '(?ms)\[workspace\.package\].*?^version\s*=\s*"([^"]+)"') { throw "no workspace version in Cargo.toml" }
+          $v = $Matches[1]
+          "version=$v" >> $env:GITHUB_OUTPUT
+          gh release view "v$v" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "fresh=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::notice::v$v is already released. Nothing to publish (bump the version in Cargo.toml in a PR to release)."
+          } else {
+            "fresh=true" >> $env:GITHUB_OUTPUT
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Toolchain
+        if: steps.ver.outputs.fresh == 'true'
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.ver.outputs.fresh == 'true'
+
+      - uses: taiki-e/install-action@v2
+        if: steps.ver.outputs.fresh == 'true'
+        with:
+          tool: cargo-nextest,cargo-deny
+
+      - name: No em-dashes
+        if: steps.ver.outputs.fresh == 'true'
+        shell: bash
+        run: |
+          dash="$(printf '\342\200\224')"
+          if git grep -n "$dash" -- . ':!Cargo.lock'; then
+            echo "Em-dash found (owner rule: use en-dashes, commas or rephrase)"; exit 1
+          fi
+
+      - name: Format
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo fmt --check
+
+      - name: Clippy
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo nextest run --workspace --no-tests=pass
+
+      - name: Deny
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo deny check
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.ver.outputs.fresh == 'true'
+        with:
+          dotnet-version: 8.0.x
+
+      - name: vpk
+        if: steps.ver.outputs.fresh == 'true'
+        run: dotnet tool install -g vpk --version $env:VPK_VERSION
+
+      - name: Build
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The updater stays OFF while the repository is private (owner, 2026-10-17; docs/updater-flip.md).
+          $vis = gh repo view "${{ github.repository }}" --json visibility --jq .visibility
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vis)) { throw "could not read the repository visibility" }
+          # Cargo's own resolution of the default build: catches a flipped `default` (one line or many)
+          # and any dependency line that turns the feature on.
+          $meta = cargo metadata --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $meta.resolve) { throw "could not resolve the workspace features" }
+          $flipped = @($meta.resolve.nodes | Where-Object { $_.id -match 'flare-update' -and $_.features -contains 'live-updates' }).Count -gt 0
+          $features = @()
+          if ('${{ vars.FLARE_LIVE_UPDATES }}' -eq 'on') { $features = @('--features', 'live-updates') }
+          if (($features.Count -gt 0 -or $flipped) -and $vis -ne 'PUBLIC') {
+            throw "the updater is switched on but the repository is $vis; it stays off until the repository is public"
+          }
+          cargo build --release -p flare @features
+          if ($LASTEXITCODE -ne 0) { throw "release build failed" }
+
+      - name: Release notes
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/release/notes.ps1 -Tag "v${{ steps.ver.outputs.version }}" -Out notes.md
+
+      - name: Previous release, so the pack can make deltas
+        if: steps.ver.outputs.fresh == 'true'
+        continue-on-error: true
+        run: vpk download github --repoUrl "https://github.com/${{ github.repository }}" --token "${{ github.token }}" --outputDir Releases
+
+      - name: Pack
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        run: ./tools/release/pack.ps1 -Version "${{ steps.ver.outputs.version }}" -Exe target/release/flare.exe -Notes notes.md -Out Releases
+
+      - name: Verify the pack
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        run: ./tools/release/verify-pack.ps1 -Out Releases -Version "${{ steps.ver.outputs.version }}"
+
+      - name: Flare beside Prism Terminal, installed for real on this clean runner
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLARE_E2E_INSTALL: '1'
+          FLARE_EXE: target/release/flare.exe
+          FLARE_RELEASES: Releases
+        run: cargo test -p flare-e2e --test side_by_side -- --include-ignored
+
+      - name: Keep the symbols
+        if: steps.ver.outputs.fresh == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flare-symbols-${{ steps.ver.outputs.version }}
+          path: target/release/flare.pdb
+          retention-days: 30
+
+      - name: Publish
+        if: steps.ver.outputs.fresh == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          # Not over a newer workflow (PT, 2026-09-28): the token cannot tag a commit whose workflows differ from main's.
+          git fetch -q --depth=1 origin main
+          git diff --quiet "${{ github.sha }}" FETCH_HEAD -- .github/workflows
+          if ($LASTEXITCODE -ne 0) {
+            "::notice::main has moved past ${{ github.sha }} with changed workflows; the next release run publishes v$v."
+            exit 0
+          }
+          vpk upload github --repoUrl "https://github.com/${{ github.repository }}" --token "${{ github.token }}" --publish --releaseName "Flare $v" --tag "v$v" --targetCommitish "${{ github.sha }}" --outputDir Releases
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }
+          $assets = gh release view "v$v" --json assets --jq '.assets[].name'
+          if (-not ($assets -contains 'releases.win.json')) { throw "the release has no releases.win.json" }
+          if (-not ($assets | Where-Object { $_ -like '*Setup*.exe' })) { throw "the release has no Setup installer" }

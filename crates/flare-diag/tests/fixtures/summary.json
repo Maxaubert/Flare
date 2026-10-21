@@ -1,0 +1,547 @@
+{
+  "capString": [
+    {
+      "input": "",
+      "output": ""
+    },
+    {
+      "input": "abc",
+      "output": "abc"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+1)"
+    },
+    {
+      "input": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "output": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé...(+1)"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀z",
+      "output": null,
+      "lone_surrogate": true,
+      "flare_output": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...(+2)"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+2200)"
+    }
+  ],
+  "summariseValue": [
+    {
+      "input": null,
+      "output": null
+    },
+    {
+      "input": {
+        "undefined": true
+      },
+      "output": null
+    },
+    {
+      "input": "str",
+      "output": "str"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+1)"
+    },
+    {
+      "input": 5,
+      "output": 5
+    },
+    {
+      "input": {
+        "number": "NaN"
+      },
+      "output": null
+    },
+    {
+      "input": {
+        "number": "Infinity"
+      },
+      "output": null
+    },
+    {
+      "input": true,
+      "output": true
+    },
+    {
+      "input": {
+        "bigint": "123"
+      },
+      "output": "123"
+    },
+    {
+      "input": {
+        "fn": true
+      },
+      "output": "function"
+    },
+    {
+      "input": {
+        "symbol": "s"
+      },
+      "output": "symbol"
+    },
+    {
+      "input": {
+        "$bytes": 4
+      },
+      "output": "bytes:4"
+    },
+    {
+      "input": {
+        "$arraybuffer": 8
+      },
+      "output": "bytes:8"
+    },
+    {
+      "input": [
+        1,
+        2,
+        3
+      ],
+      "output": "[3]"
+    },
+    {
+      "input": {
+        "a": 1,
+        "b": {
+          "c": 2
+        }
+      },
+      "output": {
+        "a": 1,
+        "b": "{1}"
+      }
+    },
+    {
+      "input": {
+        "a": {
+          "b": 1
+        }
+      },
+      "output": {
+        "a": "{1}"
+      }
+    },
+    {
+      "input": {
+        "k0": 0,
+        "k1": 1,
+        "k2": 2,
+        "k3": 3,
+        "k4": 4,
+        "k5": 5,
+        "k6": 6,
+        "k7": 7,
+        "k8": 8,
+        "k9": 9,
+        "k10": 10,
+        "k11": 11,
+        "k12": 12,
+        "k13": 13
+      },
+      "output": {
+        "k0": 0,
+        "k1": 1,
+        "k2": 2,
+        "k3": 3,
+        "k4": 4,
+        "k5": 5,
+        "k6": 6,
+        "k7": 7,
+        "k8": 8,
+        "k9": 9,
+        "k10": 10,
+        "k11": 11
+      }
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀z",
+      "output": null,
+      "lone_surrogate": true,
+      "flare_output": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...(+2)"
+    }
+  ],
+  "summariseArgs": [
+    {
+      "input": {
+        "args": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          3,
+          {
+            "$bytes": 9
+          },
+          [
+            1,
+            2
+          ],
+          {
+            "a": 1
+          },
+          null,
+          "typed text",
+          "secret"
+        ],
+        "opaque": false
+      },
+      "output": [
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+1)",
+        3,
+        "bytes:9",
+        "[2]"
+      ]
+    },
+    {
+      "input": {
+        "args": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          3,
+          {
+            "$bytes": 9
+          },
+          [
+            1,
+            2
+          ],
+          {
+            "a": 1
+          },
+          null,
+          "typed text",
+          "secret"
+        ],
+        "opaque": true
+      },
+      "output": [
+        "string:301",
+        "number",
+        "bytes:9",
+        "[2]"
+      ]
+    }
+  ],
+  "errorFields": [
+    {
+      "input": "plain string error",
+      "output": {
+        "msg": "plain string error"
+      }
+    },
+    {
+      "input": {
+        "$error": {
+          "message": "m",
+          "stack": "s"
+        }
+      },
+      "output": {
+        "msg": "m",
+        "stack": "s"
+      }
+    },
+    {
+      "input": {
+        "$error": {
+          "message": "m"
+        }
+      },
+      "output": {
+        "msg": "m"
+      }
+    },
+    {
+      "input": {
+        "message": "x",
+        "stack": "stack-text"
+      },
+      "output": {
+        "msg": "x",
+        "stack": "stack-text"
+      }
+    },
+    {
+      "input": {
+        "message": "x"
+      },
+      "output": {
+        "msg": "x"
+      }
+    },
+    {
+      "input": 42,
+      "output": {
+        "msg": "42"
+      }
+    },
+    {
+      "input": null,
+      "output": {
+        "msg": "null"
+      }
+    },
+    {
+      "input": {
+        "$error": {
+          "message": "m",
+          "stack": "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+        }
+      },
+      "output": {
+        "msg": "m",
+        "stack": "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nfr...(+1000)"
+      }
+    }
+  ],
+  "cleanFields": [
+    {
+      "input": {
+        "a": "x",
+        "b": 1,
+        "c": null,
+        "d": true,
+        "e": {
+          "number": "NaN"
+        },
+        "f": {
+          "number": "Infinity"
+        }
+      },
+      "output": {
+        "a": "x",
+        "b": 1,
+        "c": null,
+        "d": true,
+        "e": null,
+        "f": null
+      }
+    },
+    {
+      "input": {
+        "stack": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "msg": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "output": {
+        "stack": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+500)",
+        "msg": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(+1)"
+      }
+    },
+    {
+      "input": {
+        "k0": 0,
+        "k1": 1,
+        "k2": 2,
+        "k3": 3,
+        "k4": 4,
+        "k5": 5,
+        "k6": 6,
+        "k7": 7,
+        "k8": 8,
+        "k9": 9,
+        "k10": 10,
+        "k11": 11,
+        "k12": 12,
+        "k13": 13,
+        "k14": 14,
+        "k15": 15,
+        "k16": 16,
+        "k17": 17,
+        "k18": 18,
+        "k19": 19,
+        "k20": 20,
+        "k21": 21,
+        "k22": 22,
+        "k23": 23,
+        "k24": 24,
+        "k25": 25,
+        "k26": 26,
+        "k27": 27,
+        "k28": 28,
+        "k29": 29,
+        "k30": 30,
+        "k31": 31,
+        "k32": 32,
+        "k33": 33,
+        "k34": 34,
+        "k35": 35,
+        "k36": 36,
+        "k37": 37,
+        "k38": 38,
+        "k39": 39,
+        "k40": 40,
+        "k41": 41,
+        "k42": 42,
+        "k43": 43,
+        "k44": 44
+      },
+      "output": {
+        "k0": 0,
+        "k1": 1,
+        "k2": 2,
+        "k3": 3,
+        "k4": 4,
+        "k5": 5,
+        "k6": 6,
+        "k7": 7,
+        "k8": 8,
+        "k9": 9,
+        "k10": 10,
+        "k11": 11,
+        "k12": 12,
+        "k13": 13,
+        "k14": 14,
+        "k15": 15,
+        "k16": 16,
+        "k17": 17,
+        "k18": 18,
+        "k19": 19,
+        "k20": 20,
+        "k21": 21,
+        "k22": 22,
+        "k23": 23,
+        "k24": 24,
+        "k25": 25,
+        "k26": 26,
+        "k27": 27,
+        "k28": 28,
+        "k29": 29,
+        "k30": 30,
+        "k31": 31,
+        "k32": 32,
+        "k33": 33,
+        "k34": 34,
+        "k35": 35,
+        "k36": 36,
+        "k37": 37,
+        "k38": 38,
+        "k39": 39
+      }
+    },
+    {
+      "input": {
+        "list": [
+          1,
+          2,
+          {
+            "a": 1
+          },
+          [
+            1,
+            2
+          ]
+        ],
+        "rec": {
+          "x": {
+            "y": {
+              "z": 1
+            }
+          }
+        },
+        "long": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+      },
+      "output": {
+        "list": [
+          1,
+          2,
+          {
+            "a": 1
+          },
+          [
+            1,
+            2
+          ]
+        ],
+        "rec": {
+          "x": {
+            "y": "{1}"
+          }
+        },
+        "long": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé...(+1)"
+      }
+    },
+    {
+      "input": {
+        "list": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ]
+      },
+      "output": {
+        "list": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      }
+    },
+    {
+      "input": {
+        "inner": {
+          "k0": 0,
+          "k1": 1,
+          "k2": 2,
+          "k3": 3,
+          "k4": 4,
+          "k5": 5,
+          "k6": 6,
+          "k7": 7,
+          "k8": 8,
+          "k9": 9,
+          "k10": 10,
+          "k11": 11,
+          "k12": 12,
+          "k13": 13
+        }
+      },
+      "output": {
+        "inner": {
+          "k0": 0,
+          "k1": 1,
+          "k2": 2,
+          "k3": 3,
+          "k4": 4,
+          "k5": 5,
+          "k6": 6,
+          "k7": 7,
+          "k8": 8,
+          "k9": 9,
+          "k10": 10,
+          "k11": 11
+        }
+      }
+    },
+    {
+      "input": {
+        "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀z"
+      },
+      "output": null,
+      "lone_surrogate": true,
+      "flare_output": {
+        "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...(+2)"
+      }
+    }
+  ]
+}

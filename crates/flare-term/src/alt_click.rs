@@ -1,5 +1,5 @@
-//! Alt+click moves the cursor: xterm's `altClickMovesCursor`, on by default and left on by Prism
-//! Terminal (orchestrator answer to owner question 5, 2026-10-17). A cell-for-cell port of xterm.js
+//! Alt+click moves the cursor: xterm's `altClickMovesCursor`, on by default and left on by
+//! Prism Terminal (orchestrator answer to owner question 5, 2026-10-17). A cell-for-cell port of xterm.js
 //! `src/browser/input/MoveToCell.ts` (`moveToCellSequence`): on the normal screen only left and right
 //! arrows, counted across rows; on the alternate screen up and down to the logical row, then left or
 //! right by the characters between. The counts are xterm's own, including its quirks.

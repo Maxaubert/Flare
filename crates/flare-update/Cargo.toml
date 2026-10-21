@@ -1,9 +1,26 @@
 [package]
 name = "flare-update"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 publish = false
+
+[features]
+default = []
+# The updater is compiled out of every default build (owner, 2026-10-17). FakeFeed, NullFeed and
+# RefusingFeed are always compiled; only the real GitHub source sits behind this feature.
+live-updates = []
+
+[dependencies]
+velopack.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
