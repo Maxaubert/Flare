@@ -86,7 +86,20 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
   frame rate is the machine, not the slide, and the GPU slide numbers (frames, longest gap, input to first frame, the
   sidebar snapshot offsets are now exact, see the next point) are NOT a baseline; do not compare them with Prism
   Terminal's frame count. The software cells are the trustworthy Flare numbers on this machine state.
-- Sidebar pictures (V3-gpu-snapshots, 2026-10-21): the GPU sheets used to read slot 154, 160, 16, 164, 18, 159 for offsets 0 to
+- The 15 frames a second are not Flare (audit V3-gpu-baseline, 2026-10-21, checked and nothing changed): a stand-alone
+  wgpu 30 DX12 program with none of Flare's code (an 800 x 500 window, clear and present in a loop, Fifo present mode,
+  BelowNormal, 3 s per run) gave a 77 ms median gap, about 13 to 20 frames a second, with the window parked at -32000 and
+  with it on screen at 1/255 opacity, click-through and unfocused, on the HWND and on the DirectComposition swapchain
+  alike (gaps 76.9 to 77.7 ms, max 80). The same program in Mailbox mode ran at 12,700 frames a second, so the
+  program and the adapter are fine; it is the compositor's cadence. DwmFlush() called 60 times from PowerShell took
+  4,663 ms (78 ms each), and Flare with FLARE_NO_GLASS=1 (no DirectComposition) gave the same 7 to 8 frames and 68 to
+  78 ms gaps. The machine has virtual monitors (Virtual Desktop, Meta) next to the 143 Hz RTX 5090 output; DWM is
+  pacing at about 13 Hz here whatever the app does. So the Flare GPU slide cannot be judged for smoothness on this
+  PC in this state; its curve (error 0.004 to 0.007) and the exact snapshot offsets are, and the software path's 13
+  frames at 17 ms stand. To get a GPU baseline, run the tour when DwmFlush returns in about 7 ms
+  ([W.D]::DwmFlush() in a loop, 60 calls under 0.6 s). The "one frame behind Prism Terminal" snapshot offsets (collapse
+  142/84/54/33 against 125/69/38/21) were the old pictures, read when a slow GPU snapshot ended; since
+  V3-gpu-snapshots the pictures sit on the curve at the offset (125, 69, 38, 21) and match.- Sidebar pictures (V3-gpu-snapshots, 2026-10-21): the GPU sheets used to read slot 154, 160, 16, 164, 18, 159 for offsets 0 to
   100 ms and the slide seemed to open and close between pictures. Cause, measured with a frame log per picture: the
   harness asked for a picture at an offset, but a GPU snapshot blocks the UI thread for 30 to 90 ms (29 to 87 ms measured)
   while the slide runs on, and the slot is read when the snapshot ENDS. The frames underneath were monotonic (220 at 73 ms,
