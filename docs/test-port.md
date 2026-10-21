@@ -565,7 +565,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `pickedGround` | 3 | `scenarios/settings_c.rs`, `picked_ground` | 4 | 0 | ok |
 | `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 19 | 2 | ok |
 | `seeThrough` | 22 | `scenarios/settings_c.rs`, `see_through` | 22 | 2 | ok |
-| `themeCards` | 7 | `scenarios/settings_d.rs`, `theme_cards` | 10 | 0 | ok |
+| `themeCards` | 7 | `scenarios/settings_d.rs`, `theme_cards` | 18 | 0 | ok |
 | `edges` | 25 | `scenarios/settings_d.rs`, `edges` | 25 | 1 | ok |
 | `accent` | 33 | `scenarios/settings_d.rs`, `accent` | 32 | 2 | ok |
 | `updateWindow` | 78 | `scenarios/update.rs`, `update_window` | 78 | 0 | ok |

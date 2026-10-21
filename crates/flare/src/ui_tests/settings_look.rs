@@ -156,7 +156,7 @@ fn the_wall_cards_are_one_height_in_rows_of_the_right_count() {
                 )
                 .unwrap_or_else(|| panic!("{w} @{s}: card {i0} paints its own ground"));
             let card_w = bb0.2 - bb0.0 + 1;
-            // A card's ground is 196 minus its two hairlines wide, 92 high.
+            // A card's ground is the card's own width (the wall lays them out, 172 or more) minus its two hairlines wide, 92 high.
             assert!(
                 card_w.abs_diff(sc.dev(sc.wall.widths[i0]) - 2 * hair) <= 1,
                 "{w} @{s}: the card's ground is {card_w} device px wide, wanted {}",
