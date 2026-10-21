@@ -1623,6 +1623,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flare-ctl"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "flare-diag"
 version = "0.1.0"
 dependencies = [
@@ -1693,6 +1703,15 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-normalization",
+]
+
+[[package]]
+name = "flare-mcp"
+version = "0.1.0"
+dependencies = [
+ "flare-ctl",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
