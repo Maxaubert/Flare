@@ -540,7 +540,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `quitManyShells` | 3 | `scenarios/lifecycle.rs`, `quit_many_shells` | 3 | 0 | ok |
 | `lastTab` | 7 | `scenarios/lifecycle.rs`, `last_tab` | 6 | 1 | ok |
 | `closeAsk` | 12 | `scenarios/closeask.rs`, `close_ask` | 12 | 0 | ok |
-| `pathLinks` | 11 | `scenarios/input_b.rs`, `path_links` | 22 | 0 | ok |
+| `pathLinks` | 11 | `scenarios/input_b.rs`, `path_links` | 24 | 0 | ok |
 | `linkPaintStall` | 6 | `scenarios/input_d.rs`, `link_paint_stall` | 7 | 0 | ok |
 | `sonaraQuestion` | 10 | `scenarios/agent_launch.rs`, `sonara_question` | 10 | 0 | ok |
 | `termReplies` | 17 | `scenarios/input_c.rs`, `term_replies` | 16 | 2 | ok |

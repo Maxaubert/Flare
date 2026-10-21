@@ -133,20 +133,103 @@ pub struct LogicalLine {
     pub text: String,
     pub index: Vec<usize>,
     pub text_end: usize,
+    /// Where in `text` (char index) a row broken BY HAND starts (`by_hand`); empty unless asked
+    /// for (`logical_line_in` with `hand`).
+    pub joins: Vec<usize>,
+}
+
+/// What a path's piece can be made of: one character that is not a break of `paths.rs`
+/// (white space, a quote, `<>|*?`) and not a box-drawing character (a table's or a frame's
+/// edge, U+2500-U+257F). PT termCells.ts `PATHISH`.
+fn pathish(s: &str) -> bool {
+    let mut it = s.chars();
+    let (Some(c), None) = (it.next(), it.next()) else {
+        return false;
+    };
+    !(c.is_whitespace()
+        || matches!(c, '"' | '\'' | '`' | '<' | '>' | '|' | '*' | '?')
+        || ('\u{2500}'..='\u{257F}').contains(&c))
+}
+
+/// A ROW THE PROGRAM BROKE BY HAND (owner, 2026-10-21, PT #250: a path Claude printed was not a
+/// link). Claude Code breaks its own lines at the window's width and writes each row on its own,
+/// so the second row is never marked wrapped, and a long path became two pieces that each named
+/// nothing. Row `y` carries on row `y - 1` when that row's last cell and this row's first both
+/// hold a piece of a path, and the piece across the edge has a separator in it. Only PATHS are
+/// read across it: a path that exists lights up, and a sentence that ends at the edge stays.
+pub fn by_hand(b: &dyn BufferLike, cols: usize, y: usize, scratch: &mut ScratchCell) -> bool {
+    if y == 0 || cols < 2 {
+        return false;
+    }
+    let (Some(row), Some(above)) = (b.line(y), b.line(y - 1)) else {
+        return false;
+    };
+    by_hand_rows(above, row, cols, scratch)
+}
+
+/// `by_hand` over the two rows themselves: `row` carries on `above`.
+pub fn by_hand_rows(
+    above: &dyn LineLike,
+    row: &dyn LineLike,
+    cols: usize,
+    scratch: &mut ScratchCell,
+) -> bool {
+    if cols < 2 || row.is_wrapped() {
+        return false;
+    }
+    // The cell's chars, or None for a wide character's spacer (skipped, as PT's width 0 "").
+    let mut at = |line: &dyn LineLike, x: usize| -> Option<String> {
+        *scratch = ScratchCell::default();
+        line.load_cell(x, scratch);
+        (!(scratch.chars.is_empty() && scratch.width == 0)).then(|| scratch.chars.clone())
+    };
+    let edge_ok = |c: Option<String>| c.is_some_and(|c| pathish(&c));
+    if !edge_ok(at(above, cols - 1)) || !edge_ok(at(row, 0)) {
+        return false;
+    }
+    let mut sep = false;
+    for x in (0..cols).rev() {
+        let Some(c) = at(above, x) else { continue };
+        if !pathish(&c) {
+            break;
+        }
+        sep |= c.contains(['\\', '/']);
+    }
+    for x in 0..cols {
+        let Some(c) = at(row, x) else { continue };
+        if !pathish(&c) {
+            break;
+        }
+        sep |= c.contains(['\\', '/']);
+    }
+    sep
 }
 
 pub fn logical_line(b: &dyn BufferLike, cols: usize, y: usize) -> LogicalLine {
+    logical_line_in(b, cols, y, false)
+}
+
+/// `logical_line`, and with `hand` across rows broken `by_hand` too, with `joins` saying where
+/// those rows start in the text (PT termCells.ts `logicalLine(..., hand)`).
+pub fn logical_line_in(b: &dyn BufferLike, cols: usize, y: usize, hand: bool) -> LogicalLine {
+    let mut scratch = ScratchCell::default();
+    let mut goes_on = |r: usize| {
+        b.line(r).is_some_and(LineLike::is_wrapped) || (hand && by_hand(b, cols, r, &mut scratch))
+    };
     let mut first = y;
-    while first > 0 && b.line(first).is_some_and(LineLike::is_wrapped) {
+    while first > 0 && goes_on(first) {
         first -= 1;
     }
     let mut last = y;
-    while last + 1 < b.len() && b.line(last + 1).is_some_and(LineLike::is_wrapped) {
+    while last + 1 < b.len() && goes_on(last + 1) {
         last += 1;
     }
-    let mut scratch = ScratchCell::default();
     let mut cells = Vec::new();
+    let mut hand_rows = Vec::new();
     for i in first..=last {
+        if i > first && !b.line(i).is_some_and(LineLike::is_wrapped) {
+            hand_rows.push(i - first);
+        }
         cells.extend(buffer_row_cells(b.line(i), cols, &mut scratch).unwrap_or_default());
     }
     let widths = cells.iter().map(|c| c.width).collect();
@@ -155,6 +238,10 @@ pub fn logical_line(b: &dyn BufferLike, cols: usize, y: usize) -> LogicalLine {
         index,
         text_end,
     } = cell_text(&cells);
+    let joins = hand_rows
+        .iter()
+        .filter_map(|k| index.get(k * cols).copied())
+        .collect();
     LogicalLine {
         first,
         last,
@@ -162,6 +249,7 @@ pub fn logical_line(b: &dyn BufferLike, cols: usize, y: usize) -> LogicalLine {
         text,
         index,
         text_end,
+        joins,
     }
 }
 
@@ -312,6 +400,44 @@ mod tests {
             assert_eq!(l.text, "abcdefghij  ");
             assert_eq!(l.text_end, 10);
         }
+    }
+
+    // Owner, 2026-10-21 (PT #250): Claude Code breaks its own lines at the window's width and
+    // writes each row on its own, so the next row is never marked wrapped.
+    #[test]
+    fn a_path_cut_at_the_edge_carries_on_into_the_next_row() {
+        let b = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", false)]);
+        assert!(by_hand(&b, 12, 1, &mut ScratchCell::default()));
+        let l = logical_line_in(&b, 12, 1, true);
+        assert_eq!((l.first, l.last), (0, 1));
+        assert_eq!(l.text.trim_end(), "at C:\\t\\scratch\\a.exe");
+        assert_eq!(l.joins, vec![12]);
+        // Not asked for: the line is the row, as before.
+        let l = logical_line(&b, 12, 1);
+        assert_eq!((l.first, l.joins.len()), (1, 0));
+        // A wrapped row is no join.
+        let w = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", true)]);
+        assert!(logical_line_in(&w, 12, 1, true).joins.is_empty());
+    }
+
+    #[test]
+    fn no_hand_break_when_short_blank_or_no_separator() {
+        let no = |rows: &[(&'static str, bool)], cols: usize| {
+            !by_hand(&buf(rows), cols, 1, &mut ScratchCell::default())
+        };
+        assert!(no(&[("at C:\\t\\sc", false), ("ratch\\a.exe", false)], 12));
+        assert!(no(&[("at C:\\t\\scra", false), (" tch\\a.exe", false)], 12));
+        assert!(no(&[("a sentence e", false), ("nds here", false)], 12));
+        // A frame's edge is no path.
+        assert!(no(
+            &[
+                ("\u{2502} C:\\t\\a \u{2502}", false),
+                ("\u{2502} b \u{2502}", false)
+            ],
+            10
+        ));
+        // A quote is a break.
+        assert!(no(&[("x \"C:\\t\\ab\"", false), ("\"cd", false)], 11));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::{Cell, Flags};
 
-use crate::cells::{BufferLike, LineLike, ScratchCell};
+use crate::cells::{BufferLike, LineLike, ScratchCell, by_hand_rows};
 
 /// How many rows a window grows over a wrapped line, each way.
 const EXTEND_MAX: usize = 200;
@@ -94,11 +94,46 @@ fn continues_above<T: EventListener>(term: &Term<T>, hist: usize, abs: usize) ->
         .contains(Flags::WRAPLINE)
 }
 
+/// True when row `abs` carries on the row above, wrapped or broken by hand at the edge by the
+/// program (`cells::by_hand`).
+fn goes_on_above<T: EventListener>(
+    term: &Term<T>,
+    hist: usize,
+    abs: usize,
+    scratch: &mut ScratchCell,
+) -> bool {
+    if continues_above(term, hist, abs) {
+        return true;
+    }
+    if abs == 0 {
+        return false;
+    }
+    let cols = term.columns();
+    let row = |a: usize, wrapped: bool| RowRef {
+        row: &term.grid()[abs_to_line(hist, a)],
+        cols,
+        wrapped,
+    };
+    let above = row(abs - 1, continues_above(term, hist, abs - 1));
+    by_hand_rows(&above, &row(abs, false), cols, scratch)
+}
+
 impl<'a> TermBuf<'a> {
     /// Rows `[first, last]` (absolute, clamped), extended upward while the first row
     /// continues the row above and downward while the next row continues this one, at
     /// most 200 rows each way. `len()` is `total_rows`; `line(y)` is `None` outside.
     pub fn window<T: EventListener>(term: &'a Term<T>, first: usize, last: usize) -> Self {
+        Self::window_in(term, first, last, false)
+    }
+
+    /// `window`, and with `hand` extended over rows broken by hand too (`cells::by_hand`), so a
+    /// path a program cut at the edge is read whole wherever its rows start.
+    pub fn window_in<T: EventListener>(
+        term: &'a Term<T>,
+        first: usize,
+        last: usize,
+        hand: bool,
+    ) -> Self {
         let hist = term.history_size();
         let total = total_rows(term);
         if total == 0 {
@@ -110,13 +145,21 @@ impl<'a> TermBuf<'a> {
         }
         let mut lo = first.min(total - 1);
         let mut hi = last.min(total - 1).max(lo);
+        let mut scratch = ScratchCell::default();
+        let mut on = |abs: usize| {
+            if hand {
+                goes_on_above(term, hist, abs, &mut scratch)
+            } else {
+                continues_above(term, hist, abs)
+            }
+        };
         let mut up = 0;
-        while lo > 0 && up < EXTEND_MAX && continues_above(term, hist, lo) {
+        while lo > 0 && up < EXTEND_MAX && on(lo) {
             lo -= 1;
             up += 1;
         }
         let mut down = 0;
-        while hi + 1 < total && down < EXTEND_MAX && continues_above(term, hist, hi + 1) {
+        while hi + 1 < total && down < EXTEND_MAX && on(hi + 1) {
             hi += 1;
             down += 1;
         }

@@ -21,6 +21,7 @@ use flare_shells::cwd::{has_control, parse_osc9};
 use crate::alt_click::{MoveRow, MoveScreen, move_to_cell_sequence};
 use crate::cells::{
     BufferLike, CellInfo, LineLike, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
+    logical_line_in,
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
 use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
@@ -30,7 +31,7 @@ use crate::link_target::{TermPathAt, menu_link, shown_link_over};
 use crate::links::find_links;
 use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
-use crate::path_links::{Found, PathLinks, path_candidates};
+use crate::path_links::{PathLinks, path_candidates_in};
 use crate::replies::{
     Ground, colour_query_replies, decrqm_reply, dsr_theme_reply, ground_mode, xtversion_reply,
 };
@@ -1126,7 +1127,8 @@ impl Emulator {
         let last = top + rows - 1;
         let hist = self.history_size();
         let term = &self.term;
-        let buf = TermBuf::window(term, top, last);
+        // Extended over rows broken by hand too: the scan reads such a group whole.
+        let buf = TermBuf::window_in(term, top, last, true);
         let hyperlink = |row: usize, col: usize| {
             if col >= cols {
                 return None;
@@ -1237,16 +1239,16 @@ impl Emulator {
             return ctx;
         }
         let Some(cwd) = cwd else { return ctx };
-        let buf = TermBuf::window(&self.term, abs, abs);
-        let ll = logical_line(&buf, cols, abs);
+        // Across rows a program broke by hand too (`cells::by_hand`), as the scan reads them.
+        let buf = TermBuf::window_in(&self.term, abs, abs, true);
+        let ll = logical_line_in(&buf, cols, abs, true);
         let c = char_at_cell(&ll, cols, abs as i32, col as i32);
-        let Some(cand) = path_candidates(&ll.text)
+        let candidates = path_candidates_in(&ll.text, None, &ll.joins);
+        if let Some((cand, f)) = paths
+            .paths_found(owner, cwd, candidates, now_ms)
             .into_iter()
-            .find(|p| p.start <= c && c < p.end)
-        else {
-            return ctx;
-        };
-        if let Found::Hit(f) = paths.find_path(owner, cwd, &cand.path, now_ms) {
+            .find(|(p, _)| p.start <= c && c < p.end)
+        {
             ctx.path = Some(TermPathAt {
                 kind: f.hit.kind,
                 abs: f.hit.abs,
@@ -2860,6 +2862,101 @@ mod tests {
         assert_eq!((p.text.as_str(), p.base.as_str()), ("a.txt", "C:\\w"));
         let c = e.context_at(0, 1, &mut pl, "t1", Some("C:\\w"), 60);
         assert!(c.link.is_none() && c.path.is_none());
+    }
+
+    // Owner, 2026-10-21 (PT #250, core 0.44.2): Claude Code breaks its own lines at the window's
+    // width and writes each row on its own, so the next row is never marked wrapped, and a long
+    // path became two pieces that each named nothing.
+    const CUT_EXE: &str = "C:\\t\\scratch\\a.exe";
+
+    /// Scans, answers every question with only `CUT_EXE` existing, and scans again.
+    fn cut_marks(e: &mut Emulator) -> (PathLinks, Vec<LinkMark>) {
+        let mut pl = PathLinks::new();
+        for round in 0..4u64 {
+            e.links_revisit();
+            e.link_marks(&mut pl, "t1", Some("C:\\w"), round * 50, 1);
+            pl.advance(round * 50 + 45);
+            while let Some(ask) = pl.take_ask() {
+                let hits = ask
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        (p == CUT_EXE).then(|| crate::path_open::PathHit {
+                            kind: crate::path_open::PathKind::File,
+                            abs: p.clone(),
+                        })
+                    })
+                    .collect();
+                pl.answer(&ask, Some(hits), round * 50 + 46);
+            }
+        }
+        e.links_revisit();
+        let m = e.link_marks(&mut pl, "t1", Some("C:\\w"), 300, 1);
+        (pl, m)
+    }
+
+    fn cut_is_one_link(m: &[LinkMark]) {
+        let paths: Vec<&LinkMark> = m
+            .iter()
+            .filter(|m| matches!(m.target, LinkTarget::Path { .. }))
+            .collect();
+        assert_eq!(paths.len(), 1, "{m:?}");
+        assert_eq!(
+            paths[0].target,
+            LinkTarget::Path {
+                text: CUT_EXE.into()
+            }
+        );
+        assert_eq!(
+            paths[0].pieces,
+            vec![
+                Piece {
+                    row: 0,
+                    col: 3,
+                    width: 9
+                },
+                Piece {
+                    row: 1,
+                    col: 0,
+                    width: 9
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_broken_by_hand_at_the_edge_is_one_link() {
+        let mut e = Emulator::new(12, 4);
+        // The first row exactly as wide as the window, then a new line: not wrapped.
+        e.feed(b"at C:\\t\\scra\r\ntch\\a.exe");
+        let (mut pl, m) = cut_marks(&mut e);
+        cut_is_one_link(&m);
+        // The right-click over its second row offers the whole file.
+        let c = e.context_at(1, 2, &mut pl, "t1", Some("C:\\w"), 300);
+        assert_eq!(c.path.map(|p| p.text).as_deref(), Some(CUT_EXE));
+        let c = e.context_at(0, 5, &mut pl, "t1", Some("C:\\w"), 300);
+        assert_eq!(c.path.map(|p| p.text).as_deref(), Some(CUT_EXE));
+    }
+
+    #[test]
+    fn a_path_broken_by_hand_on_the_alternate_screen_inks_each_row() {
+        let mut e = Emulator::new(12, 4);
+        e.feed(b"\x1b[?1049h\x1b[Hat C:\\t\\scra\r\ntch\\a.exe");
+        let (_, m) = cut_marks(&mut e);
+        cut_is_one_link(&m);
+    }
+
+    #[test]
+    fn a_web_link_is_never_carried_across_a_row_broken_by_hand() {
+        let mut e = Emulator::new(17, 4);
+        e.feed(b"go https://a.io/x\r\n/y/z");
+        let m = marks(&mut e);
+        let web: Vec<&LinkTarget> = m
+            .iter()
+            .map(|m| &m.target)
+            .filter(|t| matches!(t, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(web, vec![&LinkTarget::Web("https://a.io/x".into())]);
     }
 
     #[test]

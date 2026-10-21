@@ -749,6 +749,66 @@ fn path_links_on(
             same_path(&clip_text(app), &pdf_s)
         });
     ctx.ok(copied, "Copy path copies it whole and absolute");
+    path_cut_at_the_edge(ctx, app, pdf)
+}
+
+/// BROKEN BY HAND AT THE EDGE (owner, 2026-10-21, PT #250, core 0.44.2: a path Claude printed was
+/// not a link). Claude Code cuts its own rows at the window's width, so the second row is never
+/// marked wrapped; written the same way here, the first row exactly as wide as the window, then a
+/// new line. PT: run.mjs pathLinks, "a path cut at the edge".
+fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), String> {
+    // `pdf` is <alpha>\docs\sign-off\rapport.pdf: the world's alpha folder is three up.
+    let alpha = pdf
+        .ancestors()
+        .nth(3)
+        .ok_or("the alpha folder of the pdf")?;
+    let deep = alpha.join("scratchpad").join("flare-pack").join("Releases");
+    fs::create_dir_all(&deep).map_err(|e| format!("make {}: {e}", deep.display()))?;
+    let notes = deep.join("Flare-notes.txt");
+    fs::write(&notes, b"x").map_err(|e| format!("write the notes: {e}"))?;
+    let notes_s = notes.to_string_lossy().into_owned();
+    type_line(
+        app,
+        "cls; $w = $Host.UI.RawUI.WindowSize.Width; $s = ('word ' * 40).Substring(0, $w - 21) + ' ' + (Resolve-Path scratchpad\\flare-pack\\Releases\\Flare-notes.txt).Path; Write-Host $s.Substring(0, $w); Write-Host $s.Substring($w)",
+    )?;
+    let mut seen = String::new();
+    let one_link = ctx.until(
+        "the cut path to wear the link colour on both rows",
+        8_000,
+        &mut || {
+            let (links, _) = marks(app);
+            seen = format!("{links:?}");
+            links.iter().any(|m| {
+                let rows: std::collections::BTreeSet<i64> = m["pieces"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p["row"].as_i64())
+                    .collect();
+                m["kind"] == json!("path")
+                    && m["text"].as_str().is_some_and(|t| same_path(t, &notes_s))
+                    && rows.len() >= 2
+            })
+        },
+    );
+    ctx.ok(
+        one_link,
+        format!("a path cut at the edge wears the link colour on both rows as ONE link ({seen})"),
+    );
+    ctx.shot(app, "path-links-cut");
+    click_on(app, "Flare-notes.txt", 2, Button::Left)?;
+    let opened_notes = ctx.until("the cut file opened", 4_000, &mut || {
+        opened(app)
+            .iter()
+            .any(|(k, p)| k == "open" && same_path(p, &notes_s))
+    });
+    ctx.ok(
+        opened_notes,
+        format!(
+            "and a click on its second row opens the whole file ({:?})",
+            opened(app)
+        ),
+    );
     Ok(())
 }
 
