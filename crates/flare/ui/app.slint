@@ -9,6 +9,7 @@ import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 
+export { Theme, Px } from "theme.slint";
 export { TabStripPreview } from "tabs.slint";
 export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
@@ -103,7 +104,7 @@ component TitleButtons inherits Rectangle {
 export component AppWindow inherits Window {
     title: "Flare";
     no-frame: true;
-    background: Theme.ground;
+    background: Theme.window-clear;
     preferred-width: 1000px;
     preferred-height: 640px;
     min-width: 560px;
@@ -123,6 +124,10 @@ export component AppWindow inherits Window {
     callback maximize-clicked();
     callback close-clicked();
     callback toggle-grid-renderer();
+    // The developer chords (decision D13), live only with the F12 overlay open: F9 / Shift+F9 walk the
+    // theme wall (-1 or 1), F8 steps the see-through level.
+    callback debug-step-theme(int);
+    callback debug-step-see-through();
 
     // ---- layout ----
     in property <bool> layout-vertical;
@@ -234,6 +239,14 @@ export component AppWindow inherits Window {
                 root.overlay-visible = !root.overlay-visible;
                 return accept;
             }
+            if (root.overlay-visible && event.text == Key.F9) {
+                root.debug-step-theme(event.modifiers.shift ? -1 : 1);
+                return accept;
+            }
+            if (root.overlay-visible && event.text == Key.F8) {
+                root.debug-step-see-through();
+                return accept;
+            }
             reject
         }
         VerticalLayout {
@@ -248,9 +261,10 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding: 0px;
                     spacing: 0px;
-                    // TitleMark: pl-3.5 pr-3 around a 17px mark, a full-height line after it.
+                    // TitleMark: pl-3.5 pr-3 around a 17px mark (43px), its full-height line INSIDE
+                    // the box (PT's `after:right-0 after:w-px`): the line starts where css px 42 ends.
                     Rectangle {
-                        width: Px.snap(43px) + Px.hair();
+                        width: Px.snap(42px) + Px.hair();
                         WindowMoveArea { }
                         AppMark {
                             x: Px.snap(14px);
@@ -554,6 +568,18 @@ export component AppWindow inherits Window {
             danger: root.dialog-danger;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
+        }
+        // The window edge (the DWM border does not show on a frameless window, docs/material.md E4):
+        // one device pixel in the colour edge_for answers; transparent when none, maximised or full screen.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            visible: Theme.edge.alpha > 0;
+            background: transparent;
+            border-width: Px.hair();
+            border-color: Theme.edge;
         }
     }
 }

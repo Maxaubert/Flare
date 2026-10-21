@@ -4,10 +4,14 @@
 
 pub mod argv;
 pub mod clipboard;
+pub mod dwm;
 pub mod edge_watch;
+pub mod material;
 pub mod monitors;
+pub mod os_build;
 pub mod pick;
 pub mod session_end;
 pub mod shell_open;
 pub mod single_instance;
+pub mod window_edge;
 pub mod window_state;

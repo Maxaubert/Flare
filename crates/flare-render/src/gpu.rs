@@ -84,6 +84,61 @@ pub struct GpuPainter {
     glyph_buf: GrowBuf,
     target: Option<wgpu::Texture>,
     warned_too_large: bool,
+    straight_pipeline: wgpu::RenderPipeline,
+    straight_bgl: wgpu::BindGroupLayout,
+    straight_target: Option<wgpu::Texture>,
+}
+
+/// The un-premultiply pass: one fullscreen triangle reading the painted grid texel for texel.
+fn straight_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("flare straight"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("straight.wgsl").into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("flare straight bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("flare straight layout"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("flare straight"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_full"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_straight"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bgl)
 }
 
 fn vertex_layout<'a>(
@@ -220,6 +275,7 @@ impl GpuPainter {
                 },
             ],
         });
+        let (straight_pipeline, straight_bgl) = straight_pipeline(&device);
         let rect_buf = GrowBuf::new(&device, "flare rect instances");
         let glyph_buf = GrowBuf::new(&device, "flare glyph instances");
         Self {
@@ -235,7 +291,85 @@ impl GpuPainter {
             glyph_buf,
             target: None,
             warned_too_large: false,
+            straight_pipeline,
+            straight_bgl,
+            straight_target: None,
         }
+    }
+
+    /// Paints like [`GpuPainter::paint`] and hands back the texture in STRAIGHT alpha, which is how
+    /// Slint reads an imported wgpu texture (docs/material.md E3, Task 20b). An opaque scene is the
+    /// same bytes either way, so only a see-through ground pays for the extra pass.
+    pub fn paint_straight(&mut self, scene: &Scene, glyphs: &mut dyn GlyphSource) -> wgpu::Texture {
+        let painted = self.paint(scene, glyphs);
+        if scene.clear.a == 255 {
+            return painted;
+        }
+        let (w, h) = (painted.width(), painted.height());
+        let stale = self
+            .straight_target
+            .as_ref()
+            .is_none_or(|t| t.width() != w || t.height() != h);
+        if stale {
+            self.straight_target = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("flare grid straight"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }));
+        }
+        let out = self
+            .straight_target
+            .clone()
+            .expect("straight target was just created");
+        let src_view = painted.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("flare straight bind group"),
+            layout: &self.straight_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&src_view),
+            }],
+        });
+        let view = out.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("flare straight"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("flare straight pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.straight_pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        out
     }
 
     /// Paints the scene into a texture of exactly `scene.width x scene.height` (recreated on size
@@ -377,6 +511,11 @@ impl GpuPainter {
 
     /// The font scale changed, so every cached bitmap is wrong.
     pub fn on_scale_change(&mut self) {
+        self.atlas.clear();
+    }
+
+    /// The face or base size changed, so every cached bitmap is wrong.
+    pub fn on_font_change(&mut self) {
         self.atlas.clear();
     }
 

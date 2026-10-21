@@ -5,7 +5,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use flare_agent::kinds::AgentKind;
@@ -23,6 +24,8 @@ use flare_term::fake::{FakeShells, FakeSpawner};
 use flare_term::handle::{StartOptions, TermHandle};
 use flare_term::pty::PortableSpawner;
 use flare_term::session::{RealShells, SessionManager, SessionOptions};
+#[cfg(test)]
+use flare_theme::look::AppliedLook;
 use flare_win::window_state::WindowStateStore;
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
@@ -35,11 +38,13 @@ use slint::{
 
 use crate::AppWindow;
 use crate::appctl::{AppCtl, Deps, Post, UiMsg};
+use crate::chrome_apply::{apply_chrome, apply_to_host};
 use crate::config::{Args, RendererChoice};
-use crate::host::{GridHost, GridPainter, SampleSource};
+use crate::host::{GridHost, GridPainter, GridSource, SampleSource};
 use crate::live::{Live, LiveSource, shutdown};
 use crate::memory::process_memory;
 use crate::tab_host::TabHost;
+use crate::theme_scene::{SAMPLE_STREAM, StreamSource, scene_font, scene_look};
 
 /// The line the live tab types; its echo and its output both show it on screen.
 const ECHO_MARK: &str = "flare-m2-ok";
@@ -251,7 +256,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 // ---- --scene: the window in one fixed state ----------------------------------------------------
 
 /// The scenes `--scene` takes, in the order the screenshot plan lists them.
-pub const SCENES: [&str; 12] = [
+pub const SCENES: [&str; 13] = [
     "strip-3",
     "strip-hover",
     "strip-many",
@@ -264,13 +269,14 @@ pub const SCENES: [&str; 12] = [
     "menu-tab",
     "dialog-close",
     "tip",
+    "theme-sample",
 ];
 
 /// The folder the scenes' tabs sit in. Inert: nothing is spawned in it and nothing is read from it.
 const GITHUB: &str = r"C:\Users\Admin\Documents\Claude\Github";
 const HOME: &str = r"C:\Users\Admin";
 /// Where the strip's first tab starts in css pixels: after the mark's column and its hairline.
-const STRIP_X: f32 = 43.0;
+const STRIP_X: f32 = 42.0;
 /// The middle of the top row in css pixels.
 const BAR_MID_Y: f32 = 17.0;
 /// The debounce of the scene's state files (the window's own delay).
@@ -285,17 +291,53 @@ fn scene_now() -> u64 {
     SCENE_MS.with(Cell::get)
 }
 
-/// The scene window's platform: it hands Slint the one software window and reads the scene clock.
-struct ScenePlatform(Rc<MinimalSoftwareWindow>);
+/// The scene window's platform: it hands Slint the window the next scene made and reads the scene
+/// clock. Slint's platform is set once per thread, so a thread that builds many scenes (the pixel
+/// tests) swaps the window through `NEXT_SCENE_WINDOW` instead of setting the platform again.
+struct ScenePlatform;
+
+thread_local! {
+    static NEXT_SCENE_WINDOW: RefCell<Option<Rc<MinimalSoftwareWindow>>> = const { RefCell::new(None) };
+    static SCENE_PLATFORM_SET: Cell<bool> = const { Cell::new(false) };
+}
 
 impl Platform for ScenePlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
-        Ok(self.0.clone())
+        NEXT_SCENE_WINDOW
+            .with(|w| w.borrow_mut().take())
+            .map(|w| w as Rc<dyn WindowAdapter>)
+            .ok_or_else(|| slint::PlatformError::Other("no scene window is waiting".into()))
     }
 
     fn duration_since_start(&self) -> Duration {
         Duration::from_millis(scene_now())
     }
+}
+
+/// Makes `win` the window the next component creation takes; the platform is set on first use.
+fn offer_scene_window(win: &Rc<MinimalSoftwareWindow>) -> Result<(), String> {
+    if !SCENE_PLATFORM_SET.with(Cell::get) {
+        slint::platform::set_platform(Box::new(ScenePlatform))
+            .map_err(|e| format!("cannot set the scene platform: {e}"))?;
+        SCENE_PLATFORM_SET.with(|s| s.set(true));
+    }
+    NEXT_SCENE_WINDOW.with(|w| *w.borrow_mut() = Some(win.clone()));
+    Ok(())
+}
+
+/// The headless GPU, opened once per process: a test that builds many scenes shares it. A static is
+/// never dropped, so no device is torn down while a thread-local of the window is already gone.
+static SCENE_GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+
+/// The headless GPU device and queue; an error starting with "GPU unavailable" means exit code 2.
+pub(crate) fn scene_gpu() -> Result<(wgpu::Device, wgpu::Queue), String> {
+    if let Some((device, queue)) = SCENE_GPU.get() {
+        return Ok((device.clone(), queue.clone()));
+    }
+    let (device, queue, info) = headless_device().map_err(|e| format!("GPU unavailable: {e}"))?;
+    log::info!("scene adapter: {} ({:?})", info.name, info.backend);
+    let (device, queue) = SCENE_GPU.get_or_init(|| (device, queue));
+    Ok((device.clone(), queue.clone()))
 }
 
 fn github(name: &str) -> String {
@@ -344,7 +386,7 @@ fn menu_places(p: &PrefStore) {
 }
 
 /// The tabs a scene restores and the preferences it sets before the window is made.
-fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
+pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
     let three = [github("Prism"), github("Flare"), github("Sonara")];
     // Thirty tabs: at 1000 px the strip shows icons and the +N control (sixteen all fit).
     let many: Vec<String> = (1..=30).map(|i| github(&format!("Tab{i:02}"))).collect();
@@ -364,20 +406,22 @@ fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         "start" => (saved(&[], 0), start_places),
         "menu-places" => (saved(&three, 0), menu_places),
         "dialog-close" => (saved(&three, 0), no_prefs),
+        // M3's strip-3 window with a single tab.
+        "theme-sample" => (saved(&[github("Flare")], 0), no_prefs),
         _ => (saved(&three, 0), no_prefs),
     }
 }
 
 /// A scene's window: the controller over fake shells, the messages its workers post and the
 /// scratch folder its state files live in (removed on drop).
-struct Scene {
+pub(crate) struct Scene {
     win: Rc<MinimalSoftwareWindow>,
-    app: AppWindow,
+    pub(crate) app: AppWindow,
     ctl: Rc<RefCell<AppCtl>>,
-    host: Rc<RefCell<GridHost>>,
+    pub(crate) host: Rc<RefCell<GridHost>>,
     queue: Arc<Mutex<VecDeque<UiMsg>>>,
-    scale: f32,
-    phys: (u32, u32),
+    pub(crate) scale: f32,
+    pub(crate) phys: (u32, u32),
     dir: PathBuf,
 }
 
@@ -389,30 +433,45 @@ impl Drop for Scene {
 
 impl Scene {
     /// The window, the grid, the prefs and the saved tabs, restored before this returns.
-    fn build(args: &Args, saved: SavedTabs, prep: fn(&PrefStore)) -> Result<Self, String> {
+    pub(crate) fn build(
+        args: &Args,
+        saved: SavedTabs,
+        prep: fn(&PrefStore),
+        sample_stream: bool,
+    ) -> Result<Self, String> {
         let scale = args.scale;
         let phys = (
             (args.size.0 as f32 * scale).round() as u32,
             (args.size.1 as f32 * scale).round() as u32,
         );
         let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        slint::platform::set_platform(Box::new(ScenePlatform(win.clone())))
-            .map_err(|e| format!("cannot set the scene platform: {e}"))?;
+        offer_scene_window(&win)?;
         let glyphs = Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0));
         let host = match args.renderer {
             RendererChoice::Software => GridHost::new(glyphs, GridPainter::Cpu),
             RendererChoice::Gpu => {
-                let (device, queue, info) =
-                    headless_device().map_err(|e| format!("GPU unavailable: {e}"))?;
-                log::info!("scene adapter: {} ({:?})", info.name, info.backend);
+                let (device, queue) = scene_gpu()?;
                 let mut host = GridHost::new(glyphs, GridPainter::Gpu);
                 host.attach_gpu(&device, &queue);
                 host
             }
         };
+        // The look the scene wears: pt-default, or what the one-run overrides name. A bad theme
+        // id stops here, before anything is made.
+        let look = scene_look(&args.look, true)?;
+        let (families, base_px) = scene_font(&args.look);
+        let families: Vec<&str> = families.iter().map(String::as_str).collect();
+        let mut host = host;
+        host.set_font(&families, base_px as f32);
+        apply_to_host(&mut host, &look);
         let host = Rc::new(RefCell::new(host));
 
-        let dir = std::env::temp_dir().join(format!("flare-scene-{}", std::process::id()));
+        static SCENE_SEQ: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "flare-scene-{}-{}",
+            std::process::id(),
+            SCENE_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir) // sync-ok: scene tooling, before the window
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let tabs_file = dir.join("tabs.json");
@@ -463,7 +522,12 @@ impl Scene {
             open_url: Rc::new(|_: &str| {}),
             // The scenes draw the sample grid under every tab, whatever the tab's shell is.
             set_grid_source: Rc::new(move |_: Option<Arc<TermHandle>>| {
-                grid.borrow_mut().set_source(Box::new(SampleSource::new()));
+                let source: Box<dyn GridSource> = if sample_stream {
+                    Box::new(StreamSource::new(SAMPLE_STREAM))
+                } else {
+                    Box::new(SampleSource::new())
+                };
+                grid.borrow_mut().set_source(source);
             }),
             raise: Rc::new(|| {}),
             quit: Rc::new(|| {}),
@@ -482,9 +546,17 @@ impl Scene {
             phys,
             dir,
         };
+        apply_chrome(&scene.app, &look);
         AppCtl::start_restore(&scene.ctl);
         scene.wait_restore()?;
         Ok(scene)
+    }
+
+    /// Wears another look in place: the chrome and the grid, nothing else moves (the pixel tests).
+    #[cfg(test)]
+    pub(crate) fn wear(&self, look: &AppliedLook) {
+        apply_chrome(&self.app, look);
+        apply_to_host(&mut self.host.borrow_mut(), look);
     }
 
     /// Hands every posted message to the controller, in order.
@@ -581,7 +653,8 @@ impl Scene {
     }
 
     /// Lays the window out and paints it: the grid is drawn into the box the layout gave it.
-    fn render(&self) -> Vec<u8> {
+    /// The grid image is premultiplied, as the live window declares it.
+    pub(crate) fn render(&self) -> Vec<u8> {
         let (w, h) = self.phys;
         let mut pixels = vec![PremultipliedRgbaColor::default(); (w * h) as usize];
         self.win.request_redraw();
@@ -601,7 +674,8 @@ impl Scene {
                     grid.width,
                     grid.height,
                 );
-                self.app.set_grid_image(Image::from_rgba8(buffer));
+                self.app
+                    .set_grid_image(Image::from_rgba8_premultiplied(buffer));
             }
         }
         self.win.request_redraw();
@@ -685,7 +759,7 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "--scene needs --screenshot <path>".to_string())?;
     let (saved, prep) = setup(name);
-    let scene = Scene::build(args, saved, prep)?;
+    let scene = Scene::build(args, saved, prep, name == "theme-sample")?;
     scene.stage(name)?;
     let rgba = scene.render();
     write_png(path, scene.phys.0, scene.phys.1, &rgba)?;

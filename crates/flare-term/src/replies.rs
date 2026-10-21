@@ -2,12 +2,9 @@
 //! byte here answers a query in the pty's own stream, or is the `?997` report a program
 //! switched on. None holds CR, LF or BEL, so a shell can never act on it.
 
-/// The look of the ground: a program asking for it is told dark or light.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GroundMode {
-    Dark,
-    Light,
-}
+/// The look of the ground (dark or light) and how it is measured: one measure, shared with the
+/// chrome (`flare_theme::marks`), so a program is told the mode the window wears.
+pub use flare_theme::marks::{Mode as GroundMode, ground_mode};
 
 /// The least time between two bells that reach the host, in milliseconds.
 pub const BELL_GAP_MS: u64 = 1000;
@@ -16,9 +13,6 @@ const ESC: char = '\x1b';
 
 /// String terminator (ESC \).
 const ST: &str = "\x1b\\";
-
-/// The fallback ground when a colour does not parse (Prism's own dark ground).
-const FALLBACK_HEX: &str = "#0b0b0f";
 
 /// The colours the replies report.
 pub struct Ground<'a> {
@@ -73,32 +67,6 @@ pub fn colour_query_replies(ident: u8, data: &str, g: &Ground) -> Option<Vec<Str
             })
             .collect(),
     )
-}
-
-/// WCAG relative luminance of an opaque colour component list.
-fn luminance(rgb: (u8, u8, u8)) -> f64 {
-    let lin = |c: u8| {
-        let c = f64::from(c) / 255.0;
-        if c <= 0.03928 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * lin(rgb.0) + 0.7152 * lin(rgb.1) + 0.0722 * lin(rgb.2)
-}
-
-/// Light or dark, measured from the ground's colour (alpha ignored). A ground above 0.4
-/// luminance is light.
-pub fn ground_mode(bg: &str) -> GroundMode {
-    let rgb = parse_rgb(bg)
-        .or_else(|| parse_rgb(FALLBACK_HEX))
-        .unwrap_or((0, 0, 0));
-    if luminance(rgb) > 0.4 {
-        GroundMode::Light
-    } else {
-        GroundMode::Dark
-    }
 }
 
 /// The answer to `CSI ? 996 n`, and the report mode 2031 pushes.
@@ -285,6 +253,26 @@ mod tests {
     fn bell_gate_drops_a_quick_second_bell() {
         assert!(!bell_gate(Some(5000), 5300));
         assert!(bell_gate(Some(5000), 6100));
+    }
+
+    #[test]
+    fn a_program_is_told_the_mode_the_chrome_wears() {
+        use flare_theme::chrome::chrome_tokens;
+        use flare_theme::edges::WindowEdges;
+        use flare_theme::preset::presets;
+        use flare_theme::resolve::resolve_preset;
+        for p in presets() {
+            let theme = resolve_preset(p);
+            let chrome = chrome_tokens(&theme, 1.0, None, WindowEdges::Hairline, None, None);
+            assert_eq!(ground_mode(&theme.background), chrome.mode, "{}", p.id);
+        }
+    }
+
+    #[test]
+    fn the_retired_github_wears_a_light_ground() {
+        use flare_theme::resolve::resolve_saved_theme;
+        let theme = resolve_saved_theme("github", None, None);
+        assert_eq!(ground_mode(&theme.background), GroundMode::Light);
     }
 
     #[test]

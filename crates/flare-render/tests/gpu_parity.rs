@@ -7,7 +7,9 @@ use flare_render::gpu::{GpuPainter, headless_device, read_texture};
 use flare_render::metrics::{cell_metrics, grid_dims};
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{GlyphDraw, RectFill, Scene, build_scene};
+use flare_render::scene::{
+    GlyphDraw, GroundPaint, RectFill, Scene, build_scene, build_scene_ground,
+};
 
 macro_rules! device_or_skip {
     () => {{
@@ -29,10 +31,26 @@ fn max_diff(a: &[u8], b: &[u8]) -> u8 {
         .unwrap_or(0)
 }
 
-fn sample_scene(glyphs: &dyn GlyphSource, scale: f32, w: u32, h: u32) -> Scene {
+fn sample_scene_ground(
+    glyphs: &dyn GlyphSource,
+    scale: f32,
+    w: u32,
+    h: u32,
+    ground: GroundPaint,
+) -> Scene {
     let m = cell_metrics(&glyphs.font_units(), scale);
     let (cols, rows) = grid_dims(w, h, &m);
-    build_scene(&sample_grid(cols, rows), &Palette::pt_default(), &m, w, h)
+    if ground == GroundPaint::InGrid {
+        return build_scene(&sample_grid(cols, rows), &Palette::pt_default(), &m, w, h);
+    }
+    build_scene_ground(
+        &sample_grid(cols, rows),
+        &Palette::pt_default(),
+        &m,
+        w,
+        h,
+        ground,
+    )
 }
 
 fn empty_scene(w: u32, h: u32) -> Scene {
@@ -47,11 +65,15 @@ fn empty_scene(w: u32, h: u32) -> Scene {
 }
 
 fn parity(glyphs: &mut dyn GlyphSource, scale: f32) {
+    parity_ground(glyphs, scale, GroundPaint::InGrid);
+}
+
+fn parity_ground(glyphs: &mut dyn GlyphSource, scale: f32, ground: GroundPaint) {
     let (device, queue) = device_or_skip!();
     glyphs.set_scale(scale);
     let w = (648.0 * scale).round() as u32;
     let h = (264.0 * scale).round() as u32;
-    let scene = sample_scene(glyphs, scale, w, h);
+    let scene = sample_scene_ground(glyphs, scale, w, h, ground);
     let mut gpu = GpuPainter::new(&device, &queue);
     let tex = gpu.paint(&scene, glyphs);
     let got = read_texture(&device, &queue, &tex);
@@ -121,6 +143,59 @@ fn real_glyphs_match_cpu_within_2() {
 #[test]
 fn real_glyphs_match_cpu_within_2_at_225_percent() {
     parity(&mut Rasterizer::new(DEFAULT_FAMILIES, 1.0), 2.25);
+}
+
+#[test]
+fn gpu_matches_cpu_on_a_transparent_ground() {
+    for scale in [1.0, 2.25] {
+        parity_ground(
+            &mut Rasterizer::new(DEFAULT_FAMILIES, 1.0),
+            scale,
+            GroundPaint::ByUi,
+        );
+    }
+}
+
+/// Slint reads an imported texture as straight alpha (docs/material.md E3): under glass the grid
+/// goes through the un-premultiply pass; an opaque grid is handed over as painted.
+#[test]
+fn paint_straight_unpremultiplies_a_see_through_grid_only() {
+    let (device, queue) = device_or_skip!();
+    let mut fake = FakeGlyphs::new(6, 12);
+    let mut gpu = GpuPainter::new(&device, &queue);
+    let mut scene = empty_scene(32, 16);
+    scene.clear = flare_render::color::Rgba {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
+    // A premultiplied half-alpha fill, as the painter leaves a half-covered glyph pixel.
+    scene.rects.push(RectFill {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 8,
+        color: flare_render::color::Rgba {
+            r: 64,
+            g: 32,
+            b: 16,
+            a: 128,
+        },
+    });
+    let tex = gpu.paint_straight(&scene, &mut fake);
+    let got = read_texture(&device, &queue, &tex);
+    let px = |x: usize, y: usize| &got[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4];
+    for (g, want) in px(2, 2).iter().zip([128u8, 64, 32, 128]) {
+        assert!(g.abs_diff(want) <= 1, "{:?}", px(2, 2));
+    }
+    assert_eq!(px(20, 10), [0, 0, 0, 0], "a clear pixel stays clear");
+
+    // Opaque: the same bytes as the painted grid.
+    let opaque = empty_scene(32, 16);
+    let a = read_texture(&device, &queue, &gpu.paint(&opaque, &mut fake));
+    let b = read_texture(&device, &queue, &gpu.paint_straight(&opaque, &mut fake));
+    assert_eq!(a, b);
 }
 
 #[test]

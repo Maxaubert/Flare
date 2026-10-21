@@ -2,10 +2,27 @@
 
 use std::path::PathBuf;
 
+use flare_theme::colour::{parse_colour, to_stored};
+use flare_theme::edges::WindowEdges;
+use flare_theme::fonts::font_id_or_default;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RendererChoice {
     Gpu,
     Software,
+}
+
+/// The developer look flags (decision D13): they beat the stored look for one run and write nothing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LookOverrides {
+    pub theme: Option<String>,
+    pub see_through: Option<u8>,
+    pub font: Option<String>,
+    pub font_pct: Option<u32>,
+    pub accent: Option<String>,
+    pub background: Option<String>,
+    pub secondary: Option<String>,
+    pub edges: Option<WindowEdges>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +46,8 @@ pub struct Args {
     pub live_tabs: Option<u32>,
     /// `--instance-probe`: answers whether this process was the first instance.
     pub instance_probe: bool,
+    /// `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`, `--background`, `--secondary`, `--edges`.
+    pub look: LookOverrides,
     /// Bare arguments (folders or files), in order.
     pub positional: Vec<String>,
 }
@@ -54,6 +73,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         scene: None,
         live_tabs: None,
         instance_probe: false,
+        look: LookOverrides::default(),
         positional: Vec::new(),
     };
     let mut i = 0;
@@ -93,6 +113,49 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                     .map_err(|_| "--live-tabs needs a whole number".to_string())?;
                 out.live_tabs = Some(n);
             }
+            "--theme" => out.look.theme = Some(value(args, &mut i, flag)?.to_string()),
+            "--see-through" => {
+                let n: u8 = value(args, &mut i, flag)?
+                    .parse()
+                    .map_err(|_| "--see-through needs a whole number from 0 to 70".to_string())?;
+                if n > 70 {
+                    return Err(format!("--see-through {n} is out of range 0..=70"));
+                }
+                out.look.see_through = Some(n);
+            }
+            "--font" => {
+                let id = value(args, &mut i, flag)?;
+                if font_id_or_default(Some(id)) != id {
+                    return Err(format!("--font {id} is not a terminal face"));
+                }
+                out.look.font = Some(id.to_string());
+            }
+            "--font-pct" => {
+                let n: u32 = value(args, &mut i, flag)?
+                    .parse()
+                    .map_err(|_| "--font-pct needs a whole number from 50 to 200".to_string())?;
+                if !(50..=200).contains(&n) || !n.is_multiple_of(10) {
+                    return Err(format!(
+                        "--font-pct {n} is not a size step (50 to 200 in tens)"
+                    ));
+                }
+                out.look.font_pct = Some(n);
+            }
+            "--accent" => {
+                out.look.accent = Some(parse_look_colour(flag, value(args, &mut i, flag)?)?);
+            }
+            "--background" => {
+                out.look.background = Some(parse_look_colour(flag, value(args, &mut i, flag)?)?);
+            }
+            "--secondary" => {
+                out.look.secondary = Some(parse_look_colour(flag, value(args, &mut i, flag)?)?);
+            }
+            "--edges" => {
+                let w = value(args, &mut i, flag)?;
+                out.look.edges = Some(WindowEdges::from_word(w).ok_or_else(|| {
+                    format!("bad edges '{w}': use none, faint, hairline or solid")
+                })?);
+            }
             other if other.starts_with("--user-data-dir=") => {
                 let path = &other["--user-data-dir=".len()..];
                 if path.is_empty() {
@@ -122,6 +185,13 @@ fn value<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, S
     args.get(*i)
         .map(String::as_str)
         .ok_or_else(|| format!("{flag} needs a value"))
+}
+
+/// A colour flag's value in the stored form (`#rrggbb` or `#rrggbbaa`).
+fn parse_look_colour(flag: &str, v: &str) -> Result<String, String> {
+    parse_colour(v)
+        .map(|c| to_stored(&c))
+        .ok_or_else(|| format!("{flag} needs a colour such as #rrggbb, not '{v}'"))
 }
 
 fn parse_renderer(v: &str) -> Result<RendererChoice, String> {
@@ -275,5 +345,54 @@ mod tests {
     fn live_shell_needs_live_screenshot() {
         assert!(parse_args(&a(&["--live-shell", "cmd"]), None).is_err());
         assert!(parse_args(&a(&["--live-shell"]), None).is_err());
+    }
+
+    #[test]
+    fn the_look_flags_parse() {
+        let args = parse_args(
+            &a(&[
+                "--theme",
+                "nord",
+                "--see-through",
+                "40",
+                "--font",
+                "hack",
+                "--font-pct",
+                "120",
+                "--accent",
+                "#e07a2f",
+                "--background",
+                "#101010",
+                "--secondary",
+                "#3a3a3a",
+                "--edges",
+                "solid",
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            args.look,
+            LookOverrides {
+                theme: Some("nord".into()),
+                see_through: Some(40),
+                font: Some("hack".into()),
+                font_pct: Some(120),
+                accent: Some("#e07a2f".into()),
+                background: Some("#101010".into()),
+                secondary: Some("#3a3a3a".into()),
+                edges: Some(WindowEdges::Solid),
+            }
+        );
+        assert_eq!(
+            parse_args(&a(&[]), None).unwrap().look,
+            LookOverrides::default()
+        );
+        assert!(parse_args(&a(&["--see-through", "90"]), None).is_err());
+        assert!(parse_args(&a(&["--font-pct", "55"]), None).is_err());
+        assert!(parse_args(&a(&["--edges", "dotted"]), None).is_err());
+        assert!(parse_args(&a(&["--theme"]), None).is_err());
+        assert!(parse_args(&a(&["--accent", "soup"]), None).is_err());
+        assert!(parse_args(&a(&["--font", "comic"]), None).is_err());
     }
 }

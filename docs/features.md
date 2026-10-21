@@ -141,3 +141,61 @@ are added as milestones land.
   whole device pixel edges, the slide holding the terminal's size, the e2e variable gate, and
   `tabs.json` written only after the restore answers); rules 48 and 125 are amended with their tests.
   The plan's numbers 138 to 142 were taken by M2, so these moved to 143 to 147.
+
+## Themes, fonts, material (M4), 2026-10-17
+
+- **Flare wears Prism Terminal's look.** All 39 themes with their exact values (generated from
+  Prism Terminal's own code by `tools/oracle`, so no value is typed by hand), the Custom theme, and
+  the 31 window chrome tokens derived from the terminal theme. Every ink is measured against the
+  ground it sits on: light or dark comes from the measured ground, never from a theme name. Text
+  4.5:1, marks 3:1, sidebar tab names 7:1, name flip under 2:1.
+- **PT Default is the default and leads the wall after Custom.** A fresh profile wears PT Default
+  (owner brief, 2026-10-17). The wall is Custom (when saved), PT Default, then the rest in measured
+  order. Held by `the_wall_is_custom_then_the_default_then_the_rest` and `a_fresh_store_wears_pt_default_at_100_percent`.
+- **Unset means the theme's.** Background, Accent and Secondary are optional; unset follows the
+  theme. A theme pick forgets all three, except that Custom restores what it kept. Each row shows the
+  theme's colour until a pick, then a plain Reset forgets it. Held by `unset_colours_follow_the_theme_exactly`,
+  `custom_keeps_no_window_colours_until_save_keeps_some` and `accent_forgets_when_handed_none_and_tells_the_painter_both_times`.
+- **See-through 0 to 70.** 0 is solid and reads "Off"; other values read "N%". The desktop shows through
+  every surface with one coat at the slider value (ground alpha = 1 - level/100). Each theme's own
+  see-through is 0; Custom keeps its own. Held by `see_through_reads_clamped_and_nonsense_as_zero`,
+  `ground_alpha_is_one_minus_the_level` and `glass_paints_the_ground_once`.
+- **Edges: None, Faint, Hairline (default), Solid.** The window line and the one-pixel DWM border step
+  follow the ground. Nothing is stored until a choice is made. Held by `edges_are_offered_weakest_to_strongest_by_every_number`,
+  `default_to_hairline_and_read_anything_else_as_it` and `apply_is_debounced_250_ms`.
+- **Acrylic on Windows 11 through DWM, GPU renderer only.** The row reads "Needs Windows 11." on builds
+  under 22000 and "Needs Windows 11 22H2." on 22000 to 22620 (decision D6); the window stays solid there.
+  Material is set before colour, so no frame shows a translucent ground without a backdrop behind it
+  (held by `order_only_material_first_when_glass_turns_on`); a failed DWM call leaves the window solid
+  (`a_failed_backdrop_call_leaves_the_window_solid`).
+- **Fonts and size belong to no theme.** Fifteen faces with fallback stacks (default Cascadia Mono),
+  base 13 px, size steps 50 to 200 percent. Ctrl+wheel zooms the one tab between 7 and 64 px and is
+  never saved. Held by `a_theme_leaves_the_font_and_its_size_alone`, `zoom_is_never_saved` and `zoom_stops_at_7_and_64`.
+- **Planner decisions D1 to D16 and four owner questions** are in `docs/parity.md` (Decisions). The
+  owner may overrule any of them. Q1 (see-through on the software renderer stays solid), Q2 (21H2
+  reads "Needs Windows 11 22H2."), Q3 (the reference is Prism Terminal 0.58.0) and Q4 (the transparent
+  DirectComposition swapchain is used from start) wait for the owner's answer.
+- **Developer flags until M7.** `--theme`, `--see-through`, `--font`, `--font-pct`, `--accent`,
+  `--background`, `--secondary` and `--edges` wear a theme for one run; F9 and Shift+F9 walk the wall,
+  F8 steps the see-through by 10 (with the F12 overlay open). The keys write the store.
+- **Tests that hold it.** The whole workspace: 1548 run, 1548 passed, 2 skipped (M3 ended at 1107).
+  `flare-theme` 235, `flare-settings` 131, `flare-win` 93, `flare` 365 (the app crate, which holds the
+  look controller, the pixel tests and the screenshots). The Prism Terminal ledger is in
+  `docs/test-port.md` ("M4 ledger"); every M4 line of `docs/parity.md` names its tests, or is open with
+  its milestone (M7 for the settings UI and the picker; O7 for the eyedropper).
+- **Screenshots.** Every theme at 100, 150 and 225 percent on both grid renderers, beside Prism Terminal
+  0.58.0 (`docs/screenshots/m4`: six contact sheets, one per size and renderer; the `side` and `pt`
+  folders; the `flare` and `material` folders). Pixel assertions hold the colours; the screenshots are for the eye.
+- **Measured on this PC, 2026-10-17 (release build, RTX 5090, Windows 11).**
+  - Cold start of the real window to its first frame, `--e2e` with `RUST_LOG=info`, 10 runs each:
+    visual swapchain (glass plan) median 1257 ms (range 1214 to 1744); without glass
+    (`FLARE_NO_GLASS=1`) median 1228 ms (range 1194 to 1334). The visual swapchain is about 30 ms
+    slower to the first frame, inside the run-to-run spread. The first-frame mean was not measured
+    (the window was not driven through 300 forced redraws); the M4 spike's figure (no measurable
+    frame cost, `docs/material.md` E7) stands.
+  - `apply_look` for all 39 themes: 1.97 ms in total (about 0.05 ms each), release.
+  - The cost of a theme switch on a 120 x 30 grid to the next frame is not timed separately yet (open).
+- **Regression rules.** `docs/regression-rules.md` rules 148 to 152 (the oracle, no frame over a
+  translucent ground without a backdrop, no DWM call on Windows 10, no theme colour typed outside the
+  theme, glass only when it can be used). Rules 67, 68, 69, 73, 74, 75, 126 and 127 are amended with
+  their test names. The plan's numbers 143 to 147 were taken by M3, so these moved to 148 to 152.

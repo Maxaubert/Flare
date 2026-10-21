@@ -234,4 +234,67 @@ mod tests {
         paint_scene(&scene, &mut FakeGlyphs::new(4, 6), &mut out);
         assert_eq!(out.pixel(0, 0), [255, 0, 0, 255]);
     }
+
+    /// Half-coverage mask glyphs, to see how text lands on a transparent ground.
+    struct HalfGlyphs {
+        inner: FakeGlyphs,
+        last: Option<crate::glyph::GlyphBitmap>,
+    }
+
+    impl GlyphSource for HalfGlyphs {
+        fn glyph(&mut self, key: &GlyphKey) -> Option<&crate::glyph::GlyphBitmap> {
+            let mut g = self.inner.glyph(key)?.clone();
+            g.data.iter_mut().for_each(|c| *c = 128);
+            self.last = Some(g);
+            self.last.as_ref()
+        }
+        fn font_units(&self) -> crate::metrics::FontUnits {
+            self.inner.font_units()
+        }
+        fn set_scale(&mut self, scale: f32) {
+            self.inner.set_scale(scale);
+        }
+    }
+
+    fn transparent_scene(w: u32, h: u32) -> Scene {
+        let clear = Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        };
+        empty_scene(w, h, clear)
+    }
+
+    #[test]
+    fn text_over_a_transparent_ground_is_premultiplied() {
+        let mut scene = transparent_scene(20, 20);
+        scene.glyphs.push(glyph("A", 4, 16, WHITE));
+        let mut half = HalfGlyphs {
+            inner: FakeGlyphs::new(4, 6),
+            last: None,
+        };
+        let mut out = RgbaImage::new(20, 20);
+        paint_scene(&scene, &mut half, &mut out);
+        let expected = blend_mask([0, 0, 0, 0], WHITE, 128);
+        assert_eq!(expected, [128, 128, 128, 128]);
+        assert_eq!(out.pixel(4, 10), expected);
+
+        // Coloured text: the colour is fg scaled by coverage, the alpha is the coverage.
+        let mut scene = transparent_scene(20, 20);
+        scene.glyphs.push(glyph("A", 4, 16, RED));
+        paint_scene(&scene, &mut half, &mut out);
+        assert_eq!(out.pixel(4, 10), blend_mask([0, 0, 0, 0], RED, 128));
+        assert_eq!(out.pixel(4, 10)[3], 128);
+    }
+
+    #[test]
+    fn a_default_cell_stays_alpha_zero() {
+        let mut scene = transparent_scene(10, 10);
+        scene.glyphs.push(glyph("A", 0, 6, WHITE));
+        let mut out = RgbaImage::new(10, 10);
+        paint_scene(&scene, &mut FakeGlyphs::new(4, 6), &mut out);
+        assert_eq!(out.pixel(9, 9), [0, 0, 0, 0]);
+        assert_eq!(out.pixel(0, 9), [0, 0, 0, 0]);
+    }
 }

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_settings::kv::{FileBackend, PrefStore};
+use flare_settings::look::LookStore;
 use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::handle::TermHandle;
@@ -45,12 +46,16 @@ use crate::appctl::{AppCtl, CloseDecision, Deps, KeyOutcome, Post, UiMsg};
 use crate::backend::BackendOutcome;
 use crate::config::{Args, RendererChoice};
 use crate::e2e;
+use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
+use crate::look_ctl::LookCtl;
+use crate::material_ctl::{SlintWake, WindowMaterial};
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
+use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
 const SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -464,6 +469,8 @@ pub fn run_window(
     let front: FrontCell = Rc::new(RefCell::new(None));
     let mut ctl: Option<CtlRc> = None;
     let mut session_end = None;
+    // A font setting changed: the grid takes the new face and size (Task 27).
+    let mut _font_sub = None;
     let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
@@ -601,6 +608,24 @@ pub fn run_window(
                 None
             }
         };
+        // The grid's face and size (Task 27): the settings, or this run's --font and --font-pct.
+        rc.borrow_mut().set_font_ctl(
+            FontCtl::new(LookStore::new(prefs.clone()), host.clone())
+                .with_overrides(args.look.font.clone(), args.look.font_pct),
+        );
+        _font_sub = Some(LookStore::new(prefs.clone()).on_look_change(|| {
+            let queued = slint::invoke_from_event_loop(|| {
+                let target = APP_CTL.with(|cell| cell.borrow().clone());
+                if let Some((rc, _)) = target
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                {
+                    c.apply_font();
+                }
+            });
+            if queued.is_err() {
+                log::debug!("font: event loop closed");
+            }
+        }));
         stores = Some((tabs_store, window_store, prefs));
         ctl = Some(rc);
     }
@@ -675,6 +700,7 @@ pub fn run_window(
             CloseDecision::KeepOpen => CloseRequestResponse::KeepWindowShown,
             CloseDecision::Close => CloseRequestResponse::HideWindow,
         });
+    let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
     if let Some(rc) = &ctl {
         install_window_filter(
             &app,
@@ -683,6 +709,7 @@ pub fn run_window(
                 front: front.clone(),
                 host: host.clone(),
                 initial: initial.clone(),
+                material: material.clone(),
             },
         );
     }
@@ -723,6 +750,48 @@ pub fn run_window(
         });
     }
 
+    // The look (Task 26): the first frame wears the saved theme, opaque (no flash of the default), because
+    // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
+    let look_prefs = stores
+        .as_ref()
+        .map_or_else(PrefStore::memory, |(_, _, p)| p.clone());
+    let look = {
+        let ctl = LookCtl::new(
+            &app,
+            LookStore::new(look_prefs),
+            host.clone(),
+            material.clone(),
+            &outcome,
+            args.look.clone(),
+        );
+        if args.e2e || sample {
+            // Headless-style runs apply once, with their overrides, and never listen.
+            let rc = ctl.install_quiet();
+            rc.borrow_mut().apply_now();
+            rc
+        } else {
+            let rc = ctl.install();
+            rc.borrow_mut().apply_now();
+            rc
+        }
+    };
+    app.on_debug_step_theme({
+        let look = look.clone();
+        move |dir| {
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.debug_step_theme(dir);
+            }
+        }
+    });
+    app.on_debug_step_see_through({
+        let look = look.clone();
+        move || {
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.debug_step_see_through();
+            }
+        }
+    });
+
     app.show()?;
     if args.e2e {
         apply_e2e_style(&app);
@@ -732,6 +801,24 @@ pub fn run_window(
     }
     if !sample {
         app.window().with_winit_window(|w| w.set_ime_allowed(true));
+    }
+    // The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window,
+    // so it is made after the show; the look controller (Task 26) drives it from the settings.
+    {
+        let now = Instant::now();
+        if let Some(mut m) = WindowMaterial::new(&app, os_version(), args.e2e) {
+            // No polling: the material arms a one-shot wake only while the border is due.
+            m.set_wake(Box::new(SlintWake::new(Rc::downgrade(&material))), now);
+            m.on_window_state(
+                app.window().is_maximized(),
+                app.window().is_fullscreen(),
+                now,
+            );
+            // A saved see-through level becomes glass only now: the backdrop first, then the ground.
+            if let Ok(mut l) = look.try_borrow_mut() {
+                l.attach_material(m);
+            }
+        }
     }
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
@@ -761,6 +848,7 @@ pub fn run_window(
         prefs.flush();
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
+    LookCtl::uninstall();
     let mut instance = instance;
     if let Some(s) = instance.as_mut().and_then(|i| i.server.take()) {
         s.stop();
@@ -818,6 +906,8 @@ struct FilterState {
     front: FrontCell,
     host: Rc<RefCell<GridHost>>,
     initial: Option<InitialWindow>,
+    /// Filled after the show, when the window has its handle.
+    material: Rc<RefCell<Option<WindowMaterial>>>,
 }
 
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
@@ -829,6 +919,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         front,
         host,
         initial,
+        material,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
@@ -966,6 +1057,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                let (maximised, fullscreen) = (window.is_maximized(), window.is_fullscreen());
+                // The look controller keeps the UI and the material in step (D7); without one
+                // the material alone follows.
+                if !LookCtl::with_current(|l| l.window_state(maximised, fullscreen, Instant::now()))
+                    && let Ok(mut m) = material.try_borrow_mut()
+                    && let Some(m) = m.as_mut()
+                {
+                    m.on_window_state(maximised, fullscreen, Instant::now());
+                }
                 let o = observe(window);
                 with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate
@@ -1083,6 +1183,15 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                     MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
                     MouseScrollDelta::PixelDelta(p) => accum.borrow_mut().add(p.y, m.cell_h),
                 };
+                // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
+                if mods.get().control_key() {
+                    for _ in 0..notches.unsigned_abs().min(64) {
+                        with_ctl(&mut |c| {
+                            c.zoom_front(f64::from(notches.signum()));
+                        });
+                    }
+                    return EventResult::PreventDefault;
+                }
                 if notches != 0 {
                     let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
                     handle.wheel(notches, col, row);

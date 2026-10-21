@@ -129,3 +129,43 @@ fn every_sync_ok_has_a_reason() {
         bad.join("\n")
     );
 }
+
+/// Every Win32 call Flare makes on the UI thread here (DWM and the ntdll version read) returns in
+/// microseconds and says so: a `// sync-ok:` marker within five lines above it or three below
+/// (Task 32; the calls are cosmetic, rule 74).
+#[test]
+fn every_dwm_and_version_call_says_it_returns_at_once() {
+    const CALLS: &[&str] = &[
+        "DwmSetWindowAttribute(",
+        "DwmGetWindowAttribute(",
+        "DwmExtendFrameIntoClientArea(",
+        "RtlGetVersion(",
+    ];
+    let (_, files) = src_files();
+    let mut bad = Vec::new();
+    for f in files {
+        let text = std::fs::read_to_string(&f).expect("a source file can be read");
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.starts_with("#[cfg(test)]") {
+                break;
+            }
+            let code = line.split("//").next().unwrap_or("");
+            if !CALLS.iter().any(|c| code.contains(c)) {
+                continue;
+            }
+            let before = &lines[i.saturating_sub(5)..i];
+            let after = &lines[i + 1..(i + 4).min(lines.len())];
+            let marked =
+                line.contains(MARK) || before.iter().chain(after.iter()).any(|l| l.contains(MARK));
+            if !marked {
+                bad.push(format!("{}:{}: {}", f.display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "DWM or version calls without a `// sync-ok:` marker:\n{}",
+        bad.join("\n")
+    );
+}

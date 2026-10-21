@@ -10,7 +10,7 @@ use flare_agent::close::{
     CloseTarget, close_primary_label, close_question_title, holds_window_close,
 };
 use flare_agent::kinds::DetectedAgent;
-use flare_tabs::close_flow::{NAME_INK, close_question_body};
+use flare_tabs::close_flow::close_question_body;
 use flare_tabs::tabs_store::TabsStore;
 use flare_win::single_instance::{
     Acquired, Handoff, InstanceGuard, InstanceNames, acquire, encode_handoff, instance_names,
@@ -240,7 +240,8 @@ pub fn window_ask(busy: &[(String, DetectedAgent, u64)]) -> Option<Ask> {
     })
 }
 
-pub fn ask_view(a: &Ask) -> AskView {
+/// The close question. `ink` is the theme's text colour (the names in the body wear it; tests pass `NAME_INK`).
+pub fn ask_view(a: &Ask, ink: &str) -> AskView {
     let target = if a.install {
         CloseTarget::Install
     } else {
@@ -251,7 +252,7 @@ pub fn ask_view(a: &Ask) -> AskView {
     };
     AskView {
         title: close_question_title(target, a.for_ms),
-        body: close_question_body(a.agent, &a.label, a.for_ms, a.others, a.install, NAME_INK),
+        body: close_question_body(a.agent, &a.label, a.for_ms, a.others, a.install, ink),
         primary: close_primary_label(target),
     }
 }
@@ -433,6 +434,7 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flare_tabs::close_flow::NAME_INK;
     use flare_tabs::model::TabModel;
     use flare_tabs::restore::{Restored, RestoredTab, SavedTab, SavedTabs};
     use flare_win::window_state::WindowState;
@@ -567,7 +569,7 @@ mod tests {
 
     #[test]
     fn a_tab_ask_names_the_agent_and_says_working_or_idle() {
-        let idle = ask_view(&tab_ask("t1", "api", DetectedAgent::Claude, None));
+        let idle = ask_view(&tab_ask("t1", "api", DetectedAgent::Claude, None), NAME_INK);
         assert_eq!(idle.title, "Close the tab and end the agent?");
         assert!(idle.body.starts_with(&format!(
             "{} is running in {}",
@@ -575,7 +577,10 @@ mod tests {
             names_of("api", NAME_INK)
         )));
         assert_eq!(idle.primary, "Close tab");
-        let busy = ask_view(&tab_ask("t1", "api", DetectedAgent::Claude, Some(125_000)));
+        let busy = ask_view(
+            &tab_ask("t1", "api", DetectedAgent::Claude, Some(125_000)),
+            NAME_INK,
+        );
         assert_eq!(busy.title, "Stop the agent and close?");
         assert!(busy.body.contains("working for 2 minutes"));
     }
@@ -592,7 +597,7 @@ mod tests {
         assert_eq!(ask.agent, DetectedAgent::Codex);
         assert_eq!(ask.for_ms, Some(300_000));
         assert_eq!(ask.others, 2);
-        let v = ask_view(&ask);
+        let v = ask_view(&ask, NAME_INK);
         assert_eq!(v.title, "Stop the agent and close the window?");
         assert_eq!(v.primary, "Close window");
         let want = format!(
@@ -611,7 +616,7 @@ mod tests {
     fn an_install_ask_says_install() {
         let mut ask = tab_ask("t1", "api", DetectedAgent::Claude, Some(90_000));
         ask.install = true;
-        let v = ask_view(&ask);
+        let v = ask_view(&ask, NAME_INK);
         assert_eq!(v.title, "Stop the agent and install the update?");
         assert_eq!(v.primary, "Install and restart");
     }

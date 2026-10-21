@@ -7,9 +7,9 @@ use flare_render::cpu::{RgbaImage, paint_scene};
 use flare_render::glyph::GlyphSource;
 use flare_render::gpu::{GpuPainter, read_texture};
 use flare_render::grid::Grid;
-use flare_render::metrics::{CellMetrics, cell_metrics, grid_dims};
+use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dims};
 use flare_render::sample::sample_grid;
-use flare_render::scene::{Scene, build_scene};
+use flare_render::scene::{GroundPaint, Scene, build_scene_ground};
 use flare_render::stats::FrameStats;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
@@ -64,6 +64,8 @@ pub struct GridHost {
     /// The cols x rows last given to the source (None = not yet told).
     dims: Option<(usize, usize)>,
     palette: Palette,
+    /// Who paints the ground behind the cells: the grid, or the UI (glass).
+    ground: GroundPaint,
     glyphs: Box<dyn GlyphSource>,
     painter: GridPainter,
     /// The painter asked for (at start or by the overlay switch), restored when a GPU attaches.
@@ -74,6 +76,9 @@ pub struct GridHost {
     cpu_image: RgbaImage,
     size: (u32, u32),
     scale: f32,
+    /// The face stack and base size (logical px) last given to the glyph source.
+    families: Vec<String>,
+    base_px: f32,
     dirty: bool,
     pub stats: FrameStats,
 }
@@ -84,6 +89,7 @@ impl GridHost {
             source: Box::new(SampleSource::new()),
             dims: None,
             palette: Palette::pt_default(),
+            ground: GroundPaint::InGrid,
             glyphs,
             painter,
             wanted: painter,
@@ -92,6 +98,8 @@ impl GridHost {
             cpu_image: RgbaImage::new(0, 0),
             size: (0, 0),
             scale: 1.0,
+            families: Vec::new(),
+            base_px: BASE_FONT_PX,
             dirty: true,
             stats: FrameStats::new(120),
         }
@@ -114,6 +122,17 @@ impl GridHost {
         self.painter = GridPainter::Cpu;
     }
 
+    /// Sets the palette and who paints the ground; marks dirty only when something differs.
+    #[allow(dead_code)] // used by the look controller (Task 23)
+    pub fn set_look(&mut self, palette: Palette, ground: GroundPaint) {
+        if self.palette == palette && self.ground == ground {
+            return;
+        }
+        self.palette = palette;
+        self.ground = ground;
+        self.dirty = true;
+    }
+
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
         let scale_changed = (scale - self.scale).abs() > f32::EPSILON;
         if (w, h) == self.size && !scale_changed {
@@ -128,6 +147,33 @@ impl GridHost {
         }
         self.size = (w, h);
         self.dirty = true;
+    }
+
+    /// Changes the face and base size. None when unchanged; else the glyph source and the GPU atlas
+    /// are told, and the new `(cols, rows)` is returned when they differ (the caller refits).
+    #[allow(dead_code)] // used by the live tab (Task 27)
+    pub fn set_font(&mut self, families: &[&str], base_px: f32) -> Option<(usize, usize)> {
+        let same = self.families.len() == families.len()
+            && self.families.iter().zip(families).all(|(a, b)| a == b)
+            && (base_px - self.base_px).abs() < f32::EPSILON;
+        if same {
+            return None;
+        }
+        let before = self.dims;
+        self.families = families.iter().map(|f| f.to_string()).collect();
+        self.base_px = base_px;
+        self.glyphs.set_font(families, base_px);
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.on_font_change();
+        }
+        self.dirty = true;
+        let (w, h) = self.size;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
+        let now = grid_dims(w, h, &metrics);
+        (before != Some(now)).then_some(now)
     }
 
     /// Switches the grid painter; Gpu only when a GpuPainter is attached.
@@ -161,7 +207,7 @@ impl GridHost {
     /// Cell metrics for the current scale.
     #[allow(dead_code)] // used by the live tab (Task 27)
     pub fn metrics(&self) -> CellMetrics {
-        cell_metrics(&self.glyphs.font_units(), self.scale)
+        cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale)
     }
 
     /// Cols and rows of the last render ((0, 0) before any).
@@ -181,14 +227,21 @@ impl GridHost {
         if w == 0 || h == 0 {
             return None;
         }
-        let metrics = cell_metrics(&self.glyphs.font_units(), self.scale);
+        let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
         let (cols, rows) = grid_dims(w, h, &metrics);
         if self.dims != Some((cols, rows)) {
             self.source.resize(cols, rows);
             self.dims = Some((cols, rows));
         }
         let grid = self.source.grid();
-        Some(build_scene(&grid, &self.palette, &metrics, w, h))
+        Some(build_scene_ground(
+            &grid,
+            &self.palette,
+            &metrics,
+            w,
+            h,
+            self.ground,
+        ))
     }
 
     /// Lays out and paints one frame with the active painter. None for a 0x0 size.
@@ -200,7 +253,9 @@ impl GridHost {
         if self.painter == GridPainter::Gpu
             && let Some(gpu) = self.gpu.as_mut()
         {
-            let texture = gpu.paint(&scene, self.glyphs.as_mut());
+            // Slint reads an imported texture as straight alpha (docs/material.md E3): under glass
+            // the grid is un-premultiplied first, or text would be darker at its edges.
+            let texture = gpu.paint_straight(&scene, self.glyphs.as_mut());
             match Image::try_from(texture) {
                 Ok(img) => image = Some(img),
                 Err(e) => {
@@ -218,7 +273,8 @@ impl GridHost {
                     self.cpu_image.width,
                     self.cpu_image.height,
                 );
-                Image::from_rgba8(buffer)
+                // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
+                Image::from_rgba8_premultiplied(buffer)
             }
         };
         self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
@@ -498,5 +554,113 @@ mod tests {
         let img = h.render();
         assert!(img.is_some());
         assert_eq!(h.painter(), GridPainter::Gpu);
+    }
+
+    #[test]
+    fn render_rgba_in_by_ui_is_clear_where_the_ground_is() {
+        let mut h = host(GridPainter::Cpu);
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        h.resize(200, 100, 1.0);
+        let img = h.render_rgba().expect("image");
+        // The sample grid has its cursor and text; the far corner is a blank cell.
+        assert_eq!(img.pixel(199, 99)[3], 0);
+        assert!(
+            img.data.chunks(4).any(|px| px[3] == 255),
+            "a coloured block cell is opaque"
+        );
+    }
+
+    #[test]
+    fn host_set_font_returns_the_new_grid_size() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(648, 264, 1.0);
+        h.render();
+        let (c13, r13) = h.dims();
+        let (cols, rows) = h.set_font(&["Consolas"], 26.0).expect("the grid changes");
+        // The fake face is 8 px wide at 13 and 15 at 26 (rounding), so columns halve within 2.
+        assert!(
+            (cols as i64 - (c13 / 2) as i64).abs() <= 2,
+            "{c13} -> {cols}"
+        );
+        assert!(
+            (rows as i64 - (r13 / 2) as i64).abs() <= 1,
+            "{r13} -> {rows}"
+        );
+        assert!(h.is_dirty());
+    }
+
+    #[test]
+    fn host_set_font_twice_is_none() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(648, 264, 1.0);
+        assert!(h.set_font(&["Consolas"], 26.0).is_some());
+        assert!(h.set_font(&["Consolas"], 26.0).is_none());
+    }
+
+    #[test]
+    fn a_font_change_reaches_the_atlas() {
+        let Ok((device, queue, _)) = headless_device() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut h = host(GridPainter::Gpu);
+        h.attach_gpu(&device, &queue);
+        h.resize(200, 100, 1.0);
+        assert!(h.render().is_some());
+        h.set_font(&["Consolas"], 20.0);
+        assert!(h.render().is_some());
+    }
+
+    #[test]
+    fn set_look_marks_dirty_only_on_a_change() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        h.render();
+        h.set_look(Palette::pt_default(), GroundPaint::InGrid);
+        assert!(!h.is_dirty());
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        assert!(h.is_dirty());
+        h.render();
+        h.set_look(Palette::pt_default(), GroundPaint::ByUi);
+        assert!(!h.is_dirty());
+        let mut p = Palette::pt_default();
+        p.fg = flare_render::color::Rgba::rgb(1, 1, 1);
+        h.set_look(p, GroundPaint::ByUi);
+        assert!(h.is_dirty());
+    }
+
+    slint::slint! {
+        export component PremulWin inherits Window {
+            in property <image> grid;
+            width: 20px;
+            height: 20px;
+            background: white;
+            Image { source: root.grid; width: 20px; height: 20px; }
+        }
+    }
+
+    #[test]
+    fn a_half_covered_pixel_over_white_is_lighter_than_straight_would_be() {
+        use crate::ui_harness::{Frame, Harness};
+        let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(4, 4);
+        for px in buf.make_mut_slice() {
+            *px = Rgba8Pixel {
+                r: 128,
+                g: 0,
+                b: 0,
+                a: 128,
+            };
+        }
+        for scale in [1.0, 2.25] {
+            let hn = Harness::new(scale, 20, 20, || PremulWin::new().unwrap());
+            hn.comp
+                .set_grid(Image::from_rgba8_premultiplied(buf.clone()));
+            let f = hn.render();
+            let c = f.px(f.w / 2, f.h / 2);
+            assert!(
+                Frame::near(c, [255, 127, 127, 255], 2),
+                "scale {scale}: {c:?}"
+            );
+        }
     }
 }

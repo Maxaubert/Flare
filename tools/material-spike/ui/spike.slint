@@ -1,0 +1,19 @@
+// The spike window: a ground (a brush, so the tool can give it an alpha) and, for the
+// premultiplied-texture mode, a 64 x 64 imported texture in the middle.
+export component Spike inherits Window {
+    in property <brush> ground: #171717;
+    in property <image> tex;
+    in property <bool> show-tex: false;
+    no-frame: true;
+    background: root.ground;
+    preferred-width: 400px;
+    preferred-height: 300px;
+
+    if root.show-tex: Image {
+        source: root.tex;
+        width: 64px;
+        height: 64px;
+        x: root.width / 2 - 32px;
+        y: root.height / 2 - 32px;
+    }
+}

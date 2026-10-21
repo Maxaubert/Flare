@@ -3,33 +3,52 @@
 // ("an opaque accent ... > pt-default", the glass entry at full alpha) and
 // src/renderer/src/index.css. M4 derives these from the theme instead.
 export global Theme {
-    out property <color> ground: #171717;      // --p-bg, --p-tabs, --p-title
-    out property <color> text: #dedacf;        // --p-text
-    out property <color> icon: #929089;        // --p-icon
-    out property <color> dim: #929089;         // --p-dim
-    out property <color> hover-hi: #ffffff1c;  // --p-hover-hi
-    out property <color> divider: #ffffff12;   // --p-divider
-    out property <color> accent: #fe8f34;      // --p-accent
-    out property <color> accent-hi: #f6a25b;   // --p-accent-hi
+    in property <color> ground: #171717;      // --p-bg, --p-tabs, --p-title
+    in property <color> text: #dedacf;        // --p-text
+    in property <color> icon: #929089;        // --p-icon
+    in property <color> dim: #929089;         // --p-dim
+    in property <color> hover-hi: #ffffff1c;  // --p-hover-hi
+    in property <color> divider: #ffffff12;   // --p-divider
+    in property <color> accent: #fe8f34;      // --p-accent
+    in property <color> accent-hi: #f6a25b;   // --p-accent-hi
     out property <color> close-hover: #fb2c36cc; // Tailwind v4 red-500 at 80%
     out property <length> bar-height: 36px;    // chromeLayout.ts BAR_H
     out property <length> radius-button: 4px;  // Tailwind `rounded`
     out property <length> term-padding: 4px;   // TerminalPanel `p-1`
 
     // Task 19: pt-default's remaining chrome tokens (opaque values; the CSS variable is the comment).
-    out property <color> tabs: #171717;        // --p-tabs (the title row and the strip)
-    out property <color> tab-active: #171717;  // --p-tab-active
-    out property <color> secondary: #0d0d0d;   // --p-secondary (the sidebar and the bar beside it)
-    out property <color> text-soft: #c2bfb5;   // --p-text-soft
-    out property <color> dim2: #716f6a;        // --p-dim2
-    out property <color> hover: #ffffff0f;     // --p-hover
-    out property <color> side-flat: #1f1f1e;   // --p-side-flat (menus, tips, dialogs, the +N list)
-    out property <color> side-text: #dedacf;   // --p-side-text
-    out property <color> side-dim: #959390;    // --p-side-dim
-    out property <color> accent-solid: #fe8f34; // --p-accent-solid (the app mark, the loading ring)
-    out property <color> on-accent: #0b0b0f;   // --p-on-accent
-    out property <color> tree-folder: #f6a25b; // --p-tree-folder (folder glyphs)
-    out property <color> control: #1e1e1d;     // --p-control
+    in property <color> tabs: #171717;        // --p-tabs (the title row and the strip)
+    in property <color> tab-active: #171717;  // --p-tab-active
+    in property <color> secondary: #0d0d0d;   // --p-secondary (the sidebar and the bar beside it)
+    in property <color> text-soft: #c2bfb5;   // --p-text-soft
+    in property <color> dim2: #716f6a;        // --p-dim2
+    in property <color> hover: #ffffff0f;     // --p-hover
+    in property <color> side-flat: #1f1f1e;   // --p-side-flat (menus, tips, dialogs, the +N list)
+    in property <color> side-text: #dedacf;   // --p-side-text
+    in property <color> side-dim: #959390;    // --p-side-dim
+    in property <color> accent-solid: #fe8f34; // --p-accent-solid (the app mark, the loading ring)
+    in property <color> on-accent: #0b0b0f;   // --p-on-accent
+    in property <color> tree-folder: #f6a25b; // --p-tree-folder (folder glyphs)
+    in property <color> control: #1e1e1d;     // --p-control
+
+    // Task 22: the rest of the 31 chrome tokens, settable from the theme (pt-default values).
+    in property <color> ground-solid: #171717; // --p-bg-solid
+    in property <color> side: #171717;         // --p-side
+    in property <color> title: #171717;        // --p-title
+    in property <color> line: #ffffff17;       // --p-line
+    in property <color> track: #5e5c59;        // --p-track
+    in property <color> preview: #31302f;      // --p-preview
+    in property <color> sel-bg: #fe8f34;       // --p-sel-bg
+    in property <color> switch-knob: #0b0b0f;  // --p-switch-knob
+    in property <color> pressed: #3d3c39;      // --p-pressed
+    in property <color> pressed-ink: #dedacf;  // --p-pressed-ink
+
+    // The window's own clear colour (PT's setBackgroundColor): the solid ground, or transparent under glass.
+    in property <color> window-clear: #171717;
+    // The window edge colour from edge_for (docs/material.md E4); transparent for none, maximised or full screen.
+    in property <color> edge: transparent;
+    // True when the measured ground is light (WCAG relative luminance above 0.4); set from Rust.
+    in property <bool> light: false;
     out property <color> danger-fill: #b4353f; // Dialog danger
     out property <color> scrim: #00000080;     // Modal bg-black/50
     out property <string> font-ui: "Segoe UI"; // --p-font-ui

@@ -44,10 +44,30 @@ pub struct Palette {
     pub bg: Rgba,
     pub cursor: Rgba,
     pub cursor_accent: Rgba,
+    /// The theme's selection fill (translucent; painted by the UI layer over the cells).
+    pub selection: Rgba,
     pub ansi: [Rgba; 16],
 }
 
 impl Palette {
+    pub fn new(
+        fg: Rgba,
+        bg: Rgba,
+        cursor: Rgba,
+        cursor_accent: Rgba,
+        selection: Rgba,
+        ansi: [Rgba; 16],
+    ) -> Self {
+        Self {
+            fg,
+            bg,
+            cursor,
+            cursor_accent,
+            selection,
+            ansi,
+        }
+    }
+
     /// Prism Terminal's `pt-default` preset (termTheme.ts).
     pub fn pt_default() -> Self {
         let bg = Rgba::rgb(0x17, 0x17, 0x17);
@@ -58,6 +78,7 @@ impl Palette {
             bg,
             cursor: hex("#bbbbbb"),
             cursor_accent: bg,
+            selection: hex("#bbbbbb55"),
             ansi: [
                 hex("#646464"),
                 hex("#ff615a"),
@@ -141,6 +162,29 @@ mod tests {
         assert_eq!(p.ansi[1], Rgba::from_hex("#ff615a").unwrap());
         assert_eq!(p.ansi[15], Rgba::from_hex("#ffffff").unwrap());
         assert_eq!(p.cursor_accent, p.bg);
+    }
+
+    #[test]
+    fn pt_default_selection_is_bbbbbb55() {
+        let sel = Palette::pt_default().selection;
+        assert_eq!(
+            sel,
+            Rgba {
+                r: 0xbb,
+                g: 0xbb,
+                b: 0xbb,
+                a: 0x55
+            }
+        );
+    }
+
+    #[test]
+    fn palette_new_carries_a_selection() {
+        let d = Palette::pt_default();
+        let sel = Rgba::from_hex("#11223344").unwrap();
+        let p = Palette::new(d.fg, d.bg, d.cursor, d.cursor_accent, sel, d.ansi);
+        assert_eq!(p.selection, sel);
+        assert_eq!(p.ansi, d.ansi);
     }
 
     #[test]

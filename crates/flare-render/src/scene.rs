@@ -1,7 +1,7 @@
 //! Scene: the shared layout step. Turns a grid into rects, glyph draws and overlays that both
 //! painters paint, so text is never laid out twice.
 
-use crate::color::{Palette, Rgba, resolve_bg, resolve_fg};
+use crate::color::{Color, Palette, Rgba, resolve_bg, resolve_fg};
 use crate::glyph::GlyphKey;
 use crate::grid::{CellFlags, Grid};
 use crate::metrics::{CellMetrics, cell_origin};
@@ -36,7 +36,18 @@ pub struct Scene {
     pub overlays: Vec<RectFill>,
 }
 
-/// Lays out `grid` into a [`Scene`] of `width` x `height` physical pixels.
+/// Who paints the theme's ground behind the cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GroundPaint {
+    /// The grid clears to `palette.bg` and draws every cell that differs from it.
+    #[default]
+    InGrid,
+    /// The UI layer paints the ground: the grid clears to transparent and leaves default-background
+    /// cells clear, so glass shows through where the theme's ground is (xterm's panel paints it).
+    ByUi,
+}
+
+/// Lays out `grid` into a [`Scene`] of `width` x `height` physical pixels, the ground in the grid.
 pub fn build_scene(
     grid: &Grid,
     palette: &Palette,
@@ -44,10 +55,32 @@ pub fn build_scene(
     width: u32,
     height: u32,
 ) -> Scene {
+    build_scene_ground(grid, palette, m, width, height, GroundPaint::InGrid)
+}
+
+/// [`build_scene`] with a choice of who paints the ground.
+pub fn build_scene_ground(
+    grid: &Grid,
+    palette: &Palette,
+    m: &CellMetrics,
+    width: u32,
+    height: u32,
+    ground: GroundPaint,
+) -> Scene {
+    let by_ui = ground == GroundPaint::ByUi;
     let mut scene = Scene {
         width,
         height,
-        clear: palette.bg,
+        clear: if by_ui {
+            Rgba {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            }
+        } else {
+            palette.bg
+        },
         rects: Vec::new(),
         glyphs: Vec::new(),
         overlays: Vec::new(),
@@ -67,7 +100,8 @@ pub fn build_scene(
 
             let mut fg = resolve_fg(palette, cell.fg, bold);
             let mut bg = resolve_bg(palette, cell.bg);
-            if cell.flags.contains(CellFlags::INVERSE) {
+            let inverse = cell.flags.contains(CellFlags::INVERSE);
+            if inverse {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let under_cursor = cursor.visible
@@ -79,7 +113,13 @@ pub fn build_scene(
             }
 
             let w = span * m.cell_w;
-            if under_cursor || bg != palette.bg {
+            let draw_bg = if by_ui {
+                // An explicit background that equals the ground is still drawn, as xterm does.
+                under_cursor || inverse || cell.bg != Color::DefaultBg
+            } else {
+                under_cursor || bg != palette.bg
+            };
+            if draw_bg {
                 scene.rects.push(RectFill {
                     x,
                     y,
@@ -117,7 +157,6 @@ pub fn build_scene(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color::Color;
     use crate::grid::Cursor;
     use crate::metrics::{FontUnits, cell_metrics};
 
@@ -332,5 +371,61 @@ mod tests {
         let s = scene(&g);
         assert!(s.glyphs[0].key.bold);
         assert_eq!(s.glyphs[0].color, Rgba::from_hex("#ddf88f").unwrap());
+    }
+
+    fn by_ui_scene(grid: &Grid) -> Scene {
+        build_scene_ground(
+            grid,
+            &Palette::pt_default(),
+            &metrics(),
+            200,
+            100,
+            GroundPaint::ByUi,
+        )
+    }
+
+    #[test]
+    fn by_ui_clears_to_transparent() {
+        let g = Grid::new(3, 2);
+        assert_eq!(by_ui_scene(&g).clear.a, 0);
+    }
+
+    #[test]
+    fn in_grid_clear_is_the_ground() {
+        let g = Grid::new(3, 2);
+        assert_eq!(scene(&g).clear, Palette::pt_default().bg);
+        assert_eq!(GroundPaint::default(), GroundPaint::InGrid);
+    }
+
+    #[test]
+    fn by_ui_skips_default_background_cells_and_draws_explicit_ones() {
+        let p = Palette::pt_default();
+        let mut g = Grid::new(4, 2);
+        no_cursor(&mut g);
+        assert!(by_ui_scene(&g).rects.is_empty());
+
+        g.cell_mut(1, 0).bg = Color::Rgb(p.bg.r, p.bg.g, p.bg.b);
+        assert_eq!(by_ui_scene(&g).rects.len(), 1);
+
+        g.cell_mut(2, 0).flags = CellFlags::INVERSE;
+        assert_eq!(by_ui_scene(&g).rects.len(), 2);
+
+        g.cursor = Cursor {
+            col: 3,
+            row: 1,
+            visible: true,
+        };
+        let s = by_ui_scene(&g);
+        assert_eq!(s.rects.len(), 3);
+        assert_eq!(s.rects[2].color, p.cursor);
+    }
+
+    #[test]
+    fn in_grid_is_unchanged() {
+        let mut g = Grid::new(3, 2);
+        no_cursor(&mut g);
+        g.cell_mut(1, 0).bg = Color::Rgb(0x17, 0x17, 0x17);
+        // The explicit background equals the ground: InGrid still skips it, as M1 did.
+        assert!(scene(&g).rects.is_empty());
     }
 }
