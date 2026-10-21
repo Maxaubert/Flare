@@ -117,6 +117,36 @@ fn rows_are_28_tall_with_hairlines_between() {
     }
 }
 
+/// Task 27 (M5 screenshots): the last row was 2 css px taller than the others (the panel added
+/// the border on top of a layout that already carries it as padding).
+#[test]
+fn every_row_is_28_tall_including_the_last_and_the_border_closes_it() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, vec![row("One"), row("Two"), row("Three")], 20.0, 20.0);
+        let px = h.comp.get_panel_x();
+        let py = h.comp.get_panel_y();
+        let f = h.render();
+        let x = h.phys(px + 3.0);
+        let dev_hair = scale.floor().max(1.0) as u32;
+        let mut y = h.phys(py) + dev_hair;
+        for i in 0..3 {
+            let run = f.run_len_v(x, y, |p| Frame::near(p, SIDE_FLAT, 1));
+            assert_eq!(run, h.phys(28.0), "row {i} at {scale}");
+            y += run;
+            let line = f.run_len_v(x, y, |p| !Frame::near(p, SIDE_FLAT, 1));
+            assert!(line >= dev_hair, "a line below row {i} at {scale}");
+            y += dev_hair;
+        }
+        let want_h = 3.0 * 28.0 + 4.0 * dev_hair as f32 / scale;
+        assert!(
+            (h.comp.get_panel_h() - want_h).abs() < 0.01,
+            "panel {} tall, want {want_h} at {scale}",
+            h.comp.get_panel_h()
+        );
+    }
+}
+
 #[test]
 fn a_pick_reports_the_row_and_asks_to_close() {
     let h = harness(1.0);

@@ -363,6 +363,102 @@ fn an_unknown_scene_is_an_error() {
     assert!(!png.exists(), "no screenshot for an unknown scene");
 }
 
+/// The M5 scenes (Task 26): the terminal's selection, find, links, menus and the Copied badge.
+const M5_SCENES: [&str; 12] = [
+    "term-selection",
+    "term-selection-wide",
+    "term-find",
+    "term-find-none",
+    "term-find-many",
+    "term-find-empty",
+    "term-links",
+    "term-menu-plain",
+    "term-menu-selection",
+    "term-menu-link",
+    "term-menu-path",
+    "term-copied",
+];
+
+/// Every display scaling from 100% to 300% (roadmap Global Constraint).
+const MATRIX: [f32; 8] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0];
+
+#[test]
+fn every_m5_scene_renders_at_every_scale() {
+    for name in M5_SCENES {
+        for s in MATRIX {
+            let scale = format!("{s}");
+            let (_dir, img) = scene_png(name, &scale);
+            let want = ((1000.0 * s).round() as u32, (640.0 * s).round() as u32);
+            assert_eq!((img.0, img.1), want, "{name} at {scale}");
+            let corner = pixel(&img, 0, 0);
+            let mut differ = 0;
+            for y in 0..img.1 {
+                for x in 0..img.0 {
+                    if pixel(&img, x, y) != corner {
+                        differ += 1;
+                    }
+                }
+            }
+            assert!(
+                differ > 500,
+                "{name} at {scale}: only {differ} pixels differ from the corner"
+            );
+        }
+    }
+}
+
+/// Counts the pixels of an image equal to `colour`.
+fn count_colour(img: &Decoded, colour: [u8; 3]) -> usize {
+    let mut n = 0;
+    for y in 0..img.1 {
+        for x in 0..img.0 {
+            if pixel(img, x, y) == colour {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn the_find_scene_shows_the_match_fill() {
+    let (_dir, img) = scene_png("term-find", "1");
+    let matches = count_colour(&img, [0x4a, 0x51, 0x60]);
+    assert!(matches > 100, "only {matches} match-fill pixels");
+    let active = count_colour(&img, [0xf6, 0xa2, 0x5b]);
+    assert!(active > 50, "only {active} active-fill pixels");
+}
+
+#[test]
+fn the_selection_scene_shows_the_selection_blend() {
+    let (_dir, img) = scene_png("term-selection", "1");
+    let blend = count_colour(&img, [78, 78, 78]);
+    assert!(blend > 200, "only {blend} selection-blend pixels");
+}
+
+#[test]
+fn an_unknown_scene_names_the_m5_scenes() {
+    let dir = TempDir::new("scene-unknown-m5");
+    let png = dir.png();
+    let out = run(
+        &[
+            "--scene",
+            "no-such-scene",
+            "--screenshot",
+            png.to_str().expect("utf-8 path"),
+            "--renderer",
+            "software",
+        ],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "exit code");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for name in M5_SCENES {
+        assert!(stderr.contains(name), "stderr names {name}: {stderr:?}");
+    }
+    assert!(!png.exists(), "no screenshot for an unknown scene");
+}
+
 #[test]
 fn scenes_differ_from_each_other() {
     let (_a, strip) = scene_png("strip-3", "1");
@@ -415,6 +511,75 @@ fn the_strip_scene_has_crisp_dividers_at_every_scale() {
                 run, hair,
                 "scale {scale}: a divider is {run} px, want {hair}"
             );
+        }
+    }
+}
+
+/// The top-left of the first run of at least `min_run` pixels equal to `colour`, from row
+/// `from_y` down: a panel's inner corner (a stray anti-aliased pixel never makes such a run).
+fn panel_corner(img: &Decoded, colour: [u8; 3], from_y: u32, min_run: u32) -> Option<(u32, u32)> {
+    for y in from_y..img.1 {
+        let mut x = 0;
+        while x < img.0 {
+            if pixel(img, x, y) == colour {
+                let start = x;
+                while x < img.0 && pixel(img, x, y) == colour {
+                    x += 1;
+                }
+                if x - start >= min_run {
+                    return Some((start, y));
+                }
+            } else {
+                x += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Task 27: every row of the terminal menu wears its glyph (PT `MenuIcon` on every row); the
+/// screenshots showed only `Copy path` with one.
+#[test]
+fn every_terminal_menu_row_has_its_glyph() {
+    const PANEL: [u8; 3] = [0x1f, 0x1f, 0x1e];
+    for (name, rows) in [
+        ("term-menu-path", 5u32),
+        ("term-menu-link", 4),
+        ("term-menu-plain", 2),
+    ] {
+        for scale in ["1", "1.5", "2.25"] {
+            let s: f32 = scale.parse().expect("scale");
+            let hair = s.floor().max(1.0) as u32;
+            let (_dir, img) = scene_png(name, scale);
+            // Below the tab strip, which wears the same colour.
+            let below_strip = (40.0 * s).round() as u32;
+            let (x0, y0) = panel_corner(&img, PANEL, below_strip, (100.0 * s) as u32)
+                .expect("the menu is shown");
+            let row_h = (28.0 * s).round() as u32;
+            // The icon column: 11 css px in from the inner edge, 13 css px wide, then the 8 px
+            // gap before the label. A row without a glyph puts its label in both.
+            let at = |css: f32| x0 + (css * s).round() as u32;
+            let ink_in = |ry: u32, xa: u32, xb: u32| {
+                let mut n = 0;
+                for y in ry + 2..ry + row_h - 2 {
+                    for x in xa..xb {
+                        let p = pixel(&img, x, y);
+                        if p.iter().zip(PANEL).any(|(a, b)| a.abs_diff(b) > 10) {
+                            n += 1;
+                        }
+                    }
+                }
+                n
+            };
+            for i in 0..rows {
+                let ry = y0 + i * (row_h + hair);
+                let glyph = ink_in(ry, at(11.0), at(26.0));
+                let gap = ink_in(ry, at(26.0), at(30.0));
+                assert!(
+                    glyph >= 4 && gap == 0,
+                    "{name} at {scale}: row {i} has no glyph (glyph {glyph} px, gap {gap} px)"
+                );
+            }
         }
     }
 }

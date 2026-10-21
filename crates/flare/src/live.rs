@@ -1,14 +1,18 @@
 //! The live tab: a shell served by flare-term, drawn through the GridHost's `GridSource` seam.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use flare_render::decor::Decor;
 use flare_render::grid::Grid;
 use flare_render::metrics::CellMetrics;
 use flare_term::handle::TermHandle;
 use flare_term::session::SessionManager;
 
 use crate::host::GridSource;
+use crate::term_ui::DecorInputs;
 
 /// The title bar's height in logical pixels (theme.slint `bar-height`).
 const BAR_LOGICAL: f64 = 36.0;
@@ -16,11 +20,23 @@ const BAR_LOGICAL: f64 = 36.0;
 /// The terminal as the grid host's source.
 pub struct LiveSource {
     handle: Arc<TermHandle>,
+    inputs: Option<Rc<RefCell<DecorInputs>>>,
 }
 
 impl LiveSource {
     pub fn new(handle: Arc<TermHandle>) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            inputs: None,
+        }
+    }
+
+    /// A source that also paints the controller's decoration (selection, find, links).
+    pub fn with_inputs(handle: Arc<TermHandle>, inputs: Rc<RefCell<DecorInputs>>) -> Self {
+        Self {
+            handle,
+            inputs: Some(inputs),
+        }
     }
 }
 
@@ -35,6 +51,13 @@ impl GridSource for LiveSource {
 
     fn dirty(&self) -> bool {
         self.handle.is_dirty()
+    }
+
+    fn decor(&mut self) -> Decor {
+        match &self.inputs {
+            Some(i) => i.borrow_mut().decor(&self.handle),
+            None => Decor::default(),
+        }
     }
 }
 

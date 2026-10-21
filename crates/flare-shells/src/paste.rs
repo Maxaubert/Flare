@@ -96,6 +96,39 @@ pub fn decide_paste(clip: &ClipboardState, shell: Option<PathShell>) -> PasteDec
     }
 }
 
+/// What `Terminal.paste` writes: every `\r\n` and every lone `\n` becomes `\r`, then, when the program
+/// asked for bracketed paste, `ESC [ 2 0 0 ~` before and `ESC [ 2 0 1 ~` after. The caller has already
+/// sanitised the text (`sanitize_paste`); this does not filter again.
+pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let body = text.replace("\r\n", "\r").replace('\n', "\r");
+    let mut out = Vec::with_capacity(body.len() + 12);
+    if bracketed {
+        out.extend_from_slice(b"\x1b[200~");
+    }
+    out.extend_from_slice(body.as_bytes());
+    if bracketed {
+        out.extend_from_slice(b"\x1b[201~");
+    }
+    out
+}
+
+/// The quoting a tab's shell reads a path in, from its shell id (`pwsh`, `powershell`, `cmd`,
+/// `wsl-<distro>`): `cmd` -> Cmd; starts with `wsl` or contains `bash` (case-insensitive) -> Bash;
+/// anything else, including `None` and "", -> PowerShell.
+pub fn path_shell_of(shell_id: Option<&str>) -> PathShell {
+    let Some(id) = shell_id else {
+        return PathShell::PowerShell;
+    };
+    let lower = id.to_ascii_lowercase();
+    if lower == "cmd" {
+        PathShell::Cmd
+    } else if lower.starts_with("wsl") || lower.contains("bash") {
+        PathShell::Bash
+    } else {
+        PathShell::PowerShell
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +389,65 @@ mod tests {
                 PasteDecision::Key => panic!("key"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn paste_bytes_turns_every_newline_into_a_carriage_return() {
+        assert_eq!(paste_bytes("a\r\nb\nc\rd", false), b"a\rb\rc\rd".to_vec());
+    }
+
+    #[test]
+    fn paste_bytes_brackets_when_asked() {
+        assert_eq!(paste_bytes("x", true), b"\x1b[200~x\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn a_multi_line_paste_is_one_bracketed_block() {
+        assert_eq!(
+            paste_bytes("one\ntwo", true),
+            b"\x1b[200~one\rtwo\x1b[201~".to_vec()
+        );
+        let bytes = paste_bytes("one\ntwo", true);
+        let end: &[u8] = b"\x1b[201~";
+        let count = bytes.windows(end.len()).filter(|w| *w == end).count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn a_sanitised_hostile_paste_cannot_end_the_bracket() {
+        let bytes = paste_bytes(&sanitize_paste("x\x1b[201~rm -rf /\r"), true);
+        let end: &[u8] = b"\x1b[201~";
+        let positions: Vec<usize> = bytes
+            .windows(end.len())
+            .enumerate()
+            .filter(|(_, w)| *w == end)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(positions, vec![bytes.len() - end.len()]);
+    }
+
+    #[test]
+    fn an_empty_paste_is_an_empty_frame_or_nothing() {
+        assert!(paste_bytes("", false).is_empty());
+        assert_eq!(paste_bytes("", true), b"\x1b[200~\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn shell_ids_read_as_the_language_they_speak() {
+        assert_eq!(path_shell_of(Some("pwsh")), PathShell::PowerShell);
+        assert_eq!(path_shell_of(Some("powershell")), PathShell::PowerShell);
+        assert_eq!(path_shell_of(Some("cmd")), PathShell::Cmd);
+        assert_eq!(path_shell_of(Some("CMD")), PathShell::Cmd);
+        assert_eq!(path_shell_of(Some("wsl-Ubuntu")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("wsl-Debian-12")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("git-bash")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("")), PathShell::PowerShell);
+        assert_eq!(path_shell_of(None), PathShell::PowerShell);
+        assert_eq!(path_shell_of(Some("fish")), PathShell::PowerShell);
     }
 }

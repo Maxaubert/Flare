@@ -7,3 +7,4 @@ mod menus;
 mod sidebar;
 mod start;
 mod strip;
+mod term;

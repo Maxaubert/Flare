@@ -16,6 +16,13 @@ pub const GLYPH_FOLDER_FILL: &str = "folder-fill";
 pub const GLYPH_PIN: &str = "pin";
 pub const GLYPH_COPY: &str = "menu-copy";
 pub const GLYPH_CLOSE: &str = "menu-close";
+/// The terminal menu's glyphs (Milestone 5, PT `MenuIcon.tsx`).
+pub const GLYPH_OPEN: &str = "menu-open";
+pub const GLYPH_PASTE: &str = "menu-paste";
+pub const GLYPH_LINK: &str = "menu-link";
+pub const GLYPH_FOLDER: &str = "menu-folder";
+pub const GLYPH_FIND: &str = "menu-find";
+pub const GLYPH_HELP: &str = "menu-help";
 
 /// The SVG path of a glyph name (24-unit viewbox), as `ui/glyphs.slint` holds it.
 pub fn glyph_path(name: &str) -> &'static str {
@@ -24,6 +31,16 @@ pub fn glyph_path(name: &str) -> &'static str {
         GLYPH_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
         GLYPH_COPY => "M8 8h12v12H8zM16 8V4H4v12h4",
         GLYPH_CLOSE => "M7 7l10 10M17 7L7 17",
+        GLYPH_OPEN => "M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6",
+        GLYPH_PASTE => "M9 3.5h6v3H9zM7 5H4.5v15.5h15V5H17",
+        GLYPH_LINK => {
+            "M9 15l6-6M7.5 10.5l-2 2a3.5 3.5 0 0 0 5 5l2-2M16.5 13.5l2-2a3.5 3.5 0 0 0-5-5l-2 2"
+        }
+        GLYPH_FOLDER => "M2.5 5.5h6.2l2 2.6h10.8v10.4H2.5z",
+        GLYPH_FIND => "M10.5 4.5a6 6 0 1 0 0 12 6 6 0 0 0 0-12zM15 15l5 5",
+        GLYPH_HELP => {
+            "M12 3.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4zM9.6 9.4a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1-1.3 1.9M12 16.6v.01"
+        }
         _ => "",
     }
 }
@@ -58,7 +75,14 @@ impl MenuRowData {
 
 pub enum MenuKind {
     Plus,
-    Tab { id: String, cwd: String },
+    Tab {
+        id: String,
+        cwd: String,
+    },
+    /// The terminal's menu; its rows and picks belong to `TermUi`.
+    Term {
+        tab: String,
+    },
 }
 
 /// The + menu: pins first, then the newest unpinned recents. None at all: one disabled row.
@@ -305,7 +329,18 @@ mod tests {
     #[test]
     fn glyph_paths_match_the_slint_file() {
         let slint = include_str!("../ui/glyphs.slint");
-        for name in [GLYPH_FOLDER_FILL, GLYPH_PIN, GLYPH_COPY, GLYPH_CLOSE] {
+        for name in [
+            GLYPH_FOLDER_FILL,
+            GLYPH_PIN,
+            GLYPH_COPY,
+            GLYPH_CLOSE,
+            GLYPH_OPEN,
+            GLYPH_PASTE,
+            GLYPH_LINK,
+            GLYPH_FOLDER,
+            GLYPH_FIND,
+            GLYPH_HELP,
+        ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(
                 slint.contains(&needle),

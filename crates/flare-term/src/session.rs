@@ -758,6 +758,11 @@ impl SessionManager {
         }
     }
 
+    /// The id of the shell definition the running session was spawned with.
+    pub fn shell_of(&self, id: &str) -> Option<String> {
+        lk(&self.sh.st).sessions.get(id).map(|s| s.def_id.clone())
+    }
+
     /// Delivers what the batcher holds NOW, on the caller's thread.
     pub fn flush_output(&self, id: &str) {
         let s = lk(&self.sh.st).sessions.get(id).cloned();

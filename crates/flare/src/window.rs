@@ -17,20 +17,22 @@ use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
 use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
+use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
-use flare_term::keys::{KeyState, TermKeyAction, term_key_action};
+use flare_term::path_open::FsStat;
 use flare_term::pty::PortableSpawner;
 use flare_term::session::RealShells;
 use flare_win::argv::{folders_from_argv, own_files};
-use flare_win::clipboard;
+use flare_win::clipboard_port::CLIPBOARD_WRITE_MAX;
+use flare_win::dblclick::system_double_click;
 use flare_win::edge_watch::{EdgeNear, EdgeWatch, FAR, PointF, RectF, real_cursor_phys};
 use flare_win::monitors::work_areas;
 use flare_win::pick::{ParentWindow, PickOptions, pick_folder};
 use flare_win::session_end::SessionEndWatch;
-use flare_win::shell_open;
 use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServer, serve};
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
 use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
@@ -42,12 +44,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::AppWindow;
-use crate::appctl::{AppCtl, CloseDecision, Deps, KeyOutcome, Post, UiMsg};
+use crate::appctl::{AppCtl, Backends, CloseDecision, Deps, KeyOutcome, Post, TermPorts, UiMsg};
 use crate::backend::BackendOutcome;
 use crate::config::{Args, RendererChoice};
 use crate::e2e;
 use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
+use crate::ime::{CaretFollower, ime_area};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
 use crate::live::{LiveSource, WheelAccum, cell_at};
 use crate::look_ctl::LookCtl;
@@ -390,6 +393,12 @@ pub fn run_window(
         }
     };
 
+    // The tab in front. Declared here so every rendered frame can place the IME area (Task 24b).
+    let front: FrontCell = Rc::new(RefCell::new(None));
+    // The IME caret hold, and the grid size the last frame had (a resize releases the hold).
+    let caret: Rc<RefCell<CaretFollower>> = Rc::new(RefCell::new(CaretFollower::new()));
+    let ime_dims: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+
     // Renders into the window's image now.
     let no_notifier = Rc::new(Cell::new(false));
     let first_software_frame = Rc::new(RefCell::new(Once::default()));
@@ -398,11 +407,15 @@ pub fn run_window(
         let weak = app.as_weak();
         let no_notifier = no_notifier.clone();
         let first_software_frame = first_software_frame.clone();
+        let front = front.clone();
+        let caret = caret.clone();
+        let ime_dims = ime_dims.clone();
         move || {
             let Some(app) = weak.upgrade() else { return };
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 app.set_grid_image(image);
+                place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                 // No notifier means no AfterRendering: log the first frame from here.
                 if no_notifier.get() && first_software_frame.borrow_mut().fire() {
                     log::info!("first frame after {} ms", start.elapsed().as_millis());
@@ -415,6 +428,9 @@ pub fn run_window(
         let host = host.clone();
         let note = note.clone();
         let weak = app.as_weak();
+        let front = front.clone();
+        let caret = caret.clone();
+        let ime_dims = ime_dims.clone();
         let mut first_frame = true;
         app.window()
             .set_rendering_notifier(move |state, api| match state {
@@ -434,6 +450,7 @@ pub fn run_window(
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
                             app.set_grid_image(image);
+                            place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
                             app.window().request_redraw();
                         }
                     }
@@ -466,7 +483,6 @@ pub fn run_window(
     }
 
     // ---- the controller -----------------------------------------------------------------------
-    let front: FrontCell = Rc::new(RefCell::new(None));
     let mut ctl: Option<CtlRc> = None;
     let mut session_end = None;
     // A font setting changed: the grid takes the new face and size (Task 27).
@@ -497,6 +513,12 @@ pub fn run_window(
         let cwd = std::env::current_dir().unwrap_or_default(); // sync-ok: startup, before any window
         let launch_folders = folders_from_argv(&argv, &own_files(), &cwd); // sync-ok: startup, before any window
         let e2e_on = args.e2e;
+        // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
+        // touch the desktop, and a url click is only recorded.
+        let backends = Backends::new(e2e_on);
+        // Filled right after the controller exists: the grid source paints the controller's decoration.
+        let inputs_cell: Rc<RefCell<Option<Rc<RefCell<crate::term_ui::DecorInputs>>>>> =
+            Rc::default();
         let deps = Deps {
             prefs: prefs.clone(),
             tabs_store: Arc::clone(&tabs_store),
@@ -526,33 +548,40 @@ pub fn run_window(
                     );
                 })
             },
-            clipboard: Rc::new(|text: &str| {
-                // The clipboard can be busy for a moment: a worker does the retries.
-                let text = text.to_string();
-                let r = std::thread::Builder::new()
-                    .name("flare-clipboard".into())
-                    .spawn(move || {
-                        if let Err(e) = clipboard::set_text(&text) {
-                            log::warn!("copy failed: {e}");
-                        }
-                    });
-                if let Err(e) = r {
-                    log::warn!("could not start the clipboard worker: {e}");
-                }
-            }),
-            open_url: Rc::new(|url: &str| {
-                if let Err(e) = shell_open::open_url(url) {
-                    log::warn!("open {url} failed: {e}");
-                }
-            }),
+            clipboard: {
+                let port = Arc::clone(&backends.clip_port);
+                Rc::new(move |text: &str| {
+                    // The clipboard can be busy for a moment: a worker does the retries.
+                    let text = text.to_string();
+                    let port = Arc::clone(&port);
+                    let r = std::thread::Builder::new()
+                        .name("flare-clipboard".into())
+                        .spawn(move || {
+                            if let Err(e) = port.write_text(&text, CLIPBOARD_WRITE_MAX) {
+                                log::warn!("copy failed: {e}");
+                            }
+                        });
+                    if let Err(e) = r {
+                        log::warn!("could not start the clipboard worker: {e}");
+                    }
+                })
+            },
+            open_url: backends.open_url(),
             set_grid_source: {
                 let host = host.clone();
                 let front = front.clone();
                 let weak = app.as_weak();
+                let inputs_cell = inputs_cell.clone();
                 Rc::new(move |handle: Option<Arc<TermHandle>>| {
                     *front.borrow_mut() = handle.clone();
                     match handle {
-                        Some(h) => host.borrow_mut().set_source(Box::new(LiveSource::new(h))),
+                        Some(h) => {
+                            let source = match inputs_cell.borrow().clone() {
+                                Some(inputs) => LiveSource::with_inputs(h, inputs),
+                                None => LiveSource::new(h),
+                            };
+                            host.borrow_mut().set_source(Box::new(source));
+                        }
                         None => host
                             .borrow_mut()
                             .set_source(Box::new(crate::host::SampleSource::new())),
@@ -585,8 +614,28 @@ pub fn run_window(
             },
             launch_folders,
             e2e: e2e_on,
+            term: TermPorts {
+                clip_port: Arc::clone(&backends.clip_port),
+                openers: Arc::clone(&backends.openers),
+                agent: Rc::new(flare_agent::keys::NoAgent),
+                dbl: system_double_click(),
+                stat: Arc::new(FsStat),
+                metrics: {
+                    let host = host.clone();
+                    Rc::new(move || host.borrow().metrics())
+                },
+                mark_grid_dirty: {
+                    let host = host.clone();
+                    Rc::new(move || {
+                        if let Ok(mut h) = host.try_borrow_mut() {
+                            h.mark_dirty();
+                        }
+                    })
+                },
+            },
         };
         let rc = AppCtl::new(&app, deps);
+        *inputs_cell.borrow_mut() = Some(rc.borrow().decor_inputs());
         APP_CTL.with(|cell| *cell.borrow_mut() = Some((rc.clone(), app.as_weak())));
         // The second launch's folders arrive on the pipe thread (running since main took the
         // lock) and hop onto the event loop; any that came while the window was being made go now.
@@ -710,6 +759,7 @@ pub fn run_window(
                 host: host.clone(),
                 initial: initial.clone(),
                 material: material.clone(),
+                caret: caret.clone(),
             },
         );
     }
@@ -908,6 +958,56 @@ struct FilterState {
     initial: Option<InitialWindow>,
     /// Filled after the show, when the window has its handle.
     material: Rc<RefCell<Option<WindowMaterial>>>,
+    /// The IME caret hold (Task 24b): a typed key opens its window.
+    caret: Rc<RefCell<CaretFollower>>,
+}
+
+/// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
+/// released on the alternate screen, after a resize and on a scrolled-back view. Nothing to place
+/// without a tab in front.
+fn place_ime(
+    app: &AppWindow,
+    front: &FrontCell,
+    caret: &RefCell<CaretFollower>,
+    host: &GridHost,
+    last_dims: &Cell<(usize, usize)>,
+) {
+    let Some(handle) = front.borrow().clone() else {
+        return;
+    };
+    let dims = host.dims();
+    let resized = last_dims.replace(dims) != dims;
+    let (cursor, scrolled, alt) = handle.with_emu_quiet(|e| {
+        let (line, col) = e.cursor();
+        (
+            CaretPos {
+                line: i64::from(line),
+                x: col as i64,
+            },
+            e.display_offset() > 0,
+            e.mode().alt_screen,
+        )
+    });
+    let held = caret
+        .borrow_mut()
+        .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
+    let scale = app.get_scale();
+    let origin = (
+        (app.get_grid_left() * scale).round() as i32,
+        (app.get_grid_top() * scale).round() as i32,
+    );
+    let area = ime_area(
+        held.line.max(0) as usize,
+        held.x.max(0) as usize,
+        &host.metrics(),
+        origin,
+    );
+    let _ = app.window().with_winit_window(|w| {
+        w.set_ime_cursor_area(
+            PhysicalPosition::new(area.x, area.y),
+            PhysicalSize::new(area.w, area.h),
+        );
+    });
 }
 
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
@@ -920,6 +1020,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         host,
         initial,
         material,
+        caret,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
@@ -1102,7 +1203,13 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 if reserved_for_slint(&ev.code) {
                     return EventResult::Propagate;
                 }
-                let chrome_focus = weak.upgrade().is_some_and(|a| a.get_chrome_has_focus());
+                if ev.pressed {
+                    // A typed key opens the IME caret hold (Task 24b).
+                    caret.borrow_mut().on_key(epoch_ms() as i64);
+                }
+                let chrome_focus = weak
+                    .upgrade()
+                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
                 let outcome = if ev.pressed {
                     let mut out = KeyOutcome::Slint;
                     with_ctl(&mut |c| out = c.on_key(&ev));
@@ -1128,25 +1235,16 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                     // Nothing to type into (Settings, the start screen): swallow the key.
                     return EventResult::PreventDefault;
                 };
-                let mut no_delete = || false;
-                let mut state = KeyState {
-                    has_selection: false,
-                    delete_selection: &mut no_delete,
-                    host_owns: &|_| false,
-                    agent_here: false,
-                };
-                match term_key_action(&ev, &mut state) {
-                    TermKeyAction::Pty => {
-                        handle.send_key(&ev);
-                        EventResult::PreventDefault
-                    }
-                    // The clipboard path is M5.
-                    TermKeyAction::Paste | TermKeyAction::PastePlain => EventResult::PreventDefault,
-                    _ => EventResult::Propagate,
-                }
+                // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
+                // its own); what is left for the shell is typed here.
+                handle.send_key(&ev);
+                EventResult::PreventDefault
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
-                if weak.upgrade().is_some_and(|a| a.get_chrome_has_focus()) {
+                if weak
+                    .upgrade()
+                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                {
                     return EventResult::Propagate;
                 }
                 match front.borrow().as_ref() {

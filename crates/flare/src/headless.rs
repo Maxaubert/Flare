@@ -37,14 +37,17 @@ use slint::{
 };
 
 use crate::AppWindow;
-use crate::appctl::{AppCtl, Deps, Post, UiMsg};
+use crate::appctl::{AppCtl, Deps, Post, TermPorts, UiMsg};
 use crate::chrome_apply::{apply_chrome, apply_to_host};
 use crate::config::{Args, RendererChoice};
 use crate::host::{GridHost, GridPainter, GridSource, SampleSource};
 use crate::live::{Live, LiveSource, shutdown};
 use crate::memory::process_memory;
 use crate::tab_host::TabHost;
+use crate::term_ui::{DecorInputs, PointerIn};
 use crate::theme_scene::{SAMPLE_STREAM, StreamSource, scene_font, scene_look};
+use flare_term::keys::KeyEvent;
+use flare_term::path_open::{PathKind, StatFn};
 
 /// The line the live tab types; its echo and its output both show it on screen.
 const ECHO_MARK: &str = "flare-m2-ok";
@@ -256,7 +259,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 // ---- --scene: the window in one fixed state ----------------------------------------------------
 
 /// The scenes `--scene` takes, in the order the screenshot plan lists them.
-pub const SCENES: [&str; 13] = [
+pub const SCENES: [&str; 25] = [
     "strip-3",
     "strip-hover",
     "strip-many",
@@ -270,6 +273,18 @@ pub const SCENES: [&str; 13] = [
     "dialog-close",
     "tip",
     "theme-sample",
+    "term-selection",
+    "term-selection-wide",
+    "term-find",
+    "term-find-none",
+    "term-find-many",
+    "term-find-empty",
+    "term-links",
+    "term-menu-plain",
+    "term-menu-selection",
+    "term-menu-link",
+    "term-menu-path",
+    "term-copied",
 ];
 
 /// The folder the scenes' tabs sit in. Inert: nothing is spawned in it and nothing is read from it.
@@ -408,7 +423,88 @@ pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         "dialog-close" => (saved(&three, 0), no_prefs),
         // M3's strip-3 window with a single tab.
         "theme-sample" => (saved(&[github("Flare")], 0), no_prefs),
+        // The terminal scenes: one live tab in the Flare folder, its shell fed with the text.
+        name if is_term_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         _ => (saved(&three, 0), no_prefs),
+    }
+}
+
+// ---- the terminal scenes (M5, Task 26) ---------------------------------------------------------
+
+/// The scenes that draw a live shell tab: selection, find, links, the menus and the Copied badge.
+fn is_term_scene(name: &str) -> bool {
+    name.starts_with("term-")
+}
+
+const PROMPT: &str = r"PS C:\Users\Admin\Documents\Claude\Github\Flare> ";
+const RUN_URL: &str = "https://github.com/Maxaubert/Flare/actions/runs/1";
+const README: &str = r"C:\Users\Admin\Documents\Claude\Github\Flare\README.md";
+
+/// The PowerShell session most scenes show: ten rows, the url on row 5, the path on row 6.
+fn term_rows() -> Vec<String> {
+    vec![
+        format!("{PROMPT}cargo nextest run"),
+        "    Starting 214 tests across 12 binaries".to_string(),
+        "error[E0432]: unresolved import `flare_term::nope`".to_string(),
+        "warning: unused variable `x`".to_string(),
+        r"    --> crates\flare\src\main.rs:12:9".to_string(),
+        format!("    log at {RUN_URL}"),
+        format!("    source {README}"),
+        "     Summary [   0.412s] 213 tests run: 212 passed, 1 failed".to_string(),
+        "error: test run failed".to_string(),
+        PROMPT.to_string(),
+    ]
+}
+
+/// The rows a terminal scene feeds its shell. `cols` is the grid's width, so a wrapped line wraps
+/// where the scene needs it to (a match over two rows, a url over two rows).
+fn term_text(name: &str, cols: usize) -> Vec<String> {
+    match name {
+        "term-selection-wide" => vec![
+            "日本語 emoji 😀 text".to_string(),
+            "second row of the block".to_string(),
+            "third row of the block".to_string(),
+            "fourth row of the block".to_string(),
+        ],
+        "term-find" | "term-find-none" | "term-find-empty" => vec![
+            format!("{PROMPT}cargo nextest run"),
+            "error[E0432]: unresolved import".to_string(),
+            "warning: err helper is unused".to_string(),
+            // One match wraps: its "e" ends this row and its "rr" starts the next.
+            format!("{}err tail", "-".repeat(cols.saturating_sub(2))),
+            "error: test run failed".to_string(),
+            "    Summary: 1 err".to_string(),
+            PROMPT.to_string(),
+        ],
+        "term-find-many" => {
+            let mut rows = term_rows();
+            rows.extend((0..600).map(|_| "err err".to_string()));
+            rows
+        }
+        "term-links" => vec![
+            format!("{PROMPT}cargo nextest run"),
+            format!("    log at {RUN_URL}"),
+            format!("    source {README}"),
+            // The url starts 20 cells from the right edge, so it wraps over two rows.
+            format!("{}{RUN_URL}", " ".repeat(cols.saturating_sub(20))),
+            PROMPT.to_string(),
+        ],
+        _ => term_rows(),
+    }
+}
+
+/// The path links' stat: the README and the Flare folder exist; nothing else does.
+struct SceneStat;
+
+impl StatFn for SceneStat {
+    fn kind(&self, abs: &str) -> Option<PathKind> {
+        if abs.eq_ignore_ascii_case(README) {
+            Some(PathKind::File)
+        } else if abs.eq_ignore_ascii_case(&github("Flare")) {
+            Some(PathKind::Dir)
+        } else {
+            None
+        }
     }
 }
 
@@ -423,6 +519,8 @@ pub(crate) struct Scene {
     pub(crate) scale: f32,
     pub(crate) phys: (u32, u32),
     dir: PathBuf,
+    /// The shell the grid shows (the terminal scenes feed it and read its cells).
+    front: Rc<RefCell<Option<Arc<TermHandle>>>>,
 }
 
 impl Drop for Scene {
@@ -433,11 +531,24 @@ impl Drop for Scene {
 
 impl Scene {
     /// The window, the grid, the prefs and the saved tabs, restored before this returns.
+    #[cfg(test)]
     pub(crate) fn build(
         args: &Args,
         saved: SavedTabs,
         prep: fn(&PrefStore),
         sample_stream: bool,
+    ) -> Result<Self, String> {
+        Self::build_with(args, saved, prep, sample_stream, false)
+    }
+
+    /// `build`, and `term`: the grid shows the front shell (the terminal scenes) instead of the
+    /// sample grid.
+    pub(crate) fn build_with(
+        args: &Args,
+        saved: SavedTabs,
+        prep: fn(&PrefStore),
+        sample_stream: bool,
+        term: bool,
     ) -> Result<Self, String> {
         let scale = args.scale;
         let phys = (
@@ -505,6 +616,11 @@ impl Scene {
             Arc::new(move || post(UiMsg::HostWake))
         };
         let grid = host.clone();
+        // The front shell, as the grid last drew it; the terminal's controller, once it exists.
+        let front: Rc<RefCell<Option<Arc<TermHandle>>>> = Rc::default();
+        let inputs_cell: Rc<RefCell<Option<Rc<RefCell<DecorInputs>>>>> = Rc::default();
+        let grid_front = front.clone();
+        let grid_inputs = inputs_cell.clone();
         let deps = Deps {
             prefs: prefs.clone(),
             tabs_store: Arc::new(TabsStore::new(tabs_file, SAVE_DELAY)),
@@ -520,12 +636,17 @@ impl Scene {
             }),
             clipboard: Rc::new(|_: &str| {}),
             open_url: Rc::new(|_: &str| {}),
-            // The scenes draw the sample grid under every tab, whatever the tab's shell is.
-            set_grid_source: Rc::new(move |_: Option<Arc<TermHandle>>| {
-                let source: Box<dyn GridSource> = if sample_stream {
-                    Box::new(StreamSource::new(SAMPLE_STREAM))
-                } else {
-                    Box::new(SampleSource::new())
+            // A terminal scene draws its front shell with the controller's decoration; every other
+            // scene draws the sample grid under every tab, whatever the tab's shell is.
+            set_grid_source: Rc::new(move |handle: Option<Arc<TermHandle>>| {
+                *grid_front.borrow_mut() = handle.clone();
+                let source: Box<dyn GridSource> = match handle {
+                    Some(h) if term => match grid_inputs.borrow().clone() {
+                        Some(inputs) => Box::new(LiveSource::with_inputs(h, inputs)),
+                        None => Box::new(LiveSource::new(h)),
+                    },
+                    _ if sample_stream => Box::new(StreamSource::new(SAMPLE_STREAM)),
+                    _ => Box::new(SampleSource::new()),
                 };
                 grid.borrow_mut().set_source(source);
             }),
@@ -534,8 +655,18 @@ impl Scene {
             hide: Rc::new(|| {}),
             launch_folders: Vec::new(),
             e2e: true,
+            term: TermPorts {
+                // The grid's own cell metrics, so a scene at 150% or 225% hits the cells it draws.
+                metrics: {
+                    let host = host.clone();
+                    Rc::new(move || host.borrow().metrics())
+                },
+                stat: Arc::new(SceneStat),
+                ..TermPorts::inert()
+            },
         };
         let ctl = AppCtl::new(&app, deps);
+        *inputs_cell.borrow_mut() = Some(ctl.borrow().decor_inputs());
         let scene = Self {
             win,
             app,
@@ -545,6 +676,7 @@ impl Scene {
             scale,
             phys,
             dir,
+            front,
         };
         apply_chrome(&scene.app, &look);
         AppCtl::start_restore(&scene.ctl);
@@ -686,9 +818,179 @@ impl Scene {
     }
 
     /// Puts the window into the scene's state: pointer, keys, the clock and the controller's timers.
+    /// The front shell the grid shows; a terminal scene cannot stage without one.
+    fn term_handle(&self) -> Result<Arc<TermHandle>, String> {
+        self.front
+            .borrow()
+            .clone()
+            .ok_or_else(|| "the scene has no live tab".to_string())
+    }
+
+    /// A pointer position in css px from the grid's corner, at a cell (`right`: its right half),
+    /// the way the grid's own hit testing reads it.
+    fn cell_css(&self, col: usize, row: usize, right: bool) -> (f64, f64) {
+        let m = self.host.borrow().metrics();
+        let x = f64::from(m.padding)
+            + col as f64 * f64::from(m.cell_w)
+            + if right { 0.75 } else { 0.25 } * f64::from(m.cell_w);
+        let y = f64::from(m.padding) + row as f64 * f64::from(m.cell_h) + f64::from(m.cell_h) / 2.0;
+        let s = f64::from(self.scale);
+        (x / s, y / s)
+    }
+
+    /// One pointer event over the front tab's grid (`kind`: 0 down, 1 up, 2 move).
+    fn term_pointer(&self, kind: u8, button: u8, at: (f64, f64), shift: bool, alt: bool) {
+        self.ctl.borrow_mut().grid_pointer(PointerIn {
+            kind,
+            button,
+            x_css: at.0,
+            y_css: at.1,
+            ctrl: false,
+            shift,
+            alt,
+        });
+    }
+
+    /// A press and a release at one place; `button` 2 is the right button (the menu).
+    fn term_click(&self, at: (f64, f64), button: u8) {
+        self.term_pointer(0, button, at, false, false);
+        self.term_pointer(1, button, at, false, false);
+    }
+
+    /// A left drag from one place to another; `alt` makes it a block selection.
+    fn term_drag(&self, from: (f64, f64), to: (f64, f64), alt: bool) {
+        self.term_pointer(0, 0, from, false, alt);
+        self.term_pointer(2, 0, to, false, alt);
+        self.term_pointer(1, 0, to, false, alt);
+    }
+
+    /// A key press into the controller (chords first, then the terminal).
+    fn term_key(&self, key: &str, code: &str, ctrl: bool) {
+        let ev = KeyEvent {
+            pressed: true,
+            key: key.to_string(),
+            code: code.to_string(),
+            text: None,
+            ctrl,
+            shift: false,
+            alt: false,
+            meta: false,
+        };
+        self.ctl.borrow_mut().on_key(&ev);
+    }
+
+    /// Lets the terminal's workers answer (path questions, the copy) and its timers run, drawing
+    /// each round so a question asked by a frame gets its answer.
+    fn settle(&self, rounds: u32) {
+        // A paint is costly at 300%, so the rounds only draw twice: before, and half way.
+        self.render();
+        for i in 0..rounds {
+            self.pump();
+            self.ctl.borrow_mut().tick();
+            self.advance(50);
+            std::thread::sleep(Duration::from_millis(5)); // sync-ok: scene tooling, waits for the terminal's workers
+            if i == rounds / 2 {
+                self.render();
+            }
+        }
+        self.pump();
+    }
+
+    /// The terminal scenes: the shell is fed its text, then the controller is driven into the
+    /// scene's state with the same pointer and key events a person would send.
+    fn stage_term(&self, name: &str) -> Result<(), String> {
+        let handle = self.term_handle()?;
+        let cols = handle.with_emu_quiet(|e| e.cols());
+        let text = term_text(name, cols).join("\r\n");
+        handle.with_emu(|e| {
+            e.feed(text.as_bytes());
+        });
+        let find = |query: &str| {
+            self.term_key("f", "KeyF", true);
+            self.type_text(query);
+        };
+        match name {
+            "term-selection" => {
+                // From inside the url on row 5, across to the end of "source" on row 6.
+                let from = self.cell_css(23, 5, false);
+                let to = self.cell_css(9, 6, true);
+                self.settle(20);
+                self.term_drag(from, to, false);
+            }
+            "term-selection-wide" => {
+                // A block from the wide emoji on row 0 down three rows, to the right.
+                let from = self.cell_css(13, 0, false);
+                let to = self.cell_css(19, 2, true);
+                self.settle(20);
+                self.term_drag(from, to, true);
+            }
+            "term-find" => {
+                find("err");
+                self.settle(20);
+                // The second match is the active one.
+                self.app.invoke_find_next();
+            }
+            "term-find-none" => find("zzz"),
+            "term-find-many" => {
+                find("err");
+                self.settle(60);
+                // Back from the first match wraps to the last, past the thousand that are
+                // counted: the readout is `1000+` (xterm's -1 index).
+                self.app.invoke_find_prev();
+                self.settle(4);
+            }
+            "term-find-empty" => self.term_key("f", "KeyF", true),
+            "term-links" => {
+                self.settle(20);
+                // The pointer rests on the url: its underline is drawn in full.
+                self.term_pointer(2, 0, self.cell_css(20, 1, false), false, false);
+            }
+            "term-menu-plain" => {
+                self.settle(20);
+                self.term_click(self.cell_css(3, 2, false), 2);
+            }
+            "term-menu-selection" => {
+                let from = self.cell_css(0, 2, false);
+                let to = self.cell_css(4, 2, true);
+                self.settle(20);
+                self.term_drag(from, to, false);
+                // Right inside the selection: the menu offers Copy.
+                self.term_click(self.cell_css(2, 2, false), 2);
+            }
+            "term-menu-link" => {
+                self.settle(20);
+                self.term_click(self.cell_css(20, 5, false), 2);
+            }
+            "term-menu-path" => {
+                self.settle(20);
+                self.term_click(self.cell_css(20, 6, false), 2);
+            }
+            "term-copied" => {
+                let from = self.cell_css(0, 2, false);
+                let to = self.cell_css(4, 2, true);
+                self.settle(20);
+                self.term_drag(from, to, false);
+                self.term_key("c", "KeyC", true);
+                // The copy runs on a worker; the badge shows once its answer is in.
+                let until = Instant::now() + Duration::from_secs(5);
+                while self.app.get_copied_phase() != 1 && Instant::now() < until {
+                    self.pump();
+                    self.ctl.borrow_mut().tick();
+                    std::thread::sleep(Duration::from_millis(5)); // sync-ok: scene tooling, waits for the copy worker
+                }
+            }
+            _ => return Err(format!("no terminal scene '{name}'")),
+        }
+        self.settle(2);
+        Ok(())
+    }
+
     fn stage(&self, name: &str) -> Result<(), String> {
         // The first paint lays the window out, so the pointer and the focus find their targets.
         self.render();
+        if is_term_scene(name) {
+            return self.stage_term(name);
+        }
         match name {
             "strip-hover" => {
                 let (x, y) = self.tab_centre(1)?;
@@ -759,10 +1061,51 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "--scene needs --screenshot <path>".to_string())?;
     let (saved, prep) = setup(name);
-    let scene = Scene::build(args, saved, prep, name == "theme-sample")?;
+    let scene = Scene::build_with(
+        args,
+        saved,
+        prep,
+        name == "theme-sample",
+        is_term_scene(name),
+    )?;
     scene.stage(name)?;
     let rgba = scene.render();
     write_png(path, scene.phys.0, scene.phys.1, &rgba)?;
     println!("screenshot: {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::parse_args;
+
+    fn staged(name: &str) -> Scene {
+        let argv: Vec<String> = [
+            "--scene",
+            name,
+            "--scale",
+            "1",
+            "--size",
+            "1000x640",
+            "--renderer",
+            "software",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let args = parse_args(&argv, None).expect("the arguments parse");
+        let (saved, prep) = setup(name);
+        let scene = Scene::build_with(&args, saved, prep, false, true).expect("the scene builds");
+        scene.stage(name).expect("the scene stages");
+        scene
+    }
+
+    /// Task 27: the screenshot of `term-find-many` read "1 of 1000"; the plan's scene shows the
+    /// readout `1000+` (the active match past the thousand that are counted).
+    #[test]
+    fn the_many_scene_reads_a_thousand_plus() {
+        let scene = staged("term-find-many");
+        assert_eq!(scene.app.get_find_readout().as_str(), "1000+");
+    }
 }

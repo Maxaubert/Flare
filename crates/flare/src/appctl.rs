@@ -21,7 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_agent::close::holds_window_close;
+use flare_agent::keys::AgentView;
 use flare_agent::kinds::{AgentKind, CODEX_RESUME, DetectedAgent};
+use flare_render::metrics::CellMetrics;
 use flare_settings::kv::PrefStore;
 use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use flare_settings::recent_roots::{pinned_roots, recent_roots};
@@ -31,7 +33,7 @@ use flare_settings::tab_switch::tab_switch;
 use flare_settings::term_prefs::agent_keys;
 use flare_tabs::close_flow::{CloseFlow, CloseVerdict, Confirmed};
 use flare_tabs::drag_flight::DragInFlight;
-use flare_tabs::keymap::{ChordId, KeyContext, key_label};
+use flare_tabs::keymap::{ChordId, KeyContext, app_owns_key, key_label};
 use flare_tabs::model::TabModel;
 use flare_tabs::places::place_rows;
 use flare_tabs::restore::{
@@ -43,9 +45,14 @@ use flare_tabs::tab_drag::Release;
 use flare_tabs::tabs::TabKind;
 use flare_tabs::tabs_store::TabsStore;
 use flare_tabs::tip_place::{BoxF, TipSide};
+use flare_term::click_caret::MouseTracking;
+use flare_term::emulator::TermEvent;
 use flare_term::handle::TermHandle;
-use flare_term::keys::KeyEvent;
+use flare_term::keys::{KeyEvent, KeyState, term_key_action};
+use flare_term::path_open::{PathOpeners, StatFn};
 use flare_win::argv::{folders_from_argv, own_files};
+use flare_win::clipboard_port::ClipboardPort;
+use flare_win::dblclick::DoubleClick;
 use flare_win::single_instance::Handoff;
 use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
@@ -61,6 +68,10 @@ use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window
 use crate::tab_host::{HostEvent, TabHost};
 use crate::tabs_ui::{
     GeomData, MarkRole, SideDrag, StripDrag, View, ViewInput, build_view, slot_to_model, sync_rows,
+};
+use crate::term_menu::to_menu_row;
+use crate::term_ui::{
+    CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
 use crate::{AppWindow, MenuRow, OverflowRow, Place, StripGeom, TabRow};
 use flare_theme::fonts::zoom_step;
@@ -80,6 +91,22 @@ pub enum UiMsg {
     Folders(Vec<String>),
     Handoff(Handoff),
     HostWake,
+    /// A worker's answer for the terminal controller (clipboard read, copy result, path stats).
+    Term(TermMsgBox),
+}
+
+/// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
+/// clipboard text.
+pub struct TermMsgBox(pub TermMsg);
+
+impl std::fmt::Debug for TermMsgBox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            TermMsg::Clip(..) => "TermMsg::Clip",
+            TermMsg::Copied(_) => "TermMsg::Copied",
+            TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
+        })
+    }
 }
 
 pub type Post = Arc<dyn Fn(UiMsg) + Send + Sync>;
@@ -108,6 +135,25 @@ pub struct Deps {
     pub hide: Rc<dyn Fn()>,
     pub launch_folders: Vec<String>,
     pub e2e: bool,
+    /// The terminal's ports (M5): the real ones in production, in-memory stand-ins under `--e2e`.
+    pub term: TermPorts,
+}
+
+/// What the terminal controller needs from the outside (Task 24).
+pub struct TermPorts {
+    /// Production `WinClipboard`; `MemoryClipboard` under `--e2e`.
+    pub clip_port: Arc<dyn ClipboardPort>,
+    /// Production `WinOpeners`; `RecordingOpeners` under `--e2e`.
+    pub openers: Arc<dyn PathOpeners + Send + Sync>,
+    /// The agent the keyboard path asks about (M6 implements it; `NoAgent` until then).
+    pub agent: Rc<dyn AgentView>,
+    pub dbl: DoubleClick,
+    /// The stat behind the path-link questions (`FsStat` in production).
+    pub stat: Arc<dyn StatFn>,
+    /// The grid's cell metrics now (production: the grid host's).
+    pub metrics: Rc<dyn Fn() -> CellMetrics>,
+    /// Marks the grid dirty so the next frame redraws the decoration.
+    pub mark_grid_dirty: Rc<dyn Fn()>,
 }
 
 /// What the window does with a key after `on_key`.
@@ -181,6 +227,114 @@ pub struct AppCtl {
     ended: bool,
     /// The grid's face and size (Task 27); set by the window after the controller is made.
     font: Option<FontCtl>,
+    /// The terminal's input controller: selection, copy, paste, find, links and the menu (M5).
+    term: TermUi,
+    /// When the terminal next wants the timer (None: idle).
+    term_due: Option<u64>,
+    /// Timer rounds still owed after output arrived: path questions are asked by a drawn frame.
+    term_hot: u8,
+    /// The find bar was shown at the last push (focus follows it opening and closing).
+    find_shown: bool,
+}
+
+/// The front shell tab as owned pieces; `info` lends them to the terminal controller.
+struct FrontTab {
+    id: String,
+    handle: Arc<TermHandle>,
+    cwd: Option<String>,
+    alive: bool,
+}
+
+impl FrontTab {
+    fn info(&self) -> TabInfo<'_> {
+        TabInfo {
+            id: &self.id,
+            handle: &self.handle,
+            cwd: self.cwd.as_deref(),
+            alive: self.alive,
+        }
+    }
+}
+
+impl TermPorts {
+    /// Stand-ins that touch nothing outside the process: tests and the headless scenes. The
+    /// metrics are an 8 by 16 cell at scale 1.
+    pub fn inert() -> Self {
+        use flare_render::glyph::{FakeGlyphs, GlyphSource};
+        Self {
+            clip_port: Arc::new(flare_win::clipboard_port::MemoryClipboard::new()),
+            openers: Arc::new(crate::openers::RecordingOpeners::new()),
+            agent: Rc::new(flare_agent::keys::NoAgent),
+            dbl: flare_win::dblclick::FALLBACK,
+            stat: Arc::new(flare_term::path_open::FsStat),
+            metrics: Rc::new(|| {
+                flare_render::metrics::cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)
+            }),
+            mark_grid_dirty: Rc::new(|| {}),
+        }
+    }
+}
+
+/// The clipboard, the openers and the url opener of a run: the real ones, or under `--e2e` the
+/// in-memory stand-ins that never touch the desktop (parity: under the test flag nothing opens
+/// outside the app).
+pub struct Backends {
+    pub clip_port: Arc<dyn ClipboardPort>,
+    pub openers: Arc<dyn PathOpeners + Send + Sync>,
+    /// Under `--e2e`: what the openers were asked to do.
+    pub recording: Option<Arc<crate::openers::RecordingOpeners>>,
+    /// Under `--e2e`: the urls that would have been opened.
+    pub urls: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+}
+
+impl Backends {
+    pub fn new(e2e: bool) -> Self {
+        if e2e {
+            let rec = Arc::new(crate::openers::RecordingOpeners::new());
+            Self {
+                clip_port: Arc::new(flare_win::clipboard_port::MemoryClipboard::new()),
+                openers: rec.clone(),
+                recording: Some(rec),
+                urls: Some(Arc::default()),
+            }
+        } else {
+            Self {
+                clip_port: Arc::new(flare_win::clipboard_port::WinClipboard),
+                openers: Arc::new(crate::openers::WinOpeners),
+                recording: None,
+                urls: None,
+            }
+        }
+    }
+
+    /// Opens a web address, or under `--e2e` only records it. The caller has checked `is_web_url`;
+    /// `shell_open::open_url` refuses anything but http(s) again.
+    pub fn open_url(&self) -> Rc<dyn Fn(&str)> {
+        match &self.urls {
+            Some(log) => {
+                let log = Arc::clone(log);
+                Rc::new(move |url: &str| {
+                    log.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(url.to_string());
+                })
+            }
+            None => Rc::new(|url: &str| {
+                if let Err(e) = flare_win::shell_open::open_url(url) {
+                    log::warn!("open {url} failed: {e}");
+                }
+            }),
+        }
+    }
+}
+
+fn cursor_of(k: CursorKind) -> slint::private_unstable_api::re_exports::MouseCursorInner {
+    use slint::private_unstable_api::re_exports::{BuiltInMouseCursor, MouseCursorInner};
+    MouseCursorInner::BuiltIn(match k {
+        CursorKind::Text => BuiltInMouseCursor::Text,
+        CursorKind::Pointer => BuiltInMouseCursor::Pointer,
+        CursorKind::Default => BuiltInMouseCursor::Default,
+    })
 }
 
 /// Binds one callback of the window to a method of the controller.
@@ -250,6 +404,7 @@ impl AppCtl {
         let prefs = deps.prefs.clone();
         let now = (deps.clock)();
         let boot_saved = deps.tabs_store.load(); // sync-ok: startup read of tabs.json
+        let term = Self::make_term(app, &deps);
         let model = TabModel::boot(&boot_saved, now);
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
@@ -299,6 +454,10 @@ impl AppCtl {
             working: HashMap::new(),
             ended: false,
             font: None,
+            term,
+            term_due: None,
+            term_hot: 0,
+            find_shown: false,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -383,6 +542,65 @@ impl AppCtl {
         );
         bind!(app, rc, on_bar_double_clicked, |c| c.toggle_maximise());
         bind!(app, rc, on_title_pressed, |c| c.title_pressed());
+        bind!(
+            app,
+            rc,
+            on_grid_pointer,
+            |c, kind: i32, button: i32, x: f32, y: f32, ctrl: bool, shift: bool, alt: bool| {
+                c.grid_pointer(PointerIn {
+                    kind: kind.clamp(0, 3) as u8,
+                    button: button.clamp(0, 3) as u8,
+                    x_css: f64::from(x),
+                    y_css: f64::from(y),
+                    ctrl,
+                    shift,
+                    alt,
+                })
+            }
+        );
+        bind!(app, rc, on_find_edited, |c, q: SharedString| c
+            .term_find_edited(&q));
+        bind!(app, rc, on_find_next, |c| c.term_find_step(true));
+        bind!(app, rc, on_find_prev, |c| c.term_find_step(false));
+        bind!(app, rc, on_find_close, |c| c.term_find_close());
+    }
+
+    /// The terminal controller over this window: its closures reach the window only through a weak
+    /// handle, so a message or a redraw after the window is gone does nothing.
+    fn make_term(app: &AppWindow, deps: &Deps) -> TermUi {
+        let weak = app.as_weak();
+        let dirty = Rc::clone(&deps.term.mark_grid_dirty);
+        let redraw: Rc<dyn Fn()> = {
+            let weak = weak.clone();
+            Rc::new(move || {
+                dirty();
+                if let Some(app) = weak.upgrade() {
+                    app.window().request_redraw();
+                }
+            })
+        };
+        let set_cursor: Rc<dyn Fn(CursorKind)> = {
+            let weak = weak.clone();
+            Rc::new(move |k| {
+                if let Some(app) = weak.upgrade() {
+                    app.set_grid_cursor(cursor_of(k));
+                }
+            })
+        };
+        let post = Arc::clone(&deps.post);
+        TermUi::new(TermDeps {
+            clipboard: Arc::clone(&deps.term.clip_port),
+            openers: Arc::clone(&deps.term.openers),
+            open_url: Rc::clone(&deps.open_url),
+            post: Arc::new(move |m| post(UiMsg::Term(TermMsgBox(m)))),
+            clock_ms: Rc::clone(&deps.clock),
+            redraw,
+            set_cursor,
+            agent: Rc::clone(&deps.term.agent),
+            home: deps.home.clone(),
+            dbl: deps.term.dbl,
+            stat: Arc::clone(&deps.term.stat),
+        })
     }
 
     // ---- small helpers ------------------------------------------------------------------------
@@ -435,6 +653,11 @@ impl AppCtl {
     fn front_handle(&self) -> Option<Arc<TermHandle>> {
         let t = self.model.active_shell()?;
         self.deps.host.handle(&t.id)
+    }
+
+    /// What the grid source reads each frame: the selection, the find matches, the links.
+    pub fn decor_inputs(&self) -> Rc<RefCell<crate::term_ui::DecorInputs>> {
+        self.term.inputs()
     }
 
     fn focus_terminal(&self) {
@@ -561,6 +784,13 @@ impl AppCtl {
             .and_then(|t| self.deps.host.handle(&t.id).map(|h| (t.id.clone(), h)));
         let want_id = want.as_ref().map(|w| w.0.clone());
         if want_id != self.source_id {
+            self.term.tab_changed(want_id.as_deref());
+            if matches!(
+                self.menu.as_ref().map(|m| &m.kind),
+                Some(MenuKind::Term { .. })
+            ) {
+                self.close_menu_quietly();
+            }
             self.source_id = want_id;
             (self.deps.set_grid_source)(want.map(|w| w.1));
             // The tab in front may wear its own zoom.
@@ -575,6 +805,7 @@ impl AppCtl {
             self.last_saved = Some(s);
         }
 
+        self.push_term();
         app.window().request_redraw();
         self.kick();
     }
@@ -720,6 +951,7 @@ impl AppCtl {
         self.deps.host.kill(id);
         self.working.remove(id);
         self.model.close(id);
+        self.term.tab_closed(id);
         self.refresh();
     }
 
@@ -960,6 +1192,16 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
+            MenuKind::Term { .. } => {
+                let front = self.front_tab();
+                {
+                    let info = front.as_ref().map(FrontTab::info);
+                    let idx = usize::try_from(i).unwrap_or(usize::MAX);
+                    self.term.on_menu_pick(info.as_ref(), idx);
+                }
+                self.push_term();
+                self.wake_term();
+            }
         }
         self.refresh();
     }
@@ -1122,10 +1364,195 @@ impl AppCtl {
         }
     }
 
+    // ---- the terminal's input (M5) ----------------------------------------------------------------------
+
+    /// The shell tab in front, as owned pieces. `alive` is a shell that was spawned and is running.
+    fn front_tab(&self) -> Option<FrontTab> {
+        let t = self.model.active_shell()?;
+        let handle = self.deps.host.handle(&t.id)?;
+        let alive = handle.shell_id().is_some();
+        Some(FrontTab {
+            id: t.id.clone(),
+            handle,
+            cwd: (!t.cwd.is_empty()).then(|| t.cwd.clone()),
+            alive,
+        })
+    }
+
+    /// The grid's cells in the pointer's units: the live metrics, the window's scale, the size of
+    /// the tab in front.
+    fn grid_geom(&self, front: Option<&FrontTab>) -> GridGeom {
+        let scale = self.app().map_or(self.scale, |a| f64::from(a.get_scale()));
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let (cols, rows) = front.map_or(self.grid_dims, |f| {
+            f.handle.with_emu_quiet(|e| (e.cols(), e.view_rows()))
+        });
+        GridGeom {
+            metrics: (self.deps.term.metrics)(),
+            scale: scale as f32,
+            cols,
+            rows,
+        }
+    }
+
+    /// The timer must run once: the terminal has something to look at.
+    fn wake_term(&mut self) {
+        self.term_due = Some(self.now());
+        self.kick();
+    }
+
+    /// Pushes the find bar, the badge and the focus that follows the bar to the window.
+    fn push_term(&mut self) {
+        let Some(app) = self.app() else { return };
+        let fs = self.term.find_state();
+        app.set_find_open(fs.open);
+        if app.get_find_query().as_str() != fs.query {
+            app.set_find_query(fs.query.as_str().into());
+        }
+        app.set_find_readout(fs.readout.as_str().into());
+        app.set_find_can_step(fs.can_step);
+        app.set_copied_phase(self.term.badge_phase().code());
+        if fs.open && !self.find_shown {
+            app.invoke_focus_find();
+        } else if !fs.open && self.find_shown {
+            app.invoke_focus_terminal();
+        }
+        self.find_shown = fs.open;
+    }
+
+    /// The terminal's share of the timer: the drag scroll, the badge, the find job, the path
+    /// questions and the drop batch.
+    fn term_tick(&mut self) {
+        let front = self.front_tab();
+        let g = self.grid_geom(front.as_ref());
+        let out = {
+            let info = front.as_ref().map(FrontTab::info);
+            self.term.tick(info.as_ref(), &g)
+        };
+        self.term_due = out.next_due_ms;
+        self.term_hot = self.term_hot.saturating_sub(1);
+        if out.focus_terminal {
+            self.focus_terminal();
+        }
+        self.push_term();
+    }
+
+    /// One pointer event over the grid (css px from the grid's corner).
+    pub fn grid_pointer(&mut self, e: PointerIn) {
+        let front = self.front_tab();
+        let g = self.grid_geom(front.as_ref());
+        let out = {
+            let info = front.as_ref().map(FrontTab::info);
+            self.term.on_pointer(info.as_ref(), &g, e)
+        };
+        if let Some(at) = out.open_menu {
+            self.open_term_menu(at);
+        }
+        if out.focus_terminal {
+            self.focus_terminal();
+        }
+        self.push_term();
+        self.wake_term();
+    }
+
+    /// The terminal's right-click menu, hung where the pointer is (the grid's corner is added).
+    fn open_term_menu(&mut self, at: crate::term_menu::TermMenuAt) {
+        self.close_overflow_quietly();
+        let find_label = self.key_label_of(ChordId::Find);
+        let help_label = self.key_label_of(ChordId::Help);
+        let rows: Vec<(MenuRowData, String)> = self
+            .term
+            .menu_rows(false, find_label, help_label)
+            .iter()
+            .map(|r| (to_menu_row(r), String::new()))
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let (gx, gy) = self
+            .app()
+            .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
+        self.show_menu(MenuKind::Term { tab: at.tab }, rows, at.x + gx, at.y + gy);
+    }
+
+    /// Ctrl+F: opens the find bar on the tab in front, or closes it there (a full-screen program
+    /// keeps Ctrl+F; the chord table decided that already).
+    fn toggle_find(&mut self) {
+        let Some(front) = self.front_tab() else {
+            return;
+        };
+        self.term.toggle_find(&front.info());
+        self.push_term();
+        self.wake_term();
+    }
+
+    fn term_find_edited(&mut self, q: &str) {
+        if let Some(front) = self.front_tab() {
+            self.term.find_edited(&front.info(), q);
+        }
+        self.push_term();
+        self.wake_term();
+    }
+
+    fn term_find_step(&mut self, forward: bool) {
+        if let Some(front) = self.front_tab() {
+            if forward {
+                self.term.find_next(&front.info());
+            } else {
+                self.term.find_prev(&front.info());
+            }
+        }
+        self.push_term();
+        self.wake_term();
+    }
+
+    fn term_find_close(&mut self) {
+        self.term.find_close();
+        self.push_term();
+        self.focus_terminal();
+    }
+
+    /// A key no chord took, for the shell in front: the terminal's rules decide (copy, delete over
+    /// a selection, paste, the agent's newline), else the shell gets it.
+    fn term_key(&mut self, ev: &KeyEvent, ctx: &KeyContext) -> KeyOutcome {
+        let Some(front) = self.front_tab() else {
+            return KeyOutcome::Consumed;
+        };
+        let info = front.info();
+        let has_selection = self.term.has_selection(&info);
+        let agent_here = self.deps.term.agent.armed(&front.id).is_some();
+        let action = {
+            let term = &mut self.term;
+            let mut delete = || term.selection_delete(&info);
+            let host = |e: &KeyEvent| app_owns_key(e, ctx);
+            let mut state = KeyState {
+                has_selection,
+                delete_selection: &mut delete,
+                host_owns: &host,
+                agent_here,
+            };
+            term_key_action(ev, &mut state)
+        };
+        let done = self.term.on_key(&info, ev, action);
+        self.push_term();
+        self.wake_term();
+        match done {
+            KeyDone::Handled => KeyOutcome::Consumed,
+            KeyDone::Send => KeyOutcome::Pty,
+        }
+    }
+
     // ---- the timer --------------------------------------------------------------------------------------------
 
     fn next_due(&self) -> Option<u64> {
-        [self.sidebar.next_due(), self.tips.next_due()]
+        let term = self
+            .term_due
+            .or_else(|| (self.term_hot > 0).then(|| self.now()));
+        [self.sidebar.next_due(), self.tips.next_due(), term]
             .into_iter()
             .flatten()
             .min()
@@ -1165,6 +1592,7 @@ impl AppCtl {
             }
         }
         self.tip_tick(now);
+        self.term_tick();
         if changed {
             self.refresh();
         }
@@ -1181,7 +1609,11 @@ impl AppCtl {
         KeyContext {
             help: false,
             vertical: self.vertical(),
-            full_screen: self.front_handle().is_some_and(|h| h.mode().alt_screen),
+            // A full-screen program owns Ctrl+F: the alternate screen or the mouse (PT focusedTermFullScreen).
+            full_screen: self.front_handle().is_some_and(|h| {
+                let m = h.mode();
+                m.alt_screen || m.mouse != MouseTracking::None
+            }),
             agent_keys: agent_keys(&self.prefs),
             agent_guard: false,
             agent_here: false,
@@ -1211,10 +1643,13 @@ impl AppCtl {
                 }
             }
             Dispatch::NotAChord => {
-                if self.app().is_some_and(|a| a.get_chrome_has_focus()) {
+                if self
+                    .app()
+                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                {
                     KeyOutcome::Slint
                 } else if shell_in_front {
-                    KeyOutcome::Pty
+                    self.term_key(ev, &ctx)
                 } else {
                     KeyOutcome::Consumed
                 }
@@ -1293,6 +1728,15 @@ impl AppCtl {
             && sidebar_mode(&self.prefs) == SidebarMode::Open
             && cursor_css.0 < side_width;
         if !(on_strip || on_side) {
+            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path).
+            if cursor_css.1 >= BAR_H {
+                let front = self.front_tab();
+                {
+                    let info = front.as_ref().map(FrontTab::info);
+                    self.term.on_dropped(info.as_ref(), &path);
+                }
+                self.wake_term();
+            }
             return;
         }
         let is_dir = Arc::clone(&self.deps.is_dir);
@@ -1549,6 +1993,15 @@ impl AppCtl {
             }
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
+            UiMsg::Term(TermMsgBox(m)) => {
+                let front = self.front_tab();
+                {
+                    let info = front.as_ref().map(FrontTab::info);
+                    self.term.on_msg(info.as_ref(), m);
+                }
+                self.push_term();
+                self.wake_term();
+            }
         }
     }
 
@@ -1558,6 +2011,7 @@ impl AppCtl {
     pub fn host_wake(&mut self) {
         let events = self.deps.host.drain_events();
         let mut changed = false;
+        let mut terminal_news = false;
         for ev in events {
             match ev {
                 HostEvent::Cwd { id, path } => {
@@ -1568,17 +2022,34 @@ impl AppCtl {
                 HostEvent::Exited { id, .. } => {
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
+                    self.term.tab_closed(&id);
                     if self.model.close(&id) {
                         changed = true;
                     }
                 }
+                HostEvent::ClipboardWrite { id, text } => {
+                    self.term
+                        .on_term_event(&id, &TermEvent::ClipboardWrite(text));
+                    terminal_news = true;
+                }
                 _ => {}
             }
+        }
+        // Output on the tab in front: the find refreshes after the last of it, and the drawn frame
+        // may ask which printed paths exist (a few timer rounds pump those questions).
+        if let Some(front) = self.front_id() {
+            self.term.on_output(&front);
+            self.term_hot = 2;
+            terminal_news = true;
         }
         if changed {
             self.refresh();
         } else if let Some(app) = self.app() {
             app.window().request_redraw();
+        }
+        if terminal_news {
+            self.push_term();
+            self.wake_term();
         }
     }
 }
@@ -1656,19 +2127,24 @@ impl ChordTarget for Target<'_> {
     }
 
     fn find(&mut self) {
-        // Find in the terminal is M5's.
+        self.0.toggle_find();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::Harness;
+    use flare_render::glyph::{FakeGlyphs, GlyphSource};
+    use flare_render::metrics::cell_metrics;
     use flare_settings::new_tab::set_new_tab_mode;
     use flare_settings::tab_layout::set_tab_layout;
     use flare_settings::term_prefs::set_agent_keys;
+    use flare_shells::list::ShellDef;
     use flare_tabs::restore::{NoSessions, SavedTab, tabs_json};
     use flare_term::fake::{FakeShells, FakeSpawner};
+    use flare_win::clipboard_port::MemoryClipboard;
     use flare_win::window_state::{Area, parse_window_state};
     use slint::Model;
     use std::cell::Cell;
@@ -1689,8 +2165,16 @@ mod tests {
         picks: Vec<Option<PathBuf>>,
     }
 
+    struct TestAgent(Cell<Option<AgentKind>>);
+    impl AgentView for TestAgent {
+        fn armed(&self, _tab: &str) -> Option<AgentKind> {
+            self.0.get()
+        }
+    }
+
     #[derive(Default)]
     struct Opts {
+        shells: Option<Vec<ShellDef>>,
         saved: Vec<(&'static str, Option<AgentKind>)>,
         active: usize,
         launch: Vec<String>,
@@ -1707,6 +2191,9 @@ mod tests {
         clock: Rc<Cell<u64>>,
         log: Rc<RefCell<Log>>,
         prefs: PrefStore,
+        clip: Arc<MemoryClipboard>,
+        openers: Arc<RecordingOpeners>,
+        agent: Rc<TestAgent>,
     }
 
     fn fx_with(opts: Opts) -> Fx {
@@ -1741,7 +2228,14 @@ mod tests {
             let post = post.clone();
             Arc::new(move || post(UiMsg::HostWake))
         };
-        let host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker);
+        let shells = match opts.shells.clone() {
+            Some(defs) => FakeShells::with(defs),
+            None => FakeShells::new(),
+        };
+        let host = TabHost::new(sp.clone(), shells, prefs.clone(), waker);
+        let clip = Arc::new(MemoryClipboard::new());
+        let openers = Arc::new(RecordingOpeners::new());
+        let agent = Rc::new(TestAgent(Cell::new(None)));
         let clock = Rc::new(Cell::new(0u64));
         let log: Rc<RefCell<Log>> = Rc::default();
         let real_fs = opts.real_fs;
@@ -1805,6 +2299,15 @@ mod tests {
             },
             launch_folders: opts.launch,
             e2e: true,
+            term: TermPorts {
+                clip_port: clip.clone(),
+                openers: openers.clone(),
+                agent: agent.clone(),
+                dbl: flare_win::dblclick::FALLBACK,
+                stat: Arc::new(flare_term::path_open::FsStat),
+                metrics: Rc::new(|| cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0)),
+                mark_grid_dirty: Rc::new(|| {}),
+            },
         };
         let h = Harness::new(1.0, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
@@ -1817,6 +2320,9 @@ mod tests {
             clock,
             log,
             prefs,
+            clip,
+            openers,
+            agent,
         }
     }
 
@@ -2423,5 +2929,316 @@ mod tests {
         assert!(f.h.comp.get_menu_open());
         f.ctl.borrow_mut().on_focus_lost();
         assert!(!f.h.comp.get_menu_open());
+    }
+
+    // ---- the terminal's input wired into the window (M5, Task 24) ----------------------------------
+
+    const KEY_C_RU: &str = "\u{441}"; // the Cyrillic letter on the C key
+
+    /// One live shell tab (`C:\a`), its handle and its fake pty.
+    fn live(opts: Opts) -> (Fx, Arc<TermHandle>, Arc<flare_term::fake::FakeState>) {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..opts
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\a");
+        let h = f.ctl.borrow().front_handle().expect("a live tab in front");
+        f.pump_until("the shell", |_| h.shell_id().is_some());
+        let fake = f.made_with("C:\\a")[0].clone();
+        (f, h, fake)
+    }
+
+    fn feed(h: &TermHandle, s: &str) {
+        h.with_emu(|e| {
+            e.feed(s.as_bytes());
+        });
+    }
+
+    /// A pointer position in css px (scale 1) for a cell, relative to the grid area.
+    fn cell_css(col: usize, row: usize, right: bool) -> (f32, f32) {
+        let m = cell_metrics(&FakeGlyphs::new(8, 16).font_units(), 1.0);
+        let x = m.padding as f32
+            + col as f32 * m.cell_w as f32
+            + if right { 0.75 } else { 0.25 } * m.cell_w as f32;
+        let y = m.padding as f32 + row as f32 * m.cell_h as f32 + m.cell_h as f32 / 2.0;
+        (x, y)
+    }
+
+    impl Fx {
+        fn ptr(&self, kind: i32, button: i32, at: (f32, f32)) {
+            self.h
+                .comp
+                .invoke_grid_pointer(kind, button, at.0, at.1, false, false, false);
+        }
+
+        fn drag_cols(&self, row: usize, a: usize, b: usize) {
+            self.ptr(0, 0, cell_css(a, row, false));
+            self.ptr(2, 0, cell_css(b, row, false));
+            self.ptr(1, 0, cell_css(b, row, false));
+        }
+
+        fn clip_text(&self) -> Option<String> {
+            self.clip.read_text()
+        }
+    }
+
+    #[test]
+    fn ctrl_f_opens_find_at_a_prompt_and_again_closes_it() {
+        let (f, _h, _) = live(Opts::default());
+        assert!(!f.h.comp.get_find_open());
+        assert_eq!(f.key(ctrl("f", "KeyF")), KeyOutcome::Consumed);
+        assert!(f.h.comp.get_find_open());
+        assert_eq!(f.key(ctrl("f", "KeyF")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_find_open());
+    }
+
+    #[test]
+    fn ctrl_f_is_the_programs_in_a_full_screen_program() {
+        // The alternate screen.
+        let (f, h, _) = live(Opts::default());
+        feed(&h, "\x1b[?1049h");
+        assert_eq!(f.key(ctrl("f", "KeyF")), KeyOutcome::Pty);
+        assert!(!f.h.comp.get_find_open());
+        // The mouse alone (a program that asked for it) is enough.
+        let (f, h, _) = live(Opts::default());
+        feed(&h, "\x1b[?1000h");
+        assert!(!h.mode().alt_screen);
+        assert_eq!(f.key(ctrl("f", "KeyF")), KeyOutcome::Pty);
+        assert!(!f.h.comp.get_find_open());
+    }
+
+    #[test]
+    fn ctrl_shift_f_always_finds() {
+        let (f, h, _) = live(Opts::default());
+        feed(&h, "\x1b[?1049h");
+        assert_eq!(
+            f.key(KeyEvent::new("F", "KeyF").ctrl().shift()),
+            KeyOutcome::Consumed
+        );
+        assert!(f.h.comp.get_find_open());
+    }
+
+    #[test]
+    fn keys_go_to_the_find_input_while_it_has_focus_but_chords_still_act() {
+        let (f, _h, _) = live(Opts::default());
+        f.key(ctrl("f", "KeyF"));
+        assert!(f.h.comp.get_find_open());
+        f.h.comp.invoke_focus_find();
+        assert!(f.h.comp.get_find_input_focused());
+        assert_eq!(f.key(KeyEvent::new("a", "KeyA")), KeyOutcome::Slint);
+        let rows = f.rows();
+        assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+        assert_eq!(f.rows(), rows + 1);
+    }
+
+    #[test]
+    fn ctrl_c_by_physical_key_copies_a_selection() {
+        let (f, h, fake) = live(Opts::default());
+        feed(&h, "hello world");
+        f.drag_cols(0, 0, 5);
+        // The Russian layout: the letter is not "c", the physical key is.
+        let ev = KeyEvent::new(KEY_C_RU, "KeyC").ctrl();
+        assert_eq!(f.key(ev.clone()), KeyOutcome::Consumed);
+        f.pump_until("the copy", |f| f.clip_text().as_deref() == Some("hello"));
+        f.pump_until("the badge", |f| f.h.comp.get_copied_phase() == 1);
+        assert!(!fake.written().contains(&3), "a copy is not the interrupt");
+        // The selection is gone, so the same key is the interrupt now.
+        assert_eq!(f.key(ev.clone()), KeyOutcome::Pty);
+        assert!(h.send_key(&ev));
+        until_written(&fake, |w| w.contains(&3));
+    }
+
+    fn until_written(fake: &flare_term::fake::FakeState, ok: impl Fn(&[u8]) -> bool) {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(5) {
+            if ok(&fake.written()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the pty never got the bytes: {:?}", fake.written());
+    }
+
+    #[test]
+    fn ctrl_v_pastes_once() {
+        let (f, h, fake) = live(Opts::default());
+        feed(&h, "\x1b[?2004h");
+        f.clip.set_text("a\nb");
+        assert_eq!(f.key(ctrl("v", "KeyV")), KeyOutcome::Consumed);
+        f.pump_until("the paste", |_| fake.written() == b"\x1b[200~a\rb\x1b[201~");
+        // Nothing more arrives later: one key is one paste.
+        std::thread::sleep(Duration::from_millis(60));
+        f.pump();
+        assert_eq!(fake.written(), b"\x1b[200~a\rb\x1b[201~");
+    }
+
+    #[test]
+    fn a_term_message_for_a_tab_that_is_no_longer_in_front_is_dropped() {
+        let (f, _h, fake) = live(Opts::default());
+        f.clip.set_text("late");
+        assert_eq!(f.key(ctrl("v", "KeyV")), KeyOutcome::Consumed);
+        // Before the worker's answer is handled, another tab comes to the front.
+        f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        std::thread::sleep(Duration::from_millis(80));
+        f.pump();
+        assert!(fake.written().is_empty(), "{:?}", fake.written());
+        let b = f.made_with("C:\\b");
+        assert!(b.iter().all(|m| m.written().is_empty()));
+    }
+
+    #[test]
+    fn a_front_change_closes_the_menu_and_the_find_bar() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", None)],
+            ..Opts::default()
+        });
+        f.start_restore_and_wait();
+        f.wait_made("C:\\a");
+        f.wait_made("C:\\b");
+        f.key(ctrl("f", "KeyF"));
+        assert!(f.h.comp.get_find_open());
+        f.ptr(0, 2, cell_css(2, 1, false));
+        f.ptr(1, 2, cell_css(2, 1, false));
+        assert!(f.h.comp.get_menu_open(), "the right release opens the menu");
+        let other = f.ctl.borrow().model().state.tabs[1].id.clone();
+        {
+            let mut c = f.ctl.borrow_mut();
+            c.model_mut().pick(&other);
+            c.refresh();
+        }
+        assert!(!f.h.comp.get_find_open());
+        assert!(!f.h.comp.get_menu_open());
+    }
+
+    #[test]
+    fn a_drop_over_the_terminal_types_and_over_the_strip_opens_a_tab() {
+        let (f, _h, fake) = live(Opts::default());
+        let folder = f.dir.path().join("proj");
+        std::fs::create_dir(&folder).unwrap(); // sync-ok: test code only, never the app
+        // Over the terminal: a quoted path, typed after the quiet time, never Enter.
+        f.ctl
+            .borrow_mut()
+            .on_dropped_path(PathBuf::from("C:\\My Dir\\a b.txt"), (500.0, 300.0));
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        until_written(&fake, |w| !w.is_empty());
+        let typed = String::from_utf8(fake.written()).unwrap();
+        assert!(typed.contains("C:\\My Dir\\a b.txt"), "{typed:?}");
+        assert!(!typed.contains('\r') && !typed.contains('\n'), "{typed:?}");
+        // Over the tab row: a tab opens in that folder.
+        let rows = f.rows();
+        f.ctl.borrow_mut().on_dropped_path(folder, (100.0, 10.0));
+        f.pump_until("the new tab", |f| f.rows() == rows + 1);
+    }
+
+    #[test]
+    fn a_cmd_tab_with_no_requested_shell_quotes_a_drop_for_cmd() {
+        let cmd = ShellDef {
+            id: "cmd".to_string(),
+            name: "Command Prompt".to_string(),
+            exe: "cmd.exe".to_string(),
+            args: Vec::new(),
+        };
+        let (f, h, fake) = live(Opts {
+            shells: Some(vec![cmd]),
+            ..Opts::default()
+        });
+        assert_eq!(h.shell_id().as_deref(), Some("cmd"));
+        f.ctl
+            .borrow_mut()
+            .on_dropped_path(PathBuf::from("C:\\a&b.txt"), (500.0, 300.0));
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        until_written(&fake, |w| !w.is_empty());
+        assert_eq!(fake.written(), b"\"C:\\a&b.txt\"");
+    }
+
+    #[test]
+    fn clipboard_writes_from_osc_52_reach_the_port() {
+        let (f, _h, fake) = live(Opts::default());
+        fake.feed(b"\x1b]52;c;T1NDNTIgw6Y=\x07");
+        f.pump_until("the copy", |f| {
+            f.clip_text().as_deref() == Some("OSC52 \u{e6}")
+        });
+        f.pump_until("the badge", |f| f.h.comp.get_copied_phase() == 1);
+    }
+
+    #[test]
+    fn under_e2e_the_clipboard_is_in_memory_and_openers_record() {
+        let b = Backends::new(true);
+        assert!(b.recording.is_some());
+        b.clip_port.write_text("kept in memory", 100).unwrap();
+        assert_eq!(b.clip_port.read_text().as_deref(), Some("kept in memory"));
+        let open = b.open_url();
+        open("https://example.com/x");
+        let urls = b.urls.as_ref().unwrap().lock().unwrap().clone();
+        assert_eq!(urls, ["https://example.com/x"]);
+        // A click on a printed url reaches the recorder, never the desktop.
+        let (f, h, _) = live(Opts::default());
+        feed(&h, "see https://example.com/x now");
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+        f.ctl.borrow_mut().tick();
+        f.ptr(0, 0, cell_css(8, 0, false));
+        f.ptr(1, 0, cell_css(8, 0, false));
+        assert_eq!(f.log.borrow().urls, ["https://example.com/x"]);
+        assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_path_click_opens_through_the_openers_port() {
+        let (f, h, _) = live(Opts::default());
+        let file = f.dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap(); // sync-ok: test code only, never the app
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, &dir);
+        feed(&h, "a.txt");
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(&h);
+        f.ptr(0, 0, cell_css(1, 0, false));
+        f.ptr(1, 0, cell_css(1, 0, false));
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let want = file.to_string_lossy().into_owned();
+        assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
+    }
+
+    #[test]
+    fn closing_a_tab_tells_term_ui() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let inputs = f.ctl.borrow().decor_inputs();
+        {
+            // The tab shows a path in a folder that exists, so it teaches that folder.
+            let mut i = inputs.borrow_mut();
+            let hit = |p: &str| {
+                Some(flare_term::path_open::PathHit {
+                    kind: flare_term::path_open::PathKind::File,
+                    abs: p.to_string(),
+                })
+            };
+            i.paths
+                .link_ranges("see C:\\d\\f.txt", Some("C:\\cwd"), &id, 0);
+            i.paths.advance(50);
+            let ask = i.paths.take_ask().expect("an ask");
+            let hits = ask.paths.iter().map(|p| hit(p)).collect();
+            i.paths.answer(&ask, Some(hits), 50);
+            i.paths
+                .link_ranges("see C:\\d\\f.txt and rel\\x.txt", Some("C:\\cwd"), &id, 60);
+        }
+        assert_eq!(inputs.borrow().paths.owners_kept(), 1);
+        f.ctl.borrow_mut().request_close(&id);
+        f.pump();
+        assert_eq!(inputs.borrow().paths.owners_kept(), 0);
     }
 }

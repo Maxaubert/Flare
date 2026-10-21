@@ -490,93 +490,93 @@ verbatim from termTheme.ts; derived = from deriveAnsi(bg, fg)).
 
 ### Selection, copy, click-to-caret
 
-- [ ] Ctrl+C with a selection copies and clears it; without one it is the interrupt (core/renderer/lib/termKeys.ts termKeyAction; termKeys.test).
-- [ ] Ctrl+C and Ctrl+V match by letter or physical key code, so Russian and Greek layouts still copy (termKeys.ts isKey; termKeys.test rule 11). DECISION: open decision O2.
-- [ ] A copy shows the "Copied" badge at the bottom centre and leaves by itself (TerminalPanel copyText, announceCopied; e2e selectionEdit).
-- [ ] A program's own selection (fullscreen Claude Code): a left press without Shift is followed; Ctrl+C is the program's copy and the copy is announced (TerminalPanel copyDown, watchAppCopies).
-- [ ] Backspace/Delete over a selection on the edited line sends Left/Right to the selection end then one DEL per character, clears the selection, swallows the key; elsewhere the key is the shell's (core/renderer/lib/termSelectionEdit.ts selectionDeleteKeys; termKeys.test; e2e selectionEdit).
-- [ ] selectionDeleteAllowed needs: mouse tracking none, normal screen, not scrolled back, cursor visible, nothing printed below, selection on the cursor's logical line (termSelectionEdit.test).
-- [ ] A selection with nothing deletable clears and still swallows the key (TerminalPanel deleteSelection).
-- [ ] selectionDeleteKeys counts non-spacer cells, stops at the text end, uses application cursor form when asked (termSelectionEdit.test).
-- [ ] Plain left click on the prompt line moves the caret with Left/Right (ESC [ C/D, or ESC O C/D under application cursor) (core/renderer/lib/termClickCaret.ts; termClickCaret.test).
-- [ ] A click is refused unless: button 0, click count under 2, no modifiers, no drag or selection, mouse tracking none, normal screen, not scrolled back, cursor not hidden, nothing printed below, on the line, not on a link (termClickCaret.ts caretClickAllowed; a test per refusal).
-- [ ] The click is read after the terminal's own mouseup, in a timer, so a drag's selection is final (TerminalPanel attachClickCaret).
-- [ ] Wide characters count once; a click on a wide char's second half lands on it; past the text goes to the end; wraps of one logical line are crossed (termClickCaret.test).
-- [ ] Mouse reporting: when a program asks for the mouse it owns clicks, SGR press and release are sent, pointer is not a text caret (e2e mouseReport).
-- [ ] Right-click menu fits what was clicked: Copy link leads over a link, Copy only with text marked, no Copy on plain text; path menu: Open, Show in Explorer, Copy path (TerminalPanel termContextAt; two-apps.md THE MENU FITS WHAT WAS CLICKED).
-- [ ] Terminal right-click rows in order: path rows (Open folder / Open, Show in Explorer, Copy path), link rows (Copy link, Open link), Copy (Ctrl+C) with a selection, Paste (Ctrl+V), Find in scrollback, Command help last while on; no Close tab; bound to the session it opened on (src/renderer/src/components/termMenu.tsx; termMenu.test).
+- [x] Ctrl+C with a selection copies and clears it; without one it is the interrupt (core/renderer/lib/termKeys.ts termKeyAction; termKeys.test). (M5: `ctrl_c_over_a_selection_is_not_the_interrupt_and_without_one_it_is` in crates/flare/src/ui_tests/term.rs; keys.rs)
+- [x] Ctrl+C and Ctrl+V match by letter or physical key code, so Russian and Greek layouts still copy (termKeys.ts isKey; termKeys.test rule 11). DECISION: open decision O2. (M5: `ctrl_c_by_physical_key_copies` in crates/flare/src/ui_tests/term.rs; M2 keys.rs)
+- [x] A copy shows the "Copied" badge at the bottom centre and leaves by itself (TerminalPanel copyText, announceCopied; e2e selectionEdit). (M5: `a_drag_then_ctrl_c_copies_and_says_copied` and `the_pill_is_centred_and_24_px_from_the_bottom_at_every_scale` in crates/flare/src/ui_tests/term.rs)
+- [x] A program's own selection (fullscreen Claude Code): a left press without Shift is followed; Ctrl+C is the program's copy and the copy is announced (TerminalPanel copyDown, watchAppCopies). (M5: `a_program_selection_copy_is_announced` in crates/flare/src/ui_tests/term.rs; `the_copy_watch_*` in crates/flare/src/clip_flow.rs)
+- [x] Backspace/Delete over a selection on the edited line sends Left/Right to the selection end then one DEL per character, clears the selection, swallows the key; elsewhere the key is the shell's (core/renderer/lib/termSelectionEdit.ts selectionDeleteKeys; termKeys.test; e2e selectionEdit). (M5: `backspace_deletes_the_selection_on_the_edited_line` in crates/flare/src/ui_tests/term.rs; flare-term selection_edit.rs)
+- [x] selectionDeleteAllowed needs: mouse tracking none, normal screen, not scrolled back, cursor visible, nothing printed below, selection on the cursor's logical line (termSelectionEdit.test). (M5: flare-term selection_edit.rs, the gate of M2 wired in Task 16e)
+- [x] A selection with nothing deletable clears and still swallows the key (TerminalPanel deleteSelection). (M5: `nothing_deletable_is_allowed_and_empty` in crates/flare-term/src/emulator.rs)
+- [x] selectionDeleteKeys counts non-spacer cells, stops at the text end, uses application cursor form when asked (termSelectionEdit.test). (M5: flare-term selection_edit.rs `selection_delete_keys` tests)
+- [x] Plain left click on the prompt line moves the caret with Left/Right (ESC [ C/D, or ESC O C/D under application cursor) (core/renderer/lib/termClickCaret.ts; termClickCaret.test). (M5: `a_click_on_the_typed_line_moves_the_caret` in crates/flare/src/ui_tests/term.rs; click_caret.rs)
+- [x] A click is refused unless: button 0, click count under 2, no modifiers, no drag or selection, mouse tracking none, normal screen, not scrolled back, cursor not hidden, nothing printed below, on the line, not on a link (termClickCaret.ts caretClickAllowed; a test per refusal). (M5: `every_refusal_sends_nothing` in crates/flare-term/src/emulator.rs; click_caret.rs `caret_click_refuses_a_hidden_cursor` and the refusal tests)
+- [x] The click is read after the terminal's own mouseup, in a timer, so a drag's selection is final (TerminalPanel attachClickCaret). (M5: Flare reads the final selection synchronously after the release, so a drag's selection is final; no timer, Task 23 rule 4)
+- [x] Wide characters count once; a click on a wide char's second half lands on it; past the text goes to the end; wraps of one logical line are crossed (termClickCaret.test). (M5: `a_wide_character_is_taken_whole` in flare-term sel_machine.rs, sel_text.rs, word_at.rs; `wide_characters_count_two_cells` in find.rs)
+- [x] Mouse reporting: when a program asks for the mouse it owns clicks, SGR press and release are sent, pointer is not a text caret (e2e mouseReport). (M5: `a_mouse_program_gets_reports_and_shift_selects` in crates/flare/src/ui_tests/term.rs; mouse_report.rs; `write_report_is_not_typing` in flare-term handle.rs)
+- [x] Right-click menu fits what was clicked: Copy link leads over a link, Copy only with text marked, no Copy on plain text; path menu: Open, Show in Explorer, Copy path (TerminalPanel termContextAt; two-apps.md THE MENU FITS WHAT WAS CLICKED). (M5: `the_menu_fits_what_was_clicked_and_copies_exactly` in crates/flare/src/ui_tests/term.rs; flare term_menu.rs tests)
+- [x] Terminal right-click rows in order: path rows (Open folder / Open, Show in Explorer, Copy path), link rows (Copy link, Open link), Copy (Ctrl+C) with a selection, Paste (Ctrl+V), Find in scrollback, Command help last while on; no Close tab; bound to the session it opened on (src/renderer/src/components/termMenu.tsx; termMenu.test). (M5: flare term_menu.rs tests (row order, no Close tab, Command help last while on, which is M7's row and off); `tab_changed_*` in crates/flare/src/term_ui.rs)
 
 ### Keyboard input
 
-- [ ] Key decision order: non-keydown to the terminal; Ctrl+C with selection copies; Backspace/Delete with selection deletes; a host chord is taken by the host and never reaches the pty; Shift+Enter is a newline only where an agent runs; Ctrl+V pastes; Ctrl+Shift+V pastes plain; else the terminal (termKeys.ts; termKeys.test).
-- [ ] Ctrl+V with Alt held is not a paste (termKeys.test).
-- [ ] Ctrl+V is one paste: the key is consumed so the native paste does not run too; Ctrl+Shift+V and right-click Paste use the same single path (TerminalPanel case 'paste'; e2e paste).
-- [ ] Ctrl+Shift+V pastes plain sanitised text even when an image rides along (TerminalPanel 'paste-plain').
-- [ ] Shift+Enter where an agent runs sends the newline key (Claude: LF; Codex and others: backslash then CR) and is consumed (TerminalPanel 'newline'; termPaste.test; e2e imagePaste).
-- [ ] Agent-armed state gates Shift+Enter: armed by Claude's title glyphs or Codex's Action Required before the poll, never by a bare braille spinner; a prompt report disarms at once (core/renderer/lib/agentArm.ts; M6 owns the arming).
-- [ ] A live shell gets the keyboard when its tab is shown; focus returns after a strip click or drag (TerminalPanel focusTermSession).
-- [ ] Caret hold for IME and screen readers: a key opens a 250 ms window; the lowest cursor position reached is the input line; while the program parks the cursor above on the normal screen the text input stays on the input line; released on alternate screen, resize, buffer change, scrollback (core/renderer/lib/termCaretHold.ts; termCaretHold.test; e2e caretHold).
+- [x] Key decision order: non-keydown to the terminal; Ctrl+C with selection copies; Backspace/Delete with selection deletes; a host chord is taken by the host and never reaches the pty; Shift+Enter is a newline only where an agent runs; Ctrl+V pastes; Ctrl+Shift+V pastes plain; else the terminal (termKeys.ts; termKeys.test). (M5: flare-term keys.rs decision order; `focus_terminal_takes_the_keys_back` in crates/flare/src/ui_tests/term.rs)
+- [x] Ctrl+V with Alt held is not a paste (termKeys.test). (M5: `ctrl_v_paste_ctrl_shift_v_plain_keyup_pty` in flare-term keys.rs; M2 rule)
+- [x] Ctrl+V is one paste: the key is consumed so the native paste does not run too; Ctrl+Shift+V and right-click Paste use the same single path (TerminalPanel case 'paste'; e2e paste). (M5: `ctrl_v_ctrl_shift_v_and_the_menu_paste_each_deliver_exactly_once` in crates/flare/src/ui_tests/term.rs)
+- [x] Ctrl+Shift+V pastes plain sanitised text even when an image rides along (TerminalPanel 'paste-plain'). (M5: `plain_pastes_only_the_text` in crates/flare/src/clip_flow.rs; `ctrl_v_paste_ctrl_shift_v_plain_keyup_pty` in flare-term keys.rs)
+- [x] Shift+Enter where an agent runs sends the newline key (Claude: LF; Codex and others: backslash then CR) and is consumed (TerminalPanel 'newline'; termPaste.test; e2e imagePaste). (M5: `an_image_pastes_the_agent_key_and_shift_enter_is_a_newline_only_for_agents` in crates/flare/src/ui_tests/term.rs; flare-agent keys.rs)
+- [ ] Agent-armed state gates Shift+Enter: armed by Claude's title glyphs or Codex's Action Required before the poll, never by a bare braille spinner; a prompt report disarms at once (core/renderer/lib/agentArm.ts; M6 owns the arming). (Open, M6: the arming and the indicator are M6's; M5 reads the `AgentView` seam only. Not ticked here.)
+- [x] A live shell gets the keyboard when its tab is shown; focus returns after a strip click or drag (TerminalPanel focusTermSession). (M5: `focus_terminal_takes_the_keys_back` in crates/flare/src/ui_tests/term.rs; M3 focus)
+- [x] Caret hold for IME and screen readers: a key opens a 250 ms window; the lowest cursor position reached is the input line; while the program parks the cursor above on the normal screen the text input stays on the input line; released on alternate screen, resize, buffer change, scrollback (core/renderer/lib/termCaretHold.ts; termCaretHold.test; e2e caretHold). (M5: flare-term caret_hold.rs tests (`caret_hold_holds_on_the_input_line`, `caret_hold_takes_the_lowest_position`); `the_hold_is_released_on_the_alternate_screen_a_resize_and_scrollback` in crates/flare/src/ime.rs)
 
 ### Find in scrollback
 
-- [ ] Ctrl+F opens find, except when the focused shell is full screen (alternate screen or mouse tracking); Ctrl+Shift+F always finds (keymap.ts 'find'; two-apps.md FIND IS CTRL+F; e2e findKey).
-- [ ] Accepted cost: at a readline prompt Ctrl+F no longer means cursor-right (two-apps.md).
-- [ ] Find bar at top-right, input 180 px, placeholder and aria-label "Find in terminal", no shadow, 20 px buttons (core/renderer/components/TermFind.tsx).
-- [ ] Incremental search keeps the current match while it still matches; Enter next, Shift+Enter previous, Escape closes; the bar stops keys reaching the terminal (TermFind.tsx).
-- [ ] Previous and next disabled with no hits; readout: empty for empty query, "none", "N+" past the count threshold, "i of n" (TermFind.tsx).
-- [ ] Highlight colours: match background #4a5160, border #6b7482, ruler #8a93a3, active match in accent-hi (else #5b5bd6) (TerminalPanel findOptions).
-- [ ] Searches the whole scrollback, wrapped lines and the alternate screen; closing clears highlights (TerminalPanel).
+- [x] Ctrl+F opens find, except when the focused shell is full screen (alternate screen or mouse tracking); Ctrl+Shift+F always finds (keymap.ts 'find'; two-apps.md FIND IS CTRL+F; e2e findKey). (M5: `ctrl_f_opens_the_bar_escape_closes_it_and_a_full_screen_program_keeps_ctrl_f` in crates/flare/src/ui_tests/term.rs)
+- [x] Accepted cost: at a readline prompt Ctrl+F no longer means cursor-right (two-apps.md). (M5: accepted cost, recorded in docs/features.md, Input (M5); held by the test above)
+- [x] Find bar at top-right, input 180 px, placeholder and aria-label "Find in terminal", no shadow, 20 px buttons (core/renderer/components/TermFind.tsx). (M5: `the_bar_sits_12_px_from_the_top_right_at_every_scale`, `the_bar_is_332_by_28_plus_two_hairlines`, `the_placeholder_is_drawn_only_while_empty` in crates/flare/src/ui_tests/term.rs; the Flare bar is 332 by 28 px, see docs/features.md)
+- [x] Incremental search keeps the current match while it still matches; Enter next, Shift+Enter previous, Escape closes; the bar stops keys reaching the terminal (TermFind.tsx). (M5: `typing_highlights_every_match_and_enter_steps` and `typing_stays_in_the_find_bar_while_output_streams` in crates/flare/src/ui_tests/term.rs)
+- [x] Previous and next disabled with no hits; readout: empty for empty query, "none", "N+" past the count threshold, "i of n" (TermFind.tsx). (M5: `previous_and_next_do_nothing_without_hits` in crates/flare/src/ui_tests/term.rs; flare-term find.rs `the_readout_words`)
+- [x] Highlight colours: match background #4a5160, border #6b7482, ruler #8a93a3, active match in accent-hi (else #5b5bd6) (TerminalPanel findOptions). (M5: decor.rs `a_find_outline_is_hair_thick_and_outside_the_box` and `the_selection_is_the_opaque_blend_over_the_ground` in flare-render; ink from DecorInk, M4)
+- [x] Searches the whole scrollback, wrapped lines and the alternate screen; closing clears highlights (TerminalPanel). (M5: `find_and_a_big_scrollback_never_hold_the_window` in crates/flare/src/ui_tests/term.rs; find.rs tests)
 
 ### Links
 
-- [ ] Left click opens a link; right click opens nothing (two-apps.md A RIGHT-CLICK ON A LINK OPENS NOTHING, #95).
-- [ ] Link text is http/https only; runs to whitespace, quote, angle bracket or backtick; trailing `. , ; : ! ?` and an unopened closing bracket given back; a bare scheme is not a link (core/renderer/lib/termLinks.ts findLinks; termLinks.test).
-- [ ] Link colour #79a7d8 moved only as far as needed to 4.5:1; where it cannot, tinted 35% toward blue; never the text colour (termLinks.ts linkColor; termLinks.test).
-- [ ] Links are painted, not hover-only: each row gets link colour and a faint underline that never blocks a click; on the alternate screen per drawn row (core/renderer/lib/termLinkPaint.ts; regression-rules links-painted #10; e2e links).
-- [ ] Scrollback links painted once and ride a marker; the live screen repainted from the last finished line down (termLinkPaint.test).
-- [ ] Link colours repaint from scratch when ink or theme changes, once per frame at most (termLinkPaint.test; relinkSoon).
-- [ ] A full pass never holds the UI: live screen first, then scrollback bottom-up in slices of at most 8 ms including painting; cancel and trim handled (core/renderer/lib/linkScanPlan.ts sliceRows; linkScanPlan.test; e2e linkPaintStall).
-- [ ] A hidden tab's painter does nothing and catches up when attached (termLinkPaint.test).
-- [ ] OSC 8 links open on left click, http(s) only, no confirm dialog (TerminalPanel linkHandler; e2e osc8Links).
-- [ ] An OSC 8 label showing another host opens the address it shows; unparseable uri opens the label (core/renderer/lib/termOsc8.ts osc8Target; termOsc8.test).
-- [ ] OSC 8 parse: uri after params, semicolons in the uri kept, empty uri closes, non-OSC-8 not handled; isWebLink http/https any case (termOsc8.test; core/shared/webUrl.test).
-- [ ] OSC 8 spans follow the stream: 1 to 16 row labels, non-blank, survive a wrap, forgotten when the anchor is gone, newer replaces older over the same cells, cap drops oldest, alternate screen spans leave with it, reflow clears all (termOsc8.ts Osc8Spans; termOsc8.test).
-- [ ] Path candidates: no whitespace/quote/`<>|*?`; leading `([{` and trailing `.,;:!)]}` and `:line[:col]` stripped; length 2 to 260; must contain a letter; leading `-` is a flag; needs a separator or `.ext` (1 to 8 alphanumerics); bare drive refused; URLs left to the link finder (core/renderer/lib/termPaths.ts findPaths; termPaths.test).
-- [ ] A path is painted and clickable only when it exists; answers cached per folder; a "no" forgotten after 15 s (core/renderer/lib/termPathLinks.ts; regression-rules path-links #99).
-- [ ] Relative paths resolve against the shell's folder (OSC 9;9) and folders the tab has shown; a bare name only in the shown folder; the folder itself is never a link (termPathLinks.test).
-- [ ] Path answer cache: at most 5000 entries; a "no" lives 15 s (NO_TTL_MS); asks batched every 40 ms (BATCH_MS); a relative path tries at most 4 anchor folders (ANCHORS_MAX) and 4 ancestors (ANCESTORS); a tab teaches at most 256 folders (TAUGHT_MAX), each looked at again once in the tab's life; a folder holds the cwd case-insensitively (termPathLinks.ts holdsCwd, parentDir, anchorBases; termPathLinks.test).
-- [ ] Paths asked in pieces of at most 300 (PATHS_MAX) one after another; a short answer is never read as missing past its end (core/shared/termLimits.ts; termPathLinks.test).
-- [ ] A found path repaints only the asking tab and lines; a multi-folder tab settles after one wake per folder; a closed tab forgets what it taught (termPathLinks.test).
-- [ ] The backend re-resolves the text and never trusts the UI: `~` is home, UNC refused, NUL refused, over 1024 chars refused, relative needs a drive-letter folder, `\foo` takes the shell's drive (core/main/termPathOpen.ts resolveTermPath; termPathOpen.test).
-- [ ] Path checks are metered: at most 3 stats in flight; a stat over 750 ms marks its drive slow for 60 s; a click is one unmetered stat (termPathOpen.ts createStatGate; termPathOpen.test).
-- [ ] Opening: a file opens in its own app; a folder in the user's chosen folder handler (Explorer default) via Start-Process with the path in the environment, falling back once to the shell opener; anything runnable is shown selected in Explorer, never run; Reveal always selects (termPathOpen.ts openTermPath, openFolderDefault, isRunnable; termPathOpen.test).
-- [ ] Runnable extensions never run: exe com scr pif cpl msc msi msp msix msixbundle appx appxbundle appref-ms application gadget bat cmd ps1 psm1 psd1 ps1xml vbs vbe js jse wsf wsh ws wsc sct hta jar py pyw pyc pyz rb pl sh bash ahk au3 lnk url website reg inf ins isp scf shb shs library-ms settingcontent-ms search-ms diagcab xbap vsto (termPathOpen.ts RUNNABLE; one test per extension).
-- [ ] Under the test flag nothing opens outside the app; opened paths are recorded (e2e pathLinks).
+- [x] Left click opens a link; right click opens nothing (two-apps.md A RIGHT-CLICK ON A LINK OPENS NOTHING, #95). (M5: `any_other_button_opens_nothing` in crates/flare-term/src/link_target.rs; `an_osc8_label_wears_the_ink_and_opens_once_on_a_left_click` in crates/flare/src/ui_tests/term.rs)
+- [x] Link text is http/https only; runs to whitespace, quote, angle bracket or backtick; trailing `. , ; : ! ?` and an unopened closing bracket given back; a bare scheme is not a link (core/renderer/lib/termLinks.ts findLinks; termLinks.test). (M5: flare-term links.rs `find_links` tests, M2)
+- [x] Link colour #79a7d8 moved only as far as needed to 4.5:1; where it cannot, tinted 35% toward blue; never the text colour (termLinks.ts linkColor; termLinks.test). (M5: flare-theme links.rs link colour tests (M4); `a_printed_link_wears_the_link_ink_and_its_full_stop_does_not` in crates/flare/src/ui_tests/term.rs)
+- [x] Links are painted, not hover-only: each row gets link colour and a faint underline that never blocks a click; on the alternate screen per drawn row (core/renderer/lib/termLinkPaint.ts; regression-rules links-painted #10; e2e links). (M5: `a_printed_link_wears_the_link_ink_and_its_full_stop_does_not` and `a_pointer_over_a_link_changes_the_cursor_and_underlines_it` in crates/flare/src/ui_tests/term.rs)
+- [x] Scrollback links painted once and ride a marker; the live screen repainted from the last finished line down (termLinkPaint.test). (M5: `an_unchanged_line_is_not_scanned_again` in crates/flare-term/src/link_scan.rs)
+- [x] Link colours repaint from scratch when ink or theme changes, once per frame at most (termLinkPaint.test; relinkSoon). (M5: `a_new_ink_scans_everything_again` in crates/flare-term/src/link_scan.rs)
+- [x] A full pass never holds the UI: live screen first, then scrollback bottom-up in slices of at most 8 ms including painting; cancel and trim handled (core/renderer/lib/linkScanPlan.ts sliceRows; linkScanPlan.test; e2e linkPaintStall). (M5: `a_burst_of_scrollback_is_not_scanned` in link_scan.rs; scan_plan.rs slice tests; `find_and_a_big_scrollback_never_hold_the_window` in crates/flare/src/ui_tests/term.rs)
+- [x] A hidden tab's painter does nothing and catches up when attached (termLinkPaint.test). (M5: `a_hidden_tab_scans_nothing_and_catches_up` in crates/flare-term/src/link_scan.rs)
+- [x] OSC 8 links open on left click, http(s) only, no confirm dialog (TerminalPanel linkHandler; e2e osc8Links). (M5: `an_osc8_label_wears_the_ink_and_opens_once_on_a_left_click` in crates/flare/src/ui_tests/term.rs; `any_other_button_opens_nothing` in link_target.rs)
+- [x] An OSC 8 label showing another host opens the address it shows; unparseable uri opens the label (core/renderer/lib/termOsc8.ts osc8Target; termOsc8.test). (M5: `an_osc8_label_showing_another_host_opens_what_it_shows` in crates/flare-term/src/link_target.rs; osc8.rs `osc8_target_*`, M2, used by the scanner)
+- [x] OSC 8 parse: uri after params, semicolons in the uri kept, empty uri closes, non-OSC-8 not handled; isWebLink http/https any case (termOsc8.test; core/shared/webUrl.test). (M5: osc8.rs `parse_osc8_*` tests, M2; web_url.rs tests)
+- [x] OSC 8 spans follow the stream: 1 to 16 row labels, non-blank, survive a wrap, forgotten when the anchor is gone, newer replaces older over the same cells, cap drops oldest, alternate screen spans leave with it, reflow clears all (termOsc8.ts Osc8Spans; termOsc8.test). (M5, D18: OSC 8 spans are alacritty's cell hyperlinks; `an_osc8_link_comes_from_the_cell`, `a_hyperlink_does_not_survive_being_overwritten` and `an_alternate_screen_osc8_label_is_marked` in crates/flare-term/src/emulator.rs; link_scan.rs `osc8_runs_become_marks`)
+- [x] Path candidates: no whitespace/quote/`<>|*?`; leading `([{` and trailing `.,;:!)]}` and `:line[:col]` stripped; length 2 to 260; must contain a letter; leading `-` is a flag; needs a separator or `.ext` (1 to 8 alphanumerics); bare drive refused; URLs left to the link finder (core/renderer/lib/termPaths.ts findPaths; termPaths.test). (M5: flare-term paths.rs tests, M2; path_links.rs `path_candidates` tests)
+- [x] A path is painted and clickable only when it exists; answers cached per folder; a "no" forgotten after 15 s (core/renderer/lib/termPathLinks.ts; regression-rules path-links #99). (M5: `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist` in crates/flare/src/ui_tests/term.rs; path_links.rs)
+- [x] Relative paths resolve against the shell's folder (OSC 9;9) and folders the tab has shown; a bare name only in the shown folder; the folder itself is never a link (termPathLinks.test). (M5: `a_printed_path_lights_up_after_the_worker_answers` in crates/flare/src/term_ui.rs; path_links.rs `holds_cwd_folder_and_above`)
+- [x] Path answer cache: at most 5000 entries; a "no" lives 15 s (NO_TTL_MS); asks batched every 40 ms (BATCH_MS); a relative path tries at most 4 anchor folders (ANCHORS_MAX) and 4 ancestors (ANCESTORS); a tab teaches at most 256 folders (TAUGHT_MAX), each looked at again once in the tab's life; a folder holds the cwd case-insensitively (termPathLinks.ts holdsCwd, parentDir, anchorBases; termPathLinks.test). (M5: path_links.rs cache tests, M2; the caps and the 15 s no-answer lifetime are in path_links.rs)
+- [x] Paths asked in pieces of at most 300 (PATHS_MAX) one after another; a short answer is never read as missing past its end (core/shared/termLimits.ts; termPathLinks.test). (M5: path_links.rs slice tests, M2; the short-answer rule)
+- [x] A found path repaints only the asking tab and lines; a multi-folder tab settles after one wake per folder; a closed tab forgets what it taught (termPathLinks.test). (M5: `a_closed_tab_forgets_what_it_taught` in crates/flare/src/term_ui.rs; path_links.rs)
+- [x] The backend re-resolves the text and never trusts the UI: `~` is home, UNC refused, NUL refused, over 1024 chars refused, relative needs a drive-letter folder, `\foo` takes the shell's drive (core/main/termPathOpen.ts resolveTermPath; termPathOpen.test). (M5: `a_path_menu_pick_re_resolves_and_never_opens_abs_directly` in crates/flare/src/term_ui.rs; path_open.rs `resolve_term_path` tests)
+- [x] Path checks are metered: at most 3 stats in flight; a stat over 750 ms marks its drive slow for 60 s; a click is one unmetered stat (termPathOpen.ts createStatGate; termPathOpen.test). (M5: path_open.rs stat-gate tests (StatGate), M2 and Task 11)
+- [x] Opening: a file opens in its own app; a folder in the user's chosen folder handler (Explorer default) via Start-Process with the path in the environment, falling back once to the shell opener; anything runnable is shown selected in Explorer, never run; Reveal always selects (termPathOpen.ts openTermPath, openFolderDefault, isRunnable; termPathOpen.test). (M5: `a_path_menu_open_and_show_go_through_the_allowlist` in crates/flare/src/ui_tests/term.rs; path_open.rs; the folder handler is the default verb here, the user's chosen handler (openFolderDefault) is M9)
+- [x] Runnable extensions never run: exe com scr pif cpl msc msi msp msix msixbundle appx appxbundle appref-ms application gadget bat cmd ps1 psm1 psd1 ps1xml vbs vbe js jse wsf wsh ws wsc sct hta jar py pyw pyc pyz rb pl sh bash ahk au3 lnk url website reg inf ins isp scf shb shs library-ms settingcontent-ms search-ms diagcab xbap vsto (termPathOpen.ts RUNNABLE; one test per extension). (M5: path_open.rs RUNNABLE table tests; the allowlist of O22 and rule 134)
+- [x] Under the test flag nothing opens outside the app; opened paths are recorded (e2e pathLinks). (M5: `under_e2e_the_clipboard_is_in_memory_and_openers_record` in crates/flare/src/appctl.rs; RecordingOpeners)
 
 ### OSC 52
 
-- [ ] OSC 52 is write-only: Pc empty or "c"; a read query "?" is swallowed and never answered (core/renderer/lib/termOsc52.ts parseOsc52; termOsc52.test).
-- [ ] Empty data (a clear) is ignored; non-base64 and bad length refused; invalid UTF-8 refused; valid UTF-8 round-trips (termOsc52.test).
-- [ ] Cap 1,048,576 characters (OSC52_MAX): one over refused, far-over refused without decoding (termOsc52.test; core/shared/termLimits.ts).
-- [ ] An accepted write goes to the clipboard through the backend and shows the Copied badge (TerminalPanel attachReplies; e2e termClipboard).
-- [ ] Clipboard write refuses non-string, empty, or over 4000 chars (UI copies) and over OSC52_MAX (terminal), refusing not trimming (core/main/ipc.ts writeCapped; ipc.clipboard.test).
-- [ ] Copies try the page clipboard first, then the backend's write (copyNotice.ts).
+- [x] OSC 52 is write-only: Pc empty or "c"; a read query "?" is swallowed and never answered (core/renderer/lib/termOsc52.ts parseOsc52; termOsc52.test). (M5: flare-term osc52.rs `parse_osc52` tests, M2)
+- [x] Empty data (a clear) is ignored; non-base64 and bad length refused; invalid UTF-8 refused; valid UTF-8 round-trips (termOsc52.test). (M5: flare-term osc52.rs tests, M2)
+- [x] Cap 1,048,576 characters (OSC52_MAX): one over refused, far-over refused without decoding (termOsc52.test; core/shared/termLimits.ts). (M5: flare-term osc52.rs tests (OSC52_MAX), M2)
+- [x] An accepted write goes to the clipboard through the backend and shows the Copied badge (TerminalPanel attachReplies; e2e termClipboard). (M5: `osc_52_lands_with_utf8_intact_says_copied_and_a_read_gets_no_reply` in crates/flare/src/ui_tests/term.rs)
+- [x] Clipboard write refuses non-string, empty, or over 4000 chars (UI copies) and over OSC52_MAX (terminal), refusing not trimming (core/main/ipc.ts writeCapped; ipc.clipboard.test). (M5: `copy_async_refuses_empty_and_oversize_without_touching_the_clipboard` in crates/flare/src/clip_flow.rs; flare-win clipboard_port.rs)
+- [x] Copies try the page clipboard first, then the backend's write (copyNotice.ts). (M5: no native meaning, one port (ClipboardPort, D12); recorded here, not a test)
 
 ### Paste and drop
 
-- [ ] decidePaste order: copied files become quoted paths typed as text; else an image sends the agent's image key only, beating text riding along; else text sanitised and pasted; else nothing; text of only controls pastes nothing (core/renderer/lib/termPaste.ts decidePaste; termPaste.test).
-- [ ] Image key is exactly one key: ESC v (Alt+V) for Claude (including WSL once armed), ^V (0x16) for Codex, others and plain shells (termPaste.ts imagePasteKey; termPaste.test; e2e imagePaste).
-- [ ] Text paste is one bracketed paste when the shell asked for it (TerminalPanel pasteFrom).
-- [ ] sanitizePaste removes every C0 control except TAB, LF, CR, plus DEL (0x7f) and C1 CSI 0x9b, so no ESC and no early bracketed-paste end (termPaste.ts sanitizePaste; termPaste.test).
-- [ ] quotePath: PowerShell single quotes with inner quotes doubled (curly included); bash single quotes with `'\''`; cmd and unknown keep double quotes; quotePaths joins with spaces (termPaste.ts; termPaste.test).
-- [ ] Quoting follows the session's shell (core/shared/help/shells.ts shellOfShellId: cmd, bash for WSL or ids containing bash, else PowerShell).
-- [ ] Dropping a file on a tab types its quoted path, never Enter, only over a shell (regression-rules file-drop-and-menu #16; e2e dropAndMenu).
-- [ ] Paste reads the clipboard asynchronously (TerminalPanel pasteHere readClipboardAsync).
-- [ ] Right-click Paste calls the same pasteHere as Ctrl+V (core/renderer/lib/termBus.ts registerPaste, pasteInto).
-- [ ] Spoken text pastes into the shell in front when dictation started, newlines and U+2028/2029 become spaces, never Enter (TerminalPanel pasteSpokenText; termBus.ts).
-- [ ] One Ctrl+V pastes once, one Ctrl+Shift+V once, right-click Paste once (e2e paste).
-- [ ] The real clipboard is saved and restored; the test flag uses an in-memory stand-in (src/main/e2eClipboard.ts; e2eClipboard.test).
-- [ ] Hostile text (control chars, bracketed-paste escapes, multi-line) and dropped paths with spaces or quotes are inert until the user acts (roadmap Review Focus).
+- [x] decidePaste order: copied files become quoted paths typed as text; else an image sends the agent's image key only, beating text riding along; else text sanitised and pasted; else nothing; text of only controls pastes nothing (core/renderer/lib/termPaste.ts decidePaste; termPaste.test). (M5: `decide_paste_*` in crates/flare-shells/src/paste.rs; `copied_files_paste_quoted_paths_for_each_shell` in crates/flare/src/ui_tests/term.rs)
+- [x] Image key is exactly one key: ESC v (Alt+V) for Claude (including WSL once armed), ^V (0x16) for Codex, others and plain shells (termPaste.ts imagePasteKey; termPaste.test; e2e imagePaste). (M5: flare-agent keys.rs `image_paste_key` tests (moved from M6, D13))
+- [x] Text paste is one bracketed paste when the shell asked for it (TerminalPanel pasteFrom). (M5: `a_multi_line_paste_is_one_bracketed_block` in crates/flare-shells/src/paste.rs; `paste_bytes_brackets_when_asked` and `paste_uses_the_xterm_newline_rule_and_the_frame` in crates/flare-term/src/handle.rs)
+- [x] sanitizePaste removes every C0 control except TAB, LF, CR, plus DEL (0x7f) and C1 CSI 0x9b, so no ESC and no early bracketed-paste end (termPaste.ts sanitizePaste; termPaste.test). (M5: `sanitize_paste_*` in crates/flare-shells/src/paste.rs)
+- [x] quotePath: PowerShell single quotes with inner quotes doubled (curly included); bash single quotes with `'\''`; cmd and unknown keep double quotes; quotePaths joins with spaces (termPaste.ts; termPaste.test). (M5: `quote_path_*` in crates/flare-shells/src/paste.rs)
+- [x] Quoting follows the session's shell (core/shared/help/shells.ts shellOfShellId: cmd, bash for WSL or ids containing bash, else PowerShell). (M5: `shell_ids_read_as_the_language_they_speak` and `path_shell_of` tests in crates/flare-shells/src/paste.rs; `copied_files_paste_quoted_paths_for_each_shell` in ui_tests/term.rs)
+- [x] Dropping a file on a tab types its quoted path, never Enter, only over a shell (regression-rules file-drop-and-menu #16; e2e dropAndMenu). (M5: `a_dropped_file_types_its_quoted_path_and_nothing_runs` in crates/flare/src/ui_tests/term.rs; crates/flare/src/drop_flow.rs `type_dropped_quotes_*`)
+- [x] Paste reads the clipboard asynchronously (TerminalPanel pasteHere readClipboardAsync). (M5: `read_async_*` in crates/flare/src/clip_flow.rs)
+- [x] Right-click Paste calls the same pasteHere as Ctrl+V (core/renderer/lib/termBus.ts registerPaste, pasteInto). (M5: `ctrl_v_ctrl_shift_v_and_the_menu_paste_each_deliver_exactly_once` in crates/flare/src/ui_tests/term.rs; the menu and Ctrl+V share one path, as the line says)
+- [ ] Spoken text pastes into the shell in front when dictation started, newlines and U+2028/2029 become spaces, never Enter (TerminalPanel pasteSpokenText; termBus.ts). (Open, M8: spoken text is M8's and will call `TermHandle::paste` (D14). Not ticked here.)
+- [x] One Ctrl+V pastes once, one Ctrl+Shift+V once, right-click Paste once (e2e paste). (M5: `ctrl_v_ctrl_shift_v_and_the_menu_paste_each_deliver_exactly_once` in crates/flare/src/ui_tests/term.rs)
+- [x] The real clipboard is saved and restored; the test flag uses an in-memory stand-in (src/main/e2eClipboard.ts; e2eClipboard.test). (M5: `under_e2e_the_clipboard_is_in_memory_and_openers_record` in crates/flare/src/appctl.rs; flare-win clipboard_port.rs)
+- [x] Hostile text (control chars, bracketed-paste escapes, multi-line) and dropped paths with spaces or quotes are inert until the user acts (roadmap Review Focus). (M5: `a_hostile_paste_is_inert` in crates/flare/src/ui_tests/term.rs; `a_control_character_in_a_name_types_nothing` in crates/flare/src/drop_flow.rs)
 
 ## M6: Agent indicator and hooks
 
@@ -1180,6 +1180,29 @@ only O17's artwork waits for the owner.
   document, text, data, image, audio, video and non-running source types open; every other type is
   revealed in Explorer, never opened. Trailing dot or space segments and `:` streams are refused,
   and the extension is read from the canonicalised path. Folders keep opening. Rule 134.
+- O23 selection on a redrawn screen (M5 plan D2, 2026-10-17): alacritty clears a selection when the
+  program erases the lines it touches (EL, ED) and on a column-count resize; xterm.js kept it. A
+  selection in scrollback is unaffected; on a live screen a program that redraws (Claude Code) can
+  lose it while it streams. Known divergence. Owner question 1 answered by the orchestrator: fix in
+  M10 (keep the selection while a program redraws). Test: `an_erase_over_the_selection_clears_it`.
+- O24 link click (M5 plan D6, 2026-10-17): a link opens on a plain left click, as Prism Terminal
+  (two-apps #95); a right click opens nothing. Owner question 2 answered by the orchestrator: keep
+  the plain click for every link, path links included (`link_click_needs_ctrl` returns false; one
+  line to change). Tests: `any_other_button_opens_nothing`, `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`.
+- O25 Alt+click moving the caret (M5 plan D8, 2026-10-17): PORTED. The planner left it out (D8);
+  owner question 5 was answered "include" by the orchestrator (parity: Prism Terminal leaves
+  xterm's `altClickMovesCursor` on), so the final review ported xterm's `moveToCellSequence` cell
+  for cell (`flare-term/src/alt_click.rs`, with xterm's `MoveToCell.test.ts` table). Prism
+  Terminal's own click-to-caret still refuses any modifier. Tests: `xterm_normal_buffer_table`,
+  `an_alt_click_moves_the_cursor_with_arrows_and_selects_nothing`.
+- O26 empty cell and typed space (M5 plan D10, 2026-10-17): the buffer adapter reads an empty cell
+  and a typed space as the same character (alacritty stores a space for both), so a prompt's
+  trailing space is not "printed text" for the click-to-caret end and for selection trimming. No
+  owner question. Test: `nothing_deletable_is_allowed_and_empty`.
+- O27 multi-line paste (M5 plan D15, 2026-10-17): no confirmation dialog and no "paste is large"
+  notice, as Prism Terminal has none. Bracketed paste is the multi-line safety; a shell that did not
+  ask for it receives the lines, as in xterm. Owner question 4 answered by the orchestrator: keep
+  parity, no confirmation (a paste is the user's own act). Test: `a_multi_line_paste_is_one_bracketed_block`.
 - M3 owner decisions (2026-10-17, from the M3 plan): O12 Settings is a tab, as in Prism Terminal;
   O20 no rename (not in Prism Terminal, so not in Flare; the DECISION line above is answered);
   O10 setting keys are `flare.*` with the import map (M7 builds the import).

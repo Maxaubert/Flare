@@ -7,6 +7,17 @@ Plan: [docs/superpowers/plans/2026-10-17-flare-roadmap.md](docs/superpowers/plan
 What "done" means: [docs/parity.md](docs/parity.md). Rules: [docs/regression-rules.md](docs/regression-rules.md).
 Test mapping: [docs/test-port.md](docs/test-port.md).
 
+## Features
+
+- Terminal tabs with a shell per tab, restore, single instance and 39 themes.
+- Selection on the grid: character, word, line and block (Alt drag), drag scroll and Shift to extend.
+- Copy (Ctrl+C with a selection, the Copied badge, OSC 52), paste (Ctrl+V, Ctrl+Shift+V, right-click Paste) and file drop (a quoted path, never Enter).
+- Find in scrollback (Ctrl+F, Ctrl+Shift+F) with highlights, the count and wrap-around.
+- Links: web links and OSC 8 links, and existing paths, painted and opened by a left click through an allowlist.
+- A terminal right-click menu that fits what was clicked.
+
+Details and the tests that hold each one: [docs/features.md](docs/features.md).
+
 ## Build
 
 ```

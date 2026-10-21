@@ -204,6 +204,7 @@ impl Fx {
             },
             launch_folders: Vec::new(),
             e2e: true,
+            term: crate::appctl::TermPorts::inert(),
         };
         let h = Harness::new(scale, css.0, css.1, || AppWindow::new().unwrap());
         h.comp.set_grid_image(grid_image());
