@@ -657,55 +657,65 @@ fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     look(app, 0);
     soft(4_000, &mut || state(app, 0) == "none");
 
-    // FINISHED ON THE TAB IN FRONT WHILE AWAY, THEN BACK (owner, 2026-10-14): away, the finish is
-    // marked and the badge counts it; the pointer moving over the window takes both down.
-    at(app, 0, &say("working"));
-    soft(8_000, &mut || state(app, 0) == "working");
-    let _ = app.session.call(&Request::Focus { on: false });
-    at(
-        app,
-        0,
-        &format!("Start-Sleep -Milliseconds 2500; {}", say("done")),
-    );
-    // PT: run.mjs:927
-    let away = ctx.until("a finish while away", 10_000, &mut || {
-        state(app, 0) == "finished"
-    });
-    ctx.ok(
-        away,
-        "a finish on the tab in front, with the window away, is marked",
-    );
-    // PT: run.mjs:928
-    let counted = ctx.until("the badge to count it", 4_000, &mut || {
-        badge(app) == "1 tab needs a look"
-    });
-    let b = badge(app);
-    ctx.ok(counted, format!("and the badge counts it ({b})"));
-    let _ = app.session.call(&Request::Pointer {
-        x: 500.0,
-        y: 300.0,
-        action: PointerAction::Move,
-    });
-    for (x, y) in [(507.0, 307.0), (513.0, 313.0), (520.0, 320.0)] {
-        let _ = app.session.call(&Request::Pointer {
-            x,
-            y,
-            action: PointerAction::Move,
+    // FINISHED ON THE TAB IN FRONT WHILE AWAY, THEN BACK (owner, 2026-10-14, reversed 2026-10-21:
+    // "it should keep that completed icon until you click a new tab"): away, the finish is marked
+    // and the badge counts it; coming back (focus, the pointer moving) leaves both up, and a click
+    // on a tab takes them down, whichever tab it is.
+    for other in [false, true] {
+        at(app, 0, &say("working"));
+        soft(8_000, &mut || state(app, 0) == "working");
+        let _ = app.session.call(&Request::Focus { on: false });
+        at(
+            app,
+            0,
+            &format!("Start-Sleep -Milliseconds 2500; {}", say("done")),
+        );
+        let away = ctx.until("a finish while away", 10_000, &mut || {
+            state(app, 0) == "finished"
         });
+        ctx.ok(
+            away,
+            "a finish on the tab in front, with the window away, is marked",
+        );
+        let counted = ctx.until("the badge to count it", 4_000, &mut || {
+            badge(app) == "1 tab needs a look"
+        });
+        let b = badge(app);
+        ctx.ok(counted, format!("and the badge counts it ({b})"));
+        for (x, y) in [
+            (500.0, 300.0),
+            (507.0, 307.0),
+            (513.0, 313.0),
+            (520.0, 320.0),
+        ] {
+            let _ = app.session.call(&Request::Pointer {
+                x,
+                y,
+                action: PointerAction::Move,
+            });
+        }
+        let _ = app.session.call(&Request::Focus { on: true });
+        ctx.settle(50);
+        ctx.ok(
+            state(app, 0) == "finished" && badge(app) == "1 tab needs a look",
+            "back, the pointer moving and the focus returning leave the mark and the badge up",
+        );
+        tab_click(app, usize::from(other));
+        let down = ctx.until("a tab click to take the mark down", 4_000, &mut || {
+            state(app, 0) == "none"
+        });
+        ctx.ok(
+            down,
+            if other {
+                "a click on another tab takes it down, off the tab left too"
+            } else {
+                "a click on the same tab takes it down"
+            },
+        );
+        let clear = ctx.until("the badge to go", 4_000, &mut || badge(app).is_empty());
+        let b = badge(app);
+        ctx.ok(clear, format!("and the badge with it ({b})"));
     }
-    // PT: run.mjs:932
-    let back = ctx.until("the pointer to take the mark down", 4_000, &mut || {
-        state(app, 0) == "none"
-    });
-    ctx.ok(
-        back,
-        "back, the pointer moving over the window takes the mark down",
-    );
-    // PT: run.mjs:933
-    let clear = ctx.until("the badge to go", 4_000, &mut || badge(app).is_empty());
-    let b = badge(app);
-    ctx.ok(clear, format!("and the badge with it ({b})"));
-    let _ = app.session.call(&Request::Focus { on: true });
     Ok(())
 }
 

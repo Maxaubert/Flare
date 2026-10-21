@@ -336,7 +336,13 @@ are added as milestones land.
 - **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
   cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
   The front tab never gets a finished or failed mark while it is being looked at, but a question is
-  raised there. Held by `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
+  raised there. **A mark raised on the tab in front while the window was unfocused is held until a tab
+  is clicked (2026-10-21, owner: "it should keep that completed icon until you click a new tab"):**
+  coming back and the pointer moving no longer clear it, a click on any tab does (the tab left too),
+  and the badge counts it meanwhile. Held by `coming_back_does_not_take_a_held_mark_down`,
+  `a_tab_click_releases_a_held_mark_on_the_same_tab` and
+  `a_click_on_another_tab_releases_the_mark_on_the_tab_left`. Also held by
+  `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
   `each_attention_mark_is_behind_its_own_switch` and `working_outranks_question_outranks_failed_outranks_done`.
 - **Keep agent sessions open (2026-10-16).** With an agent in the front tab Ctrl+D never reaches it, and
   Ctrl+C is taken unless the agent works or a selection is held. Never in a plain shell. Held by

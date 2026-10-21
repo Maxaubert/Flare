@@ -24,10 +24,6 @@ use crate::title::{AgentTitleState, TitleReader};
 pub const SCREEN_TAIL_ROWS: usize = 16;
 /// Ask the poll to look at most once in 15 s per tab.
 pub const LOOK_GAP_MS: u64 = 15_000;
-/// A pointer move over an unfocused window is the owner back for this long.
-pub const MOVE_LOOK_MS: u64 = 1000;
-/// And takes the front tab's finished/failed mark down at most this often.
-pub const MOVE_LOOK_GAP_MS: u64 = 500;
 pub const QUESTION_READ_MS: u64 = 200;
 pub const ANSWER_READS_MS: [u64; 4] = [250, 1000, 2500, 5000];
 pub const TITLE_RECHECK_MS: u64 = 250;
@@ -189,8 +185,9 @@ pub struct Indicator {
     clock: AgentClock,
     active: Option<String>,
     focused: bool,
-    moved_at: Option<u64>,
-    last_move_look: Option<u64>,
+    /// Finished/Failed marks raised on the tab in front while the window was away: held until a
+    /// tab is clicked (owner, 2026-10-21; PT `agentHold.ts`).
+    held: HashSet<String>,
     prev_working: HashSet<String>,
     timers: Timers,
     log: Vec<LogItem>,
@@ -226,8 +223,7 @@ impl Indicator {
             clock: AgentClock::new(),
             active: None,
             focused: true,
-            moved_at: None,
-            last_move_look: None,
+            held: HashSet::new(),
             prev_working: HashSet::new(),
             timers: Timers::default(),
             log: Vec::new(),
@@ -265,28 +261,33 @@ impl Indicator {
     }
 
     /// The tab in front and whether the window has focus (PT: `looking`).
+    ///
+    /// The tab in front changing releases a mark held on the tab left, as a click would; with the
+    /// window still away nothing was seen, so it stays as an ordinary background mark.
     pub fn set_looking(&mut self, now: u64, active: Option<&str>, focused: bool) {
         self.active = active.map(str::to_string);
         self.focused = focused;
+        let left: Vec<String> = self
+            .held
+            .iter()
+            .filter(|id| Some(id.as_str()) != active)
+            .cloned()
+            .collect();
+        for id in left {
+            self.held.remove(&id);
+            if focused {
+                self.release(&id);
+            }
+        }
         self.reconcile(now);
     }
 
-    /// The pointer moved over the window (PT: the `pointermove` listener).
-    pub fn pointer_moved(&mut self, now: u64) {
-        if self.focused {
-            return;
+    /// A tab was clicked (this one or another): every held mark comes down, on the tab left too.
+    pub fn tab_clicked(&mut self, now: u64) {
+        let ids: Vec<String> = self.held.drain().collect();
+        for id in ids {
+            self.release(&id);
         }
-        self.moved_at = Some(now);
-        if !self.front_marked() {
-            return;
-        }
-        if self
-            .last_move_look
-            .is_some_and(|l| now.saturating_sub(l) < MOVE_LOOK_GAP_MS)
-        {
-            return;
-        }
-        self.last_move_look = Some(now);
         self.reconcile(now);
     }
 
@@ -376,18 +377,22 @@ impl Indicator {
         self.focused && self.active.as_deref() == Some(tab)
     }
 
-    fn front_marked(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|a| self.done.contains(a) || self.failed.contains(a))
+    /// Looking takes a mark down, unless it is HELD (raised while the window was away).
+    fn seeing(&self, tab: &str) -> bool {
+        self.looked_at(tab) && !self.held.contains(tab)
     }
 
-    fn seeing(&self, now: u64, tab: &str) -> bool {
-        self.active.as_deref() == Some(tab)
-            && (self.focused
-                || self
-                    .moved_at
-                    .is_some_and(|m| now.saturating_sub(m) < MOVE_LOOK_MS))
+    /// A Finished/Failed mark raised on the tab in front with the window away is held.
+    fn hold_if_front_away(&mut self, tab: &str) {
+        if !self.focused && self.active.as_deref() == Some(tab) {
+            self.held.insert(tab.to_string());
+        }
+    }
+
+    fn release(&mut self, tab: &str) {
+        self.why(tab, "tab clicked");
+        self.done.remove(tab);
+        self.failed.remove(tab);
     }
 
     fn note_changes(&mut self) {
@@ -738,6 +743,7 @@ impl Indicator {
             self.failed_kinds.remove(tab);
         }
         let away = !looked;
+        let mut hold = false;
         if o.raise.contains(&AttentionMark::Question) {
             self.cancel_answer_reads(tab);
             self.timers.cancel(tab, Slot::TitleRecheck);
@@ -754,9 +760,15 @@ impl Indicator {
             };
             if (away || raised_while_seen(mark)) && o.raise.contains(&mark) {
                 set.insert(tab.to_string());
+                if mark != AttentionMark::Question {
+                    hold = true;
+                }
             } else if o.clear.contains(&mark) {
                 set.remove(tab);
             }
+        }
+        if hold {
+            self.hold_if_front_away(tab);
         }
         if o.working {
             self.working.insert(tab.to_string());
@@ -818,18 +830,19 @@ impl Indicator {
         for id in &was {
             if !self.working.contains(id)
                 && self.agent_ids.contains(id)
-                && !self.seeing(now, id)
+                && !self.looked_at(id)
                 && !self.hooked.contains_key(id)
             {
                 self.why(id, "stopped working while away");
                 self.done.insert(id.clone());
+                self.hold_if_front_away(id);
             }
         }
         let mut drop_done = Vec::new();
         for id in &self.done {
             let why = if self.working.contains(id) {
                 "working again"
-            } else if self.seeing(now, id) {
+            } else if self.seeing(id) {
                 "tab looked at"
             } else if !self.agent_ids.contains(id) {
                 "agent gone"
@@ -855,7 +868,7 @@ impl Indicator {
         }
         let mut drop_failed = Vec::new();
         for id in &self.failed {
-            let why = if self.seeing(now, id) {
+            let why = if self.seeing(id) {
                 "tab looked at"
             } else if self.working.contains(id) {
                 "working again"
@@ -870,6 +883,10 @@ impl Indicator {
             self.why(&id, why);
             self.failed.remove(&id);
         }
+        // A hold lasts as long as its mark does (work again, agent gone, tab closed end it).
+        let (done, failed) = (&self.done, &self.failed);
+        self.held
+            .retain(|id| done.contains(id) || failed.contains(id));
         self.note_changes();
     }
 }
@@ -1217,43 +1234,113 @@ mod tests {
         assert!(!has(h.ind.done_ids(), "t2"));
     }
 
-    #[test]
-    fn a_pointer_move_over_an_unfocused_window_is_a_look() {
+    /// A harness whose front tab "t1" finished while the window was away.
+    fn finished_away() -> H {
         let mut h = H::new();
         h.ind.set_looking(0, Some("t1"), false);
         h.hook(100, "t1", HookState::Working);
         h.hook(200, "t1", HookState::Done);
         assert!(has(h.ind.done_ids(), "t1"));
-        h.ind.pointer_moved(300);
-        assert!(!has(h.ind.done_ids(), "t1"));
-        // A new mark after the look window has passed stays until the next move.
-        h.hook(5000, "t1", HookState::Working);
-        h.hook(5100, "t1", HookState::Done);
-        assert!(has(h.ind.done_ids(), "t1"));
-        h.ind.pointer_moved(5200);
-        assert!(!has(h.ind.done_ids(), "t1"));
+        h
     }
 
     #[test]
-    fn a_pointer_move_while_focused_does_nothing() {
-        let mut h = H::new();
-        h.ind.set_looking(0, Some("other"), true);
-        h.hook(1, "t1", HookState::Working);
-        h.hook(2, "t1", HookState::Done);
-        h.ind.pointer_moved(10);
-        assert!(has(h.ind.done_ids(), "t1"));
-        assert!(h.ind.moved_at.is_none());
-    }
-
-    #[test]
-    fn coming_back_is_a_look_but_a_resting_pointer_is_not() {
-        let mut h = H::new();
-        h.ind.set_looking(0, Some("t1"), false);
-        h.hook(100, "t1", HookState::Working);
-        h.hook(200, "t1", HookState::Done);
+    fn a_pointer_move_is_no_longer_a_look() {
+        // The 2026-10-14 pointer look is gone (owner, 2026-10-21): nothing takes the mark down.
+        let mut h = finished_away();
         h.tick(10_000);
         assert!(has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn coming_back_does_not_take_a_held_mark_down() {
+        let mut h = finished_away();
         h.ind.set_looking(11_000, Some("t1"), true);
+        assert!(has(h.ind.done_ids(), "t1"), "focus returning keeps it");
+        h.tick(20_000);
+        assert!(has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_held_failed_mark_stays_too() {
+        let mut h = H::new();
+        h.ind.set_looking(0, Some("t1"), false);
+        h.hook(100, "t1", HookState::Working);
+        h.hook_k(200, "t1", HookState::Failed, Some("overloaded"));
+        h.ind.set_looking(300, Some("t1"), true);
+        assert!(has(h.ind.failed_ids(), "t1"));
+        h.ind.tab_clicked(400);
+        assert!(!has(h.ind.failed_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_tab_click_releases_a_held_mark_on_the_same_tab() {
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t1"), true);
+        h.ind.tab_clicked(400);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_click_on_another_tab_releases_the_mark_on_the_tab_left() {
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t1"), true);
+        h.ind.tab_clicked(400);
+        h.ind.set_looking(400, Some("t2"), true);
+        assert!(!has(h.ind.done_ids(), "t1"), "no background mark lingers");
+    }
+
+    #[test]
+    fn the_front_tab_changing_with_focus_releases_it_like_a_click() {
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t1"), true);
+        h.ind.set_looking(400, Some("t2"), true);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn the_front_tab_changing_under_an_away_window_leaves_an_ordinary_background_mark() {
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t2"), false);
+        assert!(has(h.ind.done_ids(), "t1"));
+        h.ind.set_looking(400, Some("t1"), true);
+        assert!(!has(h.ind.done_ids(), "t1"), "visiting takes it down");
+    }
+
+    #[test]
+    fn work_again_or_the_agent_going_ends_the_hold() {
+        let mut h = finished_away();
+        h.hook(300, "t1", HookState::Working);
+        assert!(!has(h.ind.done_ids(), "t1"));
+        h.hook(400, "t1", HookState::Done);
+        assert!(has(h.ind.done_ids(), "t1"));
+        h.ind.forget("t1");
+        h.tick(500);
+        assert!(!has(h.ind.done_ids(), "t1"));
+        // A fresh mark raised while looking is not held: it never goes up.
+        h.ind.set_looking(600, Some("t1"), true);
+        h.hook(700, "t1", HookState::Working);
+        h.hook(800, "t1", HookState::Done);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_question_is_not_held() {
+        let mut h = H::new();
+        h.ind.set_looking(0, Some("t1"), false);
+        h.hook(100, "t1", HookState::Working);
+        h.hook(200, "t1", HookState::Question);
+        h.ind.tab_clicked(300);
+        assert!(has(h.ind.question_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_mark_raised_in_the_background_is_taken_down_by_visiting() {
+        let mut h = H::new();
+        h.ind.set_looking(0, Some("t2"), true);
+        h.hook(100, "t1", HookState::Working);
+        h.hook(200, "t1", HookState::Done);
+        h.ind.set_looking(300, Some("t1"), true);
         assert!(!has(h.ind.done_ids(), "t1"));
     }
 

@@ -540,9 +540,10 @@ impl AgentHub {
         self.settle(now);
     }
 
-    pub fn pointer_moved(&mut self) {
+    /// A tab was clicked: a Finished/Failed mark held since the window was away comes down.
+    pub fn tab_clicked(&mut self) {
         let now = self.now();
-        self.ind.pointer_moved(now);
+        self.ind.tab_clicked(now);
         self.settle(now);
     }
 
