@@ -4,13 +4,20 @@
 //! `type`, or a tool the model does not know, is ignored. Nothing here panics on a field of the wrong shape: a missing
 //! or wrongly typed field simply makes that one item absent. The shapes this relies on are in `docs/surfaces/convo.md`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
 
 use crate::diff::{self, Diff};
+
+/// The most edit calls kept (the oldest go first). A long session keeps its recent edits, not all of them.
+pub const MAX_EDITS: usize = 2000;
+/// The most text kept for all edits together; the oldest edits go first once it is passed.
+pub const MAX_EDIT_BYTES: usize = 32 * 1024 * 1024;
+/// The most bytes kept of one old or new text (or a whole file). A longer text is cut and the edit says so.
+pub const MAX_TEXT: usize = 64 * 1024;
 
 /// The file tools whose calls the Changes panel lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,11 +64,13 @@ pub struct Edit {
     pub path: String,
     /// The line's `timestamp`, as written (ISO 8601), when the line had one.
     pub time: Option<String>,
-    /// Made by a subagent (a sidechain line).
+    /// Made by a subagent (a sidechain line, or a line of a subagent's own file).
     pub sidechain: bool,
     /// One entry for Edit, Write and NotebookEdit; one per entry for MultiEdit.
     pub ops: Vec<EditOp>,
     pub outcome: Outcome,
+    /// Some of its text was cut to `MAX_TEXT`, so its diff is of the kept part only.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,8 +111,9 @@ pub struct Convo {
     pub edits: Vec<Edit>,
     /// The main agent's task list. TodoWrite replaces it; the task tools add to and change it.
     pub tasks: Vec<Task>,
-    /// A subagent's task list, kept apart so it never replaces the main one.
-    pub side_tasks: Vec<Task>,
+    /// Each subagent's task list, kept apart so it never replaces the main one. The key is the subagent's transcript
+    /// file name (`agent-<id>.jsonl`), or `""` for sidechain lines inside the session file itself.
+    pub side_tasks: BTreeMap<String, Vec<Task>>,
     /// Files and images the assistant named, first mention first, each path once.
     pub files: Vec<NamedFile>,
     /// Lines read (including bad ones).
@@ -112,6 +122,10 @@ pub struct Convo {
     pub bad_lines: u64,
     edit_index: HashMap<String, usize>,
     created: HashSet<String>,
+    /// Bytes of edit text currently kept (see `MAX_EDIT_BYTES`).
+    edit_bytes: usize,
+    /// The source of the line being folded: `""` for the session file, the subagent's file name otherwise.
+    source: String,
 }
 
 impl Convo {
@@ -119,8 +133,15 @@ impl Convo {
         Self::default()
     }
 
-    /// Folds one line. Never fails: a bad line only bumps `bad_lines`.
+    /// Folds one line of the session file. Never fails: a bad line only bumps `bad_lines`.
     pub fn fold_line(&mut self, line: &str) {
+        self.fold_from("", line);
+    }
+
+    /// Folds one line from `source`: `""` for the session file, or a subagent's transcript file name
+    /// (`agent-<id>.jsonl`). Lines of a subagent file are always sidechain lines, and its task list is kept under its name.
+    pub fn fold_from(&mut self, source: &str, line: &str) {
+        self.source = source.to_string();
         self.lines += 1;
         let value: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -133,10 +154,11 @@ impl Convo {
             self.bad_lines += 1;
             return;
         };
-        let sidechain = obj
-            .get("isSidechain")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let sidechain = !source.is_empty()
+            || obj
+                .get("isSidechain")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         let time = obj
             .get("timestamp")
             .and_then(Value::as_str)
@@ -272,8 +294,20 @@ impl Convo {
         if ops.is_empty() {
             return;
         }
-        self.edit_index.insert(id.to_string(), self.edits.len());
-        self.edits.push(Edit {
+        let mut truncated = false;
+        let ops: Vec<EditOp> = ops
+            .into_iter()
+            .map(|op| match op {
+                EditOp::Replace { old, new } => EditOp::Replace {
+                    old: cap_text(old, &mut truncated),
+                    new: cap_text(new, &mut truncated),
+                },
+                EditOp::Full { content } => EditOp::Full {
+                    content: cap_text(content, &mut truncated),
+                },
+            })
+            .collect();
+        let edit = Edit {
             id: id.to_string(),
             tool,
             path: path.to_string(),
@@ -281,7 +315,30 @@ impl Convo {
             sidechain,
             ops,
             outcome: Outcome::Pending,
-        });
+            truncated,
+        };
+        self.edit_bytes += edit_bytes(&edit);
+        self.edit_index.insert(id.to_string(), self.edits.len());
+        self.edits.push(edit);
+        self.evict_old_edits();
+    }
+
+    /// Drops the oldest edits while there are too many or the kept text is too big. The newest edit is never dropped.
+    fn evict_old_edits(&mut self) {
+        let mut dropped = false;
+        while self.edits.len() > 1
+            && (self.edits.len() > MAX_EDITS || self.edit_bytes > MAX_EDIT_BYTES)
+        {
+            let gone = self.edits.remove(0);
+            self.edit_bytes -= edit_bytes(&gone);
+            dropped = true;
+        }
+        if dropped {
+            self.edit_index.clear();
+            for (i, e) in self.edits.iter().enumerate() {
+                self.edit_index.insert(e.id.clone(), i);
+            }
+        }
     }
 
     /// TodoWrite sends the whole list each time: it replaces the list it belongs to.
@@ -307,7 +364,7 @@ impl Convo {
             })
             .collect();
         if sidechain {
-            self.side_tasks = list;
+            self.side_tasks.insert(self.source.clone(), list);
         } else {
             self.tasks = list;
         }
@@ -370,22 +427,26 @@ impl Convo {
 
     fn list_mut(&mut self, sidechain: bool) -> &mut Vec<Task> {
         if sidechain {
-            &mut self.side_tasks
+            let key = self.source.clone();
+            self.side_tasks.entry(key).or_default()
         } else {
             &mut self.tasks
         }
     }
 
-    /// A task created by a call with this key, in either list.
+    /// A task created by a call with this key, in any list.
     fn find_task_mut(&mut self, key: &str) -> Option<&mut Task> {
         self.tasks
             .iter_mut()
-            .chain(self.side_tasks.iter_mut())
+            .chain(self.side_tasks.values_mut().flatten())
             .find(|t| t.key == key)
     }
 
     fn named_files(&mut self, text: &str, sidechain: bool) {
-        for m in windows_path_re().find_iter(text) {
+        for caps in windows_path_re().captures_iter(text) {
+            let Some(m) = caps.get(1) else {
+                continue;
+            };
             let raw = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?']);
             let path = raw.replace('/', "\\");
             let Some(ext) = path
@@ -419,12 +480,38 @@ impl Convo {
     }
 }
 
-/// An absolute Windows path: a drive, a colon, a slash, then characters that cannot end a path in prose.
+/// An absolute Windows path: a drive, a colon, a slash, then characters that cannot end a path in prose. The drive
+/// must not follow a letter, digit, `_`, `/`, a backslash or `:`, so a URL (`https://x.com/a.png`) and a file URL
+/// (`file:///C:/a.png`) name no file. Group 1 is the path.
 fn windows_path_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"[A-Za-z]:[\\/][^\s"'`<>|*?()\[\]{}]+"#).expect("static pattern")
+        Regex::new(r#"(?:^|[^A-Za-z0-9_/\\:])([A-Za-z]:[\\/][^\s"'`<>|*?()\[\]{}]+)"#)
+            .expect("static pattern")
     })
+}
+
+/// Cuts `s` to `MAX_TEXT` bytes at a character boundary, noting the cut.
+fn cap_text(s: String, truncated: &mut bool) -> String {
+    if s.len() <= MAX_TEXT {
+        return s;
+    }
+    *truncated = true;
+    let mut end = MAX_TEXT;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+fn edit_bytes(edit: &Edit) -> usize {
+    edit.ops
+        .iter()
+        .map(|op| match op {
+            EditOp::Replace { old, new } => old.len() + new.len(),
+            EditOp::Full { content } => content.len(),
+        })
+        .sum()
 }
 
 fn status_of(word: Option<&str>) -> TaskStatus {

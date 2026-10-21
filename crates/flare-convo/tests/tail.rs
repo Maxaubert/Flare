@@ -3,10 +3,12 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use flare_convo::tail::{MAX_LINE, MAX_READ, Tail, subscribe};
-use flare_convo::{find_transcript, valid_session_id};
+use flare_convo::tail::{MAX_LINE, MAX_READ, Tail, subscribe, subscribe_session};
+use flare_convo::{find_transcript, subagent_dir, transcript_path, valid_session_id};
 
 fn append(path: &Path, bytes: &[u8]) {
     let mut f = OpenOptions::new()
@@ -149,12 +151,22 @@ fn a_bad_utf8_byte_is_replaced_not_fatal() {
     assert!(lines[0].contains('\u{fffd}'));
 }
 
+/// Waits up to 200 ms for the worker's exit flag, and says whether it came.
+fn worker_exits_soon(exited: &Arc<AtomicBool>) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while !exited.load(Ordering::SeqCst) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    exited.load(Ordering::SeqCst)
+}
+
 #[test]
 fn the_worker_delivers_growth_and_stops_when_the_subscription_drops() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("live.jsonl");
     append(&path, b"{\"n\":1}\n");
     let sub = subscribe(&path);
+    let exited = sub.exit_flag();
     let first = sub
         .next_timeout(Duration::from_secs(5))
         .expect("the first line arrives");
@@ -164,9 +176,118 @@ fn the_worker_delivers_growth_and_stops_when_the_subscription_drops() {
         .next_timeout(Duration::from_secs(5))
         .expect("growth arrives within a poll");
     assert_eq!(second.lines, vec!["{\"n\":2}"]);
+    assert!(
+        !exited.load(Ordering::SeqCst),
+        "a live subscription keeps its worker"
+    );
     drop(sub);
-    // The worker sees the stop flag within a slice; nothing more is sent to a dropped subscription.
-    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        worker_exits_soon(&exited),
+        "the worker returned within 200 ms of the drop"
+    );
+}
+
+#[test]
+fn a_worker_blocked_on_a_full_queue_still_stops_when_the_subscription_drops() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.jsonl");
+    // More than three bounded reads of news, and nobody reads the subscription: the worker must block on the queue.
+    let line = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(1000));
+    let body = line.repeat((3 * MAX_READ) / line.len() + 100);
+    fs::write(&path, body.as_bytes()).expect("write");
+    let sub = subscribe(&path);
+    let exited = sub.exit_flag();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !exited.load(Ordering::SeqCst),
+        "a full queue parks the worker, it does not end it"
+    );
+    drop(sub);
+    assert!(
+        worker_exits_soon(&exited),
+        "a parked worker sees the stop flag and returns"
+    );
+}
+
+#[test]
+fn a_file_rewritten_in_place_that_ends_longer_restarts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    append(&path, b"{\"a\":1}\n{\"b\":2}\n");
+    let mut tail = Tail::new(&path);
+    assert_eq!(tail.poll().unwrap().lines.len(), 2);
+    // Same file, rewritten: the first line changed and the file now runs past the old offset.
+    fs::write(&path, b"{\"x\":9}\n{\"b\":2}\n{\"c\":3}\n").expect("rewrite in place");
+    let batch = tail.poll().unwrap();
+    assert!(batch.restarted, "the bytes before the offset changed");
+    assert_eq!(batch.lines, vec!["{\"x\":9}", "{\"b\":2}", "{\"c\":3}"]);
+}
+
+#[test]
+fn growth_alone_never_restarts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    append(&path, b"{\"a\":1}\n");
+    let mut tail = Tail::new(&path);
+    assert_eq!(tail.poll().unwrap().lines.len(), 1);
+    append(&path, b"{\"b\":2}\n");
+    let batch = tail.poll().unwrap();
+    assert!(!batch.restarted, "appended bytes keep the guard intact");
+    assert_eq!(batch.lines, vec!["{\"b\":2}"]);
+}
+
+#[test]
+fn a_session_worker_reads_the_session_file_and_every_subagent_file_by_name() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let folder = "C:\\work\\proj";
+    let id = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+    let session = transcript_path(home.path(), folder, id).expect("a UUID is safe");
+    fs::create_dir_all(session.parent().unwrap()).expect("mkdir");
+    append(&session, b"{\"main\":1}\n");
+    let subs = subagent_dir(home.path(), folder, id).expect("a UUID is safe");
+    assert!(
+        subs.ends_with(Path::new(id).join("subagents")),
+        "got {}",
+        subs.display()
+    );
+    fs::create_dir_all(&subs).expect("mkdir subagents");
+    append(&subs.join("agent-aaa.jsonl"), b"{\"a\":1}\n");
+    let sub = subscribe_session(&session, &subs);
+
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut append_later = true;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let has = |src: &str, line: &str| seen.iter().any(|(s, l)| s == src && l == line);
+        if has("", "{\"main\":1}")
+            && has("agent-aaa.jsonl", "{\"a\":1}")
+            && has("agent-bbb.jsonl", "{\"b\":1}")
+        {
+            break;
+        }
+        if append_later && has("agent-aaa.jsonl", "{\"a\":1}") {
+            // A subagent file that appears after the worker started is picked up on a later poll.
+            append(&subs.join("agent-bbb.jsonl"), b"{\"b\":1}\n");
+            append_later = false;
+        }
+        if let Some(batch) = sub.next_timeout(Duration::from_millis(600)) {
+            for line in batch.lines {
+                seen.push((batch.source.clone(), line));
+            }
+        }
+    }
+    assert!(
+        seen.contains(&(String::new(), "{\"main\":1}".into())),
+        "the session file: {seen:?}"
+    );
+    assert!(
+        seen.contains(&("agent-aaa.jsonl".into(), "{\"a\":1}".into())),
+        "a subagent: {seen:?}"
+    );
+    assert!(
+        seen.contains(&("agent-bbb.jsonl".into(), "{\"b\":1}".into())),
+        "a later subagent: {seen:?}"
+    );
 }
 
 #[test]

@@ -1,6 +1,8 @@
 //! Fold tests on the synthetic transcript in `tests/fixtures/session.jsonl` (hand-written, no real content).
 
-use flare_convo::fold::{Convo, EditOp, Outcome, TaskStatus, Tool};
+use flare_convo::fold::{
+    Convo, EditOp, MAX_EDIT_BYTES, MAX_EDITS, MAX_TEXT, Outcome, TaskStatus, Tool,
+};
 use flare_convo::{Kind, transcript_path};
 
 fn folded() -> Convo {
@@ -158,9 +160,9 @@ fn a_task_tool_create_then_update_by_its_id() {
 #[test]
 fn a_subagent_todolist_never_replaces_the_main_one() {
     let convo = folded();
-    assert_eq!(convo.side_tasks.len(), 1);
-    assert_eq!(convo.side_tasks[0].title, "Side task");
-    assert_eq!(convo.side_tasks[0].status, TaskStatus::Pending);
+    assert_eq!(convo.side_tasks[""].len(), 1);
+    assert_eq!(convo.side_tasks[""][0].title, "Side task");
+    assert_eq!(convo.side_tasks[""][0].status, TaskStatus::Pending);
     assert_eq!(convo.tasks.len(), 3);
 }
 
@@ -236,4 +238,111 @@ fn transcript_path_uses_the_slug_and_refuses_an_unsafe_id() {
     );
     assert!(transcript_path(home, "C:\\x", "..\\..\\secret").is_none());
     assert!(transcript_path(home, "C:\\x", "").is_none());
+}
+
+fn fold_agent(convo: &mut Convo, source: &str, fixture: &str) {
+    for line in fixture.lines() {
+        convo.fold_from(source, line);
+    }
+}
+
+#[test]
+fn a_subagent_file_folds_as_sidechain_and_each_list_keeps_its_own_name() {
+    let mut convo = Convo::new();
+    fold_agent(
+        &mut convo,
+        "agent-abc.jsonl",
+        include_str!("fixtures/agent-abc.jsonl"),
+    );
+    fold_agent(
+        &mut convo,
+        "agent-def.jsonl",
+        include_str!("fixtures/agent-def.jsonl"),
+    );
+    let e = edit(&convo, "toolu_sub_01");
+    assert!(
+        e.sidechain,
+        "every line of a subagent file is a sidechain line"
+    );
+    assert_eq!(e.outcome, Outcome::Applied);
+    assert_eq!(convo.side_tasks["agent-abc.jsonl"][0].title, "Side A");
+    assert_eq!(
+        convo.side_tasks["agent-def.jsonl"][0].title, "Side B",
+        "two subagents' lists do not overwrite each other"
+    );
+    assert!(convo.tasks.is_empty(), "no subagent replaces the main list");
+}
+
+#[test]
+fn a_url_or_a_file_url_in_the_assistants_words_names_no_file() {
+    let mut convo = Convo::new();
+    convo.fold_line(
+        r#"{"type":"assistant","message":{"role":"assistant","content":"see https://x.com/a.png and file:///C:/a.png and C:\\real\\b.png"}}"#,
+    );
+    let paths: Vec<&str> = convo.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["C:\\real\\b.png"]);
+}
+
+#[test]
+fn a_text_longer_than_the_cap_is_cut_and_the_edit_says_so() {
+    let mut convo = Convo::new();
+    let big = "x".repeat(MAX_TEXT + 10);
+    let line = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"big","name":"Write","input":{"file_path":"C:\\a.txt","content":big}}]}}).to_string();
+    convo.fold_line(&line);
+    let e = edit(&convo, "big");
+    assert!(e.truncated);
+    match &e.ops[0] {
+        EditOp::Full { content } => assert_eq!(content.len(), MAX_TEXT),
+        other => panic!("expected a whole file, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_oldest_edits_go_once_there_are_too_many_and_a_late_result_is_ignored() {
+    let mut convo = Convo::new();
+    let total = MAX_EDITS + 100;
+    for i in 0..total {
+        let line = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":format!("e{i}"),"name":"Edit","input":{"file_path":"C:\\a.rs","old_string":"a","new_string":"b"}}]}}).to_string();
+        convo.fold_line(&line);
+    }
+    assert_eq!(convo.edits.len(), MAX_EDITS, "the cap holds");
+    assert_eq!(
+        convo.edits[0].id,
+        format!("e{}", total - MAX_EDITS),
+        "the oldest went first"
+    );
+    let late = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"e0","content":"ok"}]}}).to_string();
+    convo.fold_line(&late);
+    let newest = serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("e{}", total - 1),"content":"ok"}]}}).to_string();
+    convo.fold_line(&newest);
+    assert_eq!(
+        edit(&convo, &format!("e{}", total - 1)).outcome,
+        Outcome::Applied
+    );
+}
+
+#[test]
+fn the_kept_edit_text_is_bounded_in_bytes_too() {
+    let mut convo = Convo::new();
+    let content = "y".repeat(MAX_TEXT);
+    let per_edit = content.len();
+    let count = MAX_EDIT_BYTES / per_edit + 40;
+    for i in 0..count {
+        let line = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":format!("w{i}"),"name":"Write","input":{"file_path":"C:\\a.txt","content":content}}]}}).to_string();
+        convo.fold_line(&line);
+    }
+    let kept: usize = convo
+        .edits
+        .iter()
+        .map(|e| match &e.ops[0] {
+            EditOp::Full { content } => content.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(kept <= MAX_EDIT_BYTES, "kept {kept} bytes");
+    assert_eq!(
+        convo.edits.last().unwrap().id,
+        format!("w{}", count - 1),
+        "the newest is kept"
+    );
 }

@@ -24,7 +24,9 @@ pub struct DiffLine {
     pub text: String,
 }
 
-/// One run of changes with its context. `old_start` and `new_start` are 1-based line numbers of its first line.
+/// One run of changes with its context. `old_start` and `new_start` are 1-based line numbers of its first line, counted
+/// within the old and new text given to `diff` (the snippet the edit carried), not within the file on disk. The panel
+/// adds the file offset itself, if it has read the file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Hunk {
     pub old_start: usize,

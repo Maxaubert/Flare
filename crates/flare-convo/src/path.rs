@@ -29,6 +29,20 @@ pub fn transcript_path(home: &Path, folder: &str, session_id: &str) -> Option<Pa
     )
 }
 
+/// The folder of a session's subagent transcripts: `<slug>\<session-id>\subagents`. Each subagent writes its own
+/// `agent-<id>.jsonl` there; its lines are not in the session file. `None` when the id is not a safe file name.
+pub fn subagent_dir(home: &Path, folder: &str, session_id: &str) -> Option<PathBuf> {
+    if !valid_session_id(session_id) {
+        return None;
+    }
+    Some(
+        projects_dir(home)
+            .join(encode_cwd(folder))
+            .join(session_id)
+            .join("subagents"),
+    )
+}
+
 /// The fallback when the folder's slug is not known (a tab moved, the folder was renamed): the first
 /// `<session-id>.jsonl` found in any project folder under `home`. `None` when no folder has one.
 pub fn find_transcript(home: &Path, session_id: &str) -> Option<PathBuf> {

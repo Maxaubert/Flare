@@ -18,7 +18,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - A terminal right-click menu that fits what was clicked.
 - Panels: a click on a path to a picture or a text file shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
 - Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
-- Conversation reader (library, not yet in the app): reads a Claude session's transcript as it grows and folds it into the edits, the task list and the files named. The Changes and Tasks panels come next.
+- Conversation reader (library, not yet in the app): reads a Claude session's transcript, and its subagents' transcripts, as they grow and folds them into the edits, the task list and the files named. The Changes and Tasks panels come next.
 
 Details and the tests that hold each one: [docs/features.md](docs/features.md).
 

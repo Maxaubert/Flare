@@ -27,8 +27,7 @@ is what PT's build reads first, so it does not hit the same holes.
 | `panels.json` beside `tabs.json`, matched by folder and place | The same file and the same matching rule; flush it on `before-quit` and session end like the other stores |
 | Chords Ctrl+Shift+P and Ctrl+Shift+O | The same chords in the shared key table; both always the app's |
 | Worker generation number plus a shared "newest" check | An `AbortController` per load; one decode at a time in the main process |
-| A transcript the agent writes to `~/.claude/projects/<slug>/<id>.jsonl`, tailed by a Rust worker | The same file, read by a main-process worker (`fs.open`, a 4 MB cap per read, `
-` splits, a partial line carried); the fold is pure JSON and ports line for line; the replacement test is `ino` plus `dev`, not `birthtime` (see `convo.md` and `lessons.md`, stage 6) |
+| A transcript the agent writes to `~/.claude/projects/<slug>/<id>.jsonl`, tailed by a Rust worker | The same file, read by a main-process worker (`fs.open`, a 4 MB cap per read, `\n` splits, a partial line carried); the fold is pure JSON and ports line for line; the replacement test is `ino` plus `dev`, not `birthtime` (see `convo.md` and `lessons.md`, stage 6) |
 
 Stage 1 detail: `decisions.md` (Stage 1 and its review fixes) and `lessons.md` (Stage 1).
 Stage 2 detail: `decisions.md` (Stage 2), `lessons.md` (Stage 2) and `protocol.md` (the final contract of the channel and the tools).
