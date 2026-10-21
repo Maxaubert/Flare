@@ -426,6 +426,11 @@ fn attach_window_material(
     let Some(mut m) = WindowMaterial::new(app, os_version(), e2e) else {
         return false;
     };
+    // The handle exists: the frameless window gets its resize edges and corners (winit gives it no
+    // non-client border, so Windows alone answers every point with the client).
+    if let Some(hwnd) = hwnd_of(app) {
+        flare_win::resize_edges::install(hwnd);
+    }
     // No polling: the material arms a one-shot wake only while the border is due.
     m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
     m.on_window_state(

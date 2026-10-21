@@ -33,6 +33,7 @@ pub mod window_state;
 pub mod names;
 pub mod packaged;
 pub mod registry;
+pub mod resize_edges;
 pub mod seam;
 pub mod thread_stack;
 pub mod verb;

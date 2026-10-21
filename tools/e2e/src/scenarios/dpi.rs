@@ -872,3 +872,180 @@ mod tests {
         assert_eq!(ORIGINS[0], (-32000, -32000));
     }
 }
+
+// ---- resizeEdges: the frameless window's native resize handles ------------------------------------
+
+/// `HTCLIENT`, `HTLEFT`..`HTBOTTOMRIGHT` as `WM_NCHITTEST` answers them.
+const HT_CLIENT: u32 = 1;
+const HT_LEFT: u32 = 10;
+const HT_RIGHT: u32 = 11;
+const HT_TOP: u32 = 12;
+const HT_TOPLEFT: u32 = 13;
+const HT_TOPRIGHT: u32 = 14;
+const HT_BOTTOM: u32 = 15;
+const HT_BOTTOMLEFT: u32 = 16;
+const HT_BOTTOMRIGHT: u32 = 17;
+/// The window's minimum size in css px (Prism Terminal's `minWidth` x `minHeight`).
+const MIN_CSS: (f32, f32) = (560.0, 400.0);
+
+/// The points of a `w` x `h` window (device px, from its top-left) a resize band is checked at,
+/// with the code each answers: the middle of each edge, each corner's outermost pixel, a point
+/// just inside a band, the middle, and the spot of the top-right window buttons just below the band.
+fn edge_points(w: i32, h: i32, band: i32) -> Vec<((i32, i32), u32, &'static str)> {
+    vec![
+        ((0, h / 2), HT_LEFT, "left edge"),
+        ((w - 1, h / 2), HT_RIGHT, "right edge"),
+        ((w / 2, 0), HT_TOP, "top edge"),
+        ((w / 2, h - 1), HT_BOTTOM, "bottom edge"),
+        ((0, 0), HT_TOPLEFT, "top-left corner"),
+        ((w - 1, 0), HT_TOPRIGHT, "top-right corner"),
+        ((0, h - 1), HT_BOTTOMLEFT, "bottom-left corner"),
+        ((w - 1, h - 1), HT_BOTTOMRIGHT, "bottom-right corner"),
+        ((band, h / 2), HT_CLIENT, "one pixel inside the left band"),
+        ((w / 2, band), HT_CLIENT, "one pixel inside the top band"),
+        ((w / 2, h / 2), HT_CLIENT, "the middle"),
+        (
+            (w - 3 * band, 2 * band),
+            HT_CLIENT,
+            "the window buttons, below the band",
+        ),
+    ]
+}
+
+/// `window.edges` for the points, as `(rect, dpi, band, sizebox, min_track, codes)`.
+type Edges = ([i64; 4], u32, i64, bool, (i64, i64), Vec<u32>);
+
+fn window_edges(app: &mut App, points: &[(i32, i32)]) -> Option<Edges> {
+    let pts: Vec<Value> = points.iter().map(|p| json!([p.0, p.1])).collect();
+    let v = app
+        .session
+        .probe("window.edges", json!({ "points": pts }))
+        .ok()?;
+    let n = |x: &Value| x.as_i64();
+    let r = v["rect"].as_array()?;
+    let rect = [n(&r[0])?, n(&r[1])?, n(&r[2])?, n(&r[3])?];
+    let m = v["min_track"].as_array()?;
+    let codes = v["codes"]
+        .as_array()?
+        .iter()
+        .map(|c| c.as_u64().unwrap_or(0) as u32)
+        .collect();
+    Some((
+        rect,
+        v["dpi"].as_u64()? as u32,
+        n(&v["band"][0])?,
+        v["sizebox"].as_bool()?,
+        (n(&m[0])?, n(&m[1])?),
+        codes,
+    ))
+}
+
+/// Flare's own scenario: the frameless main window has native resize edges and corners at every
+/// scaling, answers the right `HT*` codes through its real window procedure, keeps the client
+/// everywhere else, and is held to its minimum size. The window stays parked.
+pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
+    let Some(mut app) = start(ctx, "software", false)? else {
+        return Ok(());
+    };
+    for dpi in [96u32, 144, 216, 288] {
+        let at = format!("at {}%", pct(dpi));
+        let sent = app.session.call(&Request::DpiChange {
+            dpi,
+            x: None,
+            y: None,
+        });
+        ctx.ok(sent.is_ok(), format!("{at}: the DPI change is accepted"));
+        let scale = scale_of(dpi);
+        let followed = ctx.until(&format!("the scale to reach {scale}"), 5_000, &mut || {
+            (dpi_state(&mut app).scale - scale).abs() < 0.005
+        });
+        ctx.ok(followed, format!("{at}: the scale follows"));
+        ctx.poll(300, &mut || false);
+        let Some((rect, got_dpi, band, sizebox, min, _)) = window_edges(&mut app, &[]) else {
+            ctx.ok(false, format!("{at}: window.edges answers"));
+            continue;
+        };
+        let (w, h) = ((rect[2] - rect[0]) as i32, (rect[3] - rect[1]) as i32);
+        ctx.ok(
+            sizebox,
+            format!("{at}: the window can be sized (WS_SIZEBOX, so Snap works)"),
+        );
+        // The band follows the window's own DPI (the simulated change moves the app's scale, not the
+        // monitor's): Windows' frame plus padded border, about 6 to 9 px per 96 dpi.
+        let (lo, hi) = (
+            (6.0 * f64::from(got_dpi) / 96.0).floor() as i64,
+            (9.0 * f64::from(got_dpi) / 96.0).ceil() as i64,
+        );
+        ctx.ok(
+            (lo..=hi).contains(&band),
+            format!("{at}: the band is {band} px at {got_dpi} dpi (between {lo} and {hi})"),
+        );
+        let want_min = (
+            (MIN_CSS.0 * scale).round() as i64,
+            (MIN_CSS.1 * scale).round() as i64,
+        );
+        ctx.ok(
+            (min.0 - want_min.0).abs() <= 1 && (min.1 - want_min.1).abs() <= 1,
+            format!("{at}: the minimum is {min:?} (about {want_min:?})"),
+        );
+        let pts = edge_points(w, h, band as i32);
+        let xy: Vec<(i32, i32)> = pts.iter().map(|p| p.0).collect();
+        let codes = window_edges(&mut app, &xy).map(|e| e.5).unwrap_or_default();
+        for (i, (_, want, what)) in pts.iter().enumerate() {
+            let got = codes.get(i).copied();
+            ctx.ok(
+                got == Some(*want),
+                format!("{at}: {what} answers {want} (got {got:?})"),
+            );
+        }
+    }
+    // Back to 100 percent, then a programmatic resize far below the minimum is held to it.
+    let _ = app.session.call(&Request::DpiChange {
+        dpi: 96,
+        x: None,
+        y: None,
+    });
+    ctx.poll(500, &mut || false);
+    let _ = app.session.call(&Request::Resize { w: 100.0, h: 100.0 });
+    let clamped = ctx.until("the clamp to the minimum", 5_000, &mut || {
+        window_edges(&mut app, &[]).is_some_and(|e| {
+            (e.0[2] - e.0[0], e.0[3] - e.0[1]) == (MIN_CSS.0 as i64, MIN_CSS.1 as i64)
+        })
+    });
+    let size = window_edges(&mut app, &[]).map(|e| (e.0[2] - e.0[0], e.0[3] - e.0[1]));
+    ctx.ok(
+        clamped,
+        format!("a resize to 100 x 100 is held at the minimum 560 x 400 (got {size:?})"),
+    );
+    finish(ctx, app, "software");
+    Ok(())
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn the_edge_points_lie_inside_the_window_and_cover_every_handle() {
+        for (w, h, band) in [(1000, 640, 8), (3000, 1920, 24)] {
+            let pts = edge_points(w, h, band);
+            let codes: Vec<u32> = pts.iter().map(|p| p.1).collect();
+            for want in [
+                HT_LEFT,
+                HT_RIGHT,
+                HT_TOP,
+                HT_BOTTOM,
+                HT_TOPLEFT,
+                HT_TOPRIGHT,
+                HT_BOTTOMLEFT,
+                HT_BOTTOMRIGHT,
+                HT_CLIENT,
+            ] {
+                assert!(codes.contains(&want), "{want}");
+            }
+            for ((x, y), _, what) in pts {
+                assert!((0..w).contains(&x) && (0..h).contains(&y), "{what}");
+            }
+        }
+    }
+}

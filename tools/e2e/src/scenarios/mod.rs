@@ -499,6 +499,12 @@ pub const ALL: &[Scenario] = &[
         run: dpi::monitor_move,
         limit_secs: 300,
     },
+    Scenario {
+        name: "resizeEdges",
+        group: "dpi",
+        run: dpi::resize_edges,
+        limit_secs: 120,
+    },
 ];
 
 /// Scenarios that are NOT part of the gate: a plain run never picks them, a filter that names one does.
