@@ -18,6 +18,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - A terminal right-click menu that fits what was clicked.
 - Panels: a click on a path to a picture or a text file shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
 - Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
+- Conversation reader (library, not yet in the app): reads a Claude session's transcript as it grows and folds it into the edits, the task list and the files named. The Changes and Tasks panels come next.
 
 Details and the tests that hold each one: [docs/features.md](docs/features.md).
 
@@ -87,6 +88,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `zip` 9.0.0 (2026-10-09, `deflate` only): the GPU pack's unzip (M8 D5). The oldest release patched for RUSTSEC-2026-0367/0368/0369; the 14-day age rule gave way to the advisory rule because no fixed release is that old yet. `velopack` still pulls its own `zip` 8.6, ignored in `deny.toml` for the updater only.
 - `libloading` 0.8.9: loads `ggml.dll` and `parakeet.dll` inside `flare-parakeet-host.exe` (M8 D3), the resident Parakeet host. It runs out of process, so a CUDA crash cannot take the app down.
 - whisper.cpp engine b5130 (MIT, `LICENSE-whisper.cpp.txt`, ggml-org): `whisper-server.exe`, `parakeet-cli.exe` and their DLLs, plus Microsoft's Visual C++ runtime DLLs (copied only when Authenticode says Microsoft). `tools/fetch-whisper.ps1` fetches the pinned zip at build time into `vendor/whisper` (gitignored) after a size and SHA-256 check; `tools/release/pack.ps1` ships it as `whisper\` beside `Flare.exe`. Nothing in the repository is compiled from it.
+- `flare-convo` (Surfaces stage 6) adds no crate: it uses `regex`, `serde_json`, `log`, `flare-agent` (for the transcript slug) and `windows-sys`, whose `GetFileInformationByHandle` (`Win32_Storage_FileSystem`, already enabled) gives a transcript's file index.
 - `embed-resource` (build only): compiles the icon and the version resource into `Flare.exe` from `crates/flare/build.rs` (M9, Task 26).
 
 M4 adds no new crate: the theme, fonts and material need only what M1 to M3 already ship. The
