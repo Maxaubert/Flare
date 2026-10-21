@@ -122,9 +122,9 @@ are added as milestones land.
   A size is capped at a quarter over the virtual screen (all monitors) at the saved scale, never below the
   minimum (audit 2026-10-20, L16). Held by `window_state_clamps_the_size_to_the_virtual_screen_at_every_scale`.
 - **Resize edges (audit 2026-10-21).** The frameless main window resizes from its edges and corners
-  (native cursors, Snap intact): `flare_win::resize_edges` answers `WM_NCHITTEST` in a DPI-aware band
+  (native cursors, Aero Snap by drag and Win+arrow intact; no snap layouts hover menu yet): `flare_win::resize_edges` answers `WM_NCHITTEST` in a DPI-aware band
   (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, corners twice as long), never while maximized, minimized or full
-  screen, and holds a programmatic resize to the 560 x 400 minimum (`WM_WINDOWPOSCHANGING`). The dictation
+  screen (the minimum clamp skips a borderless full-screen position too), and holds a programmatic resize to the 560 x 400 minimum (`WM_WINDOWPOSCHANGING`). The dictation
   widget and popups are not resizable. Held by the `resize_edges` tests and the e2e `resizeEdges`.
 - **Diagnostics and hand-off hardening (audit 2026-10-20).** A panic line keeps the payload's length and hash, never its
   text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance

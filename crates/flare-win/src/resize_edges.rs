@@ -4,7 +4,7 @@
 //! Snap and the snap layouts work) but answers `WM_NCCALCSIZE` with the whole window as client area,
 //! so there is no non-client border and `DefWindowProc` answers `WM_NCHITTEST` with `HTCLIENT`
 //! everywhere: no handles, no resize cursors. Prism Terminal (Electron frameless) resizes from
-//! invisible edges; this subclass does the same without any visible frame. It answers
+//! invisible edges; this subclass gives Flare the same behaviour (not the same pixel sizes) without any visible frame. It answers
 //! `WM_NCHITTEST` with `HTLEFT`..`HTBOTTOMRIGHT` inside a band along the window's edge and passes
 //! everything else on, so the title-bar drag, the window buttons, the tab strip and the terminal are
 //! untouched. `DefWindowProc` then supplies the resize cursors and the sizing loop, and
@@ -12,7 +12,7 @@
 //! keeps the minimum.
 //!
 //! The band is `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` at the window's own DPI (8 px at 100 percent,
-//! as Windows draws its invisible resize border), read on every hit test, so a `WM_DPICHANGED` needs
+//! the size Windows gives a sizable window's border), read on every hit test, so a `WM_DPICHANGED` needs
 //! no work. A corner reaches twice as far along each edge as the edge is thick. No band while
 //! maximized, minimized or full screen.
 
@@ -22,11 +22,11 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT,
     HTTOPRIGHT, IsIconic, IsZoomed, SM_CXPADDEDBORDER, SM_CXSIZEFRAME, SM_CYSIZEFRAME, SWP_NOSIZE,
-    WINDOWPOS, WM_NCHITTEST, WM_WINDOWPOSCHANGING,
+    WINDOWPOS, WM_NCDESTROY, WM_NCHITTEST, WM_WINDOWPOSCHANGING,
 };
 
 /// The subclass id (one per window).
@@ -168,12 +168,17 @@ unsafe extern "system" fn resize_proc(
             return code as LRESULT;
         }
     }
+    if msg == WM_NCDESTROY {
+        // SAFETY: removes this subclass before the window goes, as comctl32 asks.
+        unsafe { RemoveWindowSubclass(hwnd, Some(resize_proc), RESIZE_ID) };
+    }
     if msg == WM_WINDOWPOSCHANGING {
         // SAFETY: for this message `lparam` points at the WINDOWPOS the system is about to apply.
         let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
         if pos.flags & SWP_NOSIZE == 0
             // SAFETY: reads the state of a window of this process.
             && unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 }
+            && !covers_monitor(hwnd, pos)
         {
             let min = min_track(hwnd as isize);
             let (cx, cy) = clamp_size(pos.cx, pos.cy, min);
@@ -183,6 +188,26 @@ unsafe extern "system" fn resize_proc(
     }
     // SAFETY: the next procedure in the chain, with the arguments this one was given.
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// True when the incoming position is exactly the monitor's rectangle (borderless full screen),
+/// which must not be pushed past the monitor by the minimum.
+fn covers_monitor(hwnd: HWND, pos: &WINDOWPOS) -> bool {
+    // SAFETY: reads the monitor of a window of this process into locals.
+    unsafe {
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if mon.is_null() || GetMonitorInfoW(mon, &mut mi) == 0 {
+            return false;
+        }
+        is_rect(pos.x, pos.y, pos.cx, pos.cy, mi.rcMonitor)
+    }
+}
+
+/// True when the position and size are exactly the rectangle.
+pub fn is_rect(x: i32, y: i32, cx: i32, cy: i32, r: RECT) -> bool {
+    x == r.left && y == r.top && x + cx == r.right && y + cy == r.bottom
 }
 
 /// A window size held to the minimum: Windows applies `ptMinTrackSize` to a drag only, so a
@@ -383,9 +408,19 @@ mod tests {
     }
 
     fn hidden_window() -> HWND {
-        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-        // SAFETY: makes a hidden, never shown popup window on this thread.
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DefWindowProcW, RegisterClassW, WNDCLASSW,
+        };
+        // A plain class whose procedure is `DefWindowProc` (the STATIC class answers HTTRANSPARENT to a
+        // hit test, which would hide what winit's window does: answer HTCLIENT).
+        let class: Vec<u16> = "FlareResizeTest\0".encode_utf16().collect();
+        // SAFETY: registers a class of this process (a repeat registration fails harmlessly) and makes
+        // a hidden, never shown popup window on this thread.
         unsafe {
+            let mut wc: WNDCLASSW = std::mem::zeroed();
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.lpszClassName = class.as_ptr();
+            RegisterClassW(&wc);
             CreateWindowExW(
                 0,
                 class.as_ptr(),
@@ -402,17 +437,52 @@ mod tests {
             )
         }
     }
-
     fn nchittest(h: HWND, x: i32, y: i32) -> u32 {
         let lp = ((y as u16 as isize) << 16) | (x as u16 as isize);
         // SAFETY: sends to a window of this thread.
         unsafe { SendMessageW(h, WM_NCHITTEST, 0, lp) as u32 }
     }
 
+    /// What winit does: the whole window is client area, so there is no non-client border.
+    unsafe extern "system" fn winit_like(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCCALCSIZE;
+        if msg == WM_NCCALCSIZE && wparam != 0 {
+            return 0;
+        }
+        // SAFETY: the next procedure in the chain.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
     #[test]
     fn the_subclass_on_a_real_window_answers_ht_codes_at_the_edges_and_corners() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HTCLIENT, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
         let h = hidden_window();
         assert!(!h.is_null());
+        // SAFETY: subclasses the window made above, then recalculates its frame, from its own thread.
+        unsafe {
+            SetWindowSubclass(h, Some(winit_like), 0x4E43_4353, 0);
+            SetWindowPos(
+                h,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+        }
+        // Without the fix this window answers the client everywhere, as winit's does.
+        assert_eq!(nchittest(h, 100, 350), HTCLIENT, "before install");
+        assert_eq!(nchittest(h, 100, 100), HTCLIENT, "before install");
         assert!(install(h as isize));
         // Installing twice is one subclass.
         assert!(install(h as isize));
@@ -436,10 +506,33 @@ mod tests {
             ![HTLEFT, HTRIGHT, HTTOP, HTBOTTOM].contains(&inside),
             "{inside}"
         );
-        let just_in = nchittest(h, l + b.x, mid_y);
-        assert_ne!(just_in, HTLEFT);
+        // The band is exactly b.x wide: its last pixel is the edge, the next is the client.
+        assert_eq!(nchittest(h, l + b.x - 1, mid_y), HTLEFT);
+        assert_eq!(nchittest(h, l + b.x, mid_y), HTCLIENT);
+        assert_eq!(nchittest(h, r - b.x, mid_y), HTRIGHT);
+        assert_eq!(nchittest(h, r - b.x - 1, mid_y), HTCLIENT);
+        assert_eq!(nchittest(h, mid_x, t + b.y - 1), HTTOP);
+        assert_eq!(nchittest(h, mid_x, t + b.y), HTCLIENT);
+        // A corner reaches twice the band along the edge.
+        assert_eq!(nchittest(h, l + 2 * b.x - 1, t), HTTOPLEFT);
+        assert_eq!(nchittest(h, l + 2 * b.x, t), HTTOP);
+        assert_eq!(nchittest(h, l, t + 2 * b.y - 1), HTTOPLEFT);
+        assert_eq!(nchittest(h, l, t + 2 * b.y), HTLEFT);
         // SAFETY: destroys the window made above.
         unsafe { DestroyWindow(h) };
+    }
+
+    #[test]
+    fn a_full_screen_position_is_recognised() {
+        let mon = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1080,
+        };
+        assert!(is_rect(-1920, 0, 1920, 1080, mon));
+        assert!(!is_rect(-1920, 0, 1920, 1000, mon));
+        assert!(!is_rect(-1900, 0, 1920, 1080, mon));
     }
 
     #[test]
