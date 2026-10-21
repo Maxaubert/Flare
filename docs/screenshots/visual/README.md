@@ -245,3 +245,10 @@ over a painted window. It is not in the window. Two faults of the copier, both f
 - The theme preview's text sat 1.3 to 1.8 css px under PT's baselines; line 2's baseline is now at 473.0 on both at
   100 percent (472.3 at 300 percent).
 - FLARE_VISUAL_CELLS=300-gpu runs the 300 percent cell (opt-in; ll keeps the three PT also has).
+- See-through 40 (audit re-check): Flare GPU's ground read (14,14,14, alpha 153) against PT's (23,23,23, alpha 153)
+  because Slint's snapshot is premultiplied and the PNG says straight. The window itself was right (the grid is
+  un-premultiplied once, in `straight.wgsl`); only the picture was wrong. `slint_snapshot` now un-premultiplies, and the
+  three GPU cells' frame 14 were re-taken: the ground is (23,23,23, alpha 153) at 100, 150 and 225 percent, as PT's.
+  Software stays solid (23,23,23, alpha 255): the recorded Q1 difference, not a bug. PT's frame 14 shows the Settings
+  gear in its hover state (the pointer was left there after the slider); that is capture residue in the PT picture and
+  was not re-taken.

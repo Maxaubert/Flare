@@ -641,11 +641,30 @@ fn print_window_snapshot(hwnd: isize) -> Result<Snap, String> {
 /// Slint's own snapshot of the window.
 fn slint_snapshot(window: &slint::Window) -> Result<Snap, String> {
     let buf = window.take_snapshot().map_err(|e| e.to_string())?;
+    let mut rgba = buf.as_bytes().to_vec();
+    // The window's pixels come back premultiplied (a see-through ground at alpha 153 holds 23 * 153 / 255 =
+    // 14), but `Snap` and the PNG are straight RGBA: convert, or the sheet shows the glass twice as dark.
+    unpremultiply(&mut rgba);
     Ok(Snap {
         w: buf.width(),
         h: buf.height(),
-        rgba: buf.as_bytes().to_vec(),
+        rgba,
     })
+}
+
+/// Premultiplied RGBA8 to straight, in place. Alpha 0 becomes clear black; alpha 255 is untouched.
+pub fn unpremultiply(rgba: &mut [u8]) {
+    for p in rgba.as_chunks_mut::<4>().0 {
+        match p[3] {
+            255 => {}
+            0 => *p = [0; 4],
+            a => {
+                for c in &mut p[..3] {
+                    *c = (u32::from(*c) * 255 / u32::from(a)).min(255) as u8;
+                }
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -2396,6 +2415,22 @@ mod frame_tests {
 
     fn at(base: Instant, ms: u64) -> Instant {
         base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_see_through_snapshot_is_written_as_straight_alpha() {
+        // Slint hands back the window's pixels premultiplied (what the window shows over the desktop). The
+        // PNG says straight RGBA, so a ground of (23,23,23) at alpha 153 must read (23,23,23,153), not (14,14,14,153).
+        let mut px = vec![14, 14, 14, 153, 5, 6, 7, 0, 10, 20, 30, 255, 100, 0, 0, 128];
+        unpremultiply(&mut px);
+        assert_eq!(&px[0..4], &[23, 23, 23, 153]);
+        assert_eq!(&px[4..8], &[0, 0, 0, 0], "a clear pixel stays clear");
+        assert_eq!(
+            &px[8..12],
+            &[10, 20, 30, 255],
+            "an opaque pixel is untouched"
+        );
+        assert_eq!(&px[12..16], &[199, 0, 0, 128]);
     }
 
     #[test]
