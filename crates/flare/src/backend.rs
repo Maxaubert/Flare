@@ -14,16 +14,20 @@ pub fn gpu_forced_to_fail(v: Option<&str>) -> bool {
 }
 
 /// Selects Slint's backend. A failed GPU start falls back to software and says why.
-pub fn select_backend(choice: RendererChoice) -> Result<BackendOutcome, slint::PlatformError> {
+/// `e2e` makes the OS window start inactive and off the taskbar (`--e2e`).
+pub fn select_backend(
+    choice: RendererChoice,
+    e2e: bool,
+) -> Result<BackendOutcome, slint::PlatformError> {
     match choice {
         RendererChoice::Software => {
-            select_software()?;
+            select_software(e2e)?;
             Ok(BackendOutcome {
                 effective: RendererChoice::Software,
                 fallback_reason: None,
             })
         }
-        RendererChoice::Gpu => match try_gpu() {
+        RendererChoice::Gpu => match try_gpu(e2e) {
             Ok(()) => Ok(BackendOutcome {
                 effective: RendererChoice::Gpu,
                 fallback_reason: None,
@@ -31,7 +35,7 @@ pub fn select_backend(choice: RendererChoice) -> Result<BackendOutcome, slint::P
             Err(e) => {
                 let reason = e.to_string();
                 log::warn!("GPU renderer unavailable: {reason}; using software");
-                select_software()?;
+                select_software(e2e)?;
                 Ok(BackendOutcome {
                     effective: RendererChoice::Software,
                     fallback_reason: Some(reason),
@@ -43,13 +47,13 @@ pub fn select_backend(choice: RendererChoice) -> Result<BackendOutcome, slint::P
 
 /// Slint's femtovg renderer on wgpu 30, with the device's limits raised to wgpu's defaults
 /// (8192 px textures, so a 4K window at 225% fits).
-fn try_gpu() -> Result<(), slint::PlatformError> {
+fn try_gpu(e2e: bool) -> Result<(), slint::PlatformError> {
     if gpu_forced_to_fail(std::env::var("FLARE_FORCE_GPU_FAIL").ok().as_deref()) {
         return Err(slint::PlatformError::Other(
             "forced by FLARE_FORCE_GPU_FAIL".into(),
         ));
     }
-    slint::BackendSelector::new()
+    with_e2e_attributes(slint::BackendSelector::new(), e2e)
         .backend_name("winit".into())
         .renderer_name("femtovg-wgpu".into())
         .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(gpu_settings()))
@@ -64,9 +68,22 @@ fn gpu_settings() -> slint::wgpu_30::WGPUSettings {
     settings
 }
 
+/// Under `--e2e` the OS window is created inactive and off the taskbar, so a test run never takes
+/// the foreground. The winit backend creates the window at `show()`, so no handle exists earlier
+/// and the attributes hook is the only place to ask.
+fn with_e2e_attributes(selector: slint::BackendSelector, e2e: bool) -> slint::BackendSelector {
+    if !e2e {
+        return selector;
+    }
+    selector.with_winit_window_attributes_hook(|attributes| {
+        use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
+        attributes.with_active(false).with_skip_taskbar(true)
+    })
+}
+
 /// Slint's software renderer. Must not be combined with `require_wgpu_30`.
-fn select_software() -> Result<(), slint::PlatformError> {
-    slint::BackendSelector::new()
+fn select_software(e2e: bool) -> Result<(), slint::PlatformError> {
+    with_e2e_attributes(slint::BackendSelector::new(), e2e)
         .backend_name("winit".into())
         .renderer_name("software".into())
         .select()

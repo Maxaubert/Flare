@@ -1,17 +1,13 @@
 //! The live tab: a shell served by flare-term, drawn through the GridHost's `GridSource` seam.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_render::grid::Grid;
 use flare_render::metrics::CellMetrics;
-use flare_term::handle::{StartOptions, TermHandle};
-use flare_term::pty::PortableSpawner;
-use flare_term::session::{RealShells, SessionManager, SessionOptions};
-use slint::ComponentHandle;
+use flare_term::handle::TermHandle;
+use flare_term::session::SessionManager;
 
-use crate::AppWindow;
 use crate::host::GridSource;
 
 /// The title bar's height in logical pixels (theme.slint `bar-height`).
@@ -46,42 +42,6 @@ impl GridSource for LiveSource {
 pub struct Live {
     pub mgr: Arc<SessionManager>,
     pub handle: Arc<TermHandle>,
-}
-
-/// Starts the default shell in the user's profile folder. The waker is coalesced: at most one
-/// closure is queued on the event loop, however fast the output arrives.
-pub fn start_live(weak: slint::Weak<AppWindow>) -> Live {
-    let mgr = SessionManager::new(
-        Arc::new(PortableSpawner),
-        Arc::new(RealShells),
-        SessionOptions::default(),
-    );
-    let handle = TermHandle::new("tab-1", Arc::clone(&mgr), 80, 24);
-    let pending = Arc::new(AtomicBool::new(false));
-    handle.set_waker(Arc::new(move || {
-        if !pending.swap(true, Ordering::SeqCst) {
-            let flag = Arc::clone(&pending);
-            let weak = weak.clone();
-            let queued = slint::invoke_from_event_loop(move || {
-                flag.store(false, Ordering::SeqCst);
-                if let Some(app) = weak.upgrade() {
-                    app.window().request_redraw();
-                }
-            });
-            if queued.is_err() {
-                // The event loop is gone (quitting): nothing needs a redraw any more.
-                log::debug!("waker: event loop closed");
-            }
-        }
-    }));
-    let root = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string());
-    handle.start(StartOptions {
-        root,
-        shell_id: None,
-        resume: None,
-        plugin: None,
-    });
-    Live { mgr, handle }
 }
 
 /// Kills every shell and waits (3 s cap) until each is gone. Safe to call twice.
@@ -141,6 +101,8 @@ mod tests {
     use flare_render::glyph::{FakeGlyphs, GlyphSource};
     use flare_render::metrics::cell_metrics;
     use flare_term::fake::{FakeShells, FakeSpawner};
+    use flare_term::handle::StartOptions;
+    use flare_term::session::SessionOptions;
 
     fn fake_handle() -> (Arc<SessionManager>, Arc<TermHandle>, Arc<FakeSpawner>) {
         let sp = FakeSpawner::new();

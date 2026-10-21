@@ -143,180 +143,180 @@ How to read it:
 
 ### Tab model and strip
 
-- [ ] A tab is one shell plus its folder; two tabs may share a folder; a folder may be opened again as a new tab (src/renderer/src/lib/tabs.ts addTab; tabs.test).
-- [ ] A new tab is appended and becomes active (tabs.ts addTab).
-- [ ] Closing the active tab focuses the right neighbour, else the left, else nothing; closing a background tab keeps the active one (tabs.ts closeTab; tabs.test).
-- [ ] Ctrl+Tab / Ctrl+Shift+Tab step next and previous with wrap (tabs.ts stepTab; tabs.test; App.tsx 'next-tab').
-- [ ] Ctrl+1 to Ctrl+9 select tab 1 to 9; a number past the last does nothing and the key is not taken (keymap.ts 'jump-tab').
-- [ ] Reorder by dragging the tab with the pointer, not HTML5 drag; a press must travel 4 px (DRAG_SLOP) before it is a drag, below that it is a click (src/renderer/src/lib/chromeLayout.ts; components/useTabReorder.ts).
-- [ ] The carried tab is clamped to its row or column; neighbours slide 170 ms (CARRY_SLIDE); box geometry is frozen when the drag starts (useTabReorder.ts).
-- [ ] The drop slot follows the carried tab's leading edge so first place is reachable even when the carried tab is wider (lib/tabDrop.ts dropSlot; tabDrop.test #125).
-- [ ] reorderTabs corrects the index for the removed slot on a move right; a drop past the end appends (tabs.ts reorderTabs; tabs.test).
-- [ ] Keyboard focus held before a drag is given back on the next frame after it ends (useTabReorder.ts endDrag).
-- [ ] Middle-click closes a tab via auxclick button 1, not mousedown (components/tabList.ts auxClose).
-- [ ] Right-click on a tab: "Close tab" (hint = close chord) and, for a folder tab only, "Copy folder path" (components/tabMenus.tsx useTabMenus).
-- [ ] A tab's tooltip is the whole folder path; while Failed applies it adds "Failed: <kind>" (tabList.ts tabTitle).
-- [ ] Tab label is the last path segment; two different folders sharing a name both get " - <parent>"; two tabs in the same folder keep the plain name; comparison ignores case, slash direction, trailing separators; a drive root is labelled by its letter (tabs.ts tabLabels, folderKey; tabs.test).
-- [ ] Settings tab is labelled "Settings" (tabs.ts tabLabels).
-- [ ] Tab name is centred; the name button has a minimum of 4 characters (components/TabStrip.tsx min-w-[4ch]).
-- [ ] Tab width is fixed: flex basis 150 px, floor 84 px; all tabs one width, shrinking equally; no Dynamic/Fixed setting (TabStrip.tsx; stripPlan.ts TAB_FLOOR; two-apps.md EVERY TAB IS ONE WIDTH; e2e tabWidth).
-- [ ] Overflow in three steps (lib/stripPlan.ts planStrip), only when room is short: step 0 all named if n x 84 fits; step 1 resting tabs become 40 px icons (ICON_TAB); step 2 tabs that need you become icons, newest first; step 3 resting tabs move to the +N list newest first, then tabs that need you. The front tab is never an icon or hidden; order never changes. +N button is 72 px (MORE_BUTTON). Room = strip width - 4 - plus width - 4 (stripPlan.test; e2e manyTabs).
-- [ ] Icon tab: 40 px, 18 px agent icon, agent-state mark at the corner, name as aria-label and tooltip, closes by menu, middle-click or Ctrl+W (TabStrip.tsx).
-- [ ] +N button reads "+N", aria-label and title "N more tabs", shows up to four dots in the needing tabs' mark colours, click toggles the list (TabStrip.tsx data-tab-more).
-- [ ] +N list has a "Find a tab" input; tabs needing you first; Enter picks the first kept row; Escape closes; Ctrl+Shift+K opens it with every tab listed (components/TabOverflowList.tsx; TabStrip.tsx).
-- [ ] Front tab carries a 2 px accent rule on its top edge and brighter name ink (TabStrip.tsx "The active mark").
-- [ ] Every tab, the last too, has a faint 1 px divider on its right edge over full strip height; no line between tabs otherwise (TabStrip.tsx data-tab-sep; e2e tabLooks, edges).
-- [ ] Close X: 10 px glyph in a 16 px box on the strip, 18 px in the sidebar; visible on the front tab and on hover, right of the ring; the ring stays on hover and the X slides in over a 150 ms width transition (components/tabParts.tsx TabClose, TabEnd).
-- [ ] Tab icon: agent icon at the left, cog for Settings, 18 px, no box (tabParts.tsx TabIcon, TAB_ICON).
-- [ ] A folder dropped from Explorer onto the tab row opens a new tab even if another tab shows it; a file opens the folder that holds it (tabList.ts folderDrop; regression-rules).
-- [ ] A shell's folder change (OSC 9;9) updates tab cwd and label; an identical report returns the same state and saves nothing (tabs.ts setCwd; tabs.test).
-- [ ] A shell that exits closes its tab without asking (App.tsx onTermExit; e2e exitClosesTab).
-- [ ] Every tab shows its agent state through the shared tab-look rule: working outranks question outranks failed outranks done (components/tabLooks.ts resolveTabMark; colours belong to M6).
-- [ ] Zero tabs: strip and sidebar draw nothing; the start screen carries the + path (TabStrip.tsx, TabSidebar.tsx).
-- [ ] DECISION: roadmap M3 lists "rename"; Prism Terminal v0.55.6 has no rename (a tab name is always its folder name). Add as a new feature (record in docs/features) or drop from M3.
-- [ ] Tabs are not imported from Prism Terminal; a fresh Flare starts with its own tabs.json (design spec Migration).
+- [x] A tab is one shell plus its folder; two tabs may share a folder; a folder may be opened again as a new tab (src/renderer/src/lib/tabs.ts addTab; tabs.test). (M3: allows_two_tabs_in_the_same_folder, adds_at_the_end_and_activates)
+- [x] A new tab is appended and becomes active (tabs.ts addTab). (M3: adds_at_the_end_and_activates)
+- [x] Closing the active tab focuses the right neighbour, else the left, else nothing; closing a background tab keeps the active one (tabs.ts closeTab; tabs.test). (M3: closing_the_active_tab_hands_over_right_then_left, closing_a_background_tab_keeps_the_active_one, closing_the_last_tab_leaves_nothing_active)
+- [x] Ctrl+Tab / Ctrl+Shift+Tab step next and previous with wrap (tabs.ts stepTab; tabs.test; App.tsx 'next-tab'). (M3: steps_with_wrap, ctrl_tab_in_order_wraps)
+- [x] Ctrl+1 to Ctrl+9 select tab 1 to 9; a number past the last does nothing and the key is not taken (keymap.ts 'jump-tab'). (M3: jump_tab_takes_1_to_9_only_without_shift, jump_takes_one_to_nine_and_a_number_past_the_last_is_not_taken)
+- [x] Reorder by dragging the tab with the pointer, not HTML5 drag; a press must travel 4 px (DRAG_SLOP) before it is a drag, below that it is a click (src/renderer/src/lib/chromeLayout.ts; components/useTabReorder.ts). (M3: the_slop_is_four_pixels_exactly, dragging_the_first_tab_moves_it_and_not_the_window)
+- [x] The carried tab is clamped to its row or column; neighbours slide 170 ms (CARRY_SLIDE); box geometry is frozen when the drag starts (useTabReorder.ts). (M3: the_carried_tab_is_clamped_to_its_row, neighbours_slide_to_open_the_gap, a_carried_tab_follows_the_pointer_and_neighbours_slide)
+- [x] The drop slot follows the carried tab's leading edge so first place is reachable even when the carried tab is wider (lib/tabDrop.ts dropSlot; tabDrop.test #125). (M3: reaches_first_place_when_the_carried_tab_is_wider, the_drop_slot_is_the_leading_edge)
+- [x] reorderTabs corrects the index for the removed slot on a move right; a drop past the end appends (tabs.ts reorderTabs; tabs.test). (M3: reorders_correcting_for_the_removed_slot)
+- [ ] Keyboard focus held before a drag is given back on the next frame after it ends (useTabReorder.ts endDrag). (M3: the drag state is tested; the hand-back of keyboard focus after a drag has no test by name yet)
+- [x] Middle-click closes a tab via auxclick button 1, not mousedown (components/tabList.ts auxClose). (M3: middle_click_closes_and_right_click_opens_the_tab_menu, middle_click_closes_right_click_menus)
+- [x] Right-click on a tab: "Close tab" (hint = close chord) and, for a folder tab only, "Copy folder path" (components/tabMenus.tsx useTabMenus). (M3: the_tab_menu_offers_close_and_copy_path_for_a_folder_tab_only)
+- [ ] A tab's tooltip is the whole folder path; while Failed applies it adds "Failed: <kind>" (tabList.ts tabTitle). (M3: path tooltip tested by centres_the_tip_under_the_item and a_tip_waits_a_second_and_is_centred_under_the_tab; deferred to M6: the "Failed:" line)
+- [x] Tab label is the last path segment; two different folders sharing a name both get " - <parent>"; two tabs in the same folder keep the plain name; comparison ignores case, slash direction, trailing separators; a drive root is labelled by its letter (tabs.ts tabLabels, folderKey; tabs.test). (M3: base_and_parent_names, same_names_are_told_apart_by_the_parent, a_drive_root_is_labelled_by_its_letter, one_folder_spelled_two_ways_is_not_a_clash)
+- [x] Settings tab is labelled "Settings" (tabs.ts tabLabels). (M3: settings_opens_once_and_is_reused)
+- [x] Tab name is centred; the name button has a minimum of 4 characters (components/TabStrip.tsx min-w-[4ch]). (M3: names_are_centred_and_elided, the_floor_is_84)
+- [x] Tab width is fixed: flex basis 150 px, floor 84 px; all tabs one width, shrinking equally; no Dynamic/Fixed setting (TabStrip.tsx; stripPlan.ts TAB_FLOOR; two-apps.md EVERY TAB IS ONE WIDTH; e2e tabWidth). (M3: wide_strip_gives_every_tab_150, the_floor_is_84, tabs_shrink_equally_when_the_room_is_short, every_tab_is_one_width_and_picking_moves_no_tab)
+- [x] Overflow in three steps (lib/stripPlan.ts planStrip), only when room is short: step 0 all named if n x 84 fits; step 1 resting tabs become 40 px icons (ICON_TAB); step 2 tabs that need you become icons, newest first; step 3 resting tabs move to the +N list newest first, then tabs that need you. The front tab is never an icon or hidden; order never changes. +N button is 72 px (MORE_BUTTON). Room = strip width - 4 - plus width - 4 (stripPlan.test; e2e manyTabs). (M3: names_every_tab_while_they_fit_at_the_floor, past_the_floor_resting_tabs_become_icons, needy_tabs_become_icons_newest_first_before_any_hides, then_resting_tabs_go_into_the_list_newest_first, the_front_tab_is_never_an_icon_or_hidden, sixteen_tabs_icons_plus_n_and_the_list)
+- [x] Icon tab: 40 px, 18 px agent icon, agent-state mark at the corner, name as aria-label and tooltip, closes by menu, middle-click or Ctrl+W (TabStrip.tsx). (M3: icon_tabs_are_forty_wide_and_have_no_x, icons_are_40_and_names_take_the_rest_up_to_150)
+- [x] +N button reads "+N", aria-label and title "N more tabs", shows up to four dots in the needing tabs' mark colours, click toggles the list (TabStrip.tsx data-tab-more). (M3: the_more_button_shows_the_count_and_up_to_four_dots, the_more_buttons_chevron_sits_beside_the_count_on_its_middle)
+- [x] +N list has a "Find a tab" input; tabs needing you first; Enter picks the first kept row; Escape closes; Ctrl+Shift+K opens it with every tab listed (components/TabOverflowList.tsx; TabStrip.tsx). (M3: the_overflow_rows_list_hidden_tabs_or_all_and_need_first, the_overflow_list_orders_needs_first_and_has_headings, enter_in_the_find_box_fronts_the_first_kept_and_clears, escape_closes_the_plus_n_list_from_its_field, sidebar_key_only_while_vertical_find_a_tab_in_both)
+- [x] Front tab carries a 2 px accent rule on its top edge and brighter name ink (TabStrip.tsx "The active mark"). (M3: the_active_tab_has_a_snapped_two_pixel_rule)
+- [x] Every tab, the last too, has a faint 1 px divider on its right edge over full strip height; no line between tabs otherwise (TabStrip.tsx data-tab-sep; e2e tabLooks, edges). (M3: every_tab_edge_is_a_whole_device_pixel_with_a_crisp_divider, a_faint_divider_at_every_right_edge_and_the_icons_are_18px)
+- [x] Close X: 10 px glyph in a 16 px box on the strip, 18 px in the sidebar; visible on the front tab and on hover, right of the ring; the ring stays on hover and the X slides in over a 150 ms width transition (components/tabParts.tsx TabClose, TabEnd). (M3: the_x_is_hidden_until_the_tab_is_active_or_hovered, a_press_on_the_x_closes_and_never_starts_a_carry, a_click_on_the_x_closes_and_never_starts_a_carry)
+- [ ] Tab icon: agent icon at the left, cog for Settings, 18 px, no box (tabParts.tsx TabIcon, TAB_ICON). (M3: the 18 px icon and the cog are drawn; deferred to M6: agent icons, D10)
+- [ ] A folder dropped from Explorer onto the tab row opens a new tab even if another tab shows it; a file opens the folder that holds it (tabList.ts folderDrop; regression-rules). (M3: the mark slot exists (mark-kind, mark-color); deferred to M6: the shared tab-look colours and rule, D10)
+- [x] A shell's folder change (OSC 9;9) updates tab cwd and label; an identical report returns the same state and saves nothing (tabs.ts setCwd; tabs.test). (M3: a_dropped_folder_on_the_tab_row_opens_a_tab_and_a_file_opens_its_folder)
+- [x] A shell that exits closes its tab without asking (App.tsx onTermExit; e2e exitClosesTab). (M3: set_cwd_relabels_and_reports_no_change, a_cwd_report_becomes_an_event)
+- [x] Every tab shows its agent state through the shared tab-look rule: working outranks question outranks failed outranks done (components/tabLooks.ts resolveTabMark; colours belong to M6). (M3: exit_ends_its_tab_and_ctrl_w_closes_the_front, exit_closes_the_tab_without_asking)
+- [x] Zero tabs: strip and sidebar draw nothing; the start screen carries the + path (TabStrip.tsx, TabSidebar.tsx). (M3: closing_the_last_tab_leaves_no_front, closing_the_last_tab_lands_on_the_start_screen, closing_the_last_tab_shows_the_start_screen_and_keeps_the_window)
+- [x] DECISION: roadmap M3 lists "rename"; Prism Terminal v0.55.6 has no rename (a tab name is always its folder name). Add as a new feature (record in docs/features) or drop from M3. (M3: DECISION answered by O20: Flare has no rename (Decisions, O20); not built)
+- [x] Tabs are not imported from Prism Terminal; a fresh Flare starts with its own tabs.json (design spec Migration). (M3: a_store_loads_an_empty_strip_without_a_file, parse_reads_foreign_files_as_empty)
 
 ### Vertical tabs (sidebar, #162)
 
-- [ ] Tab position setting: horizontal (default) or vertical; unknown reads horizontal and is never written back; label "Tab position", sub "Tabs along the top, or down the side."; own Flare key (lib/tabLayoutPrefs.ts; tabLayoutPrefs.test; settings/appOptions.ts).
-- [ ] Sidebar mode open (default) or collapsed; unknown reads open (lib/sidebarPrefs.ts validSidebarMode).
-- [ ] Sidebar width: initial 220 px, range 150 to 420, whole pixels, junk reads 220 (sidebarPrefs.ts SIDEBAR_WIDTH; sidebarPrefs.test).
-- [ ] Ctrl+Shift+B toggles open and collapsed, only while tabs are vertical; no collapse button (keymap.ts 'sidebar'; keymap.test; e2e verticalTabs).
-- [ ] With agent hotkeys on, Ctrl+S is a second sidebar key, vertical only (keymap.ts 'sidebar'.agent).
-- [ ] Row is 46 px tall; square icon band a shade darker than the card; name above a dim folder line (components/TabSidebar.tsx ROW_H, data-icon-band, data-tab-folder).
-- [ ] Folder line: parent folder of the tab's folder, home as "~", a drive root as the upper-case letter (lib/sidebarRows.ts folderLine; sidebarRows.test).
-- [ ] Find a tab in the sidebar: a row is kept when every word appears in label or folder, any order, any case; Enter fronts the first kept row, clears and blurs; Escape clears; filtering hides without reordering; reorder is refused while a query is typed (sidebarRows.ts findKeeps; TabSidebar.tsx refuse).
-- [ ] Collapsed: sidebar takes no room; slides over the terminal while the pointer is in the left zone (24 px, below the 36 px bar), stays while within 4 px of its right edge, opens after 60 ms, closes 100 ms after leaving (lib/revealZones.ts sideWants; hoverReveal.ts REVEAL; revealZones.test; hoverReveal.test).
-- [ ] The slide takes 240 ms (cubic-bezier .16,1,.3,1); the terminal is not resized during it and fits once at the end (+40 ms) (sidebarPrefs.ts setSidebarMode; e2e verticalTabs).
-- [ ] Pinning or unpinning slides sidebar and its room together (sidebarPrefs.ts sliding flag).
-- [ ] Resize grip on the sidebar's right edge (6 px target, 1 px line turning accent while dragged), clamped live to 150-420, stored on release, works while slid out (TabSidebar.tsx resize).
-- [ ] An open sidebar draws no edge of its own; the terminal draws the edge along the sidebar's side and into the bar (TabSidebar.tsx; e2e verticalTabs).
-- [ ] Sidebar New tab button at the foot: label "New tab", title "New tab (Ctrl+T). Right-click for recent folders"; left click instant new tab, right click opens the places menu (TabSidebar.tsx data-sidebar-new).
-- [ ] Vertical tabs: title-bar buttons sit in a bar beside the sidebar, the sidebar starts at the window top, only the terminal is below the bar (two-apps.md NO TITLE BAR OF ITS OWN; e2e titleBar, verticalTabs).
-- [ ] Sidebar ground is one OKLab step darker than the card, black kept (lib/sidebarGround.ts; sidebarGround.test).
-- [ ] fitHold: the terminal holds its size while the sidebar animates (core/renderer/lib/fitHold.ts; fitHold.test).
+- [x] Tab position setting: horizontal (default) or vertical; unknown reads horizontal and is never written back; label "Tab position", sub "Tabs along the top, or down the side."; own Flare key (lib/tabLayoutPrefs.ts; tabLayoutPrefs.test; settings/appOptions.ts). (M3: tab_layout_is_horizontal_until_chosen, tab_layout_reads_unknown_as_horizontal_and_never_stores_one (the settings row is M7))
+- [x] Sidebar mode open (default) or collapsed; unknown reads open (lib/sidebarPrefs.ts validSidebarMode). (M3: sidebar_mode_is_remembered, sidebar_unknown_mode_is_open)
+- [x] Sidebar width: initial 220 px, range 150 to 420, whole pixels, junk reads 220 (sidebarPrefs.ts SIDEBAR_WIDTH; sidebarPrefs.test). (M3: sidebar_is_open_at_220_until_chosen, sidebar_width_is_clamped_whole_and_junk_is_220)
+- [x] Ctrl+Shift+B toggles open and collapsed, only while tabs are vertical; no collapse button (keymap.ts 'sidebar'; keymap.test; e2e verticalTabs). (M3: vertical_tabs_show_a_sidebar_with_folders_find_and_a_collapse_key, sidebar_key_only_while_vertical_find_a_tab_in_both)
+- [x] With agent hotkeys on, Ctrl+S is a second sidebar key, vertical only (keymap.ts 'sidebar'.agent). (M3: agent_chords_are_next_tab_and_sidebar)
+- [x] Row is 46 px tall; square icon band a shade darker than the card; name above a dim folder line (components/TabSidebar.tsx ROW_H, data-icon-band, data-tab-folder). (M3: a_row_is_46_tall_8_in_from_the_edges_with_4_between, the_active_row_is_tinted_with_the_accent_and_the_icon_band_is_square)
+- [x] Folder line: parent folder of the tab's folder, home as "~", a drive root as the upper-case letter (lib/sidebarRows.ts folderLine; sidebarRows.test). (M3: folder_line_is_the_parent_with_home_as_tilde, folder_line_says_the_drive_at_a_root)
+- [x] Find a tab in the sidebar: a row is kept when every word appears in label or folder, any order, any case; Enter fronts the first kept row, clears and blurs; Escape clears; filtering hides without reordering; reorder is refused while a query is typed (sidebarRows.ts findKeeps; TabSidebar.tsx refuse). (M3: find_keeps_every_word_any_case_any_order, the_find_box_filters_and_reports, a_sidebar_drag_is_refused_while_the_find_query_is_typed)
+- [x] Collapsed: sidebar takes no room; slides over the terminal while the pointer is in the left zone (24 px, below the 36 px bar), stays while within 4 px of its right edge, opens after 60 ms, closes 100 ms after leaving (lib/revealZones.ts sideWants; hoverReveal.ts REVEAL; revealZones.test; hoverReveal.test). (M3: the_sidebar_comes_within_the_left_zone_below_its_top, opens_only_after_the_open_delay, the_sidebar_stays_on_itself_and_four_pixels_past, stays_through_a_short_slip_and_goes_after_the_grace)
+- [x] The slide takes 240 ms (cubic-bezier .16,1,.3,1); the terminal is not resized during it and fits once at the end (+40 ms) (sidebarPrefs.ts setSidebarMode; e2e verticalTabs). (M3: the_slide_holds_the_terminals_size_and_fits_once, toggle_flips_the_mode_and_slides, a_collapsed_sidebar_takes_no_room_and_slides_over_the_page)
+- [x] Pinning or unpinning slides sidebar and its room together (sidebarPrefs.ts sliding flag). (M3: pinning_and_unpinning_slide_and_hold_the_fit, pinning_animates_the_slot_when_sliding)
+- [x] Resize grip on the sidebar's right edge (6 px target, 1 px line turning accent while dragged), clamped live to 150-420, stored on release, works while slid out (TabSidebar.tsx resize). (M3: the_grip_drags_the_width_and_shows_its_line_only_on_hover, the_panel_width_is_what_it_is_told_and_snaps)
+- [x] An open sidebar draws no edge of its own; the terminal draws the edge along the sidebar's side and into the bar (TabSidebar.tsx; e2e verticalTabs). (M3: the_open_sidebar_cuts_the_terminals_corner_and_draws_its_edge)
+- [x] Sidebar New tab button at the foot: label "New tab", title "New tab (Ctrl+T). Right-click for recent folders"; left click instant new tab, right click opens the places menu (TabSidebar.tsx data-sidebar-new). (M3: the_new_tab_button_clicks_and_right_clicks)
+- [x] Vertical tabs: title-bar buttons sit in a bar beside the sidebar, the sidebar starts at the window top, only the terminal is below the bar (two-apps.md NO TITLE BAR OF ITS OWN; e2e titleBar, verticalTabs). (M3: vertical_layout_has_a_bar_beside_the_sidebar_and_no_strip)
+- [ ] Sidebar ground is one OKLab step darker than the card, black kept (lib/sidebarGround.ts; sidebarGround.test). (M3: Theme.secondary is used; deferred to M4: sidebarGround)
+- [x] fitHold: the terminal holds its size while the sidebar animates (core/renderer/lib/fitHold.ts; fitHold.test). (M3: a_second_hold_extends_the_first, fit_hold_runs_each_waiter_once_when_it_ends)
 
 ### New tab, places, recents
 
-- [ ] Ctrl+T opens a new tab (keymap.ts 'new-tab'; the match does not exclude Shift, so Ctrl+Shift+T also opens one).
-- [ ] Mode "folder" (default): opens in the chosen folder, else the user's folder, asking nothing (App.tsx newTab; lib/newTabPrefs.ts).
-- [ ] Mode "ask": a native folder picker parented to the main window; cancel opens nothing; defaultPath is the given folder if it exists (App.tsx newTab; src/main/index.ts dialog.pickFolder).
-- [ ] Settings "Folder for new tabs": segmented "Open in a folder" / "Ask where each time"; sub "Opens in your user folder." / "Opens in the folder you chose." / "Asks for a folder each time."; "Use my user folder" shows only when a folder is set; "Choose folder..." in folder mode (settings/TerminalPage.tsx; appOptions.ts newtab-mode).
-- [ ] Choice stored as mode plus folder; empty folder means the user's folder, resolved by the backend (newTabPrefs.ts; newTabPrefs.test).
-- [ ] Prewarm: in folder mode the next shell starts ahead of the click with the same shell kind and agent-hook setting (App.tsx prewarm; e2e newTabFolder).
-- [ ] Right-click on + (or sidebar New tab) opens the places menu: pinned folders in pin order, then the 5 newest unpinned recents (RECENT_SHOWN); none gives a disabled "No recent folders" (core/renderer/lib/recentRoots.ts plusMenuList; components/tabMenus.tsx).
-- [ ] Places rows show a folder glyph and label; same-name rows add "  ·  <parent>" (two spaces each side) (recentRoots.ts recentLabels; recentRoots.test).
-- [ ] Each row has a pin toggle: title "Unpin" or "Pin to this menu"; toggling keeps the menu open and re-reads so the pinned row moves up (tabMenus.tsx trailing).
-- [ ] History: at most 12 (CAP), newest first, case-insensitive dedupe, reuse moves to front; closing a tab does not forget; forgetting removes exactly that one; nonsense storage reads empty (recentRoots.ts; recentRoots.test).
-- [ ] Pins: toggle appends or removes, case-insensitive; a pinned folder is never also a recent row; a pin outlives history (recentRoots.pins.test).
-- [ ] Every folder a shell is spawned in is remembered; opening a place opens a tab and prewarms (App.tsx spawnSession, openRecent).
-- [ ] Recents and pins live in Flare's settings store (PT used localStorage prism.recentRoots, prism.pinnedRoots).
+- [x] Ctrl+T opens a new tab (keymap.ts 'new-tab'; the match does not exclude Shift, so Ctrl+Shift+T also opens one). (M3: ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open, ctrl_t_opens_a_tab_in_the_users_folder_without_asking)
+- [x] Mode "folder" (default): opens in the chosen folder, else the user's folder, asking nothing (App.tsx newTab; lib/newTabPrefs.ts). (M3: new_tab_defaults_to_folder_mode_and_the_users_folder, ctrl_t_opens_a_tab_in_the_users_folder_without_asking)
+- [x] Mode "ask": a native folder picker parented to the main window; cancel opens nothing; defaultPath is the given folder if it exists (App.tsx newTab; src/main/index.ts dialog.pickFolder). (M3: ask_mode_uses_the_picker_and_cancel_opens_nothing, pick_folder_with_a_seam_calls_done_at_once)
+- [ ] Settings "Folder for new tabs": segmented "Open in a folder" / "Ask where each time"; sub "Opens in your user folder." / "Opens in the folder you chose." / "Asks for a folder each time."; "Use my user folder" shows only when a folder is set; "Choose folder..." in folder mode (settings/TerminalPage.tsx; appOptions.ts newtab-mode). (M3: stored mode and folder keys and getters exist (tests); deferred to M7: the Settings rows)
+- [x] Choice stored as mode plus folder; empty folder means the user's folder, resolved by the backend (newTabPrefs.ts; newTabPrefs.test). (M3: new_tab_keeps_the_folder_across_ask, new_tab_clearing_the_folder_reads_the_users_own)
+- [x] Prewarm: in folder mode the next shell starts ahead of the click with the same shell kind and agent-hook setting (App.tsx prewarm; e2e newTabFolder). (M3: prewarm_starts_a_warm_shell_off_the_ui_thread)
+- [x] Right-click on + (or sidebar New tab) opens the places menu: pinned folders in pin order, then the 5 newest unpinned recents (RECENT_SHOWN); none gives a disabled "No recent folders" (core/renderer/lib/recentRoots.ts plusMenuList; components/tabMenus.tsx). (M3: the_plus_menu_is_pins_then_five_recents_or_a_disabled_note, the_plus_menu_is_pins_then_recents, place_rows_are_pins_then_recents_with_menu_labels)
+- [x] Places rows show a folder glyph and label; same-name rows add "  ·  <parent>" (two spaces each side) (recentRoots.ts recentLabels; recentRoots.test). (M3: labels_carry_the_parent_on_a_clash, labels_use_the_name_alone, whereabouts_shows_the_last_two_folders_above)
+- [x] Each row has a pin toggle: title "Unpin" or "Pin to this menu"; toggling keeps the menu open and re-reads so the pinned row moves up (tabMenus.tsx trailing). (M3: pinning_in_the_menu_moves_the_row_up_and_keeps_the_menu, pin_toggle)
+- [x] History: at most 12 (CAP), newest first, case-insensitive dedupe, reuse moves to front; closing a tab does not forget; forgetting removes exactly that one; nonsense storage reads empty (recentRoots.ts; recentRoots.test). (M3: with_root_caps_at_twelve_and_ignores_blank, with_root_dedupes_case_insensitively, with_root_puts_the_newest_first, nonsense_in_storage_is_no_history, the_stored_list_round_trips_and_forget_removes_one)
+- [x] Pins: toggle appends or removes, case-insensitive; a pinned folder is never also a recent row; a pin outlives history (recentRoots.pins.test). (M3: a_pin_outlives_history)
+- [x] Every folder a shell is spawned in is remembered; opening a place opens a tab and prewarms (App.tsx spawnSession, openRecent). (M3: spawn_starts_a_shell_in_the_folder_and_remembers_it)
+- [x] Recents and pins live in Flare's settings store (PT used localStorage prism.recentRoots, prism.pinnedRoots). (M3: the_stored_list_round_trips_and_forget_removes_one, saved_shell_id_is_none_until_chosen)
 
 ### Start screen
 
-- [ ] Shown with no tabs: after an empty restore and after the last tab closes; the window stays (components/EmptyState.tsx; e2e lastTab).
-- [ ] Layout: app mark 84 px in the accent, name 22 px semibold, nav rows 36 px with 16 px glyphs and 13 px text, then a footer (EmptyState.tsx).
-- [ ] Row "New terminal" with the new-tab chord hint; same code as the + button (EmptyState.tsx data-start-new).
-- [ ] Places divider then one row per place (pins first): folder glyph, name, last two parent folders (ellipsis if more), "Pinned" tag, full path tooltip; a click opens a shell there (EmptyState.tsx whereabouts).
-- [ ] Divider then "Settings" with the cog and hint Ctrl+, (data-start-settings).
-- [ ] Footer: "GitHub" link opened via the http(s)-only opener, and "Version <x>" at the right (data-start-version).
-- [ ] No greeting or explanation; it is not a first-run page (EmptyState.tsx).
+- [x] Shown with no tabs: after an empty restore and after the last tab closes; the window stays (components/EmptyState.tsx; e2e lastTab). (M3: closing_the_last_tab_lands_on_the_start_screen, closing_the_last_tab_shows_the_start_screen_and_keeps_the_window)
+- [x] Layout: app mark 84 px in the accent, name 22 px semibold, nav rows 36 px with 16 px glyphs and 13 px text, then a footer (EmptyState.tsx). (M3: the_mark_is_the_accent_at_84_px, the_rows_are_36_tall_and_340_wide_and_centred)
+- [x] Row "New terminal" with the new-tab chord hint; same code as the + button (EmptyState.tsx data-start-new). (M3: new_terminal_places_and_settings_report, new_terminal_from_the_start_screen_opens_one_tab_in_the_home_folder)
+- [x] Places divider then one row per place (pins first): folder glyph, name, last two parent folders (ellipsis if more), "Pinned" tag, full path tooltip; a click opens a shell there (EmptyState.tsx whereabouts). (M3: every_row_starts_at_the_left_with_its_glyph_centred_on_the_row, a_long_place_name_elides_and_never_pushes_pinned_out, only_pinned_places_say_pinned)
+- [x] Divider then "Settings" with the cog and hint Ctrl+, (data-start-settings). (M3: no_places_means_one_divider_before_settings, the_cog_and_ctrl_comma_toggle_settings)
+- [x] Footer: "GitHub" link opened via the http(s)-only opener, and "Version <x>" at the right (data-start-version). (M3: open_url_refuses_anything_but_http_and_https, the_start_screen_footer_says_version_in_words)
+- [ ] No greeting or explanation; it is not a first-run page (EmptyState.tsx). (M3: layout only; no test pins the absence of a greeting yet)
 
 ### Tab restore
 
-- [ ] tabs.json (profile) holds `{tabs:[{cwd, agent?}], active}`, written 400 ms after a tab-list report, atomically (temp then rename) (src/main/tabsStore.ts createTabsStore; atomicWrite).
-- [ ] Every close, quit, session-end and window close flushes the pending save synchronously (tabsStore.ts flush; tabsStore.test).
-- [ ] Reading keeps only entries with a non-empty cwd string; more than 50 is cut to the first 50 (MAX_TABS) (tabsStore.ts parseTabs).
-- [ ] An agent other than claude or codex is dropped, the tab returns as a plain shell (core/shared/types.ts RESUMABLE_AGENTS).
-- [ ] Active index kept only as an in-range integer, else 0 (tabsStore.test).
-- [ ] Unreadable, non-JSON or wrong-shape files read as an empty strip, no crash (tabsStore.test).
-- [ ] Loading inside the 400 ms window returns the pending state (tabsStore.ts load; tabsStore.test).
-- [ ] Tab reports are ignored until the first restore has answered (src/main/index.ts awaitingRestore).
-- [ ] planRestore: a missing folder is dropped silently; order kept; active index moves down for dropped earlier tabs; a dropped active tab makes the first survivor active; empty gives 0 (src/main/planRestore.ts; planRestore.test).
-- [ ] Claude resume: newest session of the folder; two claude tabs in a folder take newest and second newest in strip order; lookup keyed by lower-cased folder; no session means a plain shell, never `--continue` (planRestore.ts; planRestore.test).
-- [ ] A tab that hosted no agent never resumes (planRestore.test).
-- [ ] Codex resume uses the marker `codex:last` and runs `codex resume --last`; the shell still starts in the tab's folder (core/main/agentResume.ts CODEX_RESUME; planRestore.test).
-- [ ] Only interactive transcripts count: first 4096 bytes read; a queue-operation first line or an entrypoint other than cli is dropped (agentResume.ts HEAD_BYTES; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS).
-- [ ] The session lookup runs off the UI thread, 16 stats at a time, tabs settled as answers arrive (agentResume.ts; two-apps.md).
-- [ ] The resume command is the only thing written into a shell, as the startup command; the id is shape-checked; the id rides in `FLARE_RESUME_ID`, not the command line (regression-rules).
-- [ ] Peek at first frame: the saved strip is drawn as placeholders ('agent' with skeleton, 'shell' bare) before any check; settled in place by the answer (lib/restorePlan.ts peekState; restorePlan.test).
-- [ ] settleRestore: restored tabs take over placeholders in place; a gone folder removes its placeholder; a placeholder closed before the answer stays closed and spawns nothing; meanwhile-opened tabs are kept; handed-over folders come after (restorePlan.test).
-- [ ] Front tab after restore: a user-picked front that survives wins, else the restored front, else the last (restorePlan.ts).
-- [ ] Every restored shell is spawned at restore time, front or not (App.tsx restore).
-- [ ] Restore runs once per window (App.tsx restore guard).
-- [ ] A restoring agent tab shows a ring at its end in the close's place (TabStrip.tsx loadingIds; tabParts.tsx TabLoading).
-- [ ] Launch folders from argv join after the restored tabs and the last is in front (index.ts tabsRestore).
-- [ ] A saved folder on a gone drive may take seconds to answer; the check runs in parallel off the UI thread and the reply is not held (index.ts tabsRestore comment).
-- [ ] Hide and show within 400 ms restores the newest tab list (tabsStore.ts load).
+- [x] tabs.json (profile) holds `{tabs:[{cwd, agent?}], active}`, written 400 ms after a tab-list report, atomically (temp then rename) (src/main/tabsStore.ts createTabsStore; atomicWrite). (M3: store_writes_the_last_save_after_the_delay, store_flush_writes_at_once, the_file_shape_round_trips, write_atomic_replaces_and_leaves_no_temp)
+- [x] Every close, quit, session-end and window close flushes the pending save synchronously (tabsStore.ts flush; tabsStore.test). (M3: end_of_life_flushes_both_files_then_kills_and_waits, the_close_flushes_tabs_json_before_the_shells_are_killed, store_flush_writes_at_once)
+- [x] Reading keeps only entries with a non-empty cwd string; more than 50 is cut to the first 50 (MAX_TABS) (tabsStore.ts parseTabs). (M3: parse_caps_the_list_at_fifty, parse_keeps_only_well_shaped_tabs)
+- [x] An agent other than claude or codex is dropped, the tab returns as a plain shell (core/shared/types.ts RESUMABLE_AGENTS). (M3: is_resumable_says_yes_to_the_list_and_no_to_the_rest)
+- [x] Active index kept only as an in-range integer, else 0 (tabsStore.test). (M3: parse_keeps_the_active_index_only_when_it_names_a_tab)
+- [x] Unreadable, non-JSON or wrong-shape files read as an empty strip, no crash (tabsStore.test). (M3: parse_reads_foreign_files_as_empty, a_store_loads_an_empty_strip_without_a_file)
+- [x] Loading inside the 400 ms window returns the pending state (tabsStore.ts load; tabsStore.test). (M3: store_loads_the_pending_save)
+- [x] Tab reports are ignored until the first restore has answered (src/main/index.ts awaitingRestore). (M3: saved_if_restored_is_none_until_the_restore_answered, nothing_is_written_before_the_restore_answered)
+- [x] planRestore: a missing folder is dropped silently; order kept; active index moves down for dropped earlier tabs; a dropped active tab makes the first survivor active; empty gives 0 (src/main/planRestore.ts; planRestore.test). (M3: drops_a_gone_folder_and_keeps_the_active_tab_pointing_right, falls_back_to_the_first_tab_when_the_active_one_went, every_folder_gone_leaves_nothing)
+- [x] Claude resume: newest session of the folder; two claude tabs in a folder take newest and second newest in strip order; lookup keyed by lower-cased folder; no session means a plain shell, never `--continue` (planRestore.ts; planRestore.test). (M3: two_claude_tabs_in_one_folder_take_newest_and_second_newest, sessions_are_looked_up_by_the_tabs_own_folder)
+- [x] A tab that hosted no agent never resumes (planRestore.test). (M3: a_tab_without_an_agent_never_resumes)
+- [x] Codex resume uses the marker `codex:last` and runs `codex resume --last`; the shell still starts in the tab's folder (core/main/agentResume.ts CODEX_RESUME; planRestore.test). (M3: codex_gets_its_own_marker)
+- [ ] Only interactive transcripts count: first 4096 bytes read; a queue-operation first line or an entrypoint other than cli is dropped (agentResume.ts HEAD_BYTES; two-apps.md IT RESUMES ONLY YOUR OWN CONVERSATIONS). (M3: the SessionLookup hook and NoSessions ship; deferred to M6: the transcript reader, D10)
+- [ ] The session lookup runs off the UI thread, 16 stats at a time, tabs settled as answers arrive (agentResume.ts; two-apps.md). (M3: resolve_restore_stats_in_parallel_and_asks_only_for_claude_tabs_in_present_folders; deferred to M6: the 16-at-a-time transcript lookup)
+- [x] The resume command is the only thing written into a shell, as the startup command; the id is shape-checked; the id rides in `FLARE_RESUME_ID`, not the command line (regression-rules). (M3: a_resume_goes_through_start_options_only, a_resume_goes_through_start_options_only)
+- [x] Peek at first frame: the saved strip is drawn as placeholders ('agent' with skeleton, 'shell' bare) before any check; settled in place by the answer (lib/restorePlan.ts peekState; restorePlan.test). (M3: boot_draws_placeholders_and_settle_takes_over_in_place, peek_draws_every_saved_tab_as_a_placeholder, boot_draws_the_saved_strip_before_the_restore_answers)
+- [x] settleRestore: restored tabs take over placeholders in place; a gone folder removes its placeholder; a placeholder closed before the answer stays closed and spawns nothing; meanwhile-opened tabs are kept; handed-over folders come after (restorePlan.test). (M3: settle_takes_over_placeholders_in_place, a_placeholder_closed_before_the_answer_stays_closed, a_tab_opened_meanwhile_is_kept_and_its_front_wins)
+- [x] Front tab after restore: a user-picked front that survives wins, else the restored front, else the last (restorePlan.ts). (M3: a_tab_opened_meanwhile_is_kept_and_its_front_wins)
+- [x] Every restored shell is spawned at restore time, front or not (App.tsx restore). (M3: the_restore_spawns_every_shell_and_settles_in_place)
+- [ ] Restore runs once per window (App.tsx restore guard). (M3: restore runs once from AppCtl; no test is named for the once-per-window guard yet)
+- [x] A restoring agent tab shows a ring at its end in the close's place (TabStrip.tsx loadingIds; tabParts.tsx TabLoading). (M3: the_first_frame_has_the_tabs_and_the_ring_on_agent_tabs, a_placeholder_row_is_loading_only_for_an_agent)
+- [x] Launch folders from argv join after the restored tabs and the last is in front (index.ts tabsRestore). (M3: launch_folders_join_after_the_restored_tabs_and_the_last_is_in_front, a_handed_folder_comes_after_and_can_be_in_front)
+- [x] A saved folder on a gone drive may take seconds to answer; the check runs in parallel off the UI thread and the reply is not held (index.ts tabsRestore comment). (M3: resolve_restore_stats_in_parallel_and_asks_only_for_claude_tabs_in_present_folders)
+- [x] Hide and show within 400 ms restores the newest tab list (tabsStore.ts load). (M3: store_loads_the_pending_save)
 
 ### Single instance and command line
 
-- [ ] A second launch hands its folders to the running app and exits 0; the window is shown and raised; the folders become new tabs even if shown already (index.ts requestSingleInstanceLock; e2e handoff).
-- [ ] Every existing argv path is taken in the order typed, once each (case-insensitive), at most 32 (ARGV_MAX) (src/main/argv.ts pathsFromArgv; argv.test).
-- [ ] Switches starting with `--` are skipped (argv.test).
-- [ ] The app's own exe and, unpackaged, its entry script are skipped by identity, not position (argv.ts ownFiles; argv.test).
-- [ ] Relative paths resolve against the folder the command was typed in and are stored absolute (argv.ts; argv.test; regression-rules).
-- [ ] A drive root arriving as `C:"` becomes `C:\` (argv.ts unquoteArg; argv.test).
-- [ ] A missing path is ignored; folders and files accepted; a file becomes its folder once per folder (argv.ts foldersFromArgv; argv.test).
-- [ ] Before ready, a second launch's folders are queued; with no window one is created; queued folders are sent after the restore reply (index.ts second-instance, pendingFolders).
-- [ ] Raise: restore from minimised, show, brief always-on-top toggle, focus, restore the previous value (index.ts raise()).
-- [ ] Under the test flag the window is shown inactive, never raised, not focusable, not on the taskbar (index.ts reveal, createWindow).
-- [ ] Single-instance lock is Flare's own and never collides with Prism Terminal's.
+- [x] A second launch hands its folders to the running app and exits 0; the window is shown and raised; the folders become new tabs even if shown already (index.ts requestSingleInstanceLock; e2e handoff). (M3: a_second_launch_hands_its_folder_over_and_exits_zero, a_handoff_opens_new_tabs_and_raises)
+- [x] Every existing argv path is taken in the order typed, once each (case-insensitive), at most 32 (ARGV_MAX) (src/main/argv.ts pathsFromArgv; argv.test). (M3: takes_every_path_in_order, a_repeated_path_is_taken_once, at_most_32_paths_are_taken)
+- [x] Switches starting with `--` are skipped (argv.test). (M3: skips_switches)
+- [x] The app's own exe and, unpackaged, its entry script are skipped by identity, not position (argv.ts ownFiles; argv.test). (M3: skips_the_own_exe_by_identity_wherever_it_sits)
+- [x] Relative paths resolve against the folder the command was typed in and are stored absolute (argv.ts; argv.test; regression-rules). (M3: a_relative_path_is_resolved_against_the_typing_folder, a_relative_path_is_resolved_against_the_second_launchs_folder)
+- [x] A drive root arriving as `C:"` becomes `C:\` (argv.ts unquoteArg; argv.test). (M3: a_drive_root_with_the_escaped_quote_is_the_root)
+- [x] A missing path is ignored; folders and files accepted; a file becomes its folder once per folder (argv.ts foldersFromArgv; argv.test). (M3: ignores_what_does_not_exist, a_file_means_its_folder_once)
+- [x] Before ready, a second launch's folders are queued; with no window one is created; queued folders are sent after the restore reply (index.ts second-instance, pendingFolders). (M3: folders_before_the_restore_are_queued_and_sent_after_the_reply, a_handoff_before_the_restore_is_queued)
+- [x] Raise: restore from minimised, show, brief always-on-top toggle, focus, restore the previous value (index.ts raise()). (M3: raise_is_restore_show_topmost_focus_untopmost_and_inactive_under_e2e)
+- [x] Under the test flag the window is shown inactive, never raised, not focusable, not on the taskbar (index.ts reveal, createWindow). (M3: e2e_style_is_no_activate_tool_window_and_not_app_window)
+- [x] Single-instance lock is Flare's own and never collides with Prism Terminal's. (M3: the_lock_names_carry_no_prism_name, names_differ_per_profile_and_ignore_case_and_slash_direction)
 
 ### Close flow
 
-- [ ] Every route out ends at one close handler: title-bar X, Alt+F4, taskbar, a quit (index.ts win.on('close'); src/main/closeFlow.ts).
-- [ ] Closing the window quits; window-all-closed quits; closing the last tab does not (regression-rules; e2e lastTab, quitManyShells).
-- [ ] One close rule, not a setting: a plain shell closes unasked; a tab hosting an agent asks, working or idle (core/renderer/lib/agentClose.ts asksBeforeClosingTab; agentClose.test).
-- [ ] The window close is held only while an agent is working (agentClose.ts holdsWindowClose; agentClose.test).
-- [ ] Titles: "Close the tab and end the agent?", "Stop the agent and close?", "Stop the agent and close the window?", "Stop the agent and install the update?" (agentClose.ts closeQuestionTitle).
-- [ ] Bodies: idle "<Agent> is running in <tab>. Closing the tab kills the shell, and the session with it."; working "<Agent> has been working for <duration> in <tab>" plus ", and N other tab(s) is/are working too" and ". Closing kills the shell, and the answer with it."; install "Installing restarts the app, which kills the shell, and the answer with it." (App.tsx Dialog body).
-- [ ] Agent names Claude, Codex, "The agent"; working time is the longest-running agent's (agentClose.ts AGENT_NAMES; agentClose.test).
-- [ ] Buttons: "Cancel" and a primary "Close tab", "Close window" or "Install and restart" (App.tsx choices).
-- [ ] Window close with an agent working: veto, raise, ask; go-ahead closes; Cancel leaves open (index.ts; App.tsx onCloseRequest).
-- [ ] A quit interrupted by the veto is finished by the go-ahead; after Cancel a later close is ordinary (closeFlow.test).
-- [ ] An install answered in advance goes straight through once (closeFlow.test).
-- [ ] One question at a time: while a question or update window is up, tab chords swallow the key except close-tab (keymap.ts underModal; regression-rules ONE QUESTION AT A TIME).
-- [ ] Closing a tab kills its shell, disposes the session, forgets its state; Settings has no shell (App.tsx closeNow).
-- [ ] On close every shell is killed and the app waits for all to be gone, 3 s cap, on the child's exit code, not the exit event; ten live shells quit three times with code 0 (index.ts will-quit, shellsGone; e2e quitManyShells).
-- [ ] Windows shutdown or log-off flushes tabs.json and the diag log synchronously (index.ts session-end).
-- [ ] Ctrl+W closes a tab (match also takes Ctrl+Shift+W). DECISION: PT's label says Ctrl+Shift+W; Flare label should read Ctrl+W, matching the stated rule (keymap.ts 'close-tab').
+- [x] Every route out ends at one close handler: title-bar X, Alt+F4, taskbar, a quit (index.ts win.on('close'); src/main/closeFlow.ts). (M3: end_of_life_flushes_both_files_then_kills_and_waits, window_geometry_is_saved_after_the_delay_and_on_close)
+- [x] Closing the window quits; window-all-closed quits; closing the last tab does not (regression-rules; e2e lastTab, quitManyShells). (M3: closing_the_last_tab_lands_on_the_start_screen, closing_the_last_tab_shows_the_start_screen_and_keeps_the_window)
+- [x] One close rule, not a setting: a plain shell closes unasked; a tab hosting an agent asks, working or idle (core/renderer/lib/agentClose.ts asksBeforeClosingTab; agentClose.test). (M3: a_plain_shell_closes_unasked_an_agent_asks)
+- [x] The window close is held only while an agent is working (agentClose.ts holdsWindowClose; agentClose.test). (M3: the_window_is_held_only_while_an_agent_works, the_window_close_is_held_only_while_an_agent_works)
+- [x] Titles: "Close the tab and end the agent?", "Stop the agent and close?", "Stop the agent and close the window?", "Stop the agent and install the update?" (agentClose.ts closeQuestionTitle). (M3: titles_say_what_they_interrupt)
+- [x] Bodies: idle "<Agent> is running in <tab>. Closing the tab kills the shell, and the session with it."; working "<Agent> has been working for <duration> in <tab>" plus ", and N other tab(s) is/are working too" and ". Closing kills the shell, and the answer with it."; install "Installing restarts the app, which kills the shell, and the answer with it." (App.tsx Dialog body). (M3: bodies_name_the_work, agent_names)
+- [x] Agent names Claude, Codex, "The agent"; working time is the longest-running agent's (agentClose.ts AGENT_NAMES; agentClose.test). (M3: agent_names, the_window_ask_names_the_longest_and_counts_the_others)
+- [x] Buttons: "Cancel" and a primary "Close tab", "Close window" or "Install and restart" (App.tsx choices). (M3: primary_labels, the_primary_and_cancel_buttons_report)
+- [x] Window close with an agent working: veto, raise, ask; go-ahead closes; Cancel leaves open (index.ts; App.tsx onCloseRequest). (M3: nobody_working_means_no_window_ask, a_tab_with_an_agent_asks_and_cancel_keeps_it)
+- [x] A quit interrupted by the veto is finished by the go-ahead; after Cancel a later close is ordinary (closeFlow.test). (M3: an_interrupted_quit_is_finished_by_the_go_ahead)
+- [x] An install answered in advance goes straight through once (closeFlow.test). (M3: an_install_answered_in_advance_goes_through_once)
+- [x] One question at a time: while a question or update window is up, tab chords swallow the key except close-tab (keymap.ts underModal; regression-rules ONE QUESTION AT A TIME). (M3: under_a_question_chords_are_swallowed_except_close_tab, ctrl_t_and_ctrl_tab_do_nothing_under_the_question)
+- [x] Closing a tab kills its shell, disposes the session, forgets its state; Settings has no shell (App.tsx closeNow). (M3: set_agent_none_forgets_and_closing_forgets, kill_removes_the_handle_and_kills_the_shell)
+- [x] On close every shell is killed and the app waits for all to be gone, 3 s cap, on the child's exit code, not the exit event; ten live shells quit three times with code 0 (index.ts will-quit, shellsGone; e2e quitManyShells). (M3: shutdown_kills_every_shell_and_waits, shutdown_gives_up_after_three_seconds_and_says_so, ten_live_tabs_quit_by_themselves_with_code_zero_three_times)
+- [x] Windows shutdown or log-off flushes tabs.json and the diag log synchronously (index.ts session-end). (M3: a_real_end_session_message_runs_the_callback, end_of_life_flushes_both_files_then_kills_and_waits)
+- [x] Ctrl+W closes a tab (match also takes Ctrl+Shift+W). DECISION: PT's label says Ctrl+Shift+W; Flare label should read Ctrl+W, matching the stated rule (keymap.ts 'close-tab'). (M3: ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open, exit_ends_its_tab_and_ctrl_w_closes_the_front, every_label_is_the_key_that_chord_answers_to)
 
 ### Most recent tab switching
 
-- [ ] "Tab switching": "In order" (default) or "Most recent"; unknown reads In order and is never written; sub "Which tab comes next when you switch." (lib/tabSwitchPrefs.ts; tabSwitchPrefs.test).
-- [ ] Used list, front first; a tab moves to the top once (lib/tabMru.ts touchMru; tabMru.test).
-- [ ] syncMru: closed tabs leave, new tabs join after known ones in strip order, empty starts from front then strip (tabMru.test).
-- [ ] A walk starts at the first Ctrl+Tab of a hold from a snapshot; further presses go further back and wrap; Ctrl+Shift+Tab walks from the far end (tabMru.ts startWalk, stepWalk; tabMru.test).
-- [ ] The list reorders only when the hold ends: Ctrl released, focus lost, another Ctrl chord, a click on a different tab, a tab opened or closed mid-hold (tabMru.test no ping-pong; walkHolds).
-- [ ] Any other activation counts as a use at once; the list is not saved between launches (App.tsx commitWalk).
-- [ ] Ctrl+PgDn / Ctrl+PgUp step tabs while agent hotkeys are on (keymap.ts 'next-tab'.agent).
+- [x] "Tab switching": "In order" (default) or "Most recent"; unknown reads In order and is never written; sub "Which tab comes next when you switch." (lib/tabSwitchPrefs.ts; tabSwitchPrefs.test). (M3: tab_switch_is_in_order_until_chosen, tab_switch_reads_unknown_as_order_and_never_stores_one)
+- [x] Used list, front first; a tab moves to the top once (lib/tabMru.ts touchMru; tabMru.test). (M3: touch_puts_the_tab_in_front_once, touching_the_front_tab_changes_nothing)
+- [x] syncMru: closed tabs leave, new tabs join after known ones in strip order, empty starts from front then strip (tabMru.test). (M3: sync_drops_closed_tabs, sync_adds_new_tabs_after_the_known_ones, sync_starts_an_empty_list_from_the_front)
+- [x] A walk starts at the first Ctrl+Tab of a hold from a snapshot; further presses go further back and wrap; Ctrl+Shift+Tab walks from the far end (tabMru.ts startWalk, stepWalk; tabMru.test). (M3: the_walk_is_a_snapshot, further_presses_walk_back_and_wrap, shift_walks_the_other_way_from_the_far_end)
+- [x] The list reorders only when the hold ends: Ctrl released, focus lost, another Ctrl chord, a click on a different tab, a tab opened or closed mid-hold (tabMru.test no ping-pong; walkHolds). (M3: no_ping_pong_the_order_changes_when_the_hold_ends, the_walk_holds_only_for_its_own_front_and_strip, a_click_during_a_hold_ends_the_walk, releasing_control_commits_the_walk, any_other_ctrl_chord_ends_a_walk_first)
+- [x] Any other activation counts as a use at once; the list is not saved between launches (App.tsx commitWalk). (M3: most_recent_walks_a_snapshot_and_commits_on_release)
+- [x] Ctrl+PgDn / Ctrl+PgUp step tabs while agent hotkeys are on (keymap.ts 'next-tab'.agent). (M3: agent_chords_are_next_tab_and_sidebar, ctrl_tab_steps_forward_and_shift_back_and_page_keys_with_agent_keys)
 
 ### Settings tab
 
-- [ ] One Settings tab, reused; id "settings", kind 'settings', empty folder, no shell; never persisted (tabs.ts openSettings; tabs.test).
-- [ ] The cog, Ctrl+, and the start screen row toggle Settings; closing returns to the previous tab (most recent) else the close neighbour (tabs.ts toggleSettings; e2e cogToggle).
-- [ ] shellTabs() excludes Settings so its close never asks and kills nothing (tabs.ts).
+- [x] One Settings tab, reused; id "settings", kind 'settings', empty folder, no shell; never persisted (tabs.ts openSettings; tabs.test). (M3: settings_opens_once_and_is_reused, saved_skips_settings_and_keeps_a_resumable_agent, the_settings_tab_has_no_tip_or_folder)
+- [x] The cog, Ctrl+, and the start screen row toggle Settings; closing returns to the previous tab (most recent) else the close neighbour (tabs.ts toggleSettings; e2e cogToggle). (M3: the_cog_toggles_and_goes_back_to_the_tab_used_before, the_cog_toggles_back_to_the_tab_used_before, the_cog_and_ctrl_comma_toggle_settings)
+- [x] shellTabs() excludes Settings so its close never asks and kills nothing (tabs.ts). (M3: saved_active_counts_shell_tabs_only)
 
 ### Window state
 
-- [ ] window.json holds width, height, x, y, maximised; written 400 ms after resize, move, maximise, unmaximise and synchronously on close (src/main/windowState.ts watchWindowState).
-- [ ] A minimised window is not saved; the normal bounds are saved, not the maximised size (windowState.ts).
-- [ ] Defaults 1180 x 780 for no, broken or foreign file (windowState.test).
-- [ ] Minimum 560 x 400, enforced on read and as the OS minimum (MIN_WINDOW; windowState.test).
-- [ ] Width and height rounded; non-finite falls back (windowState.test).
-- [ ] Saved position kept only if it overlaps an attached display's work area; negative coordinates on a second monitor kept (windowState.test).
+- [x] window.json holds width, height, x, y, maximised; written 400 ms after resize, move, maximise, unmaximise and synchronously on close (src/main/windowState.ts watchWindowState). (M3: window_json_round_trips_and_omits_a_missing_position, window_geometry_is_saved_after_the_delay_and_on_close)
+- [x] A minimised window is not saved; the normal bounds are saved, not the maximised size (windowState.ts). (M3: a_minimised_window_is_not_saved, a_maximised_size_is_never_remembered)
+- [x] Defaults 1180 x 780 for no, broken or foreign file (windowState.test). (M3: window_state_falls_back_for_no_broken_or_foreign_file)
+- [x] Minimum 560 x 400, enforced on read and as the OS minimum (MIN_WINDOW; windowState.test). (M3: window_state_never_opens_below_560_by_400, the_initial_window_is_never_below_the_minimum)
+- [x] Width and height rounded; non-finite falls back (windowState.test). (M3: scale_is_clamped_and_junk_reads_one, window_state_falls_back_for_no_broken_or_foreign_file)
+- [x] Saved position kept only if it overlaps an attached display's work area; negative coordinates on a second monitor kept (windowState.test). (M3: window_state_drops_the_position_off_every_monitor, window_state_keeps_a_negative_position_on_a_second_monitor, the_overlap_check_uses_device_pixels)
 
 ### Chords (the key table)
 
-- [ ] One chord table feeds the key handler and the terminal's "owns this key" check (keymap.ts CHORDS, appOwnsKey; keymap.test).
-- [ ] Matching uses the key name and, for letters, the physical key code (keymap.ts letter()).
-- [ ] Tab chords are taken in the capture phase and never reach the shell (App.tsx onKey, hit()).
-- [ ] Chord list: F1 help, F11 full screen, Ctrl+Tab, Ctrl+1..9, Ctrl+, , Ctrl+Shift+K, Ctrl+Shift+B, Ctrl+T, Ctrl+W, Ctrl+F (not in a full-screen program), Ctrl+Shift+F always (keymap.ts CHORDS).
-- [ ] Agent hotkeys setting (default on): extra keys are the app's when on, the shell's when off (keymap.test).
-- [ ] Displayed labels come from the table; no component types a shortcut by hand (keymap.test).
-- [ ] Accepted cost: Ctrl+W and Ctrl+T take the shell's delete-word and Claude Code's task list; Ctrl+Backspace does delete-word (regression-rules).
-- [ ] Tooltip placement and hidden-title rule: a tooltip only when text is cut or the label is hidden (core/renderer/lib/hiddenTitle.ts; hiddenTitle.test).
+- [x] One chord table feeds the key handler and the terminal's "owns this key" check (keymap.ts CHORDS, appOwnsKey; keymap.test). (M3: the_app_takes_exactly_the_chords_it_acts_on, every_label_is_the_key_that_chord_answers_to)
+- [x] Matching uses the key name and, for letters, the physical key code (keymap.ts letter()). (M3: ctrl_c_on_a_russian_layout_keeps_the_physical_key, agent_guard_matches_the_physical_key_and_leaves_ctrl_shift_c_alone)
+- [x] Tab chords are taken in the capture phase and never reach the shell (App.tsx onKey, hit()). (M3: the_shell_keeps_its_own_keys, under_a_question_swallowed_chords_do_nothing_and_close_tab_acts)
+- [x] Chord list: F1 help, F11 full screen, Ctrl+Tab, Ctrl+1..9, Ctrl+, , Ctrl+Shift+K, Ctrl+Shift+B, Ctrl+T, Ctrl+W, Ctrl+F (not in a full-screen program), Ctrl+Shift+F always (keymap.ts CHORDS). (M3: f1_and_find_rules, every_label_is_the_key_that_chord_answers_to)
+- [x] Agent hotkeys setting (default on): extra keys are the app's when on, the shell's when off (keymap.test). (M3: agent_keys_are_on_until_turned_off, agent_hotkeys_add_second_keys, the_key_context_reads_the_prefs)
+- [x] Displayed labels come from the table; no component types a shortcut by hand (keymap.test). (M3: no_slint_file_types_a_shortcut_label_by_hand)
+- [x] Accepted cost: Ctrl+W and Ctrl+T take the shell's delete-word and Claude Code's task list; Ctrl+Backspace does delete-word (regression-rules). (M3: docs only; the cost is recorded in regression-rules 125)
+- [x] Tooltip placement and hidden-title rule: a tooltip only when text is cut or the label is hidden (core/renderer/lib/hiddenTitle.ts; hiddenTitle.test). (M3: the_whole_text_when_an_ellipsis_cut_it, no_tooltip_when_the_words_are_all_on_screen, the_name_when_the_layout_hid_it)
 
 ## M4: Themes, fonts, material
 
@@ -1180,3 +1180,20 @@ only O17's artwork waits for the owner.
   document, text, data, image, audio, video and non-running source types open; every other type is
   revealed in Explorer, never opened. Trailing dot or space segments and `:` streams are refused,
   and the extension is read from the canonicalised path. Folders keep opening. Rule 134.
+- M3 owner decisions (2026-10-17, from the M3 plan): O12 Settings is a tab, as in Prism Terminal;
+  O20 no rename (not in Prism Terminal, so not in Flare; the DECISION line above is answered);
+  O10 setting keys are `flare.*` with the import map (M7 builds the import).
+- M3 planner decisions D1 to D14 (taken by the builder, for the owner to overrule; the plan's
+  "Decisions taken by the planner" section holds the full text): D1 the `flare-tabs` crate holds the
+  pure tab logic; D2 `PrefStore` in `flare-settings`; D3 `window.json` logical size, physical
+  position, saved scale; D4 single instance by a named mutex and pipe keyed by the profile hash;
+  D5 tab geometry in device pixels in Rust; D6 the +N button is a fixed 72 px box; D7 the close
+  question names keep the brighter ink, without the 2 px backdrop blur; D8 hairlines are
+  `max(1, floor(scale))` device pixels; D9 the terminal keeps its size while the sidebar slides; D10
+  marks and agent icons are M6's; D11 the Settings tab body is a placeholder until M7; D12 a folder
+  dropped on the tab row or the sidebar opens a new tab; D13 `--user-data-dir` and `--e2e` are parsed
+  now; D14 placeholders of a tab coming back to an agent show the bare ground.
+- Owner questions raised by M3 (none blocks it): Q1 the close question has no 2 px backdrop blur
+  behind the scrim (Slint has none), and the names keep the brighter ink; Q2 the +N button is a fixed
+  72 px box (D6), say if it should be content-sized; Q3 the Ctrl+W label reads "Ctrl+W" (the
+  Prism Terminal menu said Ctrl+Shift+W); both keys close the tab, and Ctrl+W is assumed.

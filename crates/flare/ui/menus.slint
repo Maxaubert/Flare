@@ -1,0 +1,485 @@
+// Context menus and the + overflow list (Task 23). PT ContextMenu.tsx, tabMenus.tsx,
+// TabOverflowList.tsx. Both fill the window; a press outside the panel dismisses.
+import { MenuRow, OverflowRow } from "types.slint";
+import { Theme, Px } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+import { Tip } from "tip.slint";
+
+component MenuItem inherits Rectangle {
+    in property <MenuRow> item;
+    in property <int> index;
+    callback picked(int);
+    callback trailing(int);
+    height: 28px;
+    background: ta.has-hover && !root.item.disabled ? Theme.hover : transparent;
+    opacity: root.item.disabled ? 0.5 : 1;
+    ta := TouchArea {
+        enabled: !root.item.disabled;
+        clicked => { root.picked(root.index); }
+    }
+    // What the row's layout wants, so the panel can grow to it (a Rectangle does not pass
+    // its child layout's width on by itself).
+    min-width: lay.min-width;
+    // The label as it would be drawn whole: never shown, only measured.
+    probe := Text {
+        visible: false;
+        text: root.item.label;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+    }
+    lay := HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        if root.item.icon != "": Rectangle {
+            width: 13px;
+            Path {
+                width: 13px;
+                height: 13px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: root.item.icon;
+                fill: root.item.filled-icon ? Theme.tree-folder : transparent;
+                stroke: root.item.filled-icon ? transparent : (ta.has-hover ? Theme.text : Theme.text-soft);
+                stroke-width: 1.7 * 13px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                opacity: 0.8;
+            }
+        }
+        Text {
+            text: root.item.label;
+            vertical-alignment: center;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            color: ta.has-hover && !root.item.disabled ? Theme.text : Theme.text-soft;
+            overflow: elide;
+            // An eliding Text asks for no width, so the label claims what the unelided probe
+            // measures (up to 320 px, past which it elides) and the panel grows to it.
+            min-width: min(probe.preferred-width, 320px);
+        }
+        Rectangle { min-width: 32px; horizontal-stretch: 1; }
+        if root.item.hint != "": Text {
+            text: root.item.hint;
+            vertical-alignment: center;
+            font-family: Theme.font-ui;
+            font-size: 10.5px;
+            letter-spacing: 0.4px;
+            color: Theme.dim2;
+        }
+        if root.item.trailing-icon != "": Rectangle {
+            width: 20px;
+            Rectangle {
+                width: 20px;
+                height: 20px;
+                x: 4px;
+                border-radius: 4px;
+                background: tta.has-hover ? Theme.hover : transparent;
+                Path {
+                    width: 12px;
+                    height: 12px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: root.item.trailing-icon;
+                    fill: root.item.trailing-filled ? (tta.has-hover ? Theme.text : Theme.dim2) : transparent;
+                    stroke: tta.has-hover ? Theme.text : Theme.dim2;
+                    stroke-width: 1.8 * 12px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+                tta := TouchArea {
+                    clicked => { root.trailing(root.index); }
+                }
+            }
+        }
+    }
+}
+
+export component ContextMenu inherits Rectangle {
+    in property <bool> open;
+    in property <[MenuRow]> rows;
+    in property <length> at-x;
+    in property <length> at-y;
+    callback picked(int);
+    callback trailing(int);
+    callback dismissed();
+    out property <length> panel-x: panel.x;
+    out property <length> panel-y: panel.y;
+    out property <length> panel-w: panel.width;
+    out property <length> panel-h: panel.height;
+
+    visible: root.open;
+
+    // A press outside (the panel's own touch area swallows the ones inside).
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down { root.dismissed(); }
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    changed open => { if root.open { fs.focus(); } }
+
+    panel := Rectangle {
+        // At least 156 and as wide as its rows want (PT's min-w-[156px] on a fit-content
+        // panel): a label never gives way to its key hint. Only the window's edge caps it.
+        // Snapped, as the text's width is any fraction: the border stays on whole pixels.
+        width: Px.snap(min(max(156px, col.preferred-width) + 2 * Px.hair(), root.width - 16px));
+        height: col.preferred-height + 2 * Px.hair();
+        x: Px.snap(min(root.at-x, root.width - self.width - 8px));
+        y: Px.snap(min(root.at-y, root.height - self.height - 8px));
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: #00000080;
+        clip: true;
+        TouchArea { }
+        col := VerticalLayout {
+            padding: Px.hair();
+            for r[i] in root.rows: VerticalLayout {
+                if i > 0: Rectangle { height: Px.hair(); background: Theme.divider; }
+                MenuItem {
+                    item: r;
+                    index: i;
+                    picked(n) => { root.picked(n); root.dismissed(); }
+                    trailing(n) => { root.trailing(n); }
+                }
+            }
+        }
+    }
+}
+
+component OverflowItem inherits Rectangle {
+    in property <OverflowRow> item;
+    in property <string> heading;
+    callback picked(string);
+    callback row-menu(string, length, length);
+    height: (root.heading != "" ? 26px : 0px) + 34px;
+    if root.heading != "": Text {
+        x: 10px;
+        y: 8px;
+        text: root.heading.to-uppercase();
+        font-family: Theme.font-ui;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.63px;
+        color: Theme.dim2;
+    }
+    Rectangle {
+        y: root.heading != "" ? 26px : 0px;
+        height: 34px;
+        border-radius: 3px;
+        background: ta.has-hover ? Theme.hover : transparent;
+        ta := TouchArea {
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {
+                    root.row-menu(root.item.id, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+            clicked => { root.picked(root.item.id); }
+        }
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 10px;
+            Rectangle {
+                width: 18px;
+                Path {
+                    width: 18px;
+                    height: 18px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: root.item.settings ? Glyphs.cog : Glyphs.prompt;
+                    fill: transparent;
+                    stroke: ta.has-hover ? Theme.text : Theme.text-soft;
+                    stroke-width: (root.item.settings ? 1.7 : 2.2) * 18px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: root.item.label;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: ta.has-hover ? Theme.text : Theme.text-soft;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.item.folder;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 11px;
+                    color: Theme.dim2;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle {
+                width: 16px;
+                if root.item.loading: Path {
+                    width: 14px;
+                    height: 14px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: "M12 3a9 9 0 0 1 9 9";
+                    fill: transparent;
+                    stroke: Theme.accent-solid;
+                    stroke-width: 2.4 * 14px / 24;
+                    stroke-line-cap: round;
+                }
+            }
+        }
+    }
+}
+
+export component OverflowList inherits Rectangle {
+    in property <bool> open;
+    in property <[OverflowRow]> rows;
+    in property <length> anchor-right;
+    in property <length> anchor-bottom;
+    in-out property <string> query;
+    callback picked(string);
+    callback row-menu(string, length, length);
+    callback dismissed();
+    callback accepted();
+    callback query-edited(string);
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    // The head's height (field row plus its hairline); the body starts under it with 4 px of padding.
+    out property <length> head-h: 33px + Px.hair();
+    out property <length> heading-h: 26px;
+    out property <length> row-h: 34px;
+    out property <length> body-pad: 4px;
+
+    public function focus-field() { input.focus(); }
+
+    // "Needs you" before the first needs row, "Other tabs" before the first other row that
+    // follows needs rows, "Tabs" when there are no needs rows. "" for every other row.
+    pure public function heading-for(i: int) -> string {
+        if i < 0 || i >= root.rows.length { return ""; }
+        if i == 0 { return root.rows[0].needs ? "Needs you" : "Tabs"; }
+        if root.rows[i].needs { return ""; }
+        return root.rows[i - 1].needs ? "Other tabs" : "";
+    }
+
+    visible: root.open;
+
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down { root.dismissed(); }
+        }
+    }
+    FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    changed open => { if root.open { input.focus(); } }
+
+    box := Rectangle {
+        property <length> max-h: min(440px, root.height * 0.7);
+        width: 340px;
+        x: clamp(root.anchor-right - 340px, 8px, root.width - 340px - 8px);
+        y: root.anchor-bottom + 4px;
+        height: min(self.max-h, root.head-h + 2 * root.body-pad + body-col.preferred-height + (root.rows.length == 0 ? 36px : 0px));
+        background: Theme.side-flat;
+        border-radius: 4px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: #00000080;
+        clip: true;
+        TouchArea { }
+
+        Rectangle {
+            y: 0px;
+            height: root.head-h;
+            Rectangle {
+                y: parent.height - Px.hair();
+                height: Px.hair();
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 8px;
+                Rectangle {
+                    width: 13px;
+                    Path {
+                        width: 13px;
+                        height: 13px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: Glyphs.search-small;
+                        fill: transparent;
+                        stroke: Theme.dim2;
+                        stroke-width: 2 * 13px / 24;
+                        stroke-line-cap: round;
+                        stroke-line-join: round;
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    input := TextInput {
+                        width: parent.width;
+                        text <=> root.query;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.query-edited(self.text); }
+                        accepted => { root.accepted(); }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape {
+                                root.dismissed();
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                    if root.query == "": Text {
+                        text: "Find a tab";
+                        vertical-alignment: center;
+                        font-family: Theme.font-ui;
+                        font-size: 12.5px;
+                        color: Theme.dim2;
+                    }
+                }
+            }
+        }
+
+        Flickable {
+            y: root.head-h;
+            height: parent.height - root.head-h - 2 * Px.hair();
+            content-height: body-col.preferred-height + 2 * root.body-pad;
+            body-col := VerticalLayout {
+                y: root.body-pad;
+                padding-left: 4px;
+                padding-right: 4px;
+                if root.rows.length == 0: Text {
+                    height: 36px;
+                    text: "No tab has that name or folder.";
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.dim2;
+                }
+                for r[i] in root.rows: OverflowItem {
+                    item: r;
+                    heading: root.heading-for(i);
+                    picked(id) => { root.picked(id); }
+                    row-menu(id, x, y) => { root.row-menu(id, x, y); }
+                }
+            }
+        }
+    }
+}
+
+export component MenusPreview inherits Window {
+    preferred-width: 400px;
+    preferred-height: 300px;
+    background: Theme.ground;
+
+    in-out property <bool> menu-open;
+    in-out property <[MenuRow]> menu-rows;
+    in-out property <length> menu-x;
+    in-out property <length> menu-y;
+    in-out property <int> picked-index: -1;
+    in-out property <int> trailing-index: -1;
+    in-out property <int> menu-dismissed;
+    out property <length> panel-x: menu.panel-x;
+    out property <length> panel-y: menu.panel-y;
+    out property <length> panel-w: menu.panel-w;
+    out property <length> panel-h: menu.panel-h;
+
+    in-out property <bool> ov-open;
+    in-out property <[OverflowRow]> ov-rows;
+    in-out property <length> ov-right;
+    in-out property <length> ov-bottom;
+    in-out property <string> ov-query;
+    in-out property <string> ov-picked;
+    in-out property <string> ov-edited;
+    in-out property <int> ov-accepted;
+    in-out property <int> ov-dismissed;
+    out property <length> ov-box-x: ov.box-x;
+    out property <length> ov-box-y: ov.box-y;
+    out property <length> ov-box-w: ov.box-w;
+    out property <length> ov-box-h: ov.box-h;
+    out property <length> ov-head-h: ov.head-h;
+    out property <length> ov-heading-h: ov.heading-h;
+    out property <length> ov-row-h: ov.row-h;
+    out property <length> ov-body-pad: ov.body-pad;
+    pure public function ov-heading-for(i: int) -> string { return ov.heading-for(i); }
+
+    in-out property <string> tip-text;
+    in-out property <bool> tip-visible;
+    in-out property <int> tip-side;
+    out property <length> tip-w: tip.tip-w;
+    out property <length> tip-h: tip.tip-h;
+
+    in-out property <int> back-clicks;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    TouchArea { clicked => { root.back-clicks += 1; } }
+
+    menu := ContextMenu {
+        width: root.width;
+        height: root.height;
+        open: root.menu-open;
+        rows: root.menu-rows;
+        at-x: root.menu-x;
+        at-y: root.menu-y;
+        picked(i) => { root.picked-index = i; }
+        trailing(i) => { root.trailing-index = i; }
+        dismissed => { root.menu-dismissed += 1; root.menu-open = false; }
+    }
+    ov := OverflowList {
+        width: root.width;
+        height: root.height;
+        open: root.ov-open;
+        rows: root.ov-rows;
+        anchor-right: root.ov-right;
+        anchor-bottom: root.ov-bottom;
+        query <=> root.ov-query;
+        picked(id) => { root.ov-picked = id; }
+        accepted => { root.ov-accepted += 1; }
+        dismissed => { root.ov-dismissed += 1; root.ov-open = false; }
+        query-edited(q) => { root.ov-edited = q; }
+    }
+    tip := Tip {
+        width: root.width;
+        height: root.height;
+        text: root.tip-text;
+        at-x: 20px;
+        at-y: 20px;
+        visible-tip: root.tip-visible;
+        side: root.tip-side;
+    }
+}

@@ -1,0 +1,36 @@
+// Every SVG path string used by M3 (Task 19). Each is drawn on a 24-unit viewbox; the sizes and
+// stroke weights are noted where the components use them. The paths are Prism Terminal's, copied
+// from its components (`cog` is M1's, the Settings title button in app.slint).
+
+export global Glyphs {
+    // Tab X: 10 px, stroke 2.4. Window close button: 13 px, stroke 1.8.
+    out property <string> close: "M6 6l12 12M18 6L6 18";
+    // The + button: 13 px, stroke 2.
+    out property <string> plus: "M12 6v12m6-6H6";
+    // The sidebar's +: 13 px, stroke 2.2.
+    out property <string> plus-sidebar: "M12 5v14m7-7H5";
+    // The start screen's +: 16 px, stroke 1.6.
+    out property <string> plus-start: "M12 5.5v13M5.5 12h13";
+    // 11 px, stroke 2.2.
+    out property <string> chevron-down: "M6 9l6 6 6-6";
+    // 11 px, stroke 2.2.
+    out property <string> chevron-right: "M9 6l6 6-6 6";
+    // Sidebar find: 14 px, stroke 1.8.
+    out property <string> search: "M17.5 11a6.5 6.5 0 1 0-13 0a6.5 6.5 0 1 0 13 0zM16 16l4 4";
+    // The +N list's search: 13 px, stroke 2.
+    out property <string> search-small: "M17 11a6 6 0 1 0-12 0a6 6 0 1 0 12 0zM20 20l-4.5-4.5";
+    // A shell tab's icon: 18 px, stroke 2.2.
+    out property <string> prompt: "M5 7l5 5-5 5M12 17h7";
+    // Settings tab: 18 px, stroke 1.7. Start screen row: 16 px, stroke 1.6.
+    out property <string> cog: "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z";
+    // Start screen places: 16 px, stroke 1.6.
+    out property <string> folder: "M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2.4h7.4a2 2 0 0 1 2 2v6.6a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z";
+    // Menu rows: 13 px, filled with Theme.tree-folder.
+    out property <string> folder-fill: "M2.5 5.5h6.2l2 2.6h10.8v10.4H2.5z";
+    // 12 px, stroke 1.8, filled when pinned.
+    out property <string> pin: "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z";
+    // Menu rows: 13 px, stroke 1.7, opacity .8.
+    out property <string> menu-copy: "M8 8h12v12H8zM16 8V4H4v12h4";
+    // Menu rows: 13 px, stroke 1.7.
+    out property <string> menu-close: "M7 7l10 10M17 7L7 17";
+}

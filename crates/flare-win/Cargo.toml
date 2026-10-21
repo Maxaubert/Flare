@@ -1,9 +1,21 @@
 [package]
 name = "flare-win"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 publish = false
+
+[dependencies]
+flare-settings = { path = "../flare-settings" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+windows-sys.workspace = true
+rfd.workspace = true
+raw-window-handle.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

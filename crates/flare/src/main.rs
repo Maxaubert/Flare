@@ -1,13 +1,26 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appctl;
 mod backend;
+mod chords;
 mod config;
+mod e2e;
 mod headless;
 mod host;
 mod keymap;
 mod live;
 mod memory;
+mod menus_ui;
+mod sidebar_ui;
+mod startup;
+mod tab_host;
+mod tabs_ui;
 mod window;
+
+#[cfg(test)]
+mod ui_harness;
+#[cfg(test)]
+mod ui_tests;
 
 slint::include_modules!();
 
@@ -30,12 +43,44 @@ fn main() {
         || args.screenshot.is_some()
         || args.bench_frames.is_some()
         || args.live_screenshot.is_some()
+        || args.scene.is_some()
     {
         attach_parent_console();
     }
 
+    // `--scene <name>` draws one fixed state of the window (Task 32) and exits, like --screenshot.
+    if args.scene.is_some() {
+        match headless::run_scene(&args) {
+            Ok(()) => std::process::exit(0),
+            Err(message) => {
+                eprintln!("flare: {message}");
+                let code = if message.starts_with("GPU unavailable") {
+                    2
+                } else {
+                    1
+                };
+                std::process::exit(code);
+            }
+        }
+    }
+
+    // Hidden test modes of the process tests (Task 34); neither opens a window.
+    if args.instance_probe {
+        std::process::exit(startup::run_instance_probe(
+            args.user_data_dir.as_deref(),
+            &argv_with_exe(),
+        ));
+    }
+    if let (Some(n), None) = (args.live_tabs, args.scene.as_ref()) {
+        if let Err(e) = flare_term::conpty::verify_bundled() {
+            show_fatal("Flare cannot start", &e.to_string(), false);
+            std::process::exit(3);
+        }
+        std::process::exit(startup::run_live_tabs(args.user_data_dir.as_deref(), n));
+    }
+
     if args.probe_backend {
-        match backend::select_backend(args.renderer) {
+        match backend::select_backend(args.renderer, false) {
             Ok(outcome) => {
                 let name = match outcome.effective {
                     config::RendererChoice::Gpu => "gpu",
@@ -80,7 +125,38 @@ fn main() {
         std::process::exit(0);
     }
 
-    let outcome = match backend::select_backend(args.renderer) {
+    e2e::init(args.e2e);
+    // Single instance: a second launch hands its folders to the first and exits 0. The lock and
+    // the pipe are keyed by the profile folder, so an e2e run (its own profile) never reaches the
+    // owner's running Flare.
+    let instance = if args.sample {
+        None
+    } else {
+        let appdata = std::env::var("APPDATA").ok();
+        let profile = startup::Profile {
+            dir: startup::profile_dir(args.user_data_dir.as_deref(), appdata.as_deref()),
+        };
+        if let Err(e) = std::fs::create_dir_all(&profile.dir) {
+            // sync-ok: startup, before any window
+            log::warn!(
+                "cannot create the profile folder {}: {e}",
+                profile.dir.display()
+            );
+        }
+        match startup::launch(&profile, &argv_with_exe(), HANDOFF_WAIT) {
+            Ok(startup::Launch::HandedOver) => std::process::exit(0),
+            Ok(startup::Launch::First {
+                guard,
+                server_names,
+            }) => Some(window::Instance::start(profile, server_names, guard)),
+            Err(message) => {
+                attach_parent_console();
+                eprintln!("flare: {message}");
+                std::process::exit(1);
+            }
+        }
+    };
+    let outcome = match backend::select_backend(args.renderer, args.e2e) {
         Ok(outcome) => outcome,
         Err(e) => {
             attach_parent_console();
@@ -97,11 +173,19 @@ fn main() {
         show_fatal("Flare cannot start", &e.to_string(), true);
         std::process::exit(3);
     }
-    if let Err(e) = window::run_window(outcome, start, args.sample) {
+    if let Err(e) = window::run_window(outcome, start, &args, instance) {
         attach_parent_console();
         eprintln!("flare: {e}");
         std::process::exit(1);
     }
+}
+
+/// How long a second launch waits for the first instance to take its folders.
+const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The command line with the exe first, as `folders_from_argv` expects it.
+fn argv_with_exe() -> Vec<String> {
+    std::env::args().collect()
 }
 
 /// The release build has no console of its own (windows subsystem). A headless mode run from a

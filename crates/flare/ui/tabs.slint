@@ -1,0 +1,416 @@
+// The tab strip along the top (Task 20). Source: PT TabStrip.tsx, tabParts.tsx, TitleBar.tsx.
+// Tab edges come from Rust in DEVICE pixels (row.x, row.w) and are placed at `n * 1phx`, so every
+// edge, divider and rule is a whole number of device pixels at any display scaling.
+import { TabRow, StripGeom } from "types.slint";
+import { Theme, Px } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+
+// The ring of a tab coming back: a 9 px circle, 1.5 px line at 22% ink, with a quarter
+// of accent turning once a second. It exists only while loading, so nothing animates at rest.
+component LoadingRing inherits Rectangle {
+    property <angle> turn: 360deg;
+    animate turn {
+        duration: 1s;
+        iteration-count: -1;
+        easing: linear;
+    }
+    Path {
+        x: (parent.width - 9px) / 2;
+        y: (parent.height - 9px) / 2;
+        width: 9px;
+        height: 9px;
+        viewbox-width: 9;
+        viewbox-height: 9;
+        commands: "M4.5 0.75A3.75 3.75 0 1 1 4.499 0.75Z";
+        fill: transparent;
+        stroke: Theme.text.with-alpha(0.22);
+        stroke-width: 1.5px;
+    }
+    Path {
+        x: (parent.width - 9px) / 2;
+        y: (parent.height - 9px) / 2;
+        width: 9px;
+        height: 9px;
+        viewbox-width: 9;
+        viewbox-height: 9;
+        commands: "M" + (4.5 + 3.75 * cos(root.turn - 90deg)) + " " + (4.5 + 3.75 * sin(root.turn - 90deg))
+            + "A3.75 3.75 0 0 1 " + (4.5 + 3.75 * cos(root.turn)) + " " + (4.5 + 3.75 * sin(root.turn));
+        fill: transparent;
+        stroke: Theme.accent-solid;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+    }
+}
+
+// The end of a tab or sidebar row: the close X (hidden until the row is active or hovered) and,
+// for a tab coming back, the loading ring with the X sliding in beside it on hover.
+export component TabEnd inherits Rectangle {
+    in property <length> box: 16px;
+    in property <length> glyph: 10px;
+    in property <bool> shown: true;
+    in property <bool> loading: false;
+    in property <bool> row-hover: false;
+    out property <bool> hovered: xta.has-hover;
+    callback closed();
+    callback menu(length, length);
+
+    property <length> xw: root.loading ? ((root.row-hover || xta.has-hover) ? root.box : 0px) : root.box;
+    animate xw {
+        duration: 150ms;
+        easing: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    width: root.loading ? root.box + (root.xw > 0.5px ? 2px : 0px) + root.xw : root.box;
+    height: root.box;
+
+    if root.loading : LoadingRing {
+        x: 0px;
+        y: 0px;
+        width: root.box;
+        height: root.box;
+    }
+
+    Rectangle {
+        x: root.loading ? root.box + 2px : 0px;
+        y: 0px;
+        width: root.xw;
+        height: root.box;
+        clip: true;
+        opacity: root.shown ? 1 : 0;
+        Rectangle {
+            x: 0px;
+            width: root.box;
+            height: root.box;
+            border-radius: 2px;
+            background: xta.has-hover ? Theme.hover-hi : transparent;
+            Path {
+                x: (parent.width - root.glyph) / 2;
+                y: (parent.height - root.glyph) / 2;
+                width: root.glyph;
+                height: root.glyph;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Glyphs.close;
+                fill: transparent;
+                stroke: xta.has-hover ? Theme.text : Theme.icon;
+                stroke-width: 2.4 * root.glyph / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+        }
+        xta := TouchArea {
+            enabled: root.shown;
+            clicked => { root.closed(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {
+                    root.menu(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
+                }
+            }
+        }
+    }
+}
+
+export component TabStrip inherits Rectangle {
+    in property <[TabRow]> rows;
+    in property <StripGeom> geom;
+    in property <string> new-tab-title;
+    in property <bool> list-open;
+    in property <bool> drag-in-flight;
+    in property <bool> carrying;
+    out property <int> strip-phys-width: round(self.width / 1phx);
+    out property <bool> has-move-area: !root.drag-in-flight;
+    callback press(string, int, length, length);
+    callback drag-moved(length);
+    callback drag-released();
+    callback closed(string);
+    callback tab-menu(string, length, length);
+    callback new-tab();
+    callback plus-menu(length, length);
+    callback more-clicked(length, length);
+    callback tip(string, length, length, length, length);
+
+    clip: true;
+
+    if !root.drag-in-flight : WindowMoveArea { }
+
+    for row[index] in root.rows : tab := Rectangle {
+        property <bool> hov: ta.has-hover || (row.mode == 0 && xend.hovered);
+        property <color> ink: (row.active || tab.hov) ? Theme.text : Theme.dim;
+        x: row.x * 1phx + row.offset;
+        y: 0px;
+        width: row.w * 1phx;
+        height: parent.height;
+        visible: row.mode != 2;
+        z: row.carried ? 5 : 0;
+        background: row.active ? Theme.tab-active : (tab.hov ? Theme.hover : transparent);
+        animate x {
+            duration: (root.carrying && !row.carried) ? 170ms : 0ms;
+            easing: cubic-bezier(0.23, 1, 0.32, 1);
+        }
+
+        ta := TouchArea {
+            mouse-cursor: root.carrying ? MouseCursor.grabbing : MouseCursor.default;
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip(row.tip != "" ? row.tip : row.label, tab.absolute-position.x, tab.absolute-position.y, tab.width, tab.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+            moved => { root.drag-moved(self.mouse-x + tab.absolute-position.x); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                    root.press(row.id, index, self.mouse-x + tab.absolute-position.x, root.absolute-position.x);
+                } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                    root.drag-released();
+                } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.middle {
+                    root.closed(row.id);
+                } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {
+                    root.tab-menu(row.id, self.mouse-x + tab.absolute-position.x, self.mouse-y + tab.absolute-position.y);
+                }
+            }
+        }
+
+        // Named tab: icon, name, end.
+        if row.mode == 0 : Rectangle {
+            Path {
+                x: 10px;
+                y: (parent.height - 18px) / 2;
+                width: 18px;
+                height: 18px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: row.settings ? Glyphs.cog : Glyphs.prompt;
+                fill: transparent;
+                stroke: tab.ink;
+                stroke-width: (row.settings ? 1.7 : 2.2) * 18px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+            Text {
+                x: 34px;
+                y: 0px;
+                height: parent.height;
+                width: max(0px, parent.width - 34px - 10px - xend.width - 6px);
+                text: row.label;
+                font-size: 12px;
+                font-family: Theme.font-ui;
+                color: tab.ink;
+                overflow: elide;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        xend := TabEnd {
+            visible: row.mode == 0;
+            x: parent.width - 10px - self.width;
+            y: (parent.height - self.height) / 2;
+            shown: row.active || tab.hov;
+            loading: row.loading;
+            row-hover: tab.hov;
+            closed => { root.closed(row.id); }
+            menu(mx, my) => { root.tab-menu(row.id, mx, my); }
+        }
+
+        // Icon tab: the icon centred, no X.
+        if row.mode == 1 : Rectangle {
+            Path {
+                x: (parent.width - 18px) / 2;
+                y: (parent.height - 18px) / 2;
+                width: 18px;
+                height: 18px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: row.settings ? Glyphs.cog : Glyphs.prompt;
+                fill: transparent;
+                stroke: tab.ink;
+                stroke-width: (row.settings ? 1.7 : 2.2) * 18px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+            if row.mark-kind != 0 : Rectangle {
+                x: parent.width - 2px - 15px;
+                y: 3px;
+                width: 15px;
+                height: 15px;
+                border-radius: 7.5px;
+                background: Theme.tabs;
+            }
+        }
+
+        // The active mark: a snapped bar along the top edge.
+        if row.active : Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: Px.snap(2px);
+            background: Theme.accent-hi;
+        }
+
+        // The right divider, on every tab (the last too).
+        Rectangle {
+            x: parent.width - Px.hair();
+            y: 0px;
+            width: Px.hair();
+            height: parent.height;
+            background: Theme.divider;
+        }
+    }
+
+    // The +N button.
+    if root.geom.more-count > 0 : Rectangle {
+        x: root.geom.more-x * 1phx;
+        y: 4px;
+        width: root.geom.more-w * 1phx;
+        height: parent.height - 8px;
+        border-radius: 4px;
+        background: (mta.has-hover || root.list-open) ? Theme.hover-hi : transparent;
+        HorizontalLayout {
+            alignment: center;
+            spacing: 6px;
+            Text {
+                text: "+" + root.geom.more-count;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: Theme.font-ui;
+                color: (mta.has-hover || root.list-open) ? Theme.text : Theme.text-soft;
+                vertical-alignment: center;
+            }
+            // No dots, no slot: an empty one would add a second 6 px gap before the chevron.
+            if root.geom.dots.length > 0 : Rectangle {
+                width: (min(root.geom.dots.length, 4) * 9 - 3) * 1px;
+                for c[i] in root.geom.dots : Rectangle {
+                    x: i * 9px;
+                    y: (parent.height - 6px) / 2;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: c;
+                    visible: i < 4;
+                }
+            }
+            // In an 11 px column, on the button's middle (a layout puts a fixed-height child at
+            // its top).
+            Rectangle {
+                width: 11px;
+                Path {
+                    x: 0;
+                    y: Px.snap((parent.height - 11px) / 2);
+                    width: 11px;
+                    height: 11px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Glyphs.chevron-down;
+                    fill: transparent;
+                    stroke: (mta.has-hover || root.list-open) ? Theme.text : Theme.text-soft;
+                    stroke-width: 2.2 * 11px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+            }
+        }
+        mta := TouchArea {
+            clicked => {
+                root.more-clicked(self.absolute-position.x + self.width, self.absolute-position.y + self.height);
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip(root.geom.more-count + " more tabs", self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+
+    // The + button.
+    Rectangle {
+        x: root.geom.plus-x * 1phx;
+        y: 4px;
+        width: root.geom.plus-w * 1phx;
+        height: parent.height - 8px;
+        border-radius: 4px;
+        background: pta.has-hover ? Theme.hover-hi : transparent;
+        Path {
+            x: (parent.width - 13px) / 2;
+            y: (parent.height - 13px) / 2;
+            width: 13px;
+            height: 13px;
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: Glyphs.plus;
+            fill: transparent;
+            stroke: pta.has-hover ? Theme.text : Theme.icon;
+            stroke-width: 2 * 13px / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        pta := TouchArea {
+            clicked => { root.new-tab(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {
+                    root.plus-menu(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
+                }
+            }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip(root.new-tab-title, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+}
+
+export component TabStripPreview inherits Window {
+    in property <[TabRow]> rows;
+    in property <StripGeom> geom;
+    in property <string> new-tab-title;
+    in property <bool> list-open;
+    in property <bool> drag-in-flight;
+    in property <bool> carrying;
+    in property <length> strip-x: 0px;
+    out property <bool> has-move-area: strip.has-move-area;
+    out property <int> strip-phys-width: strip.strip-phys-width;
+    callback press(string, int, length, length);
+    callback drag-moved(length);
+    callback drag-released();
+    callback closed(string);
+    callback tab-menu(string, length, length);
+    callback new-tab();
+    callback plus-menu(length, length);
+    callback more-clicked(length, length);
+    callback tip(string, length, length, length, length);
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    width: 1000px;
+    height: 36px;
+    background: Theme.tabs;
+
+    strip := TabStrip {
+        x: root.strip-x;
+        y: 0px;
+        width: parent.width - root.strip-x;
+        height: parent.height - Px.hair();
+        rows: root.rows;
+        geom: root.geom;
+        new-tab-title: root.new-tab-title;
+        list-open: root.list-open;
+        drag-in-flight: root.drag-in-flight;
+        carrying: root.carrying;
+        press(a, b, c, d) => { root.press(a, b, c, d); }
+        drag-moved(a) => { root.drag-moved(a); }
+        drag-released() => { root.drag-released(); }
+        closed(a) => { root.closed(a); }
+        tab-menu(a, b, c) => { root.tab-menu(a, b, c); }
+        new-tab() => { root.new-tab(); }
+        plus-menu(a, b) => { root.plus-menu(a, b); }
+        more-clicked(a, b) => { root.more-clicked(a, b); }
+        tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+    }
+}

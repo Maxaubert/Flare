@@ -68,3 +68,76 @@ are added as milestones land.
   to 141 hold the ConPTY start-up, environment, query and synchronized-update lessons; rules 133
   to 136 hold the security fixes (cd lines, UNC reports, the click-to-open allowlist, inert paste,
   the PowerShell 7 lookup).
+
+## Tabs, restore, single instance (M3), 2026-10-17
+
+- **O12, Settings is a tab, as in Prism Terminal.** One reused tab with no shell, never saved;
+  the cog, Ctrl+, and the start screen row toggle it. Held by `settings_opens_once_and_is_reused`
+  (`flare-tabs`), `the_cog_toggles_and_goes_back_to_the_tab_used_before` and `the_cog_and_ctrl_comma_toggle_settings`.
+  Its page body is M7 (decision D11).
+- **O20, no rename.** Prism Terminal has no rename (a tab is always its folder name), so Flare has
+  none. The roadmap's M3 "rename" line is answered by this, not built.
+- **Ctrl+W closes a tab and reads "Ctrl+W" on its label.** Both Ctrl+W and Ctrl+Shift+W close it
+  (owner question Q3 in `docs/parity.md`, assumed). Held by
+  `ctrl_w_and_ctrl_shift_w_both_close_ctrl_t_and_ctrl_shift_t_both_open` and
+  `every_label_is_the_key_that_chord_answers_to`.
+- **Tabs in one row, one width.** Every tab is the same width (150 px, floor 84 px, shrinking
+  equally); when the strip is short it becomes icons (40 px), then the least-needed tabs move to the
+  `+N` list. The front tab is never hidden. Held by `strip_plan` and `strip_layout` tests and the
+  `sixteen_tabs_icons_plus_n_and_the_list` flow.
+- **Drag to reorder with the pointer.** A press must travel 4 px before it is a drag; the carried
+  tab is clamped to its row, neighbours slide, and a drop slot follows the carried tab's leading
+  edge so the first place is always reachable. Held by `the_slop_is_four_pixels_exactly`,
+  `the_carried_tab_is_clamped_to_its_row` and `reaches_first_place_when_the_carried_tab_is_wider`.
+- **Most recent switching.** `In order` (default) or `Most recent`; the list reorders only when the
+  Ctrl hold ends, and any other activation counts at once. Held by the `tab_mru` tests and
+  `no_ping_pong_the_order_changes_when_the_hold_ends`.
+- **Restore.** `tabs.json` is Flare's own file, written 400 ms after a change, atomically, and
+  flushed before the shells are killed. Nothing is written until the restore has answered. A gone
+  folder is dropped silently; a Claude tab resumes its newest session (two tabs in one folder take
+  the newest and the second newest); a tab without an agent never resumes. The restore draws the
+  saved strip as placeholders at once and settles them in place. Held by the `restore` and
+  `tabs_store` tests and `nothing_is_written_before_the_restore_answered`.
+  The transcript reader and the 16-at-a-time lookup are M6 (decision D10).
+- **Single instance per profile.** The lock and the hand-off pipe are named by a hash of the
+  profile folder, so an e2e profile never reaches the owner's Flare. A second launch hands its
+  folders over and exits 0; the first instance raises its window. Held by
+  `a_second_launch_hands_its_folder_over_and_exits_zero`, `names_differ_per_profile...` and
+  `the_lock_names_carry_no_prism_name`. The hand-off is verified by the security rule 142.
+- **Command-line folders.** Every path is taken once, in order, at most 32; switches are skipped;
+  a file means its folder; a missing path is ignored; relative paths resolve against the folder the
+  command was typed in. Held by the `argv` tests.
+- **Window state.** `window.json` keeps the size in logical pixels, the position in physical pixels
+  and the scale it was saved at. Minimum 560 x 400, default 1180 x 780. A position off every
+  monitor is dropped; a negative position on a second monitor is kept. Held by the `window_state`
+  tests and `the_overlap_check_uses_device_pixels`.
+- **Close.** One rule, not a setting: a plain shell closes unasked; a tab with an agent asks; the
+  window close is held only while an agent is working. Held by the `close` tests (flare-agent) and
+  `close_flow` (flare-tabs). The shells are killed and waited for, with a 3 s cap.
+- **Vertical tabs.** A sidebar with folders and a find box, open or collapsed; a collapsed sidebar
+  slides over the terminal from the left edge (24 px zone, 60 ms open, 100 ms grace), and the
+  terminal keeps its size during the 240 ms slide and fits once at the end (decision D9). Held by the
+  `reveal` and `sidebar_state` tests and `the_slide_holds_the_terminals_size_and_fits_once`.
+- **Folder drops.** A folder dropped on the tab row or the sidebar opens a new tab in it; a file
+  opens the folder that holds it (decision D12).
+- **Decisions D1 to D14** are the planner's and are listed in `docs/parity.md` (Decisions); the
+  owner may overrule any of them.
+- **Measured on this PC, 2026-10-17 (release build, RTX 5090, Windows 11).**
+  - `--scene strip-3`, process start to written PNG (wall clock, three runs each): GPU 606, 660 and
+    915 ms (median 660 ms); software 252, 254 and 256 ms.
+  - Cold start to a live `cmd` prompt (`--live-screenshot` with `--live-shell cmd`, three runs):
+    720, 731 and 747 ms. M2 measured 348 to 580 ms on the same kind of run; this is higher and
+    the cause is not yet known (a regression to check before M10).
+  - Idle windowed app for 10 s with the sidebar collapsed (vertical tabs, zero tabs, `--e2e`):
+    0 ms of process CPU time, the process alive with 47 threads. The 50 ms timer is stopped when
+    nothing is pending.
+- **Tests that hold it.** The whole workspace: 1107 run, 1107 passed, 2 ignored (M2 ended at 589).
+  The Prism Terminal ledger is in `docs/test-port.md` ("M3 ledger"); every M3 line of
+  `docs/parity.md` names its tests or the milestone that holds it. Ten lines stay open with a
+  reason: the focus hand-back after a drag, the Failed tooltip line, the agent icons, the shared tab
+  look, the sidebar ground (M4), the Settings rows (M7), the greeting check, the transcript reader
+  and its lookup limit (M6), and the once-per-window guard.
+- **Regression rules.** `docs/regression-rules.md` rules 143 to 147 (the profile-keyed lock, the
+  whole device pixel edges, the slide holding the terminal's size, the e2e variable gate, and
+  `tabs.json` written only after the restore answers); rules 48 and 125 are amended with their tests.
+  The plan's numbers 138 to 142 were taken by M2, so these moved to 143 to 147.

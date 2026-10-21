@@ -1,0 +1,17 @@
+// AppMark, moved out of app.slint (Task 22): the app's own mark, drawn on its 800-unit box
+// (the two shapes of build/icon-mark.svg). The title bar uses it at 17 px in Theme.icon; the
+// start screen at 84 px in the accent. Task 25 swaps app.slint over to it.
+import { Theme } from "theme.slint";
+
+export component AppMark inherits Path {
+    in property <length> size: 17px;
+    width: size;
+    height: size;
+    viewbox-x: 116;
+    viewbox-y: 115;
+    viewbox-width: 800;
+    viewbox-height: 800;
+    fill: Theme.icon;
+    fill-rule: evenodd;
+    commands: "M452 212 H601 Q626 212 642 239 L711 351 Q724 373 711 395 L439 795 Q423 818 401 818 H249 Q227 818 213 797 L142 686 Q128 665 140 644 L410 238 Q426 212 452 212 Z M610 265 L353 649 Q343 663 351 677 L411 770 Q419 782 428 768 L684 389 Q695 373 685 357 L629 266 Q620 251 610 265 Z M702 507 H788 Q810 507 824 531 L891 643 Q901 660 891 678 L803 799 Q789 818 770 818 H613 Q590 818 576 797 L544 744 Q532 725 543 707 L664 529 Q679 507 702 507 Z M790 553 L723 650 Q714 663 722 676 L780 770 Q789 782 798 767 L865 672 Q874 660 866 646 L807 550 Q798 540 790 553 Z";
+}

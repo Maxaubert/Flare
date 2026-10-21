@@ -4,6 +4,7 @@ pub mod atlas;
 pub mod blend;
 pub mod color;
 pub mod cpu;
+pub mod device_pixels;
 pub mod glyph;
 pub mod gpu;
 pub mod grid;

@@ -15,4 +15,32 @@ export global Theme {
     out property <length> bar-height: 36px;    // chromeLayout.ts BAR_H
     out property <length> radius-button: 4px;  // Tailwind `rounded`
     out property <length> term-padding: 4px;   // TerminalPanel `p-1`
+
+    // Task 19: pt-default's remaining chrome tokens (opaque values; the CSS variable is the comment).
+    out property <color> tabs: #171717;        // --p-tabs (the title row and the strip)
+    out property <color> tab-active: #171717;  // --p-tab-active
+    out property <color> secondary: #0d0d0d;   // --p-secondary (the sidebar and the bar beside it)
+    out property <color> text-soft: #c2bfb5;   // --p-text-soft
+    out property <color> dim2: #716f6a;        // --p-dim2
+    out property <color> hover: #ffffff0f;     // --p-hover
+    out property <color> side-flat: #1f1f1e;   // --p-side-flat (menus, tips, dialogs, the +N list)
+    out property <color> side-text: #dedacf;   // --p-side-text
+    out property <color> side-dim: #959390;    // --p-side-dim
+    out property <color> accent-solid: #fe8f34; // --p-accent-solid (the app mark, the loading ring)
+    out property <color> on-accent: #0b0b0f;   // --p-on-accent
+    out property <color> tree-folder: #f6a25b; // --p-tree-folder (folder glyphs)
+    out property <color> control: #1e1e1d;     // --p-control
+    out property <color> danger-fill: #b4353f; // Dialog danger
+    out property <color> scrim: #00000080;     // Modal bg-black/50
+    out property <string> font-ui: "Segoe UI"; // --p-font-ui
+}
+
+// Device-pixel helpers (Task 19). A global cannot use phx, so the window sets Px.scale from
+// `1px / 1phx` (the window's scale factor) once at start and on every scale change.
+export global Px {
+    in-out property <float> scale: 1.0;
+    // Rounds a length to a whole number of device pixels.
+    pure public function snap(l: length) -> length { return round(l / 1px * scale) / scale * 1px; }
+    // A hairline: max(1, floor(scale)) device pixels, the Chromium rule Prism Terminal's borders obeyed.
+    pure public function hair() -> length { return max(1.0, floor(scale)) / scale * 1px; }
 }

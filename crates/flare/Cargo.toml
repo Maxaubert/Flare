@@ -10,12 +10,18 @@ build = "build.rs"
 flare-render = { path = "../flare-render" }
 flare-term = { path = "../flare-term" }
 flare-shells = { path = "../flare-shells" }
+flare-tabs = { path = "../flare-tabs" }
+flare-settings = { path = "../flare-settings" }
+flare-win = { path = "../flare-win" }
+flare-agent = { path = "../flare-agent" }
 slint.workspace = true
 wgpu.workspace = true
 png.workspace = true
 log.workspace = true
 env_logger.workspace = true
 windows-sys.workspace = true
+serde_json.workspace = true
+raw-window-handle.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
