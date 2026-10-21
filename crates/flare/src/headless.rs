@@ -1451,13 +1451,26 @@ impl Scene {
     }
 
     /// Writes `text` to the fake shell that was spawned in `cwd` (its output is the agent's word).
+    /// The tabs' shells are spawned as the window settles, so on a slow machine (the release
+    /// runner, 2026-10-21) a later tab's shell may not exist yet: wait for it, never fail at once.
     fn feed(&self, cwd: &str, text: &str) -> Result<(), String> {
-        let shell = self
-            .spawner
-            .made()
-            .into_iter()
-            .find(|m| m.spec().cwd == cwd)
-            .ok_or_else(|| format!("the scene has no shell in {cwd}"))?;
+        let until = Instant::now() + Duration::from_secs(30);
+        let shell = loop {
+            if let Some(m) = self
+                .spawner
+                .made()
+                .into_iter()
+                .find(|m| m.spec().cwd == cwd)
+            {
+                break m;
+            }
+            if Instant::now() >= until {
+                return Err(format!("the scene has no shell in {cwd}"));
+            }
+            self.pump();
+            self.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(5)); // sync-ok: scene tooling, waits for the tab's shell
+        };
         shell.feed(text.as_bytes());
         Ok(())
     }
