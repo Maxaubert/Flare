@@ -70,3 +70,78 @@ export global Px {
     // A hairline: max(1, floor(scale)) device pixels, the Chromium rule Prism Terminal's borders obeyed.
     pure public function hair() -> length { return max(1.0, floor(scale)) / scale * 1px; }
 }
+
+// Milestone 7 (Task 4): the settings tokens, Prism Terminal v0.55.6's numbers (Tailwind classes in PT/,
+// measured in Task 3). This file is the one token file: every fixed settings colour lives here.
+export global SettingsShape {
+    out property <length> radius: 2px;          // --p-radius
+    out property <length> radius-sm: 3px;       // --p-radius-sm
+    out property <length> panel-radius: 5px;    // max(4, radius + 3)
+    out property <length> tile-radius: 4px;     // max(4, radius - 1)
+    out property <length> rail-w: 244px;
+    out property <length> rail-narrow-w: 56px;
+    out property <length> narrow-below: 760px;
+    out property <length> row-min-h: 58px;
+    out property <length> tile: 32px;
+    out property <length> column-max: 960px;
+    out property <length> switch-w: 36px;
+    out property <length> switch-h: 20px;
+    out property <length> switch-knob: 16px;
+    out property <length> control-h: 32px;
+    out property <length> select-min-w: 168px;
+    out property <length> option-h: 28px;
+    out property <length> slider-w: 168px;
+    out property <length> slider-track-h: 6px;
+    out property <length> slider-thumb: 18px;
+    out property <length> popover-w: 226px;
+    out property <length> sv-w: 200px;
+    out property <length> sv-h: 140px;
+    out property <length> bar-h: 12px;
+    out property <length> bar-thumb: 16px;
+    out property <length> card-w: 196px;
+    out property <length> wall-gap: 12px;
+    out property <length> help-min-w: 420px;
+    out property <length> help-max-w: 1100px;
+}
+
+export global SettingsInk {
+    // every one derived from Theme tokens, so a theme switch moves them with no code
+    out property <color> panel-fill: Theme.text.with-alpha(0.036);       // color-mix(text 3.6%, transparent)
+    out property <color> tile-fill: Theme.text.with-alpha(0.06);
+    out property <color> row-hover: Theme.text.with-alpha(0.025);
+    out property <color> sub: Theme.dim.mix(Theme.text, 0.72);            // color-mix(dim 72%, text)
+    out property <color> warn: Theme.light ? SettingsFixed.warn-light.mix(Theme.text, 0.75) : SettingsFixed.warn-dark.mix(Theme.text, 0.85);
+    out property <color> focus-edge: Theme.text.with-alpha(0.22);
+    out property <color> flash: Theme.accent-hi.with-alpha(0.16);
+    out property <color> help-stripe: Theme.text.with-alpha(0.04);
+    out property <color> help-hover: Theme.text.with-alpha(0.09);
+    out property <color> help-active: Theme.text.with-alpha(0.13);
+    out property <color> help-well: Theme.light ? SettingsFixed.black.with-alpha(0.04) : SettingsFixed.black.with-alpha(0.16);
+    out property <color> help-field: Theme.light ? SettingsFixed.black.with-alpha(0.03) : SettingsFixed.black.with-alpha(0.14);
+    out property <color> help-focus-glow: Theme.accent.with-alpha(0.16);
+    out property <color> selection: Theme.accent.with-alpha(0.45);
+}
+
+export global SettingsFixed {
+    out property <color> warn-dark: #e0a84b;
+    out property <color> warn-light: #a46400;
+    out property <color> checker-a: #c4c4c4;
+    out property <color> checker-b: #f4f4f4;
+    out property <color> hue-red: #ff0000;
+    out property <color> hue-yellow: #ffff00;
+    out property <color> hue-green: #00ff00;
+    out property <color> hue-cyan: #00ffff;
+    out property <color> hue-blue: #0000ff;
+    out property <color> hue-magenta: #ff00ff;
+    out property <color> white: #ffffff;
+    out property <color> black: #000000;
+    out property <color> copied: #8fd47a;
+    out property <color> copied-fill: #8fd47a29;   // 16 percent
+    out property <color> copy-failed: #e0a100;
+    out property <color> shadow: #00000040;
+    out property <color> modal-shadow: #00000099;   // Modal.tsx: 0 24px 70px rgba(0,0,0,.6)
+    in-out property <string> font-text: "Segoe UI Variable Text";
+    in-out property <string> font-display: "Segoe UI Variable Display";
+    out property <string> font-fallback: "Segoe UI";
+    out property <string> font-mono: "Cascadia Mono";
+}

@@ -1,0 +1,388 @@
+// The settings select and its menu (M7 Task 33): Prism Terminal's Select (fields.tsx) and its menu
+// (ROW_SCOPE: a popup inside a row casts no shadow, 7 px radius, opaque). The trigger reports its
+// absolute rectangle; Rust places the menu with layout::place_menu (D10). The menu is an overlay
+// the size of the window: a press outside it dismisses, Escape closes it and is consumed. The
+// highlight is the menu's own while it is open (Rust may set it); a choice is only reported.
+import { Px, SettingsShape, SettingsInk, Theme } from "../theme.slint";
+import { SetOption } from "types.slint";
+
+// The trigger: 32 high, min width 168 (the parent gives the width, never less).
+export component SetSelect inherits Rectangle {
+    in property <[SetOption]> options;
+    in property <string> value;
+    in property <bool> disabled;
+    in property <string> label;
+    in property <bool> open;
+    // its absolute x, y, width, height
+    callback open-request(length, length, length, length);
+    out property <bool> keyboard-focus: fs.has-focus && root.by-key;
+    property <bool> by-key;
+
+    min-width: SettingsShape.select-min-w;
+    height: SettingsShape.control-h;
+    border-radius: SettingsShape.radius-sm;
+    background: Theme.control;
+    border-width: Px.hair();
+    border-color: root.keyboard-focus ? SettingsInk.focus-edge : (ta.has-hover && !root.disabled ? Theme.line : Theme.divider);
+    opacity: root.disabled ? 0.5 : 1;
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-expanded: root.open;
+    accessible-action-default => {
+        root.ask();
+    }
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    function ask() {
+        if !root.disabled {
+            root.open-request(root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+        }
+    }
+
+    for o in root.options: Text {
+        visible: o.id == root.value;
+        x: 10px;
+        width: max(0px, root.width - 10px - 8px - 12px - 10px);
+        height: root.height;
+        text: o.name;
+        font-size: 12px;
+        // PT: font-medium. Segoe UI has no Medium face and Chromium draws 500 with the
+        // Semibold one, so 600 here (Task 53).
+        font-weight: 600;
+        font-family: o.face == "" ? Theme.font-ui : o.face;
+        color: Theme.text;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // PT chevron "M6 9l6 6 6-6" (24 box), 12 px, turned over while open. The software painter
+    // does not rotate a Path (Task 53: it stayed pointing down), so the open one is drawn
+    // pointing up instead; the 150 ms turn is the one thing lost.
+    Path {
+        x: (root.width - 10px - 12px) - (1.1px) / 2;
+        y: ((root.height - 12px) / 2) - (1.1px) / 2;
+        width: 12px + (1.1px);
+        height: 12px + (1.1px);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.open ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6";
+        stroke: Theme.dim;
+        stroke-width: 1.1px;
+        fill: transparent;
+    }
+
+    // The FocusScope comes first: a later sibling takes the pointer.
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if root.disabled {
+                return reject;
+            }
+            if e.text == Key.Return || e.text == Key.Space || e.text == Key.DownArrow {
+                root.by-key = true;
+                root.ask();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: !root.disabled;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.by-key = false;
+            }
+        }
+        clicked => {
+            root.ask();
+        }
+    }
+}
+
+// The overlay: window sized, placed at the root of AppWindow. Closed, it is invisible and takes
+// no pointer. menu-x/y/w/h come from Rust (place_menu).
+export component SelectMenu inherits Rectangle {
+    in property <bool> open;
+    in property <[SetOption]> options;
+    in property <string> value;
+    in property <length> menu-x;
+    in property <length> menu-y;
+    in property <length> menu-w;
+    in property <length> menu-h;
+    in-out property <int> highlight: -1;
+    callback chosen(string);
+    callback dismissed();
+    callback key(string);
+
+    visible: root.open;
+
+    // Keeps the highlighted option inside the visible part.
+    function reveal() {
+        let top = root.highlight * SettingsShape.option-h;
+        let bottom = top + SettingsShape.option-h;
+        let view = flick.height;
+        if top < -flick.content-y {
+            flick.content-y = -top;
+        } else if bottom > -flick.content-y + view {
+            flick.content-y = -(bottom - view);
+        }
+    }
+
+    function go(i: int) {
+        let n = root.options.length;
+        root.highlight = n <= 0 ? -1 : (i < 0 ? 0 : (i > n - 1 ? n - 1 : i));
+        root.reveal();
+    }
+
+    function pick(i: int) {
+        if i >= 0 && i < root.options.length {
+            root.chosen(root.options[i].id);
+        }
+    }
+
+    // Closed, the highlight and the scroll reset; opened, the row of the chosen option sets them
+    // itself (a handler cannot loop, so each row watches `arm`).
+    changed open => {
+        if !root.open {
+            root.highlight = -1;
+            flick.content-y = 0;
+        } else {
+            fs.focus();
+        }
+    }
+
+    // Under everything: a press outside the menu closes it.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.open;
+        clicked => {
+            root.dismissed();
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if !root.open {
+                return reject;
+            }
+            if e.text == Key.Escape {
+                root.key("Escape");
+                root.dismissed();
+                return accept;
+            }
+            if e.text == Key.DownArrow {
+                root.key("Down");
+                root.go(root.highlight + 1);
+                return accept;
+            }
+            if e.text == Key.UpArrow {
+                root.key("Up");
+                root.go(root.highlight < 0 ? 0 : root.highlight - 1);
+                return accept;
+            }
+            if e.text == Key.Home {
+                root.key("Home");
+                root.go(0);
+                return accept;
+            }
+            if e.text == Key.End {
+                root.key("End");
+                root.go(root.options.length - 1);
+                return accept;
+            }
+            if e.text == Key.Return || e.text == Key.Space {
+                root.key("Enter");
+                root.pick(root.highlight);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    menu := Rectangle {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: root.menu-w;
+        height: root.menu-h;
+        border-radius: 7px;
+        background: Theme.side-flat;
+        border-width: Px.hair();
+        border-color: Theme.line;
+        clip: true;
+
+        // Absorbs a press on the border and the padding.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+
+        flick := Flickable {
+            x: 0;
+            y: 2px;
+            width: parent.width;
+            height: max(0px, parent.height - 4px);
+            content-width: self.width;
+            content-height: root.options.length * SettingsShape.option-h;
+
+            for o[i] in root.options: Rectangle {
+                x: 0;
+                y: i * SettingsShape.option-h;
+                width: flick.width;
+                height: SettingsShape.option-h;
+                background: root.highlight == i ? Theme.hover : transparent;
+                accessible-role: list-item;
+                accessible-label: o.name;
+                property <bool> arm: root.open && o.id == root.value;
+                changed arm => {
+                    if self.arm {
+                        root.highlight = i;
+                        root.reveal();
+                    }
+                }
+
+                Text {
+                    x: 11px;
+                    width: max(0px, parent.width - 11px - 11px - 12px - 16px);
+                    height: parent.height;
+                    text: o.name;
+                    font-size: 12px;
+                    font-family: o.face == "" ? Theme.font-ui : o.face;
+                    color: o.id == root.value ? Theme.accent-hi : (root.highlight == i ? Theme.text : Theme.text-soft);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                // PT check "M4.5 12.5l5 5 10-11" (24 box), 12 px, at the right.
+                Path {
+                    visible: o.id == root.value;
+                    x: (parent.width - 11px - 12px) - (1.2px) / 2;
+                    y: ((parent.height - 12px) / 2) - (1.2px) / 2;
+                    width: 12px + (1.2px);
+                    height: 12px + (1.2px);
+                    // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: "M4.5 12.5l5 5 10-11";
+                    stroke: Theme.accent-hi;
+                    stroke-width: 1.2px;
+                    fill: transparent;
+                }
+
+                TouchArea {
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.move {
+                            root.highlight = i;
+                        }
+                    }
+                    clicked => {
+                        root.pick(i);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A trigger and its menu, placed the way place_menu does: right edge to the trigger's right, 4 px
+// below it. The window is 400 by 420; the trigger sits at (20, 20).
+export component SelectPreview inherits Window {
+    preferred-width: 400px;
+    preferred-height: 420px;
+    background: Theme.ground;
+
+    out property <float> scale: 1px / 1phx;
+    init => {
+        Px.scale = root.scale;
+    }
+    changed scale => {
+        Px.scale = root.scale;
+    }
+
+    in-out property <[SetOption]> options;
+    in-out property <string> value;
+    in-out property <bool> open;
+    in-out property <bool> disabled;
+    in property <length> want-w: 168px;
+    in-out property <int> highlight <=> menu.highlight;
+    out property <int> leaked;
+
+    callback picked(string);
+    callback closed();
+    callback opened();
+    callback menu-key(string);
+
+    out property <length> trig-x: 20px;
+    out property <length> trig-y: 20px;
+    out property <length> trig-w: Px.snap(max(SettingsShape.select-min-w, root.want-w));
+    out property <length> trig-h: trig.height;
+    out property <length> opt-h: SettingsShape.option-h;
+    out property <length> menu-w: root.trig-w;
+    out property <length> menu-h: Px.snap(min(300px, root.options.length * SettingsShape.option-h + 4px));
+    out property <length> menu-x: Px.snap(root.trig-x + root.trig-w - root.menu-w);
+    out property <length> menu-y: Px.snap(root.trig-y + root.trig-h + 4px);
+
+    public function focus-trigger() {
+        trig.focus-me();
+    }
+
+    host := FocusScope {
+        width: root.width;
+        height: root.height;
+        key-pressed(e) => {
+            root.leaked += 1;
+            return reject;
+        }
+
+        trig := SetSelect {
+            x: root.trig-x;
+            y: root.trig-y;
+            width: root.trig-w;
+            options: root.options;
+            value: root.value;
+            disabled: root.disabled;
+            open: root.open;
+            label: "Select";
+            open-request(ax, ay, aw, ah) => {
+                root.open = true;
+                root.opened();
+            }
+        }
+
+        menu := SelectMenu {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            open: root.open;
+            options: root.options;
+            value: root.value;
+            menu-x: root.menu-x;
+            menu-y: root.menu-y;
+            menu-w: root.menu-w;
+            menu-h: root.menu-h;
+            chosen(id) => {
+                root.value = id;
+                root.open = false;
+                root.picked(id);
+            }
+            dismissed => {
+                root.open = false;
+                root.closed();
+            }
+            key(k) => {
+                root.menu-key(k);
+            }
+        }
+    }
+}

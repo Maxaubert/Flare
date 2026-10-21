@@ -10,6 +10,8 @@ flare-theme = { path = "../flare-theme" }
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
+rusty-leveldb.workspace = true
+unicode-normalization.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

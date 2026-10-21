@@ -1,0 +1,6681 @@
+[
+  {
+    "command": "Get-ChildItem",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Sort-Object LastWriteTime -Descending",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem | Sort-Object LastWriteTime -Descending",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -File | Sort-Object Length -Descending",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem -File | Sort-Object Length -Descending",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Name",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem -Name",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Directory",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem -Directory",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Filter '*.EXTENSION'",
+    "names": [
+      "EXTENSION"
+    ],
+    "out": "Get-ChildItem -Filter '*.EXTENSION'",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Force",
+    "names": [],
+    "out": "Get-ChildItem -Force",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Hidden",
+    "names": [],
+    "out": "Get-ChildItem -Hidden",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content ",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE | Out-Host -Paging",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE | Out-Host -Paging",
+    "key": false
+  },
+  {
+    "command": "Get-Content -TotalCount 20 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content -TotalCount 20 ",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE | Select-Object -Skip 10 -First 5",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE | Select-Object -Skip 10 -First 5",
+    "key": false
+  },
+  {
+    "command": "Get-Process | Select-Object -First 10",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Process | Select-Object -First 10",
+    "key": false
+  },
+  {
+    "command": "Get-Content -Tail 20 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content -Tail 20 ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Select-Object -Last 10",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-ChildItem | Select-Object -Last 10",
+    "key": false
+  },
+  {
+    "command": "Get-Content -Tail 20 -Wait FILE",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Get-Content -Tail 20 -Wait ",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE -Tail 20 -Wait | Select-String 'TEXT'",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Get-Content FILE -Tail 20 -Wait | Select-String ",
+    "key": false
+  },
+  {
+    "command": "New-Item -ItemType File FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "New-Item -ItemType File ",
+    "key": false
+  },
+  {
+    "command": "(Get-Item FILE).LastWriteTime = Get-Date",
+    "names": [
+      "FILE"
+    ],
+    "out": "(Get-Item FILE).LastWriteTime = Get-Date",
+    "key": false
+  },
+  {
+    "command": "Set-Content FILE 'TEXT'",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Set-Content ",
+    "key": false
+  },
+  {
+    "command": "Add-Content FILE 'TEXT'",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Add-Content ",
+    "key": false
+  },
+  {
+    "command": "Copy-Item SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Copy-Item ",
+    "key": false
+  },
+  {
+    "command": "Copy-Item '*.EXTENSION' FOLDER",
+    "names": [
+      "SOURCE",
+      "DESTINATION",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Copy-Item '*.EXTENSION' ",
+    "key": false
+  },
+  {
+    "command": "Move-Item SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "Move-Item ",
+    "key": false
+  },
+  {
+    "command": "Rename-Item OLD_NAME NEW_NAME",
+    "names": [
+      "OLD_NAME",
+      "NEW_NAME"
+    ],
+    "out": "Rename-Item ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item FILE",
+    "names": [
+      "FILE",
+      "EXTENSION"
+    ],
+    "out": "Remove-Item ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item -WhatIf FILE",
+    "names": [
+      "FILE",
+      "EXTENSION"
+    ],
+    "out": "Remove-Item -WhatIf ",
+    "key": false
+  },
+  {
+    "command": "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile((Resolve-Path FILE), 'OnlyErrorDialogs', 'SendToRecycleBin')",
+    "names": [
+      "FILE",
+      "EXTENSION"
+    ],
+    "out": "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile((Resolve-Path FILE), 'OnlyErrorDialogs', 'SendToRecycleBin')",
+    "key": false
+  },
+  {
+    "command": "Remove-Item '*.EXTENSION'",
+    "names": [
+      "FILE",
+      "EXTENSION"
+    ],
+    "out": "Remove-Item '*.EXTENSION'",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "names": [
+      "NAME",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "key": false
+  },
+  {
+    "command": "(Get-ChildItem -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue).FullName",
+    "names": [
+      "NAME",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "(Get-ChildItem -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue).FullName",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -Filter '*.EXTENSION' -ErrorAction SilentlyContinue",
+    "names": [
+      "NAME",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem -Recurse -File -Filter '*.EXTENSION' -ErrorAction SilentlyContinue",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -Directory -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "names": [
+      "NAME",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem -Recurse -Directory -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem FOLDER -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "names": [
+      "NAME",
+      "EXTENSION",
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem FOLDER -Recurse -Filter '*NAME*' -ErrorAction SilentlyContinue",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 20 FullName, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}",
+    "names": [],
+    "out": "Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 20 FullName, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue | Where-Object Length -gt 100MB | Sort-Object Length -Descending | Select-Object FullName, Length",
+    "names": [],
+    "out": "Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue | Where-Object Length -gt 100MB | Sort-Object Length -Descending | Select-Object FullName, Length",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Where-Object LastWriteTime -gt (Get-Date).AddDays(-1) | Sort-Object LastWriteTime -Descending | Select-Object LastWriteTime, FullName",
+    "names": [],
+    "out": "Get-ChildItem -Recurse -File | Where-Object LastWriteTime -gt (Get-Date).AddDays(-1) | Sort-Object LastWriteTime -Descending | Select-Object LastWriteTime, FullName",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Where-Object LastWriteTime -gt (Get-Date).AddHours(-1) | Sort-Object LastWriteTime -Descending | Select-Object LastWriteTime, FullName",
+    "names": [],
+    "out": "Get-ChildItem -Recurse -File | Where-Object LastWriteTime -gt (Get-Date).AddHours(-1) | Sort-Object LastWriteTime -Descending | Select-Object LastWriteTime, FullName",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Select-String 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem -Recurse -File | Select-String ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -Include *.ts, *.js | Select-String 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem -Recurse -File -Include *.ts, *.js | Select-String ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Where-Object FullName -notlike '*\\node_modules\\*' | Select-String 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem -Recurse -File | Where-Object FullName -notlike '*\\node_modules\\*' | Select-String ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Select-String 'TEXT' -List | Select-Object -ExpandProperty Path",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem -Recurse -File | Select-String 'TEXT' -List | Select-Object -ExpandProperty Path",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Select-String -SimpleMatch 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem -Recurse -File | Select-String -SimpleMatch ",
+    "key": false
+  },
+  {
+    "command": "Compress-Archive -Path FOLDER -DestinationPath NAME.zip",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "Compress-Archive -Path FOLDER -DestinationPath NAME.zip",
+    "key": false
+  },
+  {
+    "command": "Compress-Archive -Path FOLDER -DestinationPath NAME.zip -Update",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "Compress-Archive -Path FOLDER -DestinationPath NAME.zip -Update",
+    "key": false
+  },
+  {
+    "command": "tar -czf NAME.tar.gz FOLDER",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "tar -czf NAME.tar.gz ",
+    "key": false
+  },
+  {
+    "command": "Expand-Archive NAME -DestinationPath FOLDER",
+    "names": [
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "Expand-Archive NAME -DestinationPath ",
+    "key": false
+  },
+  {
+    "command": "tar -tf NAME",
+    "names": [
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "tar -tf ",
+    "key": false
+  },
+  {
+    "command": "tar -xzf NAME",
+    "names": [
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "tar -xzf ",
+    "key": false
+  },
+  {
+    "command": "Get-FileHash FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-FileHash ",
+    "key": false
+  },
+  {
+    "command": "Get-FileHash -Algorithm MD5 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-FileHash -Algorithm MD5 ",
+    "key": false
+  },
+  {
+    "command": "Get-FileHash -Algorithm SHA1 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-FileHash -Algorithm SHA1 ",
+    "key": false
+  },
+  {
+    "command": "Invoke-Item FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Invoke-Item ",
+    "key": false
+  },
+  {
+    "command": "notepad FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "notepad ",
+    "key": false
+  },
+  {
+    "command": "code FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "code ",
+    "key": false
+  },
+  {
+    "command": "Get-Item FILE | Select-Object Name, Length, CreationTime, LastWriteTime, Attributes",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Item FILE | Select-Object Name, Length, CreationTime, LastWriteTime, Attributes",
+    "key": false
+  },
+  {
+    "command": "Get-Item FILE | Format-List *",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Item FILE | Format-List *",
+    "key": false
+  },
+  {
+    "command": "(Resolve-Path FILE).Path",
+    "names": [
+      "FILE"
+    ],
+    "out": "(Resolve-Path FILE).Path",
+    "key": false
+  },
+  {
+    "command": "(Resolve-Path FILE).Path | Set-Clipboard",
+    "names": [
+      "FILE"
+    ],
+    "out": "(Resolve-Path FILE).Path | Set-Clipboard",
+    "key": false
+  },
+  {
+    "command": "Test-Path FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Test-Path ",
+    "key": false
+  },
+  {
+    "command": "New-Item -ItemType Junction -Path LINK -Target FULL_PATH",
+    "names": [
+      "LINK",
+      "FULL_PATH"
+    ],
+    "out": "New-Item -ItemType Junction -Path LINK -Target ",
+    "key": false
+  },
+  {
+    "command": "New-Item -ItemType SymbolicLink -Path LINK -Target FULL_PATH",
+    "names": [
+      "LINK",
+      "FULL_PATH"
+    ],
+    "out": "New-Item -ItemType SymbolicLink -Path LINK -Target ",
+    "key": false
+  },
+  {
+    "command": "Get-Location",
+    "names": [],
+    "out": "Get-Location",
+    "key": false
+  },
+  {
+    "command": "(Get-Location).Path | Set-Clipboard",
+    "names": [],
+    "out": "(Get-Location).Path | Set-Clipboard",
+    "key": false
+  },
+  {
+    "command": "Set-Location FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location ",
+    "key": false
+  },
+  {
+    "command": "Set-Location 'C:\\Program Files'",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location 'C:\\Program Files'",
+    "key": false
+  },
+  {
+    "command": "Set-Location ~",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location ~",
+    "key": false
+  },
+  {
+    "command": "Set-Location ~\\Downloads",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location ~\\Downloads",
+    "key": false
+  },
+  {
+    "command": "Set-Location D:",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location D:",
+    "key": false
+  },
+  {
+    "command": "Set-Location -",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Set-Location -",
+    "key": false
+  },
+  {
+    "command": "Set-Location ..",
+    "names": [],
+    "out": "Set-Location ..",
+    "key": false
+  },
+  {
+    "command": "Set-Location ..\\..",
+    "names": [],
+    "out": "Set-Location ..\\..",
+    "key": false
+  },
+  {
+    "command": "Set-Location \\",
+    "names": [],
+    "out": "Set-Location \\",
+    "key": false
+  },
+  {
+    "command": "New-Item -ItemType Directory FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "New-Item -ItemType Directory ",
+    "key": false
+  },
+  {
+    "command": "mkdir FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "mkdir ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item -Recurse FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Remove-Item -Recurse ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item -Recurse -WhatIf FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Remove-Item -Recurse -WhatIf ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item -Recurse -Force FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Remove-Item -Recurse -Force ",
+    "key": false
+  },
+  {
+    "command": "Copy-Item FOLDER DESTINATION -Recurse",
+    "names": [
+      "FOLDER",
+      "DESTINATION"
+    ],
+    "out": "Copy-Item FOLDER DESTINATION -Recurse",
+    "key": false
+  },
+  {
+    "command": "robocopy FOLDER DESTINATION /E",
+    "names": [
+      "FOLDER",
+      "DESTINATION"
+    ],
+    "out": "robocopy FOLDER DESTINATION /E",
+    "key": false
+  },
+  {
+    "command": "'{0:N1} MB' -f ((Get-ChildItem FOLDER -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB)",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "'{0:N1} MB' -f ((Get-ChildItem FOLDER -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB)",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Directory | ForEach-Object { [pscustomobject]@{ Folder = $_.Name; MB = [math]::Round((Get-ChildItem $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB, 1) } } | Sort-Object MB -Descending",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem -Directory | ForEach-Object { [pscustomobject]@{ Folder = $_.Name; MB = [math]::Round((Get-ChildItem $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB, 1) } } | Sort-Object MB -Descending",
+    "key": false
+  },
+  {
+    "command": "tree /F",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "tree /F",
+    "key": false
+  },
+  {
+    "command": "tree",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "tree",
+    "key": false
+  },
+  {
+    "command": "tree /F /A FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "tree /F /A ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -Depth 1 -Name",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "Get-ChildItem -Recurse -Depth 1 -Name",
+    "key": false
+  },
+  {
+    "command": "explorer .",
+    "names": [
+      "FOLDER",
+      "FILE"
+    ],
+    "out": "explorer .",
+    "key": false
+  },
+  {
+    "command": "Invoke-Item FOLDER",
+    "names": [
+      "FOLDER",
+      "FILE"
+    ],
+    "out": "Invoke-Item ",
+    "key": false
+  },
+  {
+    "command": "explorer \"/select,$(Resolve-Path FILE)\"",
+    "names": [
+      "FOLDER",
+      "FILE"
+    ],
+    "out": "explorer \"/select,$(Resolve-Path FILE)\"",
+    "key": false
+  },
+  {
+    "command": "(Get-ChildItem -Recurse -File | Measure-Object).Count",
+    "names": [],
+    "out": "(Get-ChildItem -Recurse -File | Measure-Object).Count",
+    "key": false
+  },
+  {
+    "command": "(Get-ChildItem -File | Measure-Object).Count",
+    "names": [],
+    "out": "(Get-ChildItem -File | Measure-Object).Count",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File | Group-Object Extension | Sort-Object Count -Descending | Select-Object Count, Name",
+    "names": [],
+    "out": "Get-ChildItem -Recurse -File | Group-Object Extension | Sort-Object Count -Descending | Select-Object Count, Name",
+    "key": false
+  },
+  {
+    "command": "Get-Process | Out-String -Stream | Select-String 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-Process | Out-String -Stream | Select-String ",
+    "key": false
+  },
+  {
+    "command": "Get-Service | Out-String -Stream | Select-String -NotMatch 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-Service | Out-String -Stream | Select-String -NotMatch ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Out-String -Stream | Select-String -CaseSensitive 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-ChildItem | Out-String -Stream | Select-String -CaseSensitive ",
+    "key": false
+  },
+  {
+    "command": "Select-String -Path FILE -Pattern 'TEXT'",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Select-String -Path FILE -Pattern ",
+    "key": false
+  },
+  {
+    "command": "Select-String -Path FILE -Pattern 'TEXT' -Context 2",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Select-String -Path FILE -Pattern 'TEXT' -Context 2",
+    "key": false
+  },
+  {
+    "command": "Select-String -Path FILE -Pattern 'TEXT' -SimpleMatch",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Select-String -Path FILE -Pattern 'TEXT' -SimpleMatch",
+    "key": false
+  },
+  {
+    "command": "Select-String -Path *.log -Pattern 'TEXT'",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "Select-String -Path *.log -Pattern ",
+    "key": false
+  },
+  {
+    "command": "(Select-String -Path FILE -Pattern 'TEXT').Count",
+    "names": [
+      "FILE",
+      "TEXT"
+    ],
+    "out": "(Select-String -Path FILE -Pattern 'TEXT').Count",
+    "key": false
+  },
+  {
+    "command": "(Get-Content FILE | Measure-Object -Line).Lines",
+    "names": [
+      "FILE"
+    ],
+    "out": "(Get-Content FILE | Measure-Object -Line).Lines",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE | Measure-Object -Line -Word -Character",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE | Measure-Object -Line -Word -Character",
+    "key": false
+  },
+  {
+    "command": "(Get-Process | Measure-Object).Count",
+    "names": [
+      "FILE"
+    ],
+    "out": "(Get-Process | Measure-Object).Count",
+    "key": false
+  },
+  {
+    "command": "(Get-Content FILE -Raw) -replace 'OLD', 'NEW' | Set-Content FILE -NoNewline",
+    "names": [
+      "FILE",
+      "OLD",
+      "NEW"
+    ],
+    "out": "(Get-Content FILE -Raw) -replace 'OLD', 'NEW' | Set-Content FILE -NoNewline",
+    "key": false
+  },
+  {
+    "command": "(Get-Content FILE -Raw) -replace 'OLD', 'NEW'",
+    "names": [
+      "FILE",
+      "OLD",
+      "NEW"
+    ],
+    "out": "(Get-Content FILE -Raw) -replace 'OLD', ",
+    "key": false
+  },
+  {
+    "command": "Compare-Object (Get-Content FILE_A) (Get-Content FILE_B)",
+    "names": [
+      "FILE_A",
+      "FILE_B"
+    ],
+    "out": "Compare-Object (Get-Content FILE_A) (Get-Content FILE_B)",
+    "key": false
+  },
+  {
+    "command": "fc.exe FILE_A FILE_B",
+    "names": [
+      "FILE_A",
+      "FILE_B"
+    ],
+    "out": "fc.exe ",
+    "key": false
+  },
+  {
+    "command": "git diff --no-index FILE_A FILE_B",
+    "names": [
+      "FILE_A",
+      "FILE_B"
+    ],
+    "out": "git diff --no-index ",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE | Sort-Object -Unique",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE | Sort-Object -Unique",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE | Group-Object | Sort-Object Count -Descending | Select-Object Count, Name",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE | Group-Object | Sort-Object Count -Descending | Select-Object Count, Name",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Select-Object Name, PROPERTY",
+    "names": [
+      "PROPERTY"
+    ],
+    "out": "Get-ChildItem | Select-Object Name, ",
+    "key": false
+  },
+  {
+    "command": "Get-Process | Select-Object Name, Id",
+    "names": [
+      "PROPERTY"
+    ],
+    "out": "Get-Process | Select-Object Name, Id",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Get-Member -MemberType Property",
+    "names": [
+      "PROPERTY"
+    ],
+    "out": "Get-ChildItem | Get-Member -MemberType Property",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Select-Object -ExpandProperty PROPERTY",
+    "names": [
+      "PROPERTY"
+    ],
+    "out": "Get-ChildItem | Select-Object -ExpandProperty ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Sort-Object PROPERTY -Descending | Select-Object -First 10",
+    "names": [
+      "PROPERTY"
+    ],
+    "out": "Get-ChildItem | Sort-Object PROPERTY -Descending | Select-Object -First 10",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Where-Object PROPERTY -like '*TEXT*'",
+    "names": [
+      "PROPERTY",
+      "TEXT",
+      "NUMBER"
+    ],
+    "out": "Get-ChildItem | Where-Object PROPERTY -like '*TEXT*'",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -File | Where-Object Length -gt 10MB",
+    "names": [
+      "PROPERTY",
+      "TEXT",
+      "NUMBER"
+    ],
+    "out": "Get-ChildItem -File | Where-Object Length -gt 10MB",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Where-Object { $_.Name -like '*TEXT*' -and $_.Length -gt NUMBER }",
+    "names": [
+      "PROPERTY",
+      "TEXT",
+      "NUMBER"
+    ],
+    "out": "Get-ChildItem | Where-Object { $_.Name -like '*TEXT*' -and $_.Length -gt NUMBER }",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Format-List",
+    "names": [],
+    "out": "Get-ChildItem | Format-List",
+    "key": false
+  },
+  {
+    "command": "Get-Process -Id $PID | Format-List *",
+    "names": [],
+    "out": "Get-Process -Id $PID | Format-List *",
+    "key": false
+  },
+  {
+    "command": "Get-Service | Format-Table -AutoSize -Wrap",
+    "names": [],
+    "out": "Get-Service | Format-Table -AutoSize -Wrap",
+    "key": false
+  },
+  {
+    "command": "Get-Command | Out-Host -Paging",
+    "names": [],
+    "out": "Get-Command | Out-Host -Paging",
+    "key": false
+  },
+  {
+    "command": "ipconfig /all | more",
+    "names": [],
+    "out": "ipconfig /all | more",
+    "key": false
+  },
+  {
+    "command": "(Get-Content FILE.json -Raw | ConvertFrom-Json).KEY",
+    "names": [
+      "FILE",
+      "KEY"
+    ],
+    "out": "(Get-Content FILE.json -Raw | ConvertFrom-Json).KEY",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE.json -Raw | ConvertFrom-Json",
+    "names": [
+      "FILE",
+      "KEY"
+    ],
+    "out": "Get-Content FILE.json -Raw | ConvertFrom-Json",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Select-Object Name, Length | ConvertTo-Json",
+    "names": [
+      "FILE",
+      "KEY"
+    ],
+    "out": "Get-ChildItem | Select-Object Name, Length | ConvertTo-Json",
+    "key": false
+  },
+  {
+    "command": "Import-Csv FILE.csv | Format-Table",
+    "names": [
+      "FILE",
+      "KEY"
+    ],
+    "out": "Import-Csv FILE.csv | Format-Table",
+    "key": false
+  },
+  {
+    "command": "Get-Process",
+    "names": [],
+    "out": "Get-Process",
+    "key": false
+  },
+  {
+    "command": "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10 Name, Id, @{n='MB';e={[math]::Round($_.WorkingSet64/1MB)}}",
+    "names": [],
+    "out": "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10 Name, Id, @{n='MB';e={[math]::Round($_.WorkingSet64/1MB)}}",
+    "key": false
+  },
+  {
+    "command": "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, Id, CPU",
+    "names": [],
+    "out": "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, Id, CPU",
+    "key": false
+  },
+  {
+    "command": "tasklist",
+    "names": [],
+    "out": "tasklist",
+    "key": false
+  },
+  {
+    "command": "Get-Process -Name '*NAME*'",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Process -Name '*NAME*'",
+    "key": false
+  },
+  {
+    "command": "Get-Process -Name '*NAME*' | Select-Object Id, Name, Path",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Process -Name '*NAME*' | Select-Object Id, Name, Path",
+    "key": false
+  },
+  {
+    "command": "Get-Process -Name '*NAME*' | Select-Object Id, Name, StartTime",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Process -Name '*NAME*' | Select-Object Id, Name, StartTime",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_Process -Filter \"Name='NAME.exe'\" | Select-Object ProcessId, ParentProcessId, CommandLine | Format-List",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "Get-CimInstance Win32_Process -Filter \"Name='NAME.exe'\" | Select-Object ProcessId, ParentProcessId, CommandLine | Format-List",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_Process | Where-Object CommandLine -like '*TEXT*' | Select-Object ProcessId, Name, CommandLine | Format-List",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "Get-CimInstance Win32_Process | Where-Object CommandLine -like '*TEXT*' | Select-Object ProcessId, Name, CommandLine | Format-List",
+    "key": false
+  },
+  {
+    "command": "Stop-Process -Name NAME",
+    "names": [
+      "NAME",
+      "PROCESS_ID"
+    ],
+    "out": "Stop-Process -Name ",
+    "key": false
+  },
+  {
+    "command": "Stop-Process -WhatIf -Name NAME",
+    "names": [
+      "NAME",
+      "PROCESS_ID"
+    ],
+    "out": "Stop-Process -WhatIf -Name ",
+    "key": false
+  },
+  {
+    "command": "Stop-Process -Id PROCESS_ID",
+    "names": [
+      "NAME",
+      "PROCESS_ID"
+    ],
+    "out": "Stop-Process -Id ",
+    "key": false
+  },
+  {
+    "command": "Stop-Process -Force -Id PROCESS_ID",
+    "names": [
+      "NAME",
+      "PROCESS_ID"
+    ],
+    "out": "Stop-Process -Force -Id ",
+    "key": false
+  },
+  {
+    "command": "taskkill /F /T /PID PROCESS_ID",
+    "names": [
+      "NAME",
+      "PROCESS_ID"
+    ],
+    "out": "taskkill /F /T /PID ",
+    "key": false
+  },
+  {
+    "command": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-Process -Id $_.OwningProcess } | Select-Object -Unique Id, ProcessName, Path",
+    "names": [
+      "PORT"
+    ],
+    "out": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-Process -Id $_.OwningProcess } | Select-Object -Unique Id, ProcessName, Path",
+    "key": false
+  },
+  {
+    "command": "netstat -ano | findstr :PORT",
+    "names": [
+      "PORT"
+    ],
+    "out": "netstat -ano | findstr :PORT",
+    "key": false
+  },
+  {
+    "command": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }",
+    "names": [
+      "PORT"
+    ],
+    "out": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force }",
+    "key": false
+  },
+  {
+    "command": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -WhatIf }",
+    "names": [
+      "PORT"
+    ],
+    "out": "Get-NetTCPConnection -LocalPort PORT -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -WhatIf }",
+    "key": false
+  },
+  {
+    "command": "Ctrl+C",
+    "names": [],
+    "out": "Ctrl+C",
+    "key": true
+  },
+  {
+    "command": "Start-Process PROGRAM -ArgumentList 'ARGUMENTS'",
+    "names": [
+      "PROGRAM",
+      "ARGUMENTS"
+    ],
+    "out": "Start-Process PROGRAM -ArgumentList ",
+    "key": false
+  },
+  {
+    "command": "$job = Start-Job { Test-Connection 1.1.1.1 -Count 20 }",
+    "names": [
+      "PROGRAM",
+      "ARGUMENTS"
+    ],
+    "out": "$job = Start-Job { Test-Connection 1.1.1.1 -Count 20 }",
+    "key": false
+  },
+  {
+    "command": "Receive-Job $job",
+    "names": [
+      "PROGRAM",
+      "ARGUMENTS"
+    ],
+    "out": "Receive-Job $job",
+    "key": false
+  },
+  {
+    "command": "Get-Job; Get-Job | Remove-Job -Force",
+    "names": [
+      "PROGRAM",
+      "ARGUMENTS"
+    ],
+    "out": "Get-Job; Get-Job | Remove-Job -Force",
+    "key": false
+  },
+  {
+    "command": "npm run dev &",
+    "names": [
+      "PROGRAM",
+      "ARGUMENTS"
+    ],
+    "out": "npm run dev &",
+    "key": false
+  },
+  {
+    "command": "Test-Connection -Count 4 HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "Test-Connection -Count 4 ",
+    "key": false
+  },
+  {
+    "command": "Test-Connection 1.1.1.1 -Count 2",
+    "names": [
+      "HOST"
+    ],
+    "out": "Test-Connection 1.1.1.1 -Count 2",
+    "key": false
+  },
+  {
+    "command": "ping HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "ping ",
+    "key": false
+  },
+  {
+    "command": "Test-NetConnection HOST -Port PORT",
+    "names": [
+      "HOST",
+      "PORT"
+    ],
+    "out": "Test-NetConnection HOST -Port ",
+    "key": false
+  },
+  {
+    "command": "Test-NetConnection localhost -Port PORT",
+    "names": [
+      "HOST",
+      "PORT"
+    ],
+    "out": "Test-NetConnection localhost -Port ",
+    "key": false
+  },
+  {
+    "command": "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress",
+    "names": [],
+    "out": "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress",
+    "key": false
+  },
+  {
+    "command": "ipconfig",
+    "names": [],
+    "out": "ipconfig",
+    "key": false
+  },
+  {
+    "command": "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{n='IPv4';e={$_.IPv4Address.IPAddress}}, @{n='Gateway';e={$_.IPv4DefaultGateway.NextHop}}",
+    "names": [],
+    "out": "Get-NetIPConfiguration | Select-Object InterfaceAlias, @{n='IPv4';e={$_.IPv4Address.IPAddress}}, @{n='Gateway';e={$_.IPv4DefaultGateway.NextHop}}",
+    "key": false
+  },
+  {
+    "command": "Invoke-RestMethod https://api.ipify.org",
+    "names": [],
+    "out": "Invoke-RestMethod https://api.ipify.org",
+    "key": false
+  },
+  {
+    "command": "Invoke-WebRequest URL -OutFile FILE -UseBasicParsing",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "Invoke-WebRequest URL -OutFile FILE -UseBasicParsing",
+    "key": false
+  },
+  {
+    "command": "curl.exe -L -o FILE URL",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "curl.exe -L -o ",
+    "key": false
+  },
+  {
+    "command": "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest URL -OutFile FILE -UseBasicParsing",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest URL -OutFile FILE -UseBasicParsing",
+    "key": false
+  },
+  {
+    "command": "Invoke-RestMethod URL",
+    "names": [
+      "URL",
+      "KEY",
+      "VALUE",
+      "TOKEN"
+    ],
+    "out": "Invoke-RestMethod ",
+    "key": false
+  },
+  {
+    "command": "Invoke-RestMethod URL -Method Post -ContentType 'application/json' -Body '{\"KEY\":\"VALUE\"}'",
+    "names": [
+      "URL",
+      "KEY",
+      "VALUE",
+      "TOKEN"
+    ],
+    "out": "Invoke-RestMethod URL -Method Post -ContentType 'application/json' -Body '{\"KEY\":\"VALUE\"}'",
+    "key": false
+  },
+  {
+    "command": "Invoke-RestMethod URL -Headers @{ Authorization = 'Bearer TOKEN' }",
+    "names": [
+      "URL",
+      "KEY",
+      "VALUE",
+      "TOKEN"
+    ],
+    "out": "Invoke-RestMethod URL -Headers @{ Authorization = 'Bearer TOKEN' }",
+    "key": false
+  },
+  {
+    "command": "curl.exe -sI URL",
+    "names": [
+      "URL",
+      "KEY",
+      "VALUE",
+      "TOKEN"
+    ],
+    "out": "curl.exe -sI ",
+    "key": false
+  },
+  {
+    "command": "curl.exe -s URL",
+    "names": [
+      "URL",
+      "KEY",
+      "VALUE",
+      "TOKEN"
+    ],
+    "out": "curl.exe -s ",
+    "key": false
+  },
+  {
+    "command": "Resolve-DnsName HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "Resolve-DnsName ",
+    "key": false
+  },
+  {
+    "command": "Resolve-DnsName -Type TXT HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "Resolve-DnsName -Type TXT ",
+    "key": false
+  },
+  {
+    "command": "Resolve-DnsName -Server 1.1.1.1 HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "Resolve-DnsName -Server 1.1.1.1 ",
+    "key": false
+  },
+  {
+    "command": "nslookup HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "nslookup ",
+    "key": false
+  },
+  {
+    "command": "Get-NetTCPConnection -State Listen | Sort-Object LocalPort | Select-Object LocalPort, OwningProcess, @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}} -Unique",
+    "names": [],
+    "out": "Get-NetTCPConnection -State Listen | Sort-Object LocalPort | Select-Object LocalPort, OwningProcess, @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}} -Unique",
+    "key": false
+  },
+  {
+    "command": "netstat -ano",
+    "names": [],
+    "out": "netstat -ano",
+    "key": false
+  },
+  {
+    "command": "ipconfig /flushdns",
+    "names": [],
+    "out": "ipconfig /flushdns",
+    "key": false
+  },
+  {
+    "command": "Clear-DnsClientCache",
+    "names": [],
+    "out": "Clear-DnsClientCache",
+    "key": false
+  },
+  {
+    "command": "tracert HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "tracert ",
+    "key": false
+  },
+  {
+    "command": "Test-NetConnection -TraceRoute HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "Test-NetConnection -TraceRoute ",
+    "key": false
+  },
+  {
+    "command": "Start-Process 'URL'",
+    "names": [
+      "URL",
+      "PORT"
+    ],
+    "out": "Start-Process ",
+    "key": false
+  },
+  {
+    "command": "Start-Process 'http://localhost:PORT'",
+    "names": [
+      "URL",
+      "PORT"
+    ],
+    "out": "Start-Process 'http://localhost:PORT'",
+    "key": false
+  },
+  {
+    "command": "Get-PSDrive -PSProvider FileSystem",
+    "names": [],
+    "out": "Get-PSDrive -PSProvider FileSystem",
+    "key": false
+  },
+  {
+    "command": "Get-Volume",
+    "names": [],
+    "out": "Get-Volume",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_OperatingSystem | Select-Object @{n='TotalGB';e={[math]::Round($_.TotalVisibleMemorySize/1MB,1)}}, @{n='FreeGB';e={[math]::Round($_.FreePhysicalMemory/1MB,1)}}",
+    "names": [],
+    "out": "Get-CimInstance Win32_OperatingSystem | Select-Object @{n='TotalGB';e={[math]::Round($_.TotalVisibleMemorySize/1MB,1)}}, @{n='FreeGB';e={[math]::Round($_.FreePhysicalMemory/1MB,1)}}",
+    "key": false
+  },
+  {
+    "command": "$PSVersionTable.PSVersion",
+    "names": [],
+    "out": "$PSVersionTable.PSVersion",
+    "key": false
+  },
+  {
+    "command": "Get-Command pwsh",
+    "names": [],
+    "out": "Get-Command pwsh",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture",
+    "names": [],
+    "out": "Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors",
+    "names": [],
+    "out": "Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors",
+    "key": false
+  },
+  {
+    "command": "Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion",
+    "names": [],
+    "out": "Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion",
+    "key": false
+  },
+  {
+    "command": "systeminfo",
+    "names": [],
+    "out": "systeminfo",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem Env:",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "Get-ChildItem Env:",
+    "key": false
+  },
+  {
+    "command": "$env:NAME",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "$env:NAME",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem Env: | Where-Object Name -like '*TEXT*'",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "Get-ChildItem Env: | Where-Object Name -like '*TEXT*'",
+    "key": false
+  },
+  {
+    "command": "$env:NAME = 'VALUE'",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "$env:NAME = ",
+    "key": false
+  },
+  {
+    "command": "Remove-Item Env:NAME",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "Remove-Item Env:NAME",
+    "key": false
+  },
+  {
+    "command": "[Environment]::SetEnvironmentVariable('NAME', 'VALUE', 'User')",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "[Environment]::SetEnvironmentVariable('NAME', 'VALUE', 'User')",
+    "key": false
+  },
+  {
+    "command": "[Environment]::GetEnvironmentVariable('NAME', 'User')",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "[Environment]::GetEnvironmentVariable('NAME', 'User')",
+    "key": false
+  },
+  {
+    "command": "[Environment]::SetEnvironmentVariable('NAME', $null, 'User')",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "[Environment]::SetEnvironmentVariable('NAME', $null, 'User')",
+    "key": false
+  },
+  {
+    "command": "$env:Path -split ';'",
+    "names": [],
+    "out": "$env:Path -split ';'",
+    "key": false
+  },
+  {
+    "command": "$env:Path += ';FOLDER'",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "$env:Path += ';FOLDER'",
+    "key": false
+  },
+  {
+    "command": "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';FOLDER', 'User')",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';FOLDER', 'User')",
+    "key": false
+  },
+  {
+    "command": "[Environment]::GetEnvironmentVariable('Path', 'User') -split ';'",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "[Environment]::GetEnvironmentVariable('Path', 'User') -split ';'",
+    "key": false
+  },
+  {
+    "command": "Get-Command NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Command ",
+    "key": false
+  },
+  {
+    "command": "(Get-Command NAME).Source",
+    "names": [
+      "NAME"
+    ],
+    "out": "(Get-Command NAME).Source",
+    "key": false
+  },
+  {
+    "command": "Get-Command -All NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Command -All ",
+    "key": false
+  },
+  {
+    "command": "where.exe NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "where.exe ",
+    "key": false
+  },
+  {
+    "command": "Start-Process powershell -Verb RunAs",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "Start-Process powershell -Verb RunAs",
+    "key": false
+  },
+  {
+    "command": "Start-Process pwsh -Verb RunAs",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "Start-Process pwsh -Verb RunAs",
+    "key": false
+  },
+  {
+    "command": "Start-Process pwsh -Verb RunAs -ArgumentList '-NoExit', '-Command', \"Set-Location '$PWD'\"",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "Start-Process pwsh -Verb RunAs -ArgumentList '-NoExit', '-Command', \"Set-Location '$PWD'\"",
+    "key": false
+  },
+  {
+    "command": "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+    "key": false
+  },
+  {
+    "command": "sudo COMMAND",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "sudo ",
+    "key": false
+  },
+  {
+    "command": "whoami",
+    "names": [],
+    "out": "whoami",
+    "key": false
+  },
+  {
+    "command": "$env:COMPUTERNAME",
+    "names": [],
+    "out": "$env:COMPUTERNAME",
+    "key": false
+  },
+  {
+    "command": "$env:USERPROFILE",
+    "names": [],
+    "out": "$env:USERPROFILE",
+    "key": false
+  },
+  {
+    "command": "Get-Service | Where-Object Status -eq 'Running'",
+    "names": [
+      "NAME",
+      "SERVICE_NAME"
+    ],
+    "out": "Get-Service | Where-Object Status -eq 'Running'",
+    "key": false
+  },
+  {
+    "command": "Get-Service -DisplayName '*NAME*'",
+    "names": [
+      "NAME",
+      "SERVICE_NAME"
+    ],
+    "out": "Get-Service -DisplayName '*NAME*'",
+    "key": false
+  },
+  {
+    "command": "Restart-Service SERVICE_NAME",
+    "names": [
+      "NAME",
+      "SERVICE_NAME"
+    ],
+    "out": "Restart-Service ",
+    "key": false
+  },
+  {
+    "command": "(Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime | Select-Object Days, Hours, Minutes",
+    "names": [],
+    "out": "(Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime | Select-Object Days, Hours, Minutes",
+    "key": false
+  },
+  {
+    "command": "Get-Uptime",
+    "names": [],
+    "out": "Get-Uptime",
+    "key": false
+  },
+  {
+    "command": "Get-Date",
+    "names": [],
+    "out": "Get-Date",
+    "key": false
+  },
+  {
+    "command": "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'",
+    "names": [],
+    "out": "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'",
+    "key": false
+  },
+  {
+    "command": "Get-Date -Format 'yyyyMMdd-HHmmss'",
+    "names": [],
+    "out": "Get-Date -Format 'yyyyMMdd-HHmmss'",
+    "key": false
+  },
+  {
+    "command": "(Get-Date).ToUniversalTime().ToString('o')",
+    "names": [],
+    "out": "(Get-Date).ToUniversalTime().ToString('o')",
+    "key": false
+  },
+  {
+    "command": "Clear-Host",
+    "names": [],
+    "out": "Clear-Host",
+    "key": false
+  },
+  {
+    "command": "cls",
+    "names": [],
+    "out": "cls",
+    "key": false
+  },
+  {
+    "command": "Get-History",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-History",
+    "key": false
+  },
+  {
+    "command": "Get-Content (Get-PSReadLineOption).HistorySavePath -Tail 50",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-Content (Get-PSReadLineOption).HistorySavePath -Tail 50",
+    "key": false
+  },
+  {
+    "command": "Get-Content (Get-PSReadLineOption).HistorySavePath | Select-String 'TEXT'",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Get-Content (Get-PSReadLineOption).HistorySavePath | Select-String ",
+    "key": false
+  },
+  {
+    "command": "Invoke-History 12",
+    "names": [
+      "TEXT"
+    ],
+    "out": "Invoke-History 12",
+    "key": false
+  },
+  {
+    "command": "Get-Help -Examples NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Help -Examples ",
+    "key": false
+  },
+  {
+    "command": "Get-Help -Online NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Help -Online ",
+    "key": false
+  },
+  {
+    "command": "Get-Help -Full NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "Get-Help -Full ",
+    "key": false
+  },
+  {
+    "command": "git --help",
+    "names": [
+      "NAME"
+    ],
+    "out": "git --help",
+    "key": false
+  },
+  {
+    "command": "Get-Command '*WORD*'",
+    "names": [
+      "WORD"
+    ],
+    "out": "Get-Command '*WORD*'",
+    "key": false
+  },
+  {
+    "command": "Get-Command -Noun '*WORD*'",
+    "names": [
+      "WORD"
+    ],
+    "out": "Get-Command -Noun '*WORD*'",
+    "key": false
+  },
+  {
+    "command": "Get-Help '*WORD*'",
+    "names": [
+      "WORD"
+    ],
+    "out": "Get-Help '*WORD*'",
+    "key": false
+  },
+  {
+    "command": "Set-Alias SHORT_NAME COMMAND",
+    "names": [
+      "SHORT_NAME",
+      "COMMAND",
+      "ARGUMENTS"
+    ],
+    "out": "Set-Alias ",
+    "key": false
+  },
+  {
+    "command": "function SHORT_NAME { COMMAND ARGUMENTS @args }",
+    "names": [
+      "SHORT_NAME",
+      "COMMAND",
+      "ARGUMENTS"
+    ],
+    "out": "function SHORT_NAME { COMMAND ARGUMENTS @args }",
+    "key": false
+  },
+  {
+    "command": "function gs { git status @args }",
+    "names": [
+      "SHORT_NAME",
+      "COMMAND",
+      "ARGUMENTS"
+    ],
+    "out": "function gs { git status @args }",
+    "key": false
+  },
+  {
+    "command": "Get-Alias SHORT_NAME",
+    "names": [
+      "SHORT_NAME",
+      "COMMAND",
+      "ARGUMENTS"
+    ],
+    "out": "Get-Alias ",
+    "key": false
+  },
+  {
+    "command": "Get-Alias -Definition Get-ChildItem",
+    "names": [
+      "SHORT_NAME",
+      "COMMAND",
+      "ARGUMENTS"
+    ],
+    "out": "Get-Alias -Definition Get-ChildItem",
+    "key": false
+  },
+  {
+    "command": "if (!(Test-Path $PROFILE)) { New-Item $PROFILE -ItemType File -Force }; notepad $PROFILE",
+    "names": [],
+    "out": "if (!(Test-Path $PROFILE)) { New-Item $PROFILE -ItemType File -Force }; notepad $PROFILE",
+    "key": false
+  },
+  {
+    "command": "$PROFILE",
+    "names": [],
+    "out": "$PROFILE",
+    "key": false
+  },
+  {
+    "command": ". $PROFILE",
+    "names": [],
+    "out": ". $PROFILE",
+    "key": false
+  },
+  {
+    "command": "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser",
+    "key": false
+  },
+  {
+    "command": "Get-ExecutionPolicy -List",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "Get-ExecutionPolicy -List",
+    "key": false
+  },
+  {
+    "command": "Unblock-File SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "Unblock-File ",
+    "key": false
+  },
+  {
+    "command": "powershell -ExecutionPolicy Bypass -File SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "powershell -ExecutionPolicy Bypass -File ",
+    "key": false
+  },
+  {
+    "command": "npm.cmd install",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "npm.cmd install",
+    "key": false
+  },
+  {
+    "command": ".\\PROGRAM",
+    "names": [
+      "PROGRAM",
+      "SCRIPT",
+      "FOLDER"
+    ],
+    "out": ".\\PROGRAM",
+    "key": false
+  },
+  {
+    "command": ".\\SCRIPT.ps1",
+    "names": [
+      "PROGRAM",
+      "SCRIPT",
+      "FOLDER"
+    ],
+    "out": ".\\SCRIPT.ps1",
+    "key": false
+  },
+  {
+    "command": "& 'C:\\Program Files\\FOLDER\\PROGRAM.exe'",
+    "names": [
+      "PROGRAM",
+      "SCRIPT",
+      "FOLDER"
+    ],
+    "out": "& 'C:\\Program Files\\FOLDER\\PROGRAM.exe'",
+    "key": false
+  },
+  {
+    "command": "Get-Location; Get-ChildItem",
+    "names": [],
+    "out": "Get-Location; Get-ChildItem",
+    "key": false
+  },
+  {
+    "command": "git fetch; if ($?) { git status }",
+    "names": [],
+    "out": "git fetch; if ($?) { git status }",
+    "key": false
+  },
+  {
+    "command": "npm run build && npm start",
+    "names": [],
+    "out": "npm run build && npm start",
+    "key": false
+  },
+  {
+    "command": "npm run build || Write-Host 'The build failed'",
+    "names": [],
+    "out": "npm run build || Write-Host 'The build failed'",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Out-File -Encoding utf8 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-ChildItem | Out-File -Encoding utf8 ",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem | Out-File -Encoding utf8 -Append FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-ChildItem | Out-File -Encoding utf8 -Append ",
+    "key": false
+  },
+  {
+    "command": "npm run build | Tee-Object FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build | Tee-Object ",
+    "key": false
+  },
+  {
+    "command": "npm run build *> FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build *> ",
+    "key": false
+  },
+  {
+    "command": "git fetch *> $null",
+    "names": [
+      "FILE"
+    ],
+    "out": "git fetch *> $null",
+    "key": false
+  },
+  {
+    "command": "git status | Set-Clipboard",
+    "names": [
+      "FILE"
+    ],
+    "out": "git status | Set-Clipboard",
+    "key": false
+  },
+  {
+    "command": "Get-Content FILE -Raw | Set-Clipboard",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Content FILE -Raw | Set-Clipboard",
+    "key": false
+  },
+  {
+    "command": "Get-Clipboard",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Clipboard",
+    "key": false
+  },
+  {
+    "command": "Get-Clipboard | Set-Content FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "Get-Clipboard | Set-Content ",
+    "key": false
+  },
+  {
+    "command": "Measure-Command { npm run build }",
+    "names": [],
+    "out": "Measure-Command { npm run build }",
+    "key": false
+  },
+  {
+    "command": "Measure-Command { npm run build | Out-Default }",
+    "names": [],
+    "out": "Measure-Command { npm run build | Out-Default }",
+    "key": false
+  },
+  {
+    "command": "(Measure-Command { npm run build }).TotalSeconds",
+    "names": [],
+    "out": "(Measure-Command { npm run build }).TotalSeconds",
+    "key": false
+  },
+  {
+    "command": "$LASTEXITCODE",
+    "names": [],
+    "out": "$LASTEXITCODE",
+    "key": false
+  },
+  {
+    "command": "$?",
+    "names": [],
+    "out": "$?",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Filter '*.EXTENSION' | ForEach-Object { COMMAND $_.FullName }",
+    "names": [
+      "EXTENSION",
+      "COMMAND"
+    ],
+    "out": "Get-ChildItem -Filter '*.EXTENSION' | ForEach-Object { COMMAND $_.FullName }",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -Filter '*.EXTENSION' | ForEach-Object { COMMAND $_.FullName }",
+    "names": [
+      "EXTENSION",
+      "COMMAND"
+    ],
+    "out": "Get-ChildItem -Recurse -File -Filter '*.EXTENSION' | ForEach-Object { COMMAND $_.FullName }",
+    "key": false
+  },
+  {
+    "command": "1..5 | ForEach-Object { COMMAND }",
+    "names": [
+      "EXTENSION",
+      "COMMAND"
+    ],
+    "out": "1..5 | ForEach-Object { COMMAND }",
+    "key": false
+  },
+  {
+    "command": "while ($true) { COMMAND; Start-Sleep -Seconds 2 }",
+    "names": [
+      "EXTENSION",
+      "COMMAND"
+    ],
+    "out": "while ($true) { COMMAND; Start-Sleep -Seconds 2 }",
+    "key": false
+  },
+  {
+    "command": "COMMAND -WhatIf",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "COMMAND -WhatIf",
+    "key": false
+  },
+  {
+    "command": "Get-ChildItem -Recurse -File -Filter *.log | Remove-Item -WhatIf",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "Get-ChildItem -Recurse -File -Filter *.log | Remove-Item -WhatIf",
+    "key": false
+  },
+  {
+    "command": "COMMAND -Confirm",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "COMMAND -Confirm",
+    "key": false
+  },
+  {
+    "command": "irm https://claude.ai/install.ps1 | iex",
+    "names": [],
+    "out": "irm https://claude.ai/install.ps1 | iex",
+    "key": false
+  },
+  {
+    "command": "npm install -g @anthropic-ai/claude-code",
+    "names": [],
+    "out": "npm install -g @anthropic-ai/claude-code",
+    "key": false
+  },
+  {
+    "command": "claude --version",
+    "names": [],
+    "out": "claude --version",
+    "key": false
+  },
+  {
+    "command": "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+    "names": [],
+    "out": "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+    "key": false
+  },
+  {
+    "command": "npm install -g @openai/codex",
+    "names": [],
+    "out": "npm install -g @openai/codex",
+    "key": false
+  },
+  {
+    "command": "codex --version",
+    "names": [],
+    "out": "codex --version",
+    "key": false
+  },
+  {
+    "command": "cd",
+    "names": [],
+    "out": "cd",
+    "key": false
+  },
+  {
+    "command": "echo %cd%",
+    "names": [],
+    "out": "echo %cd%",
+    "key": false
+  },
+  {
+    "command": "cd /d FOLDER",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "cd /d ",
+    "key": false
+  },
+  {
+    "command": "cd NAME",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "cd ",
+    "key": false
+  },
+  {
+    "command": "cd /d \"%USERPROFILE%\"",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "cd /d \"%USERPROFILE%\"",
+    "key": false
+  },
+  {
+    "command": "D:",
+    "names": [
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "D:",
+    "key": false
+  },
+  {
+    "command": "cd ..",
+    "names": [],
+    "out": "cd ..",
+    "key": false
+  },
+  {
+    "command": "cd ..\\..",
+    "names": [],
+    "out": "cd ..\\..",
+    "key": false
+  },
+  {
+    "command": "cd \\",
+    "names": [],
+    "out": "cd \\",
+    "key": false
+  },
+  {
+    "command": "mkdir NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "mkdir ",
+    "key": false
+  },
+  {
+    "command": "rmdir /s /q FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rmdir /s /q ",
+    "key": false
+  },
+  {
+    "command": "rmdir FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rmdir ",
+    "key": false
+  },
+  {
+    "command": "tree /f",
+    "names": [],
+    "out": "tree /f",
+    "key": false
+  },
+  {
+    "command": "tree",
+    "names": [],
+    "out": "tree",
+    "key": false
+  },
+  {
+    "command": "tree /f /a > tree.txt",
+    "names": [],
+    "out": "tree /f /a > tree.txt",
+    "key": false
+  },
+  {
+    "command": "dir /s /a FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "dir /s /a ",
+    "key": false
+  },
+  {
+    "command": "forfiles /s /c \"cmd /c if @isdir==FALSE if @fsize GEQ 104857600 echo @fsize @path\"",
+    "names": [],
+    "out": "forfiles /s /c \"cmd /c if @isdir==FALSE if @fsize GEQ 104857600 echo @fsize @path\"",
+    "key": false
+  },
+  {
+    "command": "dir /o-s /a-d",
+    "names": [],
+    "out": "dir /o-s /a-d",
+    "key": false
+  },
+  {
+    "command": "forfiles /s /c \"cmd /c if @isdir==FALSE if @fsize GEQ 1073741824 echo @fsize @path\"",
+    "names": [],
+    "out": "forfiles /s /c \"cmd /c if @isdir==FALSE if @fsize GEQ 1073741824 echo @fsize @path\"",
+    "key": false
+  },
+  {
+    "command": "tar -xf ZIP",
+    "names": [
+      "ZIP",
+      "ARCHIVE",
+      "FOLDER"
+    ],
+    "out": "tar -xf ",
+    "key": false
+  },
+  {
+    "command": "tar -xf ZIP -C FOLDER",
+    "names": [
+      "ZIP",
+      "ARCHIVE",
+      "FOLDER"
+    ],
+    "out": "tar -xf ZIP -C ",
+    "key": false
+  },
+  {
+    "command": "tar -tf ZIP",
+    "names": [
+      "ZIP",
+      "ARCHIVE",
+      "FOLDER"
+    ],
+    "out": "tar -tf ",
+    "key": false
+  },
+  {
+    "command": "tar -a -c -f ARCHIVE.zip FOLDER",
+    "names": [
+      "ZIP",
+      "ARCHIVE",
+      "FOLDER"
+    ],
+    "out": "tar -a -c -f ARCHIVE.zip ",
+    "key": false
+  },
+  {
+    "command": "start .",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "start .",
+    "key": false
+  },
+  {
+    "command": "explorer .",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "explorer .",
+    "key": false
+  },
+  {
+    "command": "explorer \"FOLDER\"",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "explorer ",
+    "key": false
+  },
+  {
+    "command": "dir",
+    "names": [
+      "EXT"
+    ],
+    "out": "dir",
+    "key": false
+  },
+  {
+    "command": "dir /b",
+    "names": [
+      "EXT"
+    ],
+    "out": "dir /b",
+    "key": false
+  },
+  {
+    "command": "dir /o-d",
+    "names": [
+      "EXT"
+    ],
+    "out": "dir /o-d",
+    "key": false
+  },
+  {
+    "command": "dir /o-s",
+    "names": [
+      "EXT"
+    ],
+    "out": "dir /o-s",
+    "key": false
+  },
+  {
+    "command": "dir *.EXT",
+    "names": [
+      "EXT"
+    ],
+    "out": "dir *.EXT",
+    "key": false
+  },
+  {
+    "command": "dir /a",
+    "names": [],
+    "out": "dir /a",
+    "key": false
+  },
+  {
+    "command": "dir /ah",
+    "names": [],
+    "out": "dir /ah",
+    "key": false
+  },
+  {
+    "command": "attrib",
+    "names": [],
+    "out": "attrib",
+    "key": false
+  },
+  {
+    "command": "dir /s /b *NAME*",
+    "names": [
+      "NAME"
+    ],
+    "out": "dir /s /b *NAME*",
+    "key": false
+  },
+  {
+    "command": "dir /s /b /a *NAME*",
+    "names": [
+      "NAME"
+    ],
+    "out": "dir /s /b /a *NAME*",
+    "key": false
+  },
+  {
+    "command": "type FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "type ",
+    "key": false
+  },
+  {
+    "command": "more FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "more ",
+    "key": false
+  },
+  {
+    "command": "type nul >> NAME",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "type nul >> ",
+    "key": false
+  },
+  {
+    "command": "echo TEXT> NAME",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "echo TEXT> ",
+    "key": false
+  },
+  {
+    "command": "copy SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "copy ",
+    "key": false
+  },
+  {
+    "command": "robocopy SOURCE DESTINATION /e",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "robocopy SOURCE DESTINATION /e",
+    "key": false
+  },
+  {
+    "command": "xcopy SOURCE DESTINATION /e /i",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "xcopy SOURCE DESTINATION /e /i",
+    "key": false
+  },
+  {
+    "command": "move SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "move ",
+    "key": false
+  },
+  {
+    "command": "ren OLDNAME NEWNAME",
+    "names": [
+      "OLDNAME",
+      "NEWNAME",
+      "OLDEXT",
+      "NEWEXT"
+    ],
+    "out": "ren ",
+    "key": false
+  },
+  {
+    "command": "ren *.OLDEXT *.NEWEXT",
+    "names": [
+      "OLDNAME",
+      "NEWNAME",
+      "OLDEXT",
+      "NEWEXT"
+    ],
+    "out": "ren *.OLDEXT *.NEWEXT",
+    "key": false
+  },
+  {
+    "command": "del FILE",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "del ",
+    "key": false
+  },
+  {
+    "command": "del /q *.EXT",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "del /q *.EXT",
+    "key": false
+  },
+  {
+    "command": "del /s /q *.EXT",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "del /s /q *.EXT",
+    "key": false
+  },
+  {
+    "command": "start \"\" \"FILE\"",
+    "names": [
+      "FILE",
+      "URL"
+    ],
+    "out": "start \"\" ",
+    "key": false
+  },
+  {
+    "command": "start \"\" \"https://URL\"",
+    "names": [
+      "FILE",
+      "URL"
+    ],
+    "out": "start \"\" \"https://URL\"",
+    "key": false
+  },
+  {
+    "command": "findstr /s /i /n /c:\"TEXT\" *.*",
+    "names": [
+      "TEXT",
+      "EXT",
+      "FILE"
+    ],
+    "out": "findstr /s /i /n /c:\"TEXT\" *.*",
+    "key": false
+  },
+  {
+    "command": "findstr /s /i /m /c:\"TEXT\" *.*",
+    "names": [
+      "TEXT",
+      "EXT",
+      "FILE"
+    ],
+    "out": "findstr /s /i /m /c:\"TEXT\" *.*",
+    "key": false
+  },
+  {
+    "command": "findstr /s /i /n /c:\"TEXT\" *.EXT",
+    "names": [
+      "TEXT",
+      "EXT",
+      "FILE"
+    ],
+    "out": "findstr /s /i /n /c:\"TEXT\" *.EXT",
+    "key": false
+  },
+  {
+    "command": "findstr /i /n /c:\"TEXT\" FILE",
+    "names": [
+      "TEXT",
+      "EXT",
+      "FILE"
+    ],
+    "out": "findstr /i /n /c:\"TEXT\" ",
+    "key": false
+  },
+  {
+    "command": "ipconfig /all | findstr /i \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "ipconfig /all | findstr /i ",
+    "key": false
+  },
+  {
+    "command": "ipconfig /all | findstr /i /v \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "ipconfig /all | findstr /i /v ",
+    "key": false
+  },
+  {
+    "command": "fc FILE1 FILE2",
+    "names": [
+      "FILE1",
+      "FILE2"
+    ],
+    "out": "fc ",
+    "key": false
+  },
+  {
+    "command": "fc /b FILE1 FILE2",
+    "names": [
+      "FILE1",
+      "FILE2"
+    ],
+    "out": "fc /b ",
+    "key": false
+  },
+  {
+    "command": "tasklist",
+    "names": [
+      "NAME"
+    ],
+    "out": "tasklist",
+    "key": false
+  },
+  {
+    "command": "tasklist /fi \"imagename eq NAME.exe\"",
+    "names": [
+      "NAME"
+    ],
+    "out": "tasklist /fi \"imagename eq NAME.exe\"",
+    "key": false
+  },
+  {
+    "command": "tasklist | findstr /i \"NAME\"",
+    "names": [
+      "NAME"
+    ],
+    "out": "tasklist | findstr /i ",
+    "key": false
+  },
+  {
+    "command": "taskkill /im NAME.exe /f",
+    "names": [
+      "NAME",
+      "PID"
+    ],
+    "out": "taskkill /im NAME.exe /f",
+    "key": false
+  },
+  {
+    "command": "taskkill /pid PID /f",
+    "names": [
+      "NAME",
+      "PID"
+    ],
+    "out": "taskkill /pid PID /f",
+    "key": false
+  },
+  {
+    "command": "taskkill /pid PID /t /f",
+    "names": [
+      "NAME",
+      "PID"
+    ],
+    "out": "taskkill /pid PID /t /f",
+    "key": false
+  },
+  {
+    "command": "netstat -ano | findstr :PORT",
+    "names": [
+      "PORT",
+      "PID"
+    ],
+    "out": "netstat -ano | findstr :PORT",
+    "key": false
+  },
+  {
+    "command": "tasklist /fi \"pid eq PID\"",
+    "names": [
+      "PORT",
+      "PID"
+    ],
+    "out": "tasklist /fi \"pid eq PID\"",
+    "key": false
+  },
+  {
+    "command": "netstat -ano | findstr LISTENING",
+    "names": [
+      "PORT",
+      "PID"
+    ],
+    "out": "netstat -ano | findstr LISTENING",
+    "key": false
+  },
+  {
+    "command": "Ctrl+C",
+    "names": [],
+    "out": "Ctrl+C",
+    "key": true
+  },
+  {
+    "command": "ipconfig",
+    "names": [],
+    "out": "ipconfig",
+    "key": false
+  },
+  {
+    "command": "ipconfig | findstr IPv4",
+    "names": [],
+    "out": "ipconfig | findstr IPv4",
+    "key": false
+  },
+  {
+    "command": "ipconfig /all",
+    "names": [],
+    "out": "ipconfig /all",
+    "key": false
+  },
+  {
+    "command": "ping HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "ping ",
+    "key": false
+  },
+  {
+    "command": "nslookup HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "nslookup ",
+    "key": false
+  },
+  {
+    "command": "tracert HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "tracert ",
+    "key": false
+  },
+  {
+    "command": "curl -L -o FILE URL",
+    "names": [
+      "FILE",
+      "URL"
+    ],
+    "out": "curl -L -o ",
+    "key": false
+  },
+  {
+    "command": "curl -I URL",
+    "names": [
+      "FILE",
+      "URL"
+    ],
+    "out": "curl -I ",
+    "key": false
+  },
+  {
+    "command": "set",
+    "names": [
+      "NAME"
+    ],
+    "out": "set",
+    "key": false
+  },
+  {
+    "command": "echo %NAME%",
+    "names": [
+      "NAME"
+    ],
+    "out": "echo %NAME%",
+    "key": false
+  },
+  {
+    "command": "set NAME=VALUE",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "set NAME=VALUE",
+    "key": false
+  },
+  {
+    "command": "setx NAME \"VALUE\"",
+    "names": [
+      "NAME",
+      "VALUE"
+    ],
+    "out": "setx ",
+    "key": false
+  },
+  {
+    "command": "set PATH=%PATH%;FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "set PATH=%PATH%;FOLDER",
+    "key": false
+  },
+  {
+    "command": "rundll32 sysdm.cpl,EditEnvironmentVariables",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rundll32 sysdm.cpl,EditEnvironmentVariables",
+    "key": false
+  },
+  {
+    "command": "path",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "path",
+    "key": false
+  },
+  {
+    "command": "where NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "where ",
+    "key": false
+  },
+  {
+    "command": "systeminfo",
+    "names": [],
+    "out": "systeminfo",
+    "key": false
+  },
+  {
+    "command": "ver",
+    "names": [],
+    "out": "ver",
+    "key": false
+  },
+  {
+    "command": "hostname",
+    "names": [],
+    "out": "hostname",
+    "key": false
+  },
+  {
+    "command": "whoami",
+    "names": [],
+    "out": "whoami",
+    "key": false
+  },
+  {
+    "command": "dir C:\\",
+    "names": [],
+    "out": "dir C:\\",
+    "key": false
+  },
+  {
+    "command": "powershell -Command \"Start-Process cmd -Verb RunAs\"",
+    "names": [],
+    "out": "powershell -Command \"Start-Process cmd -Verb RunAs\"",
+    "key": false
+  },
+  {
+    "command": "whoami /groups | findstr /c:\"S-1-16-12288\" >nul && echo elevated || echo not elevated",
+    "names": [],
+    "out": "whoami /groups | findstr /c:\"S-1-16-12288\" >nul && echo elevated || echo not elevated",
+    "key": false
+  },
+  {
+    "command": "cls",
+    "names": [],
+    "out": "cls",
+    "key": false
+  },
+  {
+    "command": "doskey /history",
+    "names": [],
+    "out": "doskey /history",
+    "key": false
+  },
+  {
+    "command": "doskey /history > history.txt",
+    "names": [],
+    "out": "doskey /history > history.txt",
+    "key": false
+  },
+  {
+    "command": "dir /?",
+    "names": [],
+    "out": "dir /?",
+    "key": false
+  },
+  {
+    "command": "help",
+    "names": [],
+    "out": "help",
+    "key": false
+  },
+  {
+    "command": "robocopy /? | more",
+    "names": [],
+    "out": "robocopy /? | more",
+    "key": false
+  },
+  {
+    "command": "echo TEXT",
+    "names": [
+      "TEXT"
+    ],
+    "out": "echo ",
+    "key": false
+  },
+  {
+    "command": "echo.",
+    "names": [
+      "TEXT"
+    ],
+    "out": "echo.",
+    "key": false
+  },
+  {
+    "command": "echo %DATE% %TIME%",
+    "names": [
+      "TEXT"
+    ],
+    "out": "echo %DATE% %TIME%",
+    "key": false
+  },
+  {
+    "command": "dir > FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "dir > ",
+    "key": false
+  },
+  {
+    "command": "dir >> FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "dir >> ",
+    "key": false
+  },
+  {
+    "command": "npm run build > FILE 2>&1",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build > FILE 2>&1",
+    "key": false
+  },
+  {
+    "command": "where node 2>nul",
+    "names": [
+      "FILE"
+    ],
+    "out": "where node 2>nul",
+    "key": false
+  },
+  {
+    "command": "tree /f | more",
+    "names": [],
+    "out": "tree /f | more",
+    "key": false
+  },
+  {
+    "command": "dir /b | clip",
+    "names": [],
+    "out": "dir /b | clip",
+    "key": false
+  },
+  {
+    "command": "tasklist | sort",
+    "names": [],
+    "out": "tasklist | sort",
+    "key": false
+  },
+  {
+    "command": "where node && node --version",
+    "names": [],
+    "out": "where node && node --version",
+    "key": false
+  },
+  {
+    "command": "echo one & echo two",
+    "names": [],
+    "out": "echo one & echo two",
+    "key": false
+  },
+  {
+    "command": "where node || echo node is not installed",
+    "names": [],
+    "out": "where node || echo node is not installed",
+    "key": false
+  },
+  {
+    "command": "doskey ll=dir /a $*",
+    "names": [],
+    "out": "doskey ll=dir /a $*",
+    "key": false
+  },
+  {
+    "command": "doskey /macros",
+    "names": [],
+    "out": "doskey /macros",
+    "key": false
+  },
+  {
+    "command": "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd",
+    "names": [],
+    "out": "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd",
+    "key": false
+  },
+  {
+    "command": "npm install -g @anthropic-ai/claude-code",
+    "names": [],
+    "out": "npm install -g @anthropic-ai/claude-code",
+    "key": false
+  },
+  {
+    "command": "claude --version",
+    "names": [],
+    "out": "claude --version",
+    "key": false
+  },
+  {
+    "command": "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+    "names": [],
+    "out": "powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"",
+    "key": false
+  },
+  {
+    "command": "npm install -g @openai/codex",
+    "names": [],
+    "out": "npm install -g @openai/codex",
+    "key": false
+  },
+  {
+    "command": "codex --version",
+    "names": [],
+    "out": "codex --version",
+    "key": false
+  },
+  {
+    "command": "pwd",
+    "names": [],
+    "out": "pwd",
+    "key": false
+  },
+  {
+    "command": "cd FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "cd ",
+    "key": false
+  },
+  {
+    "command": "cd ~",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "cd ~",
+    "key": false
+  },
+  {
+    "command": "cd -",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "cd -",
+    "key": false
+  },
+  {
+    "command": "cd \"/mnt/c/Program Files\"",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "cd \"/mnt/c/Program Files\"",
+    "key": false
+  },
+  {
+    "command": "cd ..",
+    "names": [],
+    "out": "cd ..",
+    "key": false
+  },
+  {
+    "command": "cd ../..",
+    "names": [],
+    "out": "cd ../..",
+    "key": false
+  },
+  {
+    "command": "cd /mnt/c/Users/NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "cd /mnt/c/Users/NAME",
+    "key": false
+  },
+  {
+    "command": "ls /mnt",
+    "names": [
+      "NAME"
+    ],
+    "out": "ls /mnt",
+    "key": false
+  },
+  {
+    "command": "wslpath 'C:\\Users\\NAME\\Documents'",
+    "names": [
+      "NAME"
+    ],
+    "out": "wslpath 'C:\\Users\\NAME\\Documents'",
+    "key": false
+  },
+  {
+    "command": "wslpath -w .",
+    "names": [
+      "NAME"
+    ],
+    "out": "wslpath -w .",
+    "key": false
+  },
+  {
+    "command": "explorer.exe .",
+    "names": [
+      "FILE"
+    ],
+    "out": "explorer.exe .",
+    "key": false
+  },
+  {
+    "command": "code .",
+    "names": [
+      "FILE"
+    ],
+    "out": "code .",
+    "key": false
+  },
+  {
+    "command": "notepad.exe FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "notepad.exe ",
+    "key": false
+  },
+  {
+    "command": "mkdir -p NAME",
+    "names": [
+      "NAME",
+      "PARENT",
+      "CHILD",
+      "GRANDCHILD"
+    ],
+    "out": "mkdir -p ",
+    "key": false
+  },
+  {
+    "command": "mkdir -p PARENT/CHILD/GRANDCHILD",
+    "names": [
+      "NAME",
+      "PARENT",
+      "CHILD",
+      "GRANDCHILD"
+    ],
+    "out": "mkdir -p PARENT/CHILD/GRANDCHILD",
+    "key": false
+  },
+  {
+    "command": "rm -r FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rm -r ",
+    "key": false
+  },
+  {
+    "command": "rmdir FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rmdir ",
+    "key": false
+  },
+  {
+    "command": "rm -rf FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "rm -rf ",
+    "key": false
+  },
+  {
+    "command": "du -sh FOLDER",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "du -sh ",
+    "key": false
+  },
+  {
+    "command": "du -sh * | sort -h",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "du -sh * | sort -h",
+    "key": false
+  },
+  {
+    "command": "du -h --max-depth=1 .",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "du -h --max-depth=1 .",
+    "key": false
+  },
+  {
+    "command": "find . -maxdepth 2 -type d",
+    "names": [],
+    "out": "find . -maxdepth 2 -type d",
+    "key": false
+  },
+  {
+    "command": "tree -L 2",
+    "names": [],
+    "out": "tree -L 2",
+    "key": false
+  },
+  {
+    "command": "ls -lah",
+    "names": [],
+    "out": "ls -lah",
+    "key": false
+  },
+  {
+    "command": "ls",
+    "names": [],
+    "out": "ls",
+    "key": false
+  },
+  {
+    "command": "ls -lt",
+    "names": [],
+    "out": "ls -lt",
+    "key": false
+  },
+  {
+    "command": "ls -lhS",
+    "names": [],
+    "out": "ls -lhS",
+    "key": false
+  },
+  {
+    "command": "ls -a",
+    "names": [],
+    "out": "ls -a",
+    "key": false
+  },
+  {
+    "command": "cat FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "cat ",
+    "key": false
+  },
+  {
+    "command": "less FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "less ",
+    "key": false
+  },
+  {
+    "command": "head -n 20 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "head -n 20 ",
+    "key": false
+  },
+  {
+    "command": "tail -n 20 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "tail -n 20 ",
+    "key": false
+  },
+  {
+    "command": "tail -f FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "tail -f ",
+    "key": false
+  },
+  {
+    "command": "touch NAME",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "touch ",
+    "key": false
+  },
+  {
+    "command": "echo \"TEXT\" > NAME",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "echo \"TEXT\" > ",
+    "key": false
+  },
+  {
+    "command": "nano FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "nano ",
+    "key": false
+  },
+  {
+    "command": "code FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "code ",
+    "key": false
+  },
+  {
+    "command": ":q!",
+    "names": [
+      "FILE"
+    ],
+    "out": ":q!",
+    "key": false
+  },
+  {
+    "command": "cp SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "cp ",
+    "key": false
+  },
+  {
+    "command": "cp -r SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "cp -r ",
+    "key": false
+  },
+  {
+    "command": "cp -i SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "cp -i ",
+    "key": false
+  },
+  {
+    "command": "mv SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "mv ",
+    "key": false
+  },
+  {
+    "command": "mv -i SOURCE DESTINATION",
+    "names": [
+      "SOURCE",
+      "DESTINATION"
+    ],
+    "out": "mv -i ",
+    "key": false
+  },
+  {
+    "command": "rm FILE",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "rm ",
+    "key": false
+  },
+  {
+    "command": "rm -i FILE",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "rm -i ",
+    "key": false
+  },
+  {
+    "command": "rm *.EXT",
+    "names": [
+      "FILE",
+      "EXT"
+    ],
+    "out": "rm *.EXT",
+    "key": false
+  },
+  {
+    "command": "find . -iname \"*NAME*\"",
+    "names": [
+      "NAME"
+    ],
+    "out": "find . -iname \"*NAME*\"",
+    "key": false
+  },
+  {
+    "command": "find . -type f -iname \"*NAME*\" 2>/dev/null",
+    "names": [
+      "NAME"
+    ],
+    "out": "find . -type f -iname \"*NAME*\" 2>/dev/null",
+    "key": false
+  },
+  {
+    "command": "find . -type f -mtime -1",
+    "names": [
+      "NAME"
+    ],
+    "out": "find . -type f -mtime -1",
+    "key": false
+  },
+  {
+    "command": "find . -type f -mmin -60",
+    "names": [
+      "NAME"
+    ],
+    "out": "find . -type f -mmin -60",
+    "key": false
+  },
+  {
+    "command": "du -ah . | sort -rh | head -n 20",
+    "names": [],
+    "out": "du -ah . | sort -rh | head -n 20",
+    "key": false
+  },
+  {
+    "command": "chmod +x SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "chmod +x ",
+    "key": false
+  },
+  {
+    "command": "./SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "./SCRIPT",
+    "key": false
+  },
+  {
+    "command": "bash SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "bash ",
+    "key": false
+  },
+  {
+    "command": "ls -l FILE",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "ls -l ",
+    "key": false
+  },
+  {
+    "command": "chmod -R u+rwX FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "chmod -R u+rwX ",
+    "key": false
+  },
+  {
+    "command": "sudo chown -R $USER FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "sudo chown -R $USER ",
+    "key": false
+  },
+  {
+    "command": "chmod 600 ~/.ssh/id_ed25519",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "chmod 600 ~/.ssh/id_ed25519",
+    "key": false
+  },
+  {
+    "command": "sed -i 's/\\r$//' FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "sed -i 's/\\r$//' ",
+    "key": false
+  },
+  {
+    "command": "file FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "file ",
+    "key": false
+  },
+  {
+    "command": "dos2unix FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "dos2unix ",
+    "key": false
+  },
+  {
+    "command": "git config --global core.autocrlf input",
+    "names": [
+      "FILE"
+    ],
+    "out": "git config --global core.autocrlf input",
+    "key": false
+  },
+  {
+    "command": "tar -xf FILE",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "tar -xf ",
+    "key": false
+  },
+  {
+    "command": "tar -xf FILE -C FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "tar -xf FILE -C ",
+    "key": false
+  },
+  {
+    "command": "tar -tf FILE",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "tar -tf ",
+    "key": false
+  },
+  {
+    "command": "tar -czf NAME.tar.gz FOLDER",
+    "names": [
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "tar -czf NAME.tar.gz ",
+    "key": false
+  },
+  {
+    "command": "unzip FILE -d FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "unzip FILE -d ",
+    "key": false
+  },
+  {
+    "command": "unzip -l FILE",
+    "names": [
+      "FILE",
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "unzip -l ",
+    "key": false
+  },
+  {
+    "command": "zip -r NAME.zip FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER",
+      "NAME"
+    ],
+    "out": "zip -r NAME.zip ",
+    "key": false
+  },
+  {
+    "command": "grep -rni \"TEXT\"",
+    "names": [
+      "TEXT",
+      "EXT"
+    ],
+    "out": "grep -rni ",
+    "key": false
+  },
+  {
+    "command": "grep -rli \"TEXT\"",
+    "names": [
+      "TEXT",
+      "EXT"
+    ],
+    "out": "grep -rli ",
+    "key": false
+  },
+  {
+    "command": "grep -rni --include=\"*.EXT\" \"TEXT\"",
+    "names": [
+      "TEXT",
+      "EXT"
+    ],
+    "out": "grep -rni --include=\"*.EXT\" ",
+    "key": false
+  },
+  {
+    "command": "grep -rni --exclude-dir=node_modules \"TEXT\"",
+    "names": [
+      "TEXT",
+      "EXT"
+    ],
+    "out": "grep -rni --exclude-dir=node_modules ",
+    "key": false
+  },
+  {
+    "command": "ls -la | grep -i \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "ls -la | grep -i ",
+    "key": false
+  },
+  {
+    "command": "ls -la | grep -iv \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "ls -la | grep -iv ",
+    "key": false
+  },
+  {
+    "command": "wc -l FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "wc -l ",
+    "key": false
+  },
+  {
+    "command": "ls | wc -l",
+    "names": [
+      "FILE"
+    ],
+    "out": "ls | wc -l",
+    "key": false
+  },
+  {
+    "command": "wc -w FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "wc -w ",
+    "key": false
+  },
+  {
+    "command": "diff -u FILE1 FILE2",
+    "names": [
+      "FILE1",
+      "FILE2",
+      "FOLDER1",
+      "FOLDER2"
+    ],
+    "out": "diff -u ",
+    "key": false
+  },
+  {
+    "command": "diff -rq FOLDER1 FOLDER2",
+    "names": [
+      "FILE1",
+      "FILE2",
+      "FOLDER1",
+      "FOLDER2"
+    ],
+    "out": "diff -rq ",
+    "key": false
+  },
+  {
+    "command": "sed -i 's/OLD/NEW/g' FILE",
+    "names": [
+      "OLD",
+      "NEW",
+      "FILE"
+    ],
+    "out": "sed -i 's/OLD/NEW/g' ",
+    "key": false
+  },
+  {
+    "command": "sed 's/OLD/NEW/g' FILE",
+    "names": [
+      "OLD",
+      "NEW",
+      "FILE"
+    ],
+    "out": "sed 's/OLD/NEW/g' ",
+    "key": false
+  },
+  {
+    "command": "sort FILE | uniq -c | sort -nr",
+    "names": [
+      "FILE"
+    ],
+    "out": "sort FILE | uniq -c | sort -nr",
+    "key": false
+  },
+  {
+    "command": "sort -u FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "sort -u ",
+    "key": false
+  },
+  {
+    "command": "ps aux | awk '{print $2}'",
+    "names": [
+      "FILE"
+    ],
+    "out": "ps aux | awk '{print $2}'",
+    "key": false
+  },
+  {
+    "command": "cut -d',' -f2 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "cut -d',' -f2 ",
+    "key": false
+  },
+  {
+    "command": "ps aux",
+    "names": [
+      "NAME"
+    ],
+    "out": "ps aux",
+    "key": false
+  },
+  {
+    "command": "ps aux | grep -i NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "ps aux | grep -i ",
+    "key": false
+  },
+  {
+    "command": "pgrep -fl NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "pgrep -fl ",
+    "key": false
+  },
+  {
+    "command": "top",
+    "names": [
+      "NAME"
+    ],
+    "out": "top",
+    "key": false
+  },
+  {
+    "command": "kill PID",
+    "names": [
+      "PID",
+      "NAME",
+      "TEXT"
+    ],
+    "out": "kill ",
+    "key": false
+  },
+  {
+    "command": "kill -9 PID",
+    "names": [
+      "PID",
+      "NAME",
+      "TEXT"
+    ],
+    "out": "kill -9 ",
+    "key": false
+  },
+  {
+    "command": "pkill NAME",
+    "names": [
+      "PID",
+      "NAME",
+      "TEXT"
+    ],
+    "out": "pkill ",
+    "key": false
+  },
+  {
+    "command": "pkill -f TEXT",
+    "names": [
+      "PID",
+      "NAME",
+      "TEXT"
+    ],
+    "out": "pkill -f ",
+    "key": false
+  },
+  {
+    "command": "lsof -i :PORT",
+    "names": [
+      "PORT"
+    ],
+    "out": "lsof -i :PORT",
+    "key": false
+  },
+  {
+    "command": "ss -ltnp",
+    "names": [
+      "PORT"
+    ],
+    "out": "ss -ltnp",
+    "key": false
+  },
+  {
+    "command": "ss -ltnp | grep :PORT",
+    "names": [
+      "PORT"
+    ],
+    "out": "ss -ltnp | grep :PORT",
+    "key": false
+  },
+  {
+    "command": "Ctrl+C",
+    "names": [],
+    "out": "Ctrl+C",
+    "key": true
+  },
+  {
+    "command": "kill -9 %1",
+    "names": [],
+    "out": "kill -9 %1",
+    "key": false
+  },
+  {
+    "command": "npm run dev &",
+    "names": [],
+    "out": "npm run dev &",
+    "key": false
+  },
+  {
+    "command": "jobs",
+    "names": [],
+    "out": "jobs",
+    "key": false
+  },
+  {
+    "command": "fg",
+    "names": [],
+    "out": "fg",
+    "key": false
+  },
+  {
+    "command": "bg",
+    "names": [],
+    "out": "bg",
+    "key": false
+  },
+  {
+    "command": "nohup npm run dev > output.log 2>&1 &",
+    "names": [],
+    "out": "nohup npm run dev > output.log 2>&1 &",
+    "key": false
+  },
+  {
+    "command": "hostname -I",
+    "names": [],
+    "out": "hostname -I",
+    "key": false
+  },
+  {
+    "command": "ip addr",
+    "names": [],
+    "out": "ip addr",
+    "key": false
+  },
+  {
+    "command": "curl -s https://ifconfig.me",
+    "names": [],
+    "out": "curl -s https://ifconfig.me",
+    "key": false
+  },
+  {
+    "command": "ping -c 4 HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "ping -c 4 ",
+    "key": false
+  },
+  {
+    "command": "getent hosts HOST",
+    "names": [
+      "HOST"
+    ],
+    "out": "getent hosts ",
+    "key": false
+  },
+  {
+    "command": "curl -L -O URL",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "curl -L -O ",
+    "key": false
+  },
+  {
+    "command": "curl -L -o FILE URL",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "curl -L -o ",
+    "key": false
+  },
+  {
+    "command": "wget URL",
+    "names": [
+      "URL",
+      "FILE"
+    ],
+    "out": "wget ",
+    "key": false
+  },
+  {
+    "command": "curl -I http://localhost:PORT",
+    "names": [
+      "PORT",
+      "URL",
+      "KEY",
+      "VALUE"
+    ],
+    "out": "curl -I http://localhost:PORT",
+    "key": false
+  },
+  {
+    "command": "curl -i URL",
+    "names": [
+      "PORT",
+      "URL",
+      "KEY",
+      "VALUE"
+    ],
+    "out": "curl -i ",
+    "key": false
+  },
+  {
+    "command": "curl -X POST -H \"Content-Type: application/json\" -d '{\"KEY\":\"VALUE\"}' URL",
+    "names": [
+      "PORT",
+      "URL",
+      "KEY",
+      "VALUE"
+    ],
+    "out": "curl -X POST -H \"Content-Type: application/json\" -d '{\"KEY\":\"VALUE\"}' ",
+    "key": false
+  },
+  {
+    "command": "ssh USER@HOST",
+    "names": [
+      "USER",
+      "HOST",
+      "PORT",
+      "KEYFILE",
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "ssh USER@HOST",
+    "key": false
+  },
+  {
+    "command": "ssh -p PORT USER@HOST",
+    "names": [
+      "USER",
+      "HOST",
+      "PORT",
+      "KEYFILE",
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "ssh -p PORT USER@HOST",
+    "key": false
+  },
+  {
+    "command": "ssh -i ~/.ssh/KEYFILE USER@HOST",
+    "names": [
+      "USER",
+      "HOST",
+      "PORT",
+      "KEYFILE",
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "ssh -i ~/.ssh/KEYFILE USER@HOST",
+    "key": false
+  },
+  {
+    "command": "scp FILE USER@HOST:FOLDER",
+    "names": [
+      "USER",
+      "HOST",
+      "PORT",
+      "KEYFILE",
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "scp FILE USER@HOST:FOLDER",
+    "key": false
+  },
+  {
+    "command": "ssh-keygen -t ed25519 -C \"EMAIL\"",
+    "names": [
+      "EMAIL"
+    ],
+    "out": "ssh-keygen -t ed25519 -C ",
+    "key": false
+  },
+  {
+    "command": "cat ~/.ssh/id_ed25519.pub",
+    "names": [
+      "EMAIL"
+    ],
+    "out": "cat ~/.ssh/id_ed25519.pub",
+    "key": false
+  },
+  {
+    "command": "ssh -T git@github.com",
+    "names": [
+      "EMAIL"
+    ],
+    "out": "ssh -T git@github.com",
+    "key": false
+  },
+  {
+    "command": "df -h",
+    "names": [],
+    "out": "df -h",
+    "key": false
+  },
+  {
+    "command": "df -h /mnt/c",
+    "names": [],
+    "out": "df -h /mnt/c",
+    "key": false
+  },
+  {
+    "command": "free -h",
+    "names": [],
+    "out": "free -h",
+    "key": false
+  },
+  {
+    "command": "printenv",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "printenv",
+    "key": false
+  },
+  {
+    "command": "echo \"$NAME\"",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "echo \"$NAME\"",
+    "key": false
+  },
+  {
+    "command": "printenv | grep -i TEXT",
+    "names": [
+      "NAME",
+      "TEXT"
+    ],
+    "out": "printenv | grep -i ",
+    "key": false
+  },
+  {
+    "command": "export NAME=\"VALUE\"",
+    "names": [
+      "NAME",
+      "VALUE",
+      "COMMAND"
+    ],
+    "out": "export NAME=\"VALUE\"",
+    "key": false
+  },
+  {
+    "command": "NAME=\"VALUE\" COMMAND",
+    "names": [
+      "NAME",
+      "VALUE",
+      "COMMAND"
+    ],
+    "out": "NAME=\"VALUE\" ",
+    "key": false
+  },
+  {
+    "command": "echo 'export NAME=\"VALUE\"' >> ~/.bashrc",
+    "names": [
+      "NAME",
+      "VALUE",
+      "COMMAND"
+    ],
+    "out": "echo 'export NAME=\"VALUE\"' >> ~/.bashrc",
+    "key": false
+  },
+  {
+    "command": "export PATH=\"$PATH:FOLDER\"",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "export PATH=\"$PATH:FOLDER\"",
+    "key": false
+  },
+  {
+    "command": "echo 'export PATH=\"$PATH:FOLDER\"' >> ~/.bashrc",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "echo 'export PATH=\"$PATH:FOLDER\"' >> ~/.bashrc",
+    "key": false
+  },
+  {
+    "command": "echo \"$PATH\" | tr ':' '\\n'",
+    "names": [
+      "FOLDER"
+    ],
+    "out": "echo \"$PATH\" | tr ':' '\\n'",
+    "key": false
+  },
+  {
+    "command": "which NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "which ",
+    "key": false
+  },
+  {
+    "command": "type NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "type ",
+    "key": false
+  },
+  {
+    "command": "which -a NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "which -a ",
+    "key": false
+  },
+  {
+    "command": "lsb_release -a",
+    "names": [],
+    "out": "lsb_release -a",
+    "key": false
+  },
+  {
+    "command": "cat /etc/os-release",
+    "names": [],
+    "out": "cat /etc/os-release",
+    "key": false
+  },
+  {
+    "command": "uname -a",
+    "names": [],
+    "out": "uname -a",
+    "key": false
+  },
+  {
+    "command": "whoami",
+    "names": [],
+    "out": "whoami",
+    "key": false
+  },
+  {
+    "command": "sudo COMMAND",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "sudo ",
+    "key": false
+  },
+  {
+    "command": "sudo !!",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "sudo !!",
+    "key": false
+  },
+  {
+    "command": "sudo apt update && sudo apt install -y NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "sudo apt update && sudo apt install -y ",
+    "key": false
+  },
+  {
+    "command": "sudo apt update && sudo apt upgrade",
+    "names": [],
+    "out": "sudo apt update && sudo apt upgrade",
+    "key": false
+  },
+  {
+    "command": "sudo apt autoremove",
+    "names": [],
+    "out": "sudo apt autoremove",
+    "key": false
+  },
+  {
+    "command": "apt search TEXT",
+    "names": [
+      "TEXT",
+      "NAME"
+    ],
+    "out": "apt search ",
+    "key": false
+  },
+  {
+    "command": "apt list --installed 2>/dev/null | grep -i NAME",
+    "names": [
+      "TEXT",
+      "NAME"
+    ],
+    "out": "apt list --installed 2>/dev/null | grep -i ",
+    "key": false
+  },
+  {
+    "command": "apt show NAME",
+    "names": [
+      "TEXT",
+      "NAME"
+    ],
+    "out": "apt show ",
+    "key": false
+  },
+  {
+    "command": "sudo apt remove NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "sudo apt remove ",
+    "key": false
+  },
+  {
+    "command": "sudo apt purge NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "sudo apt purge ",
+    "key": false
+  },
+  {
+    "command": "python3 -m venv .venv",
+    "names": [],
+    "out": "python3 -m venv .venv",
+    "key": false
+  },
+  {
+    "command": "source .venv/bin/activate",
+    "names": [],
+    "out": "source .venv/bin/activate",
+    "key": false
+  },
+  {
+    "command": "sudo apt install -y python3-venv",
+    "names": [],
+    "out": "sudo apt install -y python3-venv",
+    "key": false
+  },
+  {
+    "command": "deactivate",
+    "names": [],
+    "out": "deactivate",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip install PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python3 -m pip install ",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip install PACKAGE==VERSION",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python3 -m pip install PACKAGE==VERSION",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip install --upgrade PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python3 -m pip install --upgrade ",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip uninstall PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python3 -m pip uninstall ",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip install -r requirements.txt",
+    "names": [],
+    "out": "python3 -m pip install -r requirements.txt",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip freeze > requirements.txt",
+    "names": [],
+    "out": "python3 -m pip freeze > requirements.txt",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip freeze",
+    "names": [],
+    "out": "python3 -m pip freeze",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip list",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python3 -m pip list",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip list --outdated",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python3 -m pip list --outdated",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip show PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python3 -m pip show ",
+    "key": false
+  },
+  {
+    "command": "python3 -m pip --version",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python3 -m pip --version",
+    "key": false
+  },
+  {
+    "command": "clear",
+    "names": [],
+    "out": "clear",
+    "key": false
+  },
+  {
+    "command": "reset",
+    "names": [],
+    "out": "reset",
+    "key": false
+  },
+  {
+    "command": "history",
+    "names": [
+      "TEXT",
+      "N"
+    ],
+    "out": "history",
+    "key": false
+  },
+  {
+    "command": "history | grep -i TEXT",
+    "names": [
+      "TEXT",
+      "N"
+    ],
+    "out": "history | grep -i ",
+    "key": false
+  },
+  {
+    "command": "history | tail -n 20",
+    "names": [
+      "TEXT",
+      "N"
+    ],
+    "out": "history | tail -n 20",
+    "key": false
+  },
+  {
+    "command": "!N",
+    "names": [
+      "TEXT",
+      "N"
+    ],
+    "out": "!N",
+    "key": false
+  },
+  {
+    "command": "man COMMAND",
+    "names": [
+      "COMMAND",
+      "TEXT"
+    ],
+    "out": "man ",
+    "key": false
+  },
+  {
+    "command": "tar --help",
+    "names": [
+      "COMMAND",
+      "TEXT"
+    ],
+    "out": "tar --help",
+    "key": false
+  },
+  {
+    "command": "help COMMAND",
+    "names": [
+      "COMMAND",
+      "TEXT"
+    ],
+    "out": "help ",
+    "key": false
+  },
+  {
+    "command": "man -k TEXT",
+    "names": [
+      "COMMAND",
+      "TEXT"
+    ],
+    "out": "man -k ",
+    "key": false
+  },
+  {
+    "command": "nano ~/.bashrc",
+    "names": [],
+    "out": "nano ~/.bashrc",
+    "key": false
+  },
+  {
+    "command": "source ~/.bashrc",
+    "names": [],
+    "out": "source ~/.bashrc",
+    "key": false
+  },
+  {
+    "command": "alias gs='git status'",
+    "names": [
+      "SHORT"
+    ],
+    "out": "alias gs='git status'",
+    "key": false
+  },
+  {
+    "command": "alias",
+    "names": [
+      "SHORT"
+    ],
+    "out": "alias",
+    "key": false
+  },
+  {
+    "command": "echo \"alias gs='git status'\" >> ~/.bashrc",
+    "names": [
+      "SHORT"
+    ],
+    "out": "echo \"alias gs='git status'\" >> ~/.bashrc",
+    "key": false
+  },
+  {
+    "command": "unalias SHORT",
+    "names": [
+      "SHORT"
+    ],
+    "out": "unalias ",
+    "key": false
+  },
+  {
+    "command": "npm run build > FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build > ",
+    "key": false
+  },
+  {
+    "command": "npm run build >> FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build >> ",
+    "key": false
+  },
+  {
+    "command": "npm run build &> FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build &> ",
+    "key": false
+  },
+  {
+    "command": "npm run build 2>/dev/null",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build 2>/dev/null",
+    "key": false
+  },
+  {
+    "command": "npm run build | tee FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "npm run build | tee ",
+    "key": false
+  },
+  {
+    "command": "ps aux | less",
+    "names": [
+      "OTHER"
+    ],
+    "out": "ps aux | less",
+    "key": false
+  },
+  {
+    "command": "pwd | clip.exe",
+    "names": [
+      "OTHER"
+    ],
+    "out": "pwd | clip.exe",
+    "key": false
+  },
+  {
+    "command": "find . -name \"*.log\" | xargs OTHER",
+    "names": [
+      "OTHER"
+    ],
+    "out": "find . -name \"*.log\" | xargs ",
+    "key": false
+  },
+  {
+    "command": "npm install && SECOND",
+    "names": [
+      "SECOND"
+    ],
+    "out": "npm install && ",
+    "key": false
+  },
+  {
+    "command": "npm test ; SECOND",
+    "names": [
+      "SECOND"
+    ],
+    "out": "npm test ; ",
+    "key": false
+  },
+  {
+    "command": "npm test || SECOND",
+    "names": [
+      "SECOND"
+    ],
+    "out": "npm test || ",
+    "key": false
+  },
+  {
+    "command": "exit",
+    "names": [],
+    "out": "exit",
+    "key": false
+  },
+  {
+    "command": "curl -fsSL https://claude.ai/install.sh | bash",
+    "names": [],
+    "out": "curl -fsSL https://claude.ai/install.sh | bash",
+    "key": false
+  },
+  {
+    "command": "npm install -g @anthropic-ai/claude-code",
+    "names": [],
+    "out": "npm install -g @anthropic-ai/claude-code",
+    "key": false
+  },
+  {
+    "command": "claude --version",
+    "names": [],
+    "out": "claude --version",
+    "key": false
+  },
+  {
+    "command": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    "names": [],
+    "out": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+    "key": false
+  },
+  {
+    "command": "npm install -g @openai/codex",
+    "names": [],
+    "out": "npm install -g @openai/codex",
+    "key": false
+  },
+  {
+    "command": "codex --version",
+    "names": [],
+    "out": "codex --version",
+    "key": false
+  },
+  {
+    "command": "git status",
+    "names": [],
+    "out": "git status",
+    "key": false
+  },
+  {
+    "command": "git status --short",
+    "names": [],
+    "out": "git status --short",
+    "key": false
+  },
+  {
+    "command": "git status -sb",
+    "names": [],
+    "out": "git status -sb",
+    "key": false
+  },
+  {
+    "command": "git diff",
+    "names": [],
+    "out": "git diff",
+    "key": false
+  },
+  {
+    "command": "git diff --staged",
+    "names": [],
+    "out": "git diff --staged",
+    "key": false
+  },
+  {
+    "command": "git diff --stat",
+    "names": [],
+    "out": "git diff --stat",
+    "key": false
+  },
+  {
+    "command": "git log --oneline --graph --decorate -n 20",
+    "names": [
+      "NAME"
+    ],
+    "out": "git log --oneline --graph --decorate -n 20",
+    "key": false
+  },
+  {
+    "command": "git log -n 10",
+    "names": [
+      "NAME"
+    ],
+    "out": "git log -n 10",
+    "key": false
+  },
+  {
+    "command": "git log --oneline --author \"NAME\"",
+    "names": [
+      "NAME"
+    ],
+    "out": "git log --oneline --author ",
+    "key": false
+  },
+  {
+    "command": "git show COMMIT",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git show ",
+    "key": false
+  },
+  {
+    "command": "git show HEAD",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git show HEAD",
+    "key": false
+  },
+  {
+    "command": "git show --stat COMMIT",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git show --stat ",
+    "key": false
+  },
+  {
+    "command": "git log --oneline -- FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git log --oneline -- ",
+    "key": false
+  },
+  {
+    "command": "git log -p -- FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git log -p -- ",
+    "key": false
+  },
+  {
+    "command": "git log --oneline --follow -- FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git log --oneline --follow -- ",
+    "key": false
+  },
+  {
+    "command": "git blame FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git blame ",
+    "key": false
+  },
+  {
+    "command": "git blame -L 10,20 FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git blame -L 10,20 ",
+    "key": false
+  },
+  {
+    "command": "git log --oneline -S \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "git log --oneline -S ",
+    "key": false
+  },
+  {
+    "command": "git log --oneline --grep \"TEXT\"",
+    "names": [
+      "TEXT"
+    ],
+    "out": "git log --oneline --grep ",
+    "key": false
+  },
+  {
+    "command": "git diff main...HEAD",
+    "names": [],
+    "out": "git diff main...HEAD",
+    "key": false
+  },
+  {
+    "command": "git diff --stat main...HEAD",
+    "names": [],
+    "out": "git diff --stat main...HEAD",
+    "key": false
+  },
+  {
+    "command": "git log main..HEAD --oneline",
+    "names": [],
+    "out": "git log main..HEAD --oneline",
+    "key": false
+  },
+  {
+    "command": "git diff main",
+    "names": [],
+    "out": "git diff main",
+    "key": false
+  },
+  {
+    "command": "git log --branches --not --remotes --oneline",
+    "names": [],
+    "out": "git log --branches --not --remotes --oneline",
+    "key": false
+  },
+  {
+    "command": "git add FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git add ",
+    "key": false
+  },
+  {
+    "command": "git add .",
+    "names": [
+      "FILE"
+    ],
+    "out": "git add .",
+    "key": false
+  },
+  {
+    "command": "git add -A",
+    "names": [
+      "FILE"
+    ],
+    "out": "git add -A",
+    "key": false
+  },
+  {
+    "command": "git add -p",
+    "names": [
+      "FILE"
+    ],
+    "out": "git add -p",
+    "key": false
+  },
+  {
+    "command": "git restore --staged FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git restore --staged ",
+    "key": false
+  },
+  {
+    "command": "git restore --staged .",
+    "names": [
+      "FILE"
+    ],
+    "out": "git restore --staged .",
+    "key": false
+  },
+  {
+    "command": "git reset HEAD FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git reset HEAD ",
+    "key": false
+  },
+  {
+    "command": "git commit -m \"MESSAGE\"",
+    "names": [
+      "MESSAGE"
+    ],
+    "out": "git commit -m ",
+    "key": false
+  },
+  {
+    "command": "git commit -am \"MESSAGE\"",
+    "names": [
+      "MESSAGE"
+    ],
+    "out": "git commit -am ",
+    "key": false
+  },
+  {
+    "command": "git commit",
+    "names": [
+      "MESSAGE"
+    ],
+    "out": "git commit",
+    "key": false
+  },
+  {
+    "command": "git commit --amend -m \"NEW_MESSAGE\"",
+    "names": [
+      "NEW_MESSAGE"
+    ],
+    "out": "git commit --amend -m ",
+    "key": false
+  },
+  {
+    "command": "git commit --amend --no-edit",
+    "names": [
+      "NEW_MESSAGE"
+    ],
+    "out": "git commit --amend --no-edit",
+    "key": false
+  },
+  {
+    "command": "git reset --soft HEAD~1",
+    "names": [],
+    "out": "git reset --soft HEAD~1",
+    "key": false
+  },
+  {
+    "command": "git reset HEAD~1",
+    "names": [],
+    "out": "git reset HEAD~1",
+    "key": false
+  },
+  {
+    "command": "git revert HEAD",
+    "names": [],
+    "out": "git revert HEAD",
+    "key": false
+  },
+  {
+    "command": "git revert COMMIT",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git revert ",
+    "key": false
+  },
+  {
+    "command": "git revert --no-edit HEAD",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git revert --no-edit HEAD",
+    "key": false
+  },
+  {
+    "command": "git pull",
+    "names": [],
+    "out": "git pull",
+    "key": false
+  },
+  {
+    "command": "git pull --rebase",
+    "names": [],
+    "out": "git pull --rebase",
+    "key": false
+  },
+  {
+    "command": "git fetch",
+    "names": [],
+    "out": "git fetch",
+    "key": false
+  },
+  {
+    "command": "git fetch --prune",
+    "names": [],
+    "out": "git fetch --prune",
+    "key": false
+  },
+  {
+    "command": "git push",
+    "names": [],
+    "out": "git push",
+    "key": false
+  },
+  {
+    "command": "git push -u origin HEAD",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git push -u origin HEAD",
+    "key": false
+  },
+  {
+    "command": "git push -u origin BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git push -u origin ",
+    "key": false
+  },
+  {
+    "command": "git switch -c BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch -c ",
+    "key": false
+  },
+  {
+    "command": "git checkout -b BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git checkout -b ",
+    "key": false
+  },
+  {
+    "command": "git switch -c BRANCH --no-track origin/main",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch -c BRANCH --no-track origin/main",
+    "key": false
+  },
+  {
+    "command": "git switch BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch ",
+    "key": false
+  },
+  {
+    "command": "git switch -",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch -",
+    "key": false
+  },
+  {
+    "command": "git checkout BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git checkout ",
+    "key": false
+  },
+  {
+    "command": "git branch",
+    "names": [],
+    "out": "git branch",
+    "key": false
+  },
+  {
+    "command": "git branch -a",
+    "names": [],
+    "out": "git branch -a",
+    "key": false
+  },
+  {
+    "command": "git branch --show-current",
+    "names": [],
+    "out": "git branch --show-current",
+    "key": false
+  },
+  {
+    "command": "git branch -m NEW_NAME",
+    "names": [
+      "NEW_NAME"
+    ],
+    "out": "git branch -m ",
+    "key": false
+  },
+  {
+    "command": "git branch -d BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git branch -d ",
+    "key": false
+  },
+  {
+    "command": "git branch -D BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git branch -D ",
+    "key": false
+  },
+  {
+    "command": "git push origin --delete BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git push origin --delete ",
+    "key": false
+  },
+  {
+    "command": "git merge BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git merge ",
+    "key": false
+  },
+  {
+    "command": "git merge origin/main",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git merge origin/main",
+    "key": false
+  },
+  {
+    "command": "git pull --rebase origin main",
+    "names": [],
+    "out": "git pull --rebase origin main",
+    "key": false
+  },
+  {
+    "command": "git fetch origin",
+    "names": [],
+    "out": "git fetch origin",
+    "key": false
+  },
+  {
+    "command": "git rebase origin/main",
+    "names": [],
+    "out": "git rebase origin/main",
+    "key": false
+  },
+  {
+    "command": "git diff --name-only --diff-filter=U",
+    "names": [
+      "FILE"
+    ],
+    "out": "git diff --name-only --diff-filter=U",
+    "key": false
+  },
+  {
+    "command": "git add FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git add ",
+    "key": false
+  },
+  {
+    "command": "git merge --continue",
+    "names": [
+      "FILE"
+    ],
+    "out": "git merge --continue",
+    "key": false
+  },
+  {
+    "command": "git rebase --continue",
+    "names": [
+      "FILE"
+    ],
+    "out": "git rebase --continue",
+    "key": false
+  },
+  {
+    "command": "git checkout --theirs FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git checkout --theirs ",
+    "key": false
+  },
+  {
+    "command": "git merge --abort",
+    "names": [],
+    "out": "git merge --abort",
+    "key": false
+  },
+  {
+    "command": "git rebase --abort",
+    "names": [],
+    "out": "git rebase --abort",
+    "key": false
+  },
+  {
+    "command": "git cherry-pick --abort",
+    "names": [],
+    "out": "git cherry-pick --abort",
+    "key": false
+  },
+  {
+    "command": "git cherry-pick COMMIT",
+    "names": [
+      "COMMIT"
+    ],
+    "out": "git cherry-pick ",
+    "key": false
+  },
+  {
+    "command": "git switch -",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch -",
+    "key": false
+  },
+  {
+    "command": "git switch main",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch main",
+    "key": false
+  },
+  {
+    "command": "git switch -c BRANCH",
+    "names": [
+      "BRANCH"
+    ],
+    "out": "git switch -c ",
+    "key": false
+  },
+  {
+    "command": "git stash",
+    "names": [],
+    "out": "git stash",
+    "key": false
+  },
+  {
+    "command": "git stash pop",
+    "names": [],
+    "out": "git stash pop",
+    "key": false
+  },
+  {
+    "command": "git stash -u",
+    "names": [],
+    "out": "git stash -u",
+    "key": false
+  },
+  {
+    "command": "git stash list",
+    "names": [],
+    "out": "git stash list",
+    "key": false
+  },
+  {
+    "command": "git stash apply",
+    "names": [],
+    "out": "git stash apply",
+    "key": false
+  },
+  {
+    "command": "git clone URL",
+    "names": [
+      "URL"
+    ],
+    "out": "git clone ",
+    "key": false
+  },
+  {
+    "command": "git clone --depth 1 URL",
+    "names": [
+      "URL"
+    ],
+    "out": "git clone --depth 1 ",
+    "key": false
+  },
+  {
+    "command": "git init",
+    "names": [],
+    "out": "git init",
+    "key": false
+  },
+  {
+    "command": "git init -b main",
+    "names": [],
+    "out": "git init -b main",
+    "key": false
+  },
+  {
+    "command": "git remote -v",
+    "names": [
+      "URL"
+    ],
+    "out": "git remote -v",
+    "key": false
+  },
+  {
+    "command": "git remote add origin URL",
+    "names": [
+      "URL"
+    ],
+    "out": "git remote add origin ",
+    "key": false
+  },
+  {
+    "command": "git remote set-url origin URL",
+    "names": [
+      "URL"
+    ],
+    "out": "git remote set-url origin ",
+    "key": false
+  },
+  {
+    "command": "git config --global user.name \"YOUR_NAME\"",
+    "names": [
+      "YOUR_NAME",
+      "EMAIL"
+    ],
+    "out": "git config --global user.name ",
+    "key": false
+  },
+  {
+    "command": "git config --global user.email \"EMAIL\"",
+    "names": [
+      "YOUR_NAME",
+      "EMAIL"
+    ],
+    "out": "git config --global user.email ",
+    "key": false
+  },
+  {
+    "command": "git config --global --list",
+    "names": [
+      "YOUR_NAME",
+      "EMAIL"
+    ],
+    "out": "git config --global --list",
+    "key": false
+  },
+  {
+    "command": "git rm --cached FILE",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "git rm --cached ",
+    "key": false
+  },
+  {
+    "command": "git rm -r --cached FOLDER",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "git rm -r --cached ",
+    "key": false
+  },
+  {
+    "command": "git check-ignore -v FILE",
+    "names": [
+      "FILE",
+      "FOLDER"
+    ],
+    "out": "git check-ignore -v ",
+    "key": false
+  },
+  {
+    "command": "git tag -a TAG -m \"MESSAGE\"",
+    "names": [
+      "TAG",
+      "MESSAGE"
+    ],
+    "out": "git tag -a TAG -m ",
+    "key": false
+  },
+  {
+    "command": "git push origin TAG",
+    "names": [
+      "TAG",
+      "MESSAGE"
+    ],
+    "out": "git push origin ",
+    "key": false
+  },
+  {
+    "command": "git tag",
+    "names": [
+      "TAG",
+      "MESSAGE"
+    ],
+    "out": "git tag",
+    "key": false
+  },
+  {
+    "command": "git tag -d TAG",
+    "names": [
+      "TAG",
+      "MESSAGE"
+    ],
+    "out": "git tag -d ",
+    "key": false
+  },
+  {
+    "command": "git restore --source=COMMIT FILE",
+    "names": [
+      "COMMIT",
+      "FILE"
+    ],
+    "out": "git restore --source=COMMIT ",
+    "key": false
+  },
+  {
+    "command": "git restore FILE",
+    "names": [
+      "COMMIT",
+      "FILE"
+    ],
+    "out": "git restore ",
+    "key": false
+  },
+  {
+    "command": "git reflog -n 30",
+    "names": [
+      "BRANCH",
+      "COMMIT"
+    ],
+    "out": "git reflog -n 30",
+    "key": false
+  },
+  {
+    "command": "git branch BRANCH COMMIT",
+    "names": [
+      "BRANCH",
+      "COMMIT"
+    ],
+    "out": "git branch ",
+    "key": false
+  },
+  {
+    "command": "git restore FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git restore ",
+    "key": false
+  },
+  {
+    "command": "git restore .",
+    "names": [
+      "FILE"
+    ],
+    "out": "git restore .",
+    "key": false
+  },
+  {
+    "command": "git checkout -- FILE",
+    "names": [
+      "FILE"
+    ],
+    "out": "git checkout -- ",
+    "key": false
+  },
+  {
+    "command": "git push --force-with-lease",
+    "names": [],
+    "out": "git push --force-with-lease",
+    "key": false
+  },
+  {
+    "command": "git reset --hard HEAD",
+    "names": [],
+    "out": "git reset --hard HEAD",
+    "key": false
+  },
+  {
+    "command": "git reset --hard origin/main",
+    "names": [],
+    "out": "git reset --hard origin/main",
+    "key": false
+  },
+  {
+    "command": "git clean -fd",
+    "names": [],
+    "out": "git clean -fd",
+    "key": false
+  },
+  {
+    "command": "git clean -nfd",
+    "names": [],
+    "out": "git clean -nfd",
+    "key": false
+  },
+  {
+    "command": "git clean -fdx",
+    "names": [],
+    "out": "git clean -fdx",
+    "key": false
+  },
+  {
+    "command": "claude",
+    "names": [
+      "MODEL"
+    ],
+    "out": "claude",
+    "key": false
+  },
+  {
+    "command": "claude --model MODEL",
+    "names": [
+      "MODEL"
+    ],
+    "out": "claude --model ",
+    "key": false
+  },
+  {
+    "command": "claude -c",
+    "names": [],
+    "out": "claude -c",
+    "key": false
+  },
+  {
+    "command": "claude --continue",
+    "names": [],
+    "out": "claude --continue",
+    "key": false
+  },
+  {
+    "command": "claude -r",
+    "names": [
+      "SESSION_ID"
+    ],
+    "out": "claude -r",
+    "key": false
+  },
+  {
+    "command": "claude --resume SESSION_ID",
+    "names": [
+      "SESSION_ID"
+    ],
+    "out": "claude --resume ",
+    "key": false
+  },
+  {
+    "command": "/resume",
+    "names": [
+      "SESSION_ID"
+    ],
+    "out": "/resume",
+    "key": false
+  },
+  {
+    "command": "claude -p \"PROMPT\"",
+    "names": [
+      "PROMPT"
+    ],
+    "out": "claude -p ",
+    "key": false
+  },
+  {
+    "command": "claude -p --output-format json \"PROMPT\"",
+    "names": [
+      "PROMPT"
+    ],
+    "out": "claude -p --output-format json ",
+    "key": false
+  },
+  {
+    "command": "cat FILE | claude -p \"PROMPT\"",
+    "names": [
+      "FILE",
+      "PROMPT"
+    ],
+    "out": "cat FILE | claude -p ",
+    "key": false
+  },
+  {
+    "command": "type FILE | claude -p \"PROMPT\"",
+    "names": [
+      "FILE",
+      "PROMPT"
+    ],
+    "out": "type FILE | claude -p ",
+    "key": false
+  },
+  {
+    "command": "git log --oneline -n 20 | claude -p \"Summarise these commits\"",
+    "names": [
+      "FILE",
+      "PROMPT"
+    ],
+    "out": "git log --oneline -n 20 | claude -p \"Summarise these commits\"",
+    "key": false
+  },
+  {
+    "command": "/help",
+    "names": [],
+    "out": "/help",
+    "key": false
+  },
+  {
+    "command": "/clear",
+    "names": [],
+    "out": "/clear",
+    "key": false
+  },
+  {
+    "command": "/compact",
+    "names": [
+      "KEEP_THIS"
+    ],
+    "out": "/compact",
+    "key": false
+  },
+  {
+    "command": "/compact KEEP_THIS",
+    "names": [
+      "KEEP_THIS"
+    ],
+    "out": "/compact ",
+    "key": false
+  },
+  {
+    "command": "/context",
+    "names": [
+      "KEEP_THIS"
+    ],
+    "out": "/context",
+    "key": false
+  },
+  {
+    "command": "/model",
+    "names": [
+      "MODEL"
+    ],
+    "out": "/model",
+    "key": false
+  },
+  {
+    "command": "claude --model MODEL",
+    "names": [
+      "MODEL"
+    ],
+    "out": "claude --model ",
+    "key": false
+  },
+  {
+    "command": "/init",
+    "names": [],
+    "out": "/init",
+    "key": false
+  },
+  {
+    "command": "/memory",
+    "names": [],
+    "out": "/memory",
+    "key": false
+  },
+  {
+    "command": "/code-review",
+    "names": [],
+    "out": "/code-review",
+    "key": false
+  },
+  {
+    "command": "/security-review",
+    "names": [],
+    "out": "/security-review",
+    "key": false
+  },
+  {
+    "command": "/usage",
+    "names": [],
+    "out": "/usage",
+    "key": false
+  },
+  {
+    "command": "/cost",
+    "names": [],
+    "out": "/cost",
+    "key": false
+  },
+  {
+    "command": "/permissions",
+    "names": [],
+    "out": "/permissions",
+    "key": false
+  },
+  {
+    "command": "Shift+Tab",
+    "names": [],
+    "out": "Shift+Tab",
+    "key": true
+  },
+  {
+    "command": "claude --permission-mode plan",
+    "names": [],
+    "out": "claude --permission-mode plan",
+    "key": false
+  },
+  {
+    "command": "Shift+Tab",
+    "names": [],
+    "out": "Shift+Tab",
+    "key": true
+  },
+  {
+    "command": "claude --dangerously-skip-permissions",
+    "names": [],
+    "out": "claude --dangerously-skip-permissions",
+    "key": false
+  },
+  {
+    "command": "/agents",
+    "names": [],
+    "out": "/agents",
+    "key": false
+  },
+  {
+    "command": "/mcp",
+    "names": [],
+    "out": "/mcp",
+    "key": false
+  },
+  {
+    "command": "claude mcp list",
+    "names": [],
+    "out": "claude mcp list",
+    "key": false
+  },
+  {
+    "command": "/rewind",
+    "names": [],
+    "out": "/rewind",
+    "key": false
+  },
+  {
+    "command": "@PATH",
+    "names": [
+      "PATH"
+    ],
+    "out": "@PATH",
+    "key": false
+  },
+  {
+    "command": "!COMMAND",
+    "names": [
+      "COMMAND"
+    ],
+    "out": "!COMMAND",
+    "key": false
+  },
+  {
+    "command": "Ctrl+V",
+    "names": [],
+    "out": "Ctrl+V",
+    "key": true
+  },
+  {
+    "command": "Alt+V",
+    "names": [],
+    "out": "Alt+V",
+    "key": true
+  },
+  {
+    "command": "Shift+Enter",
+    "names": [],
+    "out": "Shift+Enter",
+    "key": true
+  },
+  {
+    "command": "Ctrl+J",
+    "names": [],
+    "out": "Ctrl+J",
+    "key": true
+  },
+  {
+    "command": "\\",
+    "names": [],
+    "out": "\\",
+    "key": false
+  },
+  {
+    "command": "Esc",
+    "names": [],
+    "out": "Esc",
+    "key": true
+  },
+  {
+    "command": "/exit",
+    "names": [],
+    "out": "/exit",
+    "key": false
+  },
+  {
+    "command": "/quit",
+    "names": [],
+    "out": "/quit",
+    "key": false
+  },
+  {
+    "command": "Ctrl+C",
+    "names": [],
+    "out": "Ctrl+C",
+    "key": true
+  },
+  {
+    "command": "Ctrl+D",
+    "names": [],
+    "out": "Ctrl+D",
+    "key": true
+  },
+  {
+    "command": "/login",
+    "names": [],
+    "out": "/login",
+    "key": false
+  },
+  {
+    "command": "/logout",
+    "names": [],
+    "out": "/logout",
+    "key": false
+  },
+  {
+    "command": "claude update",
+    "names": [],
+    "out": "claude update",
+    "key": false
+  },
+  {
+    "command": "claude --version",
+    "names": [],
+    "out": "claude --version",
+    "key": false
+  },
+  {
+    "command": "claude doctor",
+    "names": [],
+    "out": "claude doctor",
+    "key": false
+  },
+  {
+    "command": "codex",
+    "names": [
+      "PROMPT",
+      "MODEL",
+      "IMAGE_FILE"
+    ],
+    "out": "codex",
+    "key": false
+  },
+  {
+    "command": "codex -m MODEL",
+    "names": [
+      "PROMPT",
+      "MODEL",
+      "IMAGE_FILE"
+    ],
+    "out": "codex -m ",
+    "key": false
+  },
+  {
+    "command": "codex -i IMAGE_FILE \"PROMPT\"",
+    "names": [
+      "PROMPT",
+      "MODEL",
+      "IMAGE_FILE"
+    ],
+    "out": "codex -i ",
+    "key": false
+  },
+  {
+    "command": "codex resume --last",
+    "names": [],
+    "out": "codex resume --last",
+    "key": false
+  },
+  {
+    "command": "codex resume",
+    "names": [],
+    "out": "codex resume",
+    "key": false
+  },
+  {
+    "command": "codex resume --all",
+    "names": [],
+    "out": "codex resume --all",
+    "key": false
+  },
+  {
+    "command": "codex exec \"PROMPT\"",
+    "names": [
+      "PROMPT"
+    ],
+    "out": "codex exec ",
+    "key": false
+  },
+  {
+    "command": "/model",
+    "names": [],
+    "out": "/model",
+    "key": false
+  },
+  {
+    "command": "/permissions",
+    "names": [],
+    "out": "/permissions",
+    "key": false
+  },
+  {
+    "command": "/new",
+    "names": [],
+    "out": "/new",
+    "key": false
+  },
+  {
+    "command": "/compact",
+    "names": [],
+    "out": "/compact",
+    "key": false
+  },
+  {
+    "command": "/diff",
+    "names": [],
+    "out": "/diff",
+    "key": false
+  },
+  {
+    "command": "/review",
+    "names": [],
+    "out": "/review",
+    "key": false
+  },
+  {
+    "command": "/status",
+    "names": [],
+    "out": "/status",
+    "key": false
+  },
+  {
+    "command": "/mcp",
+    "names": [],
+    "out": "/mcp",
+    "key": false
+  },
+  {
+    "command": "/init",
+    "names": [],
+    "out": "/init",
+    "key": false
+  },
+  {
+    "command": "/quit",
+    "names": [],
+    "out": "/quit",
+    "key": false
+  },
+  {
+    "command": "Esc",
+    "names": [],
+    "out": "Esc",
+    "key": true
+  },
+  {
+    "command": "/exit",
+    "names": [],
+    "out": "/exit",
+    "key": false
+  },
+  {
+    "command": "codex login",
+    "names": [],
+    "out": "codex login",
+    "key": false
+  },
+  {
+    "command": "codex logout",
+    "names": [],
+    "out": "codex logout",
+    "key": false
+  },
+  {
+    "command": "codex update",
+    "names": [],
+    "out": "codex update",
+    "key": false
+  },
+  {
+    "command": "codex doctor",
+    "names": [],
+    "out": "codex doctor",
+    "key": false
+  },
+  {
+    "command": "codex --version",
+    "names": [],
+    "out": "codex --version",
+    "key": false
+  },
+  {
+    "command": "winget search NAME",
+    "names": [
+      "NAME",
+      "PACKAGE_ID"
+    ],
+    "out": "winget search ",
+    "key": false
+  },
+  {
+    "command": "winget show --id PACKAGE_ID",
+    "names": [
+      "NAME",
+      "PACKAGE_ID"
+    ],
+    "out": "winget show --id ",
+    "key": false
+  },
+  {
+    "command": "winget install -e --id PACKAGE_ID",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget install -e --id ",
+    "key": false
+  },
+  {
+    "command": "winget install -e --id Git.Git",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget install -e --id Git.Git",
+    "key": false
+  },
+  {
+    "command": "winget install -e --id OpenJS.NodeJS.LTS",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget install -e --id OpenJS.NodeJS.LTS",
+    "key": false
+  },
+  {
+    "command": "winget install -e --id Microsoft.PowerShell",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget install -e --id Microsoft.PowerShell",
+    "key": false
+  },
+  {
+    "command": "winget upgrade --all",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget upgrade --all",
+    "key": false
+  },
+  {
+    "command": "winget upgrade",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget upgrade",
+    "key": false
+  },
+  {
+    "command": "winget upgrade -e --id PACKAGE_ID",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget upgrade -e --id ",
+    "key": false
+  },
+  {
+    "command": "winget list",
+    "names": [
+      "NAME"
+    ],
+    "out": "winget list",
+    "key": false
+  },
+  {
+    "command": "winget list --name NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "winget list --name ",
+    "key": false
+  },
+  {
+    "command": "winget uninstall -e --id PACKAGE_ID",
+    "names": [
+      "PACKAGE_ID"
+    ],
+    "out": "winget uninstall -e --id ",
+    "key": false
+  },
+  {
+    "command": "npm install",
+    "names": [],
+    "out": "npm install",
+    "key": false
+  },
+  {
+    "command": "npm ci",
+    "names": [],
+    "out": "npm ci",
+    "key": false
+  },
+  {
+    "command": "npm init -y",
+    "names": [],
+    "out": "npm init -y",
+    "key": false
+  },
+  {
+    "command": "npm install PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "npm install ",
+    "key": false
+  },
+  {
+    "command": "npm install PACKAGE@VERSION",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "npm install PACKAGE@VERSION",
+    "key": false
+  },
+  {
+    "command": "npm view PACKAGE version",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "npm view PACKAGE version",
+    "key": false
+  },
+  {
+    "command": "npm install --save-dev PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm install --save-dev ",
+    "key": false
+  },
+  {
+    "command": "npm install -D PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm install -D ",
+    "key": false
+  },
+  {
+    "command": "npm uninstall PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm uninstall ",
+    "key": false
+  },
+  {
+    "command": "npm run",
+    "names": [],
+    "out": "npm run",
+    "key": false
+  },
+  {
+    "command": "npm run SCRIPT",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "npm run ",
+    "key": false
+  },
+  {
+    "command": "npm run dev",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "npm run dev",
+    "key": false
+  },
+  {
+    "command": "npm run build",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "npm run build",
+    "key": false
+  },
+  {
+    "command": "npm test",
+    "names": [
+      "SCRIPT"
+    ],
+    "out": "npm test",
+    "key": false
+  },
+  {
+    "command": "npx PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npx ",
+    "key": false
+  },
+  {
+    "command": "npx tsc --noEmit",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npx tsc --noEmit",
+    "key": false
+  },
+  {
+    "command": "npx --yes PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npx --yes ",
+    "key": false
+  },
+  {
+    "command": "npm outdated",
+    "names": [],
+    "out": "npm outdated",
+    "key": false
+  },
+  {
+    "command": "npm update",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm update",
+    "key": false
+  },
+  {
+    "command": "npm install PACKAGE@latest",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm install PACKAGE@latest",
+    "key": false
+  },
+  {
+    "command": "npm ls -g --depth=0",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm ls -g --depth=0",
+    "key": false
+  },
+  {
+    "command": "npm install -g PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm install -g ",
+    "key": false
+  },
+  {
+    "command": "npm uninstall -g PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm uninstall -g ",
+    "key": false
+  },
+  {
+    "command": "npm config get prefix",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "npm config get prefix",
+    "key": false
+  },
+  {
+    "command": "npm cache clean --force",
+    "names": [],
+    "out": "npm cache clean --force",
+    "key": false
+  },
+  {
+    "command": "npm cache verify",
+    "names": [],
+    "out": "npm cache verify",
+    "key": false
+  },
+  {
+    "command": "python -m venv .venv",
+    "names": [],
+    "out": "python -m venv .venv",
+    "key": false
+  },
+  {
+    "command": ".\\.venv\\Scripts\\Activate.ps1",
+    "names": [],
+    "out": ".\\.venv\\Scripts\\Activate.ps1",
+    "key": false
+  },
+  {
+    "command": ".venv\\Scripts\\activate.bat",
+    "names": [],
+    "out": ".venv\\Scripts\\activate.bat",
+    "key": false
+  },
+  {
+    "command": "deactivate",
+    "names": [],
+    "out": "deactivate",
+    "key": false
+  },
+  {
+    "command": "python -m pip install PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python -m pip install ",
+    "key": false
+  },
+  {
+    "command": "python -m pip install PACKAGE==VERSION",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python -m pip install PACKAGE==VERSION",
+    "key": false
+  },
+  {
+    "command": "python -m pip install --upgrade PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python -m pip install --upgrade ",
+    "key": false
+  },
+  {
+    "command": "python -m pip uninstall PACKAGE",
+    "names": [
+      "PACKAGE",
+      "VERSION"
+    ],
+    "out": "python -m pip uninstall ",
+    "key": false
+  },
+  {
+    "command": "python -m pip install -r requirements.txt",
+    "names": [],
+    "out": "python -m pip install -r requirements.txt",
+    "key": false
+  },
+  {
+    "command": "python -m pip freeze > requirements.txt",
+    "names": [],
+    "out": "python -m pip freeze > requirements.txt",
+    "key": false
+  },
+  {
+    "command": "python -m pip freeze",
+    "names": [],
+    "out": "python -m pip freeze",
+    "key": false
+  },
+  {
+    "command": "python -m pip list",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python -m pip list",
+    "key": false
+  },
+  {
+    "command": "python -m pip list --outdated",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python -m pip list --outdated",
+    "key": false
+  },
+  {
+    "command": "python -m pip show PACKAGE",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python -m pip show ",
+    "key": false
+  },
+  {
+    "command": "python -m pip --version",
+    "names": [
+      "PACKAGE"
+    ],
+    "out": "python -m pip --version",
+    "key": false
+  },
+  {
+    "command": "where.exe NAME",
+    "names": [
+      "NAME"
+    ],
+    "out": "where.exe ",
+    "key": false
+  },
+  {
+    "command": "$env:Path = [Environment]::GetEnvironmentVariable(\"Path\",\"Machine\") + \";\" + [Environment]::GetEnvironmentVariable(\"Path\",\"User\")",
+    "names": [
+      "NAME"
+    ],
+    "out": "$env:Path = [Environment]::GetEnvironmentVariable(\"Path\",\"Machine\") + \";\" + [Environment]::GetEnvironmentVariable(\"Path\",\"User\")",
+    "key": false
+  },
+  {
+    "command": "wsl --install",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --install",
+    "key": false
+  },
+  {
+    "command": "wsl --install -d DISTRO",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --install -d ",
+    "key": false
+  },
+  {
+    "command": "wsl --list --online",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --list --online",
+    "key": false
+  },
+  {
+    "command": "wsl -l -v",
+    "names": [],
+    "out": "wsl -l -v",
+    "key": false
+  },
+  {
+    "command": "wsl --status",
+    "names": [],
+    "out": "wsl --status",
+    "key": false
+  },
+  {
+    "command": "wsl -d DISTRO",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl -d ",
+    "key": false
+  },
+  {
+    "command": "wsl",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl",
+    "key": false
+  },
+  {
+    "command": "wsl ~",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl ~",
+    "key": false
+  },
+  {
+    "command": "wsl COMMAND",
+    "names": [
+      "COMMAND",
+      "DISTRO"
+    ],
+    "out": "wsl ",
+    "key": false
+  },
+  {
+    "command": "wsl -d DISTRO COMMAND",
+    "names": [
+      "COMMAND",
+      "DISTRO"
+    ],
+    "out": "wsl -d ",
+    "key": false
+  },
+  {
+    "command": "wsl --set-default DISTRO",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --set-default ",
+    "key": false
+  },
+  {
+    "command": "wsl --shutdown",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --shutdown",
+    "key": false
+  },
+  {
+    "command": "wsl --terminate DISTRO",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --terminate ",
+    "key": false
+  },
+  {
+    "command": "wsl --update",
+    "names": [],
+    "out": "wsl --update",
+    "key": false
+  },
+  {
+    "command": "wsl --version",
+    "names": [],
+    "out": "wsl --version",
+    "key": false
+  },
+  {
+    "command": "wsl --export DISTRO FILE",
+    "names": [
+      "DISTRO",
+      "FILE",
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "wsl --export ",
+    "key": false
+  },
+  {
+    "command": "wsl --import NAME FOLDER FILE",
+    "names": [
+      "DISTRO",
+      "FILE",
+      "NAME",
+      "FOLDER"
+    ],
+    "out": "wsl --import ",
+    "key": false
+  },
+  {
+    "command": "wsl --unregister DISTRO",
+    "names": [
+      "DISTRO"
+    ],
+    "out": "wsl --unregister ",
+    "key": false
+  },
+  {
+    "command": "explorer.exe \\\\wsl.localhost",
+    "names": [],
+    "out": "explorer.exe \\\\wsl.localhost",
+    "key": false
+  }
+]

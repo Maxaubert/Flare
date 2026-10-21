@@ -12,8 +12,13 @@ import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
+import { SettingsView, SettingsBridge } from "settings/view.slint";
+import { SelectMenu } from "settings/select.slint";
+import { ColourPopover } from "settings/colour.slint";
+import { ThemeEditor, AskThree } from "settings/wall.slint";
+import { HelpPanel } from "settings/help_panel.slint";
 
-export { Theme, Px } from "theme.slint";
+export { Theme, Px, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview } from "tabmark.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
@@ -25,6 +30,20 @@ export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 
+// The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
+// previews, the real components and the two globals are reachable from Rust.
+export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell } from "settings/types.slint";
+export { ControlsPreview } from "settings/controls.slint";
+export { SliderPreview } from "settings/slider.slint";
+export { SelectPreview, SelectMenu } from "settings/select.slint";
+export { RowPreview } from "settings/row.slint";
+export { FramePreview } from "settings/frame.slint";
+export { ColourPreview, ColourPopover, PickerOpening } from "settings/colour.slint";
+export { WallPreview, ThemeEditor, AskThree } from "settings/wall.slint";
+export { AboutPreview } from "settings/about.slint";
+export { HelpPanelPreview, HelpPanel, HelpBridge } from "settings/help_panel.slint";
+export { SettingsPreview, SettingsView, SettingsBridge } from "settings/view.slint";
+
 // One of the title bar's buttons (PT TitleBar.tsx: h-7 w-8, rounded, an
 // SVG icon on a 24-unit viewbox drawn with a round-capped stroke).
 component TitleButton inherits Rectangle {
@@ -33,7 +52,10 @@ component TitleButton inherits Rectangle {
     in property <float> stroke-units: 1.8;
     in property <bool> danger: false;
     in property <string> label;
+    // A tooltip, when the button has one (the Command help button).
+    in property <string> tip-text;
     callback clicked();
+    callback tip(string, length, length, length, length);
     width: 32px;
     height: 28px;
     border-radius: Theme.radius-button;
@@ -55,22 +77,49 @@ component TitleButton inherits Rectangle {
     }
     ta := TouchArea {
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (root.tip-text != "") {
+                if (self.has-hover) {
+                    root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
     }
 }
 
-// The four window buttons (settings, minimise, maximise, close), `Px.snap`ped wide so the
-// strip beside them starts and ends on whole device pixels.
+// The window buttons (command help while it is on, settings, minimise, maximise, close),
+// `Px.snap`ped wide so the strip beside them starts and ends on whole device pixels. This width
+// is the one source of truth for the strip's reserved space: 154 with four buttons, 190 with the
+// Command help button before them (32 per button, 4 between, 8 and 6 at the ends).
 component TitleButtons inherits Rectangle {
+    in property <bool> help-visible;
+    in property <string> help-tip;
+    callback help();
     callback settings();
     callback minimize();
     callback maximize();
     callback close();
-    width: Px.snap(154px);
+    callback tip(string, length, length, length, length);
+    width: Px.snap(root.help-visible ? 190px : 154px);
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 6px;
         spacing: 4px;
         alignment: end;
+        if root.help-visible: VerticalLayout {
+            alignment: center;
+            TitleButton {
+                label: "Command help";
+                tip-text: root.help-tip;
+                icon-size: 15px;
+                stroke-units: 1.8;
+                commands: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M9.4 9.3a2.7 2.7 0 1 1 4 2.4c-.9.5-1.4 1.1-1.4 2.1 M12 17.2v.01";
+                clicked => { root.help(); }
+                tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+            }
+        }
         VerticalLayout {
             alignment: center;
             TitleButton {
@@ -128,14 +177,15 @@ export component AppWindow inherits Window {
     out property <float> scale: 1px / 1phx;
 
     callback grid-resized(int, int, float);
+
+    // The Settings view's focus requests (M7 Task 41): the Find field, the result list, a rail item.
+    public function settings-focus-find() { settings-view.focus-find(); }
+    public function settings-focus-list() { settings-view.focus-list(); }
+    public function settings-focus-rail(i: int) { settings-view.focus-rail(i); }
     callback minimize-clicked();
     callback maximize-clicked();
     callback close-clicked();
     callback toggle-grid-renderer();
-    // The developer chords (decision D13), live only with the F12 overlay open: F9 / Shift+F9 walk the
-    // theme wall (-1 or 1), F8 steps the see-through level.
-    callback debug-step-theme(int);
-    callback debug-step-see-through();
 
     // ---- layout ----
     in property <bool> layout-vertical;
@@ -154,6 +204,12 @@ export component AppWindow inherits Window {
     in property <string> find-tab-key;
     in property <string> new-key;
     in property <string> settings-key;
+    // Command help (M7 Task 43): the title button, its key label and which of the panel and the
+    // find bar was opened last (that one is on top in the corner).
+    in property <bool> help-visible;
+    in property <string> help-key;
+    in property <bool> help-on-top;
+    callback help-clicked();
     out property <int> strip-phys-width: strip.strip-phys-width;
     // ---- sidebar ----
     in property <bool> sidebar-collapsed;
@@ -204,7 +260,11 @@ export component AppWindow inherits Window {
     in-out property <string> find-query;
     in property <string> find-readout;
     in property <bool> find-can-step;
-    out property <bool> find-input-focused: find.input-has-focus;
+    // A Slint text field has the keys: the find box or the Command help panel.
+    out property <bool> find-input-focused: find.input-has-focus || help-panel.focused;
+    out property <length> help-sheet-w: help-panel.sheet-w;
+    in-out property <length> help-viewport-y <=> help-panel.viewport-y;
+    out property <length> title-buttons-w: top-buttons.width;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
@@ -268,14 +328,6 @@ export component AppWindow inherits Window {
         key-pressed(event) => {
             if (event.text == Key.F12) {
                 root.overlay-visible = !root.overlay-visible;
-                return accept;
-            }
-            if (root.overlay-visible && event.text == Key.F9) {
-                root.debug-step-theme(event.modifiers.shift ? -1 : 1);
-                return accept;
-            }
-            if (root.overlay-visible && event.text == Key.F8) {
-                root.debug-step-see-through();
                 return accept;
             }
             reject
@@ -347,7 +399,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    TitleButtons {
+                    top-buttons := TitleButtons {
+                        help-visible: root.help-visible;
+                        help-tip: "Command help (" + root.help-key + ")";
+                        help => { root.help-clicked(); }
+                        tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         settings => { root.settings-clicked(); }
                         minimize => { root.minimize-clicked(); }
                         maximize => { root.maximize-clicked(); }
@@ -381,6 +437,10 @@ export component AppWindow inherits Window {
                 }
                 TitleButtons {
                     x: parent.width - self.width;
+                    help-visible: root.help-visible;
+                    help-tip: "Command help (" + root.help-key + ")";
+                    help => { root.help-clicked(); }
+                    tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     settings => { root.settings-clicked(); }
                     minimize => { root.minimize-clicked(); }
                     maximize => { root.maximize-clicked(); }
@@ -434,30 +494,13 @@ export component AppWindow inherits Window {
                                     e.modifiers.control, e.modifiers.shift, e.modifiers.alt);
                             }
                         }
-                        find := FindBar {
-                            x: 0px;
-                            y: 0px;
-                            width: parent.width;
-                            height: parent.height;
-                            open: root.find-open;
-                            query <=> root.find-query;
-                            readout: root.find-readout;
-                            can-step: root.find-can-step;
-                            query-edited(q) => { root.find-edited(q); }
-                            next => { root.find-next(); }
-                            previous => { root.find-prev(); }
-                            close => { root.find-close(); }
-                        }
                     }
-                    if root.front-kind == 1: Rectangle {
-                        Text {
-                            text: "Settings";
-                            color: Theme.dim;
-                            font-size: 13px;
-                            font-family: Theme.font-ui;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                    settings-view := SettingsView {
+                        visible: root.front-kind == 1;
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
                     }
                     StartScreen {
                         x: 0px;
@@ -475,6 +518,34 @@ export component AppWindow inherits Window {
                         settings => { root.start-settings(); }
                         github => { root.start-github(); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                    }
+
+                    // Command help (M7 Task 43) and the find bar share the top right of the page by
+                    // stacking only: the one opened last is on top. The bar sits over the grid's area
+                    // alone, so it is drawn here, after the panel, and the panel's z lifts above it
+                    // when the panel was opened later.
+                    help-panel := HelpPanel {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        z: root.help-on-top ? 3 : 1;
+                    }
+                    find := FindBar {
+                        x: 0px;
+                        y: 0px;
+                        width: root.grid-frozen-width > 0px ? root.grid-frozen-width : parent.width;
+                        height: parent.height;
+                        z: 2;
+                        visible: root.front-kind == 0;
+                        open: root.find-open;
+                        query <=> root.find-query;
+                        readout: root.find-readout;
+                        can-step: root.find-can-step;
+                        query-edited(q) => { root.find-edited(q); }
+                        next => { root.find-next(); }
+                        previous => { root.find-prev(); }
+                        close => { root.find-close(); }
                     }
 
                     if root.overlay-visible: Rectangle {
@@ -608,6 +679,86 @@ export component AppWindow inherits Window {
             dismissed => { root.overflow-dismissed(); }
             accepted => { root.overflow-accepted(); }
             query-edited(q) => { root.overflow-query-edited(q); }
+        }
+        // The Settings overlays (M7 Task 41), above the page and below the dialog. Each is
+        // pointer-transparent while closed. The Command help panel joins them in Task 43.
+        ThemeEditor {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.editor-open;
+            wells: SettingsBridge.editor-wells;
+            preview: SettingsBridge.editor-preview;
+            well-edited(k, t) => { SettingsBridge.editor-well-edited(k, t); }
+            well-committed(k) => { SettingsBridge.editor-well-committed(k); }
+            well-swatch(k, x, y, w, h) => { SettingsBridge.editor-well-swatch(k, x, y, w, h); }
+            save => { SettingsBridge.editor-save(); }
+            cancel => { SettingsBridge.editor-cancel(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+        AskThree {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.ask-open;
+            answered(n) => { SettingsBridge.ask-answered(n); }
+        }
+        SelectMenu {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.select-open;
+            options: SettingsBridge.select-options;
+            value: SettingsBridge.select-value;
+            menu-x: SettingsBridge.select-x;
+            menu-y: SettingsBridge.select-y;
+            menu-w: SettingsBridge.select-w;
+            menu-h: SettingsBridge.select-h;
+            highlight <=> SettingsBridge.select-highlight;
+            chosen(id) => { SettingsBridge.select-chosen(id); }
+            dismissed => { SettingsBridge.select-dismissed(); }
+            key(k) => { SettingsBridge.select-key(k); }
+        }
+        ColourPopover {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.picker-open;
+            pop-x: SettingsBridge.picker-x;
+            pop-y: SettingsBridge.picker-y;
+            label: SettingsBridge.picker-label;
+            hue: SettingsBridge.picker-hue;
+            sat: SettingsBridge.picker-sat;
+            val: SettingsBridge.picker-val;
+            alpha: SettingsBridge.picker-alpha;
+            solid-colour: SettingsBridge.picker-solid;
+            start-colour: SettingsBridge.picker-start;
+            now-colour: SettingsBridge.picker-now;
+            hue-colour: SettingsBridge.picker-hue-colour;
+            alpha-on: SettingsBridge.picker-alpha-on;
+            alpha-disabled: SettingsBridge.picker-alpha-disabled;
+            dropper-on: SettingsBridge.picker-dropper-on;
+            format-name: SettingsBridge.picker-format;
+            sv-text: SettingsBridge.picker-sv-text;
+            hue-text: SettingsBridge.picker-hue-text;
+            alpha-text: SettingsBridge.picker-alpha-text;
+            sv-now: SettingsBridge.picker-sv-now;
+            hue-now: SettingsBridge.picker-hue-now;
+            alpha-now: SettingsBridge.picker-alpha-now;
+            sv-moved(x, y, k) => { SettingsBridge.picker-sv(x, y, k); }
+            hue-moved(x, k) => { SettingsBridge.picker-hue-moved(x, k); }
+            alpha-moved(x, k) => { SettingsBridge.picker-alpha-moved(x, k); }
+            slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
+            format-clicked => { SettingsBridge.picker-format-clicked(); }
+            dropper-clicked => { SettingsBridge.picker-dropper(); }
+            escape-pressed => { SettingsBridge.picker-escape(); }
+            outside-pressed => { SettingsBridge.picker-outside(); }
+            focus-left => { SettingsBridge.picker-focus-left(); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
         Dialog {
             x: 0px;

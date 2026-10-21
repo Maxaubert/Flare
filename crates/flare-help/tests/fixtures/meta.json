@@ -1,0 +1,68 @@
+{
+  "total": 328,
+  "categories": [
+    {
+      "id": "folders",
+      "name": "Folders"
+    },
+    {
+      "id": "files",
+      "name": "Files"
+    },
+    {
+      "id": "text",
+      "name": "Text and search"
+    },
+    {
+      "id": "processes",
+      "name": "Processes and ports"
+    },
+    {
+      "id": "network",
+      "name": "Network"
+    },
+    {
+      "id": "system",
+      "name": "System"
+    },
+    {
+      "id": "git",
+      "name": "Git"
+    },
+    {
+      "id": "agents",
+      "name": "Claude Code and Codex"
+    },
+    {
+      "id": "packages",
+      "name": "Installing things"
+    },
+    {
+      "id": "wsl",
+      "name": "WSL (Linux on Windows)"
+    },
+    {
+      "id": "shell",
+      "name": "The shell itself"
+    }
+  ],
+  "shells": [
+    {
+      "id": "powershell",
+      "name": "PowerShell"
+    },
+    {
+      "id": "cmd",
+      "name": "Command Prompt"
+    },
+    {
+      "id": "bash",
+      "name": "Bash"
+    }
+  ],
+  "idPrefixes": {
+    "powershell": "ps-",
+    "cmd": "cmd-",
+    "bash": "sh-"
+  }
+}

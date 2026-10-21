@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flare_agent::close::holds_window_close;
@@ -75,11 +76,13 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::agent_hub::{AgentHub, HubDeps, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::font_ctl::{FontCtl, effective_px};
+use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
 use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
 };
+use crate::settings_ctl::{SettingsCtl, SettingsMsg};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
@@ -91,7 +94,10 @@ use crate::term_menu::to_menu_row;
 use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
-use crate::{AppWindow, MarkMotion, MenuRow, OverflowRow, Place, StripGeom, TabRow};
+use crate::{
+    AppWindow, HelpBridge, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom,
+    TabRow,
+};
 use flare_theme::fonts::zoom_step;
 
 /// Everything a worker thread can say to the UI thread. WHY a message and not
@@ -113,6 +119,10 @@ pub enum UiMsg {
     Term(TermMsgBox),
     /// The theme, the indicator, a colour pick or an attention switch changed.
     LookChanged,
+    /// A worker's answer or a setting change for the Settings controller (Task 41).
+    Settings(SettingsMsg),
+    /// A command help setting changed (the switch, the shell chip or the panel width).
+    Help,
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -377,6 +387,17 @@ pub struct AppCtl {
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
+    /// The Settings controller (Task 41); the window hands it over after the controller exists.
+    settings: Option<Rc<RefCell<SettingsCtl>>>,
+    /// The Settings page is in front now.
+    settings_shown: bool,
+    /// A Settings tab exists.
+    settings_present: bool,
+    /// The Command help controller (Task 43), the front shell it opens on, and its settings watch.
+    help: Option<Rc<RefCell<HelpCtl>>>,
+    help_front: Rc<RefCell<Option<String>>>,
+    help_dirty: Arc<AtomicBool>,
+    _help_sub: Option<Subscription>,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -665,12 +686,62 @@ impl AppCtl {
             looked: None,
             badge: None,
             restoring: HashMap::new(),
+            settings: None,
+            settings_shown: false,
+            settings_present: false,
+            help: None,
+            help_front: Rc::default(),
+            help_dirty: Arc::new(AtomicBool::new(false)),
+            _help_sub: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
         Self::bind_callbacks(app, &rc);
+        Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
         rc
+    }
+
+    /// The Command help controller over this window. It opens on the language of the shell in
+    /// front (read from a cell this controller fills just before a toggle), copies through the
+    /// clipboard port of the window, and hears its three settings through a message.
+    fn make_help(app: &AppWindow, rc: &Rc<RefCell<AppCtl>>) {
+        let (prefs, copy, front, still, post, dirty) = {
+            let c = rc.borrow();
+            let anim = Rc::clone(&c.animations);
+            (
+                c.prefs.clone(),
+                Rc::clone(&c.deps.clipboard),
+                Rc::clone(&c.help_front),
+                Rc::new(move || !anim()) as Rc<dyn Fn() -> bool>,
+                Arc::clone(&c.deps.post),
+                Arc::clone(&c.help_dirty),
+            )
+        };
+        let sub = flare_settings::help_prefs::on_help_change(&prefs, move || {
+            if !dirty.swap(true, Ordering::SeqCst) {
+                post(UiMsg::Help);
+            }
+        });
+        let help = HelpCtl::new(
+            app,
+            prefs,
+            copy,
+            Rc::new(move || front.borrow().clone()),
+            still,
+        );
+        let mut c = rc.borrow_mut();
+        c.help = Some(help);
+        c._help_sub = Some(sub);
+    }
+
+    /// F1, the title button and the terminal menu row.
+    fn help_toggle(&mut self) {
+        let Some(h) = self.help.clone() else { return };
+        *self.help_front.borrow_mut() = self.front_handle().and_then(|t| t.shell_id());
+        if let Ok(mut h) = h.try_borrow_mut() {
+            h.toggle();
+        }
     }
 
     fn bind_callbacks(app: &AppWindow, rc: &Rc<RefCell<AppCtl>>) {
@@ -710,6 +781,7 @@ impl AppCtl {
         bind!(app, rc, on_more_clicked, |c, x: f32, y: f32| c
             .open_overflow(false, x, y));
         bind!(app, rc, on_settings_clicked, |c| c.toggle_settings());
+        bind!(app, rc, on_help_clicked, |c| c.help_toggle());
         bind!(app, rc, on_strip_resized, |c, _w: i32| c.refresh());
         bind!(app, rc, on_side_find_edited, |c, q: SharedString| c
             .find_edited(&q));
@@ -747,6 +819,31 @@ impl AppCtl {
             on_tip_request,
             |c, t: SharedString, x: f32, y: f32, w: f32, h: f32| c.tip_request(&t, x, y, w, h)
         );
+        // The Settings view's tooltips go the same way as every other surface's.
+        {
+            let weak = Rc::downgrade(rc);
+            app.global::<SettingsBridge>().on_tip(
+                move |t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                    if let Some(rc) = weak.upgrade()
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                    {
+                        c.tip_request(&t, x, y, w, h);
+                    }
+                },
+            );
+        }
+        {
+            let weak = Rc::downgrade(rc);
+            app.global::<HelpBridge>().on_tip(
+                move |t: SharedString, x: f32, y: f32, w: f32, h: f32| {
+                    if let Some(rc) = weak.upgrade()
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                    {
+                        c.tip_request(&t, x, y, w, h);
+                    }
+                },
+            );
+        }
         bind!(app, rc, on_bar_double_clicked, |c| c.toggle_maximise());
         bind!(app, rc, on_title_pressed, |c| c.title_pressed());
         bind!(
@@ -992,6 +1089,7 @@ impl AppCtl {
         let new_key = self.key_label_of(ChordId::NewTab);
         app.set_new_key(new_key.into());
         app.set_settings_key(self.key_label_of(ChordId::Settings).into());
+        app.set_help_key(self.key_label_of(ChordId::Help).into());
         app.set_find_tab_key(self.key_label_of(ChordId::FindTab).into());
         app.set_new_tab_title(
             format!("New tab ({new_key}). Right-click for recent folders").into(),
@@ -1033,6 +1131,7 @@ impl AppCtl {
         if self.overflow.is_some() {
             self.push_overflow();
         }
+        self.sync_settings();
 
         // The grid draws whichever shell is in front; Settings, a placeholder and no tab draw none.
         let want = self
@@ -1803,6 +1902,9 @@ impl AppCtl {
                 _ => {}
             },
             MenuKind::Term { .. } => {
+                if row.label == "Command help" {
+                    self.help_toggle();
+                }
                 let front = self.front_tab();
                 {
                     let info = front.as_ref().map(FrontTab::info);
@@ -2031,6 +2133,13 @@ impl AppCtl {
         } else if !fs.open && self.find_shown {
             app.invoke_focus_terminal();
         }
+        if fs.open
+            && !self.find_shown
+            && let Some(h) = self.help.clone()
+            && let Ok(mut h) = h.try_borrow_mut()
+        {
+            h.note_find_opened(next_open_seq());
+        }
         self.find_shown = fs.open;
     }
 
@@ -2074,9 +2183,10 @@ impl AppCtl {
         self.close_overflow_quietly();
         let find_label = self.key_label_of(ChordId::Find);
         let help_label = self.key_label_of(ChordId::Help);
+        let help_on = flare_settings::help_prefs::help_enabled(&self.prefs);
         let rows: Vec<(MenuRowData, String)> = self
             .term
-            .menu_rows(false, find_label, help_label)
+            .menu_rows(help_on, find_label, help_label)
             .iter()
             .map(|r| (to_menu_row(r), String::new()))
             .collect();
@@ -2263,7 +2373,7 @@ impl AppCtl {
     pub fn key_context(&self) -> KeyContext {
         let front = self.model.active_shell().map(|t| t.id.as_str());
         KeyContext {
-            help: false,
+            help: flare_settings::help_prefs::help_enabled(&self.prefs),
             vertical: self.vertical(),
             // A full-screen program owns Ctrl+F: the alternate screen or the mouse (PT focusedTermFullScreen).
             full_screen: self.front_handle().is_some_and(|h| {
@@ -2442,6 +2552,43 @@ impl AppCtl {
         self.grid_dims = (cols, rows);
         let front = self.front_id();
         self.deps.host.set_dims(cols, rows, front.as_deref());
+    }
+
+    /// The window hands over the Settings controller (Task 41).
+    pub fn set_settings(&mut self, s: Rc<RefCell<SettingsCtl>>) {
+        self.settings = Some(s);
+        self.settings_shown = false;
+        self.settings_present = false;
+        self.sync_settings();
+    }
+
+    /// Tells the Settings controller when its page comes to the front, goes behind another tab,
+    /// or its tab is closed (the page then resets to Appearance).
+    fn sync_settings(&mut self) {
+        let Some(s) = self.settings.clone() else {
+            return;
+        };
+        let shown = self.view.front_kind == 1;
+        let present = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .any(|t| t.kind == TabKind::Settings);
+        let (was_shown, was_present) = (self.settings_shown, self.settings_present);
+        self.settings_shown = shown;
+        self.settings_present = present;
+        let Ok(mut s) = s.try_borrow_mut() else {
+            return;
+        };
+        if was_present && !present {
+            s.on_settings_tab(false);
+        }
+        if shown && !was_shown {
+            s.show();
+        } else if !shown && was_shown {
+            s.hide();
+        }
     }
 
     /// The window hands over the font controller; the face and size in force apply at once.
@@ -2660,6 +2807,21 @@ impl AppCtl {
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
             UiMsg::LookChanged => self.on_look_changed(),
+            UiMsg::Settings(m) => {
+                if let Some(s) = self.settings.clone()
+                    && let Ok(mut s) = s.try_borrow_mut()
+                {
+                    s.on_msg(m);
+                }
+            }
+            UiMsg::Help => {
+                self.help_dirty.store(false, Ordering::SeqCst);
+                if let Some(h) = self.help.clone()
+                    && let Ok(mut h) = h.try_borrow_mut()
+                {
+                    h.on_pref_change();
+                }
+            }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
@@ -2749,7 +2911,7 @@ impl ChordTarget for Target<'_> {
     }
 
     fn toggle_help(&mut self) {
-        // Command help is M7's.
+        self.0.help_toggle();
     }
 
     fn commit_walk(&mut self) {
@@ -4712,5 +4874,134 @@ mod tests {
         );
         g.ctl.borrow_mut().on_focus(true);
         assert!(!g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+    }
+
+    // ---- command help (Task 43) ----
+
+    fn f1() -> KeyEvent {
+        KeyEvent::new("F1", "F1")
+    }
+
+    fn help_open(f: &Fx) -> bool {
+        f.h.comp.global::<HelpBridge>().get_open()
+    }
+
+    fn help_chips_on(f: &Fx) -> Vec<String> {
+        f.h.comp
+            .global::<HelpBridge>()
+            .get_chips()
+            .iter()
+            .filter(|c| c.on)
+            .map(|c| c.id.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn f1_opens_even_over_a_focused_shell_and_over_settings() {
+        let (f, _h, fake) = live(Opts::default());
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(help_open(&f));
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(!help_open(&f), "F1 again closes it");
+        // Over the Settings page the chord table matches F1 just the same.
+        f.ctl.borrow_mut().toggle_settings();
+        assert_eq!(f.h.comp.get_front_kind(), 1);
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(help_open(&f));
+        assert!(fake.written().is_empty(), "nothing reached the shell");
+    }
+
+    #[test]
+    fn help_off_means_off() {
+        let (f, _h, _fake) = live(Opts::default());
+        assert!(f.h.comp.get_help_visible());
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(help_open(&f));
+        flare_settings::help_prefs::set_help_enabled(&f.prefs, false);
+        f.pump();
+        assert!(!help_open(&f), "switched off: closed at once");
+        assert!(!f.h.comp.get_help_visible(), "the button is gone");
+        assert!(!f.ctl.borrow().key_context().help);
+        // F1 is no chord now: the shell hears it.
+        assert_eq!(f.key(f1()), KeyOutcome::Pty);
+        assert!(!help_open(&f));
+        // The terminal menu has no Command help row.
+        f.ptr(0, 2, cell_css(2, 1, false));
+        f.ptr(1, 2, cell_css(2, 1, false));
+        assert!(f.h.comp.get_menu_open());
+        let rows = f.h.comp.get_menu_rows();
+        assert!(rows.iter().all(|r| r.label != "Command help"));
+    }
+
+    #[test]
+    fn the_menu_row_opens_it() {
+        let (f, _h, _) = live(Opts::default());
+        f.ptr(0, 2, cell_css(2, 1, false));
+        f.ptr(1, 2, cell_css(2, 1, false));
+        assert!(f.h.comp.get_menu_open());
+        let rows = f.h.comp.get_menu_rows();
+        let last = rows.row_count() - 1;
+        assert_eq!(rows.row_data(last).unwrap().label, "Command help");
+        f.h.comp.invoke_menu_picked(last as i32);
+        assert!(!f.h.comp.get_menu_open());
+        assert!(help_open(&f));
+    }
+
+    #[test]
+    fn opening_starts_on_the_front_tabs_shell() {
+        let cmd = ShellDef {
+            id: "cmd".to_string(),
+            name: "Command Prompt".to_string(),
+            exe: "cmd.exe".to_string(),
+            args: Vec::new(),
+        };
+        let (f, _h, _) = live(Opts {
+            shells: Some(vec![cmd]),
+            ..Opts::default()
+        });
+        f.key(f1());
+        assert_eq!(help_chips_on(&f), ["cmd"]);
+        // With Settings in front there is no shell: the chip picked by hand, else PowerShell.
+        f.key(f1());
+        f.ctl.borrow_mut().toggle_settings();
+        f.key(f1());
+        assert_eq!(help_chips_on(&f), ["powershell"]);
+    }
+
+    #[test]
+    fn the_later_opened_of_help_and_find_is_on_top() {
+        let (f, _h, _) = live(Opts::default());
+        // find first, help after: help is on top
+        f.key(ctrl("f", "KeyF"));
+        assert!(f.h.comp.get_find_open());
+        f.key(f1());
+        assert!(f.h.comp.get_help_on_top());
+        // help stays open; the bar closes and opens again after it: the bar is on top
+        f.key(ctrl("f", "KeyF"));
+        assert!(!f.h.comp.get_find_open());
+        f.key(ctrl("f", "KeyF"));
+        assert!(f.h.comp.get_find_open());
+        assert!(!f.h.comp.get_help_on_top());
+    }
+
+    #[test]
+    fn the_panel_keys_stay_in_the_panel_while_it_has_the_keyboard() {
+        let (f, _h, fake) = live(Opts::default());
+        f.h.comp
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        f.key(f1());
+        f.h.advance(1);
+        f.h.advance(80);
+        assert!(
+            f.h.comp.get_find_input_focused(),
+            "the search field has the keys"
+        );
+        assert_eq!(f.key(KeyEvent::new("a", "KeyA")), KeyOutcome::Slint);
+        // chords still act
+        let rows = f.rows();
+        assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+        assert_eq!(f.rows(), rows + 1);
+        assert!(fake.written().is_empty());
     }
 }

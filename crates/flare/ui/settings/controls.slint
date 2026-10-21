@@ -1,0 +1,450 @@
+// The settings controls (M7 Task 31): the switch, the segmented pill, the Save button, the row
+// button and the Reset link (PT settings/fields.tsx). Controls are neutral: only Save when dirty
+// and an ON switch wear the accent (rule 78). Each control is its own FocusScope.
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { SetOption } from "types.slint";
+
+// PT Switch: h-[20px] w-[36px], a 16 px knob at 2 px, moving 16 px over 150 ms.
+export component SetSwitch inherits Rectangle {
+    in property <bool> on;
+    in property <bool> disabled;
+    in property <string> label;
+    // focus that came from the keyboard: the row draws the hover fill, the switch draws no ring
+    out property <bool> keyboard-focus: fs.has-focus && root.by-key;
+    out property <length> knob-x: root.on ? 18px : 2px;
+    out property <length> knob-w: knob.width;
+    callback toggled(bool);
+    property <bool> by-key;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    width: SettingsShape.switch-w;
+    height: SettingsShape.switch-h;
+    border-radius: SettingsShape.switch-h / 2;
+    opacity: root.disabled ? 0.5 : 1;
+    background: root.on ? (ta.has-hover && !root.disabled ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg) : Theme.track;
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checked: root.on;
+    accessible-action-default => {
+        if !root.disabled {
+            root.toggled(!root.on);
+        }
+    }
+
+    knob := Rectangle {
+        x: root.knob-x;
+        y: 2px;
+        width: SettingsShape.switch-knob;
+        height: SettingsShape.switch-knob;
+        border-radius: SettingsShape.switch-knob / 2;
+        background: root.on ? Theme.switch-knob : SettingsFixed.white;
+        animate x {
+            duration: 150ms;
+            easing: ease-out;
+        }
+    }
+
+    // The FocusScope comes first: a later sibling takes the pointer, so the TouchArea must follow it.
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if (e.text == Key.Space || e.text == Key.Return) && !root.disabled {
+                root.by-key = true;
+                root.toggled(!root.on);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: !root.disabled;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.by-key = false;
+            }
+        }
+        clicked => {
+            root.toggled(!root.on);
+        }
+    }
+}
+
+// PT Segmented: a pill (radius half its height), a hairline border, fill Theme.control, padding 3 and
+// gap 2; each segment 12 by 4 at 11.5 px weight 600. The chosen segment is filled Theme.pressed.
+export component SetSegmented inherits Rectangle {
+    in property <[SetOption]> options;
+    in property <string> value;
+    in property <string> label;
+    property <length> pad: 3px + Px.hair();
+    out property <length> content-w: segs.preferred-width + 2 * root.pad;
+    callback chosen(string);
+
+    width: root.content-w;
+    height: SettingsShape.control-h;
+    border-radius: SettingsShape.control-h / 2;
+    background: Theme.control;
+    border-width: Px.hair();
+    border-color: Theme.divider;
+    accessible-role: groupbox;
+    accessible-label: root.label;
+
+    segs := HorizontalLayout {
+        x: root.pad;
+        y: root.pad;
+        width: root.width - 2 * root.pad;
+        height: root.height - 2 * root.pad;
+        spacing: 2px;
+
+        for o in root.options: seg := Rectangle {
+            property <bool> chosen: o.id == root.value;
+            property <bool> hot: ta.has-hover;
+            preferred-width: lbl.preferred-width + 24px;
+            min-width: self.preferred-width;
+            min-height: 24px;
+            max-height: 24px;
+            border-radius: 12px;
+            background: seg.chosen ? Theme.pressed : transparent;
+            accessible-role: button;
+            accessible-label: o.name;
+            accessible-description: seg.chosen ? "pressed" : "";
+
+            lbl := Text {
+                width: parent.width;
+                height: parent.height;
+                text: o.name;
+                font-family: SettingsFixed.font-text;
+                font-size: 11.5px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: seg.chosen ? Theme.pressed-ink : (seg.hot ? Theme.text : Theme.dim);
+            }
+
+            fs := FocusScope {
+                width: parent.width;
+                height: parent.height;
+                key-pressed(e) => {
+                    if e.text == Key.Space || e.text == Key.Return {
+                        root.chosen(o.id);
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+
+            ta := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.chosen(o.id);
+                }
+            }
+        }
+    }
+}
+
+// PT Save: radius-sm, padding 12 by 4, 11.5 px weight 600. Dirty: accent fill; clean: a line border
+// and the hover fill, no pointer feedback, and a click does nothing.
+export component SetSaveButton inherits Rectangle {
+    in property <bool> dirty;
+    in property <string> title;
+    callback clicked();
+    callback tip(string, length, length, length, length);
+
+    width: lbl.preferred-width + 24px;
+    height: lbl.preferred-height + 8px;
+    border-radius: SettingsShape.radius-sm;
+    background: root.dirty ? (ta.has-hover ? Theme.accent.brighter(0.1) : Theme.accent) : Theme.hover;
+    border-width: Px.hair();
+    border-color: root.dirty ? transparent : Theme.line;
+    accessible-role: button;
+    accessible-label: "Save changes";
+    accessible-action-default => {
+        if root.dirty {
+            root.clicked();
+        }
+    }
+
+    lbl := Text {
+        x: 12px;
+        y: 4px;
+        text: "Save changes";
+        font-family: SettingsFixed.font-text;
+        font-size: 11.5px;
+        font-weight: 600;
+        color: root.dirty ? Theme.on-accent : Theme.dim2;
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            if root.dirty {
+                root.clicked();
+            }
+        }
+        changed has-hover => {
+            if ta.has-hover {
+                root.tip(root.title, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+}
+
+// PT row button: 32 high, radius-sm, a hairline border, fill Theme.control, padding 12, 12 px weight
+// 600. It is as wide as the wider of its two words, so Mark and Marked never change its width.
+export component SetRowButton inherits Rectangle {
+    in property <string> label;
+    in property <string> label-alt;
+    in property <bool> alt;
+    in property <bool> off;
+    in property <bool> in-row: true;
+    out property <bool> keyboard-focus: fs.has-focus && root.by-key;
+    callback clicked();
+    property <bool> by-key;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    width: max(m1.preferred-width, m2.preferred-width) + 24px;
+    height: SettingsShape.control-h;
+    border-radius: SettingsShape.radius-sm;
+    background: ta.has-hover && !root.off ? Theme.hover : Theme.control;
+    border-width: Px.hair();
+    border-color: root.keyboard-focus ? (root.in-row ? SettingsInk.focus-edge : Theme.accent-hi) : (ta.has-hover ? Theme.line : Theme.divider);
+    opacity: root.off ? 0.5 : 1;
+    accessible-role: button;
+    accessible-label: root.alt ? root.label-alt : root.label;
+    accessible-action-default => {
+        if !root.off {
+            root.clicked();
+        }
+    }
+
+    // The two words are measured, invisible, so the wider one sets the width.
+    m1 := Text {
+        opacity: 0;
+        text: root.label;
+        font-family: SettingsFixed.font-text;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    m2 := Text {
+        opacity: 0;
+        text: root.label-alt;
+        font-family: SettingsFixed.font-text;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.alt ? root.label-alt : root.label;
+        font-family: SettingsFixed.font-text;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        color: Theme.text;
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if (e.text == Key.Space || e.text == Key.Return) && !root.off {
+                root.by-key = true;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        enabled: !root.off;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.by-key = false;
+            }
+        }
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// PT Reset link: 11 px weight 600 in accent-hi; on hover or keyboard focus a hairline underline.
+export component SetResetLink inherits Rectangle {
+    in property <string> label: "Reset";
+    out property <bool> keyboard-focus: fs.has-focus && root.by-key;
+    callback clicked();
+    property <bool> by-key;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    width: t.preferred-width;
+    height: t.preferred-height;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    t := Text {
+        text: root.label;
+        font-family: SettingsFixed.font-text;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-hi;
+    }
+
+    Rectangle {
+        y: root.height - Px.hair();
+        width: root.width;
+        height: Px.hair();
+        background: (ta.has-hover || root.keyboard-focus) ? Theme.accent-hi : transparent;
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-key = true;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The one-of-each preview the Rust tests drive. The out geometry is in logical px.
+export component ControlsPreview inherits Window {
+    preferred-width: 480px;
+    preferred-height: 200px;
+    background: Theme.ground;
+
+    in-out property <bool> sw-on: true;
+    in-out property <bool> sw-disabled: false;
+    in-out property <string> seg-value: "dark";
+    in-out property <bool> save-dirty: true;
+    in-out property <bool> btn-alt: false;
+    out property <int> toggles: 0;
+    out property <int> seg-picks: 0;
+    out property <int> save-clicks: 0;
+    out property <int> btn-clicks: 0;
+    out property <int> reset-clicks: 0;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    out property <length> sw-x: sw.absolute-position.x;
+    out property <length> sw-y: sw.absolute-position.y;
+    out property <length> sw-w: sw.width;
+    out property <length> sw-h: sw.height;
+    out property <length> knob-x: sw.knob-x;
+    out property <length> knob-w: sw.knob-w;
+    out property <length> seg-x: seg.absolute-position.x;
+    out property <length> seg-y: seg.absolute-position.y;
+    out property <length> seg-w: seg.width;
+    out property <length> seg-h: seg.height;
+    out property <length> save-x: save.absolute-position.x;
+    out property <length> save-y: save.absolute-position.y;
+    out property <length> save-w: save.width;
+    out property <length> save-h: save.height;
+    out property <length> btn-w: btn.width;
+    out property <length> btn-h: btn.height;
+    out property <length> reset-x: reset.absolute-position.x;
+    out property <length> reset-y: reset.absolute-position.y;
+    out property <length> reset-w: reset.width;
+    out property <length> reset-h: reset.height;
+
+    public function focus-switch() {
+        sw.focus-me();
+    }
+    public function focus-button() {
+        btn.focus-me();
+    }
+    public function focus-reset() {
+        reset.focus-me();
+    }
+
+    sw := SetSwitch {
+        x: 20px;
+        y: 20px;
+        label: "Preview switch";
+        on: root.sw-on;
+        disabled: root.sw-disabled;
+        toggled(v) => {
+            root.sw-on = v;
+            root.toggles += 1;
+        }
+    }
+
+    seg := SetSegmented {
+        x: 20px;
+        y: 70px;
+        label: "Preview segments";
+        options: [
+            { id: "dark", name: "Dark", face: "" },
+            { id: "light", name: "Light", face: "" }
+        ];
+        value: root.seg-value;
+        chosen(id) => {
+            root.seg-value = id;
+            root.seg-picks += 1;
+        }
+    }
+
+    save := SetSaveButton {
+        x: 20px;
+        y: 130px;
+        dirty: root.save-dirty;
+        title: root.save-dirty ? "Save the settings" : "Nothing to save yet";
+        clicked => {
+            root.save-clicks += 1;
+        }
+    }
+
+    btn := SetRowButton {
+        x: 200px;
+        y: 130px;
+        label: "Mark";
+        label-alt: "Marked";
+        alt: root.btn-alt;
+        clicked => {
+            root.btn-clicks += 1;
+        }
+    }
+
+    reset := SetResetLink {
+        x: 340px;
+        y: 137px;
+        clicked => {
+            root.reset-clicks += 1;
+        }
+    }
+}

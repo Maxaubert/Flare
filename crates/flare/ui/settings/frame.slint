@@ -1,0 +1,543 @@
+// The frame: rail, Find, header, results and pane (M7 Task 35). PT SettingsFrame.tsx.
+// Rust hands over every position it computed (`flare_settings::layout`): the rail items' y, the hit rows'
+// y, the page content's height. What the frame computes itself is the rail's width and the field's box,
+// all snapped to whole device pixels with `Px.snap`.
+import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
+import { RailItem, SetHit } from "types.slint";
+import { SetRowFrame, SetPanel } from "row.slint";
+
+// Rail item: icon and label; chosen is a grey fill, never the accent.
+component RailButton inherits Rectangle {
+    in property <RailItem> item;
+    in property <bool> narrow;
+    in property <bool> on;
+    in property <int> index;
+    in-out property <int> focus-target: -1;
+    // A request names an index; the item it names takes the focus and clears the request, so the
+    // next one fires again. An item made after the request (the rail is rebuilt) takes it at init.
+    function take-focus() {
+        if (self.focus-target == self.index && self.index >= 0) {
+            fs.focus();
+            self.focus-target = -1;
+        }
+    }
+    changed focus-target => { self.take-focus(); }
+    init => { self.take-focus(); }
+    callback chosen();
+    callback key(string);
+    callback tip(string, length, length, length, length);
+    public function focus-it() { fs.focus(); }
+    out property <bool> focused: fs.has-focus;
+    height: 36px;
+    border-radius: 6px;
+    background: root.on ? Theme.hover-hi : ((ta.has-hover || fs.has-focus) ? Theme.hover : transparent);
+    accessible-role: tab;
+    accessible-label: root.item.label;
+    accessible-checked: root.on;
+    accessible-action-default => { root.chosen(); }
+    // Under the touch area, so a press reaches the touch area.
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.DownArrow) { root.key("Down"); return accept; }
+            if (e.text == Key.UpArrow) { root.key("Up"); return accept; }
+            if (e.text == Key.Home) { root.key("Home"); return accept; }
+            if (e.text == Key.End) { root.key("End"); return accept; }
+            if (e.text == Key.Return || e.text == " ") { root.chosen(); return accept; }
+            return reject;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.chosen(); }
+        changed has-hover => {
+            if (root.narrow) {
+                if (self.has-hover) {
+                    root.tip(root.item.label, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+    Path {
+        x: (root.narrow ? Px.snap((root.width - 17px) / 2) : 10px) - (1.7 * 17px / 24) / 2;
+        y: ((root.height - 17px) / 2) - (1.7 * 17px / 24) / 2;
+        width: 17px + (1.7 * 17px / 24);
+        height: 17px + (1.7 * 17px / 24);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.item.icon;
+        fill: transparent;
+        stroke: (root.on || ta.has-hover || fs.has-focus) ? Theme.text : Theme.dim;
+        stroke-width: 1.7 * 17px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    if !root.narrow: Text {
+        x: 10px + 17px + 11px;
+        width: parent.width - self.x - 10px;
+        height: parent.height;
+        text: root.item.label;
+        font-family: Theme.font-ui;
+        font-size: 13px;
+        // PT: font-medium, font-semibold when chosen. Segoe UI has no Medium face and Chromium
+        // draws 500 with the Semibold one, so both are 600 here (Task 53).
+        font-weight: 600;
+        color: (root.on || ta.has-hover || fs.has-focus) ? Theme.text : Theme.text-soft;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component SetFrame inherits Rectangle {
+    in property <[RailItem]> rail;
+    in property <string> page-title;
+    in property <bool> narrow;
+    in-out property <string> find-text;
+    in property <bool> searching;
+    in property <string> status-text;
+    in property <string> nothing-text;
+    // The no-results sentence in three parts, so the query is drawn semibold (an empty query draws nothing-text whole).
+    in property <string> nothing-pre;
+    in property <string> nothing-query;
+    in property <string> nothing-post;
+    in property <[SetHit]> hits;
+    in property <length> hits-h;
+    in property <int> hit-cursor;
+    in property <length> content-h;
+    in-out property <length> scroll-y;
+    // A change of this flag asks for the focus in the Find field.
+    in property <bool> find-focused-request;
+    callback page-chosen(string);
+    callback find-edited(string);
+    callback find-key(string, bool);
+    callback hit-chosen(int);
+    callback hit-key(string);
+    callback rail-key(string);
+    callback frame-resized(length, length);
+    callback escape-unhandled();
+    callback tip(string, length, length, length, length);
+
+    out property <length> rail-w: root.narrow ? SettingsShape.rail-narrow-w : SettingsShape.rail-w;
+    out property <length> pane-x: root.rail-w;
+    out property <length> pane-w: root.width - root.rail-w;
+    out property <length> header-y: Px.snap(root.narrow ? 20px : 26px);
+    out property <length> header-h: Px.snap(root.narrow ? 20px + 27.6px : 26px + 27.6px) - root.header-y;
+    out property <length> content-x: Px.snap(root.narrow ? 20px : 44px);
+    out property <length> content-w: max(0px, min(SettingsShape.column-max, root.pane-w) - 2 * (root.narrow ? 20px : 44px));
+    out property <length> content-top: Px.snap((root.narrow ? 20px : 26px) + 27.6px + 18px);
+    // The rail's boxes.
+    out property <length> side: root.narrow ? 8px : 12px;
+    out property <length> item-x: root.side;
+    out property <length> item-w: root.narrow ? 40px : Px.snap(root.rail-w - 1px - 2 * root.side);
+    out property <length> find-y: Px.snap(18px + 22.5px + 12px);
+    out property <length> find-h: Px.snap(18px + 22.5px + 12px + 32px) - root.find-y;
+    out property <length> find-w: root.narrow ? (root.field-open ? 300px : 40px) : root.item-w;
+    out property <bool> field-open: input.has-focus || root.find-text != "";
+    out property <bool> clear-visible: root.find-text != "";
+    out property <bool> list-focused: list-scope.has-focus;
+    out property <bool> field-focused: input.has-focus;
+
+    public function focus-field() { input.focus(); }
+    public function focus-list() { list-scope.focus(); }
+    // Asks rail item i for the focus (set it, then set it back to -1).
+    in-out property <int> focus-rail-index: -1;
+
+    changed width => { root.frame-resized(root.width, root.height); }
+    changed height => { root.frame-resized(root.width, root.height); }
+    changed find-focused-request => { input.focus(); }
+    changed scroll-y => { fl.content-y = -root.scroll-y; }
+    init => { fl.content-y = -root.scroll-y; }
+
+    background: Theme.ground;
+
+    // The rail.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.rail-w;
+        height: root.height;
+        background: Theme.side;
+        accessible-role: tab-list;
+        accessible-label: "Settings pages";
+        Rectangle {
+            x: parent.width - Px.hair();
+            width: Px.hair();
+            height: parent.height;
+            background: Theme.divider;
+        }
+        if !root.narrow: Text {
+            x: root.side + 8px;
+            y: Px.snap(18px);
+            width: root.item-w - 16px;
+            height: Px.snap(18px + 22.5px) - Px.snap(18px);
+            text: "Settings";
+            font-family: SettingsFixed.font-display;
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: -0.15px;
+            color: Theme.text;
+            vertical-alignment: center;
+            accessible-role: text;
+        }
+        for item[i] in root.rail: RailButton {
+            x: root.item-x;
+            y: item.y;
+            width: root.item-w;
+            item: item;
+            index: i;
+            focus-target <=> root.focus-rail-index;
+            narrow: root.narrow;
+            on: item.chosen && !root.searching;
+            chosen => { root.page-chosen(item.id); }
+            key(k) => { root.rail-key(k); }
+            tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+        }
+    }
+
+    // The pane.
+    fl := Flickable {
+        x: root.pane-x;
+        y: 0px;
+        width: root.pane-w;
+        height: root.height;
+        content-width: self.width;
+        content-height: max(root.content-h, root.height);
+        interactive: false;
+        changed content-y => { root.scroll-y = -self.content-y; }
+
+        Text {
+            x: root.content-x;
+            y: root.header-y;
+            width: root.content-w;
+            height: root.header-h;
+            text: root.searching ? "Results" : root.page-title;
+            font-family: SettingsFixed.font-display;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.48px;
+            color: Theme.text;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: text;
+        }
+        if root.searching: Text {
+            x: root.content-x;
+            y: root.header-y;
+            width: root.content-w;
+            height: root.header-h;
+            text: root.status-text;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: Theme.dim;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            accessible-role: text;
+        }
+        Rectangle {
+            visible: !root.searching;
+            x: 0px;
+            y: 0px;
+            width: fl.content-width;
+            height: fl.content-height;
+            @children
+        }
+        list-scope := FocusScope {
+            visible: root.searching && root.hits.length > 0;
+            enabled: root.searching && root.hits.length > 0;
+            x: root.content-x;
+            y: root.content-top;
+            width: root.content-w;
+            height: root.hits-h;
+            accessible-role: list;
+            accessible-label: "Results";
+            key-pressed(e) => {
+                if (e.text == Key.DownArrow) { root.hit-key("Down"); return accept; }
+                if (e.text == Key.UpArrow) { root.hit-key("Up"); return accept; }
+                if (e.text == Key.Return) { root.hit-key("Enter"); return accept; }
+                if (e.text == " ") { root.hit-key("Space"); return accept; }
+                if (e.text == Key.Escape) { root.hit-key("Escape"); return accept; }
+                return reject;
+            }
+            SetPanel {
+                width: parent.width;
+                height: parent.height;
+                for hit[i] in root.hits: SetRowFrame {
+                    x: Px.hair();
+                    y: Px.hair() + hit.y;
+                    width: parent.width - 2 * Px.hair();
+                    height: 58px;
+                    first: i == 0;
+                    icon: hit.icon;
+                    label: hit.label;
+                    sub: hit.sub;
+                    tap: true;
+                    focus-fill: hit.selected || i == root.hit-cursor;
+                    accessible-role: list-item;
+                    accessible-label: hit.label + ", " + hit.where;
+                    tapped => { root.hit-chosen(i); }
+                    Text {
+                        text: hit.where;
+                        font-family: Theme.font-ui;
+                        font-size: 11.5px;
+                        color: SettingsInk.sub;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                    }
+                }
+            }
+        }
+        if root.searching && root.hits.length == 0: SetPanel {
+            x: root.content-x;
+            y: root.content-top;
+            width: root.content-w;
+            height: 28px * 2 + 19px + 2 * Px.hair();
+            accessible-role: text;
+            accessible-label: root.nothing-text;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 28px;
+                padding-bottom: 28px;
+                alignment: start;
+                if root.nothing-query == "": Text {
+                    text: root.nothing-text;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: Theme.dim;
+                    vertical-alignment: center;
+                }
+                if root.nothing-query != "": Text {
+                    text: root.nothing-pre;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: Theme.dim;
+                    vertical-alignment: center;
+                }
+                if root.nothing-query != "": Text {
+                    text: root.nothing-query;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                if root.nothing-query != "": Text {
+                    text: root.nothing-post;
+                    font-family: Theme.font-ui;
+                    font-size: 12.5px;
+                    color: Theme.dim;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // The Find field, last so it draws above the pane when it opens over it (narrow).
+    find-box := Rectangle {
+        x: root.item-x;
+        y: root.find-y;
+        width: root.find-w;
+        height: root.find-h;
+        z: 10;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: input.has-focus ? SettingsInk.focus-edge : Theme.line;
+        background: (root.narrow && root.field-open) ? Theme.side-flat : SettingsInk.panel-fill;
+        property <bool> folded: root.narrow && !root.field-open;
+        // Pressing anywhere on the box (the magnifier included) focuses the field.
+        TouchArea {
+            mouse-cursor: find-box.folded ? MouseCursor.pointer : MouseCursor.text;
+            clicked => { input.focus(); }
+        }
+        Path {
+            x: (root.narrow ? 13px : 10px) - (2 * 14px / 24) / 2;
+            y: ((parent.height - 14px) / 2) - (2 * 14px / 24) / 2;
+            width: 14px + (2 * 14px / 24);
+            height: 14px + (2 * 14px / 24);
+            // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+            viewbox-width: 24;
+            viewbox-height: 24;
+            commands: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4";
+            fill: transparent;
+            stroke: Theme.dim;
+            stroke-width: 2 * 14px / 24;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        field-scope := FocusScope {
+            forward-focus: input;
+            capture-key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    if (root.find-text != "") {
+                        root.find-key("Escape", e.modifiers.shift);
+                        return accept;
+                    }
+                    root.escape-unhandled();
+                    return reject;
+                }
+                if (e.text == Key.DownArrow && root.hits.length > 0) {
+                    root.find-key("Down", e.modifiers.shift);
+                    return accept;
+                }
+                if (e.text == Key.Return && root.hits.length > 0) {
+                    root.find-key("Enter", e.modifiers.shift);
+                    return accept;
+                }
+                return reject;
+            }
+            input := TextInput {
+                x: 32px - Px.hair();
+                width: parent.width - self.x - (root.narrow ? (root.field-open ? 30px : 0px) : 30px);
+                height: parent.height;
+                text <=> root.find-text;
+                single-line: true;
+                vertical-alignment: center;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                color: find-box.folded ? transparent : Theme.text;
+                selection-background-color: SettingsInk.selection;
+                accessible-role: text-input;
+                accessible-label: "Find a setting";
+                edited => { root.find-edited(self.text); }
+            }
+        }
+        if root.find-text == "" && !find-box.folded: Text {
+            x: input.x;
+            width: input.width;
+            height: parent.height;
+            text: "Find a setting";
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            color: Theme.dim;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.clear-visible: clear-ta := TouchArea {
+            x: parent.width - 6px - 20px;
+            y: (parent.height - 20px) / 2;
+            width: 20px;
+            height: 20px;
+            mouse-cursor: MouseCursor.pointer;
+            accessible-role: button;
+            accessible-label: "Clear the search";
+            accessible-action-default => { root.find-text = ""; root.find-edited(""); input.focus(); }
+            clicked => {
+                root.find-text = "";
+                root.find-edited("");
+                input.focus();
+            }
+            Rectangle {
+                border-radius: 4px;
+                background: clear-ta.has-hover ? Theme.hover : transparent;
+            }
+            Path {
+                x: (5px) - (2.6 * 10px / 24) / 2;
+                y: (5px) - (2.6 * 10px / 24) / 2;
+                width: 10px + (2.6 * 10px / 24);
+                height: 10px + (2.6 * 10px / 24);
+                // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M6 6l12 12M18 6L6 18";
+                fill: transparent;
+                stroke: clear-ta.has-hover ? Theme.text : Theme.dim;
+                stroke-width: 2.6 * 10px / 24;
+                stroke-line-cap: round;
+            }
+        }
+    }
+}
+
+// The test window: a frame with six rail items and a tall content; the rail's y are the rail layout's.
+export component FramePreview inherits Window {
+    background: Theme.ground;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    in-out property <string> find-text;
+    in-out property <bool> searching: false;
+    in-out property <string> chosen-id: "appearance";
+    in-out property <[SetHit]> hits: [];
+    in-out property <int> hit-cursor: -1;
+    in-out property <length> scroll-y: 0px;
+    in-out property <string> last-key: "";
+    in-out property <int> key-count: 0;
+    in-out property <int> escape-unhandled-count: 0;
+    in-out property <string> page-picked: "";
+    in-out property <int> hit-picked: -1;
+    in-out property <string> tip-text: "";
+    in-out property <int> resized: 0;
+    in-out property <string> status: "3 results";
+    in-out property <string> edited-text: "";
+    in-out property <int> focus-rail-index: -1;
+
+    out property <bool> narrow: root.width < SettingsShape.narrow-below;
+    out property <length> rail-w: fr.rail-w;
+    out property <length> pane-x: fr.pane-x;
+    out property <length> pane-w: fr.pane-w;
+    out property <length> header-y: fr.header-y;
+    out property <length> content-x: fr.content-x;
+    out property <length> content-top: fr.content-top;
+    out property <length> find-y: fr.find-y;
+    out property <length> find-h: fr.find-h;
+    out property <length> find-w: fr.find-w;
+    out property <length> item-w: fr.item-w;
+    out property <bool> clear-visible: fr.clear-visible;
+    out property <bool> content-focused: content-fs.has-focus;
+    out property <bool> field-focused: fr.field-focused;
+    out property <bool> list-focused: fr.list-focused;
+
+    public function focus-field() { fr.focus-field(); }
+    public function focus-list() { fr.focus-list(); }
+
+    property <length> rail-top: Px.snap(98.5px);
+    fr := SetFrame {
+        width: parent.width;
+        height: parent.height;
+        narrow: root.narrow;
+        page-title: "Appearance";
+        searching: root.searching;
+        status-text: root.status;
+        nothing-text: "Nothing matches zzz. Try a shorter word.";
+        nothing-pre: "Nothing matches ";
+        nothing-query: "zzz";
+        nothing-post: ". Try a shorter word.";
+        hits: root.hits;
+        hits-h: root.hits.length * 58px + 2 * Px.hair();
+        hit-cursor: root.hit-cursor;
+        content-h: 1400px;
+        focus-rail-index <=> root.focus-rail-index;
+        find-text <=> root.find-text;
+        scroll-y <=> root.scroll-y;
+        rail: [
+            { id: "appearance", label: "Appearance", icon: "M12 3a9 9 0 100 18 9 9 0 000-18z", end: false, chosen: root.chosen-id == "appearance", y: Px.snap(98.5px) },
+            { id: "terminal", label: "Terminal", icon: "M4 5h16v14H4z", end: false, chosen: root.chosen-id == "terminal", y: Px.snap(136.5px) },
+            { id: "agents", label: "Agents", icon: "M12 4l8 8-8 8-8-8z", end: false, chosen: root.chosen-id == "agents", y: Px.snap(174.5px) },
+            { id: "dictation", label: "Dictation", icon: "M12 4v10M8 8v4M16 8v4", end: false, chosen: root.chosen-id == "dictation", y: Px.snap(212.5px) },
+            { id: "diagnostics", label: "Diagnostics", icon: "M4 12h4l3-7 3 14 3-7h3", end: false, chosen: root.chosen-id == "diagnostics", y: Px.snap(250.5px) },
+            { id: "about", label: "About", icon: "M12 8v1M12 12v5", end: true, chosen: root.chosen-id == "about", y: Px.snap(root.height - 12px - 36px) },
+        ];
+        page-chosen(id) => { root.page-picked = id; }
+        find-edited(t) => { root.edited-text = t; }
+        find-key(k, shift) => { root.last-key = "find:" + k; root.key-count += 1; }
+        hit-chosen(i) => { root.hit-picked = i; }
+        hit-key(k) => { root.last-key = "hit:" + k; root.key-count += 1; }
+        rail-key(k) => { root.last-key = "rail:" + k; root.key-count += 1; }
+        frame-resized(w, h) => { root.resized += 1; }
+        escape-unhandled => { root.escape-unhandled-count += 1; }
+        tip(t, a, b, c, d) => { root.tip-text = t; }
+
+        // The page content: a tall block with one focusable thing in it.
+        Rectangle {
+            x: fr.content-x;
+            y: fr.content-top;
+            width: fr.content-w;
+            height: 300px;
+            background: Theme.preview;
+            content-fs := FocusScope { }
+        }
+    }
+}

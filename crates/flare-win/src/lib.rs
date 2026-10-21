@@ -9,6 +9,8 @@ pub mod clipboard_port;
 pub mod dblclick;
 pub mod dwm;
 pub mod edge_watch;
+pub mod eyedrop;
+pub mod eyedrop_math;
 pub mod material;
 pub mod monitors;
 pub mod motion;

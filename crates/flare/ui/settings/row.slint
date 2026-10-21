@@ -1,0 +1,316 @@
+// The row, section and panel frames (M7 Task 34). PT SettingRow.tsx, SettingsSection.tsx and
+// SettingBlock.tsx. Rows take their height from Rust; nothing here measures a row to size itself.
+import { Theme, Px, SettingsInk, SettingsShape } from "../theme.slint";
+
+// The 32 by 32 icon tile. `icon` is the SVG path data on a 24 unit box (settings icons.rs).
+export component SetIconTile inherits Rectangle {
+    in property <string> icon;
+    width: SettingsShape.tile;
+    height: SettingsShape.tile;
+    border-radius: SettingsShape.tile-radius;
+    background: SettingsInk.tile-fill;
+    Path {
+        x: (8px) - (1.7 * 16px / 24) / 2;
+        y: (8px) - (1.7 * 16px / 24) / 2;
+        width: 16px + (1.7 * 16px / 24);
+        height: 16px + (1.7 * 16px / 24);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: transparent;
+        stroke: Theme.text-soft;
+        stroke-width: 1.7 * 16px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// One line of subtext, 11.5 px, elided. The tooltip fires on hover only when the text is cut.
+export component SetSubtext inherits Rectangle {
+    in property <string> text;
+    in property <bool> warn;
+    callback tip(string, length, length, length, length);
+    out property <bool> cut: probe.preferred-width > root.width + 0.5px;
+    height: 16px;
+    min-width: 0px;
+    HorizontalLayout { alignment: start; probe := Text {
+        opacity: 0;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+    } }
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        color: root.warn ? SettingsInk.warn : SettingsInk.sub;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        changed has-hover => {
+            if (self.has-hover && root.cut) {
+                root.tip(root.text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+}
+
+// One row: tile | label + subtext | control slot (@children). The label starts at x 60 (14 + 32 + 14).
+export component SetRowFrame inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> sub;
+    in property <string> sub-tip;
+    in property <bool> warn;
+    in property <bool> off;
+    in property <bool> first;
+    in property <bool> after-block;
+    in property <bool> hover-fill;
+    in property <bool> focus-fill;
+    in property <float> flash;
+    in property <bool> tap;
+    callback tapped();
+    callback tip(string, length, length, length, length);
+
+    out property <length> label-x: text-col.absolute-position.x - root.absolute-position.x;
+    out property <length> rule-x: root.after-block ? 0px : root.label-x;
+    out property <length> control-right: root.width - 16px;
+    out property <bool> rule-visible: !root.first;
+
+    // The fill: focus is Theme.hover; the hover fill shows for a tappable row under the pointer.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: root.focus-fill ? Theme.hover
+            : (root.hover-fill || (root.tap && !root.off && ta.has-hover)) ? SettingsInk.row-hover
+            : transparent;
+    }
+    // A press on the row, off the control, is the tap. A control declared inside the row (a later
+    // sibling) takes its own presses first.
+    ta := TouchArea {
+        enabled: root.tap && !root.off;
+        clicked => { root.tapped(); }
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        opacity: root.off ? 0.45 : 1;
+        HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding-left: 14px;
+            padding-right: 16px;
+            spacing: 14px;
+            VerticalLayout {
+                alignment: center;
+                width: SettingsShape.tile;
+                SetIconTile { icon: root.icon; }
+            }
+            text-col := VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 2px;
+                Text {
+                    text: root.label;
+                    font-family: Theme.font-ui;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                sub := SetSubtext {
+                    text: root.sub;
+                    warn: root.warn;
+                    tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+                }
+            }
+            @children
+        }
+    }
+    // The flash: the accent mark over the row, at the watch's alpha.
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: SettingsInk.flash;
+        opacity: root.flash;
+    }
+    // The hairline at the top edge, from the label column (or the edge after a block).
+    Rectangle {
+        x: root.rule-x;
+        y: 0px;
+        width: root.width - root.rule-x;
+        height: Px.hair();
+        background: Theme.line;
+        visible: root.rule-visible;
+    }
+}
+
+// A full-width part of a panel. The rule runs edge to edge when `full`, else from the label column.
+export component SetBlockFrame inherits Rectangle {
+    in property <bool> first;
+    in property <bool> full: true;
+    in property <bool> pad;
+    out property <length> rule-x: root.full ? 0px : 60px;
+    out property <bool> rule-visible: !root.first;
+    Rectangle {
+        x: root.rule-x;
+        y: 0px;
+        width: root.width - root.rule-x;
+        height: Px.hair();
+        background: Theme.line;
+        visible: root.rule-visible;
+    }
+    Rectangle {
+        x: root.pad ? 16px : 0px;
+        y: 0px;
+        width: root.width - (root.pad ? 32px : 0px);
+        height: root.height;
+        @children
+    }
+}
+
+// The grouped card: one fill, a 1 px line, the radius, and the rows clipped to the corners.
+export component SetPanel inherits Rectangle {
+    background: SettingsInk.panel-fill;
+    border-color: Theme.line;
+    border-width: Px.hair();
+    border-radius: SettingsShape.panel-radius;
+    clip: true;
+    @children
+}
+
+// A section heading: the title, a tag pill, and the right slot (the heading's Save).
+export component SetSectionHeading inherits Rectangle {
+    in property <string> title;
+    in property <string> tag;
+    height: 20px;
+    HorizontalLayout {
+        width: parent.width;
+        height: parent.height;
+        spacing: 8px;
+        alignment: start;
+        Text {
+            text: root.title;
+            font-family: Theme.font-ui;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.text-soft;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.tag != "": Rectangle {
+            width: tag-text.preferred-width + 14px;
+            height: 18px;
+            border-radius: 9px;
+            border-width: Px.hair();
+            border-color: Theme.dim;
+            tag-text := Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.tag;
+                font-family: Theme.font-ui;
+                font-size: 10.5px;
+                font-weight: 600;
+                color: Theme.dim;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        @children
+    }
+}
+
+// The test window: a panel of three rows (the second after a block when asked) and a block.
+export component RowPreview inherits Window {
+    width: 640px;
+    height: 400px;
+    background: Theme.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    in-out property <length> panel-w: 560px;
+    in-out property <float> flash: 0;
+    in-out property <bool> after-block: false;
+    in-out property <int> taps: 0;
+    in-out property <int> control-taps: 0;
+    in-out property <int> off-taps: 0;
+    in-out property <int> tip-count: 0;
+    in-out property <string> tip-text: "";
+
+    out property <length> label-x: r1.label-x;
+    out property <length> control-right: r1.control-right;
+    out property <bool> first-rule: r1.rule-visible;
+    out property <bool> second-rule: r2.rule-visible;
+
+    panel := SetPanel {
+        x: 20px;
+        y: 20px;
+        width: root.panel-w;
+        height: 174px;
+        r1 := SetRowFrame {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 58px;
+            first: true;
+            icon: "M4 6h16v12H4z";
+            label: "Shell";
+            sub: "Shell.";
+            tap: true;
+            flash: root.flash;
+            tapped => { root.taps += 1; }
+            tip(t, a, b, c, d) => { root.tip-count += 1; root.tip-text = t; }
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 36px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: Theme.divider;
+                    TouchArea { clicked => { root.control-taps += 1; } }
+                }
+            }
+        }
+        r2 := SetRowFrame {
+            x: 0px;
+            y: 58px;
+            width: parent.width;
+            height: 58px;
+            first: false;
+            after-block: root.after-block;
+            icon: "M4 6h16v12H4z";
+            label: "Folder";
+            sub: "Pick the folder that new tabs open in.";
+            tip(t, a, b, c, d) => { root.tip-count += 1; root.tip-text = t; }
+        }
+        r3 := SetRowFrame {
+            x: 0px;
+            y: 116px;
+            width: parent.width;
+            height: 58px;
+            first: false;
+            off: true;
+            tap: true;
+            icon: "M4 6h16v12H4z";
+            label: "Off";
+            sub: "Off.";
+            tapped => { root.off-taps += 1; }
+        }
+    }
+    blk := SetBlockFrame {
+        x: 20px;
+        y: 200px;
+        width: root.panel-w;
+        height: 40px;
+        first: false;
+        full: false;
+    }
+}

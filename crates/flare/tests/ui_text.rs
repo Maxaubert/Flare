@@ -1,7 +1,7 @@
 //! slint text checks (Task 19). These read the .slint files as text, so they need no Slint build.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn ui_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui")
@@ -11,19 +11,29 @@ fn read(name: &str) -> String {
     fs::read_to_string(ui_dir().join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
 }
 
-/// Every `*.slint` file under ui/, as (file name, text), sorted by name.
+/// Every `*.slint` file under ui/ and its folders, as (path relative to ui/ with `/`, text), sorted.
 fn all_slint() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for entry in fs::read_dir(ui_dir()).expect("read ui dir") {
+    collect_slint(&ui_dir(), &ui_dir(), &mut out);
+    out.sort();
+    out
+}
+
+fn collect_slint(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).expect("read ui dir") {
         let path = entry.expect("dir entry").path();
-        if path.extension().is_some_and(|e| e == "slint") {
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if path.is_dir() {
+            collect_slint(root, &path, out);
+        } else if path.extension().is_some_and(|e| e == "slint") {
+            let name = path
+                .strip_prefix(root)
+                .expect("a file under ui/")
+                .to_string_lossy()
+                .replace('\\', "/");
             let text = fs::read_to_string(&path).expect("read slint file");
             out.push((name, text));
         }
     }
-    out.sort();
-    out
 }
 
 /// The value of `property <color> NAME: VALUE;` in theme.slint, if declared.
@@ -221,6 +231,48 @@ fn no_hex_literal_outside_the_token_files() {
 #[test]
 fn no_em_dash_in_any_slint_file() {
     for (name, text) in all_slint() {
+        assert!(!text.contains('\u{2014}'), "{name} contains an em-dash");
+    }
+}
+
+/// The Settings tab's Slint files (M7 Task 1 creates them; each later task fills its own).
+const SETTINGS_SLINT: [&str; 11] = [
+    "settings/types.slint",
+    "settings/controls.slint",
+    "settings/slider.slint",
+    "settings/select.slint",
+    "settings/row.slint",
+    "settings/frame.slint",
+    "settings/colour.slint",
+    "settings/wall.slint",
+    "settings/about.slint",
+    "settings/help_panel.slint",
+    "settings/view.slint",
+];
+
+#[test]
+fn settings_slint_files_exist() {
+    let found: Vec<String> = all_slint().into_iter().map(|(name, _)| name).collect();
+    for name in SETTINGS_SLINT {
+        assert!(found.iter().any(|f| f == name), "{name} exists under ui/");
+    }
+}
+
+#[test]
+fn settings_slint_has_no_em_dash() {
+    let scanned = all_slint();
+    assert!(
+        scanned.len() >= 12,
+        "the walk scans ui/ and its folders: {} files",
+        scanned.len()
+    );
+    assert!(
+        scanned
+            .iter()
+            .any(|(name, _)| name.starts_with("settings/")),
+        "the walk reaches ui/settings/"
+    );
+    for (name, text) in scanned {
         assert!(!text.contains('\u{2014}'), "{name} contains an em-dash");
     }
 }

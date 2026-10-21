@@ -4,7 +4,7 @@
 //! Keys `flare.term.shell` (the shell id; unset until chosen) and `flare.window.agentKeys` (a bool,
 //! default ON: the agent hotkeys of the chord table are the app's while it is on).
 
-use crate::kv::{PrefStore, bool_pref_get, bool_pref_set};
+use crate::kv::{PrefStore, Subscription, bool_pref_get, bool_pref_set};
 
 const SHELL_KEY: &str = "flare.term.shell";
 const AGENT_KEYS: &str = "flare.window.agentKeys";
@@ -22,9 +22,25 @@ pub fn set_agent_keys(s: &PrefStore, on: bool) {
     bool_pref_set(s, AGENT_KEYS, on);
 }
 
+/// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
+pub fn save_shell_id(s: &PrefStore, id: &str) {
+    if id.is_empty() {
+        s.remove(SHELL_KEY);
+    } else {
+        s.set(SHELL_KEY, id);
+    }
+}
+
+/// Calls `cb` when the saved shell changes; dropping the subscription stops it.
+pub fn on_shell_change(s: &PrefStore, cb: impl Fn() + Send + Sync + 'static) -> Subscription {
+    s.on_change(SHELL_KEY, cb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn saved_shell_id_is_none_until_chosen() {
@@ -34,6 +50,35 @@ mod tests {
         assert_eq!(saved_shell_id(&s), Some("pwsh".to_string()));
         s.set("flare.term.shell", "");
         assert_eq!(saved_shell_id(&s), None);
+    }
+
+    #[test]
+    fn the_saved_shell_is_none_until_chosen_and_never_empty() {
+        let s = PrefStore::memory();
+        assert_eq!(saved_shell_id(&s), None);
+        save_shell_id(&s, "");
+        assert_eq!(saved_shell_id(&s), None);
+        assert_eq!(s.get(SHELL_KEY), None);
+        save_shell_id(&s, "wsl-Ubuntu");
+        save_shell_id(&s, "");
+        assert_eq!(s.get(SHELL_KEY), None);
+        assert_eq!(saved_shell_id(&s), None);
+    }
+
+    #[test]
+    fn a_saved_shell_round_trips_and_tells_its_listeners() {
+        let s = PrefStore::memory();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = Arc::clone(&hits);
+        let sub = on_shell_change(&s, move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        });
+        save_shell_id(&s, "wsl-Ubuntu");
+        assert_eq!(saved_shell_id(&s), Some("wsl-Ubuntu".to_string()));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        sub.cancel();
+        save_shell_id(&s, "pwsh");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]

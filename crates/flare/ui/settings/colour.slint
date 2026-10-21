@@ -1,0 +1,1060 @@
+// The colour field and the colour popover (M7 Task 36). Source: Prism Terminal's ColourPicker.tsx
+// (Chip, ColourField, ColourPopover, SvSquare, HueSlider, AlphaBar, Bar, THUMB, CHECKER).
+//
+// Rust owns every rule (picker.rs: HSV, coalesced writes, revert, placement); this file draws what it
+// is given and reports pointer positions and keys back. Every edge snaps to a whole device pixel.
+// Positions reported by the pointer are 0..1 fractions of the square or the bar: x from the left, y
+// from the TOP (the square's brightness is 1 - y, worked out in Rust).
+import { Px, SettingsFixed, SettingsShape, Theme } from "../theme.slint";
+
+// How the last swatch was opened. PT's square takes the focus on open and its ring is
+// `focus-visible`: a click opens the popover with no ring, Enter or Space with it (Task 53).
+export global PickerOpening {
+    in-out property <bool> by-pointer;
+}
+
+// Rounds the corners of the box it covers by painting the popover's fill outside an arc of `r`: a
+// ring as wide as `r` whose inner edge is the rounded box. It draws nothing inside the box.
+component RoundMask inherits Rectangle {
+    in property <length> r;
+    // On whole device pixels, so the ring's inner edge lands on the box's own edges.
+    property <length> rr: max(Px.snap(root.r), Px.hair());
+    Rectangle {
+        x: -root.rr;
+        y: -root.rr;
+        width: root.width + 2 * root.rr;
+        height: root.height + 2 * root.rr;
+        border-width: root.rr;
+        border-radius: 2 * root.rr;
+        border-color: Theme.side-flat;
+    }
+}
+
+// PT CHECKER: a repeating conic gradient of checker-a (0 to 25%) and checker-b (to 50%) at 8 px, so 4 px squares:
+// top-left light, top-right dark, bottom-left dark, bottom-right light.
+component Checker inherits Rectangle {
+    property <int> cols: ceil(self.width / 4px);
+    property <int> rows: ceil(self.height / 4px);
+
+    background: SettingsFixed.checker-b;
+    clip: true;
+
+    for i in root.cols * root.rows: Rectangle {
+        property <int> c: mod(i, root.cols);
+        property <int> r: floor(i / root.cols);
+        x: self.c * 4px;
+        y: self.r * 4px;
+        width: 4px;
+        height: 4px;
+        background: mod(self.c + self.r, 2) == 1 ? SettingsFixed.checker-a : transparent;
+    }
+}
+
+// A colour over the checkerboard: the left half solid, the right half at its own alpha.
+export component ColourChip inherits Rectangle {
+    in property <color> colour;
+    out property <length> half: Px.snap(root.width / 2);
+
+    clip: true;
+
+    Checker {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.half;
+        height: parent.height;
+        background: root.colour.with-alpha(1.0);
+    }
+
+    Rectangle {
+        x: root.half;
+        y: 0;
+        width: parent.width - root.half;
+        height: parent.height;
+        background: root.colour;
+    }
+}
+
+// The row control: the code field and the swatch that opens the picker.
+export component ColourField inherits Rectangle {
+    in property <string> label;
+    in property <string> text;
+    in property <color> colour;
+    in property <bool> wide;
+    in property <bool> uppercase;
+    in property <bool> open;
+    // The swatch's tooltip is "Pick a colour" (PT title); the row reports its absolute box.
+    callback edited(string);
+    callback committed();
+    callback escape-key();
+    callback swatch-clicked(length, length, length, length);
+    callback tip(string, length, length, length, length);
+
+    out property <length> code-x: 0px;
+    out property <length> code-w: Px.snap(root.wide ? 172px : 76px);
+    out property <length> code-h: Px.snap(22px);
+    out property <length> swatch-x: Px.snap(root.code-w + 6px);
+    out property <length> swatch-w: Px.snap(root.swatch-x + 36px) - root.swatch-x;
+    out property <length> swatch-h: Px.snap(24px);
+    out property <bool> code-focused: input.has-focus;
+
+    // What the user typed and has not committed: the field shows it as typed, not in capitals.
+    property <bool> draft;
+    property <bool> show-upper: root.uppercase && !root.draft && !input.has-focus;
+    property <bool> swatch-by-pointer;
+
+    public function focus-code() {
+        input.focus();
+    }
+    public function focus-swatch() {
+        swatch-fs.focus();
+    }
+
+    // Either it took, or the field goes back to the colour.
+    function commit() {
+        if root.draft {
+            root.draft = false;
+            root.committed();
+            input.text = root.text;
+        }
+    }
+
+    // Rust set a new colour text: the field follows it (typing broke the first binding).
+    changed text => {
+        input.text = root.text;
+        root.draft = false;
+    }
+
+    width: root.swatch-x + root.swatch-w;
+    height: root.swatch-h;
+
+    Rectangle {
+        x: root.code-x;
+        y: Px.snap((root.height - root.code-h) / 2);
+        width: root.code-w;
+        height: root.code-h;
+        border-radius: SettingsShape.radius-sm;
+        border-width: Px.hair();
+        border-color: input.has-focus ? Theme.accent-hi : Theme.line;
+        background: Theme.control;
+
+        // The scope sees a key the text input leaves alone (Escape).
+        FocusScope {
+            width: parent.width;
+            height: parent.height;
+            key-pressed(e) => {
+                if e.text == Key.Escape && root.draft {
+                    root.draft = false;
+                    input.text = root.text;
+                    root.escape-key();
+                    return accept;
+                }
+                return reject;
+            }
+
+            input := TextInput {
+                x: 4px;
+                y: 0;
+                width: parent.width - 8px;
+                height: parent.height;
+                text: root.text;
+                single-line: true;
+                font-family: SettingsFixed.font-mono;
+                font-size: 10.5px;
+                color: Theme.text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                opacity: root.show-upper ? 0 : 1;
+                accessible-role: text-input;
+                accessible-label: root.label;
+                edited => {
+                    root.draft = true;
+                    root.edited(self.text);
+                }
+                accepted => {
+                    root.commit();
+                }
+                changed has-focus => {
+                    if !self.has-focus {
+                        root.commit();
+                    }
+                }
+            }
+        }
+
+        // HEX without a draft reads in capitals (PT `uppercase`).
+        Text {
+            x: 4px;
+            width: parent.width - 8px;
+            height: parent.height;
+            visible: root.show-upper;
+            text: root.text.to-uppercase();
+            font-family: SettingsFixed.font-mono;
+            font-size: 10.5px;
+            color: Theme.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    swatch := Rectangle {
+        x: root.swatch-x;
+        y: 0;
+        width: root.swatch-w;
+        height: root.swatch-h;
+        border-radius: SettingsShape.radius-sm;
+        border-width: Px.hair();
+        border-color: Theme.line;
+        clip: true;
+        accessible-role: button;
+        accessible-label: "Pick " + root.label;
+        accessible-expanded: root.open;
+        accessible-action-default => {
+            PickerOpening.by-pointer = false;
+            root.swatch-clicked(self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        }
+
+        ColourChip {
+            x: Px.hair();
+            y: Px.hair();
+            width: parent.width - 2 * Px.hair();
+            height: parent.height - 2 * Px.hair();
+            colour: root.colour;
+        }
+    }
+
+    // The keyboard focus ring: 2 px outline, offset 2 (PT FOCUS), only when the focus came by key.
+    Rectangle {
+        x: root.swatch-x - 4px;
+        y: -4px;
+        width: root.swatch-w + 8px;
+        height: root.swatch-h + 8px;
+        visible: swatch-fs.has-focus && !root.swatch-by-pointer;
+        border-radius: SettingsShape.radius-sm + 4px;
+        border-width: 2px;
+        border-color: Theme.accent-hi;
+    }
+
+    swatch-fs := FocusScope {
+        x: root.swatch-x;
+        width: root.swatch-w;
+        height: root.swatch-h;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.swatch-by-pointer = false;
+                PickerOpening.by-pointer = false;
+                root.swatch-clicked(swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    swatch-ta := TouchArea {
+        x: root.swatch-x;
+        width: root.swatch-w;
+        height: root.swatch-h;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.swatch-by-pointer = true;
+            }
+        }
+        clicked => {
+            PickerOpening.by-pointer = true;
+            root.swatch-clicked(swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
+        }
+        changed has-hover => {
+            if swatch-ta.has-hover {
+                root.tip("Pick a colour", swatch.absolute-position.x, swatch.absolute-position.y, swatch.width, swatch.height);
+            }
+        }
+    }
+}
+
+// A popover button in the row-button look (fill Theme.control, a hairline, radius-sm): the eyedropper
+// (an icon) and the format toggle (mono text). A keyboard focus lightens the edge to the accent.
+component PopButton inherits Rectangle {
+    in property <string> name;
+    in property <string> tooltip;
+    in property <string> icon;
+    in property <string> caption;
+    out property <bool> focused: fs.has-focus;
+    callback clicked();
+    callback key(KeyEvent) -> bool;
+    callback tip(string, length, length, length, length);
+    property <bool> by-pointer;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    border-radius: SettingsShape.radius-sm;
+    border-width: Px.hair();
+    border-color: fs.has-focus && !root.by-pointer ? Theme.accent-hi : (ta.has-hover ? Theme.line : Theme.divider);
+    background: ta.has-hover ? Theme.hover : Theme.control;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    if root.icon != "": Path {
+        x: ((parent.width - 13px) / 2) - (1.9 * 13px / 24) / 2;
+        y: ((parent.height - 13px) / 2) - (1.9 * 13px / 24) / 2;
+        width: 13px + (1.9 * 13px / 24);
+        height: 13px + (1.9 * 13px / 24);
+        // Slint insets a stroked path by its stroke; the box grows by it so the 24 units span the full size (Task 53).
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: transparent;
+        stroke: Theme.text;
+        stroke-width: 1.9 * 13px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    if root.icon == "": Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.caption;
+        font-family: SettingsFixed.font-mono;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Space || e.text == Key.Return {
+                root.by-pointer = false;
+                root.clicked();
+                return accept;
+            }
+            return root.key(e) ? accept : reject;
+        }
+    }
+
+    ta := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.by-pointer = true;
+                fs.focus();
+            }
+        }
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if ta.has-hover {
+                root.tip(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+}
+
+// The popover: an overlay at the window root with a transparent dismiss area under the box (no
+// scrim). Rust places the box (picker::place_popover) from the out size.
+export component ColourPopover inherits Rectangle {
+    in property <bool> open;
+    in property <length> pop-x;
+    in property <length> pop-y;
+    in property <string> label;
+    in property <float> hue;       // 0..360
+    in property <float> sat;       // 0..100
+    in property <float> val;       // 0..100
+    in property <float> alpha;     // 0..1
+    in property <color> solid-colour;
+    in property <color> start-colour;
+    in property <color> now-colour;
+    in property <color> hue-colour;
+    in property <bool> alpha-on;
+    in property <bool> alpha-disabled;
+    in property <bool> dropper-on;
+    in property <string> format-name;
+    in property <string> sv-text;
+    in property <string> hue-text;
+    in property <string> alpha-text;
+    in property <int> sv-now;
+    in property <int> hue-now;
+    in property <int> alpha-now;
+
+    callback sv-moved(float, float, bool);
+    callback hue-moved(float, bool);
+    callback alpha-moved(float, bool);
+    callback slider-key(int, string, bool);
+    callback format-clicked();
+    callback dropper-clicked();
+    callback escape-pressed();
+    callback outside-pressed();
+    callback focus-left();
+    callback tip(string, length, length, length, length);
+
+    // The names Prism Terminal gives the three sliders, in order.
+    out property <string> sv-name: "Saturation and brightness";
+    out property <string> hue-name: "Hue";
+    out property <string> alpha-name: "Alpha";
+
+    // Geometry. Offsets inside the box are 13 (1 border + 12 padding); every edge snaps.
+    out property <length> pop-w: Px.snap(root.pop-x + 226px) - Px.snap(root.pop-x);
+    out property <length> pop-h: Px.snap(root.pop-y + (root.alpha-on ? 254px : 230px)) - Px.snap(root.pop-y);
+    out property <length> sv-x: Px.snap(13px);
+    out property <length> sv-y: Px.snap(13px);
+    out property <length> sv-w: Px.snap(213px) - Px.snap(13px);
+    out property <length> sv-h: Px.snap(153px) - Px.snap(13px);
+    out property <length> hue-x: Px.snap(13px);
+    out property <length> hue-y: Px.snap(165px);
+    out property <length> hue-w: Px.snap(213px) - Px.snap(13px);
+    out property <length> hue-h: Px.snap(177px) - Px.snap(165px);
+    out property <length> alpha-x: Px.snap(13px);
+    out property <length> alpha-y: Px.snap(189px);
+    out property <length> alpha-w: Px.snap(213px) - Px.snap(13px);
+    out property <length> alpha-h: Px.snap(201px) - Px.snap(189px);
+    out property <length> foot-y: Px.snap(root.alpha-on ? 213px : 189px);
+    out property <length> foot-h: Px.snap((root.alpha-on ? 213px : 189px) + 28px) - Px.snap(root.alpha-on ? 213px : 189px);
+    out property <length> drop-x: Px.snap(13px);
+    out property <length> drop-w: Px.snap(41px) - Px.snap(13px);
+    out property <length> fmt-x: Px.snap(159px);
+    out property <length> fmt-w: Px.snap(213px) - Px.snap(159px);
+    out property <length> chip-x: Px.snap(root.dropper-on ? 49px : 13px);
+    out property <length> chip-w: Px.snap(151px) - Px.snap(root.dropper-on ? 49px : 13px);
+
+    property <bool> by-pointer;
+    property <bool> inside: sv.has-focus || hue.has-focus || alp.has-focus || drop.focused || fmt.focused;
+    // The thumbs, centred on the value and snapped.
+    property <length> sv-thumb-x: Px.snap(root.sv-x + root.sat / 100 * root.sv-w - 7px);
+    property <length> sv-thumb-y: Px.snap(root.sv-y + root.sv-h - root.val / 100 * root.sv-h - 7px);
+    property <length> hue-thumb-x: Px.snap(root.hue-x + root.hue / 360 * root.hue-w - 8px);
+    property <length> alpha-thumb-x: Px.snap(root.alpha-x + root.alpha * root.alpha-w - 8px);
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+
+    // Tab order: the square, the hue, the alpha (when shown), the eyedropper (when shown), the format.
+    pure function present(i: int) -> bool {
+        return i == 2 ? root.alpha-on : (i == 3 ? root.dropper-on : true);
+    }
+    function focus-index(i: int) {
+        if i == 0 {
+            sv.focus();
+        } else if i == 1 {
+            hue.focus();
+        } else if i == 2 {
+            alp.focus();
+        } else if i == 3 {
+            drop.focus-me();
+        } else {
+            fmt.focus-me();
+        }
+    }
+    function step(back: bool) {
+        let cur = sv.has-focus ? 0 : (hue.has-focus ? 1 : (alp.has-focus ? 2 : (drop.focused ? 3 : (fmt.focused ? 4 : -1))));
+        let a = back ? (cur <= 0 ? 4 : cur - 1) : (cur == 4 || cur < 0 ? 0 : cur + 1);
+        let b = root.present(a) ? a : (back ? (a == 0 ? 4 : a - 1) : (a == 4 ? 0 : a + 1));
+        let c = root.present(b) ? b : (back ? (b == 0 ? 4 : b - 1) : (b == 4 ? 0 : b + 1));
+        root.focus-index(c);
+    }
+    // The keys every part of the popover answers; none reaches an ancestor.
+    function common-key(e: KeyEvent) -> bool {
+        if e.text == Key.Escape {
+            root.escape-pressed();
+            return true;
+        }
+        if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+            root.step(e.text == Key.Backtab || e.modifiers.shift);
+            return true;
+        }
+        return e.text == Key.Return || e.text == " ";
+    }
+    pure function key-name(t: string) -> string {
+        return t == Key.LeftArrow ? "Left" : (t == Key.RightArrow ? "Right" : (t == Key.UpArrow ? "Up" : (t == Key.DownArrow ? "Down" : (t == Key.Home ? "Home" : (t == Key.End ? "End" : "")))));
+    }
+    pure function unit(v: float) -> float {
+        return v < 0 ? 0 : (v > 1 ? 1 : v);
+    }
+
+    // The keyboard goes in with the popover, to the square.
+    public function focus-first() {
+        sv.focus();
+    }
+    changed open => {
+        if root.open {
+            root.by-pointer = PickerOpening.by-pointer;
+            sv.focus();
+        }
+    }
+    changed inside => {
+        if !root.inside && root.open {
+            root.focus-left();
+        }
+    }
+
+    // Under the box: a press anywhere else keeps the colour and closes.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.outside-pressed();
+            }
+        }
+    }
+
+    box := Rectangle {
+        x: root.pop-x;
+        y: root.pop-y;
+        width: root.pop-w;
+        height: root.pop-h;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        background: Theme.side-flat;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: SettingsFixed.shadow;
+        accessible-role: groupbox;
+        accessible-label: root.label;
+
+        // A press on the popover's own ground is not a press elsewhere, and takes no focus.
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+        }
+
+        // The saturation and brightness square.
+        sv := FocusScope {
+            x: root.sv-x;
+            y: root.sv-y;
+            width: root.sv-w;
+            height: root.sv-h;
+            accessible-role: slider;
+            accessible-label: root.sv-name;
+            accessible-value: root.sv-text;
+            key-pressed(e) => {
+                let k = root.key-name(e.text);
+                if k != "" && k != "Home" && k != "End" {
+                    root.by-pointer = false;
+                    root.slider-key(0, k, e.modifiers.shift);
+                    return accept;
+                }
+                return root.common-key(e) ? accept : reject;
+            }
+        }
+
+        Rectangle {
+            x: root.sv-x;
+            y: root.sv-y;
+            width: root.sv-w;
+            height: root.sv-h;
+
+            Rectangle {
+                background: @linear-gradient(90deg, SettingsFixed.white 0%, root.hue-colour 100%);
+            }
+
+            Rectangle {
+                background: @linear-gradient(0deg, SettingsFixed.black 0%, SettingsFixed.black.with-alpha(0) 100%);
+            }
+        }
+
+        // The software painter draws a gradient square whatever the radius or clip (Task 53), so
+        // the corners are rounded by a mask of the popover's fill, on both painters alike.
+        RoundMask {
+            x: root.sv-x;
+            y: root.sv-y;
+            width: root.sv-w;
+            height: root.sv-h;
+            r: SettingsShape.radius-sm;
+        }
+
+        // The ring that shows a keyboard focus: 2 px, offset 2.
+        Rectangle {
+            x: root.sv-x - 4px;
+            y: root.sv-y - 4px;
+            width: root.sv-w + 8px;
+            height: root.sv-h + 8px;
+            visible: sv.has-focus && !root.by-pointer;
+            border-radius: SettingsShape.radius-sm + 4px;
+            border-width: 2px;
+            border-color: Theme.accent-hi;
+        }
+
+        // The square's thumb: a 14 circle, a 2 px ring of the ink and a 1.5 px outer ring of the ground.
+        Rectangle {
+            x: root.sv-thumb-x - 1.5px;
+            y: root.sv-thumb-y - 1.5px;
+            width: 17px;
+            height: 17px;
+            border-radius: 8.5px;
+            background: Theme.ground;
+
+            Rectangle {
+                x: 1.5px;
+                y: 1.5px;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border-width: 2px;
+                border-color: Theme.text;
+                background: root.solid-colour;
+            }
+        }
+
+        sv-ta := TouchArea {
+            x: root.sv-x;
+            y: root.sv-y;
+            width: root.sv-w;
+            height: root.sv-h;
+            mouse-cursor: crosshair;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    root.by-pointer = true;
+                    sv.focus();
+                    root.sv-moved(root.unit(self.mouse-x / self.width), root.unit(self.mouse-y / self.height), false);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.sv-moved(root.unit(self.mouse-x / self.width), root.unit(self.mouse-y / self.height), false);
+                }
+            }
+        }
+
+        // The hue bar.
+        hue := FocusScope {
+            x: root.hue-x;
+            y: root.hue-y;
+            width: root.hue-w;
+            height: root.hue-h;
+            accessible-role: slider;
+            accessible-label: root.hue-name;
+            accessible-value: root.hue-text;
+            key-pressed(e) => {
+                let k = root.key-name(e.text);
+                if k != "" {
+                    root.by-pointer = false;
+                    root.slider-key(1, k, e.modifiers.shift);
+                    return accept;
+                }
+                return root.common-key(e) ? accept : reject;
+            }
+        }
+
+        // The spectrum as six two-stop pieces on whole device pixels: the software painter leaves a
+        // dark seam where a many-stop gradient's stop falls between pixels (Task 53).
+        Rectangle {
+            x: root.hue-x;
+            y: root.hue-y;
+            width: root.hue-w;
+            height: root.hue-h;
+
+            for seg[i] in [
+                { a: SettingsFixed.hue-red, b: SettingsFixed.hue-yellow },
+                { a: SettingsFixed.hue-yellow, b: SettingsFixed.hue-green },
+                { a: SettingsFixed.hue-green, b: SettingsFixed.hue-cyan },
+                { a: SettingsFixed.hue-cyan, b: SettingsFixed.hue-blue },
+                { a: SettingsFixed.hue-blue, b: SettingsFixed.hue-magenta },
+                { a: SettingsFixed.hue-magenta, b: SettingsFixed.hue-red },
+            ]: Rectangle {
+                x: Px.snap(root.hue-w * i / 6);
+                width: Px.snap(root.hue-w * (i + 1) / 6) - Px.snap(root.hue-w * i / 6);
+                height: parent.height;
+                background: @linear-gradient(90deg, seg.a 0%, seg.b 100%);
+            }
+        }
+
+        RoundMask {
+            x: root.hue-x;
+            y: root.hue-y;
+            width: root.hue-w;
+            height: root.hue-h;
+            r: self.height / 2;
+        }
+
+        Rectangle {
+            x: root.hue-x - 4px;
+            y: root.hue-y - 4px;
+            width: root.hue-w + 8px;
+            height: root.hue-h + 8px;
+            visible: hue.has-focus && !root.by-pointer;
+            border-radius: root.hue-h / 2 + 4px;
+            border-width: 2px;
+            border-color: Theme.accent-hi;
+        }
+
+        Rectangle {
+            x: root.hue-thumb-x - 1.5px;
+            y: Px.snap(root.hue-y + root.hue-h / 2 - 8px) - 1.5px;
+            width: 19px;
+            height: 19px;
+            // PT THUMB: the outer 1.5 px ring of the ground, the inside clear (Task 53).
+            border-radius: 9.5px;
+            border-width: 1.5px;
+            border-color: Theme.ground;
+
+            Rectangle {
+                x: 1.5px;
+                y: 1.5px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: Theme.text;
+            }
+        }
+
+        hue-ta := TouchArea {
+            x: root.hue-x;
+            y: root.hue-y;
+            width: root.hue-w;
+            height: root.hue-h;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    root.by-pointer = true;
+                    hue.focus();
+                    root.hue-moved(root.unit(self.mouse-x / self.width), false);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.hue-moved(root.unit(self.mouse-x / self.width), false);
+                }
+            }
+        }
+
+        // The alpha bar: only when the colour has an alpha; faded and inert when acrylic is off.
+        alp := FocusScope {
+            x: root.alpha-x;
+            y: root.alpha-y;
+            width: root.alpha-w;
+            height: root.alpha-h;
+            enabled: root.alpha-on;
+            accessible-role: slider;
+            accessible-label: root.alpha-name;
+            accessible-value: root.alpha-text;
+            key-pressed(e) => {
+                let k = root.key-name(e.text);
+                if k != "" && !root.alpha-disabled {
+                    root.by-pointer = false;
+                    root.slider-key(2, k, e.modifiers.shift);
+                    return accept;
+                }
+                return root.common-key(e) ? accept : reject;
+            }
+        }
+
+        if root.alpha-on: Rectangle {
+            x: root.alpha-x;
+            y: root.alpha-y;
+            width: root.alpha-w;
+            height: root.alpha-h;
+            opacity: root.alpha-disabled ? 0.4 : 1;
+
+            Checker {
+                border-radius: parent.height / 2;
+            }
+
+            Rectangle {
+                border-radius: parent.height / 2;
+                background: @linear-gradient(90deg, root.solid-colour.with-alpha(0) 0%, root.solid-colour.with-alpha(1.0) 100%);
+            }
+        }
+
+        if root.alpha-on: RoundMask {
+            x: root.alpha-x;
+            y: root.alpha-y;
+            width: root.alpha-w;
+            height: root.alpha-h;
+            r: self.height / 2;
+        }
+
+        if root.alpha-on: Rectangle {
+            x: root.alpha-x - 4px;
+            y: root.alpha-y - 4px;
+            width: root.alpha-w + 8px;
+            height: root.alpha-h + 8px;
+            visible: alp.has-focus && !root.by-pointer;
+            border-radius: root.alpha-h / 2 + 4px;
+            border-width: 2px;
+            border-color: Theme.accent-hi;
+        }
+
+        if root.alpha-on: Rectangle {
+            x: root.alpha-thumb-x - 1.5px;
+            y: Px.snap(root.alpha-y + root.alpha-h / 2 - 8px) - 1.5px;
+            width: 19px;
+            height: 19px;
+            border-radius: 9.5px;
+            border-width: 1.5px;
+            border-color: Theme.ground;
+            opacity: root.alpha-disabled ? 0.4 : 1;
+
+            Rectangle {
+                x: 1.5px;
+                y: 1.5px;
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border-width: 2px;
+                border-color: Theme.text;
+            }
+        }
+
+        if root.alpha-on: alpha-ta := TouchArea {
+            x: root.alpha-x;
+            y: root.alpha-y;
+            width: root.alpha-w;
+            height: root.alpha-h;
+            enabled: !root.alpha-disabled;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    root.by-pointer = true;
+                    alp.focus();
+                    root.alpha-moved(root.unit(self.mouse-x / self.width), false);
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.alpha-moved(root.unit(self.mouse-x / self.width), false);
+                }
+            }
+        }
+
+        // The footer: the eyedropper, the colour it opened with beside the new one, the format.
+        drop := PopButton {
+            x: root.drop-x;
+            y: root.foot-y;
+            width: root.drop-w;
+            height: root.foot-h;
+            visible: root.dropper-on;
+            name: "Pick a colour from the screen";
+            tooltip: "Pick a colour from the screen";
+            icon: "M14.5 5.5l4 4M17 3a2.1 2.1 0 013 3l-2.5 2.5-3-3zM14.5 7.5L5 17v2h2l9.5-9.5";
+            clicked => {
+                root.dropper-clicked();
+            }
+            key(e) => {
+                return root.common-key(e);
+            }
+            tip(t, x, y, w, h) => {
+                root.tip(t, x, y, w, h);
+            }
+        }
+
+        Rectangle {
+            x: root.chip-x;
+            y: root.foot-y;
+            width: root.chip-w;
+            height: root.foot-h;
+            border-radius: SettingsShape.radius-sm;
+            border-width: Px.hair();
+            border-color: Theme.line;
+            clip: true;
+
+            Rectangle {
+                x: Px.hair();
+                y: Px.hair();
+                width: Px.snap(parent.width / 2) - Px.hair();
+                height: parent.height - 2 * Px.hair();
+
+                Checker {}
+
+                Rectangle {
+                    background: root.start-colour;
+                }
+            }
+
+            Rectangle {
+                x: Px.snap(parent.width / 2);
+                y: Px.hair();
+                width: parent.width - Px.snap(parent.width / 2) - Px.hair();
+                height: parent.height - 2 * Px.hair();
+
+                Checker {}
+
+                Rectangle {
+                    background: root.now-colour;
+                }
+            }
+
+            TouchArea {
+                changed has-hover => {
+                    if self.has-hover {
+                        root.tip("Before and after", box.absolute-position.x + root.chip-x, box.absolute-position.y + root.foot-y, root.chip-w, root.foot-h);
+                    }
+                }
+            }
+        }
+
+        fmt := PopButton {
+            x: root.fmt-x;
+            y: root.foot-y;
+            width: root.fmt-w;
+            height: root.foot-h;
+            name: "Colour format";
+            tooltip: "How colour codes are written";
+            caption: root.format-name;
+            clicked => {
+                root.format-clicked();
+            }
+            key(e) => {
+                return root.common-key(e);
+            }
+            tip(t, x, y, w, h) => {
+                root.tip(t, x, y, w, h);
+            }
+        }
+    }
+}
+
+// A field, a popover and a window-sized frame, with the geometry out for the tests.
+export component ColourPreview inherits Window {
+    preferred-width: 520px;
+    preferred-height: 440px;
+    background: Theme.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    // The field.
+    in-out property <string> field-text: "FE8F34";
+    in-out property <color> field-colour: Theme.accent;
+    in-out property <bool> field-wide;
+    in-out property <bool> field-upper: true;
+    in-out property <bool> field-open;
+    callback field-edited(string);
+    callback field-committed();
+    callback field-escape();
+    callback field-swatch(length, length, length, length);
+    out property <length> fld-w: fld.width;
+    out property <length> fld-h: fld.height;
+    out property <length> fld-x: fld.absolute-position.x;
+    out property <length> fld-y: fld.absolute-position.y;
+    out property <length> code-w: fld.code-w;
+    out property <length> code-h: fld.code-h;
+    out property <length> swatch-x: fld.swatch-x;
+    out property <length> swatch-w: fld.swatch-w;
+    out property <length> swatch-h: fld.swatch-h;
+    out property <bool> code-focused: fld.code-focused;
+
+    // The popover.
+    in-out property <bool> open;
+    in-out property <length> pop-x: 200px;
+    in-out property <length> pop-y: 60px;
+    in-out property <float> hue;
+    in-out property <float> sat: 50;
+    in-out property <float> val: 50;
+    in-out property <float> alpha: 1;
+    in-out property <color> solid-colour: Theme.accent-hi;
+    in-out property <color> start-colour: SettingsFixed.hue-red;
+    in-out property <color> now-colour: SettingsFixed.hue-green;
+    in-out property <color> hue-colour: SettingsFixed.hue-red;
+    in-out property <bool> alpha-on: true;
+    in-out property <bool> alpha-disabled;
+    in-out property <bool> dropper-on: true;
+    in-out property <string> format-name: "HEX";
+    callback sv-moved(float, float, bool);
+    callback hue-moved(float, bool);
+    callback alpha-moved(float, bool);
+    callback slider-key(int, string, bool);
+    callback format-clicked();
+    callback dropper-clicked();
+    callback escape-pressed();
+    callback outside-pressed();
+    callback focus-left();
+    out property <length> pop-w: pop.pop-w;
+    out property <length> pop-h: pop.pop-h;
+    out property <length> sv-x: pop.pop-x + pop.sv-x;
+    out property <length> sv-y: pop.pop-y + pop.sv-y;
+    out property <length> sv-w: pop.sv-w;
+    out property <length> sv-h: pop.sv-h;
+    out property <length> hue-x: pop.pop-x + pop.hue-x;
+    out property <length> hue-y: pop.pop-y + pop.hue-y;
+    out property <length> hue-w: pop.hue-w;
+    out property <length> hue-h: pop.hue-h;
+    out property <length> alpha-x: pop.pop-x + pop.alpha-x;
+    out property <length> alpha-y: pop.pop-y + pop.alpha-y;
+    out property <length> alpha-w: pop.alpha-w;
+    out property <length> alpha-h: pop.alpha-h;
+    out property <length> foot-y: pop.pop-y + pop.foot-y;
+    out property <length> foot-h: pop.foot-h;
+    out property <length> drop-x: pop.pop-x + pop.drop-x;
+    out property <length> drop-w: pop.drop-w;
+    out property <length> fmt-x: pop.pop-x + pop.fmt-x;
+    out property <length> fmt-w: pop.fmt-w;
+    out property <length> chip-x: pop.pop-x + pop.chip-x;
+    out property <length> chip-w: pop.chip-w;
+    out property <string> sv-name: pop.sv-name;
+    out property <string> hue-name: pop.hue-name;
+    out property <string> alpha-name: pop.alpha-name;
+    out property <string> last-tip;
+
+    public function focus-code() {
+        fld.focus-code();
+    }
+    public function focus-swatch() {
+        fld.focus-swatch();
+    }
+    public function focus-popover() {
+        pop.focus-first();
+    }
+
+    fld := ColourField {
+        x: 20px;
+        y: 20px;
+        label: "Background";
+        text: root.field-text;
+        colour: root.field-colour;
+        wide: root.field-wide;
+        uppercase: root.field-upper;
+        open: root.field-open;
+        edited(t) => { root.field-edited(t); }
+        committed => { root.field-committed(); }
+        escape-key => { root.field-escape(); }
+        swatch-clicked(x, y, w, h) => { root.field-swatch(x, y, w, h); }
+        tip(t, x, y, w, h) => { root.last-tip = t; }
+    }
+
+    pop := ColourPopover {
+        open: root.open;
+        pop-x: root.pop-x;
+        pop-y: root.pop-y;
+        label: "Background";
+        hue: root.hue;
+        sat: root.sat;
+        val: root.val;
+        alpha: root.alpha;
+        solid-colour: root.solid-colour;
+        start-colour: root.start-colour;
+        now-colour: root.now-colour;
+        hue-colour: root.hue-colour;
+        alpha-on: root.alpha-on;
+        alpha-disabled: root.alpha-disabled;
+        dropper-on: root.dropper-on;
+        format-name: root.format-name;
+        sv-text: "saturation 50 percent, brightness 50 percent";
+        hue-text: "0 degrees";
+        alpha-text: "100 percent opaque";
+        sv-moved(x, y, k) => { root.sv-moved(x, y, k); }
+        hue-moved(x, k) => { root.hue-moved(x, k); }
+        alpha-moved(x, k) => { root.alpha-moved(x, k); }
+        slider-key(w, k, s) => { root.slider-key(w, k, s); }
+        format-clicked => { root.format-clicked(); }
+        dropper-clicked => { root.dropper-clicked(); }
+        escape-pressed => { root.escape-pressed(); }
+        outside-pressed => { root.outside-pressed(); }
+        focus-left => { root.focus-left(); }
+        tip(t, x, y, w, h) => { root.last-tip = t; }
+    }
+}

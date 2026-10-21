@@ -7,3 +7,34 @@ crates/flare-agent/src/badge.rs | #ffffff | the taskbar disc's count ink, white 
 crates/flare-agent/src/icon.rs | #d77757 | Clawd's orange as Claude Code draws it in the terminal: the agent's own colour, never a theme value
 crates/flare/src/appctl.rs | #ffffff | the ink `ask_text` passes to `ask_view` inside a #[cfg(test)] fn (the scan stops only at a top-level cfg(test)); the tests read the dialog's words, not its colour
 crates/flare-win/src/taskbar.rs | #25242c | the taskbar disc's fill named in doc comments, the same fixed value as badge.rs
+// M7: the settings.
+crates/flare-settings/src/actions.rs | #888888 | the editor's fallback for a cleared ANSI well, Prism Terminal's own (ThemeWall.tsx, `v ?? '#888888'`); a placeholder grey, never a theme value
+crates/flare/src/ui_tests/settings_select.rs | #f6a25b | a comment naming the accent-hi ink that the warm-pixel test checks for
+crates/flare/src/ui_tests/settings_view.rs | #FE8F34 | a test row's colour code text (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/settings_scene.rs | #e07a2f | the scene's stand-in for a user's own accent, set only to make the theme dirty for the switch question (Task 51)
+crates/flare/src/ui_tests/settings_find.rs | #fe8f34 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_find.rs | #101010 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_find.rs | #181818 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_find.rs | #111111 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_find.rs | #222222 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_find.rs | #333333 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #fe8f34 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #101010 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #181818 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #111111 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #222222 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #333333 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #ff0000 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #ffffff | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #200000 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #102030 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #fe8f3380 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_flows.rs | #ff8c3380 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_ink.rs | #e0a84b | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_ink.rs | #a46400 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #fe8f34 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #101010 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #181818 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #111111 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #222222 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+crates/flare/src/ui_tests/settings_layout.rs | #333333 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)

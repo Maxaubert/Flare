@@ -1,0 +1,210 @@
+// The settings slider (M7 Task 32): Prism Terminal's range input (fields.tsx Slider, SLIDER). A 168
+// by 6 track with the part left of the thumb centre in Theme.sel-bg, an 18 white thumb with a 1 px
+// ring, and a 38 wide value cell at 12 px. Every edge snaps to whole device pixels (Px.snap). The
+// thumb centre travels 9 px to 159 px (9 + pct * 150). Rust gives the value and the text; a change
+// is reported through `changed` and never stored here.
+import { Px, SettingsFixed, SettingsShape, Theme } from "../theme.slint";
+
+export component SetSlider inherits Rectangle {
+    in property <int> value;
+    in property <int> max;
+    in property <string> text;
+    in property <bool> disabled;
+    in property <string> label;
+
+    // Positions are relative to the slider: the slider's own x is the parent's business.
+    out property <length> track-x: 0px;
+    // `max` is a property here, so the clamps are written out (a call to max() does not resolve).
+    out property <float> raw: root.max <= 0 ? 0 : (root.value * 1.0) / (root.max * 1.0);
+    out property <float> pct: root.raw < 0 ? 0 : (root.raw > 1 ? 1 : root.raw);
+
+    out property <length> track-y: Px.snap((root.height - 6px) / 2);
+    out property <length> track-w: Px.snap(root.track-x + 168px) - Px.snap(root.track-x);
+    out property <length> track-h: Px.snap((root.height - 6px) / 2 + 6px) - Px.snap((root.height - 6px) / 2);
+    out property <length> fill-w: Px.snap(root.track-x + root.pct * 150px + 9px) - Px.snap(root.track-x);
+
+    out property <length> thumb-x: Px.snap(root.track-x + root.pct * 150px);
+    out property <length> thumb-w: Px.snap(root.track-x + root.pct * 150px + 18px) - root.thumb-x;
+    out property <length> thumb-y: Px.snap((root.height - 18px) / 2);
+    out property <length> thumb-h: Px.snap((root.height - 18px) / 2 + 18px) - root.thumb-y;
+
+    out property <length> value-x: Px.snap(root.track-x + 180px);
+    out property <length> value-w: Px.snap(root.track-x + 218px) - root.value-x;
+
+    callback changed(int);
+
+    // The last value sent, so one value is reported once; a new Rust value clears it.
+    private property <int> last-sent;
+    changed value => { root.last-sent = root.value; }
+
+    // One change: clamped, not the current value, not the last one sent.
+    function go(v: int) {
+        let c = v < 0 ? 0 : (v > root.max ? root.max : v);
+        if (!root.disabled && c != root.value && c != root.last-sent) {
+            root.last-sent = c;
+            root.changed(c);
+        }
+    }
+
+    // A pointer x on the track: 9 px is the bottom of the travel, 159 px the top.
+    function set-from(at: length) {
+        let f = (at - 9px) / 150px;
+        let g = f < 0 ? 0 : (f > 1 ? 1 : f);
+        root.go(round(g * root.max));
+    }
+
+    public function focus-me() { keys.focus(); }
+
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.text;
+
+    // The track: a rounded base in the track colour and the part left of the thumb in the accent.
+    Rectangle {
+        x: root.track-x;
+        y: root.track-y;
+        width: root.track-w;
+        height: root.track-h;
+        border-radius: SettingsShape.radius-sm;
+        background: Theme.track;
+        opacity: root.disabled ? 0.5 : 1;
+    }
+
+    Rectangle {
+        x: root.track-x;
+        y: root.track-y;
+        width: root.fill-w;
+        height: root.track-h;
+        border-top-left-radius: SettingsShape.radius-sm;
+        border-bottom-left-radius: SettingsShape.radius-sm;
+        background: Theme.sel-bg;
+        opacity: root.disabled ? 0.5 : 1;
+    }
+
+    Rectangle {
+        x: root.thumb-x;
+        y: root.thumb-y;
+        width: root.thumb-w;
+        height: root.thumb-h;
+        border-radius: self.width / 2;
+        background: SettingsFixed.white;
+        border-width: 1px;
+        border-color: SettingsFixed.shadow;
+        opacity: root.disabled ? 0.5 : 1;
+    }
+
+    Text {
+        x: root.value-x;
+        y: 0;
+        width: root.value-w;
+        height: root.height;
+        text: root.text;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.disabled ? Theme.dim : Theme.text;
+    }
+
+    // The keys, when the slider has focus: a step of one, ten for the page keys, the ends for Home
+    // and End. An unhandled key is left to the window.
+    keys := FocusScope {
+        x: root.track-x;
+        y: 0;
+        width: root.track-w;
+        height: root.height;
+        key-pressed(e) => {
+            if (root.disabled) {
+                return reject;
+            }
+            if (e.text == Key.RightArrow || e.text == Key.UpArrow) {
+                root.go(root.value + 1);
+                return accept;
+            }
+            if (e.text == Key.LeftArrow || e.text == Key.DownArrow) {
+                root.go(root.value - 1);
+                return accept;
+            }
+            if (e.text == Key.PageUp) {
+                root.go(root.value + 10);
+                return accept;
+            }
+            if (e.text == Key.PageDown) {
+                root.go(root.value - 10);
+                return accept;
+            }
+            if (e.text == Key.Home) {
+                root.go(0);
+                return accept;
+            }
+            if (e.text == Key.End) {
+                root.go(root.max);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // The pointer: a press or a drag on the track sets the value from x. It is declared after the
+    // key scope, so it is on top: a FocusScope takes a press to focus itself and would hide this.
+    TouchArea {
+        x: root.track-x;
+        y: 0;
+        width: root.track-w;
+        height: root.height;
+        enabled: !root.disabled;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.set-from(self.mouse-x);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.set-from(self.mouse-x);
+            }
+        }
+    }
+}
+
+export component SliderPreview inherits Window {
+    preferred-width: 260px;
+    preferred-height: 40px;
+    background: Theme.ground;
+
+    out property <float> scale: 1px / 1phx;
+    init => { Px.scale = root.scale; }
+    changed scale => { Px.scale = root.scale; }
+
+    in-out property <int> value;
+    in-out property <int> max: 70;
+    in-out property <string> text;
+    in-out property <bool> disabled;
+    callback changed(int);
+
+    out property <string> val-text: sl.text;
+    out property <length> tr-x: sl.track-x;
+    out property <length> tr-y: sl.track-y;
+    out property <length> tr-w: sl.track-w;
+    out property <length> tr-h: sl.track-h;
+    out property <length> th-x: sl.thumb-x;
+    out property <length> th-y: sl.thumb-y;
+    out property <length> th-w: sl.thumb-w;
+    out property <length> th-h: sl.thumb-h;
+    out property <length> val-x: sl.value-x;
+    out property <length> val-w: sl.value-w;
+
+    public function focus-slider() { sl.focus-me(); }
+
+    sl := SetSlider {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        value: root.value;
+        max: root.max;
+        text: root.text;
+        disabled: root.disabled;
+        label: "Slider";
+        changed(v) => { root.changed(v); }
+    }
+}

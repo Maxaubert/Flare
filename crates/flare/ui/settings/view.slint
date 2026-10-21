@@ -1,0 +1,559 @@
+// The settings view (M7 Task 40). It composes the frame, the section frames and every control, and
+// talks to Rust through ONE global, `SettingsBridge`. Rust positions everything (`SetSection` and
+// `SetRow` carry snapped y/h); nothing here measures a row to size it. Row `y` is inside the panel,
+// below its 1 hairline border, so the view adds `Px.hair()` the way the frame's Results list does.
+// For the non-row blocks: `about` reads `label` (name), `sub` (line one) and `note` (line two).
+import { Theme, Px, SettingsInk, SettingsShape, SettingsFixed } from "../theme.slint";
+import { RailItem, SetHit, SetOption, SetRow, SetSection, SetKind, BlockKind, WallCard, EditorWell } from "types.slint";
+import { SetFrame } from "frame.slint";
+import { SetRowFrame, SetBlockFrame, SetPanel, SetSectionHeading } from "row.slint";
+import { SetSwitch, SetSegmented, SetSaveButton, SetRowButton, SetResetLink } from "controls.slint";
+import { SetSlider } from "slider.slint";
+import { SetSelect, SelectMenu } from "select.slint";
+import { ColourField, ColourPopover } from "colour.slint";
+import { ThemeWallView, ThemeEditor, AskThree } from "wall.slint";
+import { AboutCard, SlintBadge } from "about.slint";
+import { HelpPanel } from "help_panel.slint";
+
+export global SettingsBridge {
+    // data, all computed by Rust
+    in-out property <[RailItem]> rail;
+    in-out property <string> page-title;
+    in-out property <[SetSection]> sections;
+    in-out property <length> content-h;
+    in-out property <bool> narrow;
+    in-out property <string> find-text;
+    in-out property <bool> searching;
+    in-out property <string> status-text;
+    in-out property <string> nothing-text;
+    // the no-results sentence in three parts so the query is drawn semibold (all empty: nothing-text whole)
+    in-out property <string> nothing-pre;
+    in-out property <string> nothing-query;
+    in-out property <string> nothing-post;
+    in-out property <[SetHit]> hits;
+    in-out property <length> hits-h;
+    in-out property <int> hit-cursor;
+    in-out property <[WallCard]> wall-cards;
+    in-out property <length> wall-clip-h;
+    in-out property <length> wall-full-h;
+    in-out property <bool> wall-expanded;
+    in-out property <string> wall-toggle-aria;
+    in-out property <string> wall-toggle-title;
+    in-out property <length> about-badge-h: 112px;
+    in-out property <bool> still;
+    in-out property <length> scroll-y;
+    // a row id that wants the keyboard focus (the view takes it, then clears it)
+    in-out property <string> focus-id;
+    // the overlays' state
+    in-out property <bool> select-open;
+    in-out property <string> select-row;
+    in-out property <[SetOption]> select-options;
+    in-out property <string> select-value;
+    in-out property <int> select-highlight;
+    in-out property <length> select-x;
+    in-out property <length> select-y;
+    in-out property <length> select-w;
+    in-out property <length> select-h;
+    in-out property <bool> picker-open;
+    in-out property <length> picker-x;
+    in-out property <length> picker-y;
+    in-out property <string> picker-label;
+    in-out property <float> picker-hue;
+    in-out property <float> picker-sat;
+    in-out property <float> picker-val;
+    in-out property <float> picker-alpha;
+    in-out property <color> picker-solid;
+    in-out property <color> picker-start;
+    in-out property <color> picker-now;
+    in-out property <color> picker-hue-colour;
+    in-out property <bool> picker-alpha-on;
+    in-out property <bool> picker-alpha-disabled;
+    in-out property <bool> picker-dropper-on;
+    in-out property <string> picker-format;
+    in-out property <string> picker-sv-text;
+    in-out property <string> picker-hue-text;
+    in-out property <string> picker-alpha-text;
+    in-out property <int> picker-sv-now;
+    in-out property <int> picker-hue-now;
+    in-out property <int> picker-alpha-now;
+    in-out property <bool> editor-open;
+    in-out property <[EditorWell]> editor-wells;
+    in-out property <WallCard> editor-preview;
+    in-out property <bool> ask-open;
+    // events
+    callback page-chosen(string);
+    callback find-edited(string);
+    callback find-key(string, bool);
+    callback hit-chosen(int);
+    callback hit-key(string);
+    callback rail-key(string);
+    callback row-switch(string, bool);
+    callback row-choose(string, string);
+    callback row-slide(string, int);
+    callback row-button(string, string);
+    callback row-reset(string);
+    callback colour-edited(string, string);
+    callback colour-committed(string);
+    callback colour-escape(string);
+    callback colour-swatch(string, length, length, length, length);
+    callback select-open-request(string, length, length, length, length);
+    callback select-chosen(string);
+    callback select-dismissed();
+    callback select-key(string);
+    callback save-clicked(string);
+    callback wall-pick(string);
+    callback wall-edit(string);
+    callback wall-toggle();
+    callback picker-sv(float, float, bool);
+    callback picker-hue-moved(float, bool);
+    callback picker-alpha-moved(float, bool);
+    callback picker-key(int, string, bool);
+    callback picker-format-clicked();
+    callback picker-dropper();
+    callback picker-escape();
+    callback picker-outside();
+    callback picker-focus-left();
+    callback editor-well-edited(string, string);
+    callback editor-well-committed(string);
+    callback editor-well-swatch(string, length, length, length, length);
+    callback editor-save();
+    callback editor-cancel();
+    callback ask-answered(int);
+    callback frame-resized(length, length);
+    callback escape-unhandled();
+    callback tip(string, length, length, length, length);
+    // out, for Rust and the tests
+    in-out property <length> pane-w;
+    in-out property <length> pane-h;
+}
+
+// The controls of one row, right aligned, a gap of 10 between them. Each control sits in its own
+// vertical centring layout, and watches `wants` so `SettingsBridge.focus-id` can focus it.
+component RowControls inherits HorizontalLayout {
+    in property <SetRow> data;
+    out property <bool> wants: SettingsBridge.focus-id != "" && SettingsBridge.focus-id == root.data.id;
+    spacing: 10px;
+    alignment: end;
+
+    if root.data.kind == SetKind.pill: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: pill-text.preferred-width + 16px + 2 * Px.hair();
+            height: pill-text.preferred-height + 4px + 2 * Px.hair();
+            border-radius: self.height / 2;
+            border-width: Px.hair();
+            border-color: Theme.line;
+            pill-text := Text {
+                x: 8px + Px.hair();
+                y: 2px + Px.hair();
+                text: root.data.value;
+                font-family: SettingsFixed.font-mono;
+                font-size: 11px;
+                color: Theme.text-soft;
+                wrap: no-wrap;
+            }
+        }
+    }
+    if root.data.kind == SetKind.switch: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                sw.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        sw := SetSwitch {
+            on: root.data.on;
+            disabled: root.data.off;
+            label: root.data.label;
+            toggled(v) => { SettingsBridge.row-switch(root.data.id, v); }
+        }
+    }
+    if root.data.kind == SetKind.segmented: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                SettingsBridge.focus-id = "";
+            }
+        }
+        SetSegmented {
+            options: root.data.options;
+            value: root.data.value;
+            label: root.data.label;
+            chosen(id) => { SettingsBridge.row-choose(root.data.id, id); }
+        }
+    }
+    if root.data.kind == SetKind.select: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                sel.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        sel := SetSelect {
+            width: SettingsShape.select-min-w;
+            options: root.data.options;
+            value: root.data.value;
+            disabled: root.data.off;
+            label: root.data.label;
+            open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
+            open-request(x, y, w, h) => { SettingsBridge.select-open-request(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+        }
+    }
+    if root.data.kind == SetKind.slider: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                sl.focus-me();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        sl := SetSlider {
+            width: 218px;
+            height: SettingsShape.control-h;
+            value: root.data.num;
+            max: root.data.num-max;
+            text: root.data.num-text;
+            disabled: root.data.off;
+            label: root.data.label;
+            changed(v) => { SettingsBridge.row-slide(root.data.id, v); }
+        }
+    }
+    if root.data.kind == SetKind.colour && root.data.reset: VerticalLayout {
+        alignment: center;
+        SetResetLink {
+            clicked => { SettingsBridge.row-reset(root.data.id); }
+        }
+    }
+    if root.data.kind == SetKind.colour: VerticalLayout {
+        alignment: center;
+        property <bool> want: root.wants;
+        changed want => {
+            if self.want {
+                fld.focus-code();
+                SettingsBridge.focus-id = "";
+            }
+        }
+        fld := ColourField {
+            label: root.data.label;
+            text: root.data.code;
+            colour: root.data.colour;
+            wide: root.data.code-wide;
+            uppercase: true;
+            open: SettingsBridge.picker-open && SettingsBridge.picker-label == root.data.label;
+            edited(t) => { SettingsBridge.colour-edited(root.data.id, t); }
+            committed => { SettingsBridge.colour-committed(root.data.id); }
+            escape-key => { SettingsBridge.colour-escape(root.data.id); }
+            swatch-clicked(x, y, w, h) => { SettingsBridge.colour-swatch(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
+    if root.data.kind == SetKind.save: VerticalLayout {
+        alignment: center;
+        SetSaveButton {
+            dirty: root.data.save-dirty;
+            title: root.data.save-title;
+            clicked => { SettingsBridge.save-clicked(root.data.id); }
+            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+        }
+    }
+    for b in root.data.buttons: VerticalLayout {
+        alignment: center;
+        SetRowButton {
+            label: b.label;
+            label-alt: b.label-alt;
+            alt: b.alt;
+            off: b.off;
+            clicked => { SettingsBridge.row-button(root.data.id, b.id); }
+        }
+    }
+}
+
+export component SettingsView inherits Rectangle {
+    out property <length> pane-x: fr.pane-x;
+    out property <length> pane-w: fr.pane-w;
+    out property <length> content-x: fr.content-x;
+    out property <length> content-w: fr.content-w;
+    out property <length> content-top: fr.content-top;
+    out property <length> find-y: fr.find-y;
+    out property <length> find-h: fr.find-h;
+    out property <length> rail-w: fr.rail-w;
+
+    // Focus a row's first control (the row must exist).
+    public function focus-row(id: string) {
+        SettingsBridge.focus-id = id;
+    }
+    public function focus-find() {
+        fr.focus-field();
+    }
+    public function focus-list() {
+        fr.focus-list();
+    }
+    // Asks rail item i for the focus; -1 clears the request so the next one fires again.
+    public function focus-rail(i: int) {
+        fr.focus-rail-index = i;
+    }
+
+    changed width => { root.report(); }
+    changed height => { root.report(); }
+    init => { root.report(); }
+    function report() {
+        SettingsBridge.pane-w = fr.pane-w;
+        SettingsBridge.pane-h = root.height;
+    }
+
+    fr := SetFrame {
+        width: parent.width;
+        height: parent.height;
+        rail: SettingsBridge.rail;
+        page-title: SettingsBridge.page-title;
+        narrow: SettingsBridge.narrow;
+        find-text <=> SettingsBridge.find-text;
+        searching: SettingsBridge.searching;
+        status-text: SettingsBridge.status-text;
+        nothing-text: SettingsBridge.nothing-text;
+        nothing-pre: SettingsBridge.nothing-pre;
+        nothing-query: SettingsBridge.nothing-query;
+        nothing-post: SettingsBridge.nothing-post;
+        hits: SettingsBridge.hits;
+        hits-h: SettingsBridge.hits-h;
+        hit-cursor: SettingsBridge.hit-cursor;
+        content-h: SettingsBridge.content-h;
+        scroll-y <=> SettingsBridge.scroll-y;
+        page-chosen(id) => { SettingsBridge.page-chosen(id); }
+        find-edited(t) => { SettingsBridge.find-edited(t); }
+        find-key(k, s) => { SettingsBridge.find-key(k, s); }
+        hit-chosen(i) => { SettingsBridge.hit-chosen(i); }
+        hit-key(k) => { SettingsBridge.hit-key(k); }
+        rail-key(k) => { SettingsBridge.rail-key(k); }
+        frame-resized(w, h) => {
+            root.report();
+            SettingsBridge.frame-resized(w, h);
+        }
+        escape-unhandled => { SettingsBridge.escape-unhandled(); }
+        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+
+        for section in SettingsBridge.sections: Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            // PT SettingsSection: the heading row is `mx-0.5`, 2 px in from each panel edge.
+            SetSectionHeading {
+                x: fr.content-x + 2px;
+                y: section.title-y;
+                width: fr.content-w - 4px;
+                title: section.title;
+                tag: section.tag;
+            }
+            // The heading lays its children out from the left, so the Save sits at the right edge here.
+            if section.action-save: SetSaveButton {
+                x: Px.snap(fr.content-x + fr.content-w - 2px - self.width);
+                y: Px.snap(section.title-y + (20px - self.height) / 2);
+                dirty: section.action-dirty;
+                title: section.action-title;
+                clicked => { SettingsBridge.save-clicked(section.id); }
+                tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+            }
+            SetPanel {
+                x: fr.content-x;
+                y: section.panel-y;
+                width: fr.content-w;
+                height: section.panel-h;
+                for row[i] in section.rows: Rectangle {
+                    x: Px.hair();
+                    y: Px.hair() + row.y;
+                    width: parent.width - 2 * Px.hair();
+                    height: row.h;
+                    if row.block == BlockKind.row: SetRowFrame {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        after-block: i > 0 && section.rows[i - 1].block != BlockKind.row;
+                        icon: row.icon;
+                        label: row.label;
+                        sub: row.sub;
+                        sub-tip: row.sub-tip;
+                        warn: row.warn;
+                        off: row.off;
+                        tap: row.tap;
+                        flash: row.flash;
+                        tapped => {
+                            if row.kind == SetKind.switch && !row.off {
+                                SettingsBridge.row-switch(row.id, !row.on);
+                            }
+                        }
+                        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                        RowControls { data: row; }
+                    }
+                    if row.block == BlockKind.wall: SetBlockFrame {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        pad: true;
+                        ThemeWallView {
+                            x: 0px;
+                            y: 14px;
+                            width: parent.width;
+                            cards: SettingsBridge.wall-cards;
+                            clip-h: SettingsBridge.wall-clip-h;
+                            full-h: SettingsBridge.wall-full-h;
+                            expanded: SettingsBridge.wall-expanded;
+                            toggle-aria: SettingsBridge.wall-toggle-aria;
+                            toggle-title: SettingsBridge.wall-toggle-title;
+                            still: SettingsBridge.still;
+                            picked(id) => { SettingsBridge.wall-pick(id); }
+                            edit(id) => { SettingsBridge.wall-edit(id); }
+                            toggled => { SettingsBridge.wall-toggle(); }
+                            tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+                        }
+                    }
+                    if row.block == BlockKind.about: SetBlockFrame {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        AboutCard {
+                            width: parent.width;
+                            name: row.label;
+                            line-one: row.sub;
+                            line-two: row.note;
+                        }
+                    }
+                    if row.block == BlockKind.slint: SetBlockFrame {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        SlintBadge {
+                            width: parent.width;
+                            open-url(u) => { SettingsBridge.row-button("slint", u); }
+                        }
+                    }
+                    if row.block == BlockKind.note: SetBlockFrame {
+                        width: parent.width;
+                        height: parent.height;
+                        first: i == 0;
+                        Text {
+                            x: 14px;
+                            width: parent.width - 28px;
+                            height: parent.height;
+                            text: row.note;
+                            font-family: Theme.font-ui;
+                            font-size: 12.5px;
+                            color: Theme.dim;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The test window: a SettingsView on sample bridge data (the test sets the bridge), and the overlays
+// placed the way AppWindow places them: the help panel, the editor, the question, the Select menu and
+// the colour popover, all over the rail and the pane.
+export component SettingsPreview inherits Window {
+    preferred-width: 1000px;
+    preferred-height: 604px;
+    background: Theme.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    out property <length> pane-x: view.pane-x;
+    out property <length> pane-w: view.pane-w;
+    out property <length> content-x: view.content-x;
+    out property <length> content-w: view.content-w;
+    out property <length> content-top: view.content-top;
+    out property <length> rail-w: view.rail-w;
+
+    public function focus-row(id: string) { view.focus-row(id); }
+    public function focus-find() { view.focus-find(); }
+
+    view := SettingsView {
+        width: parent.width;
+        height: parent.height;
+    }
+
+    HelpPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    ThemeEditor {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.editor-open;
+        wells: SettingsBridge.editor-wells;
+        preview: SettingsBridge.editor-preview;
+        well-edited(k, t) => { SettingsBridge.editor-well-edited(k, t); }
+        well-committed(k) => { SettingsBridge.editor-well-committed(k); }
+        well-swatch(k, x, y, w, h) => { SettingsBridge.editor-well-swatch(k, x, y, w, h); }
+        save => { SettingsBridge.editor-save(); }
+        cancel => { SettingsBridge.editor-cancel(); }
+        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+    }
+    AskThree {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.ask-open;
+        answered(n) => { SettingsBridge.ask-answered(n); }
+    }
+    SelectMenu {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.select-open;
+        options: SettingsBridge.select-options;
+        value: SettingsBridge.select-value;
+        menu-x: SettingsBridge.select-x;
+        menu-y: SettingsBridge.select-y;
+        menu-w: SettingsBridge.select-w;
+        menu-h: SettingsBridge.select-h;
+        highlight <=> SettingsBridge.select-highlight;
+        chosen(id) => { SettingsBridge.select-chosen(id); }
+        dismissed => { SettingsBridge.select-dismissed(); }
+        key(k) => { SettingsBridge.select-key(k); }
+    }
+    ColourPopover {
+        width: parent.width;
+        height: parent.height;
+        open: SettingsBridge.picker-open;
+        pop-x: SettingsBridge.picker-x;
+        pop-y: SettingsBridge.picker-y;
+        label: SettingsBridge.picker-label;
+        hue: SettingsBridge.picker-hue;
+        sat: SettingsBridge.picker-sat;
+        val: SettingsBridge.picker-val;
+        alpha: SettingsBridge.picker-alpha;
+        solid-colour: SettingsBridge.picker-solid;
+        start-colour: SettingsBridge.picker-start;
+        now-colour: SettingsBridge.picker-now;
+        hue-colour: SettingsBridge.picker-hue-colour;
+        alpha-on: SettingsBridge.picker-alpha-on;
+        alpha-disabled: SettingsBridge.picker-alpha-disabled;
+        dropper-on: SettingsBridge.picker-dropper-on;
+        format-name: SettingsBridge.picker-format;
+        sv-text: SettingsBridge.picker-sv-text;
+        hue-text: SettingsBridge.picker-hue-text;
+        alpha-text: SettingsBridge.picker-alpha-text;
+        sv-now: SettingsBridge.picker-sv-now;
+        hue-now: SettingsBridge.picker-hue-now;
+        alpha-now: SettingsBridge.picker-alpha-now;
+        sv-moved(x, y, k) => { SettingsBridge.picker-sv(x, y, k); }
+        hue-moved(x, k) => { SettingsBridge.picker-hue-moved(x, k); }
+        alpha-moved(x, k) => { SettingsBridge.picker-alpha-moved(x, k); }
+        slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
+        format-clicked => { SettingsBridge.picker-format-clicked(); }
+        dropper-clicked => { SettingsBridge.picker-dropper(); }
+        escape-pressed => { SettingsBridge.picker-escape(); }
+        outside-pressed => { SettingsBridge.picker-outside(); }
+        focus-left => { SettingsBridge.picker-focus-left(); }
+        tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
+    }
+}
