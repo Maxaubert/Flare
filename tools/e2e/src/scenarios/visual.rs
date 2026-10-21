@@ -238,10 +238,17 @@ fn ready(ctx: &mut Ctx, app: &mut App, tabs: usize) -> bool {
         println!("  note  {tabs} tabs were wanted, the app shows {seen:?}");
     }
     let id = front_id(app);
-    opened && wait_for_prompt(app, &id, Shell::Cmd, prompt_timeout(Shell::Cmd)) && {
-        pause(300);
-        true
-    }
+    opened
+        && wait_for_prompt(
+            app,
+            &id,
+            Shell::PowerShell,
+            prompt_timeout(Shell::PowerShell),
+        )
+        && {
+            pause(300);
+            true
+        }
 }
 
 // ---- the sidebar --------------------------------------------------------------------------------------
@@ -292,7 +299,6 @@ fn sidebar_cell(
     seed(
         &w.profile,
         &[
-            ("flare.term.shell", "cmd"),
             ("flare.window.tabLayout", "vertical"),
             ("flare.window.sidebar", "open"),
         ],
@@ -495,7 +501,7 @@ fn startup_cell(
     // The native scale: the app starts at the monitor's and the tour does not change it for this surface.
     let w = ctx.new_world();
     let g = gamma(&w);
-    let mut settings = vec![("flare.term.shell", "cmd")];
+    let mut settings: Vec<(&str, &str)> = Vec::new();
     if surface == "resume" {
         settings.push(("flare.window.tabLayout", "vertical"));
         settings.push(("flare.window.sidebar", "open"));
@@ -673,7 +679,7 @@ fn startup_timing(
     for i in 0..=cfg.runs {
         let w = ctx.new_world();
         let g = gamma(&w);
-        let mut settings = vec![("flare.term.shell", "cmd")];
+        let mut settings: Vec<(&str, &str)> = Vec::new();
         if surface == "resume" {
             settings.push(("flare.window.tabLayout", "vertical"));
             settings.push(("flare.window.sidebar", "open"));
@@ -708,7 +714,7 @@ fn startup_timing(
                 }
                 if st.len() >= want {
                     let id = st.front.clone().unwrap_or_default();
-                    if prompt_showing(&rows_text(&mut app, &id), Shell::Cmd) {
+                    if prompt_showing(&rows_text(&mut app, &id), Shell::PowerShell) {
                         prompt_ms = Some(began.elapsed().as_secs_f64() * 1000.0);
                     }
                 }
@@ -774,7 +780,7 @@ fn general_cell(
     let mut n = 0u32;
     let mut notes: Vec<Value> = Vec::new();
     let w = ctx.new_world();
-    seed(&w.profile, &[("flare.term.shell", "cmd")])?;
+    seed(&w.profile, &[])?;
     let g = gamma(&w);
     let mut app = start(
         ctx,
@@ -893,10 +899,7 @@ fn general_cell(
 
     // See-through: a second launch with the level stored.
     let w2 = ctx.new_world();
-    seed(
-        &w2.profile,
-        &[("flare.term.shell", "cmd"), ("flare.term.seeThrough", "40")],
-    )?;
+    seed(&w2.profile, &[("flare.term.seeThrough", "40")])?;
     // Prism Terminal's see-through frame is taken in its three-tab session, so this one has the same
     // three tabs (alpha, beta, gamma), not one.
     let g2 = gamma(&w2);
@@ -955,7 +958,6 @@ fn dictation_cell(
     seed(
         &w.profile,
         &[
-            ("flare.term.shell", "cmd"),
             (
                 "flare.dictation.hotkey",
                 r#"{"code":"AltRight","ctrl":false,"alt":false,"shift":false,"meta":false}"#,
@@ -1176,5 +1178,21 @@ mod tests {
             PathBuf::from("o").join("sidebar").join("225-gpu")
         );
         assert!(c.wants("sidebar") && !c.wants("general"));
+    }
+
+    /// Prism Terminal's frames are PowerShell ("PS C:\...>"), so the tour must not seed Flare to cmd (audit
+    /// shell-mismatch): the tour runs the default shell and waits for a PowerShell prompt.
+    #[test]
+    fn the_tour_runs_powershell_like_prism_terminal_not_cmd() {
+        let src = include_str!("visual.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !code.contains("\"flare.term.shell\""),
+            "the tour seeds a shell"
+        );
+        assert!(
+            !code.contains("Shell::Cmd"),
+            "the tour waits for a cmd prompt"
+        );
     }
 }

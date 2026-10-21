@@ -118,19 +118,19 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
   ms (its key goes through Playwright and the renderer's event loop). Both apps open the sidebar with the middle tab
   (beta) selected, so the frames show the same tab; Flare's cell checks it.
 
-Start-up (from process start; Flare's tabs and prompt times are wall clock from `CreateProcess`, Prism Terminal's are
+Start-up, both apps in PowerShell (shell-mismatch fix, 2026-10-21: the tour used to seed Flare to `cmd`, so its frames showed a `C:\...>` prompt and the Command Prompt help chip against Prism Terminal's `PS C:\...>` and PowerShell chip, and its start-up prompt was cmd's 156 / 835 ms; it now runs the default shell, as PT does, and waits for a `PS ...>` prompt; the 225 cells were re-taken, the 100 and 150 percent Flare cells still show the cmd run) (from process start; Flare's tabs and prompt times are wall clock from `CreateProcess`, Prism Terminal's are
 from `process.uptime()`, so a few ms apart in kind):
 
 | | first frame / paint | tabs there | prompt |
 |---|---|---|---|
 | Prism Terminal | 228 to 247 ms (resume 282 to 300) | 200 to 215 ms | 723 to 742 ms (resume 761 to 780) |
-| Flare software | 47 ms (resume 46) | 90 ms | 156 ms (resume 159) |
-| Flare GPU | 746 ms (resume 752) | 756 ms | 835 ms (resume 872) |
+| Flare software | 48 ms (resume 47) | 107 ms (resume 89) | 485 ms (resume 476) |
+| Flare GPU | 772 ms (resume 756) | 788 ms (resume 766) | 1153 ms (resume 1143) |
 
-- Flare GPU's first frame is late: `startup.trace` shows `backend` at 478 ms and the first frame at 746 ms, against 46 ms
+- Flare GPU's first frame is late: `startup.trace` shows `backend` at 483 ms and the first frame at 772 ms, against 48 ms
   on the software path. Until then the window is not shown at all (see below), so nothing blank is on the screen.
 - The pictures from outside (`startup/`, `resume/`): the window first comes on the screen (shown and not cloaked) at
-  about 788 to 795 ms on the GPU path and 124 to 125 ms on the software path, and its first picture there is already the UI in the
+  about 788 to 801 ms on the GPU path and 129 to 136 ms on the software path, and its first picture there is already the UI in the
   theme's colours, frameless and at its size (2655 x 1755). The black, light-framed and 2880 x 1497 pictures before
   that are copies of a window that is not shown yet (named `-hidden`; DWM never composes them). See "Audit V1" below.
   Prism Terminal's first picture is already its UI, because Playwright attaches after the page has loaded (180 ms), so
@@ -159,6 +159,7 @@ from `process.uptime()`, so a few ms apart in kind):
   tabs with the middle one (beta) selected and the vertical sidebar open (Flare's cell seeds `tabs.json` with
   `active: 1`, as PT's `prepResume` does, and checks the front tab). Start-up is one tab (alpha), resume three with
   beta in front, as before.
+- Shell: both apps run PowerShell (`PS C:\...>`); a test in `visual.rs` fails if the tour seeds a shell or waits for cmd again. PowerShell's prompt is slower than cmd's: Flare's prompt now arrives at 485 ms (software) and 1153 ms (GPU) against Prism Terminal's 723 to 742 ms, so the software path is ahead and the GPU path is behind, where the cmd numbers had Flare ahead on both.
 - Run: a release build, the monitor woken by a zero-distance mouse move, both tools at BelowNormal priority, one app
   at a time; Flare `visualTour` 233 checks, 0 failures, 342 s.
 

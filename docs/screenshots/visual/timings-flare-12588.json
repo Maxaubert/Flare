@@ -1,0 +1,282 @@
+{
+  "startup-gpu": {
+    "runs": [
+      {
+        "pipe_ms": 661.1002,
+        "tabs_ms": 787.4671,
+        "prompt_wall_ms": 1128.3813,
+        "main": 14.331,
+        "component": 630.9531000000001,
+        "shell_spawn": 767.1407999999999,
+        "render_setup": 693.6689,
+        "first_frame": 755.9247,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 662.1679,
+        "tabs_ms": 756.1008999999999,
+        "prompt_wall_ms": 1110.9660999999999,
+        "main": 15.5308,
+        "component": 626.2923999999999,
+        "shell_spawn": 755.0288,
+        "render_setup": 685.6514999999999,
+        "first_frame": 746.2505,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 688.3616999999999,
+        "tabs_ms": 781.8163000000001,
+        "prompt_wall_ms": 1157.342,
+        "main": 15.1077,
+        "component": 648.1403,
+        "shell_spawn": 780.799,
+        "render_setup": 707.9597,
+        "first_frame": 771.8139000000001,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 689.4801,
+        "tabs_ms": 791.5344,
+        "prompt_wall_ms": 1153.0466,
+        "main": 14.6612,
+        "component": 649.9675000000001,
+        "shell_spawn": 790.3922,
+        "render_setup": 715.9719,
+        "first_frame": 781.4943,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 714.2477,
+        "tabs_ms": 801.6624999999999,
+        "prompt_wall_ms": 1168.9694,
+        "main": 15.936800000000002,
+        "component": 665.2106,
+        "shell_spawn": 800.5702,
+        "render_setup": 727.8516999999999,
+        "first_frame": 790.4687,
+        "first_prompt": null
+      }
+    ],
+    "median": {
+      "pipe_ms": 688.3616999999999,
+      "tabs_ms": 787.4671,
+      "prompt_wall_ms": 1153.0466,
+      "main": 15.1077,
+      "component": 648.1403,
+      "shell_spawn": 780.799,
+      "render_setup": 707.9597,
+      "first_frame": 771.8139000000001,
+      "first_prompt": 0.0
+    }
+  },
+  "startup-software": {
+    "runs": [
+      {
+        "pipe_ms": 55.629999999999995,
+        "tabs_ms": 92.0646,
+        "prompt_wall_ms": 454.6838,
+        "main": 15.1904,
+        "component": 25.4297,
+        "shell_spawn": 91.0509,
+        "render_setup": null,
+        "first_frame": 47.4788,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 72.5195,
+        "tabs_ms": 106.7762,
+        "prompt_wall_ms": 474.3687,
+        "main": 14.8982,
+        "component": 24.9438,
+        "shell_spawn": 89.1885,
+        "render_setup": null,
+        "first_frame": 46.5205,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 74.146,
+        "tabs_ms": 112.2047,
+        "prompt_wall_ms": 484.8912,
+        "main": 17.4464,
+        "component": 28.0797,
+        "shell_spawn": 94.799,
+        "render_setup": null,
+        "first_frame": 50.2456,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 55.4099,
+        "tabs_ms": 94.5964,
+        "prompt_wall_ms": 487.0102,
+        "main": 15.4411,
+        "component": 25.7604,
+        "shell_spawn": 93.5869,
+        "render_setup": null,
+        "first_frame": 47.4952,
+        "first_prompt": 494.3045
+      },
+      {
+        "pipe_ms": 55.7318,
+        "tabs_ms": 112.2154,
+        "prompt_wall_ms": 498.5942,
+        "main": 16.1262,
+        "component": 27.3466,
+        "shell_spawn": 98.9638,
+        "render_setup": null,
+        "first_frame": 52.7045,
+        "first_prompt": 507.9873
+      }
+    ],
+    "median": {
+      "pipe_ms": 55.7318,
+      "tabs_ms": 106.7762,
+      "prompt_wall_ms": 484.8912,
+      "main": 15.4411,
+      "component": 25.7604,
+      "shell_spawn": 93.5869,
+      "render_setup": 0.0,
+      "first_frame": 47.4952,
+      "first_prompt": 501.1459
+    }
+  },
+  "resume-gpu": {
+    "runs": [
+      {
+        "pipe_ms": 663.8497,
+        "tabs_ms": 762.8464,
+        "prompt_wall_ms": 1141.0249999999999,
+        "main": 14.9465,
+        "component": 624.8515,
+        "shell_spawn": 761.6227,
+        "render_setup": 681.5234999999999,
+        "first_frame": 752.7967,
+        "first_prompt": 1174.6536
+      },
+      {
+        "pipe_ms": 661.6592,
+        "tabs_ms": 768.0962,
+        "prompt_wall_ms": 1143.3445,
+        "main": 15.4004,
+        "component": 632.7174,
+        "shell_spawn": 767.436,
+        "render_setup": 688.6577000000001,
+        "first_frame": 758.7123,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 662.2819,
+        "tabs_ms": 766.1044999999999,
+        "prompt_wall_ms": 1147.9371999999998,
+        "main": 14.1355,
+        "component": 631.3656,
+        "shell_spawn": 764.9580000000001,
+        "render_setup": 687.9131000000001,
+        "first_frame": 756.2391,
+        "first_prompt": 1149.5092
+      },
+      {
+        "pipe_ms": 662.9438,
+        "tabs_ms": 768.248,
+        "prompt_wall_ms": 1132.3242,
+        "main": 14.6725,
+        "component": 632.6684,
+        "shell_spawn": 766.9559,
+        "render_setup": 689.2157,
+        "first_frame": 758.0479,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 661.475,
+        "tabs_ms": 764.4442,
+        "prompt_wall_ms": 1149.7718,
+        "main": 14.615,
+        "component": 626.3833,
+        "shell_spawn": 763.2387,
+        "render_setup": 683.9933,
+        "first_frame": 753.9922,
+        "first_prompt": 1163.0648
+      }
+    ],
+    "median": {
+      "pipe_ms": 662.2819,
+      "tabs_ms": 766.1044999999999,
+      "prompt_wall_ms": 1143.3445,
+      "main": 14.6725,
+      "component": 631.3656,
+      "shell_spawn": 764.9580000000001,
+      "render_setup": 687.9131000000001,
+      "first_frame": 756.2391,
+      "first_prompt": 1163.0648
+    }
+  },
+  "resume-software": {
+    "runs": [
+      {
+        "pipe_ms": 55.9437,
+        "tabs_ms": 89.3357,
+        "prompt_wall_ms": 470.6648,
+        "main": 15.3968,
+        "component": 25.3606,
+        "shell_spawn": 88.1513,
+        "render_setup": null,
+        "first_frame": 47.092299999999994,
+        "first_prompt": 476.299
+      },
+      {
+        "pipe_ms": 55.912499999999994,
+        "tabs_ms": 88.8755,
+        "prompt_wall_ms": 486.34490000000005,
+        "main": 15.1433,
+        "component": 24.9131,
+        "shell_spawn": 87.588,
+        "render_setup": null,
+        "first_frame": 46.4599,
+        "first_prompt": 485.6356
+      },
+      {
+        "pipe_ms": 55.4088,
+        "tabs_ms": 88.6179,
+        "prompt_wall_ms": 458.29150000000004,
+        "main": 14.6086,
+        "component": 24.615,
+        "shell_spawn": 87.45360000000001,
+        "render_setup": null,
+        "first_frame": 46.9314,
+        "first_prompt": null
+      },
+      {
+        "pipe_ms": 54.8102,
+        "tabs_ms": 86.6235,
+        "prompt_wall_ms": 477.6132,
+        "main": 14.0984,
+        "component": 24.7453,
+        "shell_spawn": 85.4035,
+        "render_setup": null,
+        "first_frame": 45.8675,
+        "first_prompt": 474.316
+      },
+      {
+        "pipe_ms": 55.1101,
+        "tabs_ms": 90.98349999999999,
+        "prompt_wall_ms": 475.8443,
+        "main": 14.5898,
+        "component": 24.572,
+        "shell_spawn": 89.6516,
+        "render_setup": null,
+        "first_frame": 46.6401,
+        "first_prompt": null
+      }
+    ],
+    "median": {
+      "pipe_ms": 55.4088,
+      "tabs_ms": 88.8755,
+      "prompt_wall_ms": 475.8443,
+      "main": 14.6086,
+      "component": 24.7453,
+      "shell_spawn": 87.588,
+      "render_setup": 0.0,
+      "first_frame": 46.6401,
+      "first_prompt": 476.299
+    }
+  }
+}
