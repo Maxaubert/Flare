@@ -1,6 +1,6 @@
 # Visual comparison: Flare and Prism Terminal (audit 2026-10-20)
 
-Captured 2026-10-20 and re-captured whole 2026-10-21 (branch head `5aa8c7f`, a release build, run at BelowNormal priority) on the owner's PC (Windows 11, GPU and software renderers; the monitor refreshes faster than
+Captured 2026-10-20 and re-captured whole 2026-10-21 (built from `5aa8c7f`, committed in `6d96ef8`; a release build, run at BelowNormal priority) on the owner's PC (Windows 11, GPU and software renderers; the monitor refreshes faster than
 60 Hz). Flare is the audit-fixes build (0.1.0 + the tour's probes); Prism Terminal is the installed 0.58.0, run from a
 COPY of its folder with its own profile (see "Safety"). Every number is in `numbers.md` (made by
 `tools/visual/summarize.py`) and in each cell's `numbers.json`; the pictures are in each cell's `frames/` (not
@@ -45,7 +45,7 @@ switches, see-through 40), `dictation` (Flare only: the pill listening, with liv
   compares the fractional `visualViewport` and `shot()` re-sizes before a picture. Measured on the re-taken general
   frames (06-settings-dictation): the buttons' ink right edge is 2207 for both at 225 percent (was 2207 / 2212), 1471
   / 1471 at 150 (1471 / 1473), 980 / 981 at 100 (one pixel of glyph rounding); the settings card's right edge is
-  2150 for both at 225 (was 2150 / 2155). The sidebar PT cells were not re-taken (their numbers are in css px).
+  2150 for both at 225 (was 2150 / 2155). The sidebar PT cells were re-taken later the same day (see the recorder note below); their numbers are in css px.
   Dictation page pickers (V12, 2026-10-21, general 225-gpu re-taken): the brightest pixel in the Microphone and Spoken
   language picker boxes is 116 for both, the dimmed labels 116 for both, the Test button 73 for both (Flare was 72 / 72
   against PT's 115 / 115 before: the picker dimmed twice, once with the row and once on its own).
@@ -60,8 +60,8 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
 
 | | frames | longest gap | t50 / t90 / t99 | curve error |
 |---|---|---|---|---|
-| Prism Terminal, 100 / 150 / 225 % (2026-10-21 re-capture) | 11 to 38 | 18.7 to 19.1 ms | 7 to 8 / 62 / 131 to 132 ms | 0.002 to 0.008 |
-| Prism Terminal, all scales (2026-10-20 capture, machine not throttled) | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
+| Prism Terminal, 100 / 150 / 225 % (2026-10-21 re-capture) | 11 | 18.5 to 19.0 ms | 7 to 8 / 62 / 131 to 132 ms | 0.002 to 0.008 |
+| Prism Terminal, all scales (2026-10-20 capture): INVALID, a recorder artefact (see below), not to be quoted | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
 | Flare GPU, 100 / 150 / 225 % (2026-10-21, re-taken after V3-gpu-snapshots) | 7 to 8 | 67.9 to 71.4 ms | 9 to 11 / 67 to 76 / 140 to 149 ms | 0.004 to 0.007 |
 | Flare software, 100 / 150 / 225 % (2026-10-21, re-taken after V3-gpu-snapshots) | 13 | 17.0 to 17.8 ms | 9 to 10 / 63 to 64 / 133 to 134 ms | 0.001 to 0.008 |
 | Flare GPU before V3 (2026-10-20, same machine state) | 7 | 67 to 71 ms | 8 to 27 / 66 to 78 / 139 to 153 ms | 0.116 to 0.206 |
@@ -99,7 +99,8 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
   frames at 17 ms stand. To get a GPU baseline, run the tour when DwmFlush returns in about 7 ms
   ([W.D]::DwmFlush() in a loop, 60 calls under 0.6 s). The "one frame behind Prism Terminal" snapshot offsets (collapse
   142/84/54/33 against 125/69/38/21) were the old pictures, read when a slow GPU snapshot ended; since
-  V3-gpu-snapshots the pictures sit on the curve at the offset (125, 69, 38, 21) and match.- Sidebar pictures (V3-gpu-snapshots, 2026-10-21): the GPU sheets used to read slot 154, 160, 16, 164, 18, 159 for offsets 0 to
+  V3-gpu-snapshots the pictures sit on the curve at the offset (125, 69, 38, 21) and match.
+- Sidebar pictures (V3-gpu-snapshots, 2026-10-21): the GPU sheets used to read slot 154, 160, 16, 164, 18, 159 for offsets 0 to
   100 ms and the slide seemed to open and close between pictures. Cause, measured with a frame log per picture: the
   harness asked for a picture at an offset, but a GPU snapshot blocks the UI thread for 30 to 90 ms (29 to 87 ms measured)
   while the slide runs on, and the slot is read when the snapshot ENDS. The frames underneath were monotonic (220 at 73 ms,
@@ -112,14 +113,14 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
   0, 95, 151, 182, 199, 208, 216, 219, 220, 220 at 100 % and 225 %. Each cell's `numbers.json` keeps `snapshot_ms` and the
   `frames_since_key` of each picture. The GPU frame cadence itself (15 a second, 68 to 70 ms gaps) is unchanged and is
   still the machine state noted above, not something this fix claims to change.
-- The terminal keeps its width after a round trip (102 columns before and after), and goes 102 to 131 collapsed. The
+- The terminal keeps its width after a round trip (102 columns before and after), and goes 102 to 131 collapsed at 225 % (96 to 124 at 100 %, 105 to 135 at 150 %). The
   snapshots show the terminal text moving with the slot edge in both apps; no jump in the tab strip or the rows.
 - Input to the first frame that moved: Flare GPU 21.6 to 23.5 ms, Flare software 16.1 to 17.1 ms, Prism Terminal 23 to 33
   ms (its key goes through Playwright and the renderer's event loop). Both apps open the sidebar with the middle tab
   (beta) selected, so the frames show the same tab; Flare's cell checks it.
 
 Start-up, both apps in PowerShell (shell-mismatch fix, 2026-10-21: the tour used to seed Flare to `cmd`, so its frames showed a `C:\...>` prompt and the Command Prompt help chip against Prism Terminal's `PS C:\...>` and PowerShell chip, and its start-up prompt was cmd's 156 / 835 ms; it now runs the default shell, as PT does, and waits for a `PS ...>` prompt; the 225 cells were re-taken, the 100 and 150 percent Flare cells still show the cmd run) (from process start; Flare's tabs and prompt times are wall clock from `CreateProcess`, Prism Terminal's are
-from `process.uptime()`, so a few ms apart in kind):
+from `process.uptime()`, so a few ms apart in kind; PT's tabs are there before its first contentful paint because the tab strip is in the DOM before Chromium paints it; all of these are in the last table of `numbers.md`):
 
 | | first frame / paint | tabs there | prompt |
 |---|---|---|---|
@@ -244,7 +245,7 @@ over a painted window. It is not in the window. Two faults of the copier, both f
   After: the pill's left edge is 711.0 at 100 percent on both apps.
 - The theme preview's text sat 1.3 to 1.8 css px under PT's baselines; line 2's baseline is now at 473.0 on both at
   100 percent (472.3 at 300 percent).
-- FLARE_VISUAL_CELLS=300-gpu runs the 300 percent cell (opt-in; ll keeps the three PT also has).
+- FLARE_VISUAL_CELLS=300-gpu runs the 300 percent cell (opt-in; `all` keeps the three PT also has).
 - See-through 40 (audit re-check): Flare GPU's ground read (14,14,14, alpha 153) against PT's (23,23,23, alpha 153)
   because Slint's snapshot is premultiplied and the PNG says straight. The window itself was right (the grid is
   un-premultiplied once, in `straight.wgsl`); only the picture was wrong. `slint_snapshot` now un-premultiplies, and the
