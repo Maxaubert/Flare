@@ -141,3 +141,11 @@ variable directly (`no_source_file_reads_an_e2e_variable_directly`).
 ## The visual tour (audit 2026-10-20)
 
 `visualTour` is an opt-in scenario (`OPT_IN`; a plain run never picks it, a filter that names it does) that captures Flare's start-up, session resume, sidebar slide and a general pass at 100, 150 and 225 percent on both renderers into `docs/screenshots/visual/`, with per-frame numbers from the `frames.series` and `sidebar.anim` probes. `tools/pt-shot/pt-visual.mjs` captures Prism Terminal from a copy of its folder, `tools/visual/summarize.py` makes the sheets and tables. How to run it and what it found: `docs/screenshots/visual/README.md`.
+
+## Panel scenario (Surfaces stage 1)
+
+`panelImage` (`tools/e2e/src/scenarios/panel.rs`) prints a picture path and a text path, clicks them, and checks the panel
+slot at 100 and 225 percent (the window is 1000 by 640 css px at both): the slot against the layout maths (the
+`panel.state` probe reports both), the painted pixels, the 1:1 zoom, Ctrl+Shift+P and Ctrl+Shift+O, the splitter, the
+overlay flag, the close button, and that the terminal refits and answers. The probe is `panel.state`; the `ui.rect` names
+are `panel`, `splitter`, `panel-body`, `panel-image` and `panel-close`. Docs for the port: `docs/surfaces/`.

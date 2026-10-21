@@ -16,6 +16,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - Find in scrollback (Ctrl+F, Ctrl+Shift+F) with highlights, the count and wrap-around.
 - Links: web links and OSC 8 links, and existing paths, painted and opened by a left click through an allowlist.
 - A terminal right-click menu that fits what was clicked.
+- Panels: a click on a path to a picture or a text file shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
 
 Details and the tests that hold each one: [docs/features.md](docs/features.md).
 
@@ -56,6 +57,7 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `cosmic-text`: text shaping and layout for the glyph rasteriser (brings in `swash` for glyph bitmaps).
 - `unicode-width`: the display width of each character, so wide cells take two columns.
 - `png`: writes the `--screenshot` image.
+- `image` 0.25.10 (MIT OR Apache-2.0; default features off, only png, jpeg, gif, bmp, webp and ico): decodes the pictures a panel shows, on a worker thread (Surfaces stage 1). `png` and `jpeg` were already in the build through Slint; the others add `gif` and its small helpers.
 - `pollster`: blocks on wgpu's async setup from synchronous startup code.
 - `bytemuck`: casts glyph and vertex data to bytes for GPU upload.
 - `log`: the logging facade used across the crates.

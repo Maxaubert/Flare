@@ -3805,12 +3805,12 @@ impl ChordTarget for Target<'_> {
         self.0.open_system_menu();
     }
 
-    fn toggle_panel(&mut self) -> bool {
-        self.0.toggle_front_panel()
+    fn toggle_panel(&mut self) {
+        self.0.toggle_front_panel();
     }
 
-    fn focus_panel(&mut self) -> bool {
-        self.0.move_panel_focus()
+    fn focus_panel(&mut self) {
+        self.0.move_panel_focus();
     }
 }
 
@@ -5289,8 +5289,9 @@ mod tests {
     #[test]
     fn the_close_button_and_the_toggle_chord_close_and_bring_the_panel_back() {
         let (f, _h, _) = live(Opts::default());
-        // Nothing to toggle: the chord is not taken, so the shell hears it.
-        assert_ne!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        // Nothing to toggle: the chord is still the app's, so the shell never hears it.
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_open());
         show_text(&f, "a.txt", "a\nb");
         f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
         assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
@@ -5308,8 +5309,9 @@ mod tests {
     fn the_focus_chord_moves_the_keys_both_ways_and_escape_gives_them_back() {
         let (f, _h, _) = live(Opts::default());
         f.h.activate();
-        // No panel: not taken.
-        assert_ne!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        // No panel: nothing moves, and the shell does not hear it.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_has_focus());
         show_text(&f, "a.txt", "a\nb\nc");
         f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
         assert!(!f.h.comp.get_panel_has_focus());
