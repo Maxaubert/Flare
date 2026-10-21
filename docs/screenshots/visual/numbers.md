@@ -51,4 +51,10 @@
 | flare startup-software | 47.5 | 90.4 (wall, from CreateProcess) | 156.0 (wall) |
 | flare resume-gpu | 752.3 | 762.2 (wall, from CreateProcess) | 872.0 (wall) |
 | flare resume-software | 46.5 | 89.1 (wall, from CreateProcess) | 158.8 (wall) |
+| startup-100-pt | 246.7 | 212.6 | 730.8 |
+| resume-100-pt | 300.3 | 204.4 | 779.8 |
+| startup-150-pt | 240.5 | 215.4 | 722.8 |
+| resume-150-pt | 281.9 | 199.6 | 761.4 |
+| startup-225-pt | 228.4 | 214.1 | 742.1 |
+| resume-225-pt | 283.0 | 201.5 | 770.5 |
 

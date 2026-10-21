@@ -382,3 +382,27 @@ fn a_row_reports_its_look_with_the_mark_and_its_buttons() {
         assert_eq!(a.b1_id.as_str(), "", "scale {scale}: no second button");
     }
 }
+
+#[test]
+fn a_dimmed_row_does_not_dim_the_microphone_picker_a_second_time() {
+    // PT draws the microphone picker at the dimmed label brightness: the row's group dim only, no 50 percent of
+    // its own (audit V12, frames 06-settings-dictation, 115 against the Test button's 72).
+    for scale in SCALES {
+        let h = harness(scale);
+        let c = &h.comp;
+        let at = |f: &Frame| {
+            f.px(
+                dev(scale, c.get_select_x() + 6.0),
+                dev(scale, c.get_track_y() + 3.0),
+            )
+        };
+        let live = at(&h.render());
+        c.set_disabled(true);
+        h.advance(0);
+        let off = at(&h.render());
+        assert_eq!(
+            live, off,
+            "scale {scale}: the picker's own pixels do not change when the row dims (the row's group does that)"
+        );
+    }
+}
