@@ -840,21 +840,25 @@ mod tests {
             let mut new = Rasterizer::new(DEFAULT_FAMILIES, scale);
             assert_eq!(old.family(), new.family());
             let mut checked = 0;
+            let mut differing = Vec::new();
             // Control characters (the sample holds raw ESC bytes) draw no glyph: a terminal never rasterises
-            // them, and what a font puts at .notdef depends on which fonts the machine has installed.
+            // them. On a machine whose installed fonts cover one (the CI runner does U+001B), the all-fonts
+            // build finds that font and the lazy catalogue fallback does not consult it, so they differ there.
+            // Every printable character is compared, and all differences are listed, not just the first.
             for ch in text
                 .chars()
                 .filter(|c| !c.is_whitespace() && !c.is_control())
             {
                 let k = key(&ch.to_string());
-                assert_eq!(
-                    glyph_settled(&mut old, &k),
-                    glyph_settled(&mut new, &k),
-                    "U+{:04X} differs at scale {scale}",
-                    ch as u32
-                );
+                if glyph_settled(&mut old, &k) != glyph_settled(&mut new, &k) {
+                    differing.push(format!("U+{:04X}", ch as u32));
+                }
                 checked += 1;
             }
+            assert!(
+                differing.is_empty(),
+                "differ at scale {scale}: {differing:?}"
+            );
             assert!(checked > 100);
             assert!(new.face_count() < old.face_count());
         }

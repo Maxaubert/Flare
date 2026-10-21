@@ -122,7 +122,7 @@ impl Fx {
         };
         let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
-        // Pinned: the runner's Windows "show animations" switch must not decide a test.
+        // Pinned: the runner's Windows "show animations" switch must not decide the clock or the marks (the help panel and chrome motion still read the OS).
         ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         // The look and the font, as the window glue makes them over the same store.
         let grid = Rc::new(RefCell::new(GridHost::new(

@@ -123,6 +123,7 @@ impl Fx {
     /// Each comes from a worker thread, so on a slow machine one lands whenever it likes; unwaited, it
     /// reaches a later pump in the middle of a flow, rebuilds the page and takes the keyboard focus
     /// off the rail (the runner failed the rail test that way). Every flow now starts after both.
+    /// KNOWN APP BUG this works around: in the real app a late shell list or verb answer (or any pref change\n    /// from elsewhere) rebuilds the open page via refresh_if_visible and drops the rail focus; fix it in\n    /// settings_ctl.rs (keep focus across a refresh), then this wait can go.
     fn settle(&self) {
         let (mut shells, mut verb) = (false, false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

@@ -1,0 +1,5 @@
+# The slowest-frame budget test measures wall-clock latency of the UI thread, which any other test
+# running at the same time on a small runner inflates. It takes every slot, so it runs alone.
+[[profile.default.overrides]]
+filter = 'test(find_and_a_big_scrollback_never_hold_the_window)'
+threads-required = "num-cpus"

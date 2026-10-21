@@ -209,7 +209,7 @@ impl Fx {
         let h = Harness::new(scale, css.0, css.1, || AppWindow::new().unwrap());
         h.comp.set_grid_image(grid_image());
         let ctl = AppCtl::new(&h.comp, deps);
-        // Pinned: the runner's Windows "show animations" switch must not decide a test.
+        // Pinned: the runner's Windows "show animations" switch must not decide the clock or the marks (the help panel and chrome motion still read the OS).
         ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         // The window glue (Task 30b) in miniature: the grid size reaches the controller, cells
         // are 8 x 16 device pixels, and the three window buttons are counted.

@@ -837,7 +837,7 @@ mod flow {
             };
             let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
             let ctl = AppCtl::new(&h.comp, deps);
-            // Pinned: the runner's Windows "show animations" switch must not decide a test.
+            // Pinned: the runner's Windows "show animations" switch must not decide the clock or the marks (the help panel and chrome motion still read the OS).
             ctl.borrow_mut().set_animations_source(Rc::new(|| true));
             *inputs_cell.borrow_mut() = Some(ctl.borrow().decor_inputs());
             // The window glue in miniature: the grid host sizes itself, paints, and tells the controller.
