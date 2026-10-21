@@ -22,6 +22,7 @@ pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
 pub mod settings_d;
+pub mod settings_live;
 pub mod strip;
 pub mod update;
 pub mod vertical;
@@ -504,6 +505,12 @@ pub const ALL: &[Scenario] = &[
         group: "dpi",
         run: dpi::resize_edges,
         limit_secs: 120,
+    },
+    Scenario {
+        name: "settingsLive",
+        group: "settings_d",
+        run: settings_live::settings_live,
+        limit_secs: 180,
     },
 ];
 

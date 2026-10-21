@@ -458,6 +458,37 @@ impl Fx {
         ids
     }
 
+    /// The Settings tab, opened in front over the tabs (the real controller over the same store).
+    fn open_settings(&self) -> Rc<RefCell<crate::settings_ctl::SettingsCtl>> {
+        let post: Post = {
+            let q = self.q.clone();
+            Arc::new(move |m| q.lock().unwrap().push_back(m))
+        };
+        let clock = self.clock.clone();
+        let settings = crate::settings_ctl::SettingsCtl::new(
+            &self.h.comp,
+            crate::settings_scene::deps(&self.prefs, post, Rc::new(move || clock.get())),
+        );
+        {
+            let mut c = self.ctl.borrow_mut();
+            c.set_settings(settings.clone());
+            c.model_mut().open_settings();
+            c.refresh();
+        }
+        self.pump();
+        assert_eq!(self.h.comp.get_front_kind(), 1, "Settings is in front");
+        settings
+    }
+
+    /// A Settings switch, as its control fires it.
+    fn settings_switch(&self, row: &str, on: bool) {
+        self.h
+            .comp
+            .global::<crate::SettingsBridge>()
+            .invoke_row_switch(row.into(), on);
+        self.pump();
+    }
+
     /// The user looks at tab `i`: it comes to the front and the window is watched.
     fn visit(&self, i: usize) {
         let id = self.ids()[i].clone();
@@ -914,6 +945,51 @@ fn finished_is_a_flowing_rainbow_by_default_plain_when_off_and_off_counts_nothin
         Some(None),
         "the badge is cleared"
     );
+}
+
+/// The marks and the taskbar count follow their Settings rows while Settings stays open (owner bug
+/// 2026-10-21, "some settings dont apply instantly"; Prism Terminal applies every row at once).
+#[test]
+fn the_mark_rows_and_the_taskbar_count_apply_while_settings_is_open() {
+    for s in SCALES {
+        let f = Fx::with(
+            Opts {
+                scale: s,
+                ..Opts::default()
+            },
+            |p| {
+                LookStore::new(p.clone()).set_agent_indicator(AgentIndicator::Minimal);
+            },
+        );
+        f.tabs(&["C:\\a", "C:\\b"]);
+        f.visit(0);
+        f.say("C:\\b", Q);
+        f.pump_until("question", |f| f.row(1).mark_state == 2);
+        assert_eq!(
+            f.badge.last().map(|b| b.1),
+            Some("1 tab needs a look".to_string()),
+            "scale {s}"
+        );
+        let _settings = f.open_settings();
+        // The taskbar count off: the overlay goes at once.
+        f.settings_switch("taskbar-badge", false);
+        assert_eq!(f.h.comp.get_front_kind(), 1, "scale {s}: Settings stays");
+        assert_eq!(
+            f.badge.last().map(|b| b.0),
+            Some(None),
+            "scale {s}: the count left the taskbar with Settings open"
+        );
+        // And back on: it comes back at once.
+        f.settings_switch("taskbar-badge", true);
+        assert!(
+            f.badge.last().is_some_and(|b| b.0.is_some()),
+            "scale {s}: the count is back with Settings open"
+        );
+        // The question mark off: the tab's mark goes at once.
+        f.settings_switch("agent-question-on", false);
+        assert_eq!(f.row(1).mark_state, 0, "scale {s}: the mark went");
+        assert_eq!(f.h.comp.get_front_kind(), 1, "scale {s}: Settings stays");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

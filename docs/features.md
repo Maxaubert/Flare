@@ -417,6 +417,19 @@ Prism Terminal's, measured from its Tailwind classes and its layout (Appendix B 
 cards, a section heading, one panel of rows, 32 px icon tiles, one line of subtext, hairlines that start after
 the icon. Every size is held to a layout test (`layout::rows_match_prism_terminals_measured_boxes`).
 
+- **Every row applies at once, Settings still open (owner bug 2026-10-21).** As in Prism Terminal, a change
+  reaches the live window without leaving Settings: Tab position moves the tabs to the side or the top, the
+  look rows (theme, colours, see through, Panel edges) are worn, the terminal font and size reach the grid, the
+  marks and the taskbar count follow their switches, Command help goes, the key rows hold for the next key and
+  Detailed logging switches. The cause was the tab view reading its own rows (the tab position, the taskbar
+  count) only on its next refresh, which closing Settings caused; the controller now listens to every row key
+  the look, the help panel and dictation do not own and refreshes once per turn (`AppCtl::listen_to_rows`).
+  Kept as Prism Terminal has them: the default shell and Exact status from Claude Code apply to terminals
+  opened after the change, the folder for new tabs to the next new tab. Held by `ui_tests::settings_live::*`
+  (a test per row class at 100 to 300 percent, plus `every_other_row_key_reaches_the_main_window`, which
+  makes a row added later live too), `the_mark_rows_and_the_taskbar_count_apply_while_settings_is_open`, and
+  the e2e `settingsLive` (Tab position both ways and Panel edges, read from the main window with Settings in
+  front, at 100 percent and again after a move to a 225 percent monitor).
 - **Find a setting.** The index is built from the same row tables the pages draw, so a row that is not drawn on
   this PC is not indexed (the GPU row needs NVIDIA; the dictation rows wait for M8). Words match by prefix with
   accents folded, ranked label first. Choosing a result switches page, scrolls the row to the middle, flashes it

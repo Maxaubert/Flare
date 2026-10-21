@@ -812,8 +812,6 @@ pub fn run_window(
     // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
     let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
-    // A font setting changed: the grid takes the new face and size (Task 27).
-    let mut _font_sub = None;
     // The Explorer verb (reconciled on a worker after the restore) and the update engine (started
     // after the window is shown), both made with the controller (M9 Task 32).
     let mut verb_switch: Option<Arc<flare_win::verb_switch::VerbSwitch>> = None;
@@ -1093,20 +1091,8 @@ pub fn run_window(
             FontCtl::new(LookStore::new(prefs.clone()), host.clone())
                 .with_overrides(args.look.font.clone(), args.look.font_pct),
         );
-        // untimed: the font subscriber only queues one event-loop call and returns at once
-        _font_sub = Some(LookStore::new(prefs.clone()).on_look_change(|| {
-            let queued = slint::invoke_from_event_loop(|| {
-                let target = APP_CTL.with(|cell| cell.borrow().clone());
-                if let Some((rc, _)) = target
-                    && let Ok(mut c) = rc.try_borrow_mut()
-                {
-                    c.apply_font();
-                }
-            });
-            if queued.is_err() {
-                log::debug!("font: event loop closed");
-            }
-        }));
+        // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
+        // wear the new face and size, Settings open or not.
         stores = Some((tabs_store, window_store, prefs));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each

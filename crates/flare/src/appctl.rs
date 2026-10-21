@@ -120,6 +120,9 @@ pub enum UiMsg {
     Term(TermMsgBox),
     /// The theme, the indicator, a colour pick or an attention switch changed.
     LookChanged,
+    /// A setting the tab view reads changed (the tab position, the keys, the taskbar count...): the
+    /// view refreshes at once, Settings open or not (owner bug 2026-10-21). One per turn.
+    PrefsChanged,
     /// A worker's answer or a setting change for the Settings controller (Task 41).
     Settings(SettingsMsg),
     /// A command help setting changed (the switch, the shell chip or the panel width).
@@ -388,6 +391,10 @@ pub struct AppCtl {
     /// The rainbow switch `marks` was made with.
     marks_rainbow: bool,
     _look_subs: Vec<Subscription>,
+    /// The listeners of every other key a Settings row stores, and the flag that makes many
+    /// changes in one turn one `PrefsChanged`.
+    _prefs_subs: Vec<Subscription>,
+    prefs_dirty: Arc<AtomicBool>,
     /// The mark clock (Task 29).
     clock: MarkClock,
     /// Windows' "animation effects" switch; tests inject it.
@@ -675,6 +682,8 @@ impl AppCtl {
                 on_agent_look_change(&prefs, on_change),
             ]
         };
+        let prefs_dirty = Arc::new(AtomicBool::new(false));
+        let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
             let clock = Rc::clone(&deps.clock);
@@ -740,6 +749,8 @@ impl AppCtl {
             marks,
             marks_rainbow,
             _look_subs: look_subs,
+            _prefs_subs: prefs_subs,
+            prefs_dirty,
             clock: MarkClock::new(),
             animations: Rc::new(crate::e2e::animations_enabled),
             minimised: false,
@@ -773,6 +784,40 @@ impl AppCtl {
         Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
         rc
+    }
+
+    /// Every key a Settings row stores that the look, the help panel and dictation do not listen to
+    /// themselves (the tab position, the sidebar, the keys, the taskbar count, the shell, the folder
+    /// for new tabs...): a change posts one `PrefsChanged` per turn, and the view refreshes at once.
+    /// Before this the view read them only on its next refresh, so the tab position waited for
+    /// Settings to close (owner bug 2026-10-21). Prism Terminal applies every row at once.
+    fn listen_to_rows(
+        prefs: &PrefStore,
+        post: &Post,
+        dirty: &Arc<AtomicBool>,
+    ) -> Vec<Subscription> {
+        let owned: HashSet<&str> = flare_settings::look::LOOK_KEYS
+            .iter()
+            .chain(flare_settings::agent_prefs::AGENT_LOOK_KEYS.iter())
+            .chain(flare_settings::help_prefs::HELP_KEYS.iter())
+            .chain(flare_dictation::prefs::KEYS.iter())
+            .copied()
+            .collect();
+        let keys: std::collections::BTreeSet<&str> = flare_settings::rows::all_rows()
+            .flat_map(|r| r.keys.iter().copied())
+            .filter(|k| !owned.contains(k))
+            .collect();
+        keys.into_iter()
+            .map(|k| {
+                let post = Arc::clone(post);
+                let dirty = Arc::clone(dirty);
+                prefs.on_change(k, move || {
+                    if !dirty.swap(true, Ordering::SeqCst) {
+                        post(UiMsg::PrefsChanged);
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Makes the update controller over this window (M9 Task 30). The engine is built by the glue
@@ -1603,13 +1648,22 @@ impl AppCtl {
             .set_rainbow(ModelRc::new(VecModel::from(marks.rainbow.clone())));
     }
 
-    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours.
+    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours, and the
+    /// grid wears the terminal font and size in force (a no-op when they did not change).
     pub fn on_look_changed(&mut self) {
         self.marks = compute_marks(&self.prefs);
         self.marks_rainbow = agent_rainbow(&self.prefs);
         if let Some(app) = self.app() {
             Self::push_rainbow(&app, &self.marks);
         }
+        self.apply_font();
+        self.refresh();
+    }
+
+    /// A setting the tab view reads changed: the view refreshes now (the coalescing flag is cleared
+    /// first, so a change made by the refresh itself is heard again).
+    pub fn on_prefs_changed(&mut self) {
+        self.prefs_dirty.store(false, Ordering::SeqCst);
         self.refresh();
     }
 
@@ -3393,6 +3447,7 @@ impl AppCtl {
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
             UiMsg::LookChanged => self.on_look_changed(),
+            UiMsg::PrefsChanged => self.on_prefs_changed(),
             UiMsg::Settings(m) => {
                 if let Some(s) = self.settings.clone()
                     && let Ok(mut s) = s.try_borrow_mut()
