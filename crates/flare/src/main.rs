@@ -4,6 +4,8 @@ mod backend;
 mod config;
 mod headless;
 mod host;
+mod keymap;
+mod live;
 mod memory;
 mod window;
 
@@ -24,7 +26,11 @@ fn main() {
         }
     };
 
-    if args.probe_backend || args.screenshot.is_some() || args.bench_frames.is_some() {
+    if args.probe_backend
+        || args.screenshot.is_some()
+        || args.bench_frames.is_some()
+        || args.live_screenshot.is_some()
+    {
         attach_parent_console();
     }
 
@@ -46,6 +52,19 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    if args.live_screenshot.is_some() {
+        // The bundled ConPTY is checked before any live session starts (exit code 3).
+        if let Err(e) = flare_term::conpty::verify_bundled() {
+            show_fatal("Flare cannot start", &e.to_string(), false);
+            std::process::exit(3);
+        }
+        if let Err(message) = headless::run_live(args, start) {
+            eprintln!("flare: {message}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
 
     if args.screenshot.is_some() || args.bench_frames.is_some() {
@@ -74,7 +93,11 @@ fn main() {
         outcome.effective,
         outcome.fallback_reason
     );
-    if let Err(e) = window::run_window(outcome, start) {
+    if let Err(e) = flare_term::conpty::verify_bundled() {
+        show_fatal("Flare cannot start", &e.to_string(), true);
+        std::process::exit(3);
+    }
+    if let Err(e) = window::run_window(outcome, start, args.sample) {
         attach_parent_console();
         eprintln!("flare: {e}");
         std::process::exit(1);
@@ -96,3 +119,47 @@ fn attach_parent_console() {
 
 #[cfg(not(windows))]
 fn attach_parent_console() {}
+
+/// Says why Flare cannot start: always on stderr, and in a message box when `dialog` is set and
+/// this run has no console (the release build, or a window started from Explorer). A test run
+/// never passes `dialog`, so no box can block it.
+fn show_fatal(title: &str, message: &str, dialog: bool) {
+    eprintln!("flare: {message}");
+    if dialog && (!cfg!(debug_assertions) || !console_attached()) {
+        message_box(title, message);
+    }
+}
+
+/// Whether this process has a console window to write to.
+#[cfg(windows)]
+fn console_attached() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    // SAFETY: GetConsoleWindow takes no arguments and only reads the process's console state.
+    !unsafe { GetConsoleWindow() }.is_null()
+}
+
+#[cfg(not(windows))]
+fn console_attached() -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn message_box(title: &str, message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let text = wide(message);
+    let caption = wide(title);
+    // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call; a null owner makes
+    // the box an unowned one, and the call returns once the user closes it.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn message_box(_title: &str, _message: &str) {}

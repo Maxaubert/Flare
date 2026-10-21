@@ -16,6 +16,9 @@ pub struct Args {
     pub size: (u32, u32),
     pub bench_frames: Option<u32>,
     pub probe_backend: bool,
+    pub sample: bool,
+    pub live_screenshot: Option<PathBuf>,
+    pub live_shell: Option<String>,
 }
 
 /// Flags: --renderer gpu|software, --screenshot <path>, --scale <f32> (default 1.0, allowed
@@ -31,6 +34,9 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         size: (1000, 640),
         bench_frames: None,
         probe_backend: false,
+        sample: false,
+        live_screenshot: None,
+        live_shell: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -55,9 +61,17 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                 out.bench_frames = Some(frames);
             }
             "--probe-backend" => out.probe_backend = true,
+            "--sample" => out.sample = true,
+            "--live-screenshot" => {
+                out.live_screenshot = Some(PathBuf::from(value(args, &mut i, flag)?));
+            }
+            "--live-shell" => out.live_shell = Some(value(args, &mut i, flag)?.to_string()),
             other => return Err(format!("unknown argument: {other}")),
         }
         i += 1;
+    }
+    if out.live_shell.is_some() && out.live_screenshot.is_none() {
+        return Err("--live-shell needs --live-screenshot <path>".to_string());
     }
     out.renderer = match (renderer_flag, env_renderer) {
         (Some(choice), _) => choice,
@@ -174,5 +188,32 @@ mod tests {
     fn probe_flag_parsed() {
         let args = parse_args(&a(&["--probe-backend"]), None).unwrap();
         assert!(args.probe_backend);
+    }
+
+    #[test]
+    fn sample_flag_parsed() {
+        let args = parse_args(&a(&[]), None).unwrap();
+        assert!(!args.sample);
+        let args = parse_args(&a(&["--sample"]), None).unwrap();
+        assert!(args.sample);
+    }
+
+    #[test]
+    fn live_screenshot_path_parsed() {
+        let args = parse_args(&a(&["--live-screenshot", "out/live.png"]), None).unwrap();
+        assert_eq!(args.live_screenshot, Some(PathBuf::from("out/live.png")));
+        assert_eq!(args.live_shell, None);
+        let args = parse_args(
+            &a(&["--live-screenshot", "x.png", "--live-shell", "cmd"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(args.live_shell.as_deref(), Some("cmd"));
+    }
+
+    #[test]
+    fn live_shell_needs_live_screenshot() {
+        assert!(parse_args(&a(&["--live-shell", "cmd"]), None).is_err());
+        assert!(parse_args(&a(&["--live-shell"]), None).is_err());
     }
 }

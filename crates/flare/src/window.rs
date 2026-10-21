@@ -2,15 +2,23 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
-use slint::{ComponentHandle, GraphicsAPI, RenderingState};
+use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
+use slint::winit_030::winit::keyboard::ModifiersState;
+use slint::winit_030::{EventResult, WinitWindowAccessor};
+use slint::{CloseRequestResponse, ComponentHandle, GraphicsAPI, RenderingState};
+
+use flare_term::keys::{KeyState, TermKeyAction, term_key_action};
 
 use crate::AppWindow;
 use crate::backend::BackendOutcome;
 use crate::config::RendererChoice;
 use crate::host::{GridHost, GridPainter};
+use crate::keymap::{key_event_from_parts, reserved_for_slint};
+use crate::live::{Live, LiveSource, WheelAccum, cell_at, shutdown, start_live};
 use crate::memory::process_memory;
 
 /// The overlay text: renderer, grid painter, frame statistics and memory.
@@ -49,7 +57,12 @@ fn repaint_due(dirty: bool) -> bool {
 }
 
 /// Runs the window until it closes. `start` is main's start time, for the first-frame log.
-pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::PlatformError> {
+/// `sample` keeps M1's sample grid instead of a live shell.
+pub fn run_window(
+    outcome: BackendOutcome,
+    start: Instant,
+    sample: bool,
+) -> Result<(), slint::PlatformError> {
     let app = AppWindow::new()?;
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
@@ -59,6 +72,14 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
         Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0)),
         painter,
     )));
+    let live: Option<Rc<Live>> = if sample {
+        None
+    } else {
+        let live = Rc::new(start_live(app.as_weak()));
+        host.borrow_mut()
+            .set_source(Box::new(LiveSource::new(Arc::clone(&live.handle))));
+        Some(live)
+    };
     // Why the grid is not on the GPU even though it was asked for, set by the notifier.
     let note: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(outcome.fallback_reason.clone()));
     let effective = outcome.effective;
@@ -176,13 +197,29 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
     });
     app.on_close_clicked({
         let weak = app.as_weak();
+        let live = live.clone();
         move || {
+            if let Some(live) = &live {
+                shutdown(live);
+            }
             if let Some(app) = weak.upgrade() {
                 let _ = app.hide();
             }
             let _ = slint::quit_event_loop();
         }
     });
+    app.window().on_close_requested({
+        let live = live.clone();
+        move || {
+            if let Some(live) = &live {
+                shutdown(live);
+            }
+            CloseRequestResponse::HideWindow
+        }
+    });
+    if let Some(live) = live.clone() {
+        install_input_filter(&app, live, host.clone());
+    }
     app.on_toggle_grid_renderer({
         let host = host.clone();
         let render_now = render_now.clone();
@@ -221,6 +258,9 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
     }
 
     app.show()?;
+    if !sample {
+        app.window().with_winit_window(|w| w.set_ime_allowed(true));
+    }
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
@@ -233,6 +273,86 @@ pub fn run_window(outcome: BackendOutcome, start: Instant) -> Result<(), slint::
     drop(timer);
     drop(frame_timer);
     result
+}
+
+/// One winit filter: physical keys, IME text and the wheel go to the live shell.
+fn install_input_filter(app: &AppWindow, live: Rc<Live>, host: Rc<RefCell<GridHost>>) {
+    let mods = Cell::new(ModifiersState::empty());
+    let cursor = Cell::new((0.0_f64, 0.0_f64));
+    let accum = RefCell::new(WheelAccum::new());
+    let weak = app.as_weak();
+    app.window().on_winit_window_event(move |_window, event| {
+        match event {
+            WindowEvent::ModifiersChanged(m) => {
+                mods.set(m.state());
+                EventResult::Propagate
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                cursor.set((position.x, position.y));
+                EventResult::Propagate
+            }
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } => {
+                let ev = key_event_from_parts(
+                    event.state == ElementState::Pressed,
+                    &event.physical_key,
+                    &event.logical_key,
+                    event.text.as_deref(),
+                    mods.get(),
+                );
+                if reserved_for_slint(&ev.code) {
+                    return EventResult::Propagate;
+                }
+                let mut no_delete = || false;
+                let mut state = KeyState {
+                    has_selection: false,
+                    delete_selection: &mut no_delete,
+                    host_owns: &|_| false,
+                    agent_here: false,
+                };
+                match term_key_action(&ev, &mut state) {
+                    TermKeyAction::Pty => {
+                        live.handle.send_key(&ev);
+                        EventResult::PreventDefault
+                    }
+                    // The clipboard path is M5.
+                    TermKeyAction::Paste | TermKeyAction::PastePlain => EventResult::PreventDefault,
+                    _ => EventResult::Propagate,
+                }
+            }
+            WindowEvent::Ime(Ime::Commit(s)) => {
+                live.handle.send_text(s);
+                EventResult::PreventDefault
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(app) = weak.upgrade() else {
+                    return EventResult::Propagate;
+                };
+                let scale = app.get_scale();
+                let (x, y) = cursor.get();
+                if y < (36.0 * f64::from(scale)).round() {
+                    return EventResult::Propagate;
+                }
+                let (m, (cols, rows)) = {
+                    let h = host.borrow();
+                    (h.metrics(), h.dims())
+                };
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
+                    MouseScrollDelta::PixelDelta(p) => accum.borrow_mut().add(p.y, m.cell_h),
+                };
+                if notches != 0 {
+                    let (col, row) = cell_at(x, y, scale, &m, cols, rows);
+                    live.handle.wheel(notches, col, row);
+                }
+                EventResult::PreventDefault
+            }
+            _ => EventResult::Propagate,
+        }
+    });
 }
 
 #[cfg(test)]

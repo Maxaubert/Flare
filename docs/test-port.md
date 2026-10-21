@@ -110,11 +110,11 @@ re-expressed natively and listed in `docs/regression-rules.md`.
 | flare-settings | `src/renderer/src/lib/tabSwitchPrefs.test.ts` | port | In order default, unknown reads In order, listeners |
 | flare-shells | `core/main/shells.test.ts` | port | parseWslList, shellById, pwsh path discovery, System32 tool paths |
 | flare-shells | `core/main/termPrompt.test.ts` | port | OSC 9;9 prompt hook, cmd PROMPT, PS file style (test the emitted strings) |
-| flare-shells | `core/main/terminal.test.ts` | port (split) | ptyEnv and withResume groups in flare-shells; OutputBatcher and pollExitCode groups in flare-term; plugin-dir and isOurPlugin groups in flare-agent |
+| flare-shells | `core/main/terminal.test.ts` | port (split) | ptyEnv and withResume groups in flare-shells; OutputBatcher and pollExitCode groups in flare-term; plugin-dir group in flare-shells (`pty_env` takes it); isOurPlugin in flare-agent |
 | flare-shells | `core/renderer/lib/termPaste.test.ts` | port (split) | decidePaste, sanitizePaste, quotePath here; imagePasteKey and newlineKey groups in flare-agent |
 | flare-shells | `core/shared/psQuote.test.ts` | port | PowerShell single-quote helper |
 | flare-shells | `core/shared/termCwd.test.ts` | port | parseOsc9, decideFollow, cdCommand quoting |
-| flare-term | `core/main/termPathOpen.test.ts` | port (split) | resolveTermPath, pathKinds and the stat meter here; openTermPath and openFolderDefault in flare-win |
+| flare-term | `core/main/termPathOpen.test.ts` | port (split) | resolveTermPath, pathKinds, the stat meter and openTermPath here; openFolderDefault in flare-win |
 | flare-term | `core/main/terminal.sessions.test.ts` | port | kill-wait for shells, pending spawn, warm shell eviction |
 | flare-term | `core/renderer/lib/appCopyNotice.test.ts` | port | program-selection copy notice |
 | flare-term | `core/renderer/lib/termCaretHold.test.ts` | port | caret-hold logic; the text input rectangle itself is flare (Slint IME) |
@@ -181,3 +181,33 @@ ported as the native e2e, see the e2e section of `docs/parity.md`); `tools/diag.
 `tools/make-icon.py` (icon generator, build tooling); view files with no PT test (HelpPanel, DictationPage, AboutPage,
 UpdateChip, TitleBar) are covered by their e2e scenario in `docs/parity.md`.
 Tests for `tabMark.test.ts` and `TabMark.test.ts` in flare cover the mark spec; `core/renderer/components/TabMark.test.ts` DOM checks are dropped.
+
+## M2 ledger
+
+228 Prism Terminal tests are ported here. "Deferred" lines are the groups `test-port.md` assigns to another crate.
+
+| PT file | Tests ported | Flare module (the number in brackets is the Task) | Ported as | Deferred (to) |
+|---|---|---|---|---|
+| `core/main/shells.test.ts` | 9 | `list.rs`, `sys.rs` (2) | `parse_wsl_list_*` (3), `shell_by_id_*` (3), `every_windows_tool_lives_under_system32_never_a_bare_name`, `pwsh_path_skips_the_current_directory`, `pwsh_path_is_none_when_where_finds_nothing` | none |
+| `core/main/termPrompt.test.ts` | 4 | `prompt.rs` (3), `env.rs` (6) | `ps_prompt_hook_wraps_once_and_reports_the_filesystem_folder`, `cmd_prompt_goes_in_front_of_the_existing_prompt`, `ps_file_style_paints_directories_bold_blue_text`, `prompt_reaches_cmd_through_its_environment_only` | none |
+| `core/main/terminal.test.ts` | 27 of 29 | `batcher.rs`, `exit_poll.rs` (13), `env.rs`, `resume.rs` (6) | `coalesces_chunks_and_flushes_once_per_window`, `flush_empties_at_once_and_is_idempotent`, `polls_fast_then_slow_says_stuck_once_and_hears_a_late_exit`, 10 `ptyEnv` tests (`names_the_tab_and_never_keeps_an_inherited_one` ... `passes_everything_else_through`), 9 plugin tests (`plugin_dir_added_when_on` ... `with_plugin_dir_drops_empty_entries`), 5 `withResume` tests | `isOurPlugin` x2 (flare-agent, M6) |
+| `core/main/terminal.sessions.test.ts` | 7 | `session.rs` (21) | `shells_gone_*` (3), `a_tab_closed_while_its_shell_starts_starts_no_shell`, `a_second_spawn_for_a_pending_id_is_refused`, `closing_an_adopted_tab_keeps_the_next_warm_shell`, `a_warm_shell_with_the_other_plugin_answer_makes_way` | none |
+| `core/main/termPathOpen.test.ts` | 10 of 12 | `path_open.rs` (15) | `resolve_against_the_shell_folder`, `resolve_refuses_unc_nul_and_no_folder`, `path_kinds_says_what_exists`, `open_a_file_and_a_folder`, `a_runnable_file_is_revealed_never_run`, `reveal_on_request_and_nothing_for_missing`, `may_open_allows_documents_media_and_safe_code_only`, `a_folder_uses_open_folder_a_file_never_does`, `never_more_than_three_stats_in_flight`, `a_hanging_drive_answers_nothing_for_a_minute` | `openFolderDefault` x2 (flare-win, M9) |
+| `core/renderer/lib/appCopyNotice.test.ts` | 9 | `app_copy.rs` (12) | 9 tests of Task 12 | none |
+| `core/renderer/lib/termCaretHold.test.ts` | 5 | `caret_hold.rs` (9) | `caret_hold_*` (5) | none |
+| `core/renderer/lib/termCells.test.ts` | 9 | `cells.rs` (8) | `cell_text_*` (3), `cell_from_*` (3), `logical_line_joins_from_any_row`, `char_at_cell_clamps`, `buffer_row_cells_reuses_one_scratch` | none |
+| `core/renderer/lib/termClickCaret.test.ts` | 17 | `click_caret.rs` (9) | `caret_click_plain_click_is_allowed`, 11 `caret_click_refuses_*`, `caret_delta_*` (4), `arrow_keys_right_left_application` | none |
+| `core/renderer/lib/termKeys.test.ts` | 6 | `keys.rs` (10) | the 6 decision tests (+2 new) | none |
+| `core/renderer/lib/termLinks.test.ts` | 5 (+ linkColor group) | `links.rs` (8) | `find_links_*` (5) | `linkColor` group (flare-theme, M4) |
+| `core/renderer/lib/termOsc52.test.ts` | 11 | `osc52.rs` (11) | `osc52_*` (11) | none |
+| `core/renderer/lib/termOsc8.test.ts` | 25 | `osc8.rs` (11) | `osc8_target_*` (4), `parse_osc8_*` (4), `is_web_link_http_https_only`, `spans_*`/`newer_span_*`/`clear_one_screen` (8), `span_rows_*` (2), `span_text_*` (4), `pieces_overlap_*` (2) | none |
+| `core/renderer/lib/termPathLinks.test.ts` | 17 | `path_links.rs` (16) | 17 tests of Task 16 | none |
+| `core/renderer/lib/termPaths.test.ts` | 6 | `paths.rs` (8) | `find_paths_*` (6) | none |
+| `core/renderer/lib/termReplies.test.ts` | 19 of 25 | `replies.rs` (11) | `osc_colour_*` (2), `colour_query_*` (4), `ground_mode_*` (3), `dsr_theme_reply_values`, `decrqm_reply_values`, `mode_params_flattens`, `xtversion_*` (4), `bell_*` (3) | `themePush` x4, `nudgeWidths` x2 (flare-theme, M4) |
+| `core/renderer/lib/termSelectionEdit.test.ts` | 11 | `selection_edit.rs` (9) | 11 tests of Task 9 | none |
+| `core/shared/termVersion.test.ts` | 2 | `version.rs` (11) | `flare_term_version_matches_the_workspace_version`, `alacritty_version_matches_cargo_lock` | none |
+| `core/shared/webUrl.test.ts` | 2 | `web_url.rs` (8) | `is_web_url_*` (2) | none |
+| `core/shared/psQuote.test.ts` | 3 | `ps_quote.rs` (4) | `ps_quote_*` (3) | none |
+| `core/shared/termCwd.test.ts` | 8 | `cwd.rs` (4) | `parse_osc9_*` (2), `decide_follow_tells_same_inside_outside`, `cd_command_*` (5) | none |
+| `core/renderer/lib/termPaste.test.ts` | 16 (+ 2 groups) | `paste.rs` (5) | `decide_paste_*` (8), `sanitize_paste_*` (3), `quote_path_*` (4), `quote_paths_joins_with_spaces` | `imagePasteKey`, `newlineKey` groups (flare-agent, M6) |
+| `src/main/nodePtyPin.test.ts` | dropped | `conpty.rs` (17) | replaced by `bundled_files_match_the_pinned_hashes`, `verify_loads_the_bundled_dll_by_absolute_path` | none |

@@ -13,6 +13,8 @@ impl CellFlags {
     pub const WIDE: Self = Self(8);
     pub const WIDE_SPACER: Self = Self(16);
     pub const INVERSE: Self = Self(32);
+    pub const DIM: Self = Self(64);
+    pub const STRIKE: Self = Self(128);
 
     pub const fn empty() -> Self {
         Self(0)
