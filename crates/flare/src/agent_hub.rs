@@ -22,10 +22,11 @@ use flare_agent::question_watch::{QuestionWatch, RowSource};
 use flare_agent::question_widget::ShownQuestion;
 use flare_agent::resume::valid_resume;
 use flare_agent::reveal::agent_of_resume;
-use flare_agent::signal::parse_agent_signal;
+use flare_agent::signal::{is_session_id, parse_agent_signal};
 use flare_agent::sonara::post_question_shown;
 use flare_agent::tab_look::Switches;
 use flare_diag::agent_diag::{AgentDiag, DiagSink, MarkSets};
+use flare_dictation::route::SendTab;
 use flare_settings::kv::PrefStore;
 use flare_term::handle::TermHandle;
 use flare_term::session::SessionManager;
@@ -180,6 +181,13 @@ pub struct AgentHub {
     watches: HashMap<String, QuestionWatch>,
     /// Tabs the hub has heard of and not yet been told closed.
     tabs: HashSet<String>,
+    /// The same tabs in the order the hub first heard of them (the dictation picker's order).
+    order: Vec<String>,
+    /// Each tab's folder, from its spawn and its prompt (OSC 7), for the dictation list.
+    folders: HashMap<String, String>,
+    /// Each tab's Claude session (a lower-case UUID): named by the turn's own hooks, or by the
+    /// resume id of a restored tab; gone with the agent (N25).
+    sessions: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
     diag: AgentDiag,
@@ -199,6 +207,9 @@ impl AgentHub {
             arms: ArmMap::default(),
             watches: HashMap::new(),
             tabs: HashSet::new(),
+            order: Vec::new(),
+            folders: HashMap::new(),
+            sessions: HashMap::new(),
             polled: HashSet::new(),
             diag,
             poll: None,
@@ -272,6 +283,7 @@ impl AgentHub {
     fn apply_arm(&mut self, tab: &str, step: ArmStep) {
         self.arms.insert(tab.to_string(), step.arm);
         if step.gone {
+            self.sessions.remove(tab);
             (self.deps.reports_off)(tab);
         }
         if step.recheck
@@ -345,7 +357,7 @@ impl AgentHub {
                 after_output.remove(id);
             }
             if let Some(id) = event_tab(ev) {
-                self.tabs.insert(id.to_string());
+                self.note_tab(id);
             }
             match ev {
                 HostEvent::Title { id, text } => {
@@ -361,6 +373,9 @@ impl AgentHub {
                 }
                 HostEvent::Osc777 { id, data } => {
                     if let Some(signal) = parse_agent_signal(data) {
+                        if let Some(session) = &signal.session {
+                            self.sessions.insert(id.clone(), session.clone());
+                        }
                         self.ind_handle(
                             now,
                             Event::Signal {
@@ -370,7 +385,8 @@ impl AgentHub {
                         );
                     }
                 }
-                HostEvent::Cwd { id, .. } => {
+                HostEvent::Cwd { id, path } => {
+                    self.folders.insert(id.clone(), path.clone());
                     self.ind.activity.mark_prompt(id, now);
                     let step = arm_on_prompt(&self.arm_of(id));
                     self.apply_arm(id, step);
@@ -411,8 +427,18 @@ impl AgentHub {
     /// Called right after `TabHost::spawn`, before any output can be drained.
     pub fn on_spawned(&mut self, tab: &str, cwd: &str, resume: Option<&str>) {
         let now = self.now();
-        self.tabs.insert(tab.to_string());
+        self.note_tab(tab);
+        self.folders.insert(tab.to_string(), cwd.to_string());
         let resumed = valid_resume(resume);
+        // A restored Claude tab already has its session: the resume id (only a UUID).
+        match resumed {
+            Some(r) if agent_of_resume(r) == AgentKind::Claude && is_session_id(r) => {
+                self.sessions.insert(tab.to_string(), r.to_string());
+            }
+            _ => {
+                self.sessions.remove(tab);
+            }
+        }
         self.arms.insert(
             tab.to_string(),
             arm_at_start(resumed.map(|r| DetectedAgent::from(agent_of_resume(r)))),
@@ -433,9 +459,57 @@ impl AgentHub {
             w.dispose();
         }
         self.tabs.remove(tab);
+        self.order.retain(|t| t != tab);
+        self.folders.remove(tab);
+        self.sessions.remove(tab);
         self.polled.remove(tab);
         self.diag.forget(tab, now);
         self.settle(now);
+    }
+
+    fn note_tab(&mut self, tab: &str) {
+        if self.tabs.insert(tab.to_string()) {
+            self.order.push(tab.to_string());
+        }
+    }
+
+    /// Every tab the hub knows, in the order it heard of them, as the dictation send rules see
+    /// them: the folder, the agent the tab runs, its state (`working`, `question`, `done` or
+    /// `failed`) and its Claude session (N25, M8 Task 11). The label is the folder's name here;
+    /// the window may put the tab's own title over it. `orchestrator` is always false (D9) and
+    /// `copy` is the link's to fill.
+    pub fn send_tabs(&self) -> Vec<SendTab> {
+        self.order
+            .iter()
+            .map(|tab| {
+                let cwd = self.folders.get(tab).cloned().unwrap_or_default();
+                let label = cwd
+                    .trim_end_matches(['\\', '/'])
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(tab)
+                    .to_string();
+                let agent = self.ind.agent_kind(tab).map(kind_word).or_else(|| {
+                    flare_agent::keys::AgentView::armed(&self.arms, tab).map(|k| match k {
+                        AgentKind::Claude => "claude".to_string(),
+                        AgentKind::Codex => "codex".to_string(),
+                    })
+                });
+                let state = tab_state(&self.ind, tab);
+                SendTab {
+                    id: tab.clone(),
+                    tab: tab.clone(),
+                    label,
+                    cwd,
+                    agent,
+                    state: state.map(str::to_string),
+                    orchestrator: false,
+                    session: self.sessions.get(tab).cloned(),
+                    copy: None,
+                }
+            })
+            .collect()
     }
 
     pub fn set_looking(&mut self, active: Option<&str>, focused: bool) {
@@ -679,6 +753,32 @@ fn real_poll_deps(mgr: Arc<SessionManager>) -> PollDeps {
     }
 }
 
+/// The state word a send tab reports, in Prism Terminal's `ledgerState` order: question, failed,
+/// working, done. The sets can overlap (a Background phase keeps `working` while a question
+/// mark is set), and a tab with an open question must never read as working, or dictated text
+/// would land in the question box as its answer.
+fn tab_state(ind: &Indicator, tab: &str) -> Option<&'static str> {
+    state_word(
+        ind.question_ids().contains(tab),
+        ind.failed_ids().contains(tab),
+        ind.working_ids().contains(tab),
+        ind.done_ids().contains(tab),
+    )
+}
+
+fn state_word(question: bool, failed: bool, working: bool, done: bool) -> Option<&'static str> {
+    if question {
+        Some("question")
+    } else if failed {
+        Some("failed")
+    } else if working {
+        Some("working")
+    } else if done {
+        Some("done")
+    } else {
+        None
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -944,6 +1044,122 @@ mod tests {
         assert!(r.hub.indicator().done_ids().len() == 1);
     }
 
+    const SID: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
+
+    fn osc_session(state: &str, session: &str) -> Vec<u8> {
+        format!("\x1b]777;flare-agent;state={state};session={session}\x07").into_bytes()
+    }
+
+    fn tab_of(hub: &AgentHub, id: &str) -> flare_dictation::route::SendTab {
+        hub.send_tabs()
+            .into_iter()
+            .find(|t| t.tab == id)
+            .unwrap_or_else(|| panic!("no send tab {id}"))
+    }
+
+    /// N25: the turn's own two hooks name the Claude session; the hub keeps it per tab and
+    /// exposes it to the dictation rules.
+    #[test]
+    fn a_tab_learns_its_session_from_the_turn_hooks() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        assert_eq!(tab_of(&r.hub, "a").session, None);
+        r.print("a", &osc_session("working", SID));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.session.as_deref(), Some(SID));
+        assert_eq!(a.state.as_deref(), Some("working"));
+        assert_eq!(a.cwd, "C:\\proj");
+        assert!(!a.orchestrator);
+        assert_eq!(a.copy, None);
+        // The neighbour is untouched.
+        assert_eq!(tab_of(&r.hub, "b").session, None);
+        // A hook with no session (a tool's) keeps the one the turn named.
+        r.print("a", &osc("working"));
+        assert_eq!(tab_of(&r.hub, "a").session.as_deref(), Some(SID));
+        // A session that is not a UUID is never taken, the state stands.
+        r.print("b", &osc_session("working", "..\\x"));
+        let b = tab_of(&r.hub, "b");
+        assert_eq!(b.session, None);
+        assert_eq!(b.state.as_deref(), Some("working"));
+        // The session of a later turn replaces the old one.
+        let next = "11111111-2222-4333-8444-555555555555";
+        r.print("a", &osc_session("done", next));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.session.as_deref(), Some(next));
+        assert_eq!(a.state.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_session_goes_when_the_agent_leaves_or_the_tab_closes() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        r.title("a", CLAUDE_TITLE);
+        r.print("a", &osc_session("done", SID));
+        r.print("b", &osc_session("done", SID));
+        assert_eq!(tab_of(&r.hub, "a").session.as_deref(), Some(SID));
+        // The title goes empty: the agent left the tab.
+        r.title("a", "");
+        assert_eq!(tab_of(&r.hub, "a").session, None);
+        r.hub.on_closed("b");
+        assert!(r.hub.send_tabs().iter().all(|t| t.tab != "b"));
+    }
+
+    #[test]
+    fn a_restored_tab_takes_its_session_from_the_resume_id() {
+        let mut r = Rig::new();
+        r.open("a", Some(ID));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.session.as_deref(), Some(ID));
+        assert_eq!(a.agent.as_deref(), Some("claude"));
+        // Only a UUID, and not Codex's marker.
+        r.open("b", Some("abcdef12"));
+        assert_eq!(tab_of(&r.hub, "b").session, None);
+        r.open("c", Some(flare_agent::kinds::CODEX_RESUME));
+        assert_eq!(tab_of(&r.hub, "c").session, None);
+        // The tabs come in the order they opened.
+        let order: Vec<String> = r.hub.send_tabs().into_iter().map(|t| t.tab).collect();
+        assert_eq!(order, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_polled_claude_tab_names_its_agent_and_a_question_its_state() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        assert_eq!(tab_of(&r.hub, "a").agent, None);
+        r.hub
+            .queue_poll_answer("a", true, Some(DetectedAgent::Claude));
+        r.hub.drain_poll();
+        r.print("a", &osc("question"));
+        let a = tab_of(&r.hub, "a");
+        assert_eq!(a.agent.as_deref(), Some("claude"));
+        assert_eq!(a.state.as_deref(), Some("question"));
+    }
+
+    #[test]
+    fn a_tab_in_several_sets_reports_question_then_failed_then_working_then_done() {
+        // PT ledgerState order; the sets overlap (Background keeps working under a question).
+        assert_eq!(state_word(true, false, true, false), Some("question"));
+        assert_eq!(state_word(true, true, true, true), Some("question"));
+        assert_eq!(state_word(false, true, true, false), Some("failed"));
+        assert_eq!(state_word(false, true, false, true), Some("failed"));
+        assert_eq!(state_word(false, false, true, true), Some("working"));
+        assert_eq!(state_word(false, false, false, true), Some("done"));
+        assert_eq!(state_word(false, false, false, false), None);
+    }
+
+    #[test]
+    fn a_failed_turn_reports_failed_though_it_is_also_done() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        r.hub.set_looking(Some("b"), true);
+        r.print("a", &osc("working"));
+        r.print("a", &osc("failed"));
+        r.pump_until("a failed", |h| h.indicator().failed_ids().contains("a"));
+        assert_eq!(tab_of(&r.hub, "a").state.as_deref(), Some("failed"));
+    }
     #[test]
     fn the_neighbours_agent_signal_is_not_accepted() {
         let mut r = Rig::new();

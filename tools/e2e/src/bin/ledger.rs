@@ -85,6 +85,8 @@ const PT: &[(&str, u32)] = &[
     ("dictationParakeet", 11),
     ("exitClosesTab", 3),
     ("promptLayout", 2),
+    ("dictateAnywhere", 9),
+    ("dictateTwoCopies", 10),
 ];
 
 /// Where a scenario's port lives, as far as this ledger can tell.
@@ -94,7 +96,7 @@ pub enum Port {
     Flare { group: String, func: String },
     /// Ported by M9 out of process (`updateQuiet`), not in `ALL`; not counted here.
     Elsewhere(&'static str),
-    /// Waits for M8 (dictation); not ported.
+    /// Not in `scenarios::ALL` and not ported (the reason is the string).
     Waits(&'static str),
 }
 
@@ -289,9 +291,6 @@ pub fn ledger(dir: &Path) -> Vec<Row> {
                     0,
                 );
             }
-            if matches!(name, "dictation" | "dictationPage" | "dictationParakeet") {
-                return row(name, pt_ok, Port::Waits("M8"), 0, 0);
-            }
             let Some((_, group, func)) = table.iter().find(|(n, _, _)| n == name) else {
                 return row(name, pt_ok, Port::Waits("not in ALL"), 0, 0);
             };
@@ -389,9 +388,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pt_counts_are_the_74_scenarios_and_their_1094_calls() {
-        assert_eq!(PT.len(), 74);
-        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1094);
+    fn the_pt_counts_are_the_76_scenarios_and_their_1113_calls() {
+        // 74 scenarios and 1094 calls at v0.55.6, plus dictateAnywhere (9) and dictateTwoCopies (10) at e5848cb.
+        assert_eq!(PT.len(), 76);
+        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1113);
     }
 
     #[test]
@@ -441,13 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn the_flare_ports_are_the_70_scenarios_of_all() {
+    fn the_flare_ports_are_the_75_scenarios_of_all() {
+        // 70 before M8, plus the five dictation scenarios (Tasks 29 to 31), none waiting any more.
         let rows = ledger(&scenarios_dir());
         let ported = rows
             .iter()
             .filter(|r| matches!(r.port, Port::Flare { .. }))
             .count();
-        assert_eq!(ported, 70);
+        assert_eq!(ported, 75);
     }
 
     #[test]

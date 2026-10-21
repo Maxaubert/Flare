@@ -545,7 +545,9 @@ fn a_real_hook_script_reaches_the_pty_as_the_parser_reads_it() {
                 .replace("${CLAUDE_PLUGIN_ROOT}", &root)
         })
         .collect();
-    assert_eq!(args.last().map(String::as_str), Some("done"));
+    // Stop names the session too (N25): `done +sid`.
+    assert_eq!(args.last().map(String::as_str), Some("+sid"));
+    assert_eq!(args[args.len() - 2], "done");
     // The args as Claude Code runs them (exec form): a path with spaces is quoted, nothing else.
     let quoted: Vec<String> = args
         .iter()
@@ -574,6 +576,11 @@ fn a_real_hook_script_reaches_the_pty_as_the_parser_reads_it() {
         "no prompt: {:?}",
         live.probe.screen("t1")
     );
+    // Claude puts its session id in the hook's environment; the shell stands in for that.
+    live.type_line(
+        "t1",
+        "set CLAUDE_CODE_SESSION_ID=b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9",
+    );
     live.type_line("t1", &line);
     assert!(
         wait_until(20_000, || {
@@ -594,7 +601,7 @@ fn a_real_hook_script_reaches_the_pty_as_the_parser_reads_it() {
         serde_json::from_str(json_line.trim()).expect("the hook line is JSON");
     assert_eq!(
         value["terminalSequence"].as_str(),
-        Some("\u{1b}]777;flare-agent;state=done\u{7}")
+        Some("\u{1b}]777;flare-agent;state=done;session=b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9\u{7}")
     );
 
     // The same sequence written through ConPTY by a stand-in reaches the parser unchanged.

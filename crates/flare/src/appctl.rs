@@ -365,6 +365,8 @@ pub struct AppCtl {
     find_shown: bool,
     /// The agent indicator, the arm state, the poll and the question watches (Task 28).
     hub: AgentHub,
+    /// The dictation key path (M8): offered every key first.
+    dictation: crate::dictation_ctl::DictationKeys,
     /// The tabs the hub has been given a handle for; one that goes away is forgotten.
     hub_known: HashSet<String>,
     /// The hub's view of the host's handles, refreshed before every hub call.
@@ -726,6 +728,7 @@ impl AppCtl {
             skel_resumed: false,
             agent_view,
             focused: true,
+            dictation: crate::dictation_ctl::DictationKeys,
             flash: Rc::new(|| {}),
             looked: None,
             badge: None,
@@ -987,6 +990,9 @@ impl AppCtl {
                 },
             );
         }
+        // untimed: a model row's look is noted in a map and returns at once
+        app.global::<SettingsBridge>()
+            .on_row_look(crate::e2e_probes::dictation::note_look);
         {
             let weak = Rc::downgrade(rc);
             // untimed: a tooltip request only records the hover and returns at once
@@ -1548,6 +1554,8 @@ impl AppCtl {
         *self.handles.borrow_mut() = live;
         for id in gone {
             self.hub.on_closed(&id);
+            // A recording that was to be pasted into this tab learns it has closed.
+            crate::dictation_ctl::tab_gone(&id);
         }
         self.hub_known = self.handles.borrow().keys().cloned().collect();
     }
@@ -1702,8 +1710,27 @@ impl AppCtl {
         &self.hub
     }
 
-    /// The live terminal of a tab (window flow tests send keys through it, as the window does).
-    #[cfg(test)]
+    /// What dictation needs at install: the settings store and the session manager (M8 Task 22).
+    pub(crate) fn dictation_inputs(&self) -> crate::dictation_ctl::DictInputs {
+        crate::dictation_ctl::DictInputs {
+            prefs: self.prefs.clone(),
+            mgr: self.deps.host.manager(),
+        }
+    }
+
+    /// The shell tab in front with a live session: where dictation types. `None` on the Settings page,
+    /// the Explorer, and a shell that has not started.
+    pub(crate) fn dictation_front(&self) -> Option<String> {
+        let t = self.model.active_shell()?;
+        self.deps.host.handle(&t.id).map(|_| t.id.clone())
+    }
+
+    /// The tabs as the dictation send rules see them: the hub's, each named by its folder.
+    pub(crate) fn dictation_tabs(&self) -> Vec<flare_dictation::route::SendTab> {
+        self.hub.send_tabs()
+    }
+
+    /// The live terminal of a tab (dictation pastes through it; window flow tests send keys through it).
     pub(crate) fn handle_of(&self, id: &str) -> Option<Arc<TermHandle>> {
         self.deps.host.handle(id)
     }
@@ -2703,6 +2730,13 @@ impl AppCtl {
 
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        // Dictation sees every key first (Prism Terminal's capture phase); a swallowed key goes nowhere else.
+        if self
+            .dictation
+            .feed_key(ev, false, &|| self.dictation_front())
+        {
+            return KeyOutcome::Consumed;
+        }
         if ev.pressed {
             flare_term::session::trace_key("key");
         }
@@ -2753,12 +2787,19 @@ impl AppCtl {
     }
 
     pub fn on_key_up(&mut self, ev: &KeyEvent) {
+        if self
+            .dictation
+            .feed_key(ev, true, &|| self.dictation_front())
+        {
+            return;
+        }
         chords::on_key_up(ev, &mut Target(self));
     }
 
     /// The window lost the keyboard: a Most recent walk ends, tips go, a right-click menu shuts
     /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
+        crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
         self.close_menu();
@@ -2808,6 +2849,8 @@ impl AppCtl {
     }
 
     pub fn on_pointer_down(&mut self) {
+        // A press anywhere ends a key capture on the Dictation page (the field's own click follows it).
+        crate::dictation_ctl::on_press();
         self.clear_tip();
         if self.flight.on() {
             self.flight.pointer_down();
@@ -3068,6 +3111,9 @@ impl AppCtl {
             return;
         }
         self.ended = true;
+        // Dictation first (parity 834): the engine's children, the link and the key hook stop before the shells are
+        // killed and waited for, so a picker never keeps swallowing digits while the window is already hidden.
+        crate::dictation_ctl::stop_all();
         self.save_window_now();
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
@@ -5193,7 +5239,10 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
+        // Wait for each tab's own shell: a count of spawns says nothing about whose they are, and `say`
+        // reads the first shell of a cwd.
+        f.wait_made("C:\\c");
+        f.wait_made("C:\\d");
         f.ctl.borrow_mut().hub_mut().set_looking(None, false);
         f.say("C:\\c", TITLE_IDLE);
         f.say("C:\\d", TITLE_IDLE);

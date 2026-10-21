@@ -586,7 +586,7 @@ fn code_of_char(c: char) -> Option<(String, bool)> {
 
 /// True when `t` names a W3C code this grammar accepts.
 fn is_code(t: &str) -> bool {
-    const NAMED: [&str; 31] = [
+    const NAMED: [&str; 32] = [
         "Enter",
         "Tab",
         "Space",
@@ -619,6 +619,8 @@ fn is_code(t: &str) -> bool {
         "ControlLeft",
         "ShiftLeft",
         "AltLeft",
+        // Right Alt alone (M8: the dictation key is Right Alt in the scenarios that hold it).
+        "AltRight",
     ];
     if NAMED.contains(&t) {
         return true;
@@ -676,7 +678,7 @@ fn logical_of_code(code: &str, shift: bool) -> String {
         "Space" => " ".into(),
         "ControlLeft" => "Control".into(),
         "ShiftLeft" => "Shift".into(),
-        "AltLeft" => "Alt".into(),
+        "AltLeft" | "AltRight" => "Alt".into(),
         "Comma" => pair(",", "<"),
         "Period" => pair(".", ">"),
         "Slash" => pair("/", "?"),
@@ -1588,6 +1590,9 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             resp.reply(ctx.probe(&name, &arg));
             return;
         }
+        Request::DictLine { line } => crate::dictation_ctl::e2e_line(&line),
+        Request::DictRoute { text, front } => crate::dictation_ctl::e2e_route(&text, front),
+        Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,
@@ -1786,6 +1791,13 @@ mod tests {
                 ModifiersState::empty(),
             ),
             ("AltLeft", KeyCode::AltLeft, N::Alt, ModifiersState::empty()),
+            // Right Alt alone is the dictation key (M8): a scenario holds it as a key-down and a key-up.
+            (
+                "AltRight",
+                KeyCode::AltRight,
+                N::Alt,
+                ModifiersState::empty(),
+            ),
         ] {
             for down in [true, false] {
                 let want = key_event_from_parts(

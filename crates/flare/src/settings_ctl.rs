@@ -31,6 +31,7 @@ use flare_settings::layout::{
     layout_results, place_menu_at, rail_layout, rail_width, scroll_target,
 };
 use flare_settings::look::LookStore;
+use flare_settings::page::dictation::{GpuRow, ModelRow, ModelState, Vendor};
 use flare_settings::page::{
     BlockModel, Control, DiagInfo, DictationPage, GlassSupport, PageEnv, PageModel, RowModel,
     SectionModel, ThemeColours, build_page,
@@ -191,6 +192,8 @@ pub fn control_kind(c: &Control) -> SetKind {
         Control::Slider { .. } => SetKind::Slider,
         Control::Colour { .. } => SetKind::Colour,
         Control::Save { .. } => SetKind::Save,
+        Control::Key { .. } => SetKind::Key,
+        Control::Mic { .. } => SetKind::Mic,
     }
 }
 
@@ -303,8 +306,131 @@ pub fn to_slint_row(r: &RowModel, y: f64, h: f64, ctx: &RowCtx<'_>) -> SetRow {
             out.save_dirty = *dirty;
             out.save_title = title.as_str().into();
         }
+        Control::Key { text, capturing } => {
+            out.value = text.as_str().into();
+            out.capturing = *capturing;
+            // PT HotkeyField: Reset only while the key is not the default and none is awaited.
+            out.reset = r.reset
+                || (!*capturing
+                    && *text
+                        != flare_dictation::hotkey::format_hotkey(
+                            &flare_dictation::hotkey::default_hotkey(),
+                        ));
+        }
+        Control::Mic {
+            value,
+            options,
+            testing,
+            problem,
+            ..
+        } => {
+            out.value = value.as_str().into();
+            out.options = options_of(options);
+            out.testing = *testing;
+            // The microphone says its problem in the row's own subtext (PT MicField `onProblem`).
+            if let Some(p) = problem {
+                out.sub = p.as_str().into();
+                out.sub_tip = p.as_str().into();
+            }
+        }
     }
+    // The language picker of a model that picks its own language: disabled, with the globe that says why.
+    out.limited = r.id == "dictation-language"
+        && !r.row_tip.is_empty()
+        && matches!(r.control, Control::Select { .. });
     out
+}
+
+/// A model row's or the pack's buttons as the view draws them. A download that failed offers Retry in place of
+/// Download or Enable (PT ModelRow); the failure itself is already the row's note.
+fn model_buttons(buttons: &[flare_settings::page::Button], failed: bool) -> ModelRc<SetButton> {
+    ModelRc::new(VecModel::from(
+        buttons
+            .iter()
+            .map(|b| SetButton {
+                id: b.id.into(),
+                label: if failed && matches!(b.id, "download" | "enable") {
+                    "Retry".into()
+                } else {
+                    b.label.as_str().into()
+                },
+                // Never the tooltip: SetRowButton sizes itself by the wider of label and label_alt, and the
+                // tip (GPU_OFF_TITLE) is a sentence. It reaches the view through `button_title`.
+                label_alt: SharedString::new(),
+                off: b.off,
+                alt: false,
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+fn model_state(s: &ModelState) -> (&'static str, i32) {
+    match s {
+        ModelState::Absent => ("absent", 0),
+        ModelState::Downloading { pct } => ("downloading", i32::try_from(*pct).unwrap_or(0)),
+        ModelState::Installed => ("installed", 0),
+        ModelState::Active => ("active", 0),
+    }
+}
+
+/// One speech model of the Speech models card.
+pub fn to_slint_model(m: &ModelRow, y: f64, h: f64) -> SetRow {
+    let (state, pct) = model_state(&m.state);
+    SetRow {
+        id: m.id.into(),
+        label: m.name.into(),
+        sub: m.sub.as_str().into(),
+        warn: m.warn,
+        off: false,
+        block: SlintBlock::Model,
+        kind: SetKind::None,
+        colour: no_colour(),
+        y: y as f32,
+        h: h as f32,
+        vendor: match m.vendor {
+            Vendor::Openai => "openai",
+            Vendor::Nvidia => "nvidia",
+        }
+        .into(),
+        size_text: m.size_text.as_str().into(),
+        recommended: m.recommended,
+        badge: m.badge.unwrap_or_default().into(),
+        state: state.into(),
+        num: pct,
+        button_title: m.uninstall_title.as_str().into(),
+        buttons: model_buttons(&m.buttons, m.failure.is_some()),
+        ..Default::default()
+    }
+}
+
+/// The NVIDIA GPU pack's row.
+pub fn to_slint_gpu(g: &GpuRow, y: f64, h: f64) -> SetRow {
+    let (state, pct) = model_state(&g.state);
+    let pack = flare_dictation::catalog::GPU_PACK;
+    SetRow {
+        id: pack.id.into(),
+        label: pack.name.into(),
+        // A failure, or the fall-back note, replaces the note (PT: `failed || note`).
+        sub: g
+            .failure
+            .clone()
+            .unwrap_or_else(|| pack.note.to_string())
+            .into(),
+        off: false,
+        block: SlintBlock::Model,
+        kind: SetKind::None,
+        colour: no_colour(),
+        y: y as f32,
+        h: h as f32,
+        vendor: "nvidia".into(),
+        size_text: flare_dictation::catalog::size_text(pack.bytes).into(),
+        badge: g.badge.unwrap_or_default().into(),
+        state: state.into(),
+        num: pct,
+        button_title: g.title.as_str().into(),
+        buttons: model_buttons(&g.buttons, g.failure.is_some()),
+        ..Default::default()
+    }
 }
 
 /// One section with its blocks placed by `l`.
@@ -334,6 +460,8 @@ pub fn to_slint_section(s: &SectionModel, l: &SectionLayout, ctx: &RowCtx<'_>) -
                     ..block_row("about", SlintBlock::About, y, rl.h)
                 },
                 BlockModel::SlintBadge => block_row("slint", SlintBlock::Slint, y, rl.h),
+                BlockModel::Model(m) => to_slint_model(m, y, rl.h),
+                BlockModel::Gpu(g) => to_slint_gpu(g, y, rl.h),
                 BlockModel::Note(text) => SetRow {
                     note: text.as_str().into(),
                     ..block_row("note", SlintBlock::Note, y, rl.h)
@@ -434,7 +562,7 @@ impl SettingsCtl {
         let find = FindState::new(
             settings_index(&IndexEnv {
                 nvidia: false,
-                dictation_wired: false,
+                dictation_wired: crate::dictation_ctl::wired(),
             }),
             page_names(),
         );
@@ -475,6 +603,29 @@ impl SettingsCtl {
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
         Self::bind_callbacks(app, &rc);
+        // The Dictation page's own state (a waiting key field, a download, the meter) rebuilds the page or moves
+        // the meter without going through a Settings event.
+        {
+            let weak = Rc::downgrade(&rc);
+            let app_weak = app.as_weak();
+            let prefs = rc.borrow().deps.prefs.clone();
+            crate::dictation_ctl::register_page(
+                prefs,
+                Rc::new(move || {
+                    if let Some(rc) = weak.upgrade()
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                        && c.page == "dictation"
+                    {
+                        c.refresh_if_visible();
+                    }
+                }),
+                Rc::new(move |level| {
+                    if let Some(app) = app_weak.upgrade() {
+                        app.global::<SettingsBridge>().set_dict_level(level);
+                    }
+                }),
+            );
+        }
         {
             let c = rc.borrow();
             c.start_shell_list();
@@ -610,6 +761,8 @@ impl SettingsCtl {
         on!(app, rc, on_editor_save, |c| c.event(Event::EditorSave));
         on!(app, rc, on_editor_cancel, |c| c.event(Event::EditorCancel));
         on!(app, rc, on_ask_answered, |c, n: i32| c.ask_answered(n));
+        on!(app, rc, on_dict_ask_answered, |c, n: i32| c
+            .dict_ask_answered(n));
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
         on!(app, rc, on_escape_unhandled, |c| {
@@ -671,6 +824,9 @@ impl SettingsCtl {
         );
         self.diag_verbose.set(None);
         self.ask_verb();
+        if self.page == "dictation" {
+            crate::dictation_ctl::page_shown();
+        }
         self.rebuild();
         self.picker_do(|p, ctx| p.recall(ctx));
     }
@@ -678,6 +834,8 @@ impl SettingsCtl {
     /// Another tab came to the front: keep the page, close the overlays.
     pub fn hide(&mut self) {
         self.visible = false;
+        // A key field that waits, a microphone test and an open question end with the page.
+        crate::dictation_ctl::page_left();
         self.close_select();
         self.picker_do(|p, _| p.hide_for_tab_switch());
         if let Some(app) = self.weak.upgrade() {
@@ -690,6 +848,7 @@ impl SettingsCtl {
         if open {
             return;
         }
+        crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
         self.find.set_query("");
         self.watch = None;
@@ -758,6 +917,10 @@ impl SettingsCtl {
             return false;
         };
         let b = app.global::<SettingsBridge>();
+        if crate::dictation_ctl::page_snap().ask.is_some() {
+            self.dict_ask_answered(0);
+            return true;
+        }
         if self.ask_open {
             self.event(Event::Ask {
                 answer: AskAnswer::Cancel,
@@ -812,8 +975,9 @@ impl SettingsCtl {
             glass: (self.deps.glass)(),
             diag,
             diag_marked: self.marked(),
-            nvidia: false,
-            dictation_wired: false,
+            // The GPU card is offered only where it can work: the pack is NVIDIA's (answered once per process).
+            nvidia: self.page == "dictation" && flare_dictation::gpu::has_nvidia(),
+            dictation_wired: crate::dictation_ctl::wired(),
             theme_colours: (self.deps.theme_colours)(),
             agent_colours: (self.deps.agent_colours)(),
             agent_key_labels: (self.deps.agent_key_labels)(),
@@ -1049,6 +1213,8 @@ impl SettingsCtl {
 
         // The overlays.
         b.set_ask_open(self.ask_open);
+        b.set_dict_ask_open(crate::dictation_ctl::page_snap().ask.is_some());
+        b.set_dict_ask_text(flare_dictation::catalog::LIMITED_LANGUAGES_TEXT.into());
         self.push_editor(app, format);
     }
 
@@ -1156,6 +1322,12 @@ impl SettingsCtl {
 
     fn page_chosen(&mut self, id: &str) {
         self.page = page_static(id);
+        if self.page == "dictation" {
+            // The microphones are listed again, on a worker (the page never opens one).
+            crate::dictation_ctl::page_shown();
+        } else {
+            crate::dictation_ctl::page_left();
+        }
         crate::diag_ctl::crumb(
             "settings-page",
             &[("page", crate::diag_ctl::txt(self.page))],
@@ -1169,6 +1341,22 @@ impl SettingsCtl {
 
     /// Carries out one control event: the store writes, then the effects.
     pub fn event(&mut self, ev: Event) {
+        // The Dictation page's controls are dictation's: its stored keys, its store, its microphone.
+        let dictated = match &ev {
+            Event::Switch { row, on } if crate::dictation_ctl::owns_row(row) => {
+                Some(crate::dictation_ctl::page_switch(row, *on))
+            }
+            Event::Choose { row, option } if crate::dictation_ctl::owns_row(row) => {
+                Some(crate::dictation_ctl::page_choose(row, option))
+            }
+            _ => None,
+        };
+        if let Some(changed) = dictated {
+            if changed {
+                self.refresh_if_visible();
+            }
+            return;
+        }
         if matches!(&ev, Event::Switch { row, .. } if row == "diag-verbose") {
             // The switch writes the file; the rebuild that follows shows what it now holds.
             self.diag_verbose.set(None);
@@ -1232,6 +1420,12 @@ impl SettingsCtl {
     }
 
     fn row_button(&mut self, row: &str, button: &str) {
+        if crate::dictation_ctl::owns_row(row) {
+            if crate::dictation_ctl::page_button(row, button) {
+                self.refresh_if_visible();
+            }
+            return;
+        }
         if row == "slint" {
             if flare_term::web_url::is_web_url(button) {
                 (self.deps.open_path)(Path::new(button));
@@ -1251,6 +1445,13 @@ impl SettingsCtl {
             SaveFrom::MarkColours
         };
         self.event(Event::SaveChanges { from });
+    }
+
+    /// The Dictation page's one-line question: 0 Cancel, 1 Download.
+    fn dict_ask_answered(&mut self, n: i32) {
+        if crate::dictation_ctl::page_ask_answer(n == 1) {
+            self.refresh_if_visible();
+        }
     }
 
     fn ask_answered(&mut self, n: i32) {
@@ -1527,7 +1728,9 @@ impl SettingsCtl {
         let Some(r) = flare_settings::page::row_of(&built.model, row) else {
             return;
         };
-        let Control::Select { value, options } = &r.control else {
+        // The language picker and the microphone's picker open the same menu.
+        let (Control::Select { value, options } | Control::Mic { value, options, .. }) = &r.control
+        else {
             return;
         };
         let scale = Self::scale_of(&app);
@@ -1914,7 +2117,7 @@ mod tests {
     use crate::ui_harness::{Harness, SCALES};
     use flare_settings::kv::{Backend, MemoryBackend};
     use flare_settings::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
-    use flare_settings::page::{Button, Opt, PlaceholderDictation};
+    use flare_settings::page::{Button, Opt};
     use flare_settings::verb::{FakeDiag, FakeVerb, PendingVerb};
     use flare_settings::window_colours::ACCENT;
     use slint::Model;
@@ -1964,6 +2167,18 @@ mod tests {
     }
 
     fn fx_with(scale: f32, verb: Arc<dyn ExplorerVerb>) -> Fx {
+        fx_with_dictation(
+            scale,
+            verb,
+            Rc::new(crate::dictation_page::DictationPageProvider),
+        )
+    }
+
+    fn fx_with_dictation(
+        scale: f32,
+        verb: Arc<dyn ExplorerVerb>,
+        dictation: Rc<dyn DictationPage>,
+    ) -> Fx {
         let written = Arc::new(RecBackend {
             inner: MemoryBackend::new(),
             keys: Mutex::new(BTreeSet::new()),
@@ -1991,7 +2206,7 @@ mod tests {
             look: LookStore::new(prefs.clone()),
             diag: diag.clone(),
             verb,
-            dictation: Rc::new(PlaceholderDictation),
+            dictation,
             pick_folder: {
                 let answer = Rc::clone(&pick_answer);
                 Rc::new(move |_, done| done(answer.borrow().clone()))
@@ -2629,6 +2844,338 @@ mod tests {
         let stray: Vec<&String> = written.iter().filter(|k| !allowed.contains(*k)).collect();
         assert!(stray.is_empty(), "keys no row names: {stray:?}");
         assert!(!written.is_empty(), "the tour wrote something");
+    }
+
+    // ---- the Dictation page's controls (M8 Task 25) -------------------------------------------------
+
+    use crate::dictation_ctl::fixture::{fake_store, install_store, model_now, pump_until};
+
+    /// The Settings tab on the Dictation page, over the real provider, a fake store and no microphone.
+    /// Returns what must outlive the page: the store's temp folder and the fetch count.
+    fn fx_dict(
+        scale: f32,
+        urls: [&str; 3],
+    ) -> (Fx, tempfile::TempDir, Arc<std::sync::atomic::AtomicUsize>) {
+        let (store, dir, calls) = fake_store(urls);
+        install_store(store);
+        let f = fx_with_dictation(
+            scale,
+            Arc::new(FakeVerb::new(VerbState::Off)),
+            Rc::new(crate::dictation_page::DictationPageProvider),
+        );
+        f.page("dictation");
+        (f, dir, calls)
+    }
+
+    fn switch_dictation_on(f: &Fx) {
+        f.b().invoke_row_switch("dictation-enabled".into(), true);
+    }
+
+    #[test]
+    fn the_dictation_page_draws_every_card_and_every_control_at_every_scale() {
+        for scale in SCALES {
+            let (f, _dir, _calls) = fx_dict(scale, ["a", "b", "c"]);
+            let sections = f.sections();
+            let ids: Vec<String> = sections.iter().map(|s| s.id.to_string()).collect();
+            for want in ["dictation", "listening", "while", "models", "anywhere"] {
+                assert!(
+                    ids.iter().any(|i| i == want),
+                    "scale {scale}: no {want} card in {ids:?}"
+                );
+            }
+            let models = sections
+                .iter()
+                .find(|s| s.id == "models")
+                .expect("the models card");
+            let kinds: Vec<SetRow> = models.rows.iter().collect();
+            assert_eq!(
+                kinds.len(),
+                flare_dictation::catalog::visible_models().len(),
+                "scale {scale}: one block per model"
+            );
+            for r in &kinds {
+                assert_eq!(r.block, SlintBlock::Model);
+                assert!(
+                    r.h >= 64.0 - 1e-3,
+                    "scale {scale}: {} is {} high",
+                    r.id,
+                    r.h
+                );
+                for v in [r.y, r.h] {
+                    let d = v * scale;
+                    assert!(
+                        (d - d.round()).abs() < 1e-3,
+                        "scale {scale}: {} edge {v}",
+                        r.id
+                    );
+                }
+                assert!(!r.vendor.is_empty() && !r.size_text.is_empty(), "{}", r.id);
+            }
+            let key = f.row("dictation-hotkey").expect("the key row");
+            assert_eq!(key.kind, SetKind::Key);
+            assert_eq!(key.value, "Ctrl+Win");
+            assert!(!key.reset && !key.capturing);
+            let mic = f.row("dictation-mic").expect("the microphone row");
+            assert_eq!(mic.kind, SetKind::Mic);
+            assert_eq!(
+                mic.options.row_data(0).expect("System default first").name,
+                "System default"
+            );
+            let lang = f.row("dictation-language").expect("the language row");
+            assert_eq!(lang.kind, SetKind::Select);
+            assert!(!lang.limited);
+        }
+    }
+
+    #[test]
+    fn a_key_captured_from_the_page_is_stored_and_drawn() {
+        let (f, _dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        switch_dictation_on(&f);
+        f.b()
+            .invoke_row_button("dictation-hotkey".into(), "capture".into());
+        let row = f.row("dictation-hotkey").unwrap();
+        assert!(
+            row.capturing && !row.reset,
+            "the field waits and offers no Reset meanwhile"
+        );
+        // The window's key path takes the next keys; a lone Right Alt is taken on its release.
+        let ev = |pressed: bool| {
+            let e = flare_term::keys::KeyEvent::new("Alt", "AltRight")
+                .ctrl()
+                .alt();
+            if pressed { e } else { e.released() }
+        };
+        let keys = crate::dictation_ctl::DictationKeys;
+        assert!(keys.feed_key(&ev(true), false, &|| None));
+        assert!(keys.feed_key(&ev(false), true, &|| None));
+        let row = f.row("dictation-hotkey").unwrap();
+        assert_eq!(row.value, "Right Alt", "the page shows the new key");
+        assert!(!row.capturing);
+        assert!(row.reset, "a key that is not the default offers Reset");
+        assert!(
+            f.written
+                .keys
+                .lock()
+                .unwrap()
+                .contains("flare.dictation.hotkey")
+        );
+        // Reset puts the default back.
+        f.b()
+            .invoke_row_button("dictation-hotkey".into(), "reset".into());
+        let row = f.row("dictation-hotkey").unwrap();
+        assert_eq!((row.value.as_str(), row.reset), ("Ctrl+Win", false));
+    }
+
+    #[test]
+    fn the_switch_and_the_choices_of_the_page_write_and_undim_the_rows() {
+        let (f, _dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        assert!(
+            f.row("dictation-mic").unwrap().off,
+            "off dims every row under the switch"
+        );
+        switch_dictation_on(&f);
+        assert_eq!(f.prefs.get("flare.dictation.enabled").as_deref(), Some("1"));
+        assert!(!f.row("dictation-mic").unwrap().off);
+        f.b()
+            .invoke_row_choose("dictation-mode".into(), "toggle".into());
+        assert_eq!(
+            f.prefs.get("flare.dictation.mode").as_deref(),
+            Some("toggle")
+        );
+        assert_eq!(f.row("dictation-mode").unwrap().value, "toggle");
+        f.b()
+            .invoke_row_choose("dictation-language".into(), "no".into());
+        assert_eq!(f.row("dictation-language").unwrap().value, "no");
+        // The microphone picker opens the one menu and its choice writes.
+        crate::dictation_ctl::fixture::set_mics(&[("mic-1", "Headset")]);
+        f.b().invoke_page_chosen("terminal".into());
+        f.page("dictation");
+        let mic = f.row("dictation-mic").unwrap();
+        assert_eq!(mic.options.row_count(), 2);
+        f.b()
+            .invoke_select_open_request("dictation-mic".into(), 300.0, 200.0, 168.0, 32.0);
+        assert!(f.b().get_select_open());
+        assert_eq!(f.b().get_select_options().row_count(), 2);
+        f.b().invoke_select_chosen("mic-1".into());
+        assert_eq!(f.prefs.get("flare.dictation.mic").as_deref(), Some("mic-1"));
+        assert_eq!(f.row("dictation-mic").unwrap().value, "mic-1");
+    }
+
+    #[test]
+    fn a_limited_model_makes_the_language_row_limited_and_keeps_the_stored_language() {
+        let (f, _dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        switch_dictation_on(&f);
+        f.b()
+            .invoke_row_choose("dictation-language".into(), "no".into());
+        f.prefs.set("flare.dictation.model", "parakeet-v3");
+        f.pump();
+        let lang = f.row("dictation-language").unwrap();
+        assert!(lang.limited, "the model picks its own language");
+        assert_eq!(lang.value, "auto");
+        assert_eq!(
+            lang.row_tip,
+            flare_dictation::catalog::LIMITED_LANGUAGES_TEXT
+        );
+        assert_eq!(
+            f.prefs.get("flare.dictation.language").as_deref(),
+            Some("no"),
+            "the stored language is untouched"
+        );
+        f.prefs.set("flare.dictation.model", "base");
+        f.pump();
+        let lang = f.row("dictation-language").unwrap();
+        assert!(!lang.limited);
+        assert_eq!(lang.value, "no", "and comes back on a Whisper model");
+    }
+
+    #[test]
+    fn a_download_of_a_limited_model_asks_in_one_line_and_the_answer_decides() {
+        let (f, _dir, calls) = fx_dict(1.0, ["a", "b", "c"]);
+        switch_dictation_on(&f);
+        let n = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        f.b()
+            .invoke_row_button("parakeet-v3".into(), "download".into());
+        assert!(f.b().get_dict_ask_open(), "Download on Parakeet asks first");
+        assert_eq!(
+            f.b().get_dict_ask_text(),
+            flare_dictation::catalog::LIMITED_LANGUAGES_TEXT
+        );
+        assert_eq!(n(), 0, "nothing downloads while it asks");
+        assert_eq!(f.row("parakeet-v3").unwrap().state, "absent");
+        f.b().invoke_dict_ask_answered(0);
+        assert!(!f.b().get_dict_ask_open());
+        assert_eq!(n(), 0);
+        // Escape, with no Slint control holding it, is Cancel too.
+        f.b()
+            .invoke_row_button("parakeet-v3".into(), "download".into());
+        assert!(f.b().get_dict_ask_open());
+        assert!(f.ctl.borrow_mut().escape());
+        assert!(!f.b().get_dict_ask_open());
+        // Download starts it; the first model anyone downloads becomes the one in use.
+        f.b()
+            .invoke_row_button("parakeet-v3".into(), "download".into());
+        f.b().invoke_dict_ask_answered(1);
+        assert!(!f.b().get_dict_ask_open());
+        pump_until("the download", || model_now() == "parakeet-v3");
+        let row = f.row("parakeet-v3").unwrap();
+        assert_eq!(row.state, "active");
+        assert_eq!(row.badge, "Active");
+        assert_eq!(row.buttons.row_count(), 1);
+        assert_eq!(row.buttons.row_data(0).unwrap().id, "uninstall");
+        assert_eq!(row.button_title, "Delete Parakeet v3 from this PC.");
+        // A Whisper model asks nothing.
+        f.b().invoke_row_button("base".into(), "download".into());
+        assert!(!f.b().get_dict_ask_open());
+        pump_until("whisper", || f.row("base").unwrap().state == "installed");
+        // Uninstall removes the active model and clears the stored id.
+        f.b()
+            .invoke_row_button("parakeet-v3".into(), "uninstall".into());
+        pump_until("the removal", || model_now().is_empty());
+        assert_eq!(f.row("parakeet-v3").unwrap().state, "absent");
+    }
+
+    #[test]
+    fn the_gpu_disable_button_is_as_wide_as_its_word_and_the_tip_is_a_title() {
+        use flare_settings::page::Button;
+        use flare_settings::page::dictation::{GpuRow, ModelState};
+        let tip = "Turns GPU acceleration off and frees 675 MB of disk space.";
+        let g = GpuRow {
+            state: ModelState::Installed,
+            failure: None,
+            badge: Some("Enabled"),
+            sub: String::new(),
+            buttons: vec![Button {
+                id: "disable",
+                label: "Disable".to_string(),
+                alt: Some(tip.to_string()),
+                off: false,
+            }],
+            title: tip.to_string(),
+        };
+        let row = to_slint_gpu(&g, 0.0, 64.0);
+        let b = row.buttons.row_data(0).unwrap();
+        assert_eq!(b.label, "Disable");
+        assert_eq!(
+            b.label_alt, "",
+            "a sentence in label_alt would size the button"
+        );
+        assert_eq!(row.button_title, tip, "the tip still arrives as the title");
+    }
+
+    #[test]
+    fn a_failed_download_says_why_and_offers_retry() {
+        let (f, _dir, _calls) = fx_dict(1.0, ["fail", "b", "c"]);
+        switch_dictation_on(&f);
+        f.b().invoke_row_button("base".into(), "download".into());
+        pump_until("the failure", || {
+            f.row("base").unwrap().sub == "The download failed."
+        });
+        let row = f.row("base").unwrap();
+        assert_eq!(row.state, "absent");
+        assert_eq!(row.buttons.row_data(0).unwrap().label, "Retry");
+        assert_eq!(
+            f.row("small").unwrap().buttons.row_data(0).unwrap().label,
+            "Download"
+        );
+    }
+
+    #[test]
+    fn the_test_button_runs_the_meter_and_leaving_the_page_ends_it() {
+        let (f, dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        crate::dictation_ctl::fixture::silent_mic(dir.path());
+        switch_dictation_on(&f);
+        let before = flare_dictation::mic::opens_on_this_thread();
+        assert_eq!(f.b().get_dict_level(), 0.0);
+        f.b()
+            .invoke_row_button("dictation-mic".into(), "test".into());
+        assert!(f.row("dictation-mic").unwrap().testing);
+        assert_eq!(flare_dictation::mic::opens_on_this_thread(), before + 1);
+        // Leaving the page lets the microphone go.
+        f.b().invoke_page_chosen("terminal".into());
+        f.page("dictation");
+        assert!(!f.row("dictation-mic").unwrap().testing);
+        assert!(!crate::timer_registry::running("dictation.mic-test"));
+        assert_eq!(f.b().get_dict_level(), 0.0);
+    }
+
+    #[test]
+    fn building_and_showing_the_page_opens_no_microphone() {
+        let (f, dir, _calls) = fx_dict(1.0, ["a", "b", "c"]);
+        crate::dictation_ctl::fixture::silent_mic(dir.path());
+        let before = flare_dictation::mic::opens_on_this_thread();
+        // The whole page, built with dictation off and on, listed, shown, left and shown again.
+        switch_dictation_on(&f);
+        let _ = crate::dictation_ctl::page_mics();
+        crate::dictation_ctl::page_shown();
+        f.b().invoke_page_chosen("terminal".into());
+        f.page("dictation");
+        crate::dictation_ctl::page_shown();
+        assert!(f.row("dictation-mic").is_some());
+        assert_eq!(
+            flare_dictation::mic::opens_on_this_thread(),
+            before,
+            "page_data, page_shown and page_mics open nothing"
+        );
+        // Only the Test button does, once.
+        f.b()
+            .invoke_row_button("dictation-mic".into(), "test".into());
+        assert_eq!(flare_dictation::mic::opens_on_this_thread(), before + 1);
+    }
+
+    #[test]
+    fn the_models_card_and_the_buttons_follow_the_store_not_the_page() {
+        // With dictation off the models card is live: it reads the one store, and nothing is dimmed (F2).
+        let (f, _dir, calls) = fx_dict(1.0, ["a", "b", "c"]);
+        for r in f
+            .sections()
+            .iter()
+            .filter(|s| s.id == "models")
+            .flat_map(|s| s.rows.iter())
+        {
+            assert_eq!(r.state, "absent", "{}", r.id);
+            assert!(!r.off, "{} is live while dictation is off (F2)", r.id);
+        }
+        let _ = calls;
     }
 
     // ---- the wall, the select menu and every scaling -----------------------------------------------

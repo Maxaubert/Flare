@@ -11,17 +11,22 @@ import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "typ
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { TermScrollbar } from "scrollbar.slint";
+import { DictationPill } from "dictation_pill.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
 import { SettingsView, SettingsBridge } from "settings/view.slint";
 import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
+import { DictAsk } from "settings/dictation.slint";
 import { HelpPanel } from "settings/help_panel.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
-export { MarkMotion, MarkPreview } from "tabmark.slint";
+export { MarkMotion, MarkPreview, DictationTabMark, DictationTabMarkPreview, DictationTabMarkScene } from "tabmark.slint";
+export { DictationPill, DictationPillPreview } from "dictation_pill.slint";
+export { DictationWidget } from "dictation_widget.slint";
+export { DictationPageControls } from "settings/dictation.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
 export { BadgePreview } from "badge.slint";
@@ -35,7 +40,7 @@ export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
-export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell } from "settings/types.slint";
+export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell, RowLook } from "settings/types.slint";
 export { ControlsPreview } from "settings/controls.slint";
 export { SliderPreview } from "settings/slider.slint";
 export { SelectPreview, SelectMenu } from "settings/select.slint";
@@ -396,6 +401,12 @@ export component AppWindow inherits Window {
     in property <float> scroll-top: 0;
     in property <float> scroll-len: 1;
     in property <bool> scroll-back: false;
+    // The dictation pill (M8): fed from dictation_ctl::view() by dictation_ctl's host; 0 mounts nothing.
+    in property <int> dict-phase: 0;
+    in property <bool> dict-starting: false;
+    in property <string> dict-live-text;
+    in property <string> dict-message;
+    in property <float> dict-level: 0;
     out property <length> scroll-strip-x: scroll-bar.strip-x;
     out property <length> scroll-strip-w: scroll-bar.strip-w;
     out property <length> scroll-thumb-x: scroll-bar.thumb-x;
@@ -677,6 +688,17 @@ export component AppWindow inherits Window {
                             len: root.scroll-len;
                             back: root.scroll-back;
                         }
+                        dict-pill := DictationPill {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            phase: root.dict-phase;
+                            starting: root.dict-starting;
+                            live-text: root.dict-live-text;
+                            message: root.dict-message;
+                            level: root.dict-level;
+                        }
                     }
                     settings-view := SettingsView {
                         visible: root.front-kind == 1;
@@ -919,6 +941,16 @@ export component AppWindow inherits Window {
             height: root.height;
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
+        }
+        // The Dictation page's one-line question before a download (M8 Task 25).
+        dict-ask := DictAsk {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.dict-ask-open;
+            text: SettingsBridge.dict-ask-text;
+            answered(n) => { SettingsBridge.dict-ask-answered(n); }
         }
         ColourPopover {
             x: 0px;

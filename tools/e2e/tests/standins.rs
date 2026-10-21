@@ -33,8 +33,11 @@ fn hook_line_parses_with_the_real_agent_parser() {
     let rows = agent_hook_events();
     assert_eq!(rows.len(), 25);
     for row in rows {
+        // `+sid`: the turn's own hooks also name the Claude session (N25).
+        let sid = "f1f2f3f4-a5a6-4b70-8c9d-0e1f2a3b4c5d";
         let (state, payload) = match row.args.split_once(' ') {
             Some(("failed", kind)) => ("failed", json!({ "kind": kind })),
+            Some((state, "+sid")) => (state, json!({ "session": sid })),
             _ => (row.args.as_str(), json!({})),
         };
         let line = hook_line(state, &payload);

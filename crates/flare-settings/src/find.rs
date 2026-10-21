@@ -248,6 +248,25 @@ mod tests {
         list.iter().map(|x| x.to_string()).collect()
     }
 
+    #[test]
+    fn the_index_has_39_rows_without_nvidia() {
+        // 30 rows outside dictation, 8 dictation rows and From any app (the GPU row needs NVIDIA).
+        let n = settings_index(&IndexEnv {
+            nvidia: false,
+            dictation_wired: true,
+        })
+        .len();
+        assert_eq!(n, 39);
+        assert!(
+            settings_index(&IndexEnv {
+                nvidia: false,
+                dictation_wired: true,
+            })
+            .iter()
+            .any(|e| e.id == "dictation-anywhere" && e.section == "From any app")
+        );
+    }
+
     fn index_all() -> Vec<IndexEntry> {
         settings_index(&IndexEnv {
             nvidia: true,
@@ -354,8 +373,9 @@ mod tests {
         };
         assert_eq!(count(true, false), 0);
         assert_eq!(count(false, false), 0);
-        assert_eq!(count(false, true), 8);
-        assert_eq!(count(true, true), 9);
+        // Eight dictation rows, From any app (N12, N31), and the GPU row with NVIDIA.
+        assert_eq!(count(false, true), 9);
+        assert_eq!(count(true, true), 10);
     }
 
     #[test]

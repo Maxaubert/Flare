@@ -12,6 +12,7 @@ use super::driver;
 use super::strip::snap;
 use crate::ctx::{App, Ctx, Launch};
 use crate::pixels::{contrast, mix, Rgb};
+use crate::world::World;
 
 /// A row's icon tile is 32 css px square, 14 px in from the row's left edge, and the label column
 /// starts 14 px after it (`SetRowFrame`: padding-left 14, the tile, spacing 14).
@@ -320,9 +321,11 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
     // The catalogue of rows, read as data (PT reads the option tables as text).
     let cat = probe(&mut app, "settings.rows", json!({ "catalogue": true }));
     let all: Vec<Value> = cat["rows"].as_array().cloned().unwrap_or_default();
+    // PT's `onlyWhere` rows (the GPU row) are not wanted on a PC without an NVIDIA card, which this run is.
     let core: Vec<Value> = all
         .iter()
         .filter(|r| str_of(r, "source") != "app")
+        .filter(|r| !r["only_nvidia"].as_bool().unwrap_or(false))
         .cloned()
         .collect();
     let wanted: Vec<String> = core.iter().map(|r| str_of(r, "id").to_string()).collect();
@@ -367,17 +370,18 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
         per_page.push((tab, v));
     }
 
-    // The Dictation rows are M8's: the page draws no dictation row until M8 (Task 47), so they are
-    // skipped here and not counted as missing.
-    let (dictation, terminal): (Vec<&Value>, Vec<&Value>) = core
-        .iter()
-        .partition(|r| str_of(r, "source") == "dictation");
-    if !dictation.is_empty() {
-        ctx.skip(&format!(
-            "the {} Dictation rows are M8's: the page draws none until M8 (Task 47)",
-            dictation.len()
-        ));
+    // The Dictation rows are on their page (M8 Task 24), so every core row is wanted, dictation's too.
+    // REPLACED: PT's `dictation-model` is one wrapper round the model rows; Flare draws each model as
+    // its own block, so the wrapper counts as shown when a model block is drawn.
+    let models_drawn = per_page.iter().any(|(_, v)| {
+        v["rows"]
+            .as_array()
+            .is_some_and(|rs| rs.iter().any(|r| str_of(r, "block") == "model"))
+    });
+    if models_drawn {
+        shown.insert("dictation-model".to_string());
     }
+    let terminal: Vec<&Value> = core.iter().collect();
     let wanted: Vec<String> = terminal
         .iter()
         .map(|r| str_of(r, "id").to_string())
@@ -388,7 +392,7 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
         format!("every terminal option is on the page (missing: {missing:?})"),
     );
     // ONE ORDER IN BOTH APPS, per section: each core section is drawn once, is one panel, and its
-    // rows come in the list's own order. The Dictation sections are M8's (skipped above).
+    // rows come in the list's own order, the Dictation section's included.
     let mut core_sections: Vec<String> = Vec::new();
     for r in &terminal {
         let s = str_of(r, "section").to_string();
@@ -401,6 +405,7 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
             .iter()
             .filter(|r| str_of(r, "section") == s)
             .map(|r| str_of(r, "id").to_string())
+            .filter(|id| id != "dictation-model") // the models' wrapper: its blocks are the rows
             .collect();
         let drawn: Vec<&Value> = sections.iter().filter(|x| str_of(x, "id") == s).collect();
         ctx.ok(
@@ -461,8 +466,16 @@ pub fn options(ctx: &mut Ctx) -> Result<(), String> {
         "the GPU row is not offered without an NVIDIA card",
     );
 
-    // The layout. The dictation model manager's rows are placeholders until M8.
-    ctx.skip("the model manager is laid out: its rows are placeholders until M8 (Task 47)");
+    // The model manager is laid out (PT's base row: padded, wider than 400px). REPLACED: the bridge
+    // carries a row's size only, not its padding, so the base row's height (at least 58px) stands in.
+    goto_page(ctx, &mut app, "dictation");
+    let base = probe(&mut app, "settings.row", json!({ "id": "base" }));
+    let base_w = base["rect"]["w"].as_f64().unwrap_or(0.0);
+    let base_h = base["rect"]["h"].as_f64().unwrap_or(0.0);
+    ctx.ok(
+        base_w > 400.0 && base_h >= 58.0,
+        format!("the model manager is laid out ({base_w:.0}x{base_h:.0}px)"),
+    );
     // Every row is at least 58px tall. The Flare bridge carries a row's height only: its padding
     // (PT's 8px) is not probed, so only the height is checked here.
     let heights: Vec<f64> = per_page
@@ -529,7 +542,6 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
         app.close();
         return Ok(());
     }
-    ctx.skip("a warning subtext reads 4.5:1: the dictation warning belongs to M8");
 
     // The accent, from the start screen's mark (the same accent the window draws in).
     let accent = rgb_of_hex(str_of(
@@ -650,7 +662,61 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
 
     resize(&mut app, 1600.0, 1000.0);
     app.close();
+    // PT: a warning subtext reads 4.5:1 (dictation on with no model). Its own app, after this one.
+    let sub = warning_subtext(ctx);
+    ctx.ok(
+        sub.is_some_and(|s| s >= 4.5),
+        format!("a warning subtext reads 4.5:1 ({sub:?})"),
+    );
     Ok(())
+}
+
+/// An app with dictation switched on in its profile (no sounds, no media pause) and no model, on a
+/// world of its own, with a models folder of the scenario's own: nothing is looked for on this PC.
+/// The world is returned beside the app, and must live as long as the app runs.
+pub fn seeded_dictation_app(ctx: &mut Ctx) -> Option<(World, App)> {
+    let w = ctx.new_world();
+    std::fs::create_dir_all(&w.profile).ok()?;
+    let seeded = json!({
+        "flare.dictation.enabled": "1",
+        "flare.dictation.sounds": "0",
+        "flare.dictation.pauseMedia": "0"
+    });
+    std::fs::write(w.profile.join("settings.json"), seeded.to_string()).ok()?;
+    let root = w.root.join("dictation");
+    let mut app = ctx
+        .launch_in(
+            &w,
+            Launch {
+                folders: vec![w.alpha.clone()],
+                env: vec![
+                    (
+                        concat!("FLARE_DICTATION", "_ROOT").to_string(),
+                        root.to_string_lossy().into_owned(),
+                    ),
+                    (concat!("FLARE_E2E", "_NVIDIA").to_string(), "0".to_string()),
+                ],
+                ..Launch::default()
+            },
+        )
+        .ok()?;
+    ctx.until("one tab open", 15_000, &mut || tabs(&mut app) == 1);
+    resize(&mut app, 1600.0, 1000.0);
+    Some((w, app))
+}
+
+/// PT settingsLook's warning (run.mjs 5774-5782): with dictation on and no model, the warning subtext
+/// reads 4.5:1. Flare reads the Dictation card's first row, where the warning sits. None when the
+/// card draws no subtext.
+fn warning_subtext(ctx: &mut Ctx) -> Option<f64> {
+    let (_world, mut app) = seeded_dictation_app(ctx)?;
+    let sub = if open_settings(ctx, &mut app) && goto_page(ctx, &mut app, "dictation") {
+        read_row_look(ctx, &mut app, false, "settings-warning").and_then(|l| l.sub)
+    } else {
+        None
+    };
+    app.close();
+    sub
 }
 
 /// PT: run.mjs:5510-5606. Find a setting: the index holds every row, the field owns Escape only
@@ -660,17 +726,15 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = launch_with_tab(ctx)?;
     ctx.until("one tab open", 15_000, &mut || tabs(&mut app) == 1);
     resize(&mut app, 1600.0, 1000.0);
-    // The index: every row of the catalogue that is findable on this PC (the NVIDIA-only row and
-    // the Dictation page, which is not wired until M8, are not indexed).
+    // The index: every row of the catalogue that is findable on this PC (the NVIDIA-only row is not
+    // indexed here; the Dictation page is wired, M8 Task 24, so its rows are).
     let cat = probe(&mut app, "settings.rows", json!({ "catalogue": true }));
     let indexed: Vec<(String, String)> = cat["rows"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter(|r| {
-            !r["only_nvidia"].as_bool().unwrap_or(false) && str_of(r, "page") != "dictation"
-        })
+        .filter(|r| !r["only_nvidia"].as_bool().unwrap_or(false))
         .map(|r| (str_of(r, "id").to_string(), str_of(r, "label").to_string()))
         .collect();
     ctx.ok(
@@ -736,9 +800,17 @@ pub fn settings_search(ctx: &mut Ctx) -> Result<(), String> {
         }
         let _ = app.session.key("ArrowDown");
         let _ = app.session.key("Enter");
-        let landed = ctx.until(&format!("{id} is flashed on screen"), 4_000, &mut || {
-            row_landed(&mut app, id)
-        });
+        // REPLACED: the models' wrapper is no row (its model blocks are drawn), so the Dictation page
+        // it lives on is what must be on screen.
+        let landed = if id == "dictation-model" {
+            ctx.until(&format!("{id} is on its page"), 4_000, &mut || {
+                rows_now(&mut app)["page"] == json!("dictation")
+            })
+        } else {
+            ctx.until(&format!("{id} is flashed on screen"), 4_000, &mut || {
+                row_landed(&mut app, id)
+            })
+        };
         if !landed {
             misses.push(format!("{id}: not on screen and flashed"));
         }

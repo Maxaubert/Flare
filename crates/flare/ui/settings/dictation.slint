@@ -1,0 +1,723 @@
+// The Dictation page's controls (M8 Task 25): the key field, the microphone with its meter, the limited-language
+// mark, one speech model or GPU row, and the one-line question before a model that does not support every language.
+// PT core/renderer/settings/dictation/parts.tsx (HotkeyField, MicField, LimitedMark) and sections/DictationPage.tsx
+// (ModelRow), components/ModelDownloadAsk.tsx. Rust positions everything; nothing here measures a row to size it.
+// The accent is PT's own here: the capture ring, the meter and the download bar are accent-hi, the Active badge
+// is the accent fill (DictationPage.tsx ModelRow), and Recommended is an accent-hi outline.
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
+import { SetOption, SetRow, SetButton, RowLook } from "types.slint";
+import { SetRowButton } from "controls.slint";
+import { SetSelect } from "select.slint";
+import { SetSubtext } from "row.slint";
+
+// The simple-icons outlines PT's VendorMark draws (CC0), on a 24 unit box.
+export global DictVendor {
+    out property <string> openai: "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z";
+    out property <string> nvidia: "M8.948 8.798v-1.43a6.7 6.7 0 0 1 .424-.018c3.922-.124 6.493 3.374 6.493 3.374s-2.774 3.851-5.75 3.851c-.398 0-.787-.062-1.158-.185v-4.346c1.528.185 1.837.857 2.747 2.385l2.04-1.714s-1.492-1.952-4-1.952a6.016 6.016 0 0 0-.796.035m0-4.735v2.138l.424-.027c5.45-.185 9.01 4.47 9.01 4.47s-4.08 4.964-8.33 4.964c-.37 0-.733-.035-1.095-.097v1.325c.3.035.61.062.91.062 3.957 0 6.82-2.023 9.593-4.408.459.371 2.34 1.263 2.73 1.652-2.633 2.208-8.772 3.984-12.253 3.984-.335 0-.653-.018-.971-.053v1.864H24V4.063zm0 10.326v1.131c-3.657-.654-4.673-4.46-4.673-4.46s1.758-1.944 4.673-2.262v1.237H8.94c-1.528-.186-2.73 1.245-2.73 1.245s.68 2.412 2.739 3.11M2.456 10.9s2.164-3.197 6.5-3.533V6.201C4.153 6.59 0 10.653 0 10.653s2.35 6.802 8.948 7.42v-1.237c-4.84-.6-6.492-5.936-6.492-5.936z";
+}
+
+// The dictation key: a Reset button (only when the key is not the default and no key is awaited), then the
+// field: 112 wide at least, the key's name in the mono face, or "Press a key…" in accent-hi while it listens.
+export component DictKeyField inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> capturing;
+    in property <bool> reset;
+    in property <bool> disabled;
+    in property <string> label;
+    in property <string> sub;
+    callback pressed();
+    callback reset-clicked();
+    out property <length> field-x: key.absolute-position.x;
+    out property <length> field-y: key.absolute-position.y;
+    out property <length> field-w: key.width;
+    out property <length> field-h: key.height;
+    out property <bool> reset-shown: root.reset && !root.capturing;
+
+    public function focus-me() {
+        fs.focus();
+    }
+
+    spacing: 8px;
+    alignment: end;
+
+    if root.reset && !root.capturing: VerticalLayout {
+        alignment: center;
+        rst := SetRowButton {
+            label: "Reset";
+            off: root.disabled;
+            clicked => { root.reset-clicked(); }
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        key := Rectangle {
+            width: max(112px, lbl.preferred-width + 24px);
+            height: SettingsShape.control-h;
+            border-radius: SettingsShape.radius-sm;
+            background: root.capturing ? transparent : (ta.has-hover && !root.disabled ? Theme.hover : Theme.control);
+            border-width: Px.hair();
+            border-color: root.capturing ? Theme.accent-hi : Theme.divider;
+            opacity: root.disabled ? 0.5 : 1;
+            accessible-role: button;
+            accessible-label: root.label;
+            accessible-description: root.capturing ? "Press a key" : root.text;
+            accessible-action-default => {
+                if !root.disabled {
+                    root.pressed();
+                }
+            }
+
+            lbl := Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.capturing ? "Press a key…" : root.text;
+                font-family: SettingsFixed.font-mono;
+                font-size: 11.5px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: root.capturing ? Theme.accent-hi : Theme.text;
+            }
+
+            // The capture itself reads keys in Rust (the window's key path); the field only starts it.
+            fs := FocusScope {
+                width: parent.width;
+                height: parent.height;
+                key-pressed(e) => {
+                    if (e.text == Key.Space || e.text == Key.Return) && !root.disabled && !root.capturing {
+                        root.pressed();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            ta := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: !root.disabled;
+                clicked => { root.pressed(); }
+            }
+        }
+    }
+}
+
+// The microphone: a 96 by 6 meter track (always drawn, so the row never changes shape when a test starts), the
+// Test / Stop button, and the picker. `level` is the smoothed meter, 0 to 1, written by Rust.
+export component DictMicField inherits HorizontalLayout {
+    in property <[SetOption]> options;
+    in property <string> value;
+    in property <bool> disabled;
+    in property <bool> testing;
+    in property <float> level;
+    in property <string> label;
+    in property <string> sub;
+    in property <bool> open;
+    callback test-clicked();
+    callback open-request(length, length, length, length);
+    callback tip(string, length, length, length, length);
+    out property <length> track-x: track.absolute-position.x;
+    out property <length> track-y: track.absolute-position.y;
+    out property <length> track-w: track.width;
+    out property <length> track-h: track.height;
+    out property <length> fill-w: fill.width;
+    out property <length> test-x: test.absolute-position.x;
+    out property <length> test-w: test.width;
+    out property <length> select-x: sel.absolute-position.x;
+    out property <length> select-w: sel.width;
+
+    public function focus-me() {
+        sel.focus-me();
+    }
+
+    spacing: 8px;
+    alignment: end;
+
+    VerticalLayout {
+        alignment: center;
+        track := Rectangle {
+            width: 96px;
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.track;
+            clip: true;
+            fill := Rectangle {
+                x: 0px;
+                width: root.testing ? parent.width * max(0.0, min(1.0, root.level)) : 0px;
+                height: parent.height;
+                border-radius: 3px;
+                background: Theme.accent-hi;
+                animate width { duration: Motion.d(80ms); easing: linear; }
+            }
+            ta := TouchArea {
+                changed has-hover => {
+                    if self.has-hover && root.testing {
+                        root.tip("Speak: the bar should move", root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                    }
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        test := SetRowButton {
+            label: root.testing ? "Stop" : "Test";
+            off: root.disabled;
+            clicked => { root.test-clicked(); }
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        sel := SetSelect {
+            width: SettingsShape.select-min-w;
+            options: root.options;
+            value: root.value;
+            disabled: root.disabled;
+            label: root.label;
+            sub: root.sub;
+            open: root.open;
+            open-request(x, y, w, h) => { root.open-request(x, y, w, h); }
+        }
+    }
+}
+
+// The globe beside the language picker while the active model picks its own language: 24 square, the dim ink,
+// and the same one line as the download question on hover (PT LimitedMark).
+export component DictLimitedMark inherits Rectangle {
+    in property <string> text;
+    callback tip(string, length, length, length, length);
+    width: 24px;
+    height: 24px;
+    accessible-role: image;
+    accessible-label: root.text;
+    // 15 px glyph centred in the 24 px box; the stroked box grows by one stroke and moves back (see the other glyphs).
+    Path {
+        x: (24px - 15px) / 2 - (1.9 * 15px / 24) / 2;
+        y: (24px - 15px) / 2 - (1.9 * 15px / 24) / 2;
+        width: 15px + (1.9 * 15px / 24);
+        height: 15px + (1.9 * 15px / 24);
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0z M3 12h18 M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z";
+        fill: transparent;
+        stroke: Theme.dim;
+        stroke-width: 1.9 * 15px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            }
+        }
+    }
+}
+
+// A small capsule: Recommended (an accent-hi outline) or the badge (a filled accent). 9.5 px bold, upper case,
+// tracking 0.04 em, 14 px line, 7 px sides.
+component DictPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> filled;
+    width: lbl.preferred-width + 14px + 2 * Px.hair();
+    height: 14px + 2 * Px.hair();
+    border-radius: self.height / 2;
+    border-width: Px.hair();
+    border-color: root.filled ? transparent : Theme.accent-hi;
+    background: root.filled ? Theme.accent : transparent;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    lbl := Text {
+        x: 7px + Px.hair();
+        y: Px.hair();
+        height: 14px;
+        text: root.text.to-uppercase();
+        font-family: SettingsFixed.font-text;
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.38px;
+        vertical-alignment: center;
+        color: root.filled ? Theme.on-accent : Theme.accent-hi;
+    }
+}
+
+// One speech model or the GPU pack (PT ModelRow): the vendor's mark, the name, the size, the badges and the note;
+// on the right the state's controls. The row is as wide as its panel and as tall as Rust says (64 at least).
+export component DictModelRow inherits Rectangle {
+    in property <SetRow> data;
+    in property <bool> first;
+    // The id of the button pressed.
+    callback pressed(string);
+    callback tip(string, length, length, length, length);
+    // What the row drew, said once it is built and again whenever any of it changes (the e2e reads it).
+    callback look(RowLook);
+    property <bool> active: root.data.state == "active";
+    property <bool> off: root.data.off;
+    out property <length> mark-x: mark.absolute-position.x - root.absolute-position.x;
+    out property <length> mark-y: mark.absolute-position.y - root.absolute-position.y;
+    out property <length> mark-w: mark.width;
+    out property <length> mark-h: mark.height;
+    out property <length> name-x: name.absolute-position.x - root.absolute-position.x;
+    out property <length> right-x: ctrls.absolute-position.x - root.absolute-position.x;
+    out property <length> text-right-x: text-col.absolute-position.x - root.absolute-position.x + text-col.width;
+    out property <length> buttons-w: ctrls.width;
+    out property <bool> downloading: root.data.state == "downloading";
+    property <RowLook> now: {
+        id: root.data.id, row-h: root.height,
+        mark-x: root.mark-x, mark-y: root.mark-y, mark-w: root.mark-w, mark-h: root.mark-h, name-x: root.name-x,
+        b0-id: ctrls.has0 ? root.data.buttons[0].id : "",
+        b0-x: b0.absolute-position.x - root.absolute-position.x, b0-y: b0.absolute-position.y - root.absolute-position.y,
+        b0-w: b0.width, b0-h: b0.height, b0-fill: b0.fill, b0-edge: b0.edge, b0-radius: b0.radius, b0-ink: b0.ink,
+        b1-id: ctrls.has1 ? root.data.buttons[1].id : "",
+        b1-x: b1.absolute-position.x - root.absolute-position.x, b1-y: b1.absolute-position.y - root.absolute-position.y,
+        b1-w: b1.width, b1-h: b1.height, b1-fill: b1.fill, b1-edge: b1.edge, b1-radius: b1.radius, b1-ink: b1.ink,
+    };
+    init => { root.look(root.now); }
+    changed now => { root.look(root.now); }
+
+    // A whisper of a fill for the row in use (PT: text 2.5 percent).
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: root.active ? Theme.text.with-alpha(0.025) : transparent;
+    }
+    // The hairline above the row, from the text column (before:left-16).
+    Rectangle {
+        x: 64px;
+        y: 0px;
+        width: root.width - 64px;
+        height: Px.hair();
+        background: Theme.line;
+        visible: !root.first;
+    }
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        opacity: root.off ? 0.45 : 1;
+        HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding-left: 14px;
+            padding-right: 16px;
+            spacing: 14px;
+            VerticalLayout {
+                alignment: center;
+                width: 36px;
+                mark := Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 8px;
+                    background: Theme.control;
+                    border-width: Px.hair();
+                    border-color: Theme.divider;
+                    accessible-role: image;
+                    accessible-label: root.data.vendor == "nvidia" ? "NVIDIA" : "OpenAI";
+                    Path {
+                        x: 9px;
+                        y: 9px;
+                        width: 18px;
+                        height: 18px;
+                        viewbox-width: 24;
+                        viewbox-height: 24;
+                        commands: root.data.vendor == "nvidia" ? DictVendor.nvidia : DictVendor.openai;
+                        fill: Theme.text;
+                    }
+                }
+            }
+            text-col := VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 2px;
+                HorizontalLayout {
+                    height: 17px;
+                    spacing: 8px;
+                    alignment: start;
+                    name := Text {
+                        min-width: 0px;
+                        text: root.data.label;
+                        font-family: Theme.font-ui;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.data.size-text;
+                        font-family: SettingsFixed.font-mono;
+                        font-size: 11px;
+                        color: Theme.dim;
+                        vertical-alignment: center;
+                        wrap: no-wrap;
+                    }
+                    if root.data.recommended: VerticalLayout {
+                        alignment: center;
+                        DictPill { text: "Recommended"; filled: false; }
+                    }
+                    if root.data.badge != "": VerticalLayout {
+                        alignment: center;
+                        DictPill { text: root.data.badge; filled: true; }
+                    }
+                }
+                SetSubtext {
+                    text: root.data.sub;
+                    warn: root.data.warn;
+                    tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
+                }
+            }
+            // The controls: the download's bar and percentage, then up to two buttons. Not a layout of repeaters:
+            // a layout does not know the width of what it repeats, so the text column would run under the buttons.
+            ctrls := Rectangle {
+                property <bool> has0: root.data.buttons.length > 0;
+                property <bool> has1: root.data.buttons.length > 1;
+                property <length> bar-group: root.downloading ? 112px + 8px + 36px + (self.has0 ? 10px : 0px) : 0px;
+                property <length> w0: self.has0 ? b0.width + (self.has1 ? 10px : 0px) : 0px;
+                property <length> w1: self.has1 ? b1.width : 0px;
+                width: self.bar-group + self.w0 + self.w1;
+                if root.downloading: Rectangle {
+                    x: 0px;
+                    width: 112px + 8px + 36px;
+                    height: parent.height;
+                    bar := Rectangle {
+                        x: 0px;
+                        y: (parent.height - 6px) / 2;
+                        width: 112px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.track;
+                        clip: true;
+                        Rectangle {
+                            x: 0px;
+                            width: parent.width * max(0, min(100, root.data.num)) / 100;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.accent-hi;
+                        }
+                    }
+                    Text {
+                        x: 120px;
+                        width: 36px;
+                        height: parent.height;
+                        text: "" + root.data.num + "%";
+                        font-family: SettingsFixed.font-mono;
+                        font-size: 11px;
+                        color: Theme.dim;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+                b0 := SetRowButton {
+                    visible: ctrls.has0;
+                    x: ctrls.bar-group;
+                    y: (parent.height - self.height) / 2;
+                    label: root.data.buttons[0].label;
+                    label-alt: root.data.buttons[0].label-alt;
+                    alt: root.data.buttons[0].alt;
+                    off: root.data.buttons[0].off || root.off;
+                    icon: root.data.buttons[0].id == "uninstall" ? "M6 6l12 12M18 6L6 18" : "";
+                    title: (root.data.buttons[0].id == "uninstall" || root.data.buttons[0].id == "disable") ? root.data.button-title : "";
+                    clicked => { root.pressed(root.data.buttons[0].id); }
+                    tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+                }
+                b1 := SetRowButton {
+                    visible: ctrls.has1;
+                    x: ctrls.bar-group + ctrls.w0;
+                    y: (parent.height - self.height) / 2;
+                    label: root.data.buttons[1].label;
+                    label-alt: root.data.buttons[1].label-alt;
+                    alt: root.data.buttons[1].alt;
+                    off: root.data.buttons[1].off || root.off;
+                    icon: root.data.buttons[1].id == "uninstall" ? "M6 6l12 12M18 6L6 18" : "";
+                    title: (root.data.buttons[1].id == "uninstall" || root.data.buttons[1].id == "disable") ? root.data.button-title : "";
+                    clicked => { root.pressed(root.data.buttons[1].id); }
+                    tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+                }
+            }
+        }
+    }
+}
+
+// The one-line question before a model that does not support every language is downloaded (PT ModelDownloadAsk):
+// the line, Cancel and Download, and nothing else. Answers: 0 Cancel, 1 Download. Escape and a press outside are
+// Cancel; the focus starts on Download. No shadow (a popup casts none).
+export component DictAsk inherits Rectangle {
+    in property <bool> open;
+    in property <string> text;
+    callback answered(int);
+    out property <length> box-x: box.x;
+    out property <length> box-y: box.y;
+    out property <length> box-w: box.width;
+    out property <length> box-h: box.height;
+    out property <length> text-h: line.height;
+    out property <length> cancel-x: cancel.absolute-position.x;
+    out property <length> cancel-y: cancel.absolute-position.y;
+    out property <length> cancel-w: cancel.width;
+    out property <length> download-x: download.absolute-position.x;
+    out property <length> download-y: download.absolute-position.y;
+    out property <length> download-w: download.width;
+    // 0 Cancel, 1 Download
+    out property <int> focus-idx: 1;
+
+    visible: root.open;
+    width: 100%;
+    height: 100%;
+    changed open => {
+        if root.open {
+            root.focus-idx = 1;
+            download.focus-me();
+        }
+    }
+
+    fs := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.answered(0);
+                return accept;
+            }
+            if e.text == Key.Tab || e.text == Key.Backtab {
+                if root.focus-idx == 1 {
+                    root.focus-idx = 0;
+                    cancel.focus-me();
+                } else {
+                    root.focus-idx = 1;
+                    download.focus-me();
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: Theme.scrim;
+        }
+        // a press outside the box is Cancel
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.answered(0);
+                }
+            }
+        }
+        box := Rectangle {
+            width: min(360px, root.width - 48px);
+            height: col.preferred-height;
+            x: Px.snap((root.width - self.width) / 2);
+            y: Px.snap((root.height - self.height) / 2);
+            background: Theme.side-flat;
+            border-radius: SettingsShape.radius;
+            border-width: Px.hair();
+            border-color: Theme.divider;
+            accessible-role: none;
+            accessible-label: root.text;
+
+            // swallows presses inside the box, so they never reach the scrim
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+            }
+            col := VerticalLayout {
+                padding: 20px;
+                line := Text {
+                    text: root.text;
+                    wrap: word-wrap;
+                    font-family: Theme.font-ui;
+                    font-size: 13px;
+                    color: Theme.text;
+                }
+                Rectangle { height: 20px; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    cancel := SetRowButton {
+                        label: "Cancel";
+                        in-row: false;
+                        clicked => { root.answered(0); }
+                    }
+                    download := SetRowButton {
+                        label: "Download";
+                        in-row: false;
+                        clicked => { root.answered(1); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The controls alone in a 640 by 520 window, for the component tests: the key field, the microphone, the language
+// mark, a panel of three model rows (the active one, a download under way, one not yet downloaded) and the question.
+export component DictationPageControls inherits Window {
+    preferred-width: 640px;
+    preferred-height: 520px;
+    background: Theme.ground;
+
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = self.win-scale; }
+    init => { Px.scale = self.win-scale; }
+
+    in-out property <string> key-text: "Ctrl+Win";
+    in-out property <bool> capturing: false;
+    in-out property <bool> key-reset: false;
+    in-out property <bool> disabled: false;
+    in-out property <[SetOption]> mic-options: [{ id: "", name: "System default", face: "" }, { id: "a", name: "Headset", face: "" }];
+    in-out property <string> mic-value: "";
+    in-out property <bool> mic-testing: false;
+    in-out property <float> mic-level: 0;
+    in-out property <bool> limited: false;
+    in-out property <length> panel-w: 560px;
+    in-out property <SetRow> row-a;
+    in-out property <SetRow> row-b;
+    in-out property <SetRow> row-c;
+    out property <RowLook> look-a;
+    out property <RowLook> look-c;
+    in-out property <bool> ask-open: false;
+    in-out property <string> ask-text: "This model doesn't support all languages.";
+    // what the controls reported, newest last, joined with a space
+    in-out property <string> log: "";
+    in-out property <int> tips: 0;
+    in-out property <string> tip-text: "";
+
+    out property <length> key-x: keyf.field-x;
+    out property <length> key-y: keyf.field-y;
+    out property <length> key-w: keyf.field-w;
+    out property <length> key-h: keyf.field-h;
+    out property <bool> reset-shown: keyf.reset-shown;
+    out property <length> track-x: micf.track-x;
+    out property <length> track-y: micf.track-y;
+    out property <length> track-w: micf.track-w;
+    out property <length> track-h: micf.track-h;
+    out property <length> fill-w: micf.fill-w;
+    out property <length> test-x: micf.test-x;
+    out property <length> select-x: micf.select-x;
+    out property <length> select-w: micf.select-w;
+    out property <length> mic-right: micf.select-x + micf.select-w;
+    out property <length> mark-w: lim.width;
+    out property <length> mark-h: lim.height;
+    out property <length> mark-x: lim.absolute-position.x;
+    out property <length> mark-y: lim.absolute-position.y;
+    out property <length> panel-x: panel.absolute-position.x;
+    out property <length> panel-y: panel.absolute-position.y;
+    out property <length> a-y: ra.absolute-position.y;
+    out property <length> b-y: rb.absolute-position.y;
+    out property <length> c-y: rc.absolute-position.y;
+    out property <length> a-mark-x: ra.mark-x;
+    out property <length> a-mark-y: ra.mark-y;
+    out property <length> a-mark-w: ra.mark-w;
+    out property <length> a-mark-h: ra.mark-h;
+    out property <length> a-name-x: ra.name-x;
+    out property <length> a-h: ra.height;
+    out property <length> a-buttons-w: ra.buttons-w;
+    out property <length> b-buttons-w: rb.buttons-w;
+    out property <length> b-right-x: rb.right-x;
+    out property <length> b-text-right-x: rb.text-right-x;
+    out property <length> a-right-x: ra.right-x;
+    out property <length> a-text-right-x: ra.text-right-x;
+    out property <length> c-right-x: rc.right-x;
+    out property <length> c-text-right-x: rc.text-right-x;
+    out property <length> ask-box-x: ask.box-x;
+    out property <length> ask-box-y: ask.box-y;
+    out property <length> ask-box-w: ask.box-w;
+    out property <length> ask-box-h: ask.box-h;
+    out property <length> ask-text-h: ask.text-h;
+    out property <length> ask-cancel-x: ask.cancel-x;
+    out property <length> ask-cancel-y: ask.cancel-y;
+    out property <length> ask-download-x: ask.download-x;
+    out property <length> ask-download-y: ask.download-y;
+    out property <length> ask-download-w: ask.download-w;
+
+    public function focus-key() { keyf.focus-me(); }
+
+    keyf := DictKeyField {
+        x: 20px;
+        y: 20px;
+        width: 400px;
+        height: 32px;
+        text: root.key-text;
+        capturing: root.capturing;
+        reset: root.key-reset;
+        disabled: root.disabled;
+        label: "Dictation key";
+        pressed => { root.log += " key"; }
+        reset-clicked => { root.log += " reset"; }
+    }
+    micf := DictMicField {
+        x: 20px;
+        y: 70px;
+        width: 600px;
+        height: 32px;
+        options: root.mic-options;
+        value: root.mic-value;
+        testing: root.mic-testing;
+        level: root.mic-level;
+        disabled: root.disabled;
+        label: "Microphone";
+        test-clicked => { root.log += " test"; }
+        open-request(x, y, w, h) => { root.log += " mic-menu"; }
+        tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
+    }
+    lim := DictLimitedMark {
+        x: 20px;
+        y: 120px;
+        visible: root.limited;
+        text: "This model doesn't support all languages.";
+        tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
+    }
+    panel := Rectangle {
+        x: 20px;
+        y: 160px;
+        width: root.panel-w;
+        height: 3 * 64px + 2 * Px.hair();
+        background: SettingsInk.panel-fill;
+        border-color: Theme.line;
+        border-width: Px.hair();
+        border-radius: SettingsShape.panel-radius;
+        clip: true;
+        ra := DictModelRow {
+            x: Px.hair();
+            y: Px.hair();
+            width: parent.width - 2 * Px.hair();
+            height: 64px;
+            first: true;
+            data: root.row-a;
+            pressed(b) => { root.log += " a:" + b; }
+            look(l) => { root.look-a = l; }
+            tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
+        }
+        rb := DictModelRow {
+            x: Px.hair();
+            y: Px.hair() + 64px;
+            width: parent.width - 2 * Px.hair();
+            height: 64px;
+            first: false;
+            data: root.row-b;
+            pressed(b) => { root.log += " b:" + b; }
+            tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
+        }
+        rc := DictModelRow {
+            x: Px.hair();
+            y: Px.hair() + 128px;
+            width: parent.width - 2 * Px.hair();
+            height: 64px;
+            first: false;
+            data: root.row-c;
+            pressed(b) => { root.log += " c:" + b; }
+            look(l) => { root.look-c = l; }
+            tip(t, x, y, w, h) => { root.tips += 1; root.tip-text = t; }
+        }
+    }
+    ask := DictAsk {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        open: root.ask-open;
+        text: root.ask-text;
+        answered(n) => { root.log += " ask:" + n; }
+    }
+}

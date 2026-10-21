@@ -319,7 +319,7 @@ mod tests {
             );
             for word in &args[4..] {
                 assert!(
-                    word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                    *word == "+sid" || word.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                     "arg {word} is not a plain word"
                 );
             }
@@ -398,6 +398,7 @@ mod tests {
         let entries = hook_entries(&value);
         assert_eq!(entries.len(), 25);
         for (_event, _matcher, joined, hook) in entries {
+            let sid = joined.ends_with(" +sid");
             let args: Vec<String> = hook["args"]
                 .as_array()
                 .expect("args")
@@ -412,6 +413,7 @@ mod tests {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .env("CLAUDE_CODE_SESSION_ID", SESSION)
                 .creation_flags(CREATE_NO_WINDOW)
                 .output()
                 .expect("cmd.exe runs the hook");
@@ -431,11 +433,92 @@ mod tests {
                 "failed" => HookState::Failed,
                 other => panic!("unknown state {other}"),
             };
-            let kind = words.next().map(str::to_string);
-            let want = AgentSignal { state, kind };
+            let second = words.next();
+            let (kind, session) = match second {
+                Some("+sid") => (None, Some(SESSION.to_string())),
+                other => (other.map(str::to_string), None),
+            };
+            assert_eq!(sid, session.is_some(), "{joined}");
+            let want = AgentSignal {
+                state,
+                kind,
+                session,
+            };
             assert_eq!(parse_agent_signal(payload), Some(want), "payload {payload}");
         }
         assert!(started.elapsed().as_secs() < 20, "25 spawns took too long");
+    }
+
+    #[cfg(windows)]
+    const SESSION: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
+
+    /// The id is Claude's, but read with care: cmd expands %VAR% before it parses, so a ) & | < > ^
+    /// or quote in the value would break the block or the JSON and lose the STATE with it.
+    #[cfg(windows)]
+    #[test]
+    fn prints_the_state_as_valid_json_whatever_the_session_id_holds() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let system = system_directory().expect("system directory");
+        install_plugin(&plugin_root(), tmp.path(), &system).expect("install"); // sync-ok: test fixture on a temp folder
+        let hook = tmp.path().join("hook.cmd");
+        let cmd = system_cmd_path(&system).expect("cmd path");
+        let upper = SESSION.to_uppercase();
+        let semicolon = format!(";{}", &SESSION[1..]);
+        let trailing = format!("{SESSION}x");
+        for value in [
+            "a&calc",
+            "x)\"",
+            "a\\b",
+            "%PATH%",
+            "!PATH!",
+            upper.as_str(),
+            semicolon.as_str(),
+            trailing.as_str(),
+            "",
+        ] {
+            let output = Command::new(&cmd) // sync-ok: test fixture on a temp folder
+                .args(["/d", "/c", "call"])
+                .arg(&hook)
+                .args(["done", "+sid"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .env("CLAUDE_CODE_SESSION_ID", value)
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .expect("cmd.exe runs the hook");
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let line: serde_json::Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("{value:?} broke the JSON: {e}: {stdout}"));
+            let sequence = line["terminalSequence"].as_str().expect("terminalSequence");
+            let payload = &sequence[6..sequence.len() - 1];
+            assert_eq!(
+                parse_agent_signal(payload),
+                Some(AgentSignal {
+                    state: HookState::Done,
+                    kind: None,
+                    session: None,
+                }),
+                "{value:?}"
+            );
+        }
+        // And the one good value is carried.
+        let output = Command::new(&cmd) // sync-ok: test fixture on a temp folder
+            .args(["/d", "/c", "call"])
+            .arg(&hook)
+            .args(["done", "+sid"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .env("CLAUDE_CODE_SESSION_ID", SESSION)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .expect("cmd.exe runs the hook");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        assert!(stdout.contains(&format!("session={SESSION}")), "{stdout}");
     }
 
     fn fake_system32(tmp: &Path) -> PathBuf {

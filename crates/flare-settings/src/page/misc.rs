@@ -103,8 +103,7 @@ mod tests {
     use super::*;
     use crate::page::test_env::{with_env, with_env_fields};
     use crate::page::{
-        BlockModel, Control, DiagInfo, PlaceholderDictation, SectionModel, all_row_ids, row_of,
-        section,
+        BlockModel, Control, DiagInfo, NoDictation, SectionModel, all_row_ids, row_of, section,
     };
 
     const COPYRIGHT: &str = "Copyright (c) 2026 Max Aubert. All rights reserved.";
@@ -246,12 +245,9 @@ mod tests {
             let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
             assert_eq!(ids, ["listening", "models"]);
 
-            let placeholder = build_dictation(env, &PlaceholderDictation);
-            assert_eq!(placeholder.sections.len(), 1);
-            assert!(matches!(
-                &placeholder.sections[0].blocks[0],
-                BlockModel::Note(text) if text == "Dictation arrives in a later update."
-            ));
+            let none = build_dictation(env, &NoDictation);
+            assert_eq!(none.id, "dictation");
+            assert!(none.sections.is_empty());
         });
     }
 }

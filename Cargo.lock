@@ -1584,6 +1584,7 @@ dependencies = [
  "env_logger",
  "flare-agent",
  "flare-diag",
+ "flare-dictation",
  "flare-e2e-proto",
  "flare-help",
  "flare-render",
@@ -1634,6 +1635,22 @@ dependencies = [
 [[package]]
 name = "flare-dictation"
 version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flare-diag",
+ "flare-shells",
+ "flare-win",
+ "libloading",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "ureq",
+ "windows",
+ "windows-sys 0.61.2",
+ "zip 9.0.0",
+]
 
 [[package]]
 name = "flare-e2e"
@@ -1641,6 +1658,7 @@ version = "0.1.0"
 dependencies = [
  "flare-agent",
  "flare-diag",
+ "flare-dictation",
  "flare-e2e-proto",
  "flare-render",
  "flare-settings",
@@ -5799,7 +5817,7 @@ dependencies = [
  "waitpid-any",
  "windows",
  "xml",
- "zip",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -6987,6 +7005,20 @@ name = "zip"
 version = "8.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "typed-path",
+ "zopfli",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "711e8c9646791c49b7eb799a19c4ae70a9b8372ddc6a1fa4778defd1e2aa5d5e"
 dependencies = [
  "crc32fast",
  "flate2",

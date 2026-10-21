@@ -271,3 +271,117 @@ fn no_em_dash_in_any_release_file() {
         assert!(!read(rel).contains(dash), "em dash in {rel}");
     }
 }
+
+// M8 Task 33: the speech engine and the Parakeet host ship beside Flare.exe.
+
+const FETCH: &str = "tools/fetch-whisper.ps1";
+const LICENSE_WHISPER: &str = "LICENSE-whisper.cpp.txt";
+const README: &str = "README.md";
+const NOTICES: &str = "THIRD-PARTY-NOTICES.md";
+
+/// The quoted items of a PowerShell array `$name = @( ... )`, in order. The arrays hold no parentheses.
+fn ps_array(src: &str, name: &str) -> Vec<String> {
+    let head = format!("${name} = @(");
+    let start = src
+        .find(&head)
+        .unwrap_or_else(|| panic!("no ${name} array"))
+        + head.len();
+    let end = start
+        + src[start..]
+            .find(')')
+            .expect("the array's closing parenthesis");
+    src[start..end]
+        .split([',', '\n'])
+        .map(|s| s.trim().trim_matches('\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[test]
+fn the_dictation_seam_ships_the_engine_folder_and_the_parakeet_host() {
+    let pack = read(PACK);
+    assert!(
+        pack.contains("Source = 'vendor/whisper'; Name = 'whisper'"),
+        "the engine folder is packed beside the app as whisper\\"
+    );
+    assert!(
+        pack.contains("flare-parakeet-host.exe"),
+        "the Parakeet host is packed beside Flare.exe"
+    );
+    assert!(!pack.contains("SEAM M8"), "the M8 seam is filled in");
+}
+
+#[test]
+fn no_fake_binary_is_packed() {
+    let pack = read(PACK);
+    for fake in [
+        "fake-whisper-server",
+        "fake-parakeet-cli",
+        "fake-parakeet-host",
+        "fake_",
+    ] {
+        assert!(!pack.contains(fake), "pack.ps1 names a stand-in: {fake}");
+    }
+}
+
+#[test]
+fn the_package_never_names_the_models_folder() {
+    // O14: the models folder is %LOCALAPPDATA%\FlareDictation; the installer and the packer never touch it,
+    // so an uninstall keeps the downloaded models (M8 Task 33; M9's side-by-side test holds the folder).
+    for rel in [PACK, VERIFY] {
+        let text = read(rel);
+        assert!(
+            !text.contains("FlareDictation"),
+            "{rel} names the models folder"
+        );
+        assert!(
+            !text.contains("LOCALAPPDATA"),
+            "{rel} reaches into LOCALAPPDATA"
+        );
+    }
+}
+
+#[test]
+fn the_engine_folder_holds_the_fifteen_files_the_runtime_and_the_notice() {
+    let fetch = read(FETCH);
+    let files = ps_array(&fetch, "Files");
+    let runtime = ps_array(&fetch, "Runtime");
+    assert_eq!(files.len(), 15, "the fifteen engine files");
+    assert_eq!(runtime.len(), 4, "the four Microsoft runtime DLLs");
+    assert!(
+        fetch.contains(&format!("'{LICENSE_WHISPER}'")),
+        "the notice is written into the engine folder"
+    );
+    let notice = read(LICENSE_WHISPER);
+    assert!(notice.contains("MIT License"), "whisper.cpp is MIT");
+    assert!(
+        notice.contains("ggml"),
+        "the notice names its copyright holders"
+    );
+    assert!(!notice.contains(char::from_u32(0x2014).expect("the em dash")));
+}
+
+#[test]
+fn the_notices_and_the_readme_name_every_new_dependency() {
+    let readme = read(README);
+    for line in [
+        "`libloading` 0.8.9",
+        "`ureq` 3.4.2",
+        "`zip` 9.0.0",
+        "whisper.cpp",
+    ] {
+        assert!(readme.contains(line), "README.md lacks {line}");
+    }
+    let notices = read(NOTICES);
+    for entry in [
+        "libloading 0.8.9",
+        "ureq 3.4.2",
+        "zip 9.0.0",
+        "whisper.cpp engine b5130",
+    ] {
+        assert!(
+            notices.contains(entry),
+            "THIRD-PARTY-NOTICES.md lacks {entry}"
+        );
+    }
+}

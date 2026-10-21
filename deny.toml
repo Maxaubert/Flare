@@ -16,9 +16,9 @@ version = 2
 # public-flip step must check that they are gone.
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by cosmic-text 0.19.0 via fontdb; no safe upgrade" },
-    { id = "RUSTSEC-2026-0367", reason = "zip 8.6 via velopack 1.2.161; used only by the updater, which is off until public; bump velopack first" },
-    { id = "RUSTSEC-2026-0368", reason = "zip 8.6 via velopack 1.2.161; used only by the updater, which is off until public; bump velopack first" },
-    { id = "RUSTSEC-2026-0369", reason = "zip 8.6 via velopack 1.2.161; used only by the updater, which is off until public; bump velopack first" },
+    { id = "RUSTSEC-2026-0367", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 ONLY, via velopack 1.2.161 (updater, off until public; bump velopack first). flare-dictation uses zip 9.0.0, proven clean with these three ignores removed (2026-10-19)" },
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained notice via velopack 1.2.161; not a vulnerability" },
 ]
 

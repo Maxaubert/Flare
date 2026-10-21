@@ -16,6 +16,7 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ("while", "While dictating"),
     ("models", "Speech models"),
     ("gpu", "GPU acceleration"),
+    ("anywhere", "From any app"),
     ("diagnostics", ""),
 ];
 
@@ -58,6 +59,7 @@ mod tests {
                 ("while", "While dictating"),
                 ("models", "Speech models"),
                 ("gpu", "GPU acceleration"),
+                ("anywhere", "From any app"),
                 ("diagnostics", ""),
             ]
         );

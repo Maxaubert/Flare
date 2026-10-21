@@ -17,6 +17,7 @@ flare-win = { path = "../flare-win" }
 flare-agent = { path = "../flare-agent" }
 flare-diag = { path = "../flare-diag" }
 flare-help = { path = "../flare-help" }
+flare-dictation = { path = "../flare-dictation" }
 flare-e2e-proto = { path = "../flare-e2e-proto" }
 slint.workspace = true
 wgpu.workspace = true

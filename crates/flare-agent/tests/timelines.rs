@@ -49,7 +49,13 @@ fn timeline(name: &str) -> Vec<Step> {
 }
 
 fn event_of(name: &str) -> HookEvent {
-    let sig = |state| HookEvent::Signal(AgentSignal { state, kind: None });
+    let sig = |state| {
+        HookEvent::Signal(AgentSignal {
+            state,
+            kind: None,
+            session: None,
+        })
+    };
     match name {
         "idle-title" => HookEvent::IdleTitle,
         "working-title" => HookEvent::WorkingTitle,

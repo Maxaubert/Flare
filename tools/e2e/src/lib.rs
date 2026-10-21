@@ -3,6 +3,8 @@
 
 pub mod chord;
 pub mod ctx;
+pub mod dictproc;
+pub mod fixtures;
 pub mod guards;
 pub mod perf;
 pub mod pixels;

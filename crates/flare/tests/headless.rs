@@ -754,8 +754,8 @@ fn scene_list_prints_every_scene_and_exits_0() {
     );
     let text = String::from_utf8_lossy(&out.stdout);
     let names: Vec<&str> = text.lines().collect();
-    // SCENES holds 45 names (37 non-update scenes and the 8 update scenes); the list prints all of them.
-    assert_eq!(names.len(), 45, "listed: {names:?}");
+    // SCENES holds 60 names (37 non-update scenes, the 8 update scenes and the 15 dictation scenes); the list prints all of them.
+    assert_eq!(names.len(), 60, "listed: {names:?}");
     for want in [
         "strip-3",
         "term-copied",

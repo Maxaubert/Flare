@@ -19,7 +19,7 @@ use flare_settings::find::{IndexEnv, settings_index};
 use flare_settings::help_prefs::help_enabled;
 use flare_settings::kv::PrefStore;
 use flare_settings::look::LookStore;
-use flare_settings::page::{GlassSupport, PlaceholderDictation, ThemeColours};
+use flare_settings::page::{GlassSupport, ThemeColours};
 use flare_settings::pages::PAGES;
 use flare_settings::rows::{ROW_ORDER, row};
 use flare_settings::verb::{FakeDiag, FakeVerb, VerbState};
@@ -73,7 +73,7 @@ fn fx() -> Fx {
         look,
         diag: Rc::new(FakeDiag::new("C:/logs", false)),
         verb: Arc::new(FakeVerb::new(VerbState::Off)),
-        dictation: Rc::new(PlaceholderDictation),
+        dictation: Rc::new(crate::dictation_page::DictationPageProvider),
         pick_folder: Rc::new(|_, done| done(None::<PathBuf>)),
         open_path: Rc::new(|_: &Path| {}),
         clipboard: Rc::new(|_: &str| {}),
@@ -207,11 +207,11 @@ fn drawn_rows(f: &Fx) -> Vec<String> {
         .collect()
 }
 
-/// The rows the index says this PC draws (no NVIDIA, no wired Dictation page).
+/// The rows the index says this PC draws (no NVIDIA; the Dictation page is wired, M8 Task 24).
 fn index_ids() -> Vec<String> {
     settings_index(&IndexEnv {
         nvidia: false,
-        dictation_wired: false,
+        dictation_wired: true,
     })
     .into_iter()
     .map(|e| e.id)
@@ -223,7 +223,10 @@ fn index_ids() -> Vec<String> {
 #[test]
 fn the_index_has_30_rows_on_this_pc() {
     let n = index_ids().len();
-    assert_eq!(n, 30, "39 rows less the 9 dictation rows (M8 raises it)");
+    assert_eq!(
+        n, 39,
+        "the 30 rows of the other pages and the 9 dictation rows"
+    );
     assert!(n >= 30, "PT's own gate says at least 30");
 }
 
@@ -279,6 +282,10 @@ fn typing_each_label_opens_its_page_flashes_and_focuses_its_first_control() {
         );
         f.b().invoke_find_key("Enter".into(), false);
         assert_eq!(f.ctl.borrow().current_page(), r.page, "{id}: the page");
+        // The models' wrapper is no Row (its model blocks are drawn), so there is no row to flash.
+        if id == "dictation-model" {
+            continue;
+        }
         f.wait_for_row(&id);
         let shown = f.row(&id).unwrap_or_else(|| panic!("{id} is drawn"));
         assert!(shown.flash > 0.0, "{id}: the flash is positive");
@@ -493,15 +500,17 @@ fn the_page_shows_the_tables_and_nothing_else() {
     }
     drawn.sort();
     drawn.dedup();
+    // The models are drawn as model blocks, so the index's `dictation-model` wrapper is no Row; the
+    // GPU row is drawn only with NVIDIA, which this PC is not.
     let mut want: Vec<String> = ROW_ORDER
         .iter()
-        .filter(|id| !id.starts_with("dictation-"))
+        .filter(|id| !matches!(**id, "dictation-model" | "dictation-gpu"))
         .map(|id| id.to_string())
         .collect();
     want.sort();
     assert_eq!(
         drawn, want,
-        "the drawn rows are the tables less the dictation rows"
+        "the drawn rows are the tables less the models' wrapper"
     );
     assert!(
         !drawn
@@ -515,7 +524,7 @@ fn each_core_section_is_drawn_once_in_one_panel_in_the_tables_order() {
     let f = fx();
     let entries = settings_index(&IndexEnv {
         nvidia: false,
-        dictation_wired: false,
+        dictation_wired: true,
     });
     let mut seen_sections: Vec<String> = Vec::new();
     for p in PAGES.iter() {
@@ -537,11 +546,12 @@ fn each_core_section_is_drawn_once_in_one_panel_in_the_tables_order() {
             );
         }
         seen_sections.extend(sections.iter().cloned());
-        // Rows inside the page follow the tables' order.
+        // Rows inside the page follow the tables' order. The index's `dictation-model` is PT's one
+        // wrapper round the model rows; Flare draws the models as their own blocks, not as a Row.
         let rows = drawn_rows(&f);
         let table: Vec<String> = entries
             .iter()
-            .filter(|e| e.page == p.id)
+            .filter(|e| e.page == p.id && e.id != "dictation-model")
             .map(|e| e.id.clone())
             .collect();
         assert_eq!(rows, table, "{}: the rows are in the tables' order", p.id);

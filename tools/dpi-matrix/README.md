@@ -16,16 +16,24 @@ python tools\dpi-matrix\check.py --selftest
 
 # 3. the sheets for docs/screenshots/m10/dpi (add -CopySuspects for the suspects' full images)
 powershell -File tools\dpi-matrix\compose.ps1 -Images <scratch>\dpi -CopySuspects
+
+# the M8 dictation sheets (both renderers, readable size, the real images at 1:1 for 1x, 2.25x and 3x)
+powershell -File tools\dpi-matrix\run.ps1 -Exe <flare.exe> -Out <scratch>\dpi -Only dictation
+foreach ($r in 'software', 'gpu') { powershell -File tools\dpi-matrix\compose.ps1 -Images <scratch>\dpi -Sheets docs\screenshots\m8\dictation -Only dictation -Renderer $r -Height 320 -Cell 480 -Native 1,2_25,3 -CopySuspects }
 ```
+
+The M8 dictation scenes are real scenes: the pill in the window, the Dictation page through the Settings frame, the
+widget card and the tab mark on the strip and the sidebar (`dictation_scenes.rs`). The widget and the mark are windows of
+their own size, so `SCENE_SIZE` in `check.py` carries those sizes (a test in `dictation_scenes.rs` keeps the two equal).
 
 The scenes are the names `flare.exe --scene list` prints (`SCENES` in `crates/flare/src/headless.rs`),
 so the matrix cannot drift from the scene list. `badge` is left out: it is one contact sheet of every
-taskbar disc at its own scales, not a window, so `--scale` does not apply to it (44 windows are rendered).
+taskbar disc at its own scales, not a window, so `--scale` does not apply to it (59 windows are rendered: the 44 of M10 and the 15 dictation scenes of M8).
 The scales are 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5 and 3
 (`--scale`), the logical size 1000 x 640 (`--size`), the renderers `software` and `gpu` (the gpu pass
 is skipped with a note when `--probe-backend` finds no adapter).
 
-The 704 full images (44 scenes x 8 scales x 2 renderers) stay in the scratch folder. Only the sheets (`sheet-<scene>.png` for every
+The 944 full images (59 scenes x 8 scales x 2 renderers) stay in the scratch folder. Only the sheets (`sheet-<scene>.png` for every
 scene, and `sheet-100.png`, `sheet-150.png`, `sheet-225.png` as grids) and the suspects' full images
 are committed, under `docs/screenshots/m10/dpi/`.
 
@@ -50,4 +58,6 @@ a difference in a flat area is always reported.
 - `run.ps1`: renders every scene at every scale and renderer, one process at a time.
 - `check.py`: the checks above, and `--selftest` (a clean set passes; a mis-sized, a blank, a drifted,
   and a renderer-mismatch set each fail with the right message, and a glyph-edge difference passes).
-- `compose.ps1`: the sheets, with System.Drawing (Windows, bicubic downscale).
+- `compose.ps1`: the sheets, with System.Drawing (Windows, bicubic downscale). `-Only`, `-Name`, `-Height`, `-Cell` and
+  `-Native` make a readable partial set; every sheet cell is labelled with the image's real size; a gpu pass writes
+  `-gpu` sheets beside the software ones.

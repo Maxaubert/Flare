@@ -661,6 +661,12 @@ const E2E_SEAMS: &[&str] = &[
     // M10 Appendix F: with a sandboxed HOME, the transcript store of that HOME is read for the Claude
     // session lookup (startup.rs, window.rs; the agentLaunch scenario sets it).
     "FLARE_E2E_SESSIONS",
+    // M8 (dictation) seams: the microphone WAV, the NVIDIA probe, the link, the stalled download.
+    "FLARE_E2E_MIC",
+    "FLARE_E2E_NVIDIA",
+    "FLARE_E2E_DICT_PIPE",
+    "FLARE_E2E_DICT_KEY",
+    "FLARE_E2E_FETCH",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

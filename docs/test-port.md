@@ -421,6 +421,71 @@ the real totals from `cargo nextest list -p <crate>` on 2026-10-18 are **flare-u
 | `tools/diag.mjs`, `tools/make-icon.py` (no tests) | - | Task 23 goldens, Task 26 | |
 | Installer side by side | 1 line of parity | Task 37 | |
 
+## M8 ledger (dictation, Prism Terminal at `e5848cb`)
+
+Appendix C of the M8 plan, the unit test port for dictation. The Flare column counts the `#[test]` attributes in
+the file at this commit (a count of the source, not `cargo nextest list`, so a file that holds tests of more than one
+PT row is counted once and the split is in the Notes). Ignored tests are shown as `(n ignored)`. The ported and dropped
+figures are the plan's; the Flare counts were not recounted by a build.
+
+| PT file | PT tests | Flare file (task) | Flare `#[test]` | Notes |
+|---|---|---|---|---|
+| `core/shared/dictationCatalog.test.ts` | 18 | `catalog.rs` (3) | 20 | |
+| `core/renderer/lib/dictationKey.test.ts` | 59 (55 + 4 new) | `hotkey.rs` (4) | 61 | the four new are N1 to N3 |
+| `core/renderer/lib/dictationClean.test.ts` | 26 | `clean.rs` (5) | 28 | |
+| `core/renderer/lib/wav.test.ts` | 23 | `wav.rs` (6) | 27 | |
+| `core/renderer/lib/micCapture.test.ts` | 2 (new) | `mic.rs` (16) | 11 | N4 and the mic only rules |
+| `core/renderer/lib/dictation.test.ts` | 2 | `controller.rs` (18) | 69 | the reducer's own tests, with the outside route and page keys |
+| `core/main/dictationStore.test.ts` | 27 | `tests/store.rs` (12) | 32 | |
+| `core/main/dictationEngine.test.ts` | 45 (41 + 4 new) | `tests/engine.rs` (13), `tests/host.rs` (14), `engine/*.rs` | 35 and 29 (1 ignored), plus 18 unit | `never_stands_down_with_no_idle` is the N5 new test |
+| `core/main/mediaPause.test.ts` | 18 (15 ported, 3 dropped) | `media.rs` (15) | 20 | 3 dropped: the PowerShell script shape (no script in Flare) |
+| `core/main/orchestratorSend.test.ts` | 7 (2 ported, 5 dropped) | `route.rs` (9) | 18 | 5 dropped: `decideSend` is the orchestrator's (DIFF-16) |
+| `core/main/dictationClient.test.ts` | 6 | `route.rs` (9), `service.rs` (21) | in the two | 5 in `route.rs`, `dictationAnswers` in `service.rs` |
+| `core/main/dictationLink.test.ts` | 7 | `tests/link.rs` (20) | 26 (and 2 in `link.rs`) | |
+| `src/main/globalDictKey.test.ts` | 8 (6 ported, 2 ignored) | `keyfeed.rs` (10), `keyhook.rs` (19) | 7 and 29 (3 ignored) | the 2 ignored send real keys; they are by-hand tests (`docs/dictation-by-hand.md`) |
+| `src/main/dictateAnywhere.test.ts` | 13 (10 in `route.rs`, 3 in `service.rs`) | `route.rs` (9), `service.rs` (21) | in the two | |
+| `core/renderer/lib/agentHookSignal.test.ts` | 2 new of 12 | `flare-agent/src/signal.rs` (11) | 10 | the `session=` field, N25 |
+| `src/main/appHelper.test.ts` | 1 (dropped) | - | - | Flare has no helper process to configure late (DIFF-19) |
+
+Flare-only tests (not in Appendix C), the same count method:
+
+| File | `#[test]` | Task | What it holds |
+|---|---|---|---|
+| `flare-dictation/src/cues.rs` | 7 (1 ignored) | 8 | the cue shapes; `play_plays_the_start_cue` plays a sound, by hand |
+| `flare-dictation/src/prefs.rs` | 7 | 7 | the preference reads and the import map |
+| `flare-dictation/src/hmac.rs` | 8 | 20 | the link's HMAC and nonces |
+| `flare-dictation/src/fetch_ureq.rs` | 9 | 12 | the download, its stall limit and the e2e stand-in |
+| `flare-dictation/src/gpu.rs` | 2 | 17 | the NVIDIA probe and `FLARE_E2E_NVIDIA` |
+| `flare-dictation/src/job.rs` | 1 | 17 | the Job Object that ends every child at quit |
+| `flare-dictation/src/privacy.rs` | 3 | 16 | the scans: only capture endpoints opened, no audio on disk |
+| `flare-dictation/src/bin/flare_parakeet_host.rs` | 11 | 14 | the resident host's protocol |
+| `flare-dictation/tests/fetch_whisper.rs` | 5 | 28 | the engine fetch script's checks |
+| `flare-agent/src/plugin.rs` | 21 | 11 | the `flare-status` plugin files and `hook.cmd` |
+| `flare/src/agent_hub.rs` | 27 | 11 | the tab's Claude session in the hub |
+| `flare-settings/src/page/dictation.rs` | 11 | 24 | the Dictation page model |
+| `flare/src/dictation_page.rs` | 4 | 24 | the `DictationPage` provider |
+| `flare/src/dictation_ctl.rs` | 37 | 22, 25, 27 | the controller on the UI thread: key path, paste, pill, Settings actions, the e2e seams |
+| `flare/src/dictation_widget.rs` | (in `ui_tests`) | 26 | the widget window (its tests are in the next rows) |
+| `flare/src/ui_tests/dictation_pill.rs` | 8 | 23 | the pill and the tab mark at all eight scales |
+| `flare/src/ui_tests/dictation_page.rs` | 9 | 25 | the page's controls at all eight scales |
+| `flare/src/ui_tests/dictation_widget.rs` | 16 | 26 | the widget's card, faces, inks and focus, at all eight scales |
+| `flare/src/e2e_probes/dictation.rs` | 17 | 27 | the dictation probes the e2e reads |
+| `flare-dictation/tests/host.rs` | (1 ignored) | 14 | `the_real_host_answers_like_parakeet_cli` needs `vendor/whisper` and the q4 model |
+
+## E2E map: the dictation scenarios (M8 Task 29 to 31)
+
+| Scenario | PT `ok(` (PT line) | Flare file (task) | Flare `ctx.ok(` | Notes |
+|---|---|---|---|---|
+| `dictation` | 21 (8084) | `scenarios/dictation.rs` (29) | in the 68 | Right Alt set first |
+| `dictationPage` | 36 (8215) | `scenarios/dictation.rs` (30) | in the 68 | `FLARE_E2E_FETCH=stall` |
+| `dictationParakeet` | 11 (8352) | `scenarios/dictation.rs` (29) | in the 68 | Right Alt set first |
+| `dictateAnywhere` | 9 (3172) | `scenarios/anywhere.rs` (31) | in the 19 | 3 REPLACED (DIFF-16) |
+| `dictateTwoCopies` | 10 (3261) | `scenarios/anywhere.rs` (31) | in the 19 | two apps, their own pipe and key; DIFF-21 |
+| `catchUp` | 25 (3036) | not ported | - | the orchestrator (Appendix F, Q1) |
+
+The totals: `scenarios/dictation.rs` has 68 `ctx.ok(` calls (PT's three scenarios: 21 + 36 + 11 = 68) and
+`scenarios/anywhere.rs` has 19 (PT's two: 9 + 10 = 19). The whole set is 87 checks, one per PT `ok(`, in order.
+
 ## E2E map (M10 Task 74)
 
 Prism Terminal's `tools/e2e/run.mjs` has 74 scenarios and 1094 `ok(` calls. Flare ports 70 of them in
@@ -488,14 +553,14 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `reviewKeys` | 16 | `scenarios/input_d.rs`, `review_keys` | 17 | 0 | ok |
 | `dropAndMenu` | 6 | `scenarios/input_d.rs`, `drop_and_menu` | 7 | 0 | ok |
 | `helpPanel` | 89 | `scenarios/help.rs`, `help_panel` | 90 | 2 | ok |
-| `options` | 19 | `scenarios/settings_a.rs`, `options` | 16 | 5 | ok |
+| `options` | 19 | `scenarios/settings_a.rs`, `options` | 17 | 3 | ok |
 | `diagLog` | 26 | `scenarios/diag.rs`, `diag_log` | 24 | 2 | ok |
-| `settingsLook` | 16 | `scenarios/settings_a.rs`, `settings_look` | 13 | 4 | ok |
+| `settingsLook` | 16 | `scenarios/settings_a.rs`, `settings_look` | 14 | 3 | ok |
 | `settingsSearch` | 15 | `scenarios/settings_a.rs`, `settings_search` | 15 | 1 | ok |
 | `settingsKeys` | 8 | `scenarios/settings_a.rs`, `settings_keys` | 4 | 3 | by hand |
 | `themeEditorLive` | 17 | `scenarios/settings_b.rs`, `theme_editor_live` | 20 | 1 | ok |
 | `themeSwitch` | 15 | `scenarios/settings_b.rs`, `theme_switch` | 18 | 1 | ok |
-| `reviewSettings` | 19 | `scenarios/settings_b.rs`, `review_settings` | 18 | 3 | ok |
+| `reviewSettings` | 19 | `scenarios/settings_b.rs`, `review_settings` | 21 | 3 | ok |
 | `colourPicker` | 46 | `scenarios/settings_c.rs`, `colour_picker` | 47 | 1 | ok |
 | `pickedGround` | 3 | `scenarios/settings_c.rs`, `picked_ground` | 4 | 0 | ok |
 | `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 19 | 2 | ok |
@@ -507,11 +572,13 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `updateGuard` | 26 | `scenarios/update.rs`, `update_guard` | 26 | 0 | ok |
 | `updateNotes` | 9 | `scenarios/update.rs`, `update_notes` | 9 | 0 | ok |
 | `updateQuiet` | 6 | M9 out of process (Task 39) | - | 0 | elsewhere |
-| `dictation` | 21 | M8 | - | 0 | waits |
-| `dictationPage` | 36 | M8 | - | 0 | waits |
-| `dictationParakeet` | 11 | M8 | - | 0 | waits |
+| `dictation` | 21 | `scenarios/dictation.rs`, `dictation` | 21 | 0 | ok |
+| `dictationPage` | 36 | `scenarios/dictation.rs`, `dictation_page` | 36 | 0 | ok |
+| `dictationParakeet` | 11 | `scenarios/dictation.rs`, `dictation_parakeet` | 11 | 0 | ok |
 | `exitClosesTab` | 3 | `scenarios/lifecycle.rs`, `exit_closes_tab` | 3 | 0 | ok |
 | `promptLayout` | 2 | `scenarios/lifecycle.rs`, `prompt_layout` | 2 | 0 | ok |
+| `dictateAnywhere` | 9 | `scenarios/anywhere.rs`, `dictate_anywhere` | 9 | 0 | ok |
+| `dictateTwoCopies` | 10 | `scenarios/anywhere.rs`, `dictate_two_copies` | 10 | 0 | ok |
 
 `settingsKeys` is judged by hand: the `reach` closure runs three walks (5 checks run, 3 DROPPED notes; 8 of 8 PT checks accounted).
 

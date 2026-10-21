@@ -40,12 +40,28 @@ impl Platform for HarnessPlatform {
     }
 }
 
-fn ensure_platform() {
+pub fn ensure_platform() {
     if !PLATFORM_SET.with(Cell::get) {
         slint::platform::set_platform(Box::new(HarnessPlatform))
             .expect("the harness platform is set once per thread");
         PLATFORM_SET.with(|s| s.set(true));
     }
+}
+
+/// Queues a software window for the next component made on this thread, without a Harness around it (a test that
+/// drives code which makes its own component, like the dictation widget).
+pub fn provide_window(css_w: u32, css_h: u32) -> Rc<MinimalSoftwareWindow> {
+    ensure_platform();
+    let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    win.set_size(PhysicalSize::new(css_w, css_h));
+    NEXT_WINDOW.with(|w| *w.borrow_mut() = Some(win.clone()));
+    win
+}
+
+/// Moves the platform clock on and runs the timers that came due.
+pub fn advance_clock(ms: u64) {
+    CLOCK_MS.with(|c| c.set(c.get() + ms));
+    slint::platform::update_timers_and_animations();
 }
 
 pub struct Harness<C: ComponentHandle> {

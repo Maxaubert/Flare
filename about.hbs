@@ -52,6 +52,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+whisper.cpp engine b5130 (ggml-org): whisper-server.exe, parakeet-cli.exe, whisper.dll, parakeet.dll and the ggml DLLs, from the official release zip whisper-bin-x64.zip (sha256 f9ec6c52a2e949b62ab51fa21d0d497958f9e41c3010c157c4e42932d5316f3c), fetched at build time by tools/fetch-whisper.ps1 and checked before it is unpacked; MIT licence, (c) The ggml authors, https://github.com/ggml-org/whisper.cpp; shipped as LICENSE-whisper.cpp.txt beside the engine (the repository copy is the same text). The Parakeet runner (flare-parakeet-host.exe) is Flare's own program and uses parakeet.dll from that zip.
+
+Microsoft Visual C++ runtime: msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll and vcomp140.dll, copied from System32 on the build machine only when Authenticode says Valid and the signer is Microsoft Corporation; redistributed under Microsoft's Visual C++ redistributable terms.
+
+```text
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Bundled artwork
 
 - OpenAI mark (Codex tab icon): the path data is Simple Icons 15 (CC0 1.0, https://simpleicons.org). The mark itself is OpenAI's trademark, shown only to name Codex. Copied from Prism Terminal's agentIcon.ts.

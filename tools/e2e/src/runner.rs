@@ -46,6 +46,8 @@ pub struct Cli {
     pub out: Option<PathBuf>,
     /// `perf` only: the Prism Terminal baseline.
     pub baseline: Option<PathBuf>,
+    /// Downloads the dictation fixtures into the cache, then stops (M8 Task 28, D10). Never a scenario.
+    pub fetch_fixtures: bool,
 }
 
 fn value(it: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
@@ -66,6 +68,7 @@ impl Cli {
                 "--list" => cli.list = true,
                 "--packaged" => cli.packaged = true,
                 "--keep" => cli.keep = true,
+                "--fetch-fixtures" => cli.fetch_fixtures = true,
                 "--exe" => cli.exe = Some(PathBuf::from(value(&mut it, "--exe")?)),
                 "--shots" => cli.shots = Some(PathBuf::from(value(&mut it, "--shots")?)),
                 "--run-one" => cli.run_one = Some(value(&mut it, "--run-one")?),
@@ -219,7 +222,7 @@ fn drain(rx: &Receiver<String>, lines: &mut Vec<String>) {
 }
 
 /// Runs `cmd` with stdout piped and a time limit. On overrun the child is killed, and every
-/// process holding the world root it announced is reaped. The world root is removed unless
+/// process holding a world root it announced is reaped. Each world root is removed unless
 /// `keep`.
 pub fn supervise(mut cmd: Command, limit: Duration, keep: bool) -> Supervised {
     cmd.stdout(Stdio::piped());
@@ -255,11 +258,7 @@ pub fn supervise(mut cmd: Command, limit: Duration, keep: bool) -> Supervised {
         thread::sleep(POLL);
     };
     drain(&rx, &mut lines);
-    let world = lines.iter().find_map(|l| match parse_line(l) {
-        Line::World(w) => Some(PathBuf::from(w)),
-        _ => None,
-    });
-    if let Some(root) = world {
+    for root in world_roots(&lines) {
         reap_by_profile(&root);
         if !keep {
             let _ = std::fs::remove_dir_all(&root);
@@ -270,6 +269,17 @@ pub fn supervise(mut cmd: Command, limit: Duration, keep: bool) -> Supervised {
         outcome,
         pid,
     }
+}
+
+/// Every world root the child announced, in order (a scenario that runs two copies announces two).
+fn world_roots(lines: &[String]) -> Vec<PathBuf> {
+    lines
+        .iter()
+        .filter_map(|l| match parse_line(l) {
+            Line::World(w) => Some(PathBuf::from(w)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One line the child printed.
@@ -395,5 +405,42 @@ pub fn run_all(cli: &Cli) -> i32 {
     } else {
         println!("all scenarios passed");
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_world_a_scenario_announces_is_found_not_only_the_first() {
+        let lines = vec![
+            r#"{"world":"C:\\t\\flare-e2e-a"}"#.to_string(),
+            r#"{"pass":true,"msg":"x"}"#.to_string(),
+            r#"{"world":"C:\\t\\flare-e2e-b"}"#.to_string(),
+            "not json".to_string(),
+        ];
+        let roots = world_roots(&lines);
+        assert_eq!(
+            roots,
+            [
+                PathBuf::from(r"C:\t\flare-e2e-a"),
+                PathBuf::from(r"C:\t\flare-e2e-b")
+            ]
+        );
+        assert!(world_roots(&[]).is_empty());
+    }
+
+    #[test]
+    fn fetch_fixtures_is_a_flag_of_its_own_and_runs_no_scenario() {
+        let cli = Cli::parse(["--fetch-fixtures".to_string()]).expect("the flag parses");
+        assert!(cli.fetch_fixtures);
+        assert!(cli.filters.is_empty());
+        assert!(!cli.list && cli.run_one.is_none() && !cli.perf);
+        assert!(
+            !Cli::parse(Vec::<String>::new())
+                .expect("no args")
+                .fetch_fixtures
+        );
     }
 }

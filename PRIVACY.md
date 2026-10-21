@@ -26,4 +26,15 @@ Flare adds a small local plugin, `flare-status`, to the Claude Code sessions sta
 
 A program running in a tab (Claude Code's /copy, or anything you reach over ssh) can put text ON your clipboard with the standard OSC 52 sequence, up to 1 MB, and a "Copied" badge shows when it does. Nothing in a tab can READ your clipboard that way: such a request gets no answer. The text a program copies is never written to the diagnostics log. When a program asks, the terminal also tells it its own name and version (XTVERSION, `Flare <version>`) and the colours it is painted in, so it can draw to match; that answer goes only to the program that asked, on your PC.
 
+## Dictating from any app
+
+Dictation (off by default) can take your voice with another app in front. With **Dictate from any app** on (it is on by default once dictation is on; Settings > Dictation turns it off), Flare watches the keyboard for the dictation key only:
+
+- **What the keyboard hook reads.** A Windows keyboard hook inside Flare looks at the keys of your dictation key and nothing else. It learns that one of those keys went down or up, and the number of the window in front when it did. While one of them is held it learns only that some other key went down, never which key. While the Claude session picker is open it also reads the digits 1 to 9 and Esc, and only those, and it passes every other key on untouched. It types nothing and writes nothing about the keys.
+- **Between copies of Flare.** Copies of Flare on this PC talk over a local named pipe that only your Windows account can open. Two copies first prove they hold the same key: 32 random bytes in `%LOCALAPPDATA%\FlareDictation\link.key`, beside the speech models, made once and read by every copy. Over that pipe the copies exchange the names and folders of their open Claude tabs and, when you pick one, the words you dictated. Nothing goes over the network.
+- **Where the words go.** Into a Claude tab's terminal, as a paste. In a shell that is not running Claude, dictated text is pasted and never sent with Enter. In a running Claude prompt, Flare presses Enter once, and only after it has checked that tab is still the one you picked and still runs Claude.
+- **What is kept.** The window's number lives in memory for that one dictation. The keys, that number, the words and the audio are never written to a file, never put in the diagnostics log (which keeps only the phases: listening, transcribing, pasted) and never sent anywhere.
+
+The speech models are in `%LOCALAPPDATA%\FlareDictation`. When you first switch dictation on, Flare links any of the same models that another dictation app on this PC already holds in its own folder, after checking each one's size and SHA-256, and it never writes into that folder.
+
 If the app ever gains a request that is not listed here, this file changes in the same pull request.

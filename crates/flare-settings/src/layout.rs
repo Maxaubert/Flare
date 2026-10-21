@@ -134,7 +134,12 @@ impl SnapGrid {
     }
 }
 
-/// The kind of a panel's block (Slint's `BlockKind` names the same five).
+/// A speech model's or the GPU pack's row: PT's `min-h-16` (M8 Task 25).
+pub const MODEL_ROW_H: f64 = 64.0;
+/// The id the GPU pack's block carries (the store's id for the pack).
+pub const GPU_ROW_ID: &str = "gpu-pack";
+
+/// The kind of a panel's block (Slint's `BlockKind` names the same six).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
     Row,
@@ -142,6 +147,8 @@ pub enum BlockKind {
     About,
     Slint,
     Note,
+    /// A speech model or the GPU pack (M8 Task 25).
+    Model,
 }
 
 /// One block of a panel. `id` is the row id for a row and "" for the other kinds.
@@ -243,6 +250,9 @@ fn child_of(
         BlockModel::AboutCard { .. } => (BlockKind::About, "", m.about_h),
         BlockModel::SlintBadge => (BlockKind::Slint, "", slint_badge_h),
         BlockModel::Note(_) => (BlockKind::Note, "", m.note_h),
+        // A speech model or the GPU pack: PT's `min-h-16` row (M8 Task 25), named by its catalogue id.
+        BlockModel::Model(r) => (BlockKind::Model, r.id, MODEL_ROW_H),
+        BlockModel::Gpu(_) => (BlockKind::Model, GPU_ROW_ID, MODEL_ROW_H),
     };
     Child {
         kind,
@@ -504,7 +514,7 @@ fn place_menu_raw(
 mod tests {
     use super::*;
     use crate::page::test_env::with_env;
-    use crate::page::{PlaceholderDictation, build_page, section};
+    use crate::page::{NoDictation, build_page, section};
     use crate::wall::{layout as wall_layout, total_themes};
 
     const PAGES: [&str; 6] = [
@@ -543,7 +553,7 @@ mod tests {
 
     fn laid_out(id: &str, frame_w: f64, scale: f64) -> PageLayout {
         with_env(|env| {
-            let page = build_page(id, env, &PlaceholderDictation);
+            let page = build_page(id, env, &NoDictation);
             let wall = wall_for(frame_w, false);
             layout_page(&page, frame_w, scale, &wall, wall.full_h, 112.0)
         })
@@ -687,6 +697,49 @@ mod tests {
             l.sections[0].rows.iter().map(|r| (r.block, r.h)).collect();
         assert_eq!(kinds[0], (BlockKind::About, 96.0));
         assert_eq!(kinds[2], (BlockKind::Slint, 112.0));
+    }
+
+    #[test]
+    fn a_model_row_is_64_high_at_every_scale_and_keeps_its_catalogue_id() {
+        use crate::page::dictation::{ModelRow, ModelState, Vendor};
+        let row = |id: &'static str| ModelRow {
+            id,
+            name: "Whisper Base",
+            size_text: "148 MB".to_string(),
+            vendor: Vendor::Openai,
+            recommended: false,
+            badge: None,
+            sub: String::new(),
+            warn: false,
+            state: ModelState::Absent,
+            failure: None,
+            buttons: Vec::new(),
+            uninstall_title: String::new(),
+        };
+        let page = PageModel {
+            id: "dictation",
+            label: "Dictation",
+            sections: vec![section(
+                "models",
+                vec![
+                    BlockModel::Model(row("base")),
+                    BlockModel::Model(row("small")),
+                ],
+            )],
+        };
+        for scale in SCALES {
+            let wall = wall_for(1000.0, false);
+            let l = layout_page(&page, 1000.0, scale, &wall, wall.full_h, 112.0);
+            let rows = &l.sections[0].rows;
+            assert_eq!(rows[0].block, BlockKind::Model);
+            assert_eq!(rows[0].id, "base");
+            assert_eq!(rows[1].id, "small");
+            for r in rows {
+                assert!(r.h >= MODEL_ROW_H - 1e-9, "scale {scale}: {}", r.h);
+                assert!(is_whole(r.y, scale) && is_whole(r.h, scale));
+            }
+            assert!((rows[0].y + rows[0].h - rows[1].y).abs() < 1e-9);
+        }
     }
 
     #[test]

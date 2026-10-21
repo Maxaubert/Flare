@@ -270,15 +270,17 @@ fn update_chip_arrow_draws_at_full_size_at_every_scale() {
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 8] = [
+const SIZED: [(&str, usize); 10] = [
     ("tabs.slint", 5),
-    ("tabmark.slint", 6),
+    ("tabmark.slint", 7),
     ("sidebar.slint", 3),
     ("menus.slint", 4),
     ("start.slint", 1),
     ("find.slint", 1),
     ("app.slint", 1),
     ("update.slint", 1),
+    ("dictation_pill.slint", 1),
+    ("dictation_widget.slint", 1),
 ];
 
 /// The hairline rules: straight rules or the sidebar's corner arcs, not glyphs, with no size test.

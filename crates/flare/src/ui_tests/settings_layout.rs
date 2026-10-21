@@ -16,9 +16,7 @@ use flare_settings::layout::{
     rail_layout, rail_width,
 };
 use flare_settings::look::LookStore;
-use flare_settings::page::{
-    DiagInfo, GlassSupport, PageEnv, PageModel, PlaceholderDictation, ThemeColours, build_page,
-};
+use flare_settings::page::{DiagInfo, GlassSupport, PageEnv, PageModel, ThemeColours, build_page};
 use flare_settings::pages::PAGES;
 use flare_settings::verb::VerbState;
 use flare_settings::wall::{self, WallLayout};
@@ -90,7 +88,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
         },
         diag_marked: false,
         nvidia: false,
-        dictation_wired: false,
+        dictation_wired: true,
         theme_colours: ThemeColours {
             accent: "#fe8f34".into(),
             background: "#101010".into(),
@@ -100,7 +98,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
         agent_key_labels: String::new(),
         face_of: &face,
     };
-    build_page(page, &env, &PlaceholderDictation)
+    build_page(page, &env, &crate::dictation_page::DictationPageProvider)
 }
 
 /// The wall's layout in a frame `frame_w` wide, the way `SettingsCtl::wall_for` computes it.

@@ -598,3 +598,45 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   frame time. The misses are recorded, not waived; the owner decides what happens next.
 - **Measured on this PC** (AMD Ryzen 9 9950X3D, RTX 5090, Windows 11 Pro 10.0.26300, 2026-10-19; Prism Terminal
   is the installed 0.58.0): the numbers are in `docs/performance.md` and `docs/perf/`.
+
+## Dictation (M8), 2026-10-20
+
+- **The parity target is Prism Terminal at `e5848cb`** (the owner's decision, 2026-10-18), not the frozen v0.55.6.
+  Four later commits changed dictation (#244 the orchestrator, #246 dictate from any app, #248 every app's sessions,
+  #249 a link fix). Their dictation behaviour is N1 to N34 in `docs/parity.md`. There is no orchestrator in Flare
+  (Q1, DIFF-16): the picker always shows.
+- **Off by default.** Switching it on and choosing a model downloads the engine and the model from pinned sources,
+  each checked by size and SHA-256 before use. The NVIDIA GPU pack is a separate download you choose. A download
+  starts only on a press of Download or Enable, never in a test. On each switch-on Flare links the models Prism already has from
+  `%LOCALAPPDATA%\PrismDictation` when one is missing and matches by size and SHA-256 (checked the same way; O14, Q9).
+  The page refreshes when one was linked. An overridden store root (`FLARE_DICTATION_ROOT`) links nothing, so an isolated
+  profile never takes the user's models. Held by `the_first_switch_on_reuses_the_neighbours_models_and_never_while_off`.
+- **The key is Ctrl+Win by default**, hold or toggle, with the solo rules: a chord of modifiers works, and a stored key
+  (Right Alt included) is kept (N1 to N3). "Dictate from any app" is on by default once dictation is on, so Ctrl+Win
+  also works with another app in front, as in Prism Terminal. Both apps on Ctrl+Win means both widgets open (Q2): turn
+  one of them off, or bind another key.
+- **The pill and the tab mark in the window; the widget outside.** Outside, the widget shows what you say and lets you
+  pick a Claude session by a click or a number from 1 to 9; Esc keeps it unsent. The checked send types into that tab
+  and presses Enter once (N22 to N24). Inside the window dictation pastes at the cursor and never presses Enter.
+- **One dictation for every Flare copy.** Copies talk over a local pipe that proves a shared key both ways. The pipe,
+  lock and key are Flare's own; Prism and Prism Terminal are not on them (DIFF-20).
+- **The engine.** The bundled whisper.cpp engine (pinned, Authenticode-checked runtime DLLs, MIT notice), and Parakeet
+  through `flare-parakeet-host.exe` (DIFF-19), a resident host that keeps its model loaded. While dictation is on, the
+  engine never stands down by itself (N5, D11; rule 95). Quitting ends every child through a Job Object.
+- **Media.** Playback pauses through Windows' media session (never the play/pause key) and resumes only what it paused
+  (rule 97). The microphone is the only device Flare opens, only on a press or the Test button; opening Settings never
+  opens it. Audio never touches disk and never leaves the machine (rule 91).
+- **Voice processing** is Windows' communications processing, not Chromium's echo cancellation (DIFF-18, Q4).
+- **Differences, PROPOSED until the owner approves them:** DIFF-16 (no orchestrator), DIFF-17 (the models card wording,
+  Q3), DIFF-18 (voice processing), DIFF-19 (native Parakeet host and hook), DIFF-20 (Flare's own link), and DIFF-21 (a
+  tab's Claude session across a prompt; the owner decides whether to keep it).
+- **Planner decisions D1 to D13** are in `docs/superpowers/plans/2026-10-19-flare-m8.md`: a pure controller with its
+  effects run on the UI thread (D1), the key arriving where every key does (D2), the native host and hook (D3, D6),
+  ureq for downloads (D4), the zip crate at a release without the advisories (D5), copy names on the link (D8), no
+  orchestrator (D9), the fixture cache filled by a command and never by a test (D10), the engine's stand-down
+  amendment (D11), and the models card wording (D13).
+- **Not machine-tested** is in `docs/dictation-by-hand.md`: the cues, AltGr on a Norwegian keyboard, the Start menu after
+  Ctrl+Win, pause against a real player, the widget over a full-screen game and on each monitor, an elevated window in
+  front, and a real dictation at 225%.
+- **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
+  not measured at this commit, so this entry gives none yet.

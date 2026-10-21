@@ -1,0 +1,395 @@
+// The dictation widget (M8 Task 26): the card of the second window that shows for "Dictate from any app"
+// (PT overlay.ts and overlay.css at e5848cb). The window is 480 css px wide and as tall as the face needs (Rust
+// sets `face-h` from `OverlayState::height`); the card sits 14 px in from the sides, 10 px under the top and 14 px
+// above the foot. It wears the inks the main window handed over at the outside start (N32): this window has no theme
+// store of its own, so every ink is an `in` property that Rust sets (the defaults are pt-default's, for the tests).
+// Faces (`phase`): 0 nothing, 1 listening, 2 transcribing, 3 pick, 4 sending, 5 sent, 6 note.
+import { Motion, Theme } from "theme.slint";
+
+// One line of the picker: a group header (`header`, the group's name in `label`) or a numbered session row.
+export struct WidgetItem {
+    header: bool,
+    id: string,
+    n: int,
+    label: string,
+    folder: string,
+    // "working", "asking" or "orchestrator", or empty.
+    chip: string,
+    // Why the row cannot be picked (it is also the row's title); empty for a row that can.
+    reason: string,
+    disabled: bool,
+}
+
+// A stroked glyph in a 24-unit box drawn at `size`. Slint fits a stroked Path into its box less one stroke, so the
+// Path is one stroke wider than the mark and moved back by half a stroke (the Task 50 pattern, icons_tabs.rs).
+component WidgetIcon inherits Rectangle {
+    in property <string> commands;
+    in property <color> ink;
+    in property <float> weight: 1.9;
+    in property <length> size: 19px;
+    width: root.size;
+    height: root.size;
+
+    Path {
+        property <length> sw: root.weight * root.size / 24;
+        x: -self.sw / 2;
+        y: -self.sw / 2;
+        width: root.size + self.sw;
+        height: root.size + self.sw;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.commands;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: self.sw;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// A numbered session row, 44 px tall (PT .row).
+component WidgetRow inherits Rectangle {
+    in property <WidgetItem> item;
+    in property <color> ink;
+    in property <color> dim;
+    in property <color> accent;
+    callback chosen(string);
+    height: 44px;
+    border-radius: 9px;
+    border-width: 1px;
+    property <bool> live: touch.has-hover && !root.item.disabled;
+    background: root.live ? root.accent.with-alpha(0.16) : root.ink.with-alpha(0.05);
+    border-color: root.live ? root.accent.with-alpha(0.45) : transparent;
+    opacity: root.item.disabled ? 0.55 : 1.0;
+    accessible-role: button;
+    accessible-label: root.item.n + ". " + root.item.label + " " + root.item.folder;
+    accessible-description: root.item.reason;
+
+    // The number chip.
+    Rectangle {
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        width: 26px;
+        height: 26px;
+        border-radius: 7px;
+        background: root.accent.with-alpha(0.24);
+        Text {
+            width: parent.width;
+            height: parent.height;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            text: root.item.n;
+            font-family: "Segoe UI";
+            font-size: 15px;
+            font-weight: 700;
+            color: root.ink;
+        }
+    }
+
+    property <length> chip-w: root.item.chip == "" ? 0px : chip-t.preferred-width + 18px;
+    Text {
+        x: 48px;
+        y: 4px;
+        width: root.width - 48px - 10px - (root.item.chip == "" ? 0px : root.chip-w + 12px);
+        height: 20px;
+        vertical-alignment: center;
+        text: root.item.label;
+        font-family: "Segoe UI";
+        font-size: 15px;
+        font-weight: 600;
+        color: root.ink;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+    Text {
+        x: 48px;
+        y: 24px;
+        width: root.width - 48px - 10px - (root.item.chip == "" ? 0px : root.chip-w + 12px);
+        height: 16px;
+        vertical-alignment: center;
+        text: root.item.folder;
+        font-family: "Segoe UI";
+        font-size: 12.5px;
+        color: root.dim;
+        overflow: elide;
+        wrap: no-wrap;
+    }
+    if root.item.chip != "" : Rectangle {
+        x: root.width - 10px - self.width;
+        y: (parent.height - self.height) / 2;
+        width: root.chip-w;
+        height: 20px;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: root.item.chip == "orchestrator" ? root.accent.with-alpha(0.55) : root.ink.with-alpha(0.18);
+    }
+    chip-t := Text {
+        visible: root.item.chip != "";
+        x: root.width - 10px - root.chip-w + 9px;
+        y: (root.height - 20px) / 2;
+        height: 20px;
+        vertical-alignment: center;
+        text: root.item.chip;
+        font-family: "Segoe UI";
+        font-size: 12px;
+        color: root.item.chip == "orchestrator" ? root.accent : root.dim;
+        wrap: no-wrap;
+    }
+
+    touch := TouchArea {
+        enabled: !root.item.disabled;
+        clicked => { root.chosen(root.item.id); }
+    }
+}
+
+export component DictationWidget inherits Window {
+    no-frame: true;
+    background: root.flat ? root.ground : transparent;
+    preferred-width: 480px;
+    preferred-height: root.face-h;
+
+    // The face. The title is the head's line (PT: "Listening", "Send to", "Sent to <tab>", a note's message).
+    in property <int> phase;
+    in property <string> head;
+    in property <bool> starting;
+    // The live words (listening) or the heard words (pick).
+    in property <string> words;
+    // The bar's scale, 0.04 to 1 (Rust: max(0.04, min(1, level * 3))).
+    in property <float> bar: 0.04;
+    in property <bool> warn;
+    // The surface has no per-pixel alpha (no glass): the window is the ground colour and the card has no shadow.
+    in property <bool> flat: false;
+    in property <[WidgetItem]> items;
+    // The window's height in css px for this face (N18).
+    in property <length> face-h: 104px;
+    // The inks of the theme in front (N32).
+    in property <color> ground: Theme.tabs;
+    in property <color> ink: Theme.text;
+    in property <color> dim: Theme.dim;
+    in property <color> accent: Theme.accent-hi;
+    in property <color> edge: Theme.divider;
+    // The card rises into place on each show (160 ms); Rust sets it false at a show and true a moment later.
+    in property <bool> risen: true;
+    callback pick(string);
+
+    out property <length> card-x: card.x;
+    out property <length> card-y: card.y;
+    out property <length> card-w: card.width;
+    out property <length> card-h: card.height;
+    out property <length> rows-y: 116px;
+
+    property <length> head-y: root.phase >= 4 ? (card.height - 34px) / 2 : 14px;
+    property <string> placeholder: root.starting ? "Starting the speech engine" : "Speak now";
+    property <bool> breath-hi: false;
+    property <int> step: 0;
+
+    Timer {
+        interval: 700ms;
+        running: root.phase == 1 && !Motion.reduced;
+        triggered => { root.breath-hi = !root.breath-hi; }
+    }
+    Timer {
+        interval: 300ms;
+        running: root.phase == 2 && !Motion.reduced;
+        triggered => { root.step = Math.mod(root.step + 1, 3); }
+    }
+
+    card := Rectangle {
+        x: 14px;
+        y: 10px + (root.risen ? 0px : 10px);
+        width: root.width - 28px;
+        height: root.height - 24px;
+        border-radius: 14px;
+        background: root.ground.with-alpha(0.96);
+        border-width: 1px;
+        border-color: root.edge.mix(root.ink, 0.8);
+        drop-shadow-blur: 24px;
+        drop-shadow-color: root.flat ? transparent : black.with-alpha(0.5);
+        drop-shadow-offset-y: 8px;
+        opacity: root.risen ? 1.0 : 0.0;
+        visible: root.phase != 0;
+        animate y { duration: Motion.d(160ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate opacity { duration: Motion.d(160ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        accessible-role: text;
+        accessible-label: root.head;
+
+        // The head: the badge (a breathing ring while listening) and the title.
+        if root.ring-on : Rectangle {
+            x: 16px - 4px - (root.breath-hi ? 2.5px : 0px);
+            y: root.head-y - 4px - (root.breath-hi ? 2.5px : 0px);
+            width: 42px + (root.breath-hi ? 5px : 0px);
+            height: 42px + (root.breath-hi ? 5px : 0px);
+            border-radius: self.width / 2;
+            border-width: 2px;
+            border-color: root.accent;
+            opacity: root.breath-hi ? 0.15 : 0.55;
+            animate width { duration: Motion.d(700ms); easing: ease-in-out; }
+            animate height { duration: Motion.d(700ms); easing: ease-in-out; }
+            animate x { duration: Motion.d(700ms); easing: ease-in-out; }
+            animate y { duration: Motion.d(700ms); easing: ease-in-out; }
+            animate opacity { duration: Motion.d(700ms); easing: ease-in-out; }
+        }
+        Rectangle {
+            x: 16px;
+            y: root.head-y;
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: root.accent.with-alpha(0.22);
+            WidgetIcon {
+                x: 7.5px;
+                y: 7.5px;
+                size: 19px;
+                weight: root.phase == 5 ? 2.6 : 1.9;
+                ink: root.warn && root.phase == 6 ? Theme.widget-warn : root.accent;
+                commands: root.phase == 5 ? "M6 12.5l4 4 8-9"
+                    : (root.warn && root.phase == 6 ? "M12 4l9 16H3z M12 10v4 M12 17.2v.1"
+                    : "M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z M6 11.5a6 6 0 0 0 12 0 M12 17.5v3");
+            }
+        }
+        Text {
+            x: 62px;
+            y: root.head-y;
+            width: card.width - 62px - 16px;
+            height: 34px;
+            vertical-alignment: center;
+            text: root.head;
+            font-family: "Segoe UI";
+            font-size: 17px;
+            font-weight: 600;
+            color: root.ink;
+            overflow: elide;
+            wrap: no-wrap;
+        }
+
+        // Listening: the 4 px level bar, the live words, the hint.
+        if root.phase == 1 : Rectangle {
+            x: 16px;
+            y: 60px;
+            width: card.width - 32px;
+            height: 4px;
+            border-radius: 2px;
+            background: root.ink.with-alpha(0.10);
+            clip: true;
+            Rectangle {
+                x: 0px;
+                width: parent.width * root.bar;
+                height: parent.height;
+                border-radius: 2px;
+                background: root.accent;
+                animate width { duration: Motion.d(90ms); easing: linear; }
+            }
+        }
+        if root.phase == 1 : Text {
+            x: 16px;
+            y: 74px;
+            width: card.width - 32px;
+            height: 68px;
+            vertical-alignment: top;
+            text: root.words != "" ? root.words : root.placeholder;
+            font-family: "Segoe UI";
+            font-size: 17px;
+            color: root.ink;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        if root.phase == 1 : Text {
+            x: 16px;
+            y: card.height - 12px - 18px;
+            width: card.width - 32px;
+            height: 18px;
+            text: "Let go to finish. Esc cancels.";
+            font-family: "Segoe UI";
+            font-size: 13px;
+            color: root.dim;
+            wrap: no-wrap;
+        }
+
+        // Transcribing: three dots under the title.
+        if root.phase == 2 : Rectangle {
+            x: 62px;
+            y: 60px;
+            width: 42px;
+            height: 6px;
+            for i in 3 : Rectangle {
+                x: i * 14px;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: root.accent;
+                opacity: Motion.reduced || root.step == i ? 1.0 : 0.35;
+            }
+        }
+
+        // Pick: the heard words, the numbered rows, the hint.
+        if root.phase == 3 : Rectangle {
+            x: 16px;
+            y: 60px;
+            width: card.width - 32px;
+            height: 46px;
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 1px;
+                height: parent.height;
+                background: root.accent.with-alpha(0.7);
+            }
+            Text {
+                x: 13px;
+                width: parent.width - 13px;
+                height: parent.height;
+                vertical-alignment: top;
+                text: root.words;
+                font-family: "Segoe UI";
+                font-size: 17px;
+                color: root.dim;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+        }
+        if root.phase == 3 : VerticalLayout {
+            x: 16px;
+            y: root.rows-y;
+            width: card.width - 32px;
+            spacing: 4px;
+            alignment: start;
+            for item[i] in root.items : Rectangle {
+                height: item.header ? 26px : 44px;
+                if item.header : Text {
+                    x: 4px;
+                    y: i == 0 ? 2px : 6px;
+                    width: parent.width - 8px;
+                    height: 18px;
+                    text: item.label;
+                    font-family: "Segoe UI";
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: root.dim;
+                    overflow: elide;
+                    wrap: no-wrap;
+                }
+                if !item.header : WidgetRow {
+                    width: parent.width;
+                    item: item;
+                    ink: root.ink;
+                    dim: root.dim;
+                    accent: root.accent;
+                    chosen(id) => { root.pick(id); }
+                }
+            }
+        }
+        if root.phase == 3 : Text {
+            x: 16px;
+            y: card.height - 12px - 18px;
+            width: card.width - 32px;
+            height: 18px;
+            text: "Press a number or click. Esc keeps it unsent.";
+            font-family: "Segoe UI";
+            font-size: 13px;
+            color: root.dim;
+            wrap: no-wrap;
+        }
+    }
+
+    property <bool> ring-on: root.phase == 1;
+}

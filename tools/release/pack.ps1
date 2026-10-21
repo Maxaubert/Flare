@@ -19,13 +19,17 @@ foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
 $plugin = Need (Join-Path $root 'crates\flare-agent\claude-plugin')
 Need (Join-Path $plugin 'hooks\hooks.json') | Out-Null
 Copy-Item -Recurse -LiteralPath $plugin -Destination (Join-Path $Stage 'claude-plugin')
-# SEAM M8 (dictation is built last and is not in this branch yet): the dictation engine folders that ship beside the
-# app. When M8 lands it adds one entry per folder here, { Source = <folder in the repo>; Name = <name the app looks for> },
-# copied from M8's build.rs copy list. Until then the list is empty and nothing is copied.
-$dictationSeam = @()
+# Dictation (M8 Task 33): the speech engine folder, fetched at build time by tools/fetch-whisper.ps1 into vendor\whisper
+# (gitignored), ships beside the app as whisper\ (the app looks there: FLARE_WHISPER_DIR's default, names.rs ENGINE_FOLDER).
+# The fake stand-ins are never packed. The Parakeet host is built beside Flare.exe (cargo's target folder) and copied by name.
+$dictationSeam = @(
+  @{ Source = 'vendor/whisper'; Name = 'whisper' }
+)
 foreach ($d in $dictationSeam) {
   Copy-Item -Recurse -LiteralPath (Need (Join-Path $root $d.Source)) -Destination (Join-Path $Stage $d.Name)
 }
+$parakeetHost = Join-Path (Split-Path -Parent $Exe) 'flare-parakeet-host.exe'
+Copy-Item -LiteralPath (Need $parakeetHost) -Destination (Join-Path $Stage 'flare-parakeet-host.exe')
 foreach ($f in 'LICENSE', 'THIRD-PARTY-NOTICES.md') { Copy-Item -LiteralPath (Need (Join-Path $root $f)) -Destination $Stage }
 vpk pack --packId Flare --packTitle Flare --packAuthors Max --packVersion $Version --packDir $Stage --mainExe Flare.exe --icon (Join-Path $root 'build\icon.ico') --shortcuts StartMenuRoot --aumid com.flare.terminal --runtime win-x64 --channel win --delta BestSpeed --releaseNotes $Notes --outputDir $Out
 exit $LASTEXITCODE

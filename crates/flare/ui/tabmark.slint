@@ -285,3 +285,182 @@ export component MarkPreview inherits Window {
         ink: root.ink;
     }
 }
+
+// The dictation mark (M8 Task 23): a 13 px microphone in accent-hi at a tab's end while dictation is listening or
+// transcribing into that tab (PT DictationTabMark.tsx). It sits in a 16 px end box, centred by its parent, and is
+// absent from the tree while idle. The paste target's tab wears it even with another tab in front.
+export component DictationTabMark inherits Rectangle {
+    // Dictation is listening or transcribing into this tab.
+    in property <bool> active: false;
+    // True while listening, false while transcribing (the accessible name).
+    in property <bool> listening: true;
+    width: 16px;
+    height: 16px;
+
+    if root.active : Path {
+        x: Px.snap((root.width - self.width) / 2);
+        y: Px.snap((root.height - self.height) / 2);
+        width: 13px;
+        height: 13px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M9 2a3 3 0 0 1 6 0v8a3 3 0 0 1-6 0z M5 10a7 7 0 0 0 14 0 M12 17v4 M8 21h8";
+        fill: transparent;
+        stroke: Theme.accent-hi;
+        stroke-width: 2px * 13 / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        accessible-role: image;
+        accessible-label: root.listening ? "Listening" : "Transcribing";
+    }
+}
+
+// The dictation mark on a target tab, with another tab in front, in a 400 x 36 window (the component tests).
+export component DictationTabMarkPreview inherits Window {
+    preferred-width: 400px;
+    preferred-height: 36px;
+    background: Theme.ground;
+
+    in-out property <bool> active;
+    in-out property <bool> listening: true;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    // The paste target's tab (0 to 250) and the tab in front (250 to 400).
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 250px;
+        height: 36px;
+        background: Theme.tabs;
+        DictationTabMark {
+            x: 228px;
+            y: 10px;
+            active: root.active;
+            listening: root.listening;
+        }
+    }
+    Rectangle {
+        x: 250px;
+        y: 0px;
+        width: 150px;
+        height: 36px;
+        background: Theme.control;
+    }
+}
+// The dictation mark on the real strip tab and the real sidebar card, for the scaling images (M8 Task 35). A strip
+// (400 x 36 css px: the paste target's tab with its icon band, name and end box, a tab in front of it) or, with
+// `sidebar`, the column (260 x 148: three 46 px cards, the middle one the target). Same metrics as tabs.slint's tab
+// (18 px icon at 10, name at 34, 18 px end box 10 from the edge) and sidebar.slint's card (8 px margins, 46 px icon
+// band, 18 px end box 8 from the edge).
+export component DictationTabMarkScene inherits Window {
+    in property <bool> sidebar: false;
+    in property <bool> active: true;
+    in property <bool> listening: true;
+    preferred-width: root.sidebar ? 260px : 400px;
+    preferred-height: root.sidebar ? 148px : 36px;
+    background: root.sidebar ? Theme.side : Theme.ground;
+    out property <float> win-scale: 1px / 1phx;
+    changed win-scale => { Px.scale = root.win-scale; }
+    init => { Px.scale = root.win-scale; }
+
+    if !root.sidebar : Rectangle {
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 250px;
+            height: 36px;
+            background: Theme.tabs;
+            AgentIcon { x: 10px; y: 9px; kind: 0; ink: Theme.dim; }
+            Text {
+                x: 34px;
+                y: 0px;
+                width: 250px - 34px - 10px - 18px - 6px;
+                height: 36px;
+                text: "Flare";
+                font-size: 12px;
+                font-family: Theme.font-ui;
+                color: Theme.dim;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            DictationTabMark {
+                x: 250px - 10px - 18px + 1px;
+                y: 10px;
+                active: root.active;
+                listening: root.listening;
+            }
+            Rectangle { x: 250px - Px.hair(); y: 0px; width: Px.hair(); height: 36px; background: Theme.divider; }
+        }
+        Rectangle {
+            x: 250px;
+            y: 0px;
+            width: 150px;
+            height: 36px;
+            background: Theme.tab-active;
+            AgentIcon { x: 10px; y: 9px; kind: 0; ink: Theme.text; }
+            Text {
+                x: 34px;
+                y: 0px;
+                width: 150px - 34px - 10px - 18px - 6px;
+                height: 36px;
+                text: "Atlas";
+                font-size: 12px;
+                font-family: Theme.font-ui;
+                color: Theme.text;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle { x: 0px; y: 0px; width: 150px; height: Px.snap(2px); background: Theme.accent-hi; }
+        }
+    }
+
+    if root.sidebar : Rectangle {
+        for name[i] in ["Atlas", "Flare", "Sonara"] : Rectangle {
+            x: 8px;
+            y: i * 46px + 5px;
+            width: 260px - 16px;
+            height: 46px;
+            border-radius: 8px;
+            clip: true;
+            background: i == 0 ? Theme.accent-hi.with-alpha(0.14) : Theme.text.with-alpha(0.03);
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 46px;
+                height: 46px;
+                background: Theme.text.with-alpha(0.05);
+                AgentIcon { x: 14px; y: 14px; kind: 0; ink: Theme.side-text; }
+            }
+            VerticalLayout {
+                x: 56px;
+                y: 0px;
+                width: 260px - 16px - 56px - 8px - 18px - 10px;
+                height: 46px;
+                alignment: center;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                Text {
+                    text: name;
+                    color: Theme.side-text;
+                    font-size: 13px;
+                    font-weight: i == 0 ? 600 : 400;
+                    overflow: elide;
+                }
+                Text {
+                    text: "Github";
+                    color: Theme.side-dim;
+                    font-size: 11.5px;
+                    overflow: elide;
+                }
+            }
+            if i == 1 : DictationTabMark {
+                x: 260px - 16px - 8px - 18px + 1px;
+                y: 15px;
+                active: root.active;
+                listening: root.listening;
+            }
+        }
+    }
+}

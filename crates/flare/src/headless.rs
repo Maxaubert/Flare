@@ -233,7 +233,7 @@ fn marked_rows(grid: &Grid) -> usize {
 }
 
 /// One premultiplied pixel as straight RGBA bytes.
-fn straight_rgba(p: &PremultipliedRgbaColor) -> [u8; 4] {
+pub(crate) fn straight_rgba(p: &PremultipliedRgbaColor) -> [u8; 4] {
     let unpremultiply = |c: u8| -> u8 {
         if p.alpha == 0 {
             0
@@ -266,7 +266,7 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
 // ---- --scene: the window in one fixed state ----------------------------------------------------
 
 /// The scenes `--scene` takes, in the order the screenshot plan lists them.
-pub const SCENES: [&str; 45] = [
+pub const SCENES: [&str; 60] = [
     "strip-3",
     "strip-hover",
     "strip-many",
@@ -312,6 +312,22 @@ pub const SCENES: [&str; 45] = [
     "update-window-notice",
     "update-window-small",
     "update-window-empty",
+    // The dictation scenes (M8, Task 35): the pill in the window, the Dictation page, the tab mark and the widget.
+    "dictation-pill-listening",
+    "dictation-pill-starting",
+    "dictation-pill-transcribing",
+    "dictation-pill-message",
+    "dictation-mark-strip",
+    "dictation-mark-sidebar",
+    "dictation-page-top",
+    "dictation-page-models",
+    "dictation-page-ask",
+    "dictation-page-end",
+    "dictation-widget-listening",
+    "dictation-widget-starting",
+    "dictation-widget-pick",
+    "dictation-widget-sent",
+    "dictation-widget-warning",
 ];
 
 /// The folder the scenes' tabs sit in. Inert: nothing is spawned in it and nothing is read from it.
@@ -331,6 +347,12 @@ thread_local! {
 
 fn scene_now() -> u64 {
     SCENE_MS.with(Cell::get)
+}
+
+/// Moves the scene clock on and runs the animations and timers that came due (the component scenes).
+pub(crate) fn advance_scene_clock(ms: u64) {
+    SCENE_MS.with(|c| c.set(c.get() + ms));
+    slint::platform::update_timers_and_animations();
 }
 
 /// The scene window's platform: it hands Slint the window the next scene made and reads the scene
@@ -357,7 +379,7 @@ impl Platform for ScenePlatform {
 }
 
 /// Makes `win` the window the next component creation takes; the platform is set on first use.
-fn offer_scene_window(win: &Rc<MinimalSoftwareWindow>) -> Result<(), String> {
+pub(crate) fn offer_scene_window(win: &Rc<MinimalSoftwareWindow>) -> Result<(), String> {
     if !SCENE_PLATFORM_SET.with(Cell::get) {
         slint::platform::set_platform(Box::new(ScenePlatform))
             .map_err(|e| format!("cannot set the scene platform: {e}"))?;
@@ -453,6 +475,10 @@ pub(crate) fn setup(name: &str) -> (SavedTabs, fn(&PrefStore)) {
         // The Settings tab alone, as a fresh Prism Terminal profile shows it, in a fixed store
         // (M7, Task 51).
         "settings" => (saved(&[], 0), crate::settings_scene::prep),
+        // The Dictation page alone, with dictation on and the Base model in use (M8, Task 35).
+        name if is_dictation_page_scene(name) => (saved(&[], 0), settings_scene::prep_dictation),
+        // The pill over a Flare tab's terminal.
+        name if is_dictation_pill_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         // The terminal scenes: one live tab in the Flare folder, its shell fed with the text.
         name if is_term_scene(name) => (saved(&[github("Flare")], 0), no_prefs),
         name if is_mark_scene(name) => marks_setup(name),
@@ -479,8 +505,28 @@ pub(crate) fn scene_args(name: &str, args: &Args) -> Args {
     if name == "update-window-small" {
         args.size = (1000, 420);
     }
+    if is_dictation_page_scene(name) {
+        args.settings_page = Some("dictation".to_string());
+    }
     args
 }
+
+// ---- the dictation scenes (M8, Task 35) ----------------------------------------------------------
+
+/// The scenes that draw the Dictation page through the real Settings frame.
+pub(crate) fn is_dictation_page_scene(name: &str) -> bool {
+    name.starts_with("dictation-page-")
+}
+
+/// The scenes that draw the pill over the front tab's terminal, in the real window.
+pub(crate) fn is_dictation_pill_scene(name: &str) -> bool {
+    name.starts_with("dictation-pill-")
+}
+
+/// How far the Dictation page is scrolled (css px) when the scene shows the models card.
+pub(crate) const DICTATION_MODELS_SCROLL: f32 = 520.0;
+/// More than the page is tall: the view clamps it to the foot.
+pub(crate) const DICTATION_END_SCROLL: f32 = 5000.0;
 
 /// The version the update scenes run as: the offer is the next minor, `0.56.0`.
 const UPDATE_SCENE_CURRENT: &str = "0.55.6";
@@ -1093,7 +1139,16 @@ impl Scene {
     /// The Settings scene (M7, Task 51): the Settings tab opened over the restored tab, on the
     /// page and with the overlay the flags name. The controller is made here, over the scene's own
     /// in-memory store and fixed ports, and everything is driven through its own callbacks.
-    fn stage_settings(&self, args: &Args) -> Result<(), String> {
+    pub(crate) fn stage_settings(&self, args: &Args) -> Result<(), String> {
+        let scene = args.scene.as_deref().unwrap_or_default();
+        if is_dictation_page_scene(scene) {
+            // Base in use, Small at half its download, the rest not downloaded; the question open on the third scene.
+            crate::dictation_ctl::scene_page(
+                &["base"],
+                Some(("small", 50)),
+                (scene == "dictation-page-ask").then_some("parakeet-v3"),
+            );
+        }
         let post: Post = {
             let queue = self.queue.clone();
             Arc::new(move |m| {
@@ -1211,6 +1266,14 @@ impl Scene {
                 // distance, so the cards the toggle revealed are in the picture.
                 bridge.set_scroll_y(settings_scene::WALL_SCROLL);
             }
+        }
+        match scene {
+            "dictation-page-models" | "dictation-page-ask" => {
+                bridge.set_scroll_y(DICTATION_MODELS_SCROLL)
+            }
+            // Past the end: the view stops at its foot, with the GPU card and From any app.
+            "dictation-page-end" => bridge.set_scroll_y(DICTATION_END_SCROLL),
+            _ => {}
         }
         // Long enough for the help panel's slide (460 ms) and the flashes to be over.
         self.settle(30);
@@ -1476,6 +1539,35 @@ impl Scene {
         Ok(())
     }
 
+    /// The pill scenes: the window's own pill properties, as `dictation_ctl` feeds them, over the front tab. The
+    /// spinner is pinned to its start and the clock runs on so the pill's fade and the bars have settled.
+    fn stage_pill(&self, name: &str) -> Result<(), String> {
+        let app = &self.app;
+        match name {
+            "dictation-pill-listening" => {
+                app.set_dict_phase(1);
+                app.set_dict_live_text("the newest words of a long sentence".into());
+                app.set_dict_level(0.5);
+            }
+            "dictation-pill-starting" => {
+                app.set_dict_phase(1);
+                app.set_dict_starting(true);
+            }
+            "dictation-pill-transcribing" => app.set_dict_phase(2),
+            "dictation-pill-message" => {
+                app.set_dict_phase(3);
+                app.set_dict_message("Typed into the tab in front".into());
+            }
+            _ => return Err(format!("no dictation pill scene '{name}'")),
+        }
+        self.advance(500);
+        self.pump();
+        let g = self.app.global::<MarkMotion>();
+        g.set_still(false);
+        g.set_spin(0.0);
+        Ok(())
+    }
+
     /// The update scenes: the update controller over a fake engine, told an offer and then driven
     /// through the window's own callbacks (the chip click, Install), exactly as a person would.
     fn stage_update(&self, name: &str) -> Result<(), String> {
@@ -1567,7 +1659,7 @@ impl Scene {
         Ok(())
     }
 
-    fn stage(&self, name: &str) -> Result<(), String> {
+    pub(crate) fn stage(&self, name: &str) -> Result<(), String> {
         // The first paint lays the window out, so the pointer and the focus find their targets.
         self.render();
         if is_term_scene(name) {
@@ -1578,6 +1670,9 @@ impl Scene {
         }
         if is_update_scene(name) {
             return self.stage_update(name);
+        }
+        if is_dictation_pill_scene(name) {
+            return self.stage_pill(name);
         }
         match name {
             "strip-hover" => {
@@ -1658,6 +1753,18 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
     if name == "badge" {
         return write_badge_sheet(path);
     }
+    if crate::dictation_scenes::is_component_scene(name) {
+        let (w, h, rgba) = crate::dictation_scenes::render(name, args.scale)?;
+        write_png(path, w, h, &rgba)?;
+        println!("screenshot: {}", path.display());
+        return Ok(());
+    }
+    if is_dictation_page_scene(name) {
+        // The GPU card is offered only on an NVIDIA machine: the scene says it is one, as the e2e does, so the
+        // page shows the same cards on every PC.
+        // SAFETY: the scene runs before any other thread of this process reads the environment.
+        unsafe { std::env::set_var(flare_win::names::SEAM_NVIDIA, "1") };
+    }
     let args = scene_args(name, args);
     let (saved, prep) = setup(name);
     let scene = Scene::build_with(
@@ -1667,7 +1774,7 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         name == "theme-sample",
         is_term_scene(name),
     )?;
-    if name == "settings" {
+    if name == "settings" || is_dictation_page_scene(name) {
         scene.stage_settings(&args)?;
     } else {
         scene.stage(name)?;

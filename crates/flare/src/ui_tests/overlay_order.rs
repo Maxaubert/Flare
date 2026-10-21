@@ -13,14 +13,16 @@ const APP: &str = include_str!("../../ui/app.slint");
 /// Where each overlay component sits in PT's LAYER table. Two entries are a documented reading:
 /// `OverflowList` is PT's `TabOverflowList`, which uses `LAYER.menu`; `ThemeEditor` and `AskThree`
 /// host the colour picker (PT draws a picker inside a dialog at z-10 of that dialog, so it is over
-/// it), so they share the picker's rank and the picker is declared after them.
-const RANKS: [(&str, u8, &str); 13] = [
+/// it), so they share the picker's rank and the picker is declared after them. `DictAsk` (the Dictation page's
+/// one-line download question) is a Settings dialog like `AskThree` and takes the same rank (M8 Task 25).
+const RANKS: [(&str, u8, &str); 14] = [
     ("UpdateNotice", 1, "pop"),
     ("SelectMenu", 1, "pop"),
     ("ContextMenu", 2, "menu"),
     ("OverflowList", 2, "menu"),
     ("ThemeEditor", 3, "picker"),
     ("AskThree", 3, "picker"),
+    ("DictAsk", 3, "picker"),
     ("ColourPopover", 3, "picker"),
     ("UpdateWindow", 4, "modal"),
     ("Dialog", 4, "modal"),

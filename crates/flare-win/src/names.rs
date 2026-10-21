@@ -18,6 +18,34 @@ pub const PROFILE_FOLDER: &str = "Flare";
 pub const LOG_FOLDER: &str = "logs";
 /// The dictation models folder under `%LOCALAPPDATA%`.
 pub const DICTATION_FOLDER: &str = "FlareDictation";
+/// The dictation hook lock file in `%TEMP%` (one hook per user; never Prism Terminal's lock).
+pub const DICTATION_LOCK: &str = "Flare-dictation-key.lock";
+/// The prefix of the dictation link pipe (`\\.\pipe\flare-dictation-<hash>`).
+pub const DICTATION_PIPE_PREFIX: &str = "flare-dictation-";
+/// The file that holds the link key, inside the dictation folder.
+pub const DICTATION_LINK_KEY: &str = "link.key";
+/// The copy name on the dictation link for the packaged app.
+pub const COPY_NAME: &str = "Flare";
+/// The copy name on the dictation link for any other build.
+pub const COPY_NAME_DEV: &str = "Flare (Dev)";
+/// The resident Parakeet host executable.
+pub const PARAKEET_HOST_EXE: &str = "flare-parakeet-host.exe";
+/// The engine folder beside the executable.
+pub const ENGINE_FOLDER: &str = "whisper";
+/// Env seam (read only through `e2e::global().env`): a WAV played as the microphone.
+pub const SEAM_MIC: &str = concat!("FLARE_E2E", "_MIC");
+/// Env seam: `1` or `0` instead of the DXGI NVIDIA probe.
+pub const SEAM_NVIDIA: &str = concat!("FLARE_E2E", "_NVIDIA");
+/// Env seam: the scenario's own link pipe name.
+pub const SEAM_DICT_PIPE: &str = concat!("FLARE_E2E", "_DICT_PIPE");
+/// Env seam: the scenario's own link key.
+pub const SEAM_DICT_KEY: &str = concat!("FLARE_E2E", "_DICT_KEY");
+/// Env seam: `stall` makes the store's downloads come from a slow in-memory stand-in.
+pub const SEAM_FETCH: &str = concat!("FLARE_E2E", "_FETCH");
+/// Env seam: the models folder (else `%LOCALAPPDATA%\FlareDictation`).
+pub const SEAM_DICTATION_ROOT: &str = concat!("FLARE_DICTATION", "_ROOT");
+/// Env seam: the engine folder (else `<exe dir>\whisper`).
+pub const SEAM_WHISPER_DIR: &str = concat!("FLARE_WHISPER", "_DIR");
 /// The name of the Explorer verb key, under `Directory\shell` and `Directory\Background\shell`.
 pub const VERB_KEY: &str = "Flare";
 /// The Explorer verb label.
@@ -68,6 +96,20 @@ mod tests {
             REPO_URL,
             E2E_REG_PREFIX,
             OFF_MARKER_FILE,
+            DICTATION_LOCK,
+            DICTATION_PIPE_PREFIX,
+            DICTATION_LINK_KEY,
+            COPY_NAME,
+            COPY_NAME_DEV,
+            PARAKEET_HOST_EXE,
+            ENGINE_FOLDER,
+            SEAM_MIC,
+            SEAM_NVIDIA,
+            SEAM_DICT_PIPE,
+            SEAM_DICT_KEY,
+            SEAM_FETCH,
+            SEAM_DICTATION_ROOT,
+            SEAM_WHISPER_DIR,
         ];
         for name in all {
             assert!(!name.to_ascii_lowercase().contains(&other), "{name}");
