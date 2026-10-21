@@ -6,12 +6,14 @@ implement it from this file alone. The Rust reference is `crates/flare-ctl` (typ
 the connection state machine, the client) and `crates/flare-mcp` (a client). Where this file and the
 code disagree, that is a bug in one of them: fix both in the same commit.
 
-Status of the methods in Flare: the framework (transport, hello, grants, errors, limits, timeouts,
-events) is built and tested in `flare-ctl` (stage 2, library part). The app wiring and the behaviour of
-`panel.*` and `view.*` land with the panels (stage 2, proper), `browser.*` with the web panel (stage 3)
-and the agent driving it (stage 4), `convo.state` with the conversation reader (stage 6),
-`tools.respond` with mods (stage 8). Each method
-below says which stage owns its behaviour; the names, params and grants are fixed now.
+Status of the methods in Flare (stage 2 is done): the framework (transport, hello, grants, errors,
+limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
+implements `hello`, `tabs.list`, `panel.close`, `panel.state` and `view.image|file|text`; `panel.open`
+answers (`unavailable` for `web`, `bad_params` for anything else) but is not listed in `capabilities`.
+`browser.*` lands with the web panel (stage 3) and the agent driving it (stage 4), `convo.state` with the
+conversation reader (stage 6), `tools.respond` with mods (stage 8); until then each answers
+`unavailable`. Each method below says which stage owns its behaviour; the names, params and grants are
+fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -34,9 +36,17 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   | SID `S-1-5-21-1111111111-2222222222-3333333333-1001` | `\\.\pipe\flare-ctl-df660900cac14fc2` |
 
   `s-1-5-21-1` (lower case) and scope `E2E` give the same names as `S-1-5-21-1` and `e2e`.
+- **Which scope Flare uses**: none for the default profile (`%APPDATA%\Flare`), so any client of the same
+  user finds the plain name with no environment; for any other profile (an e2e run, a second profile of
+  the owner) the scope is the profile folder as a string, so that Flare never meets the owner's. The shell
+  gets the whole name in `FLARE_CTL_PIPE`, so a client never has to compute it.
 - **Discovery for a client**: environment variable `FLARE_CTL_PIPE` when set and non-empty, else the
-  user's default name. The app sets `FLARE_CTL_PIPE` and `FLARE_TAB_ID` in every shell it starts, so a
-  child finds the right app even when the owner runs two profiles.
+  user's default name. The app sets three variables in every shell it starts (the `pty_env` function,
+  regression rule 12): `FLARE_CTL_PIPE` (this instance's pipe), `FLARE_TAB_TOKEN` (the tab's secret, section 4)
+  and `FLARE_MCP_EXE` (the absolute path of `flare-mcp.exe`, when it sits beside the app). A value the user
+  already had under any of these names is replaced, and none is inherited. So a child finds the right app
+  even when the owner runs two profiles, and a Flare started inside a Flare tab does not pass on the outer
+  tab's secret. `FLARE_TAB_ID` still exists, for hook lines and Sonara; it is public and opens nothing.
 - **Who may connect**: the pipe's security descriptor is `D:P(A;;GA;;;<user SID>)`, a protected DACL
   with one ACE, so only the current user (S1). Remote clients are rejected
   (`PIPE_REJECT_REMOTE_CLIENTS`). The server creates the first instance with
@@ -88,7 +98,9 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
 3. Method name in the protocol? No: `unknown_method` (stays).
 4. `hello` again: `already_hello` (stays). `hello` itself resolves the grant (below) and answers.
    Any other method before `hello`: `hello_required` (stays).
-5. **Re-resolve the grant**: a connection with a token asks the app for the token's grant again; a
+5. **Re-resolve the grant and the tab**: a connection with a tab token asks the app which tab owns it
+   again (a closed tab's token stops resolving, and the connection then has no tab: `no_tab`). A
+   connection with a token asks the app for the token's grant again; a
    token that is gone or whose mod is disabled answers `unauthorized` and closes (rule S5: a disabled
    mod's token is dead, also for connections already open). A connection with no token takes the
    app's current agent grant, so the user's `eval` switch is live without a reconnect. **A grant of
@@ -138,11 +150,20 @@ holds `panel`, `view`, `browser` and `convo`, plus `eval` only when the user has
 on (S4). The `permissions` list in the `hello` answer always agrees with what the grant can call
 (`permission_names_agree_with_what_each_grant_can_call`).
 
-**The tab is advisory, and a grant is not a sandbox.** `tab` in `hello` is asserted by the client: any
-client of this user can name any tab (`tabs.list` hands the ids out), and the agent can run Bash as
-that same user anyway. Grants limit what the MCP tool surface and mods can do; they do not defend one
-process of the user against another. A method must therefore act only on the connection's own `tab`
-(`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants alike.
+**A tab is named by its secret (rule S1).** Flare makes a random token for every tab when it starts the
+tab's shell (64 lower-case hex digits from two random UUIDs, the OS generator: 244 bits) and puts it in
+that shell's environment as `FLARE_TAB_TOKEN`; never on a command line, never logged, never sent to
+Sonara, never in a hook line. `hello` presents it as `tab_token`; the server maps token to tab through
+the app and the connection's tab is that tab. There is no way to name a tab any other way: a `tab` param
+in `hello` is refused (`bad_params`), the ids `tabs.list` returns are not secrets and open nothing, and
+an unknown token is `unauthorized` (closes). A token lives as long as its shell: a restored tab gets a new
+one at every launch, a closed tab's stops working at once, a warm spare shell belongs to no tab until one
+adopts it. Compared in constant time. **A grant is still not a sandbox**: the agent can run Bash as the
+same user, so a process that can read another process's environment can still read a token; the token
+keeps unrelated processes of the user (a script, a browser tab, another app) from acting as a tab, and
+keeps the tab's identity out of anything that only sees `tabs.list`. A method acts only on the
+connection's own tab (`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants
+alike.
 
 | Method | agent | mod needs | ui |
 |---|---|---|---|
@@ -177,7 +198,8 @@ so clients send absolute paths (`flare-mcp` makes them absolute).
 ### hello
 
 Params: `client` (string, required), `version` (string, required), `protocol` (number, optional, must
-be 1 if present), `token` (string, optional), `tab` (string, optional, an existing tab id).
+be 1 if present), `token` (string, optional, a mod's token), `tab_token` (string, optional, the tab's secret
+from `FLARE_TAB_TOKEN`). A `tab` param, whatever its value, is refused with `bad_params`.
 
 Result:
 
@@ -192,51 +214,79 @@ Result:
 ```
 
 `grant` gains `"id": "<mod id>"` for a mod. `capabilities` is the methods this build implements
-**and** this grant may call; a client uses it to decide which tools to offer. `tab` is null when the
-client named none.
+**and** this grant may call; a client uses it to decide which tools to offer. `tab` is the id of the tab
+the token belongs to, null when the client presented none.
 
-Errors: `bad_params` (missing client or version, token not a string), `unsupported_protocol` (closes),
-`unauthorized` (unknown or disabled token; closes), `no_tab` (the named tab does not exist; the client
-may retry hello), `already_hello`.
+Errors: `bad_params` (missing client or version, a token or tab_token that is not a string, a `tab`
+param; the client may retry hello), `unsupported_protocol` (closes), `unauthorized` (unknown or disabled
+mod token, unknown tab token; closes), `already_hello`.
 
 ### tabs.list
 
 Params: none. Result: `{"tabs": [{"id": string, "title": string, "active": bool}]}`. Ids and titles
-only: never screen content (S3). Stage 2.
+only: never screen content (S3). The agent grant gets **its own tab only** (an empty list when the
+connection has no tab); a mod gets every tab when it holds `panel`, else its own. `title` is the label the
+tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open
 
 Params: `kind` (string, required; v1 accepts `"web"`), `url` (string, optional, http or https).
 Opens the tab's panel (replacing an open one). For images, files and text use `view.*`.
-Result: `{"panel": PanelInfo}`. Errors: `no_tab`, `bad_params`, `unavailable` (kind not built yet, or no
-WebView2 runtime). Stage 2 (shell of the panel), stage 3 (`web`).
+Result: `{"panel": PanelInfo}`. Errors: `no_tab`, `bad_params` (no kind, or a kind other than `web`),
+`unavailable` (`web` is not built yet, or there is no WebView2 runtime). In Flare today `web` always
+answers `unavailable`; stage 3 builds it.
 
 ### panel.close
 
 Params: none. Result: `{"closed": bool}` (`false` when none was open; not an error). Errors: `no_tab`.
+The panel keeps what it showed, so the user's toggle chord (Ctrl+Shift+P) brings it back. If the user had
+moved the keys into the panel they go back to the terminal. Stage 2.
 
 ### panel.state
 
 Params: none. Result: `{"open": bool, "panel"?: PanelInfo, "width"?: number}` where `width` is the
-slot's fraction of the window. Errors: `no_tab`.
+slot's fraction of the page (the user's splitter position, else the default 0.4). Both are absent when
+`open` is false (a closed panel is not reported). Errors: `no_tab`. Stage 2.
 
 ### view.image
 
-Params: `path` (string, required), `title` (string, optional). Shows an image in the tab's panel.
-Result: `{"panel": PanelInfo}`. Errors: `bad_params` (no path, or not an image the viewer can decode),
-`not_found`, `no_tab`, `forbidden` is not used here (a path the user cannot open answers `not_found`,
-so a probe learns nothing). Stage 2.
+Params: `path` (string, required), `title` (string, optional, one line, cut at 200 characters, control
+characters become spaces; the header shows it instead of the file's name). Shows an image in the tab's
+panel: png, jpg, gif, bmp, webp or ico (not svg: a vector file can carry script). Result:
+`{"panel": PanelInfo}`, answered once the panel holds the request (the decode follows on a worker; a file
+that turns out unreadable is shown as a reason in the panel, the call has already answered).
+
+Rules (S2, regression rule 187): the path is resolved again by the app on the call's own thread, a
+relative one against the tab's folder, with the same function and the same click allowlist as a click on
+a path on the screen. Errors: `bad_params` (no path, a path with a NUL or over 4096 characters, a
+`title` that is not a string, or a file that is not a picture: "show_file shows it"), `not_found` (the
+file is missing, is a folder, is on a share, or is not on the allowlist, a program for instance: all the
+same answer, so a probe learns nothing about the disk), `no_tab`, `unavailable` (Flare is shutting down),
+`timeout` (the window did not answer in 10 s). A file whose name says picture but which the file system
+names something else (a link to a program) is `bad_params`, never shown. The explicit ask is not held
+back by the "Open previews in Flare" switch (that switch governs clicks only). A call for a tab that is
+not in front stores that tab's panel and does **not** switch tabs; it shows when the tab comes to the
+front. Stage 2.
 
 ### view.file
 
-Params: `path` (string, required), `line` (number, optional, 1-based line to scroll to), `title`.
-Shows a text or code file, read-only. A binary file answers `bad_params`. A file over 8 MB shows its
-first 8 MB and says so in the panel. Result and other errors as `view.image`. Stage 2.
+Params: `path` (string, required), `line` (whole number from 1, optional), `title`. Shows a text or code
+file, read-only, in the panel: the types in `flare_surfaces::preview::TEXT_EXTS` (txt, md, json, yaml,
+toml, rs, ts, and so on; no script: a runnable file is refused, never shown as text and never run, rule
+14). The first 4 MB and 100 000 lines are shown and the panel says so under the text; a file with a NUL
+in its first 8 KB (UTF-16 with a BOM excepted) shows "This file is not text." in the panel. `line` is
+validated and **ignored** in Flare today (scrolling to a line is not built). Result and errors as
+`view.image` (a picture through `view.file` is `bad_params`: "show_image shows it"). Stage 2.
 
 ### view.text
 
-Params: `text` (string, required, at most 4 MB), `title`, `language` (string, optional syntax hint).
-Result `{"panel": PanelInfo}`. Errors: `bad_params`, `no_tab`. Stage 2.
+Params: `text` (string, required, at most 4 MB = 4194304 bytes; an empty string is allowed on the wire,
+the MCP tool refuses it), `title` (as `view.image`; default "Text"), `language` (string, optional syntax
+hint, checked and ignored today). Shows the text in the same read-only viewer a file gets (tabs become
+four spaces, long lines are cut, at most 100 000 lines), replacing what the panel showed. The text lives
+in memory for this run: it is **not** written to `panels.json` and is not restored. Result
+`{"panel": PanelInfo}` with no `path`. Errors: `bad_params` (no text, not a string, over 4 MB, a title
+or language that is not a string), `no_tab`, `unavailable`, `timeout`. Stage 2.
 
 ### browser.* (stage 3 for the panel, stage 4 for the agent driving it)
 
@@ -312,8 +362,8 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 
 | Event | Params | When |
 |---|---|---|
-| `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed |
-| `tabs.changed` | `{}` | a tab was added, removed or retitled |
+| `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*` or `panel.close` call, a click on a path, the close button or the toggle chord |
+| `tabs.changed` | `{}` | a tab was added, removed or retitled (**reserved**: Flare does not send it yet) |
 
 ## 8. Versioning
 
@@ -328,21 +378,41 @@ A client of this channel, not part of it. A stdio MCP server (JSON-RPC 2.0, one 
 protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05`; the client's version is echoed when listed,
 else the newest). Methods: `initialize`, `notifications/initialized` (no reply), `ping`, `tools/list`,
 `tools/call`. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
-connection), says `hello` with `tab` from `FLARE_TAB_ID`, then calls:
+connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`), then
+calls:
 
 | Tool | Params | Channel method |
 |---|---|---|
 | `show_image` | `path` | `view.image` |
 | `show_file` | `path` | `view.file` |
+| `show_text` | `text` (non-empty), `title` (optional) | `view.text` |
 | `close_panel` | none | `panel.close` |
 
 (`show_diagram`, `show_html`, `open_page` follow in stage 5, `browser_*` in stages 3 and 4.) A tool
 call waits for the method's own timeout plus 5 s (`call_wait`), not a fixed 20 s, so a 60 s
 `browser.wait` is not given up on early; 20 s bounds only connecting and `hello`. Results are MCP
 content: text, and image content (`{"type":"image","data","mimeType"}`) reserved for `browser_look`.
-Outside Flare (no `FLARE_TAB_ID`, no pipe, no server) every tool answers `isError: true` with "Flare is
+Outside Flare (no `FLARE_TAB_TOKEN`, no pipe, no server) every tool answers `isError: true` with "Flare is
 not running this session ...". A channel error `forbidden` or `not_found` becomes `isError` text
 ("Flare refused: ... (code)"), so the model sees it. A bad argument is `isError`, not a JSON-RPC error;
 an unknown tool name is JSON-RPC `-32602`. An implementation in another app only needs the same tool
 names and the same method mapping, so Prism Terminal can reuse the binary unchanged if its server
 speaks this protocol.
+
+### How Claude Code finds it (the bundled plugin)
+
+The `flare-status` plugin (`crates/flare-agent/claude-plugin`, handed to Claude Code through
+`CLAUDE_CODE_PLUGIN_DIRS` in every Flare shell) declares the server in its `plugin.json`, so Claude in a
+Flare tab has the four tools with no setup:
+
+```json
+"mcpServers": {"flare": {"command": "${FLARE_MCP_EXE}", "args": [],
+  "env": {"FLARE_TAB_TOKEN": "${FLARE_TAB_TOKEN:-}", "FLARE_CTL_PIPE": "${FLARE_CTL_PIPE:-}"}}}
+```
+
+The program is named by the variable Flare sets (an absolute path; a bare name could be answered by
+`PATH` or the current folder, the way `hooks.json` also never names a program by name). The tab's secret
+and the pipe are passed through `env` rather than assumed inherited, with an empty default so a shell
+that has no channel (Flare could not make the pipe) gives the server an empty value, which it treats as
+"not set". The secret is never in `args`. The installed plugin copy (`%LOCALAPPDATA%\Flare\claude-plugin`)
+is refreshed from the template at every start, so a new version of the manifest reaches existing installs.

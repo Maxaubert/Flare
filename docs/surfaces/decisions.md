@@ -168,3 +168,71 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
   channel.
 - 2026-10-21, stage 2 library review fixes: `flare-mcp` waits for a call as long as the method's server
   timeout plus 5 s; a fixed 20 s dropped the connection on a legitimate 60 s `browser.wait`.
+
+## Stage 2: the channel inside Flare (`surfaces-2-channel`, issues #18 and #19)
+
+- 2026-10-21, stage 2, tab identity (security review finding, fixed): a connection is a tab only by presenting the
+  tab's secret. Flare makes one per tab when it starts the shell (two random UUIDs, 64 hex digits, the OS generator),
+  puts it in the shell's environment as `FLARE_TAB_TOKEN` and nowhere else (not on a command line, not in a log, not in
+  Sonara's post, not in a hook line). `hello` takes `tab_token` and refuses a `tab` name outright (`bad_params`, so an old
+  client fails loudly instead of silently acting as nobody). Why not reuse `FLARE_TAB_ID`: that id is public by design (hook
+  lines carry it, Sonara is told it, `tabs.list` hands the same string out); a secret must be a different value that is never
+  shown. The session manager answers token to tab (`tab_for_ctl_token`) under its own lock, without early exit, and the
+  channel asks again on every request, so a closed tab's token is dead at once and the connection falls back to no tab
+  (`no_tab`). A restored tab starts a new shell and so gets a new secret each launch; nothing about a secret is stored.
+- 2026-10-21, stage 2, an unknown tab token closes the connection (`unauthorized`), like an unknown mod token. A client that
+  presents none still connects as the agent with no tab (it can call `tabs.list`, which is empty for it, and nothing that
+  needs a tab). Why: both are the same signal ("you are not who you say"); and a tool run outside Flare must not be able to
+  tell a wrong secret from no secret by timing or by a different failure.
+- 2026-10-21, stage 2, `tabs.list` for the agent grant gives its own tab only. A mod holding `panel` sees every tab's id and
+  title; a mod without it sees its own. Why: the agent has no use for the other tabs, and a list of titles is the one
+  place the channel could leak what the user is working on.
+- 2026-10-21, stage 2, the pipe is per instance: the default profile (`%APPDATA%\Flare`) uses the user's plain name; any
+  other profile folder is hashed into the name (`flare-ctl-<sid hash>-<profile hash>`). Every shell is told the whole name in
+  `FLARE_CTL_PIPE`, so the right Flare is found with no computation, and the e2e runs (own profile) never touch the
+  installed Flare's pipe. A name already taken fails the start (first-instance flag) and Flare runs without the channel; the
+  shells then get no channel variables at all, and the plugin's `mcpServers` entry degrades to "not running".
+- 2026-10-21, stage 2, three variables, one function: `pty_env` (rule 12) sets `FLARE_TAB_TOKEN`, `FLARE_CTL_PIPE` and
+  `FLARE_MCP_EXE` and drops an inherited copy of each, whatever its case. The channel's own data (pipe name, MCP path) is the
+  `SessionOptions.ctl` of the session manager, so every shell of the instance gets it from one place.
+- 2026-10-21, stage 2, the server starts at launch from `run_window` (the pipe is made on the UI thread at startup, which is the
+  allowed exception: one `CreateNamedPipe` and a thread) and every connection runs on its own worker. A call that needs the
+  window posts `UiMsg::Ctl` with a one-shot reply channel and waits at most 10 s, looking at the stop flag every 50 ms. The
+  UI thread answers from the model at once and never waits on a client. A file the agent names is resolved on the call's own
+  thread, so the UI thread is only ever given a path that passed.
+- 2026-10-21, stage 2, quit: the first thing after the event loop ends is `CtlServer::stop` (flag set, waiting calls answer
+  `unavailable` within 50 ms, pipe closed, workers joined, at most 2 s), before the shells are killed and the stores flushed.
+  A message that reaches the controller after `end()` is dropped, which drops its reply sender, which wakes the waiting call
+  with `unavailable`. Rule 28: nothing of the channel outlives the quit unnoticed (a count of still-running handlers is
+  logged).
+- 2026-10-21, stage 2, a view call for a tab that is not in front stores that tab's panel (the target and the title) and does
+  not switch tabs; the panel shows when the tab comes to the front. Why: switching tabs is the user's act; an agent in a
+  background tab finishing a task must not pull the user away from what they are typing. The user sees the tab's own signals
+  (the agent mark) and finds the panel when they get there. `panel.changed` goes to that tab's connections either way.
+- 2026-10-21, stage 2, an explicit ask is not a click: `view.*` ignores the "Open previews in Flare" switch (that setting is for
+  clicks on paths), but applies every other check a click gets (rules 13 and 14, the same kind on both names).
+- 2026-10-21, stage 2, `view.text` is shown in the same text viewer, from memory: the target is `inline:<n>` (a new number for
+  every call, so the panel reads it afresh), the text is held on the controller (at most 4 MB per tab, let go when the tab
+  closes), shaped on a worker like a file, never written to `panels.json` and never restored (a restored `inline:` target fails
+  the stored-target check and is dropped). The title defaults to "Text". `language` is validated and ignored (no syntax
+  colouring in the viewer yet). `view.file`'s `line` is validated and ignored (the viewer cannot scroll to a line yet).
+- 2026-10-21, stage 2, `view.file` shows text and code only (the stage 1 list); it does not show a runnable file as text, it
+  refuses it as `not_found` like any path off the allowlist. The protocol had said "as text or refuses"; refusing is the
+  stricter of the two and matches rule 14.
+- 2026-10-21, stage 2, `panel.open` is implemented as the refusal (`web` is `unavailable`, anything else `bad_params`) and is
+  not in `capabilities` until stage 3, so a client that offers tools from the list never offers it. `browser.*`, `convo.state`
+  and `tools.respond` answer `unavailable` ("not built in this version of Flare").
+- 2026-10-21, stage 2, events: `panel.changed` is published for every change of a tab's panel (a channel call, a click on a path,
+  the close button, the toggle chord); `tabs.changed` is not sent yet (the tab strip has no single place that says "a tab was
+  retitled"; it comes with the board in stage 7).
+- 2026-10-21, stage 2, MCP in the plugin: the manifest names the server by `${FLARE_MCP_EXE}` and passes the secret and the pipe
+  in `env` with an empty default. Why an environment variable and not a path in the plugin folder: the plugin is installed as a
+  copy under `%LOCALAPPDATA%` and refreshed at every start, but the exe lives with the app (Velopack moves it on every update);
+  one variable set by the running app is always the right file, with no copy of a binary to keep fresh and no bare name for
+  `PATH` to answer. The plugin version is 1.1.0.
+- 2026-10-21, stage 2, packing: `flare-mcp.exe` is built by its own step in the three workflows that pack (release,
+  installer-e2e, update-e2e), copied beside `Flare.exe` by `pack.ps1` and required in the portable zip by `verify-pack.ps1`;
+  a release test reads the three files so none of them can lose it.
+- 2026-10-21, stage 2, e2e: the shell's secret is read through the `ctl.info` probe (only answered under `--e2e`), which also
+  reports the pipe and the MCP path; the scenario plays the shell. The first scenario also reads the three variables from
+  inside a real shell and compares them. `flare-mcp.exe` is run with `CREATE_NO_WINDOW` and killed on every way out.

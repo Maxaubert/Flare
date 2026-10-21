@@ -4,7 +4,7 @@
 //! (`flare-ctl`) on the other side. Hand-rolled on `serde_json`: the surface is four methods.
 //!
 //! The server answers `initialize`, `tools/list` and `ping` with or without Flare. Only a tool call
-//! needs the channel, and without Flare (no pipe, no `FLARE_TAB_ID`) it answers `isError` text that
+//! needs the channel, and without Flare (no pipe, no `FLARE_TAB_TOKEN`) it answers `isError` text that
 //! says so, so the agent can carry on without the tool.
 
 use std::io::{BufRead, Write};
@@ -16,6 +16,8 @@ use serde_json::{Map, Value, json};
 /// Protocol versions this server can speak, newest first. The client's is echoed when listed.
 pub const SUPPORTED_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 pub const SERVER_NAME: &str = "flare-mcp";
+/// The variable Flare puts in every shell it starts: the secret of that shell's tab.
+pub const TAB_TOKEN_VAR: &str = "FLARE_TAB_TOKEN";
 
 /// How long a tool call waits for Flare (a connect, then the answer).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -129,12 +131,25 @@ pub fn tools() -> Vec<ToolDef> {
         ToolDef {
             name: "show_image",
             description: "Show an image file in a panel beside this terminal tab in Flare, so the user can look at it without leaving the terminal. Takes an absolute path, or one relative to the current folder.",
-            schema: path_schema("Path of the image file (png, jpg, gif, webp, bmp, svg)."),
+            schema: path_schema("Path of the image file (png, jpg, gif, webp, bmp, ico)."),
         },
         ToolDef {
             name: "show_file",
             description: "Show a text or code file in a panel beside this terminal tab in Flare. The file is only displayed, never run or changed.",
             schema: path_schema("Path of the file to show."),
+        },
+        ToolDef {
+            name: "show_text",
+            description: "Show a piece of text (notes, a plan, a log excerpt, a table) in a read-only panel beside this terminal tab in Flare. Use it for something longer than is comfortable to read in the terminal. Replaces what the panel showed.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The text to show (at most 4 MB)."},
+                    "title": {"type": "string", "description": "A short title for the panel header."}
+                },
+                "required": ["text"],
+                "additionalProperties": false
+            }),
         },
         ToolDef {
             name: "close_panel",
@@ -193,6 +208,21 @@ pub fn call_tool(
                 .call(method, json!({"path": path}))
                 .map(|_| ToolResult::text(format!("Showing the {what} {path} in Flare.")))
         }
+        "show_text" => {
+            let text = match args.get("text") {
+                Some(Value::String(t)) if !t.is_empty() => t.clone(),
+                _ => return Some(ToolResult::error("text is required: a non-empty string.")),
+            };
+            let mut params = json!({"text": text});
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            channel
+                .call(Method::ViewText, params)
+                .map(|_| ToolResult::text("Showing the text in Flare."))
+        }
         "close_panel" => channel.call(Method::PanelClose, json!({})).map(|v| {
             match v.get("closed").and_then(Value::as_bool) {
                 Some(false) => ToolResult::text("No panel was open."),
@@ -250,7 +280,7 @@ pub fn handle_message(msg: &Value, channel: &mut dyn Channel) -> Option<Value> {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Tools to show files and images in the Flare terminal tab this agent runs in."
+                    "instructions": "Tools to show images, files and text in a panel beside the Flare terminal tab this agent runs in."
                 }),
             )
         }
@@ -323,24 +353,24 @@ pub fn run(
     Ok(())
 }
 
-/// The real channel: connects to Flare's pipe on the first call, says hello with the tab from
-/// `FLARE_TAB_ID`, and reconnects once if the connection has gone stale.
+/// The real channel: connects to Flare's pipe on the first call, says hello with the tab token from
+/// `FLARE_TAB_TOKEN`, and reconnects once if the connection has gone stale.
 pub struct FlareChannel {
-    tab: Option<String>,
+    tab_token: Option<String>,
     pipe: Option<String>,
     client: Option<flare_ctl::Client<flare_ctl::PipeEnd>>,
 }
 
 impl FlareChannel {
-    /// Reads `FLARE_TAB_ID` and `FLARE_CTL_PIPE` (or the user's default pipe).
+    /// Reads `FLARE_TAB_TOKEN` and `FLARE_CTL_PIPE` (or the user's default pipe).
     pub fn from_env() -> Self {
-        let tab = std::env::var("FLARE_TAB_ID").ok().filter(|t| !t.is_empty());
-        Self::new(tab, flare_ctl::default_pipe_name())
+        let token = std::env::var(TAB_TOKEN_VAR).ok().filter(|t| !t.is_empty());
+        Self::new(token, flare_ctl::default_pipe_name())
     }
 
-    pub fn new(tab: Option<String>, pipe: Option<String>) -> Self {
+    pub fn new(tab_token: Option<String>, pipe: Option<String>) -> Self {
         Self {
-            tab,
+            tab_token,
             pipe,
             client: None,
         }
@@ -350,8 +380,10 @@ impl FlareChannel {
         if self.client.is_some() {
             return Ok(());
         }
-        let Some(tab) = self.tab.clone() else {
-            return Err(ChannelError::NotRunning("FLARE_TAB_ID is not set".into()));
+        let Some(tab_token) = self.tab_token.clone() else {
+            return Err(ChannelError::NotRunning(
+                "FLARE_TAB_TOKEN is not set".into(),
+            ));
         };
         let Some(pipe) = self.pipe.clone() else {
             return Err(ChannelError::NotRunning(
@@ -366,7 +398,7 @@ impl FlareChannel {
                     client: SERVER_NAME.into(),
                     version: env!("CARGO_PKG_VERSION").into(),
                     token: None,
-                    tab: Some(tab),
+                    tab_token: Some(tab_token),
                 },
                 CALL_TIMEOUT,
             )
@@ -510,17 +542,75 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_the_three_tools_with_object_schemas() {
+    fn tools_list_has_the_four_tools_with_object_schemas() {
         let r = handle_message(&req(1, "tools/list", json!({})), &mut Fake::default()).unwrap();
         let list = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = list.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["show_image", "show_file", "close_panel"]);
+        assert_eq!(
+            names,
+            ["show_image", "show_file", "show_text", "close_panel"]
+        );
         for t in list {
             assert!(!t["description"].as_str().unwrap().is_empty());
             assert_eq!(t["inputSchema"]["type"], "object");
         }
         assert_eq!(list[0]["inputSchema"]["required"], json!(["path"]));
-        assert_eq!(list[2]["inputSchema"]["properties"], json!({}));
+        assert_eq!(list[2]["inputSchema"]["required"], json!(["text"]));
+        assert_eq!(list[3]["inputSchema"]["properties"], json!({}));
+    }
+
+    #[test]
+    fn show_text_routes_to_view_text_with_its_title() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_text", "arguments": {"text": "plan
+1. a", "title": "Plan"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewText);
+        assert_eq!(
+            ch.calls[0].1,
+            json!({"text": "plan
+1. a", "title": "Plan"})
+        );
+        // The title is optional; the text is not.
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "show_text", "arguments": {"text": "x"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].1, json!({"text": "x"}));
+        for bad in [
+            json!({}),
+            json!({"text": ""}),
+            json!({"text": 3}),
+            json!({"text": "x", "title": 3}),
+        ] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    3,
+                    "tools/call",
+                    json!({"name": "show_text", "arguments": bad}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+            assert!(ch.calls.is_empty());
+        }
     }
 
     #[test]
@@ -628,7 +718,7 @@ mod tests {
     fn channel_errors_map_to_is_error_text() {
         let cases = [
             (
-                ChannelError::NotRunning("FLARE_TAB_ID is not set".into()),
+                ChannelError::NotRunning("FLARE_TAB_TOKEN is not set".into()),
                 "Flare is not running this session",
             ),
             (
@@ -707,7 +797,7 @@ mod tests {
     fn without_a_tab_the_real_channel_says_flare_is_not_running() {
         let mut ch = FlareChannel::new(None, Some("\\\\.\\pipe\\flare-ctl-nobody-home".into()));
         match ch.call(Method::PanelClose, json!({})) {
-            Err(ChannelError::NotRunning(m)) => assert!(m.contains("FLARE_TAB_ID")),
+            Err(ChannelError::NotRunning(m)) => assert!(m.contains("FLARE_TAB_TOKEN")),
             other => panic!("{other:?}"),
         }
         let mut ch = FlareChannel::new(

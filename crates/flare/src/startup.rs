@@ -1177,7 +1177,10 @@ mod m7_start_tests {
                 .unwrap_or_else(|| panic!("window.rs has {needle}"))
         };
         let import = at("import_at_start(");
-        assert!(import < at("TabHost::new("), "the import precedes the tabs");
+        assert!(
+            import < at("TabHost::with_options("),
+            "the import precedes the tabs"
+        );
         assert!(import < at("LookCtl::new("), "the import precedes the look");
         assert!(
             import < at("app.show()?"),

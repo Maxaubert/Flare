@@ -10,6 +10,18 @@ use super::{ProbeCtx, ProbeRegistry};
 /// Adds this file's probes to `r`.
 pub fn register(r: &mut ProbeRegistry) {
     r.add("panel.state", panel_state);
+    r.add("ctl.info", ctl_info);
+}
+
+/// The control channel of this run: its pipe, the MCP server beside the exe, and every shell tab's id
+/// and secret. The scenario plays the part of a shell (it presents the token a real shell would be
+/// handed through its environment). Only ever answered under `--e2e`, like every probe.
+fn ctl_info(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    let c = ctx
+        .ctl
+        .try_borrow()
+        .map_err(|_| "ctl.info: the controller is busy".to_string())?;
+    Ok(c.ctl_probe())
 }
 
 /// A css rectangle with its device-pixel twin.
@@ -105,6 +117,7 @@ fn panel_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "picture": { "w": pic.width, "h": pic.height },
         "alpha": a.get_panel_alpha(),
         "lines": slint::Model::row_count(&a.get_panel_lines()),
+        "row0": slint::Model::row_data(&a.get_panel_lines(), 0).map(|r| r.to_string()),
         "first_line": a.get_panel_first_line(),
         "gutter_w": a.get_panel_gutter_w(),
         "page_phys_w": page_phys,

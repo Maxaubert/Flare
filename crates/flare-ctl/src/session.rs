@@ -32,8 +32,11 @@ pub trait Dispatcher: Send + Sync + 'static {
         Grant::agent()
     }
 
-    /// Whether `tab` is a tab that exists now.
-    fn tab_exists(&self, tab: &str) -> bool;
+    /// The tab that owns `tab_token` (the secret the app put in that tab's shell as
+    /// `FLARE_TAB_TOKEN`), or None when no live tab has it. This is the only way a connection gets a
+    /// tab: `hello` carries the token, never a tab name, so a process that was not started inside the
+    /// tab cannot claim it. Asked again on every request, so a closed tab's token stops working at once.
+    fn resolve_tab_token(&self, tab_token: &str) -> Option<String>;
 
     /// The methods this build implements; `hello` lists them (narrowed to the caller's grant).
     fn capabilities(&self) -> Vec<Method> {
@@ -59,7 +62,7 @@ pub struct CallContext {
     pub client: String,
     pub client_version: String,
     pub grant: Grant,
-    /// The tab from `hello`, if the client named one that existed.
+    /// The tab whose token `hello` presented, while that tab exists.
     pub tab: Option<String>,
 }
 
@@ -414,6 +417,8 @@ struct Hello {
     ctx: CallContext,
     /// The mod token, kept to re-check on every request.
     token: Option<String>,
+    /// The tab token, kept to re-check on every request.
+    tab_token: Option<String>,
 }
 
 /// A grant from the app, checked to be one that may exist over the pipe: never `ui` (S3). A bug on
@@ -464,11 +469,32 @@ fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlE
         )?,
         None => pipe_grant(shared.dispatcher.agent_grant(), false)?,
     };
-    let tab = match req.params.get("tab") {
+    // A tab is named by its secret, never by its name: a free-form `tab` would let any process of the
+    // user act as any tab.
+    if req.params.get("tab").is_some_and(|t| !t.is_null()) {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "hello does not take a tab; send tab_token",
+        ));
+    }
+    let tab_token = match req.params.get("tab_token") {
         None | Some(Value::Null) => None,
-        Some(Value::String(t)) if shared.dispatcher.tab_exists(t) => Some(t.clone()),
-        Some(Value::String(_)) => return Err(CtlError::new(code::NO_TAB, "no such tab")),
-        Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "tab must be a string")),
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "tab_token must be a string",
+            ));
+        }
+    };
+    let tab = match &tab_token {
+        Some(t) => Some(
+            shared
+                .dispatcher
+                .resolve_tab_token(t)
+                .ok_or_else(|| CtlError::new(code::UNAUTHORIZED, "unknown tab token"))?,
+        ),
+        None => None,
     };
     Ok(Hello {
         ctx: CallContext {
@@ -479,6 +505,7 @@ fn handle_hello(shared: &Shared, conn: u64, req: &Request) -> Result<Hello, CtlE
             tab,
         },
         token,
+        tab_token,
     })
 }
 
@@ -598,6 +625,14 @@ fn answer(
         Ok(g) => h.ctx.grant = g,
         Err(e) => return fail(e),
     }
+    // The tab is re-read too: a tab that was closed since hello is no tab any more.
+    if let Some(t) = &h.tab_token {
+        let now = shared.dispatcher.resolve_tab_token(t);
+        if now != h.ctx.tab {
+            *handle.tab.lock().unwrap_or_else(|e| e.into_inner()) = now.clone();
+            h.ctx.tab = now;
+        }
+    }
     // The ui namespace is closed to the pipe whatever the grant says (belt and braces for S3).
     if method.namespace() == Namespace::Ui {
         return fail(
@@ -635,6 +670,8 @@ mod tests {
         /// Token `ui` resolves to the ui grant; with `ui_agent` the agent grant is the ui grant.
         pub ui_agent: AtomicBool,
         pub promote: AtomicBool,
+        /// Tab `t1` was closed: its token no longer resolves.
+        pub t1_closed: AtomicBool,
     }
 
     impl Dispatcher for Fake {
@@ -655,8 +692,12 @@ mod tests {
                 eval: self.eval.load(Ordering::SeqCst),
             }
         }
-        fn tab_exists(&self, tab: &str) -> bool {
-            tab == "t1" || tab == "t2"
+        fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
+            match tab_token {
+                "tok1" if !self.t1_closed.load(Ordering::SeqCst) => Some("t1".into()),
+                "tok2" => Some("t2".into()),
+                _ => None,
+            }
         }
         fn call(&self, ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
             if self.hang.load(Ordering::SeqCst) {
@@ -771,7 +812,7 @@ mod tests {
     #[test]
     fn hello_reports_protocol_grant_and_capabilities() {
         let mut r = rig();
-        let v = r.hello(r#","tab":"t1""#);
+        let v = r.hello(r#","tab_token":"tok1""#);
         assert_eq!(v["result"]["protocol"], 1);
         assert_eq!(v["result"]["grant"]["kind"], "agent");
         assert_eq!(v["result"]["tab"], "t1");
@@ -835,12 +876,47 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_tab_is_refused_but_the_client_may_retry() {
+    fn an_unknown_tab_token_is_refused_and_closes_the_client() {
         let mut r = rig();
-        let v = r.hello(r#","tab":"zzz""#);
-        assert_eq!(code_of(&v), code::NO_TAB);
-        let v = r.hello(r#","tab":"t2""#);
-        assert_eq!(v["result"]["tab"], "t2");
+        let v = r.hello(r#","tab_token":"zzz""#);
+        assert_eq!(code_of(&v), code::UNAUTHORIZED);
+        assert!(r.closed());
+        r.finish();
+    }
+
+    #[test]
+    fn a_tab_name_is_refused_because_only_the_secret_names_a_tab() {
+        // The ids `tabs.list` hands out are not tokens: naming a tab is not enough to act as it.
+        let mut r = rig();
+        for name in ["t1", "tok1", "t2"] {
+            let v = r.hello(&format!(r#","tab":"{name}""#));
+            assert_eq!(code_of(&v), code::BAD_PARAMS, "{name}");
+        }
+        let v = r.hello("");
+        assert!(v["result"]["tab"].is_null());
+        r.finish();
+    }
+
+    #[test]
+    fn the_tab_token_must_be_a_string() {
+        let mut r = rig();
+        let v = r.hello(r#","tab_token":7"#);
+        assert_eq!(code_of(&v), code::BAD_PARAMS);
+        let v = r.hello(r#","tab_token":null"#);
+        assert!(v["result"]["tab"].is_null());
+        r.finish();
+    }
+
+    #[test]
+    fn a_closed_tab_loses_its_connection_s_tab_at_once() {
+        let mut r = rig();
+        r.hello(r#","tab_token":"tok1""#);
+        r.ask(r#"{"id":1,"method":"panel.state"}"#);
+        assert_eq!(r.fake.calls.lock().unwrap()[0].2.as_deref(), Some("t1"));
+        r.fake.t1_closed.store(true, Ordering::SeqCst);
+        r.ask(r#"{"id":2,"method":"panel.state"}"#);
+        assert_eq!(r.fake.calls.lock().unwrap()[1].2, None);
+        assert_eq!(r.shared.hub.publish("x", json!({}), Some("t1")), 0);
         r.finish();
     }
 
@@ -904,7 +980,7 @@ mod tests {
     #[test]
     fn a_call_reaches_the_dispatcher_with_the_tab_and_params() {
         let mut r = rig();
-        r.hello(r#","tab":"t1""#);
+        r.hello(r#","tab_token":"tok1""#);
         let v = r.ask(r#"{"id":"abc","method":"view.image","params":{"path":"C:\\a.png"}}"#);
         assert_eq!(v["id"], "abc");
         assert_eq!(v["result"]["ok"], "view.image");
@@ -1164,7 +1240,7 @@ mod tests {
     fn events_reach_only_the_matching_tab_and_after_hello() {
         let mut r = rig();
         assert_eq!(r.shared.hub.publish("panel.changed", json!({}), None), 0);
-        r.hello(r#","tab":"t1""#);
+        r.hello(r#","tab_token":"tok1""#);
         assert_eq!(
             r.shared
                 .hub

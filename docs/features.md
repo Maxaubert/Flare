@@ -697,7 +697,6 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   front, and a real dictation at 225%.
 - **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
   not measured at this commit, so this entry gives none yet.
-<<<<<<< HEAD
 
 ## Panels (Surfaces stage 1), 2026-10-21
 
@@ -771,7 +770,7 @@ Plan: `docs/superpowers/plans/2026-10-21-surfaces.md`, stage 1. Decisions and ho
   and `panel-close` are for it.
 - **Not built in this stage:** web, changes, tasks, board and mod panels (later stages); selecting or copying text in the text
   viewer; wrapping long lines; animated GIFs; svg; more than one panel per tab.
-=======
+
 ## Surfaces: the control channel and the MCP server (stage 2, library part), 2026-10-21
 
 Two new crates and no UI. Nothing in `crates/flare` uses them yet (stage 2 proper wires them after the
@@ -818,4 +817,56 @@ panels land). Contract: `docs/surfaces/protocol.md`. Choices: `docs/surfaces/dec
   the port (`the_pipe_name_has_known_answers`); the hello permissions match the grant
   (`permission_names_agree_with_what_each_grant_can_call`); `flare-mcp` waits the method's timeout plus
   5 s (`the_client_waits_longer_than_the_server_lets_a_call_run`).
->>>>>>> surfaces-2-channel-lib
+
+## Surfaces: the control channel in Flare and the agent tools (stage 2), 2026-10-21
+
+Wires the library part into the app. Contract: `docs/surfaces/protocol.md`; choices: `docs/surfaces/decisions.md` (Stage 2);
+the notes for the port: `docs/surfaces/lessons.md` (Stage 2). Issues #18 and #19.
+
+- **A tab is named by its secret, never by an id (S1, regression rule 186).** Flare makes 64 hex digits from two random UUIDs for
+  every tab when it starts its shell and puts them in that shell's environment as `FLARE_TAB_TOKEN`, with `FLARE_CTL_PIPE` and
+  `FLARE_MCP_EXE` (rule 12). `hello` takes `tab_token` and refuses a `tab`; an unknown token is `unauthorized`; a closed tab's token
+  stops working at once; a restored tab gets a new one every launch. Held by `every_shell_gets_its_own_unguessable_control_token_and_the_pipe`,
+  `an_unknown_empty_or_partial_token_names_no_tab`, `a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one`,
+  `a_warm_spare_belongs_to_no_tab_until_one_adopts_it`, `with_no_channel_no_control_variable_is_set`, `the_secret_compare_looks_at_every_byte`
+  (`flare-term`), `the_control_channel_variables_reach_the_shell_and_replace_the_users_own`, `without_a_channel_an_inherited_token_never_passes`
+  (`flare-shells`), `an_unknown_tab_token_is_refused_and_closes_the_client`, `a_tab_name_is_refused_because_only_the_secret_names_a_tab`,
+  `a_closed_tab_loses_its_connection_s_tab_at_once` (`flare-ctl`) and the e2e `ctlChannel`.
+- **One pipe per Flare instance.** The default profile uses the user's plain pipe name; any other profile folder is hashed into it, so
+  an e2e run never meets the installed Flare. Every shell is told its pipe. Held by `the_pipe_name_is_per_user_and_per_scope`,
+  `the_pipe_name_has_known_answers` and the e2e `ctlChannel` (the scoped name, and the shell's own variables equal the probe's).
+- **The server runs in Flare** on worker threads (the UI thread only makes the pipe at start and answers messages), stops first at
+  quit inside the quit cap, and every call that needs the window waits at most 10 s on a one-shot reply (rules 28 and 34). Held by
+  `an_unanswered_call_times_out_and_a_stop_ends_the_wait_within_a_slice`, `a_message_dropped_by_the_ui_thread_answers_unavailable_at_once`,
+  `a_message_after_the_end_of_life_is_dropped_so_its_waiter_lets_go` and the e2e `ctlChannel` (the app quits by itself with a client
+  connected).
+- **`tabs.list`, `panel.close`, `panel.state`, `view.image`, `view.file`, `view.text`.** `tabs.list` gives the agent its own tab only.
+  `view.image|file` resolve the path again in the backend, require the click allowlist on both names and the right kind, and answer
+  `not_found` for anything a probe could learn from (S2, rule 187). `view.text` takes a string (4 MB), shown in the text viewer with
+  a title, kept in memory, never stored. A call for a tab that is behind stores its panel and switches nothing. Held by
+  `view_image_resolves_vets_and_then_shows_on_the_callers_tab`, `a_path_nobody_may_open_is_not_found_and_never_reaches_the_ui_thread`,
+  `the_kind_must_match_and_a_link_that_changes_kind_shows_nothing`, `bad_params_are_named_before_the_ui_is_asked`,
+  `view_text_is_capped_and_a_title_is_one_short_line`, `tabs_list_gives_the_agent_its_own_tab_only` (`ctl_app.rs`);
+  `view_text_shows_in_the_front_tabs_panel_with_its_title`, `view_file_shows_a_file_under_a_title_and_a_picture_with_its_size`,
+  `a_call_for_a_tab_that_is_behind_stores_its_panel_and_never_switches_tabs`, `panel_state_and_close_report_what_is_open`,
+  `the_tab_list_has_every_shell_tab_or_only_the_callers`, `a_closed_or_invented_tab_is_no_tab`,
+  `an_explicit_ask_shows_even_when_clicks_open_previews_in_windows`, `text_handed_over_is_not_written_to_the_panels_file_and_not_restored`,
+  `panel_changes_are_published_to_the_tab_s_clients` (`appctl.rs`); `a_piece_of_text_is_shaped_like_a_file_and_cut_on_a_character_boundary`
+  (`preview.rs`).
+- **`flare-mcp` ships and Claude gets it with no setup.** Built by the workspace and by its own step in the three packing workflows,
+  copied beside `Flare.exe` by `pack.ps1`, required in the portable zip by `verify-pack.ps1`, and named in the bundled `flare-status`
+  plugin's `mcpServers` through `${FLARE_MCP_EXE}` (plugin version 1.1.0). Tools: `show_image`, `show_file`, `show_text`, `close_panel`;
+  it reads `FLARE_TAB_TOKEN` and `FLARE_CTL_PIPE`. Held by `declares_the_flare_mcp_server_by_environment_and_never_by_name_or_secret`,
+  `has_a_manifest_claude_code_accepts` (`flare-agent`), `show_text_routes_to_view_text_with_its_title`,
+  `tools_list_has_the_four_tools_with_object_schemas`, `a_tool_call_reaches_the_server_with_the_tab`,
+  `an_unknown_tab_token_is_reported_as_flare_refusing` (`flare-mcp`),
+  `the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_builds_it` (`release_files.rs`) and the e2e `mcpRoundTrip`.
+- **End to end (the release exe, its own profile, offscreen):** `ctlChannel` (42 checks) reads a tab's secret through the `ctl.info`
+  probe and from inside a real shell, connects to the pipe, opens a picture, a text and a file in the panel, reads them back with
+  `panel.state`, is refused for a wrong secret, the tab's id, a tab named in `hello`, a missing file, a program, a program named like a
+  picture, a network path, a picture through `view.file`, over-long text, `browser.eval` and `shell.input`, stores a behind tab's panel
+  without switching, closes, and quits with a client connected. `mcpRoundTrip` (14 checks) runs the built `flare-mcp.exe` as Claude Code
+  would (`initialize`, `tools/list`, `tools/call show_text`, `show_image`, `show_file`, `close_panel`) and reads what the window shows.
+- **Not built in this stage:** the web panel and `browser.*` (stage 3 and 4), `convo.state` (6), mods and tokens for them (8), `tabs.changed`,
+  scrolling `view.file` to a line, syntax colouring for `view.text`, and the by-hand check that Claude Code expands the manifest's
+  `${FLARE_MCP_EXE}` (see `lessons.md`).

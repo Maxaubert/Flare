@@ -122,3 +122,45 @@ Newest last.
   pipe and reads its descriptor (`GetSecurityInfo`). `GA` reads back as `FA`.
 - **Tooling note**: when scripting edits, assert that every replacement matched; a silent no-op
   hides behind a green compile.
+
+## Stage 2, the channel inside Flare, 2026-10-21
+
+- **A name is not an identity.** The first version let `hello` carry a free-form `tab`; the stage 2 security review found that
+  any process of the user could claim any tab, and `tabs.list` handed out the ids to do it. The fix is a secret per tab that
+  only the tab's shell is given. **What Electron must do:** make the token in the main process when it spawns the pty
+  (`crypto.randomBytes(32).toString('hex')`), put it in the pty environment as `FLARE_TAB_TOKEN` (the same `ptyEnv` function and
+  its test list that drops an inherited copy), keep a `Map<token, tabId>` that is checked on every request, never log it or put
+  it on a command line (`node-pty` env is the way), refuse a `tab` param, and compare with `crypto.timingSafeEqual`. Keep the
+  public tab id separate (hook lines and Sonara carry it).
+- **The same variable name can come from outside.** A Flare started from a Flare tab inherits that tab's `FLARE_TAB_TOKEN`; if
+  the builder only overwrote the variable when a channel was present, a Flare without one would pass the outer secret to its
+  shells. `pty_env` drops all three variables unconditionally and then sets them. Electron: strip them in `ptyEnv` first.
+- **A one-shot channel in the message is the whole bridge.** The worker posts `UiMsg::Ctl` carrying an `mpsc::Sender`, the UI
+  thread answers on it, the worker waits with a deadline and polls a stop flag in 50 ms slices. Three ways out all end the wait:
+  an answer, the deadline (`timeout`), a dropped sender (the message was thrown away because the window is gone, `unavailable`).
+  The third is free: dropping the message drops the sender. Electron: `ipcMain.handle` already is this; add the deadline and
+  answer `unavailable` once `before-quit` has run.
+- **`Debug` on a message must not print its data.** `UiMsg` is `Debug`; the request type prints its kind only, because a path or
+  a 4 MB text must never reach a log through `{:?}`. A test pins it.
+- **A scan that counts blocking calls caught the wait.** The `sync_calls` scan flags `recv_timeout`; the channel's wait is
+  correct (it is a worker thread), so it carries a `sync-ok` reason. Check the scan's list when adding a new waiting thread.
+- **Moving the test that reads source order.** `the_import_runs_before_the_look_and_the_first_paint` searches `window.rs` for the
+  text `TabHost::new(`; the constructor changed name and the test failed with "window.rs has ...". A test that reads source text
+  should name the function it protects in its failure.
+- **An env var in a plugin manifest is expanded by Claude Code, not by Flare.** `${FLARE_MCP_EXE}` as the server's `command` and
+  `${VAR:-}` for the secrets rely on Claude Code expanding them when it reads `plugin.json` (documented for `.mcp.json`; the
+  plugin manifest uses the same server format). **Not machine-verified:** the e2e starts `flare-mcp.exe` the way Claude Code is
+  documented to (stdio, the tab's environment) but cannot start Claude itself without touching the owner's Claude settings and
+  plugins, which the safe rules forbid. Do this by hand once: open a Flare tab, run `claude`, `/mcp` should list `flare` as
+  connected with four tools, then ask Claude to "show README.md in a panel". If the expansion does not happen, the fallback is
+  to ship `.mcp.json` in the plugin folder with the same content, or to have Flare write the absolute path into the installed
+  copy at install time (`install_plugin` already rewrites `hooks.json` that way).
+- **Hands-on list for the owner (not machine-tested):** Claude Code lists the `flare` server in `/mcp`; the tools appear to Claude
+  and `show_text` fills a panel; the agent in a tab that is behind shows its panel without the tab switching; the Velopack
+  install path finds `flare-mcp.exe` beside `Flare.exe` (the portable zip is checked by `verify-pack.ps1`, an install is not run
+  here).
+- **A relative path is the tab's, and the e2e's front tab is not the first folder.** The scenario wrote its picture into the first
+  folder and the front tab was the second (the last opened is in front). The channel was right and the test wrong; the picture is
+  now written into both folders. Electron: resolve a relative `path` against the tab's cwd, not the main process's.
+- **Merge leftovers hide in docs.** `docs/features.md` still held the conflict markers of the stage 2 library merge (two sections
+  between `<<<<<<<` and `>>>>>>>`), found only because this stage edited the same file. Grep for `^<<<<<<<` before a PR.

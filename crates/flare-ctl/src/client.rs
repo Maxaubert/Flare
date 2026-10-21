@@ -48,7 +48,8 @@ pub struct HelloParams {
     pub client: String,
     pub version: String,
     pub token: Option<String>,
-    pub tab: Option<String>,
+    /// The secret of the tab this client runs in (`FLARE_TAB_TOKEN`). The tab itself is never named.
+    pub tab_token: Option<String>,
 }
 
 /// What `hello` answered.
@@ -128,8 +129,8 @@ impl<W: Wire> Client<W> {
         if let Some(t) = &h.token {
             params["token"] = json!(t);
         }
-        if let Some(t) = &h.tab {
-            params["tab"] = json!(t);
+        if let Some(t) = &h.tab_token {
+            params["tab_token"] = json!(t);
         }
         let v = self.call(Method::Hello, params, timeout)?;
         HelloInfo::from_value(v)
@@ -269,7 +270,7 @@ mod tests {
                     client: "x".into(),
                     version: "1".into(),
                     token: None,
-                    tab: Some("t1".into()),
+                    tab_token: Some("tok".into()),
                 },
                 Duration::from_secs(2),
             )

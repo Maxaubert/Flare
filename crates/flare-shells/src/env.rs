@@ -1,4 +1,4 @@
-//! pty_env, plugin env, FLARE_TAB_ID.
+//! pty_env, plugin env, FLARE_TAB_ID and the control channel variables.
 
 use crate::prompt::cmd_prompt;
 
@@ -7,6 +7,13 @@ pub type Env = Vec<(String, String)>;
 
 /// The tab token every shell in a Flare tab sees.
 pub const TAB_ID_VAR: &str = "FLARE_TAB_ID";
+/// The secret of the tab (control channel `hello`). Unlike `FLARE_TAB_ID`, which names the tab in hook lines
+/// and to Sonara, this one is never printed, logged or sent anywhere: a process that has it IS the tab.
+pub const TAB_TOKEN_VAR: &str = "FLARE_TAB_TOKEN";
+/// The control channel's pipe of the Flare instance that started the shell (per profile).
+pub const CTL_PIPE_VAR: &str = "FLARE_CTL_PIPE";
+/// Where `flare-mcp.exe` is, for the bundled Claude Code plugin's `.mcp.json`.
+pub const MCP_EXE_VAR: &str = "FLARE_MCP_EXE";
 /// The Claude Code plugin folder list (`;`-separated).
 pub const PLUGIN_DIRS_VAR: &str = "CLAUDE_CODE_PLUGIN_DIRS";
 /// Variables that name another session; a shell in a Flare tab never inherits them.
@@ -24,6 +31,16 @@ pub const SESSION_MARKERS: [&str; 12] = [
     "CODEX_COMPANION_SESSION_ID",
     "CODEX_COMPANION_TRANSCRIPT_PATH",
 ];
+
+/// What a shell learns about the control channel (rule S1: the token is per tab and unguessable, the
+/// pipe is per Flare instance). Variables the user already had under these names are replaced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CtlEnv {
+    pub tab_token: String,
+    pub pipe: String,
+    /// The absolute path of `flare-mcp.exe`, when it was found beside `flare.exe`.
+    pub mcp_exe: Option<String>,
+}
 
 /// Whether the Claude Code plugin folder is on for a tab, and where it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +97,7 @@ pub fn pty_env(
     plugin: Option<&PluginEnv>,
     is_ours: Option<&dyn Fn(&str) -> bool>,
     tab_token: Option<&str>,
+    ctl: Option<&CtlEnv>,
 ) -> Env {
     let mut prompt: Option<String> = None;
     let mut out: Env = Vec::with_capacity(from.len() + 4);
@@ -92,7 +110,11 @@ pub fn pty_env(
             || (up == "FORCE_COLOR"
                 && matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "none"));
         let is_session = SESSION_MARKERS.iter().any(|m| *m == up);
-        if silences_colour || is_session || up == "TERM" || up == "COLORTERM" || up == TAB_ID_VAR {
+        // The variables Flare sets itself are never inherited: a Flare started from a Flare tab must not
+        // hand its shells the outer tab's secret.
+        let ours =
+            up == TAB_ID_VAR || up == TAB_TOKEN_VAR || up == CTL_PIPE_VAR || up == MCP_EXE_VAR;
+        if silences_colour || is_session || up == "TERM" || up == "COLORTERM" || ours {
             continue;
         }
         out.push((k.clone(), v.clone()));
@@ -101,6 +123,13 @@ pub fn pty_env(
     out.push(("COLORTERM".to_string(), "truecolor".to_string()));
     if let Some(token) = tab_token {
         out.push((TAB_ID_VAR.to_string(), token.to_string()));
+    }
+    if let Some(c) = ctl {
+        out.push((TAB_TOKEN_VAR.to_string(), c.tab_token.clone()));
+        out.push((CTL_PIPE_VAR.to_string(), c.pipe.clone()));
+        if let Some(exe) = &c.mcp_exe {
+            out.push((MCP_EXE_VAR.to_string(), exe.clone()));
+        }
     }
     if shell_id == Some("cmd") {
         out.retain(|(k, _)| !k.eq_ignore_ascii_case("PROMPT"));
@@ -173,11 +202,72 @@ mod tests {
             None,
             None,
             Some("tok-1"),
+            None,
         );
         assert_eq!(get(&r, TAB_ID_VAR), Some("tok-1"));
         assert_eq!(count_upper(&r, TAB_ID_VAR), 1);
-        let r2 = pty_env(&e(&[("FLARE_TAB_ID", "old")]), None, None, None, None);
+        let r2 = pty_env(&e(&[("FLARE_TAB_ID", "old")]), None, None, None, None, None);
         assert!(!env_has(&r2, TAB_ID_VAR));
+    }
+
+    fn ctl() -> CtlEnv {
+        CtlEnv {
+            tab_token: "ab".repeat(32),
+            pipe: "\\\\.\\pipe\\flare-ctl-1-2".to_string(),
+            mcp_exe: Some("C:\\Flare\\flare-mcp.exe".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_control_channel_variables_reach_the_shell_and_replace_the_users_own() {
+        let r = pty_env(
+            &e(&[
+                ("FLARE_TAB_TOKEN", "stolen"),
+                ("flare_ctl_pipe", "\\\\.\\pipe\\other"),
+                ("Flare_Mcp_Exe", "C:\\evil.exe"),
+            ]),
+            Some("pwsh"),
+            None,
+            None,
+            Some("tab-id"),
+            Some(&ctl()),
+        );
+        assert_eq!(get(&r, TAB_TOKEN_VAR), Some("ab".repeat(32).as_str()));
+        assert_eq!(get(&r, CTL_PIPE_VAR), Some("\\\\.\\pipe\\flare-ctl-1-2"));
+        assert_eq!(get(&r, MCP_EXE_VAR), Some("C:\\Flare\\flare-mcp.exe"));
+        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, MCP_EXE_VAR] {
+            assert_eq!(count_upper(&r, k), 1, "{k}");
+        }
+        // The secret and the tab's public id are different variables with different values.
+        assert_ne!(get(&r, TAB_TOKEN_VAR), get(&r, TAB_ID_VAR));
+    }
+
+    #[test]
+    fn without_a_channel_an_inherited_token_never_passes() {
+        let r = pty_env(
+            &e(&[
+                ("FLARE_TAB_TOKEN", "outer"),
+                ("FLARE_CTL_PIPE", "p"),
+                ("FLARE_MCP_EXE", "x"),
+            ]),
+            Some("pwsh"),
+            None,
+            None,
+            None,
+            None,
+        );
+        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, MCP_EXE_VAR] {
+            assert!(!env_has(&r, k), "{k}");
+        }
+    }
+
+    #[test]
+    fn no_exe_means_no_exe_variable() {
+        let mut c = ctl();
+        c.mcp_exe = None;
+        let r = pty_env(&[], Some("pwsh"), None, None, None, Some(&c));
+        assert!(env_has(&r, TAB_TOKEN_VAR) && env_has(&r, CTL_PIPE_VAR));
+        assert!(!env_has(&r, MCP_EXE_VAR));
     }
 
     #[test]
@@ -185,6 +275,7 @@ mod tests {
         let r = pty_env(
             &e(&[("TERM", "dumb"), ("PATH", "C:\\bin")]),
             Some("pwsh"),
+            None,
             None,
             None,
             None,
@@ -202,6 +293,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!env_has(&r, "NO_COLOR"));
         assert!(!env_has(&r, "FORCE_COLOR"));
@@ -209,10 +301,24 @@ mod tests {
 
     #[test]
     fn keeps_force_color_that_asks_for_more() {
-        let r = pty_env(&e(&[("FORCE_COLOR", "3")]), Some("pwsh"), None, None, None);
+        let r = pty_env(
+            &e(&[("FORCE_COLOR", "3")]),
+            Some("pwsh"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(get(&r, "FORCE_COLOR"), Some("3"));
         for v in ["false", "none", "FALSE"] {
-            let r = pty_env(&e(&[("FORCE_COLOR", v)]), Some("pwsh"), None, None, None);
+            let r = pty_env(
+                &e(&[("FORCE_COLOR", v)]),
+                Some("pwsh"),
+                None,
+                None,
+                None,
+                None,
+            );
             assert!(!env_has(&r, "FORCE_COLOR"), "{v} must be dropped");
         }
     }
@@ -233,6 +339,7 @@ mod tests {
                 ("PATH", "C:\\bin"),
             ]),
             Some("pwsh"),
+            None,
             None,
             None,
             None,
@@ -262,6 +369,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(
             get(&r, "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION"),
@@ -273,7 +381,7 @@ mod tests {
 
     #[test]
     fn never_forces_hyperlinks() {
-        let r = pty_env(&[], Some("pwsh"), None, None, None);
+        let r = pty_env(&[], Some("pwsh"), None, None, None, None);
         assert_eq!(count_upper(&r, "FORCE_HYPERLINK"), 0);
     }
 
@@ -282,6 +390,7 @@ mod tests {
         let r = pty_env(
             &e(&[("FORCE_HYPERLINK", "0")]),
             Some("pwsh"),
+            None,
             None,
             None,
             None,
@@ -297,6 +406,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(get(&r, "force_hyperlink"), Some("0"));
         assert_eq!(count_upper(&r, "FORCE_HYPERLINK"), 1);
@@ -305,14 +415,14 @@ mod tests {
 
     #[test]
     fn passes_everything_else_through_untouched() {
-        let r = pty_env(&e(&[("FOO", "bar")]), Some("pwsh"), None, None, None);
+        let r = pty_env(&e(&[("FOO", "bar")]), Some("pwsh"), None, None, None, None);
         assert_eq!(get(&r, "FOO"), Some("bar"));
         assert!(!env_has(&r, "GONE"));
     }
 
     #[test]
     fn plugin_dir_added_when_on() {
-        let r = pty_env(&[], Some("pwsh"), Some(&on()), None, None);
+        let r = pty_env(&[], Some("pwsh"), Some(&on()), None, None, None);
         assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some(DIR));
     }
 
@@ -322,6 +432,7 @@ mod tests {
             &e(&[("CLAUDE_CODE_PLUGIN_DIRS", "D:\\mine;E:\\too")]),
             Some("pwsh"),
             Some(&on()),
+            None,
             None,
             None,
         );
@@ -337,6 +448,7 @@ mod tests {
             &e(&[("Claude_Code_Plugin_Dirs", "D:\\mine")]),
             Some("pwsh"),
             Some(&on()),
+            None,
             None,
             None,
         );
@@ -356,18 +468,20 @@ mod tests {
             Some(&on()),
             None,
             None,
+            None,
         );
         assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some(lower.as_str()));
     }
 
     #[test]
     fn plugin_dir_left_out_when_off_and_the_users_value_kept() {
-        let r = pty_env(&[], Some("pwsh"), Some(&off()), None, None);
+        let r = pty_env(&[], Some("pwsh"), Some(&off()), None, None, None);
         assert!(!env_has(&r, PLUGIN_DIRS_VAR));
         let r = pty_env(
             &e(&[("CLAUDE_CODE_PLUGIN_DIRS", "D:\\mine")]),
             Some("pwsh"),
             Some(&off()),
+            None,
             None,
             None,
         );
@@ -381,15 +495,15 @@ mod tests {
             "CLAUDE_CODE_PLUGIN_DIRS",
             "D:\\mine;C:\\stable\\claude-plugin",
         )]);
-        let r = pty_env(&input, Some("pwsh"), Some(&on()), Some(&ours), None);
+        let r = pty_env(&input, Some("pwsh"), Some(&on()), Some(&ours), None, None);
         assert_eq!(
             get(&r, PLUGIN_DIRS_VAR),
             Some("D:\\mine;C:\\PT\\resources\\claude-plugin")
         );
-        let r = pty_env(&input, Some("pwsh"), Some(&off()), Some(&ours), None);
+        let r = pty_env(&input, Some("pwsh"), Some(&off()), Some(&ours), None, None);
         assert_eq!(get(&r, PLUGIN_DIRS_VAR), Some("D:\\mine"));
         let only = e(&[("CLAUDE_CODE_PLUGIN_DIRS", "C:\\stable\\claude-plugin")]);
-        let r = pty_env(&only, Some("pwsh"), Some(&off()), Some(&ours), None);
+        let r = pty_env(&only, Some("pwsh"), Some(&off()), Some(&ours), None, None);
         assert!(!env_has(&r, PLUGIN_DIRS_VAR));
     }
 
@@ -404,16 +518,16 @@ mod tests {
             ("FOO", "x"),
         ]);
         assert_eq!(
-            pty_env(&from, Some("pwsh"), None, Some(&ours), None),
-            pty_env(&from, Some("pwsh"), None, None, None)
+            pty_env(&from, Some("pwsh"), None, Some(&ours), None, None),
+            pty_env(&from, Some("pwsh"), None, None, None, None)
         );
-        let kept = pty_env(&from, Some("pwsh"), None, None, None);
+        let kept = pty_env(&from, Some("pwsh"), None, None, None, None);
         assert_eq!(
             get(&kept, PLUGIN_DIRS_VAR),
             Some("D:\\mine;;C:\\stable\\claude-plugin")
         );
         assert!(!env_has(
-            &pty_env(&[], Some("pwsh"), None, Some(&ours), None),
+            &pty_env(&[], Some("pwsh"), None, Some(&ours), None, None),
             PLUGIN_DIRS_VAR
         ));
     }
@@ -433,13 +547,27 @@ mod tests {
 
     #[test]
     fn prompt_reaches_cmd_through_its_environment_only() {
-        let r = pty_env(&e(&[("PROMPT", "$P$G")]), Some("cmd"), None, None, None);
+        let r = pty_env(
+            &e(&[("PROMPT", "$P$G")]),
+            Some("cmd"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(get(&r, "PROMPT"), Some("$e]9;9;$P$e\\$P$G"));
-        let r = pty_env(&[], Some("cmd"), None, None, None);
+        let r = pty_env(&[], Some("cmd"), None, None, None, None);
         assert_eq!(get(&r, "PROMPT"), Some("$e]9;9;$P$e\\$P$G"));
-        let r = pty_env(&e(&[("PROMPT", "$P$G")]), Some("pwsh"), None, None, None);
+        let r = pty_env(
+            &e(&[("PROMPT", "$P$G")]),
+            Some("pwsh"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(get(&r, "PROMPT"), Some("$P$G"));
-        let r = pty_env(&[], Some("pwsh"), None, None, None);
+        let r = pty_env(&[], Some("pwsh"), None, None, None, None);
         assert_eq!(get(&r, "PROMPT"), None);
     }
 }

@@ -29,6 +29,7 @@ flare-render = { path = "../../crates/flare-render" }
 flare-tabs = { path = "../../crates/flare-tabs" }
 flare-settings = { path = "../../crates/flare-settings" }
 flare-dictation = { path = "../../crates/flare-dictation" }
+flare-ctl = { path = "../../crates/flare-ctl" }
 
 [lints]
 workspace = true

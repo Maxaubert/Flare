@@ -16,8 +16,8 @@ impl Dispatcher for Recorder {
     fn resolve_token(&self, _: &str) -> Option<flare_ctl::Grant> {
         None
     }
-    fn tab_exists(&self, tab: &str) -> bool {
-        tab == "tab-7"
+    fn resolve_tab_token(&self, token: &str) -> Option<String> {
+        (token == "secret-7").then(|| "tab-7".to_string())
     }
     fn call(&self, ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
         self.calls
@@ -74,12 +74,12 @@ fn session(call: Value) -> Vec<Value> {
 fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
     let replies = drive(
         &[],
-        &["FLARE_TAB_ID", "FLARE_CTL_PIPE"],
+        &["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE"],
         &session(json!({"name":"show_image","arguments":{"path":"C:\\a.png"}})),
     );
     assert_eq!(replies.len(), 3, "the notification gets no reply");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 4);
     assert_eq!(replies[2]["result"]["isError"], true);
     let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Flare is not running this session"), "{text}");
@@ -89,7 +89,7 @@ fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
 fn with_a_tab_but_no_server_it_is_still_not_running() {
     let replies = drive(
         &[
-            ("FLARE_TAB_ID", "tab-7"),
+            ("FLARE_TAB_TOKEN", "secret-7"),
             ("FLARE_CTL_PIPE", "\\\\.\\pipe\\flare-mcp-test-nobody"),
         ],
         &[],
@@ -104,13 +104,14 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
     let rec = Arc::new(Recorder::default());
     let server = Server::start(&pipe, ServerConfig::default(), rec.clone()).unwrap();
     let replies = drive(
-        &[("FLARE_TAB_ID", "tab-7"), ("FLARE_CTL_PIPE", &pipe)],
+        &[("FLARE_TAB_TOKEN", "secret-7"), ("FLARE_CTL_PIPE", &pipe)],
         &[],
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"show_image","arguments":{"path":"C:\\pics\\cat.png"}}}),
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"show_file","arguments":{"path":"C:\\pics\\missing.png"}}}),
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"close_panel"}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"show_text","arguments":{"text":"hello","title":"T"}}}),
         ],
     );
     assert_eq!(replies[1]["result"]["isError"], false);
@@ -125,18 +126,21 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
         "Closed the panel."
     );
     let calls = rec.calls.lock().unwrap();
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].0, Method::ViewImage);
     assert_eq!(calls[0].1["path"], "C:\\pics\\cat.png");
     assert_eq!(calls[0].2.as_deref(), Some("tab-7"));
     assert_eq!(calls[1].0, Method::ViewFile);
     assert_eq!(calls[2].0, Method::PanelClose);
+    assert_eq!(calls[3].0, Method::ViewText);
+    assert_eq!(calls[3].1["text"], "hello");
+    assert_eq!(calls[3].1["title"], "T");
     drop(calls);
     server.stop();
 }
 
 #[test]
-fn an_unknown_tab_is_reported_as_flare_refusing() {
+fn an_unknown_tab_token_is_reported_as_flare_refusing() {
     let pipe = format!("\\\\.\\pipe\\flare-mcp-test-badtab-{}", std::process::id());
     let server = Server::start(
         &pipe,
@@ -145,12 +149,12 @@ fn an_unknown_tab_is_reported_as_flare_refusing() {
     )
     .unwrap();
     let replies = drive(
-        &[("FLARE_TAB_ID", "tab-gone"), ("FLARE_CTL_PIPE", &pipe)],
+        &[("FLARE_TAB_TOKEN", "guess"), ("FLARE_CTL_PIPE", &pipe)],
         &[],
         &session(json!({"name":"close_panel"})),
     );
     assert_eq!(replies[2]["result"]["isError"], true);
     let t = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(t.contains("no_tab"), "{t}");
+    assert!(t.contains("unauthorized"), "{t}");
     server.stop();
 }

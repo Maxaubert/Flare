@@ -6,6 +6,7 @@ pub mod agent_misc;
 pub mod anywhere;
 pub mod chrome;
 pub mod closeask;
+pub mod ctl;
 pub mod diag;
 pub mod dictation;
 pub mod dpi;
@@ -523,6 +524,18 @@ pub const ALL: &[Scenario] = &[
         name: "panelImage",
         group: "panel",
         run: panel::panel_image,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "ctlChannel",
+        group: "ctl",
+        run: ctl::ctl_channel,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "mcpRoundTrip",
+        group: "ctl",
+        run: ctl::mcp_round_trip,
         limit_secs: 240,
     },
 ];

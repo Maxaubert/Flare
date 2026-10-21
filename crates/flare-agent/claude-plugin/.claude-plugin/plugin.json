@@ -1,5 +1,15 @@
 {
   "name": "flare-status",
-  "version": "1.0.0",
-  "description": "Lets a Flare tab show what this Claude Code session is doing: working, waiting on you, finished or failed. Each hook prints one fixed terminal sequence; nothing leaves the PC."
+  "version": "1.1.0",
+  "description": "Lets a Flare tab show what this Claude Code session is doing: working, waiting on you, finished or failed. Each hook prints one fixed terminal sequence; nothing leaves the PC. Also gives Claude tools to show an image, a file or some text in a panel beside the tab, through Flare's own local control channel.",
+  "mcpServers": {
+    "flare": {
+      "command": "${FLARE_MCP_EXE}",
+      "args": [],
+      "env": {
+        "FLARE_TAB_TOKEN": "${FLARE_TAB_TOKEN:-}",
+        "FLARE_CTL_PIPE": "${FLARE_CTL_PIPE:-}"
+      }
+    }
+  }
 }

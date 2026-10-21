@@ -179,7 +179,12 @@ pub fn read_text(path: &Path, cap: usize) -> Result<TextDoc, Reason> {
     if !bom16 && buf.iter().take(8192).any(|b| *b == 0) {
         return Err(Reason::NotText);
     }
-    let text = decode_text(&buf);
+    Ok(doc_of(&decode_text(&buf), more, meta.len()))
+}
+
+/// The rows of `text`: at most `LINES_MAX`, each shaped for drawing. `more` says a byte cap already
+/// cut the text short; `bytes` is the real length to show in the header.
+fn doc_of(text: &str, more: bool, bytes: u64) -> TextDoc {
     let mut lines = Vec::new();
     let mut cut = more.then_some(Cut::Bytes);
     for raw in text.lines() {
@@ -189,12 +194,23 @@ pub fn read_text(path: &Path, cap: usize) -> Result<TextDoc, Reason> {
         }
         lines.push(shape_line(raw));
     }
-    Ok(TextDoc {
+    TextDoc {
         lines,
         truncated: cut.is_some(),
         cut,
-        bytes: meta.len(),
-    })
+        bytes,
+    }
+}
+
+/// A piece of text the app was handed (not a file): the first `cap` bytes of it, cut on a character
+/// boundary, shaped like a file's. Nothing touches the disk, so it may run anywhere.
+pub fn text_doc_from_str(text: &str, cap: usize) -> TextDoc {
+    let more = text.len() > cap;
+    let mut end = text.len().min(cap);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    doc_of(&text[..end], more, text.len() as u64)
 }
 
 /// A line as drawn: tabs become four spaces and a very long line is cut with a mark.
@@ -317,6 +333,24 @@ mod tests {
         ] {
             assert_eq!(classify(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn a_piece_of_text_is_shaped_like_a_file_and_cut_on_a_character_boundary() {
+        let d = text_doc_from_str("a\tb\nsecond\n", 1000);
+        assert_eq!(d.lines, ["a    b", "second"]);
+        assert!(!d.truncated && d.cut.is_none());
+        assert_eq!(d.bytes, 11);
+        // The cap falls inside a two-byte character: the cut backs up to its start.
+        let d = text_doc_from_str("ab\u{e9}cd", 3);
+        assert_eq!(d.lines, ["ab"]);
+        assert_eq!(d.cut, Some(Cut::Bytes));
+        assert_eq!(d.bytes, 6);
+        let many = "x\n".repeat(LINES_MAX + 5);
+        let d = text_doc_from_str(&many, usize::MAX);
+        assert_eq!(d.lines.len(), LINES_MAX);
+        assert_eq!(d.cut, Some(Cut::Lines));
+        assert!(text_doc_from_str("", 10).lines.is_empty());
     }
 
     #[test]

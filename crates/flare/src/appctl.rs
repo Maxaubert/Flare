@@ -74,6 +74,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
+use crate::ctl_app::{CtlOp, CtlRequestBox};
 use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
@@ -132,6 +133,20 @@ pub enum UiMsg {
     Update(UpdateMsg),
     /// A worker's answer for the panel controller (Surfaces stage 1): a picture or a text file read.
     Panel(PanelMsgBox),
+    /// A call of the control channel that needs the window or a tab's panel (Surfaces stage 2). The
+    /// worker waits on the request's reply channel, so this is answered at once, never queued behind
+    /// anything slow.
+    Ctl(CtlRequestBox),
+}
+
+/// Publishes a control channel event: name, params, and the tab it is about (its connections only).
+pub type CtlEvents = Arc<dyn Fn(&str, serde_json::Value, Option<&str>) + Send + Sync>;
+
+/// What the control channel looks like from outside, for the e2e probe and the diagnostics.
+#[derive(Clone, Debug, Default)]
+pub struct CtlInfo {
+    pub pipe: String,
+    pub mcp_exe: Option<String>,
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -452,6 +467,9 @@ pub struct AppCtl {
     panels: PanelCtl,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
+    /// Where control channel events go (None: no channel, in tests and headless runs).
+    ctl_events: Option<CtlEvents>,
+    ctl_info: Option<CtlInfo>,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -788,6 +806,8 @@ impl AppCtl {
             spawn_marks: HashMap::new(),
             panels,
             panel_focus_seen: false,
+            ctl_events: None,
+            ctl_info: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -2777,7 +2797,162 @@ impl AppCtl {
         }
         if self.panels.show(tab, kind, abs) {
             self.refresh();
+            self.panel_changed(tab);
         }
+    }
+
+    // ---- the control channel (Surfaces stage 2) -------------------------------------------------------------------------
+
+    /// Where events go, and what the channel is called (startup).
+    pub fn set_ctl(&mut self, events: CtlEvents, info: CtlInfo) {
+        self.ctl_events = Some(events);
+        self.ctl_info = Some(info);
+    }
+
+    /// The pipe and the MCP server's path of this run, for the e2e probe.
+    pub fn ctl_info(&self) -> Option<CtlInfo> {
+        self.ctl_info.clone()
+    }
+
+    /// The channel's pipe and every shell tab's id and secret, for the `ctl.info` e2e probe (the
+    /// scenario plays the shell). Nothing else reads a tab's secret.
+    pub fn ctl_probe(&self) -> serde_json::Value {
+        let mgr = self.deps.host.manager();
+        let active = self.model.state.active_id.clone();
+        let tabs: Vec<serde_json::Value> = flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "active": active.as_deref() == Some(&t.id),
+                    "token": mgr.ctl_token(&t.id),
+                })
+            })
+            .collect();
+        let info = self.ctl_info.clone().unwrap_or_default();
+        serde_json::json!({"pipe": info.pipe, "mcp_exe": info.mcp_exe, "tabs": tabs})
+    }
+
+    /// `PanelInfo` of a tab's panel, as the protocol writes it.
+    fn panel_info(snap: &crate::panel_ctl::PanelSnap) -> serde_json::Value {
+        let mut v = serde_json::json!({"kind": snap.kind, "title": snap.title});
+        if let Some(p) = &snap.path {
+            v["path"] = serde_json::json!(p);
+        }
+        v
+    }
+
+    /// Tells the tab's connections its panel changed (`panel.changed`).
+    fn panel_changed(&self, tab: &str) {
+        let Some(events) = &self.ctl_events else {
+            return;
+        };
+        let mut params = serde_json::json!({"tab": tab, "open": false});
+        if let Some(snap) = self.panels.snap(tab).filter(|s| s.open) {
+            params["open"] = serde_json::json!(true);
+            params["panel"] = Self::panel_info(&snap);
+        }
+        events("panel.changed", params, Some(tab));
+    }
+
+    fn is_shell_tab(&self, tab: &str) -> bool {
+        flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .any(|t| t.id == tab)
+    }
+
+    /// One call of the control channel, on the UI thread. The tab is the caller's own (resolved from
+    /// its token by the worker); a tab that was closed since answers `no_tab`.
+    fn ctl_op(&mut self, op: CtlOp) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        use flare_ctl::{CtlError, code};
+        use serde_json::json;
+        let no_tab = || CtlError::new(code::NO_TAB, "that tab is closed");
+        match op {
+            CtlOp::Tabs { own } => {
+                let active = self.model.state.active_id.clone();
+                let tabs: Vec<serde_json::Value> = self
+                    .model
+                    .state
+                    .tabs
+                    .iter()
+                    .zip(self.model.labels())
+                    .filter(|(t, _)| {
+                        t.kind == TabKind::Shell && own.as_deref().is_none_or(|o| o == t.id)
+                    })
+                    .map(|(t, label)| {
+                        json!({"id": t.id, "title": label, "active": active.as_deref() == Some(&t.id)})
+                    })
+                    .collect();
+                Ok(json!({"tabs": tabs}))
+            }
+            CtlOp::TabCwd { tab } => {
+                let t = flare_tabs::tabs::shell_tabs(&self.model.state)
+                    .into_iter()
+                    .find(|t| t.id == tab)
+                    .ok_or_else(no_tab)?;
+                Ok(json!({"cwd": t.cwd}))
+            }
+            CtlOp::PanelState { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                Ok(match self.panels.snap(&tab).filter(|s| s.open) {
+                    Some(s) => json!({
+                        "open": true,
+                        "panel": Self::panel_info(&s),
+                        "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
+                    }),
+                    None => json!({"open": false}),
+                })
+            }
+            CtlOp::PanelClose { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let closed = self.panels.close(&tab);
+                if closed {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
+                Ok(json!({"closed": closed}))
+            }
+            CtlOp::ShowFile {
+                tab,
+                kind,
+                abs,
+                title,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                // An explicit ask of the agent: the "Open previews in Flare" switch is for clicks only.
+                // A tab behind gets its panel (stored) and keeps its place: no tab is ever switched.
+                if !self.panels.show_titled(&tab, kind, &abs, title.as_deref()) {
+                    return Err(CtlError::new(code::BAD_PARAMS, "that file cannot be shown"));
+                }
+                self.after_ctl_show(&tab)
+            }
+            CtlOp::ShowText { tab, text, title } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                if !self.panels.show_text(&tab, &text, title.as_deref()) {
+                    return Err(CtlError::new(code::INTERNAL, "the text could not be shown"));
+                }
+                self.after_ctl_show(&tab)
+            }
+        }
+    }
+
+    /// A panel was put on a tab by the control channel: the window follows, the event goes out and the
+    /// answer says what is on show.
+    fn after_ctl_show(&mut self, tab: &str) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        self.refresh();
+        self.panel_changed(tab);
+        let snap = self.panels.snap(tab).ok_or_else(|| {
+            flare_ctl::CtlError::new(flare_ctl::code::INTERNAL, "the panel went missing")
+        })?;
+        Ok(serde_json::json!({"panel": Self::panel_info(&snap)}))
     }
 
     /// The panel's close button, and the toggle chord when it is open.
@@ -2786,6 +2961,7 @@ impl AppCtl {
         if self.panels.close(&id) {
             self.refresh();
             self.focus_terminal();
+            self.panel_changed(&id);
         }
     }
 
@@ -2810,6 +2986,7 @@ impl AppCtl {
             if !self.panels.is_open(&id) {
                 self.focus_terminal();
             }
+            self.panel_changed(&id);
         }
         changed
     }
@@ -3641,6 +3818,10 @@ impl AppCtl {
                 if let Some(app) = self.app() {
                     self.panels.on_msg(&app, m);
                 }
+            }
+            UiMsg::Ctl(CtlRequestBox(req)) => {
+                let answer = self.ctl_op(req.op);
+                let _ = req.reply.send(answer);
             }
             UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
                 self.show_preview(&tab, kind, &abs);
@@ -5642,6 +5823,292 @@ mod tests {
             assert_eq!(g.ctl.borrow().open_panels(), 0, "{target}");
             assert!(!g.h.comp.get_panel_open(), "{target}");
         }
+    }
+
+    // ---- the control channel's calls (Surfaces stage 2) ----
+
+    /// One control channel op, answered the way the worker would get it.
+    fn ctl_call(
+        f: &Fx,
+        op: crate::ctl_app::CtlOp,
+    ) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest { op, reply: tx },
+            )));
+        rx.try_recv().expect("the UI thread answers at once")
+    }
+
+    fn show_text_op(tab: &str, text: &str, title: Option<&str>) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::ShowText {
+            tab: tab.into(),
+            text: text.into(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    type Events = Arc<std::sync::Mutex<Vec<(String, serde_json::Value, Option<String>)>>>;
+
+    /// Starts recording the control channel events the controller publishes.
+    fn recorded_events(f: &Fx) -> Events {
+        let store: Events = Arc::default();
+        let keep = Arc::clone(&store);
+        f.ctl.borrow_mut().set_ctl(
+            Arc::new(move |name, params, tab| {
+                keep.lock()
+                    .unwrap()
+                    .push((name.to_string(), params, tab.map(str::to_string)));
+            }),
+            crate::appctl::CtlInfo::default(),
+        );
+        store
+    }
+
+    #[test]
+    fn view_text_shows_in_the_front_tabs_panel_with_its_title() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let v = ctl_call(&f, show_text_op(&id, "alpha\nbeta\ngamma", Some("Plan"))).unwrap();
+        assert_eq!(v["panel"]["kind"], "text");
+        assert_eq!(v["panel"]["title"], "Plan");
+        assert!(v["panel"].get("path").is_none(), "text has no file");
+        f.pump_until("the text", |f| rows_in_panel(f) == 3);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Plan");
+        assert_eq!(f.h.comp.get_panel_kind(), 2);
+        assert!(f.h.comp.get_panel_open());
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("3 lines"),
+            "{}",
+            f.h.comp.get_panel_sub()
+        );
+        // A second call replaces it; with no title the header says Text.
+        ctl_call(&f, show_text_op(&id, "one line", None)).unwrap();
+        f.pump_until("the new text", |f| rows_in_panel(f) == 1);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Text");
+        // Text that was handed over never reaches the disk's panel file, and asks nothing of a path.
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+    }
+
+    #[test]
+    fn view_file_shows_a_file_under_a_title_and_a_picture_with_its_size() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let note = f.dir.path().join("n.txt");
+        std::fs::write(&note, "x\ny").unwrap(); // sync-ok: test code only
+        let abs = note.to_string_lossy().into_owned();
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: abs.clone(),
+                title: Some("Notes".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["panel"]["kind"], "text");
+        assert_eq!(v["panel"]["path"], abs.as_str());
+        f.pump_until("the file", |f| rows_in_panel(f) == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Notes");
+        // The same file without a title is shown under its own name again.
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id,
+                kind: flare_surfaces::PanelKind::Text,
+                abs,
+                title: None,
+            },
+        )
+        .unwrap();
+        f.pump_until("the name", |f| {
+            f.h.comp.get_panel_title().as_str() == "n.txt"
+        });
+    }
+
+    #[test]
+    fn a_call_for_a_tab_that_is_behind_stores_its_panel_and_never_switches_tabs() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+        ctl_call(&f, show_text_op(&a, "for a", Some("A"))).unwrap();
+        f.pump();
+        assert_eq!(
+            f.ctl.borrow().front_id().as_deref(),
+            Some(b.as_str()),
+            "the front tab did not change"
+        );
+        assert!(!f.h.comp.get_panel_open(), "b has no panel");
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        // a's panel is there when a comes to the front.
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("a's panel", |f| f.h.comp.get_panel_title().as_str() == "A");
+    }
+
+    #[test]
+    fn panel_state_and_close_report_what_is_open() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let state =
+            |f: &Fx| ctl_call(f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        assert_eq!(state(&f), serde_json::json!({"open": false}));
+        let close = |f: &Fx| {
+            ctl_call(f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap()["closed"]
+                .clone()
+        };
+        assert_eq!(close(&f), false, "nothing open is not an error");
+        ctl_call(&f, show_text_op(&id, "x", Some("T"))).unwrap();
+        let s = state(&f);
+        assert_eq!(s["open"], true);
+        assert_eq!(s["panel"]["kind"], "text");
+        assert_eq!(s["panel"]["title"], "T");
+        assert_eq!(
+            s["width"],
+            serde_json::json!(flare_surfaces::layout::DEFAULT_SHARE)
+        );
+        assert_eq!(close(&f), true);
+        f.pump();
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(state(&f), serde_json::json!({"open": false}));
+        assert_eq!(close(&f), false);
+        // The toggle chord brings back what the agent showed.
+        assert!(f.ctl.borrow_mut().toggle_front_panel());
+        assert_eq!(state(&f)["open"], true);
+    }
+
+    #[test]
+    fn the_tab_list_has_every_shell_tab_or_only_the_callers() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        let all = ctl_call(&f, crate::ctl_app::CtlOp::Tabs { own: None }).unwrap();
+        let ids: Vec<&str> = all["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [a.as_str(), b.as_str()]);
+        assert_eq!(all["tabs"][1]["active"], true);
+        assert_eq!(all["tabs"][0]["active"], false);
+        assert!(!all["tabs"][0]["title"].as_str().unwrap().is_empty());
+        let own = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::Tabs {
+                own: Some(a.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(own["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(own["tabs"][0]["id"], a.as_str());
+        let cwd = ctl_call(&f, crate::ctl_app::CtlOp::TabCwd { tab: a }).unwrap();
+        assert_eq!(cwd["cwd"], "C:\\a");
+    }
+
+    #[test]
+    fn a_closed_or_invented_tab_is_no_tab() {
+        let (f, _h, _) = live(Opts::default());
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        f.ctl.borrow_mut().request_close(&b);
+        f.pump();
+        for tab in [b.as_str(), "nope", "settings", ""] {
+            for op in [
+                show_text_op(tab, "x", None),
+                crate::ctl_app::CtlOp::PanelState { tab: tab.into() },
+                crate::ctl_app::CtlOp::PanelClose { tab: tab.into() },
+                crate::ctl_app::CtlOp::TabCwd { tab: tab.into() },
+            ] {
+                let e = ctl_call(&f, op).unwrap_err();
+                assert_eq!(e.code, flare_ctl::code::NO_TAB, "{tab:?}");
+            }
+        }
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn an_explicit_ask_shows_even_when_clicks_open_previews_in_windows() {
+        let (f, _h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "still shown", None)).unwrap();
+        f.pump_until("the text", |f| rows_in_panel(f) == 1);
+    }
+
+    #[test]
+    fn text_handed_over_is_not_written_to_the_panels_file_and_not_restored() {
+        let (f, _h, _) = live(Opts::default());
+        let file = f.dir.path().join("panels.json");
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "private notes", Some("T"))).unwrap();
+        f.ctl.borrow_mut().refresh();
+        store.flush();
+        let raw = std::fs::read_to_string(&file).unwrap_or_default(); // sync-ok: test code only
+        assert!(!raw.contains("private notes"), "{raw}");
+        assert!(!raw.contains("inline"), "{raw}");
+    }
+
+    #[test]
+    fn panel_changes_are_published_to_the_tab_s_clients() {
+        let (f, _h, _) = live(Opts::default());
+        let events = recorded_events(&f);
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "x", Some("T"))).unwrap();
+        ctl_call(&f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap();
+        // The close button and a click on a path say so too.
+        let note = f.dir.path().join("p.txt");
+        std::fs::write(&note, "p").unwrap(); // sync-ok: test code only
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.ctl.borrow_mut().close_front_panel();
+        let ev = events.lock().unwrap().clone();
+        let opens: Vec<bool> = ev
+            .iter()
+            .map(|(n, p, t)| {
+                assert_eq!(n, "panel.changed");
+                assert_eq!(t.as_deref(), Some(id.as_str()));
+                assert_eq!(p["tab"], id.as_str());
+                p["open"].as_bool().unwrap()
+            })
+            .collect();
+        assert_eq!(opens, [true, false, true, false]);
+        assert_eq!(ev[0].1["panel"]["title"], "T");
+        assert!(ev[1].1.get("panel").is_none());
+    }
+
+    #[test]
+    fn a_message_after_the_end_of_life_is_dropped_so_its_waiter_lets_go() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().end();
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op: show_text_op(&id, "late", None),
+                    reply: tx,
+                },
+            )));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]

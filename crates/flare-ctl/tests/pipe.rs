@@ -21,8 +21,8 @@ impl Dispatcher for Fake {
             permissions: vec![Permission::View],
         })
     }
-    fn tab_exists(&self, tab: &str) -> bool {
-        tab == "t1"
+    fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
+        (tab_token == "tok1").then(|| "t1".to_string())
     }
     fn call(&self, ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
         match m {
@@ -51,14 +51,14 @@ fn start(cfg: ServerConfig) -> (Server, String) {
 
 const WAIT: Duration = Duration::from_secs(10);
 
-fn hello(name: &str, extra_tab: Option<&str>, token: Option<&str>) -> Client<flare_ctl::PipeEnd> {
+fn hello(name: &str, tab_token: Option<&str>, token: Option<&str>) -> Client<flare_ctl::PipeEnd> {
     let mut c = connect(name, WAIT).expect("connect");
     c.hello(
         &HelloParams {
             client: "test".into(),
             version: "1".into(),
             token: token.map(str::to_string),
-            tab: extra_tab.map(str::to_string),
+            tab_token: tab_token.map(str::to_string),
         },
         WAIT,
     )
@@ -86,7 +86,7 @@ fn hello_and_a_call_round_trip() {
                 client: "test".into(),
                 version: "1".into(),
                 token: None,
-                tab: Some("t1".into()),
+                tab_token: Some("tok1".into()),
             },
             WAIT,
         )
@@ -108,7 +108,7 @@ fn hello_and_a_call_round_trip() {
 #[test]
 fn remote_errors_and_grants_travel_over_the_pipe() {
     let (server, name) = start(ServerConfig::default());
-    let mut c = hello(&name, Some("t1"), None);
+    let mut c = hello(&name, Some("tok1"), None);
     match c.call(Method::ViewFile, json!({"path": "missing"}), WAIT) {
         Err(ClientError::Remote(e)) => assert_eq!(e.code, code::NOT_FOUND),
         other => panic!("{other:?}"),
@@ -137,7 +137,7 @@ fn a_mod_token_works_and_a_bad_one_is_refused() {
             client: "x".into(),
             version: "1".into(),
             token: Some("nope".into()),
-            tab: None,
+            tab_token: None,
         },
         WAIT,
     );
@@ -156,7 +156,7 @@ fn the_65th_client_is_refused_and_the_first_64_keep_working() {
             client: "x".into(),
             version: "1".into(),
             token: None,
-            tab: None,
+            tab_token: None,
         },
         WAIT,
     );
@@ -231,7 +231,7 @@ fn connecting_to_no_server_is_an_error_not_a_hang() {
 #[test]
 fn published_events_reach_the_matching_client() {
     let (server, name) = start(ServerConfig::default());
-    let mut a = hello(&name, Some("t1"), None);
+    let mut a = hello(&name, Some("tok1"), None);
     let mut b = hello(&name, None, None);
     assert_eq!(
         server.publish("panel.changed", json!({"open": true}), Some("t1")),
@@ -376,7 +376,7 @@ fn the_live_pipe_carries_the_owner_only_descriptor() {
 #[test]
 fn stop_frees_a_worker_blocked_writing_to_a_client_that_never_reads() {
     let (server, name) = start(ServerConfig::default());
-    let c = hello(&name, Some("t1"), None);
+    let c = hello(&name, Some("tok1"), None);
     assert!(wait_for(|| server.client_count() == 1));
     let big = "x".repeat(200_000);
     for _ in 0..20 {

@@ -1583,6 +1583,7 @@ dependencies = [
  "embed-resource",
  "env_logger",
  "flare-agent",
+ "flare-ctl",
  "flare-diag",
  "flare-dictation",
  "flare-e2e-proto",
@@ -1669,6 +1670,7 @@ name = "flare-e2e"
 version = "0.1.0"
 dependencies = [
  "flare-agent",
+ "flare-ctl",
  "flare-diag",
  "flare-dictation",
  "flare-e2e-proto",

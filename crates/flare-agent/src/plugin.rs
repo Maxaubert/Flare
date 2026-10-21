@@ -310,9 +310,38 @@ mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
         assert!(shaped, "name {name} is not a plugin name");
-        assert_eq!(manifest["version"].as_str(), Some("1.0.0"));
+        assert_eq!(manifest["version"].as_str(), Some("1.1.0"));
         let description = manifest["description"].as_str().expect("description");
         assert!(!description.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn declares_the_flare_mcp_server_by_environment_and_never_by_name_or_secret() {
+        // Surfaces stage 2: Claude in a Flare tab gets show_image, show_file, show_text and
+        // close_panel with no setup. The program is named by the variable Flare sets in the shell
+        // (an absolute path beside flare.exe), never by a bare name that PATH or the current folder
+        // could answer; the tab's secret is handed over through the environment and never written
+        // into the manifest or onto a command line.
+        let manifest: serde_json::Value =
+            serde_json::from_str(&read_plugin_file(".claude-plugin/plugin.json")).expect("json");
+        let servers = manifest["mcpServers"].as_object().expect("mcpServers");
+        assert_eq!(servers.len(), 1);
+        let flare = &servers["flare"];
+        assert_eq!(flare["command"].as_str(), Some("${FLARE_MCP_EXE}"));
+        assert_eq!(flare["args"].as_array().map(Vec::len), Some(0));
+        let env = flare["env"].as_object().expect("env");
+        assert_eq!(
+            env["FLARE_TAB_TOKEN"].as_str(),
+            Some("${FLARE_TAB_TOKEN:-}")
+        );
+        assert_eq!(env["FLARE_CTL_PIPE"].as_str(), Some("${FLARE_CTL_PIPE:-}"));
+        assert_eq!(env.len(), 2);
+        let text = read_plugin_file(".claude-plugin/plugin.json");
+        assert!(!text.contains("flare-mcp.exe"), "no bare program name");
+        assert!(
+            !text.contains("pipe"),
+            "no pipe name is written into the manifest"
+        );
     }
 
     #[test]

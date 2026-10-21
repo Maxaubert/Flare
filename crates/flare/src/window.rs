@@ -833,6 +833,8 @@ pub fn run_window(
     // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
     let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
+    // The control channel's server (Surfaces stage 2); stopped right after the loop ends.
+    let mut ctl_server: Option<crate::ctl_app::CtlServer> = None;
     // The Explorer verb (reconciled on a worker after the restore) and the update engine (started
     // after the window is shown), both made with the controller (M9 Task 32).
     let mut verb_switch: Option<Arc<flare_win::verb_switch::VerbSwitch>> = None;
@@ -873,13 +875,29 @@ pub fn run_window(
             Arc::new(move || post(UiMsg::HostWake))
         };
         let e2e_on = args.e2e;
-        let tab_host = TabHost::new(
+        // The control channel's name is per user and per profile; every shell is told it, with its own
+        // secret (Surfaces stage 2). A run that cannot name it (no SID) has no channel.
+        let ctl_pipe = crate::ctl_app::pipe_for(args.user_data_dir.as_deref(), &inst.profile.dir);
+        let ctl_instance = ctl_pipe
+            .clone()
+            .map(|pipe| flare_term::session::CtlInstance {
+                pipe,
+                mcp_exe: std::env::current_exe() // sync-ok: startup, before the window shows
+                    .ok()
+                    .and_then(|exe| crate::ctl_app::mcp_exe_beside(&exe)),
+            });
+        let tab_host = TabHost::with_options(
             Arc::new(PortableSpawner),
             Arc::new(RealShells),
             prefs.clone(),
             waker,
             crate::startup::production_plugin_dir(e2e_on),
+            flare_term::session::SessionOptions {
+                ctl: ctl_instance.clone(),
+                ..flare_term::session::SessionOptions::default()
+            },
         );
+        let ctl_mgr = tab_host.manager();
         // The memory watch sums the shells' memory through the tab host's live pids.
         {
             let mgr = tab_host.manager();
@@ -1022,6 +1040,29 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The server answers on its own threads and reaches the window through `post`. A failure
+        // (the name is taken, no SID) is logged and the run goes on without the channel.
+        if let Some(instance) = &ctl_instance {
+            let tabs = Arc::clone(&ctl_mgr);
+            match crate::ctl_app::CtlServer::start(
+                &instance.pipe,
+                Arc::clone(&post),
+                Arc::new(move |token: &str| tabs.tab_for_ctl_token(token)),
+                crate::app_facts::home().to_string(),
+            ) {
+                Ok(server) => {
+                    rc.borrow_mut().set_ctl(
+                        server.events(),
+                        crate::appctl::CtlInfo {
+                            pipe: instance.pipe.clone(),
+                            mcp_exe: instance.mcp_exe.clone(),
+                        },
+                    );
+                    ctl_server = Some(server);
+                }
+                Err(e) => log::warn!("the control channel did not start: {e}"),
+            }
+        }
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),
@@ -1422,7 +1463,15 @@ pub fn run_window(
         crate::startup_trace::after_first_frame("verb_reconcile", move || switch.reconcile());
     }
     let result = app.run();
-    // Dictation stops first: engine, host, hook and link are gone before the shells are killed.
+    // The control channel stops first of all: no call may reach the window once it is going (a waiting
+    // one answers `unavailable` within 50 ms; the stop is bounded by its own 2 s, inside the quit).
+    if let Some(server) = ctl_server.take() {
+        let left = server.stop();
+        if left > 0 {
+            log::warn!("control channel: {left} call(s) still running at quit");
+        }
+    }
+    // Dictation stops next: engine, host, hook and link are gone before the shells are killed.
     crate::dictation_ctl::stop_all();
     if let Some((engine, _)) = &update_engine {
         engine.stop();
