@@ -8,6 +8,9 @@ accepted = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    "BSL-1.0",
+    # Slint is used under its royalty-free desktop licence (the GPL-3.0 alternative is never chosen; see deny.toml).
+    "LicenseRef-Slint-Royalty-free-2.0",
 ]
 targets = ["x86_64-pc-windows-msvc"]
 ignore-dev-dependencies = true

@@ -1,0 +1,204 @@
+import { Theme } from "theme.slint";
+
+// One of the title bar's buttons (PT TitleBar.tsx: h-7 w-8, rounded, an
+// SVG icon on a 24-unit viewbox drawn with a round-capped stroke).
+component TitleButton inherits Rectangle {
+    in property <string> commands;
+    in property <length> icon-size: 13px;
+    in property <float> stroke-units: 1.8;
+    in property <bool> danger: false;
+    in property <string> label;
+    callback clicked();
+    width: 32px;
+    height: 28px;
+    border-radius: Theme.radius-button;
+    background: ta.has-hover ? (root.danger ? Theme.close-hover : Theme.hover-hi) : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    Path {
+        width: root.icon-size;
+        height: root.icon-size;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.commands;
+        fill: transparent;
+        stroke: ta.has-hover ? (root.danger ? #ffffff : Theme.text) : Theme.icon;
+        stroke-width: root.stroke-units * root.icon-size / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Flare";
+    no-frame: true;
+    background: Theme.ground;
+    preferred-width: 1000px;
+    preferred-height: 640px;
+    min-width: 360px;
+    min-height: 200px;
+    forward-focus: keys;
+
+    in property <image> grid-image;
+    in-out property <bool> overlay-visible: false;
+    in property <string> overlay-text;
+    out property <int> grid-phys-width: round(grid-area.width / 1phx);
+    out property <int> grid-phys-height: round(grid-area.height / 1phx);
+    out property <float> scale: 1px / 1phx;
+
+    callback grid-resized(int, int, float);
+    callback minimize-clicked();
+    callback maximize-clicked();
+    callback close-clicked();
+    callback toggle-grid-renderer();
+
+    changed grid-phys-width => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }
+    changed grid-phys-height => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }
+    changed scale => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.F12) {
+                root.overlay-visible = !root.overlay-visible;
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: 0;
+            spacing: 0;
+            // THE TOP ROW (PT App.tsx data-title-bar="tabs"): mark, tab strip, buttons.
+            Rectangle {
+                height: Theme.bar-height;
+                background: Theme.ground;
+                HorizontalLayout {
+                    padding-right: 6px;
+                    spacing: 0;
+                    // TitleMark: pl-3.5 pr-3 around a 17px mark, a full-height line after it.
+                    Rectangle {
+                        width: 14px + 17px + 12px;
+                        WindowMoveArea {
+                            Path {
+                                x: 14px;
+                                width: 17px;
+                                height: 17px;
+                                viewbox-x: 116;
+                                viewbox-y: 115;
+                                viewbox-width: 800;
+                                viewbox-height: 800;
+                                fill: Theme.icon;
+                                fill-rule: evenodd;
+                                commands: "M452 212 H601 Q626 212 642 239 L711 351 Q724 373 711 395 L439 795 Q423 818 401 818 H249 Q227 818 213 797 L142 686 Q128 665 140 644 L410 238 Q426 212 452 212 Z M610 265 L353 649 Q343 663 351 677 L411 770 Q419 782 428 768 L684 389 Q695 373 685 357 L629 266 Q620 251 610 265 Z M702 507 H788 Q810 507 824 531 L891 643 Q901 660 891 678 L803 799 Q789 818 770 818 H613 Q590 818 576 797 L544 744 Q532 725 543 707 L664 529 Q679 507 702 507 Z M790 553 L723 650 Q714 663 722 676 L780 770 Q789 782 798 767 L865 672 Q874 660 866 646 L807 550 Q798 540 790 553 Z";
+                            }
+                        }
+                        Rectangle {
+                            x: parent.width - 1px;
+                            width: 1px;
+                            background: Theme.divider;
+                        }
+                    }
+                    // The (empty) tab strip: the handle the window moves by.
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        WindowMoveArea {
+                            TouchArea {
+                                double-clicked => { root.maximize-clicked(); }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        spacing: 4px;
+                        alignment: end;
+                        VerticalLayout {
+                            alignment: center;
+                            TitleButton {
+                                label: "Settings";
+                                icon-size: 15px;
+                                stroke-units: 1.7;
+                                commands: "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z";
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TitleButton {
+                                label: "Minimize";
+                                commands: "M6 12h12";
+                                clicked => { root.minimize-clicked(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TitleButton {
+                                label: "Maximize";
+                                commands: "M7.5 6h9a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-9a1.5 1.5 0 0 1 1.5-1.5z";
+                                clicked => { root.maximize-clicked(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TitleButton {
+                                label: "Close";
+                                danger: true;
+                                commands: "M7 7l10 10M17 7L7 17";
+                                clicked => { root.close-clicked(); }
+                            }
+                        }
+                    }
+                }
+                // border-b border-[var(--p-divider)]
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.divider;
+                }
+            }
+            grid-area := Rectangle {
+                vertical-stretch: 1;
+                background: Theme.ground;
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.grid-image;
+                    image-fit: fill;
+                    image-rendering: pixelated;
+                }
+                if root.overlay-visible: Rectangle {
+                    x: parent.width - self.width - 8px;
+                    y: 8px;
+                    width: 300px;
+                    height: overlay-col.preferred-height + 16px;
+                    background: #000000cc;
+                    border-radius: 4px;
+                    overlay-col := VerticalLayout {
+                        padding: 8px;
+                        spacing: 6px;
+                        Text {
+                            text: root.overlay-text;
+                            color: Theme.text;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        Rectangle {
+                            height: 24px;
+                            border-radius: 4px;
+                            background: switch-ta.has-hover ? Theme.hover-hi : #ffffff12;
+                            Text {
+                                text: "Switch grid renderer";
+                                color: Theme.text;
+                                font-size: 12px;
+                            }
+                            switch-ta := TouchArea {
+                                clicked => { root.toggle-grid-renderer(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

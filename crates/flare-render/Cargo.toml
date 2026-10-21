@@ -1,9 +1,17 @@
 [package]
 name = "flare-render"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 publish = false
+
+[dependencies]
+wgpu.workspace = true
+cosmic-text.workspace = true
+unicode-width.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

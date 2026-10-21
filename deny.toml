@@ -3,6 +3,14 @@ targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 version = 2
+# RUSTSEC-2026-0192 (ttf-parser unmaintained) reaches us only through cosmic-text 0.19.0 (pinned) -> fontdb 0.23.0.
+# No patched ttf-parser exists, and cosmic-text 0.19.0 (the latest on 2026-10-17) requires fontdb ^0.23. fontdb 0.24
+# no longer uses ttf-parser (Slint already pulls 0.24 through usvg), so the fix is a cosmic-text release on fontdb
+# 0.24. It is an unmaintained notice, not a vulnerability. Drop this entry when cosmic-text moves off fontdb 0.23
+# (check on each cosmic-text bump).
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained, pulled by cosmic-text 0.19.0 via fontdb; no safe upgrade" },
+]
 
 [licenses]
 version = 2
@@ -16,6 +24,7 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    "BSL-1.0",
 ]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"
@@ -24,9 +33,51 @@ unused-allowed-license = "allow"
 [licenses.private]
 ignore = true
 
-# Slint is used under its royalty-free desktop licence (attribution: "Made with Slint").
-# When the Slint dependency lands in Milestone 1, add it here, for example:
-# exceptions = [{ allow = ["LicenseRef-Slint-Royalty-free-2.0"], crate = "slint" }]
+# Slint is used under its royalty-free desktop licence (attribution: "Made with Slint", About page, M7).
+# Only the royalty-free term is allowed for these crates; GPL-3.0 is never allowed globally.
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint-build"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "slint-macros"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-backend-selector"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-backend-winit"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-common"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-compiler"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-core"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-core-macros"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-renderer-femtovg"
+
+[[licenses.exceptions]]
+allow = ["LicenseRef-Slint-Royalty-free-2.0"]
+crate = "i-slint-renderer-software"
 
 [bans]
 multiple-versions = "warn"

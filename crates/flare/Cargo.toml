@@ -1,9 +1,22 @@
 [package]
 name = "flare"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 publish = false
+build = "build.rs"
+
+[dependencies]
+flare-render = { path = "../flare-render" }
+slint.workspace = true
+wgpu.workspace = true
+png.workspace = true
+log.workspace = true
+env_logger.workspace = true
+windows-sys.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
 
 [lints]
 workspace = true
