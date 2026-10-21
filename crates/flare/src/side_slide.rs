@@ -159,6 +159,19 @@ impl SideSlide {
         }
     }
 
+    /// The e2e's picture at an offset: a slide that is moving is put `ms` into its time as of `now` (the
+    /// frames that come next go on from there), and the values it shows are returned.
+    pub fn place(&mut self, now: f64, ms: f64) -> (f32, f32) {
+        if let Some((slot, panel)) = &mut self.tracks {
+            for t in [slot, panel] {
+                if t.moving() {
+                    t.start = Some(now - ms);
+                }
+            }
+        }
+        self.frame(now)
+    }
+
     /// What the last frame showed (or the rest a jump went to).
     pub fn shown(&self) -> (f32, f32) {
         self.tracks
@@ -288,6 +301,27 @@ mod tests {
         let back = s.frame(560.0).0;
         assert!(back > mid && back < 220.0, "{back}");
         assert_eq!(s.frame(740.0).0, 220.0);
+    }
+
+    #[test]
+    fn a_slide_can_be_placed_at_an_offset_before_any_frame_came() {
+        let mut s = SideSlide::default();
+        s.aim(&open(false));
+        assert!(s.aim(&shut(true)));
+        let (slot, panel) = s.place(5000.0, 60.0);
+        let k = ease(60.0 / SLIDE_MS);
+        assert!((f64::from(slot) - 220.0 * (1.0 - k)).abs() < 1e-3, "{slot}");
+        assert!((f64::from(panel) + 230.0 * k).abs() < 1e-3, "{panel}");
+        assert!(s.running());
+        // The slide goes on from there with the clock.
+        let (later, _) = s.frame(5000.0 + 120.0);
+        assert!(f64::from(later) < f64::from(slot));
+        // Past its end it has arrived.
+        assert_eq!(s.place(9000.0, 260.0), (0.0, -230.0));
+        assert!(!s.running());
+        // Offset 0 is the start itself.
+        s.aim(&open(true));
+        assert_eq!(s.place(1.0, 0.0), (0.0, -230.0));
     }
 
     #[test]

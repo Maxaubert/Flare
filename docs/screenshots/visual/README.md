@@ -62,8 +62,8 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
 |---|---|---|---|---|
 | Prism Terminal, 100 / 150 / 225 % (2026-10-21 re-capture) | 11 to 38 | 18.7 to 19.1 ms | 7 to 8 / 62 / 131 to 132 ms | 0.002 to 0.008 |
 | Prism Terminal, all scales (2026-10-20 capture, machine not throttled) | 27 | 7.0 ms | 18 / 72 / 142 ms | 0.000 to 0.003 |
-| Flare GPU, 100 / 150 / 225 % (2026-10-21 re-capture) | 7 to 8 | 66.5 to 71.1 ms | 9 to 11 / 66 to 79 / 143 to 150 ms | 0.002 to 0.008 |
-| Flare software, 100 / 150 / 225 % (2026-10-21 re-capture) | 13 | 16.9 to 18.1 ms | 10 / 63 to 64 / 133 to 134 ms | 0.004 to 0.008 |
+| Flare GPU, 100 / 150 / 225 % (2026-10-21, re-taken after V3-gpu-snapshots) | 7 to 8 | 67.9 to 71.4 ms | 9 to 11 / 67 to 76 / 140 to 149 ms | 0.004 to 0.007 |
+| Flare software, 100 / 150 / 225 % (2026-10-21, re-taken after V3-gpu-snapshots) | 13 | 17.0 to 17.8 ms | 9 to 10 / 63 to 64 / 133 to 134 ms | 0.001 to 0.008 |
 | Flare GPU before V3 (2026-10-20, same machine state) | 7 | 67 to 71 ms | 8 to 27 / 66 to 78 / 139 to 153 ms | 0.116 to 0.206 |
 | Flare software before V3 (2026-10-20) | 11 | 17.7 to 20.9 ms | 7 to 8 / 61 to 63 / 127 to 128 ms | 0.018 to 0.019 |
 
@@ -84,11 +84,24 @@ Sidebar (slot width, median of three; both apps declare 240 ms and `cubic-bezier
   about 15 frames a second (66 to 71 ms gaps, 7 to 8 frames; every GPU cell, all three scales), while the software path
   gave a frame every compositor frame (16.9 to 18.1 ms, 13 frames) and Prism Terminal one every 18.5 to 19 ms. The GPU
   frame rate is the machine, not the slide, and the GPU slide numbers (frames, longest gap, input to first frame, the
-  sidebar snapshot offsets: `collapse-00` shows slot 154, not 220) are NOT a baseline; do not compare them with Prism
+  sidebar snapshot offsets are now exact, see the next point) are NOT a baseline; do not compare them with Prism
   Terminal's frame count. The software cells are the trustworthy Flare numbers on this machine state.
+- Sidebar pictures (V3-gpu-snapshots, 2026-10-21): the GPU sheets used to read slot 154, 160, 16, 164, 18, 159 for offsets 0 to
+  100 ms and the slide seemed to open and close between pictures. Cause, measured with a frame log per picture: the
+  harness asked for a picture at an offset, but a GPU snapshot blocks the UI thread for 30 to 90 ms (29 to 87 ms measured)
+  while the slide runs on, and the slot is read when the snapshot ENDS. The frames underneath were monotonic (220 at 73 ms,
+  159 at 85 ms, 22 at 154 ms: the 15 frames a second above, in pairs 12 ms apart with a 70 ms gap); only the label was
+  wrong, and it varied with the snapshot time. It was not the slide starting late and not a stale read. Fix: the e2e
+  request `SlideHold` puts the slide exactly the offset into its time (`SideSlide::place`) and holds it while the
+  picture is taken, as `pt-visual.mjs` pauses CSS transitions at the offset; the files are named by the offset, and a
+  new check fails any picture more than 0.6 px off the curve. Every sidebar cell (GPU and software) was re-taken and every
+  picture now sits on `cubic-bezier(0.16, 1, 0.3, 1)`: collapse 220, 125, 69, 38, 21, 12, 4, 1, 0, 0 and expand
+  0, 95, 151, 182, 199, 208, 216, 219, 220, 220 at 100 % and 225 %. Each cell's `numbers.json` keeps `snapshot_ms` and the
+  `frames_since_key` of each picture. The GPU frame cadence itself (15 a second, 68 to 70 ms gaps) is unchanged and is
+  still the machine state noted above, not something this fix claims to change.
 - The terminal keeps its width after a round trip (102 columns before and after), and goes 102 to 131 collapsed. The
   snapshots show the terminal text moving with the slot edge in both apps; no jump in the tab strip or the rows.
-- Input to the first frame that moved: Flare GPU 21 to 22 ms, Flare software 16 to 17 ms, Prism Terminal 23 to 33
+- Input to the first frame that moved: Flare GPU 21.6 to 23.5 ms, Flare software 16.1 to 17.1 ms, Prism Terminal 23 to 33
   ms (its key goes through Playwright and the renderer's event loop). Both apps open the sidebar with the middle tab
   (beta) selected, so the frames show the same tab; Flare's cell checks it.
 

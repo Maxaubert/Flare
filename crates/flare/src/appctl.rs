@@ -352,6 +352,8 @@ pub struct AppCtl {
     slide_timer: slint::Timer,
     /// The slide's clock in fractional ms; the window sets the precise one.
     frame_clock: Rc<dyn Fn() -> f64>,
+    /// The e2e holds the slide at an offset for a picture: no frame moves it until released.
+    slide_held: bool,
     rows_model: Rc<VecModel<TabRow>>,
     view: View,
     last_geom: Option<GeomData>,
@@ -704,6 +706,7 @@ impl AppCtl {
             side_slide: SideSlide::default(),
             slide_timer: slint::Timer::default(),
             frame_clock,
+            slide_held: false,
             rows_model,
             view: View {
                 rows: Vec::new(),
@@ -2667,6 +2670,10 @@ impl AppCtl {
         if !self.side_slide.running() {
             return false;
         }
+        if self.slide_held {
+            // A picture is being taken at an offset: the slide waits, and asks for nothing more.
+            return false;
+        }
         let Some(app) = self.app() else { return false };
         let (slot, panel) = self.side_slide.frame((self.frame_clock)());
         app.set_sidebar_slot_now(slot);
@@ -2676,6 +2683,28 @@ impl AppCtl {
             self.slide_timer.stop();
         }
         more
+    }
+
+    /// The e2e's picture at an offset (audit V3): Some(ms) puts a running slide ms into its time and
+    /// holds it there, however many frames come, until None lets it go on. A snapshot blocks the UI
+    /// thread for 30 to 90 ms on the GPU path, so a picture asked for at an offset otherwise shows wherever
+    /// the frames had got to when it finished.
+    pub fn hold_slide(&mut self, ms: Option<f64>) {
+        let Some(app) = self.app() else { return };
+        match ms {
+            Some(ms) => {
+                let (slot, panel) = self.side_slide.place((self.frame_clock)(), ms.max(0.0));
+                app.set_sidebar_slot_now(slot);
+                app.set_sidebar_slide_now(panel);
+                self.slide_held = true;
+            }
+            None => {
+                self.slide_held = false;
+                if self.side_slide.running() {
+                    Self::ask_frame(&app);
+                }
+            }
+        }
     }
 
     /// A sidebar slide waits for its first frame or still moves.

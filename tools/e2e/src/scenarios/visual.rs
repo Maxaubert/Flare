@@ -32,7 +32,7 @@ use crate::perf::{median, pause};
 use crate::proc::Child;
 use crate::session::Session;
 use crate::slide;
-use crate::tour::{judge_frames, num, probe, wait_until, wake_display, watch_launch, Tabs};
+use crate::tour::{judge_frames, num, probe, wake_display, watch_launch, Tabs};
 use crate::world::{prompt_showing, prompt_timeout, rows_text, wait_for_prompt, Shell, World};
 
 /// The window the tour sizes everything to, css px.
@@ -314,7 +314,7 @@ fn sidebar_cell(
     let front = Tabs::read(&mut app).and_then(|t| t.front_index());
     ctx.ok(
         front == Some(1),
-        format!("sidebar {pct}-{renderer}: the saved middle tab is in front, as in Prism Terminal ({front:?})"),
+        format!("sidebar {pct}-{renderer}: the saved middle tab is in front, as in the reference ({front:?})"),
     );
     let open = ctx.until("the sidebar open", 6_000, &mut || {
         probe(&mut app, "sidebar.state", Value::Null)["open"] == json!(true)
@@ -370,26 +370,48 @@ fn sidebar_cell(
             toggle(ctx, &mut app, false)?;
         }
         for (k, off) in OFFSETS.iter().enumerate() {
+            app.session.call(&Request::Frames { reset: true })?;
+            let press_age = num(&app.session.probe_str("frames.series")?["now_age_ms"]);
             let t0 = Instant::now();
             app.session.key("Ctrl+Shift+B")?;
-            wait_until(t0 + Duration::from_millis(*off));
+            // The slide is put exactly `off` ms into its time and held while the picture is taken: a GPU
+            // snapshot blocks for 30 to 90 ms and the slide would run on under it (audit V3). `at` is the
+            // time the hold took after the key.
+            app.session.call(&Request::SlideHold {
+                ms: Some(*off as f64),
+            })?;
             let at = t0.elapsed().as_secs_f64() * 1000.0;
             // The picture comes first; its label is the slide the app read straight after taking it, so
             // the number names the frame the picture shows (a probe before the snapshot is a frame early).
             let staged = dir
                 .join("frames")
-                .join(format!("{name}-{k:02}-t{:03}ms.png", at.round() as i64));
+                .join(format!("{name}-{k:02}-t{:03}ms.png", *off as i64));
             let taken = shot_to(&mut app, &staged);
+            let snap_ms = t0.elapsed().as_secs_f64() * 1000.0 - at;
             let shown = picture_slide(&mut app);
+            app.session.call(&Request::SlideHold { ms: None })?;
+            // The frames the app presented since the key, to tell a late picture from a wrong value.
+            let frames: Vec<Value> = app
+                .session
+                .probe_str("frames.series")
+                .map(|s| {
+                    slide::parse_rows(&s)
+                        .iter()
+                        .take(40)
+                        .map(|r| json!([r.age - press_age, r.slot]))
+                        .collect()
+                })
+                .unwrap_or_default();
             let slot = shown.map_or(0, |s| s.0.round() as i64);
             let file = dir.join("frames").join(format!(
                 "{name}-{k:02}-t{:03}ms-slot{slot:03}.png",
-                at.round() as i64
+                *off as i64
             ));
             let taken = taken && fs::rename(&staged, &file).is_ok();
             shots.push(json!({
                 "name": name, "k": k, "target_ms": off, "at_ms": at,
                 "slot": shown.map(|s| s.0), "panel_left": shown.map(|s| s.1), "taken": taken,
+                "snapshot_ms": snap_ms, "frames_since_key": frames,
                 "file": file.file_name().map(|f| f.to_string_lossy()),
             }));
             // Back to the state this pass started from, settled.
@@ -404,6 +426,30 @@ fn sidebar_cell(
         format!(
             "sidebar {pct}-{renderer}: {taken} snapshots taken during the slides (of {})",
             OFFSETS.len() * 2
+        ),
+    );
+    // Each picture shows the slide AT its offset, not wherever the frames had got to when the (slow, blocking)
+    // snapshot finished (audit V3, GPU snapshots read 154, 160, 16, 164, 18, 159 for 0 to 100 ms).
+    let open_w = num(&collapse[0]["slot"]["from"]);
+    let off_curve: Vec<String> = shots
+        .iter()
+        .filter_map(|s| {
+            let off = s["target_ms"].as_f64()?;
+            let p = slide::bezier(slide::EASE, off / slide::SLIDE_MS);
+            let want = if s["name"] == json!("collapse") {
+                open_w * (1.0 - p)
+            } else {
+                open_w * p
+            };
+            let got = s["slot"].as_f64()?;
+            ((got - want).abs() > 0.6)
+                .then(|| format!("{} {off} ms: {got:.1}, want {want:.1}", s["name"]))
+        })
+        .collect();
+    ctx.ok(
+        off_curve.is_empty(),
+        format!(
+            "sidebar {pct}-{renderer}: every picture shows the slide at its offset ({off_curve:?})"
         ),
     );
     let problems = park_problems(&probe(&mut app, "window.park", Value::Null));

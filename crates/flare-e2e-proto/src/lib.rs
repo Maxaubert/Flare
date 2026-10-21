@@ -111,6 +111,11 @@ pub enum Request {
     Frames {
         reset: bool,
     },
+    /// Some(ms): the sidebar's slide is put ms into its time and held there (no frame moves it) until
+    /// None lets it go on, so a picture shows the slide at its offset however long the snapshot takes.
+    SlideHold {
+        ms: Option<f64>,
+    },
     Latency {
         chord: String,
         expect: String,
@@ -347,6 +352,8 @@ mod tests {
             },
             Request::Pixel { x: 3, y: 4 },
             Request::Frames { reset: true },
+            Request::SlideHold { ms: Some(60.5) },
+            Request::SlideHold { ms: None },
             Request::Latency {
                 chord: "KeyW".into(),
                 expect: "w".into(),

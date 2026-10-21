@@ -1328,6 +1328,14 @@ impl GlueCtx {
         apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
         Ok(())
     }
+    /// `SlideHold`: the sidebar's slide at an offset, held for a picture (or let go).
+    fn slide_hold(&self, ms: Option<f64>) -> Result<(), String> {
+        let ctl = self.ctl.upgrade().ok_or("the window is gone")?;
+        let mut c = ctl.try_borrow_mut().map_err(|_| "the controller is busy")?;
+        c.hold_slide(ms);
+        Ok(())
+    }
+
     /// `Snapshot`: Slint's own snapshot first, then `PrintWindow`; the PNG is in device pixels.
     fn snapshot(&self, path: &str, mode: Option<SnapMode>) -> Reply {
         let Some(app) = self.app.upgrade() else {
@@ -1757,6 +1765,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             resp.reply(frames_reply(reset));
             return;
         }
+        Request::SlideHold { ms } => ctx.slide_hold(ms),
         Request::Latency {
             chord,
             expect,
