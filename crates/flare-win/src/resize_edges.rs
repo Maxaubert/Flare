@@ -344,6 +344,25 @@ mod tests {
         assert_eq!(hit_test(W, H, W - 6, H - 6, b), None);
         // The Close button's right edge is the client at 100 percent (it was a resize edge at 8 px).
         assert_eq!(hit_test(W, H, W - 6, 20, b), None);
+        // The Close button's own last pixel is w - 7 (TitleButtons pads 6 px on the right): the
+        // client at 100 percent, where an 8 px band made it a resize edge; at 300 percent the
+        // padding is 18 px and the band 15.
+        assert_eq!(hit_test(W, H, W - 7, 18, b), None);
+        assert_eq!(
+            hit_test(
+                W,
+                H,
+                W - 7,
+                18,
+                Band {
+                    x: 8,
+                    y: 8,
+                    corner: 16
+                }
+            ),
+            Some(HTRIGHT)
+        );
+        assert_eq!(hit_test(W, H, W - 19, 54, band(300)), None);
         assert_eq!(hit_test(W, H, -1, 5, b), None);
         assert_eq!(hit_test(W, H, W, 5, b), None);
         assert_eq!(hit_test(W, H, 5, H, b), None);
@@ -353,13 +372,19 @@ mod tests {
     fn the_band_scales_with_the_dpi_from_100_to_300_percent() {
         for pct in [100, 150, 225, 300] {
             let b = band(pct);
-            let dpi = 96.0 * pct as f64 / 100.0;
+            // Literal sizes (5 and 16 px at 96 dpi, scaled and rounded), so a floor or a ceil in
+            // the code shows at once: 7.5 -> 8, 11.25 -> 11, 24 and 36 and 48 exactly.
+            let (want_edge, want_corner) = match pct {
+                100 => (5, 16),
+                150 => (8, 24),
+                225 => (11, 36),
+                _ => (15, 48),
+            };
             assert_eq!(
-                b.x as f64,
-                (5.0 * dpi / 96.0).round(),
-                "5 px at 100 percent, scaled"
+                (b.x, b.y, b.corner),
+                (want_edge, want_edge, want_corner),
+                "{pct}%"
             );
-            assert_eq!(b.corner as f64, (16.0 * dpi / 96.0).round(), "{pct}%");
             let (e, c) = (b.x, b.corner);
             // The last pixel of the edge is the edge; the first inside is the client.
             assert_eq!(hit_test(W * 3, H * 3, e - 1, H, b), Some(HTLEFT), "{pct}%");

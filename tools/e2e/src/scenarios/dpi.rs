@@ -890,9 +890,16 @@ const MIN_CSS: (f32, f32) = (560.0, 400.0);
 
 /// The points of a `w` x `h` window (device px, from its top-left) a resize band is checked at,
 /// with the code each answers: the middle of each edge, each corner's outermost pixel and reach, a
-/// point just inside a band, the middle, and the Close button's right edge (client, not a handle).
-fn edge_points(w: i32, h: i32, band: i32, corner: i32) -> Vec<((i32, i32), u32, &'static str)> {
-    vec![
+/// point just inside a band, the middle, and, when `close` is given (the Close button's own last
+/// pixel, mid-height), that pixel (client, not a handle).
+fn edge_points(
+    w: i32,
+    h: i32,
+    band: i32,
+    corner: i32,
+    close: Option<(i32, i32)>,
+) -> Vec<((i32, i32), u32, &'static str)> {
+    let mut pts = vec![
         ((0, h / 2), HT_LEFT, "left edge"),
         ((w - 1, h / 2), HT_RIGHT, "right edge"),
         ((w / 2, 0), HT_TOP, "top edge"),
@@ -931,12 +938,27 @@ fn edge_points(w: i32, h: i32, band: i32, corner: i32) -> Vec<((i32, i32), u32, 
         ((band, h / 2), HT_CLIENT, "one pixel inside the left band"),
         ((w / 2, band), HT_CLIENT, "one pixel inside the top band"),
         ((w / 2, h / 2), HT_CLIENT, "the middle"),
-        (
-            (w - band - 1, 2 * band),
-            HT_CLIENT,
-            "the Close button's right edge, inside the band",
-        ),
-    ]
+    ];
+    if let Some(p) = close {
+        pts.push((p, HT_CLIENT, "the Close button's last pixel"));
+    }
+    pts
+}
+
+/// The band Prism Terminal's frameless window has at a dpi, as literals: `round(5 * dpi / 96)` for
+/// an edge and `round(16 * dpi / 96)` for a corner (100, 125, 150, 175, 200, 225, 250, 300 percent).
+fn want_band_at(dpi: u32) -> Option<(i64, i64)> {
+    Some(match dpi {
+        96 => (5, 16),
+        120 => (6, 20),
+        144 => (8, 24),
+        168 => (9, 28),
+        192 => (10, 32),
+        216 => (11, 36),
+        240 => (13, 40),
+        288 => (15, 48),
+        _ => return None,
+    })
 }
 
 /// `window.edges` for the points, as `(rect, dpi, band, sizebox, min_track, codes)`.
@@ -974,6 +996,8 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
     let Some(mut app) = start(ctx, "software", false)? else {
         return Ok(());
     };
+    let mut checked_close = false;
+    let mut window_dpi = 96;
     for dpi in [96u32, 144, 216, 288] {
         let at = format!("at {}%", pct(dpi));
         let sent = app.session.call(&Request::DpiChange {
@@ -993,18 +1017,23 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
             continue;
         };
         let (w, h) = ((rect[2] - rect[0]) as i32, (rect[3] - rect[1]) as i32);
+        window_dpi = got_dpi;
         ctx.ok(
             sizebox,
             format!("{at}: the window can be sized (WS_SIZEBOX, so Snap works)"),
         );
-        // The band follows the window's own DPI (the simulated change moves the app's scale, not the
-        // monitor's) and is Prism Terminal's: 5 px edges and 16 px corners per 96 dpi.
-        let s = f64::from(got_dpi) / 96.0;
-        let (want_band, want_corner) = ((5.0 * s).round() as i64, (16.0 * s).round() as i64);
+        // The band follows the WINDOW's own DPI, which the simulated change does not move (it moves
+        // the app's scale only): every step reads the host monitor's band, Prism Terminal's 5 px
+        // edges and 16 px corners per 96 dpi, from literals. The sizes at 100 to 300 percent are
+        // held by the unit tests (`the_band_scales_with_the_dpi_from_100_to_300_percent`).
+        let (want_band, want_corner) = want_band_at(got_dpi).unwrap_or_else(|| {
+            let s = f64::from(got_dpi) / 96.0;
+            ((5.0 * s).round() as i64, (16.0 * s).round() as i64)
+        });
         ctx.ok(
             band.0 == want_band && band.1 == want_corner,
             format!(
-                "{at}: the edge is {} px and the corner {} px at {got_dpi} dpi (want {want_band} and {want_corner})",
+                "{at} (the window stays at the monitor's {got_dpi} dpi): the edge is {} px and the corner {} px (want {want_band} and {want_corner})",
                 band.0, band.1
             ),
         );
@@ -1016,7 +1045,18 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
             (min.0 - want_min.0).abs() <= 1 && (min.1 - want_min.1).abs() <= 1,
             format!("{at}: the minimum is {min:?} (about {want_min:?})"),
         );
-        let pts = edge_points(w, h, band.0 as i32, band.1 as i32);
+        // The Close button's last pixel: the title buttons pad 6 css px on the right and the bar is
+        // 36 css px, so the pixel is (w - round(6 * scale) - 1, round(18 * scale)). The layout
+        // follows the app's scale, so this is only asserted where that equals the window's own
+        // scale (else the band, from the window's dpi, and the layout disagree by construction).
+        let close = ((got_dpi as f32 / 96.0 - scale).abs() < 0.005).then(|| {
+            (
+                w - (6.0 * scale).round() as i32 - 1,
+                (18.0 * scale).round() as i32,
+            )
+        });
+        checked_close |= close.is_some();
+        let pts = edge_points(w, h, band.0 as i32, band.1 as i32, close);
         let xy: Vec<(i32, i32)> = pts.iter().map(|p| p.0).collect();
         let codes = window_edges(&mut app, &xy).map(|e| e.5).unwrap_or_default();
         for (i, (_, want, what)) in pts.iter().enumerate() {
@@ -1027,6 +1067,12 @@ pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
             );
         }
     }
+    // The Close button's own last pixel is client, not a resize edge, at the step whose scale is the
+    // window's (any monitor at 100, 150, 225 or 300 percent has one).
+    ctx.ok(
+        checked_close || ![96, 144, 216, 288].contains(&window_dpi),
+        format!("the Close button's last pixel was probed at the step matching the window's {window_dpi} dpi"),
+    );
     // Back to 100 percent, then a programmatic resize far below the minimum is held to it.
     let _ = app.session.call(&Request::DpiChange {
         dpi: 96,
@@ -1056,7 +1102,7 @@ mod edge_tests {
     #[test]
     fn the_edge_points_lie_inside_the_window_and_cover_every_handle() {
         for (w, h, band, corner) in [(1000, 640, 5, 16), (3000, 1920, 15, 48)] {
-            let pts = edge_points(w, h, band, corner);
+            let pts = edge_points(w, h, band, corner, Some((w - 7, h / 20)));
             let codes: Vec<u32> = pts.iter().map(|p| p.1).collect();
             for want in [
                 HT_LEFT,

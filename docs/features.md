@@ -125,7 +125,8 @@ are added as milestones land.
   (native cursors, Aero Snap by drag and Win+arrow intact; no snap layouts hover menu yet): `flare_win::resize_edges` answers `WM_NCHITTEST` in a DPI-aware band
   (Prism Terminal's sizes: `round(5 * dpi / 96)` px edges, `round(16 * dpi / 96)` px corners, inside the window), never while maximized, minimized or full
   screen (the minimum clamp skips a borderless full-screen position too), and holds a programmatic resize to the 560 x 400 minimum (`WM_WINDOWPOSCHANGING`). The dictation
-  widget and popups are not resizable. Held by the `resize_edges` tests and the e2e `resizeEdges`.
+  widget and popups are not resizable. Sizes at 100 to 300 percent are held by the unit tests (literals: edge 5, 8, 11, 15; corner 16, 24, 36, 48); the e2e `resizeEdges` reads the band at the host monitor's dpi and probes the Close button's last pixel. Chromium floors the pointer to DIP, so PT's band can be 1 px wider at fractional scales (parity.md).
+  Held by the `resize_edges` tests and the e2e `resizeEdges`.
 - **Diagnostics and hand-off hardening (audit 2026-10-20).** A panic line keeps the payload's length and hash, never its
   text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance
   still shows its lock to a normal launch (L11). A hand-off server that is not this user in this session
