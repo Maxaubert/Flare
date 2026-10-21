@@ -465,6 +465,32 @@ fn double_click_on_the_empty_strip_maximises() {
     assert_eq!(n.get(), 1);
 }
 
+/// A TouchArea declared after an empty WindowMoveArea sits above it and takes the press, so the
+/// window never moves (the bar beside the sidebar, owner bug 2026-10-21). A move area's own
+/// TouchArea goes inside it: the move area filters before its children and still starts the move.
+#[test]
+fn no_touch_area_sits_on_top_of_a_window_move_area() {
+    for (name, src) in [
+        ("app.slint", include_str!("../../ui/app.slint")),
+        ("tabs.slint", include_str!("../../ui/tabs.slint")),
+    ] {
+        let lines: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        for (i, l) in lines.iter().enumerate() {
+            if l.ends_with("WindowMoveArea { }") {
+                let next = lines.get(i + 1).copied().unwrap_or("");
+                assert!(
+                    !next.starts_with("TouchArea"),
+                    "{name}: a TouchArea is declared over an empty WindowMoveArea"
+                );
+            }
+        }
+    }
+}
+
 /// Parity line 26: the buttons at the right end of the top row run Command help, Settings,
 /// Minimise, Maximise, Close, in that order, and no app menu sits in the window (PT TitleBar.tsx).
 /// A source scan of the Slint component, because the order is the declaration order.

@@ -600,12 +600,15 @@ export component AppWindow inherits Window {
                 height: root.side-mode ? Theme.bar-height : 0px;
                 visible: root.side-mode;
                 background: Theme.secondary;
-                WindowMoveArea { }
-                TouchArea {
-                    pointer-event(e) => {
-                        if e.kind == PointerEventKind.down { root.title-pressed(); }
+                // The TouchArea sits INSIDE the move area, as on the top row: as a sibling above it,
+                // it took the press and the window never moved (owner bug 2026-10-21).
+                WindowMoveArea {
+                    TouchArea {
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down { root.title-pressed(); }
+                        }
+                        double-clicked => { root.bar-double-clicked(); }
                     }
-                    double-clicked => { root.bar-double-clicked(); }
                 }
                 AppMark {
                     x: Px.snap(16px);
