@@ -1,7 +1,7 @@
 """Checks of the icon pipeline (M9 Task 26). Run: python -I tools/test_make_icon.py
 
 Stdlib unittest plus Pillow. The frames are the owner's artwork rendered from the SVG, so the
-checks look for the artwork (a dark flame on a yellow square, transparent outside the square),
+checks look for the artwork (an orange and a gold flame on a dark square, transparent outside the\nsquare; the owner's final icon of 2026-10-21),
 never for a badge or an outline.
 """
 
@@ -18,8 +18,9 @@ README = ROOT / 'docs' / 'assets' / 'flare-icon.png'
 
 SIZES = [16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 96, 128, 256]
 VIEW = 1254  # the SVG's viewBox; the sample points below are in these units
-FLAME_POINT = (440, 690)  # deep inside the flame (black in the artwork)
-YELLOW_POINT = (1060, 260)  # inside the rounded square, clear of the flame
+FLAME_POINT = (440, 690)  # deep inside the orange flame
+GOLD_POINT = (880, 700)  # deep inside the gold flame
+SQUARE_POINT = (180, 640)  # inside the dark rounded square, left of the flames, clear of its edge
 
 
 def at(point, n):
@@ -55,18 +56,23 @@ class IconFrames(unittest.TestCase):
             frame = im.convert('RGBA')
             self.assertEqual(frame.getpixel((0, 0))[3], 0, f'frame {n} corner is not transparent')
 
-    def test_every_frame_has_the_dark_flame_and_the_yellow_square(self):
+    def test_every_frame_has_the_two_flames_and_the_dark_square(self):
         im = Image.open(ICO)
         for n in SIZES:
             im.size = (n, n)
             im.load()
             frame = im.convert('RGBA')
-            r, g, b, a = frame.getpixel(at(FLAME_POINT, n))
-            self.assertLess(max(r, g, b), 60, f'frame {n}: the flame is not dark')
-            self.assertEqual(a, 255, f'frame {n}: the flame is not opaque')
-            r, g, b, a = frame.getpixel(at(YELLOW_POINT, n))
-            self.assertTrue(r > 200 and g > 180 and b < 120, f'frame {n}: not yellow')
-            self.assertEqual(a, 255, f'frame {n}: the square is not opaque')
+            self.assert_artwork(frame, n)
+
+    def assert_artwork(self, frame, n):
+        r, g, b, a = frame.getpixel(at(FLAME_POINT, n))
+        self.assertTrue(r > 200 and g < 130 and b < 60, f'frame {n}: not orange {(r, g, b)}')
+        self.assertEqual(a, 255, f'frame {n}: the flame is not opaque')
+        r, g, b, a = frame.getpixel(at(GOLD_POINT, n))
+        self.assertTrue(r > 200 and g > 170 and b < 80, f'frame {n}: not gold {(r, g, b)}')
+        r, g, b, a = frame.getpixel(at(SQUARE_POINT, n))
+        self.assertLess(max(r, g, b), 70, f'frame {n}: the square is not dark {(r, g, b)}')
+        self.assertEqual(a, 255, f'frame {n}: the square is not opaque')
 
     def test_every_frame_is_as_sharp_as_the_vector(self):
         # Each frame against the 1024 px render averaged down to its size (each pixel the mean of
@@ -102,10 +108,8 @@ class SourceAndReadme(unittest.TestCase):
         im = Image.open(SOURCE).convert('RGBA')
         self.assertEqual(im.size, (1024, 1024))
         self.assertEqual(im.getpixel((0, 0))[3], 0)
-        r, g, b, a = im.getpixel(at(FLAME_POINT, 1024))
-        self.assertLess(max(r, g, b), 60)
-        r, g, b, a = im.getpixel(at(YELLOW_POINT, 1024))
-        self.assertTrue(r > 200 and g > 180 and b < 120)
+        IconFrames.assert_artwork(self, im, 1024)
+
 
     def test_the_readme_picture_is_256(self):
         im = Image.open(README)

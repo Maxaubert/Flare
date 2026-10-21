@@ -578,7 +578,9 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   `summary`, `gate`, `reader`, `control` in flare-diag; the privacy scan in `crates/flare/tests/privacy.rs`.
 - **The icon.** The owner's artwork (`assets/icon/flare-color.svg`) is the app icon, the taskbar and the Explorer
   icon, rendered as it is with no badge and no outline (O17, 2026-10-17). `tools/make-icon.py` builds the
-  frames; `tools/test_make_icon.py` checks them.
+  frames; `tools/test_make_icon.py` checks them. 2026-10-21: the owner's final icon replaced the first
+  artwork: an orange and a gold flame on a dark rounded square (the three SVGs in `assets/icon/`). The
+  in-app mark keeps the flame's outline, tinted by the theme.
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).
