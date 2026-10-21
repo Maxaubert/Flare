@@ -26,9 +26,22 @@ pub struct FakeState {
     exit_cb: Mutex<Option<ExitCb>>,
     reader_tx: Mutex<Option<Sender<Vec<u8>>>>,
     late_exit: Arc<AtomicBool>,
+    /// While set, the pty's write blocks (a full pipe), until `unblock_writes`.
+    write_gate: Gate,
 }
 
 impl FakeState {
+    /// The next writes block inside the pty, as a full pipe would.
+    pub fn block_writes(&self) {
+        *lk(&self.write_gate.0) = true;
+    }
+
+    /// Lets blocked writes through.
+    pub fn unblock_writes(&self) {
+        *lk(&self.write_gate.0) = false;
+        self.write_gate.1.notify_all();
+    }
+
     pub fn spec(&self) -> SpawnSpec {
         self.spec.clone()
     }
@@ -108,6 +121,12 @@ struct FakeWriter(Arc<FakeState>);
 
 impl Write for FakeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let (m, cv) = &*self.0.write_gate;
+        let mut blocked = lk(m);
+        while *blocked {
+            blocked = cv.wait(blocked).unwrap_or_else(|p| p.into_inner()); // sync-ok: a fake pty write held by a test
+        }
+        drop(blocked);
         lk(&self.0.written).extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -231,6 +250,7 @@ impl PtySpawner for FakeSpawner {
             exit_cb: Mutex::new(None),
             reader_tx: Mutex::new(Some(tx)),
             late_exit: Arc::clone(&self.late_exit),
+            write_gate: Arc::new((Mutex::new(false), Condvar::new())),
         });
         let pid = {
             let mut made = lk(&self.made);

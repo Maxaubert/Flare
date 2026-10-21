@@ -2,13 +2,19 @@
 //! to the painters through `GlyphSource`.
 
 use crate::blend::blend_premul;
-use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphSource};
+use crate::font_catalog::{
+    FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
+};
+use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
 use crate::metrics::{BASE_FONT_PX, FontUnits, font_px_for};
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     SwashImage, Weight,
 };
 use std::collections::HashMap;
+
+/// The locale the font system is built with (the fallback lists pick Han fonts by it).
+const LOCALE: &str = "en-US";
 
 /// PT's `TERM_FONTS` 'cascadia' stack, in order of preference.
 pub const DEFAULT_FAMILIES: &[&str] = &["Cascadia Mono", "JetBrainsMono NF", "Consolas"];
@@ -22,13 +28,28 @@ pub struct Rasterizer {
     generation: u64,
     units: FontUnits,
     cache: HashMap<GlyphKey, Option<GlyphBitmap>>,
+    /// The lazy fallback families already asked for (loaded or found useless), once each.
+    tried_fallbacks: Vec<&'static str>,
+    /// The ones that were kept, so a rebuilt database brings them back.
+    kept_fallbacks: Vec<&'static str>,
+    /// (faces, bytes) of the last `font_bytes` count.
+    font_bytes: std::cell::Cell<Option<(usize, usize)>>,
 }
 
 impl Rasterizer {
-    /// Loads system fonts once (about 60 ms), picks the first family in `families` that exists
-    /// (else the first monospace face), measures FontUnits from it.
+    /// Loads only the faces the terminal needs (the stack plus `FALLBACK_FAMILIES`, found through
+    /// the registry's font list), picks the first family in `families` that exists (else the first
+    /// monospace face), measures FontUnits from it.
     pub fn new(families: &[&str], scale: f32) -> Self {
-        let mut fs = FontSystem::new();
+        let db = database_for(families, FALLBACK_FAMILIES);
+        Self::from_system(
+            FontSystem::new_with_locale_and_db(LOCALE.into(), db),
+            families,
+            scale,
+        )
+    }
+
+    fn from_system(mut fs: FontSystem, families: &[&str], scale: f32) -> Self {
         let family = pick_family(&fs, families);
         let units = measure(&mut fs, &family, BASE_FONT_PX);
         Self {
@@ -40,7 +61,103 @@ impl Rasterizer {
             generation: 0,
             units,
             cache: HashMap::new(),
+            tried_fallbacks: Vec::new(),
+            kept_fallbacks: Vec::new(),
+            font_bytes: std::cell::Cell::new(None),
         }
+    }
+
+    /// Bytes of the distinct face files the database holds, read once per database change.
+    fn font_bytes(&self) -> usize {
+        let faces = self.fs.db().len();
+        if let Some((n, bytes)) = self.font_bytes.get()
+            && n == faces
+        {
+            return bytes;
+        }
+        let mut seen: Vec<&std::path::Path> = Vec::new();
+        let mut total = 0usize;
+        for face in self.fs.db().faces() {
+            match &face.source {
+                cosmic_text::fontdb::Source::File(p)
+                | cosmic_text::fontdb::Source::SharedFile(p, _) => {
+                    if !seen.contains(&p.as_path()) {
+                        seen.push(p.as_path());
+                        // sync-ok: read once per database change, for the memory overlay only
+                        total += std::fs::metadata(p).map_or(0, |m| m.len() as usize);
+                    }
+                }
+                cosmic_text::fontdb::Source::Binary(data) => {
+                    total += data.as_ref().as_ref().len();
+                }
+            }
+        }
+        self.font_bytes.set(Some((faces, total)));
+        total
+    }
+
+    /// How many faces the font database holds.
+    pub fn face_count(&self) -> usize {
+        self.fs.db().len()
+    }
+
+    /// Whether the database holds a face of this family (case-insensitive).
+    pub fn has_family_loaded(&self, name: &str) -> bool {
+        has_family(&self.fs, name)
+    }
+
+    /// A character nothing loaded covers: loads, once per family, the next lazy fallback family
+    /// that covers it. True when one was added.
+    fn fallback_for(&mut self, ch: char) -> bool {
+        let faces = installed_faces();
+        for &family in LAZY_FALLBACK_FAMILIES {
+            if self.tried_fallbacks.contains(&family) {
+                continue;
+            }
+            self.tried_fallbacks.push(family);
+            let files = files_for_family(&faces, family);
+            let mut ids = Vec::new();
+            for file in files {
+                ids.extend(
+                    self.fs
+                        .db_mut()
+                        .load_font_source(cosmic_text::fontdb::Source::File(file)),
+                );
+            }
+            let covers = self.covers(ch);
+            if covers {
+                self.kept_fallbacks.push(family);
+                return true;
+            }
+            for id in ids {
+                self.fs.db_mut().remove_face(id);
+            }
+        }
+        false
+    }
+
+    /// Whether shaping `ch` in the current stack draws a real glyph (not the missing-glyph box).
+    fn covers(&mut self, ch: char) -> bool {
+        let px = font_px_for(self.base_px, 1.0);
+        let family = self.family.clone();
+        let attrs = Attrs::new().family(Family::Name(&family));
+        let mut buffer = Buffer::new_empty(Metrics::new(px, px));
+        buffer.set_text(&ch.to_string(), &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(&mut self.fs, false);
+        missing_char(&buffer).is_none()
+    }
+
+    /// Builds a fresh font system for a new stack, keeping the lazy fallbacks already needed.
+    fn rebuild_for(&mut self, families: &[&str]) {
+        let mut db = database_for(families, FALLBACK_FAMILIES);
+        let faces = installed_faces();
+        for &family in &self.kept_fallbacks {
+            for file in files_for_family(&faces, family) {
+                let _ = db.load_font_file(&file);
+            }
+        }
+        self.fs = FontSystem::new_with_locale_and_db(LOCALE.into(), db);
+        self.swash = SwashCache::new();
     }
 
     pub fn family(&self) -> &str {
@@ -75,7 +192,8 @@ impl Rasterizer {
             return None;
         }
         let px = font_px_for(self.base_px, self.scale);
-        let mut attrs = Attrs::new().family(Family::Name(&self.family));
+        let family = self.family.clone();
+        let mut attrs = Attrs::new().family(Family::Name(&family));
         if key.bold {
             attrs = attrs.weight(Weight::BOLD);
         }
@@ -85,6 +203,15 @@ impl Rasterizer {
         let mut buffer = Buffer::new_empty(Metrics::new(px, px));
         buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.fs, false);
+        // A glyph id of 0 is the missing-glyph box: ask for one more fallback family and shape
+        // again, until the text is covered or no lazy family is left.
+        while let Some(missing) = missing_char(&buffer) {
+            if !self.fallback_for(missing) {
+                break;
+            }
+            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut self.fs, false);
+        }
         let run = buffer.layout_runs().next()?;
 
         // Every glyph of the first run, with its physical position and rasterised image.
@@ -121,7 +248,28 @@ impl GlyphSource for Rasterizer {
         self.cache.clear();
     }
 
+    fn memory(&self) -> GlyphMemory {
+        let caches = self
+            .cache
+            .iter()
+            .map(|(k, v)| k.text.capacity() + v.as_ref().map_or(0, |b| b.data.capacity()))
+            .sum::<usize>()
+            + self.cache.capacity() * size_of::<(GlyphKey, Option<GlyphBitmap>)>();
+        GlyphMemory {
+            fonts: self.font_bytes(),
+            caches,
+        }
+    }
+
     fn set_font(&mut self, families: &[&str], base_px: f32) {
+        let installed = installed_faces();
+        let wanted = families
+            .iter()
+            .find(|f| !files_for_family(&installed, f).is_empty());
+        if wanted.is_some_and(|f| !has_family(&self.fs, f)) {
+            // The stack's first installed family is not loaded: swap the database for the new stack.
+            self.rebuild_for(families);
+        }
         let family = pick_family(&self.fs, families);
         if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
             return;
@@ -132,6 +280,17 @@ impl GlyphSource for Rasterizer {
         self.cache.clear();
         self.generation += 1;
     }
+}
+
+/// The first character of `text` that the shaped buffer drew as the missing-glyph box.
+fn missing_char(buffer: &Buffer) -> Option<char> {
+    let run = buffer.layout_runs().next()?;
+    run.glyphs.iter().filter(|g| g.glyph_id == 0).find_map(|g| {
+        run.text
+            .get(g.start..g.end)?
+            .chars()
+            .find(|c| !c.is_whitespace())
+    })
 }
 
 /// The first installed family of `families`, else the first monospace face, else "monospace".
@@ -154,7 +313,7 @@ fn pick_family(fs: &FontSystem, families: &[&str]) -> String {
 fn has_family(fs: &FontSystem, name: &str) -> bool {
     fs.db()
         .faces()
-        .any(|f| f.families.iter().any(|(n, _)| n == name))
+        .any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
 }
 
 /// Shapes "M" at the base size and reads the font's metrics, in font units.
@@ -426,5 +585,107 @@ mod tests {
             h2 >= 2 * h1,
             "2.25x M is at least twice as tall ({h1} -> {h2})"
         );
+    }
+
+    /// The sample of every script the plan names, plus the theme sample file.
+    fn sample_text() -> String {
+        let mut s = String::from(include_str!("../../../docs/theme-sample.txt"));
+        s.push_str(
+            "Hello Wxyz 0123 \u{2500}\u{2502}\u{250C}\u{2588}\u{2591} \u{2800}\u{28FF} \
+             \u{3B1}\u{3B2}\u{3B3} \u{416}\u{44F} \u{4E2D}\u{6587}\u{65E5}\u{672C} \
+             \u{1F600}\u{1F680}\u{2764} \u{D55C}\u{AE00} \u{905}\u{915}\u{93E} \u{2713}\u{2192}",
+        );
+        s
+    }
+
+    #[test]
+    fn glyph_images_are_identical_to_the_all_fonts_build_for_the_theme_sample() {
+        let text = sample_text();
+        for scale in [1.0f32, 2.25] {
+            let mut old = Rasterizer::from_system(FontSystem::new(), DEFAULT_FAMILIES, scale);
+            let mut new = Rasterizer::new(DEFAULT_FAMILIES, scale);
+            assert_eq!(old.family(), new.family());
+            let mut checked = 0;
+            for ch in text.chars().filter(|c| !c.is_whitespace()) {
+                let k = key(&ch.to_string());
+                assert_eq!(
+                    old.glyph(&k).cloned(),
+                    new.glyph(&k).cloned(),
+                    "U+{:04X} differs at scale {scale}",
+                    ch as u32
+                );
+                checked += 1;
+            }
+            assert!(checked > 100);
+            assert!(new.face_count() < old.face_count());
+        }
+    }
+
+    #[test]
+    fn a_missing_character_loads_one_fallback_once() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
+            eprintln!("skipped: Javanese Text is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        assert!(!r.has_family_loaded("Javanese Text"));
+        let before = r.face_count();
+        let java = key("\u{A9B2}");
+        assert!(r.glyph(&java).is_some());
+        assert!(r.has_family_loaded("Javanese Text"));
+        let after = r.face_count();
+        assert!(after > before);
+        // The same family is not loaded again, by this character or another of its script.
+        r.glyph(&key("\u{A9B3}"));
+        r.glyph(&java);
+        assert_eq!(r.face_count(), after);
+        let tried = r.tried_fallbacks.len();
+        // A character nothing covers tries every lazy family once and keeps none.
+        r.glyph(&key("\u{10FFFD}"));
+        let after_tofu = r.face_count();
+        assert_eq!(after_tofu, after);
+        let tried_after = r.tried_fallbacks.len();
+        assert!(tried_after >= tried);
+        r.glyph(&key("\u{10FFFC}"));
+        assert_eq!(r.tried_fallbacks.len(), tried_after);
+        assert_eq!(r.face_count(), after);
+    }
+
+    #[test]
+    fn changing_the_font_swaps_the_database() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Arial").is_empty() {
+            eprintln!("skipped: Arial is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        assert!(!r.has_family_loaded("Arial"));
+        let g = r.generation();
+        r.set_font(&["Arial"], 13.0);
+        assert_eq!(r.family(), "Arial");
+        assert!(r.has_family_loaded("Arial"));
+        assert_eq!(r.generation(), g + 1);
+        assert!(r.glyph(&key("M")).is_some());
+        // Back to a family the fallbacks already hold: no reload needed, the family changes.
+        r.set_font(&["Consolas"], 13.0);
+        assert_eq!(r.family(), "Consolas");
+    }
+
+    #[test]
+    #[ignore = "release timing: cargo test --release -- --ignored startup_font_load"]
+    fn startup_font_load_is_under_150_ms() {
+        let start = std::time::Instant::now();
+        let r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        let new_ms = start.elapsed().as_millis();
+        let start = std::time::Instant::now();
+        let all = FontSystem::new();
+        let old_ms = start.elapsed().as_millis();
+        eprintln!(
+            "new {new_ms} ms ({} faces), all fonts {old_ms} ms ({} faces)",
+            r.face_count(),
+            all.db().len()
+        );
+        assert!(new_ms < 150, "{new_ms} ms");
     }
 }

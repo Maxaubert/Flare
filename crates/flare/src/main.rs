@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_hub;
+mod app_facts;
 mod appctl;
 mod backend;
 mod badge;
@@ -11,6 +12,9 @@ mod config;
 mod diag_ctl;
 mod drop_flow;
 mod e2e;
+mod e2e_glue;
+mod e2e_hook;
+mod e2e_probes;
 mod font_ctl;
 mod headless;
 mod help_ctl;
@@ -25,17 +29,20 @@ mod memory;
 mod menus_ui;
 mod openers;
 mod picker_ctl;
+mod scrollbar;
 mod sessions;
 mod settings_ctl;
 mod settings_scene;
 mod ship_ctl;
 mod sidebar_ui;
 mod startup;
+mod startup_trace;
 mod tab_host;
 mod tabs_ui;
 mod term_menu;
 mod term_ui;
 mod theme_scene;
+mod timer_registry;
 mod update_ctl;
 mod window;
 
@@ -51,10 +58,13 @@ slint::include_modules!();
 fn main() {
     // Velopack's hooks may end the process here, before anything else starts.
     ship_ctl::bootstrap();
+    startup_trace::mark(startup_trace::Phase::Main);
     let start = std::time::Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let env_renderer = std::env::var("FLARE_RENDERER").ok();
+    // The GPU device is built on a worker thread while the rest of start-up runs (Task 64).
+    let prewarm = backend::prewarm_if_gpu(&argv, env_renderer.as_deref());
     let args = match config::parse_args(&argv, env_renderer.as_deref()) {
         Ok(args) => args,
         Err(message) => {
@@ -64,6 +74,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    startup_trace::mark(startup_trace::Phase::Args);
 
     if args.probe_backend
         || args.screenshot.is_some()
@@ -182,7 +194,7 @@ fn main() {
             }
         }
     };
-    let outcome = match backend::select_backend(args.renderer, args.e2e) {
+    let outcome = match backend::select_backend_with(args.renderer, args.e2e, prewarm) {
         Ok(outcome) => outcome,
         Err(e) => {
             attach_parent_console();
@@ -190,6 +202,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    startup_trace::mark(startup_trace::Phase::Backend);
     log::info!(
         "renderer: {:?} (fallback: {:?})",
         outcome.effective,
@@ -213,6 +226,23 @@ fn main() {
         eprintln!("flare: {e}");
         std::process::exit(1);
     }
+    end_process_clean();
+}
+
+/// Ends a quit that finished cleanly with exit code 0. By now the shells are gone, the settings are
+/// flushed and the instance lock is released. On the GPU renderer the DXGI/DirectComposition
+/// teardown that runs while the process exits rewrote the exit code to 2170 (the DXGI facility), so
+/// the process ends itself and skips that teardown.
+fn end_process_clean() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: the pseudo-handle of this process is always valid and nothing is left to run.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+    }
+    std::process::exit(0);
 }
 
 /// How long a second launch waits for the first instance to take its folders.
@@ -244,9 +274,20 @@ fn attach_parent_console() {}
 /// never passes `dialog`, so no box can block it.
 fn show_fatal(title: &str, message: &str, dialog: bool) {
     eprintln!("flare: {message}");
-    if dialog && (!cfg!(debug_assertions) || !console_attached()) {
+    if fatal_dialog_shows(
+        dialog,
+        cfg!(debug_assertions),
+        console_attached(),
+        e2e::global().on(),
+    ) {
         message_box(title, message);
     }
+}
+
+/// Whether a fatal error is also shown in a message box: never under --e2e (no window is ever
+/// shown to the owner), and not in a debug run that has a console to print to.
+fn fatal_dialog_shows(dialog: bool, debug: bool, console: bool, e2e: bool) -> bool {
+    dialog && !e2e && (!debug || !console)
 }
 
 /// Whether this process has a console window to write to.
@@ -282,3 +323,19 @@ fn message_box(title: &str, message: &str) {
 
 #[cfg(not(windows))]
 fn message_box(_title: &str, _message: &str) {}
+
+#[cfg(test)]
+mod fatal_tests {
+    use super::fatal_dialog_shows;
+
+    #[test]
+    fn an_e2e_run_never_shows_the_fatal_message_box() {
+        // A release run with no console shows the box; an --e2e run never does (no window is
+        // ever shown to the owner), and a debug run with a console prints instead.
+        assert!(fatal_dialog_shows(true, false, false, false));
+        assert!(!fatal_dialog_shows(true, false, false, true));
+        assert!(!fatal_dialog_shows(true, true, true, false));
+        assert!(fatal_dialog_shows(true, true, false, false));
+        assert!(!fatal_dialog_shows(false, false, false, false));
+    }
+}

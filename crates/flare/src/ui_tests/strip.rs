@@ -489,3 +489,37 @@ fn the_window_handle_goes_away_while_a_drag_is_in_flight() {
     r.h.comp.set_drag_in_flight(true);
     assert!(!r.h.comp.get_has_move_area());
 }
+
+/// Parity line 37: with `Motion.reduced` a hovered tab shows its hover fill and its X in the first
+/// frame after the pointer moves, and a neighbour displaced by a carry is in its new place at once.
+#[test]
+fn reduced_motion_completes_the_hover_fill_and_the_slide_in_the_first_frame() {
+    let (rows, geom) = rows_for(3, 1, 1.0, 1000.0);
+    let r = rig(1.0, 1000, 0.0, rows, geom);
+    slint::ComponentHandle::global::<crate::Motion>(&r.h.comp).set_reduced(true);
+    r.h.move_to(60.0, 18.0);
+    r.h.advance(0);
+    let f = r.h.render();
+    assert!(
+        !is_ground(f.px(20, 30)),
+        "the hover fill is on the tab in the first frame"
+    );
+    let ink = f.count_where(124, 9, 140, 26, bright);
+    assert!(ink > 0, "the X is drawn in the first frame");
+
+    let (mut rows, geom) = rows_for(3, 2, 1.0, 1000.0);
+    rows[1].active = false;
+    let r = rig(1.0, 1000, 0.0, rows, geom);
+    slint::ComponentHandle::global::<crate::Motion>(&r.h.comp).set_reduced(true);
+    r.h.render();
+    r.h.comp.set_carrying(true);
+    let mut two = r.model.row_data(2).unwrap();
+    two.offset = -150.0;
+    r.model.set_row_data(2, two);
+    r.h.advance(0);
+    let f = r.h.render();
+    let left = (0..1000u32)
+        .find(|x| Frame::near(f.px(*x, 0), ACCENT_HI, 3))
+        .unwrap();
+    assert_eq!(left, 150, "the slide is finished in the first frame");
+}

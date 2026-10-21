@@ -13,12 +13,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
+use flare_render::stats::{FrameTrace, TracePhase};
 use flare_settings::kv::{FileBackend, PrefStore};
 use flare_settings::look::LookStore;
-use flare_tabs::restore::NoSessions;
 use flare_tabs::tabs_store::TabsStore;
 use flare_term::caret_hold::CaretPos;
 use flare_term::handle::TermHandle;
+use flare_term::keys::KeyEvent;
 use flare_term::path_open::FsStat;
 use flare_term::pty::PortableSpawner;
 use flare_term::session::RealShells;
@@ -240,9 +241,42 @@ fn repaint_due(dirty: bool) -> bool {
     dirty
 }
 
+/// How often the software path looks for a dirty grid (one display frame at 60 Hz).
+const FRAME_POLL: Duration = Duration::from_millis(16);
+
+/// The software path, a wake-up from a shell just landed: paint now when the grid is dirty and the
+/// last paint is a whole frame ago; else leave it to the poll timer, which comes within one frame.
+/// So output never waits for a wake AND then for the timer (M10 Task 67, step 3).
+fn paint_on_wake(since_last_paint: Duration, dirty: bool) -> bool {
+    dirty && since_last_paint >= FRAME_POLL
+}
+
+/// At most one `HostWake` is queued on the event loop however fast the output arrives: the shell
+/// threads call `try_queue`, the UI thread calls `delivered` as it takes the message.
+#[derive(Default)]
+struct WakeGate(AtomicBool);
+
+impl WakeGate {
+    /// True when the caller must queue a wake-up; false when one is already on its way.
+    fn try_queue(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+
+    /// The queued wake-up is being handled: the next output may queue a new one.
+    fn delivered(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    /// The software path's paint-on-wake hook (UI thread only); empty on the GPU path, where the
+    /// notifier paints in `BeforeRendering` after the `request_redraw` a wake-up makes.
+    static SOFTWARE_PAINT: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
 type CtlRc = Rc<RefCell<AppCtl>>;
 /// The shell the grid shows now: kept by the `set_grid_source` dependency, read by the filter.
-type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
+pub(crate) type FrontCell = Rc<RefCell<Option<Arc<TermHandle>>>>;
 
 thread_local! {
     /// The controller the worker threads' messages land on. Filled at startup, emptied at exit.
@@ -252,18 +286,25 @@ thread_local! {
 /// The production `post`: a worker's message hops onto the event loop and lands on `AppCtl`.
 /// Wake-ups are coalesced: at most one is queued however fast the output arrives.
 fn make_post() -> Post {
-    let wake_pending = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new(WakeGate::default());
     Arc::new(move |msg: UiMsg| {
         let is_wake = matches!(msg, UiMsg::HostWake);
-        if is_wake && wake_pending.swap(true, Ordering::SeqCst) {
+        if is_wake && !gate.try_queue() {
             return;
         }
-        let flag = Arc::clone(&wake_pending);
+        let gate = Arc::clone(&gate);
         let queued = slint::invoke_from_event_loop(move || {
             if is_wake {
-                flag.store(false, Ordering::SeqCst);
+                gate.delivered();
             }
             deliver_on_ui(msg);
+            if is_wake {
+                // The software path has no notifier: paint what the wake-up changed.
+                let hook = SOFTWARE_PAINT.with(|h| h.borrow().clone());
+                if let Some(paint) = hook {
+                    paint();
+                }
+            }
         });
         if queued.is_err() {
             log::debug!("post: event loop closed");
@@ -291,7 +332,7 @@ fn deliver_on_ui(msg: UiMsg) {
 }
 
 /// The window's HWND, when it has one.
-fn hwnd_of(app: &AppWindow) -> Option<isize> {
+pub(crate) fn hwnd_of(app: &AppWindow) -> Option<isize> {
     app.window()
         .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
@@ -300,12 +341,14 @@ fn hwnd_of(app: &AppWindow) -> Option<isize> {
         .flatten()
 }
 
+/// Where the window is put before its first show: the parking spot under `--e2e`, else nowhere
+/// in particular (the saved or default place applies).
+pub fn e2e_first_position(e2e: bool) -> Option<(i32, i32)> {
+    e2e.then(flare_win::window_park::parked_origin)
+}
+
 /// Gives an `--e2e` window the no-activate style, so it can never take the foreground.
-fn apply_e2e_style(app: &AppWindow) {
-    let Some(hwnd) = hwnd_of(app) else {
-        log::warn!("e2e: the window has no handle, its style is unchanged");
-        return;
-    };
+fn apply_e2e_style_to(hwnd: isize) {
     let hwnd = hwnd as *mut std::ffi::c_void;
     // SAFETY: `hwnd` is this process's own live window on the UI thread; reading and writing its
     // extended style touches no memory of ours.
@@ -315,6 +358,126 @@ fn apply_e2e_style(app: &AppWindow) {
     }
 }
 
+/// How often the `--e2e` window looks for its handle, and how many looks it makes (about 10 s).
+const E2E_HANDLE_POLL_MS: u64 = 10;
+const E2E_HANDLE_POLLS: u32 = 1000;
+
+/// What one look for the `--e2e` window's handle decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlePoll {
+    /// The window exists: style and park it.
+    Found(isize),
+    /// Not yet: look again.
+    Wait,
+    /// Looked `max` times in vain: say so and stop.
+    GiveUp,
+}
+
+/// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
+pub fn poll_handle(polls: u32, max: u32, hwnd: Option<isize>) -> HandlePoll {
+    match hwnd {
+        Some(h) => HandlePoll::Found(h),
+        None if polls + 1 >= max => HandlePoll::GiveUp,
+        None => HandlePoll::Wait,
+    }
+}
+
+/// Styles and parks the `--e2e` window as soon as it has a handle. The winit backend makes the
+/// native window only once the event loop runs, so right after `show()` there is no handle yet:
+/// a short timer looks until it exists. Keep the returned timer alive for the run.
+fn park_e2e_window_when_ready(app: &AppWindow) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(h) => {
+                    apply_e2e_style_to(h);
+                    flare_win::window_park::park(h);
+                    log::info!("e2e: the window is styled and parked");
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("e2e: the window never got a handle, it is not parked");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
+}
+
+/// The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window.
+/// Returns false when there is no handle yet (nothing is attached then).
+fn attach_window_material(
+    app: &AppWindow,
+    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    look: &Rc<RefCell<LookCtl>>,
+    e2e: bool,
+) -> bool {
+    let now = Instant::now();
+    let Some(mut m) = WindowMaterial::new(app, os_version(), e2e) else {
+        return false;
+    };
+    // No polling: the material arms a one-shot wake only while the border is due.
+    m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
+    m.on_window_state(
+        app.window().is_maximized(),
+        app.window().is_fullscreen(),
+        now,
+    );
+    // A saved see-through level becomes glass only now: the backdrop first, then the ground.
+    if let Ok(mut l) = look.try_borrow_mut() {
+        l.attach_material(m);
+    }
+    true
+}
+
+/// Attaches the window material as soon as the window has a handle (looking as often as the
+/// `--e2e` park timer does). Keep the returned timer alive for the run.
+fn attach_material_when_ready(
+    app: &AppWindow,
+    material: &Rc<RefCell<Option<WindowMaterial>>>,
+    look: &Rc<RefCell<LookCtl>>,
+    e2e: bool,
+) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let (material, look) = (material.clone(), look.clone());
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(_) => {
+                    attach_window_material(&app, &material, &look, e2e);
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("the window never got a handle, so it has no glass");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
+}
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
     let minimised = app.window().is_minimized();
@@ -374,7 +537,8 @@ fn settings_deps(
                 .upgrade()
                 .and_then(|a| hwnd_of(&a))
                 .map(|hwnd| ParentWindow { hwnd });
-            let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+            // Under --e2e an unset seam is a cancel (an empty value): no real dialog shows.
+            let seam = e2e::global().dialog_seam(&["FLARE_E2E", "_PICK"].concat(), "", |_| true);
             pick_folder(
                 PickOptions {
                     parent,
@@ -391,6 +555,7 @@ fn settings_deps(
             } else if e2e_on {
                 // Under --e2e nothing opens; the attempt is recorded in the log instead.
                 log::info!("e2e: open {text} (nothing opened)");
+                crate::openers::record_window_open(p);
             } else if let Err(e) = std::process::Command::new("explorer.exe").arg(p).spawn()
             // sync-ok: spawn returns at once
             {
@@ -427,11 +592,11 @@ fn settings_deps(
                 .join(", ")
         }),
         post,
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::app_facts::version().to_string(),
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),
         e2e: e2e_on,
         clock: Rc::new(epoch_ms),
-        still: Rc::new(|| !flare_win::motion::animations_enabled()),
+        still: Rc::new(|| !crate::e2e::animations_enabled()),
     }
 }
 
@@ -439,6 +604,24 @@ fn epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Hands the probes the renderer the run really got (`Hello` and `app.state` report it).
+fn tell_renderer(effective: RendererChoice, fallback: Option<&str>, scale: f32) {
+    let word = match (effective, fallback) {
+        (_, Some(why)) => format!("software (fallback: {why})"),
+        (RendererChoice::Gpu, None) => "gpu".to_string(),
+        (RendererChoice::Software, None) => "software".to_string(),
+    };
+    crate::e2e_hook::set_hello_info(&word, scale);
+}
+
+/// Under `--e2e`, hands the probes the grid host's cell size after each frame.
+fn note_cell_for_e2e(host: &GridHost) {
+    if crate::e2e::global().on() {
+        let m = host.metrics();
+        crate::e2e_hook::set_cell(m.cell_w, m.cell_h);
+    }
 }
 
 /// Runs the window until it closes. `start` is main's start time, for the first-frame log.
@@ -451,6 +634,7 @@ pub fn run_window(
 ) -> Result<(), slint::PlatformError> {
     let sample = args.sample;
     let app = AppWindow::new()?;
+    crate::startup_trace::mark(crate::startup_trace::Phase::Component);
     let painter = match outcome.effective {
         RendererChoice::Gpu => GridPainter::Gpu,
         RendererChoice::Software => GridPainter::Cpu,
@@ -470,8 +654,11 @@ pub fn run_window(
         move || {
             let Some(app) = weak.upgrade() else { return };
             let host = host.borrow();
-            let memory =
+            let mut memory =
                 process_memory().map_or_else(|| "unavailable".to_string(), |m| m.summary());
+            if let Some(b) = crate::memory::breakdown() {
+                memory = format!("{memory}\nparts: {}", b.line());
+            }
             let text = overlay_text(
                 effective,
                 note.borrow().as_deref(),
@@ -501,13 +688,19 @@ pub fn run_window(
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
         move || {
+            crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
             let Some(app) = weak.upgrade() else { return };
             let image = host.borrow_mut().render();
             if let Some(image) = image {
-                app.set_grid_image(image);
+                FrameTrace::global().time(TracePhase::SetImage, || app.set_grid_image(image));
+                note_cell_for_e2e(&host.borrow());
+                crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
+                FrameTrace::global().end_frame();
                 place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
+                crate::scrollbar::place(&app, &front);
                 // No notifier means no AfterRendering: log the first frame from here.
                 if no_notifier.get() && first_software_frame.borrow_mut().fire() {
+                    crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
                     log::info!("first frame after {} ms", start.elapsed().as_millis());
                 }
             }
@@ -522,6 +715,9 @@ pub fn run_window(
         let caret = caret.clone();
         let ime_dims = ime_dims.clone();
         let mut first_frame = true;
+        // The frame trace (FLARE_TRACE_FRAME=1): when the render began and when the last one ended.
+        let mut render_began: Option<std::time::Instant> = None;
+        let mut last_ended: Option<std::time::Instant> = None;
         app.window()
             .set_rendering_notifier(move |state, api| match state {
                 RenderingState::RenderingSetup => {
@@ -533,21 +729,51 @@ pub fn run_window(
                         *note.borrow_mut() = Some("Slint renderer has no wgpu device".to_string());
                         log::warn!("renderer: grid on the CPU (Slint renderer has no wgpu device)");
                     }
+                    crate::startup_trace::mark(crate::startup_trace::Phase::RenderSetup);
+                    if let Some(app) = weak.upgrade() {
+                        tell_renderer(
+                            effective,
+                            note.borrow().as_deref(),
+                            app.window().scale_factor(),
+                        );
+                    }
                 }
                 RenderingState::BeforeRendering => {
+                    crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
+                    let trace = FrameTrace::global();
+                    if trace.on() {
+                        let now = std::time::Instant::now();
+                        render_began = Some(now);
+                        if let Some(ended) = last_ended {
+                            trace.add(TracePhase::Gap, now.duration_since(ended));
+                        }
+                    }
                     let Some(app) = weak.upgrade() else { return };
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
-                            app.set_grid_image(image);
+                            trace.time(TracePhase::SetImage, || app.set_grid_image(image));
+                            note_cell_for_e2e(&host.borrow());
                             place_ime(&app, &front, &caret, &host.borrow(), &ime_dims);
+                            crate::scrollbar::place(&app, &front);
                             app.window().request_redraw();
                         }
                     }
                 }
                 RenderingState::AfterRendering => {
+                    crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::After);
+                    let trace = FrameTrace::global();
+                    if trace.on() {
+                        let now = std::time::Instant::now();
+                        if let Some(began) = render_began.take() {
+                            trace.add(TracePhase::Render, now.duration_since(began));
+                        }
+                        last_ended = Some(now);
+                        trace.end_frame();
+                    }
                     if first_frame {
                         first_frame = false;
+                        crate::startup_trace::mark(crate::startup_trace::Phase::FirstFrame);
                         log::info!("first frame after {} ms", start.elapsed().as_millis());
                     }
                 }
@@ -569,11 +795,13 @@ pub fn run_window(
         initial_window(&WindowStateStore::read(file, &areas), &areas)
     });
     if let Some(init) = &initial {
-        apply_initial(&app, init);
+        apply_initial(&app, init, args.e2e);
     }
 
     // ---- the controller -----------------------------------------------------------------------
     let mut ctl: Option<CtlRc> = None;
+    // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
+    let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
     // A font setting changed: the grid takes the new face and size (Task 27).
     let mut _font_sub = None;
@@ -637,6 +865,7 @@ pub fn run_window(
         // The clipboard and the openers are the real ones; under --e2e in-memory stand-ins that never
         // touch the desktop, and a url click is only recorded.
         let backends = Backends::new(e2e_on);
+        backends_clip = Some(Arc::clone(&backends.clip_port));
         // Filled right after the controller exists: the grid source paints the controller's decoration.
         let inputs_cell: Rc<RefCell<Option<Rc<RefCell<crate::term_ui::DecorInputs>>>>> =
             Rc::default();
@@ -645,15 +874,17 @@ pub fn run_window(
             tabs_store: Arc::clone(&tabs_store),
             window_store: Arc::clone(&window_store),
             host: tab_host,
-            // Under --e2e nothing resumes the owner's real conversations.
-            lookup: if e2e_on {
-                Arc::new(NoSessions)
-            } else {
-                crate::startup::production_lookup()
-            },
+            // Under --e2e nothing resumes the owner's real conversations, unless a scenario hands
+            // over a sandboxed HOME with FLARE_E2E_SESSIONS=1.
+            lookup: crate::startup::session_lookup(
+                e2e_on,
+                e2e::global()
+                    .env(&["FLARE_E2E", "_SESSIONS"].concat())
+                    .as_deref(),
+            ),
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
-            home: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string()),
+            home: crate::app_facts::home().to_string(),
             clock: Rc::new(epoch_ms),
             post: Arc::clone(&post),
             pick_folder: {
@@ -663,7 +894,9 @@ pub fn run_window(
                         .upgrade()
                         .and_then(|a| hwnd_of(&a))
                         .map(|hwnd| ParentWindow { hwnd });
-                    let seam = e2e::global().env(&["FLARE_E2E", "_PICK"].concat());
+                    // Under --e2e an unset seam is a cancel: no real dialog shows.
+                    let seam =
+                        e2e::global().dialog_seam(&["FLARE_E2E", "_PICK"].concat(), "", |_| true);
                     pick_folder(
                         PickOptions {
                             parent,
@@ -770,12 +1003,15 @@ pub fn run_window(
         );
         let switch = ship.real_verb_switch(&inst.profile.dir);
         verb_switch = Some(Arc::clone(&switch));
+        if args.e2e {
+            crate::e2e_probes::chrome::note_verb_switch(Arc::clone(&switch), ship.root.clone());
+        }
         {
             let choice =
                 crate::ship_ctl::choose_feed(&ship, &|suffix| crate::ship_ctl::e2e_var(suffix));
             let engine = crate::ship_ctl::build_engine(
                 &choice,
-                env!("CARGO_PKG_VERSION"),
+                crate::app_facts::version(),
                 args.user_data_dir.clone(),
                 Arc::new(crate::update_ctl::PostEvents {
                     post: Arc::clone(&post),
@@ -786,7 +1022,7 @@ pub fn run_window(
                 &rc,
                 crate::appctl::UpdateParts {
                     engine: Arc::clone(&engine),
-                    current_version: env!("CARGO_PKG_VERSION").to_string(),
+                    current_version: crate::app_facts::version().to_string(),
                     e2e_dir: args.e2e.then(|| inst.profile.dir.clone()),
                     spawn: crate::update_ctl::std_spawn(),
                 },
@@ -858,6 +1094,28 @@ pub fn run_window(
             }
         }));
         stores = Some((tabs_store, window_store, prefs));
+        crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
+        // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
+        // tab's scrollback.
+        {
+            let host = host.clone();
+            let weak = Rc::downgrade(&rc);
+            crate::memory::set_breakdown_source(Rc::new(move || {
+                let mut b = crate::memory::Breakdown::default();
+                if let Ok(h) = host.try_borrow() {
+                    h.fill_breakdown(&mut b);
+                }
+                if let Some(c) = weak.upgrade()
+                    && let Ok(c) = c.try_borrow()
+                {
+                    b.scrollback = c.scrollbacks();
+                }
+                b.help_index = flare_help::search::index_bytes();
+                b.settings_catalogue = flare_settings::rows::all_rows().count()
+                    * size_of::<flare_settings::rows::RowDef>();
+                b
+            }));
+        }
         ctl = Some(rc);
     }
 
@@ -935,7 +1193,7 @@ pub fn run_window(
         })
     });
     let material: Rc<RefCell<Option<WindowMaterial>>> = Rc::new(RefCell::new(None));
-    if let Some(rc) = &ctl {
+    let key_path: Option<Rc<KeyPath>> = ctl.as_ref().map(|rc| {
         install_window_filter(
             &app,
             FilterState {
@@ -945,9 +1203,10 @@ pub fn run_window(
                 initial: initial.clone(),
                 material: material.clone(),
                 caret: caret.clone(),
+                e2e: args.e2e,
             },
-        );
-    }
+        )
+    });
     app.on_toggle_grid_renderer({
         let host = host.clone();
         let render_now = render_now.clone();
@@ -976,15 +1235,30 @@ pub fn run_window(
     // Without a notifier nothing re-renders a dirty grid, so poll for it (M2's live output).
     let frame_timer = slint::Timer::default();
     if no_notifier.get() {
-        frame_timer.start(slint::TimerMode::Repeated, Duration::from_millis(16), {
+        // When the grid was last painted, by the timer or by a wake-up.
+        let last_paint = Rc::new(Cell::new(std::time::Instant::now()));
+        frame_timer.start(slint::TimerMode::Repeated, FRAME_POLL, {
             let host = host.clone();
             let render_now = render_now.clone();
+            let last_paint = last_paint.clone();
             move || {
                 if repaint_due(host.borrow().is_dirty()) {
+                    last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
                 }
             }
         });
+        let hook: Rc<dyn Fn()> = {
+            let host = host.clone();
+            let render_now = render_now.clone();
+            Rc::new(move || {
+                if paint_on_wake(last_paint.get().elapsed(), host.borrow().is_dirty()) {
+                    last_paint.set(std::time::Instant::now());
+                    crate::diag_ctl::timed("frame_render", &render_now);
+                }
+            })
+        };
+        SOFTWARE_PAINT.with(|h| *h.borrow_mut() = Some(hook));
     }
 
     // The look (Task 26): the first frame wears the saved theme, opaque (no flash of the default), because
@@ -1001,8 +1275,10 @@ pub fn run_window(
             &outcome,
             args.look.clone(),
         );
-        if args.e2e || sample {
-            // Headless-style runs apply once, with their overrides, and never listen.
+        if sample {
+            // Headless-style runs apply once, with their overrides, and never listen. An `--e2e` run
+            // listens like the real app: PT's e2e drives Settings and reads the live chrome, and a
+            // picked accent or background must reach the window (FLARE-DEFECT, Task 34).
             let rc = ctl.install_quiet();
             rc.borrow_mut().apply_now();
             rc
@@ -1012,32 +1288,61 @@ pub fn run_window(
             rc
         }
     };
+    // An `--e2e` window is placed on the parking spot BEFORE it first shows, so it is never on a
+    // monitor, not even for the few ticks until its handle exists and the timer styles it.
+    if let Some((x, y)) = e2e_first_position(args.e2e) {
+        app.window()
+            .set_position(slint::PhysicalPosition::new(x, y));
+    }
     app.show()?;
     // The watchdog: the UI thread beats every 50 ms, and the hung-window poll looks at this window.
     let beat_timer = crate::diag_ctl::beat_timer();
     if let Some(hwnd) = hwnd_of(&app) {
         crate::diag_ctl::set_window(hwnd);
     }
+    // A bell flashes the taskbar button while the window is not in front (no sound). Under --e2e the
+    // window is parked and has no button, so the flash is only counted.
+    if let Some(rc) = &ctl {
+        let weak = app.as_weak();
+        let e2e = args.e2e;
+        rc.borrow_mut().set_flash(Rc::new(move || {
+            let Some(hwnd) = weak.upgrade().and_then(|a| hwnd_of(&a)) else {
+                return;
+            };
+            if e2e {
+                if !flare_win::taskbar_flash::is_foreground(hwnd) {
+                    crate::e2e_probes::core::record_flash();
+                }
+            } else {
+                flare_win::taskbar_flash::flash_unless_foreground(hwnd);
+            }
+        }));
+    }
+    // The handle does not exist before the event loop runs: style and park when it appears.
+    let park_timer = args.e2e.then(|| park_e2e_window_when_ready(&app));
     if args.e2e {
-        apply_e2e_style(&app);
+        tell_renderer(
+            effective,
+            note.borrow().as_deref(),
+            app.window().scale_factor(),
+        );
+        if let (Some(rc), Some(kp)) = (&ctl, &key_path) {
+            crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
+        }
     }
     // The exe's own icon on the window (and again on every scale-factor change).
     crate::startup::apply_window_icon(hwnd_of(&app));
-    // Command help's catalogue and first search are built on a worker after the first paint (Task 44).
-    if stores
-        .as_ref()
-        .is_some_and(|(_, _, p)| flare_settings::help_prefs::help_enabled(p))
-    {
-        crate::startup::warm_help_index();
-    }
     // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
-    // exists now). Under --e2e the overlay is never touched.
+    // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
+    // the badge's text can be read.
     if let Some(rc) = &ctl {
         let mut c = rc.borrow_mut();
         c.start_agent_poll();
-        if !args.e2e
-            && let Some(hwnd) = hwnd_of(&app)
-        {
+        if args.e2e {
+            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
+                flare_win::taskbar::RecordShell,
+            )));
+        } else if let Some(hwnd) = hwnd_of(&app) {
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }
@@ -1049,22 +1354,11 @@ pub fn run_window(
     }
     // The window material (Task 25): the DWM backdrop and edge. It needs the handle of the window,
     // so it is made after the show; the look controller (Task 26) drives it from the settings.
-    {
-        let now = Instant::now();
-        if let Some(mut m) = WindowMaterial::new(&app, os_version(), args.e2e) {
-            // No polling: the material arms a one-shot wake only while the border is due.
-            m.set_wake(Box::new(SlintWake::new(Rc::downgrade(&material))), now);
-            m.on_window_state(
-                app.window().is_maximized(),
-                app.window().is_fullscreen(),
-                now,
-            );
-            // A saved see-through level becomes glass only now: the backdrop first, then the ground.
-            if let Ok(mut l) = look.try_borrow_mut() {
-                l.attach_material(m);
-            }
-        }
-    }
+    // The handle can be missing right after the show (the winit backend makes the native window
+    // once the event loop runs, as under `--e2e`): a short timer then attaches the material the
+    // moment the handle exists, or the window would stay solid for the whole run.
+    let material_timer = (!attach_window_material(&app, &material, &look, args.e2e))
+        .then(|| attach_material_when_ready(&app, &material, &look, args.e2e));
     // The first size, before Slint's `changed` callbacks have fired.
     host.borrow_mut().resize(
         app.get_grid_phys_width().max(0) as u32,
@@ -1086,12 +1380,8 @@ pub fn run_window(
         }
     }
     if let Some(switch) = verb_switch.take() {
-        let spawned = std::thread::Builder::new()
-            .name("flare-verb-reconcile".into())
-            .spawn(move || switch.reconcile());
-        if let Err(e) = spawned {
-            log::warn!("could not start the verb reconcile: {e}");
-        }
+        // The Explorer verb is repaired on a worker once the first frame is up (M10 Task 63).
+        crate::startup_trace::after_first_frame("verb_reconcile", move || switch.reconcile());
     }
     let result = app.run();
     if let Some((engine, _)) = &update_engine {
@@ -1122,19 +1412,28 @@ pub fn run_window(
     }
     drop(timer);
     drop(frame_timer);
+    SOFTWARE_PAINT.with(|h| *h.borrow_mut() = None);
     drop(beat_timer);
+    drop(park_timer);
+    drop(material_timer);
     drop(instance); // the lock is released last
     result
 }
 
 /// The size (logical) and position (physical) the window opens with.
-fn apply_initial(app: &AppWindow, init: &InitialWindow) {
+/// The saved position to apply, if any. An `--e2e` run never applies one: its window stays parked
+/// off every monitor (the size is still applied).
+pub fn saved_position(init: &InitialWindow, e2e: bool) -> Option<(i32, i32)> {
+    if e2e { None } else { init.pos }
+}
+
+fn apply_initial(app: &AppWindow, init: &InitialWindow, e2e: bool) {
     let window = app.window();
     window.set_size(slint::LogicalSize::new(
         init.logical_size.0 as f32,
         init.logical_size.1 as f32,
     ));
-    if let Some((x, y)) = init.pos {
+    if let Some((x, y)) = saved_position(init, e2e) {
         window.set_position(slint::PhysicalPosition::new(x, y));
     }
 }
@@ -1175,6 +1474,85 @@ struct FilterState {
     material: Rc<RefCell<Option<WindowMaterial>>>,
     /// The IME caret hold (Task 24b): a typed key opens its window.
     caret: Rc<RefCell<CaretFollower>>,
+    /// `--e2e`: the saved position is never applied.
+    e2e: bool,
+}
+
+/// Everything a key (and a focus change) needs: the winit filter and the e2e glue both go through
+/// it, so a test key takes exactly the path of a real one.
+pub(crate) struct KeyPath {
+    pub ctl: std::rc::Weak<RefCell<AppCtl>>,
+    pub front: FrontCell,
+    /// The IME caret hold (Task 24b): a typed key opens its window.
+    pub caret: Rc<RefCell<CaretFollower>>,
+    /// Codes whose press the app consumed: their release must not reach the shell either.
+    pub consumed: RefCell<HashSet<String>>,
+    pub app: slint::Weak<AppWindow>,
+}
+
+impl KeyPath {
+    fn with_ctl(&self, f: &mut dyn FnMut(&mut AppCtl)) {
+        if let Some(rc) = self.ctl.upgrade()
+            && let Ok(mut c) = rc.try_borrow_mut()
+        {
+            f(&mut c);
+        }
+    }
+}
+
+/// One key event, from winit or from the test hook: the controller first, then the shell.
+/// Returns what the window should do with the event.
+pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
+    if reserved_for_slint(&ev.code) {
+        return EventResult::Propagate;
+    }
+    if ev.pressed {
+        // A typed key opens the IME caret hold (Task 24b).
+        kp.caret.borrow_mut().on_key(epoch_ms() as i64);
+    }
+    let chrome_focus = kp
+        .app
+        .upgrade()
+        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
+    let outcome = if ev.pressed {
+        let mut out = KeyOutcome::Slint;
+        kp.with_ctl(&mut |c| out = c.on_key(ev));
+        if out == KeyOutcome::Consumed {
+            kp.consumed.borrow_mut().insert(ev.code.clone());
+        }
+        out
+    } else {
+        kp.with_ctl(&mut |c| c.on_key_up(ev));
+        if kp.consumed.borrow_mut().remove(&ev.code) {
+            KeyOutcome::Consumed
+        } else if chrome_focus {
+            KeyOutcome::Slint
+        } else {
+            KeyOutcome::Pty
+        }
+    };
+    let (action, to_pty) = key_outcome_to_filter(outcome);
+    if !to_pty {
+        return to_event_result(action);
+    }
+    let Some(handle) = kp.front.borrow().clone() else {
+        // Nothing to type into (Settings, the start screen): swallow the key.
+        return EventResult::PreventDefault;
+    };
+    // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
+    // its own); what is left for the shell is typed here.
+    handle.send_key(ev);
+    EventResult::PreventDefault
+}
+
+/// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
+pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
+    if on {
+        // Coming back to the window is a look at the tab in front.
+        kp.with_ctl(&mut |c| c.on_focus(true));
+    } else {
+        kp.with_ctl(&mut |c| c.on_focus_lost());
+    }
 }
 
 /// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
@@ -1203,6 +1581,20 @@ fn place_ime(
             e.mode().alt_screen,
         )
     });
+    let stops: Vec<(CaretPos, i64)> = handle
+        .take_cursor_stops()
+        .into_iter()
+        .map(|s| {
+            (
+                CaretPos {
+                    line: i64::from(s.line),
+                    x: s.col as i64,
+                },
+                s.at_ms,
+            )
+        })
+        .collect();
+    caret.borrow_mut().on_stops(&stops);
     let held = caret
         .borrow_mut()
         .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
@@ -1217,6 +1609,7 @@ fn place_ime(
         &host.metrics(),
         origin,
     );
+    crate::ime::record_area(area);
     let _ = app.window().with_winit_window(|w| {
         w.set_ime_cursor_area(
             PhysicalPosition::new(area.x, area.y),
@@ -1228,7 +1621,7 @@ fn place_ime(
 /// One winit filter. It only converts: keys go to `AppCtl::on_key`, and the pointer, the files and
 /// the window's own movements are reported to it. Physical keys, IME text and the wheel reach the
 /// FRONT shell; a chord never does (the controller consumes it first).
-fn install_window_filter(app: &AppWindow, st: FilterState) {
+fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
     let FilterState {
         ctl,
         front,
@@ -1236,12 +1629,20 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
         initial,
         material,
         caret,
+        e2e,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
     let accum = RefCell::new(WheelAccum::new());
-    // Codes whose press the app consumed: their release must not reach the shell either.
-    let consumed: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    // The key path (and the codes whose press the app consumed) is shared with the e2e glue.
+    let kp = Rc::new(KeyPath {
+        ctl: ctl.clone(),
+        front: front.clone(),
+        caret,
+        consumed: RefCell::new(HashSet::new()),
+        app: app.as_weak(),
+    });
+    let kp_out = kp.clone();
     let reapply = RefCell::new(Reapply::new(
         initial.filter(|i| !i.maximise),
         Instant::now(),
@@ -1369,13 +1770,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 with_ctl(&mut |c| c.on_dropped_path(path.clone(), (at.0 as f32, at.1 as f32)));
                 EventResult::Propagate
             }
-            WindowEvent::Focused(false) => {
-                with_ctl(&mut |c| c.on_focus_lost());
-                EventResult::Propagate
-            }
-            WindowEvent::Focused(true) => {
-                // Coming back to the window is a look at the tab in front.
-                with_ctl(&mut |c| c.on_focus(true));
+            WindowEvent::Focused(on) => {
+                handle_focus(&kp, *on);
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -1400,7 +1796,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                         init.logical_size.0 as f32,
                         init.logical_size.1 as f32,
                     ));
-                    if let Some((x, y)) = init.pos {
+                    if let Some((x, y)) = saved_position(&init, e2e) {
                         window.set_position(slint::PhysicalPosition::new(x, y));
                     }
                 }
@@ -1429,45 +1825,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                     event.text.as_deref(),
                     mods.get(),
                 );
-                if reserved_for_slint(&ev.code) {
-                    return EventResult::Propagate;
-                }
-                if ev.pressed {
-                    // A typed key opens the IME caret hold (Task 24b).
-                    caret.borrow_mut().on_key(epoch_ms() as i64);
-                }
-                let chrome_focus = weak
-                    .upgrade()
-                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused());
-                let outcome = if ev.pressed {
-                    let mut out = KeyOutcome::Slint;
-                    with_ctl(&mut |c| out = c.on_key(&ev));
-                    if out == KeyOutcome::Consumed {
-                        consumed.borrow_mut().insert(ev.code.clone());
-                    }
-                    out
-                } else {
-                    with_ctl(&mut |c| c.on_key_up(&ev));
-                    if consumed.borrow_mut().remove(&ev.code) {
-                        KeyOutcome::Consumed
-                    } else if chrome_focus {
-                        KeyOutcome::Slint
-                    } else {
-                        KeyOutcome::Pty
-                    }
-                };
-                let (action, to_pty) = key_outcome_to_filter(outcome);
-                if !to_pty {
-                    return to_event_result(action);
-                }
-                let Some(handle) = front.borrow().clone() else {
-                    // Nothing to type into (Settings, the start screen): swallow the key.
-                    return EventResult::PreventDefault;
-                };
-                // AppCtl decided (copy, paste, delete over a selection and the agent's newline are
-                // its own); what is left for the shell is typed here.
-                handle.send_key(&ev);
-                EventResult::PreventDefault
+                handle_key(&kp, &ev)
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
                 if weak
@@ -1521,18 +1879,46 @@ fn install_window_filter(app: &AppWindow, st: FilterState) {
                 }
                 if notches != 0 {
                     let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
-                    handle.wheel(notches, col, row);
+                    if handle.wheel(notches, col, row) {
+                        app.window().request_redraw();
+                    }
                 }
                 EventResult::PreventDefault
             }
             _ => EventResult::Propagate,
         }
     });
+    kp_out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_e2e_window_is_parked_when_its_handle_appears_not_before() {
+        // No handle yet (the first looks after show()): wait, until the budget is spent.
+        assert_eq!(poll_handle(0, 3, None), HandlePoll::Wait);
+        assert_eq!(poll_handle(1, 3, None), HandlePoll::Wait);
+        assert_eq!(poll_handle(2, 3, None), HandlePoll::GiveUp);
+        // The handle shows up on any look: that look parks it.
+        assert_eq!(poll_handle(0, 3, Some(77)), HandlePoll::Found(77));
+        assert_eq!(poll_handle(2, 3, Some(77)), HandlePoll::Found(77));
+        // The wait is long enough for a slow start and short enough to give up.
+        assert!(E2E_HANDLE_POLL_MS * u64::from(E2E_HANDLE_POLLS) >= 5_000);
+    }
+
+    #[test]
+    fn the_e2e_window_is_placed_off_screen_before_its_first_show() {
+        assert_eq!(e2e_first_position(true), Some((-32000, -32000)));
+        assert_eq!(e2e_first_position(false), None);
+        let src = include_str!("window.rs").replace("\r\n", "\n");
+        let set = src.find("e2e_first_position(args.e2e)").expect("used");
+        let show = src
+            .find("    app.show()?;\n    // The watchdog")
+            .expect("show");
+        assert!(set < show, "the position is set before show()");
+    }
 
     fn h(cwd: &str) -> Handoff {
         Handoff {
@@ -1559,6 +1945,63 @@ mod tests {
         sink.attach(post);
         sink.deliver(h("C:\\three"));
         assert_eq!(*got.lock().unwrap(), ["C:\\one", "C:\\two", "C:\\three"]);
+    }
+
+    #[test]
+    fn an_e2e_run_never_applies_a_saved_position() {
+        let init = InitialWindow {
+            pos: Some((120, 80)),
+            logical_size: (900, 600),
+            maximise: false,
+        };
+        assert_eq!(saved_position(&init, false), Some((120, 80)));
+        assert_eq!(saved_position(&init, true), None);
+    }
+
+    /// A wheel scroll makes no output, so nothing else wakes the GPU path: the arm (and the e2e
+    /// mirror of it) asks for the redraw itself when the view moved (M10 Task 70, B5 counted no
+    /// GPU frame at all before this).
+    #[test]
+    fn a_wheel_that_moves_the_view_asks_for_a_redraw() {
+        let src = include_str!("window.rs").replace("\r\n", "\n");
+        let from = src
+            .find("WindowEvent::MouseWheel {")
+            .expect("the filter has a wheel arm");
+        let arm = &src[from..];
+        let arm = &arm[..arm
+            .find("_ => EventResult::Propagate")
+            .expect("the arm ends")];
+        let call = arm
+            .find("if handle.wheel(notches, col, row) {")
+            .expect("the wheel's answer is used");
+        assert!(
+            arm[call..].contains("app.window().request_redraw();"),
+            "the wheel arm asks for a redraw"
+        );
+        let glue = include_str!("e2e_glue.rs").replace("\r\n", "\n");
+        let from = glue.find("fn term_wheel(").expect("the e2e wheel");
+        let body = &glue[from..from + glue[from..].find("\n    }\n").expect("end")];
+        assert!(
+            body.contains("&& handle.wheel(") && body.contains("request_redraw()"),
+            "the e2e wheel asks for a redraw as the real one does"
+        );
+    }
+
+    #[test]
+    fn the_winit_filter_calls_handle_key_and_nothing_else() {
+        let src = include_str!("window.rs");
+        let from = src
+            .find("WindowEvent::KeyboardInput {")
+            .expect("the filter has a keyboard arm");
+        let rest = &src[from..];
+        let to = rest.find("WindowEvent::Ime(").expect("the Ime arm follows");
+        let arm = &rest[..to];
+        for needed in ["user_acted", "key_event_from_parts", "handle_key"] {
+            assert!(arm.contains(needed), "the arm lacks {needed}");
+        }
+        for banned in [".on_key(", ".on_key_up(", ".send_key(", "consumed"] {
+            assert!(!arm.contains(banned), "the arm still has {banned}");
+        }
     }
 
     #[test]
@@ -1604,6 +2047,61 @@ mod tests {
     fn repaint_follows_dirty() {
         assert!(repaint_due(true));
         assert!(!repaint_due(false));
+    }
+
+    #[test]
+    fn software_output_after_a_quiet_frame_is_painted_at_once() {
+        assert!(paint_on_wake(Duration::from_millis(16), true));
+        assert!(paint_on_wake(Duration::from_secs(5), true));
+        assert!(!paint_on_wake(Duration::from_millis(15), true));
+        assert!(!paint_on_wake(Duration::ZERO, true));
+        assert!(!paint_on_wake(Duration::from_secs(5), false), "clean grid");
+    }
+
+    /// The moment (ms) output that arrives at `wake_at` is painted on the software path: at once when
+    /// the last paint is a frame old, else at the poll timer's next tick (ticks at every multiple of
+    /// 16 ms; a tick paints only a dirty grid, and `last_paint` is when the grid was last painted).
+    fn painted_at(wake_at: u64, last_paint: u64) -> u64 {
+        let frame = FRAME_POLL.as_millis() as u64;
+        if paint_on_wake(Duration::from_millis(wake_at - last_paint), true) {
+            wake_at
+        } else {
+            wake_at.div_ceil(frame) * frame
+        }
+    }
+
+    #[test]
+    fn software_output_is_painted_by_the_next_timer_tick() {
+        // However the wake-up falls against the timer, output waits at most one frame: never the wake
+        // and then a second 16 ms wait for the timer (the old path waited for the tick alone, and a
+        // wake that landed just after a tick waited almost 16 ms for nothing else to happen).
+        for last in [0u64, 7, 16, 100] {
+            for wake in last..last + 200 {
+                let wait = painted_at(wake, last) - wake;
+                assert!(
+                    wait < 16,
+                    "wake at {wake}, last paint {last}: waited {wait} ms"
+                );
+            }
+        }
+        // A wake a frame after the last paint is painted in the same tick of the event loop.
+        assert_eq!(painted_at(116, 100), 116);
+        // One inside the frame waits for the tick, which is the soonest the pacing allows.
+        assert_eq!(painted_at(105, 100), 112);
+    }
+
+    #[test]
+    fn output_wakes_a_redraw_and_coalesces() {
+        let gate = WakeGate::default();
+        assert!(gate.try_queue(), "the first wake-up is queued");
+        for _ in 0..1000 {
+            assert!(!gate.try_queue(), "a wake-up is already on its way");
+        }
+        gate.delivered();
+        assert!(
+            gate.try_queue(),
+            "after delivery the next output queues a new one"
+        );
     }
 
     #[test]

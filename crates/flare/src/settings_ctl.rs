@@ -462,7 +462,7 @@ impl SettingsCtl {
             stale: true,
             ask_open: false,
             select_row: String::new(),
-            home: std::env::var("USERPROFILE").unwrap_or_default(),
+            home: crate::app_facts::home().to_string(),
             dirty,
             _subs: subs,
             flash_timer: slint::Timer::default(),
@@ -535,7 +535,8 @@ impl SettingsCtl {
         on!(app, rc, on_hit_chosen, |c, i: i32| c
             .choose(usize::try_from(i).unwrap_or(usize::MAX)));
         on!(app, rc, on_hit_key, |c, k: SharedString| c.hit_key(&k));
-        on!(app, rc, on_rail_key, |c, k: SharedString| c.rail_key(&k));
+        on!(app, rc, on_rail_key, |c, k: SharedString, i: i32| c
+            .rail_key(&k, i));
         on!(app, rc, on_row_switch, |c, id: SharedString, on: bool| c
             .event(Event::Switch {
                 row: id.to_string(),
@@ -1341,12 +1342,14 @@ impl SettingsCtl {
             label,
             value,
             stored,
+            // The theme's Background is a colour only (owner, 2026-10-13: the See-through slider is the
+            // only way to make the window see-through), so its popover has no Alpha bar.
             range: flare_theme::colour_contrast::AlphaRange {
-                alpha: true,
+                alpha: key != "bg",
                 alpha_min: 0.0,
                 alpha_max,
             },
-            alpha_disabled: false,
+            alpha_disabled: key == "bg",
         })
     }
 
@@ -1369,7 +1372,11 @@ impl SettingsCtl {
             window,
             scale,
             lookup: &lookup,
-            seam: crate::e2e::global().env(&["FLARE_E2E", "_PICK_COLOUR"].concat()),
+            seam: crate::e2e::global().dialog_seam(
+                &["FLARE_E2E", "_PICK_COLOUR"].concat(),
+                "cancel",
+                |v| flare_win::eyedrop::pick_seam(Some(v)).is_some(),
+            ),
             post: &self.deps.post,
         };
         let r = f(&mut self.picker, &ctx);
@@ -1415,6 +1422,13 @@ impl SettingsCtl {
             w: anchor[2],
             h: anchor[3],
         };
+        // A swatch that moved under its open popover reports the same way, marked so it is not a press.
+        if let Some(app) = self.weak.upgrade()
+            && app.global::<crate::PickerOpening>().get_reanchor()
+        {
+            self.picker_do(|p, ctx| p.reanchor(id, in_editor, rect, ctx));
+            return;
+        }
         self.close_select();
         self.picker_do(|p, ctx| p.open(id, in_editor, rect, ctx));
     }
@@ -1617,9 +1631,11 @@ impl SettingsCtl {
         }
     }
 
-    fn rail_key(&mut self, word: &str) {
+    /// An arrow on the rail: the walk goes from the item that has the keys (t), which is not
+    /// always the chosen page: Down Down from the first item reaches the third before Enter chooses.
+    fn rail_key(&mut self, word: &str, at: i32) {
         let Some(key) = key_of(word) else { return };
-        let cur = PAGES.iter().position(|p| p.id == self.page).unwrap_or(0);
+        let cur = usize::try_from(at).unwrap_or(0);
         if let Some(next) = rail_key(cur, PAGES.len(), key)
             && let Some(app) = self.weak.upgrade()
         {

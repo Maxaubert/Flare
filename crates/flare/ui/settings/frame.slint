@@ -114,7 +114,8 @@ export component SetFrame inherits Rectangle {
     callback find-key(string, bool);
     callback hit-chosen(int);
     callback hit-key(string);
-    callback rail-key(string);
+    // The rail's arrows: the key and the index of the item that has the keys (the walk goes from there).
+    callback rail-key(string, int);
     callback frame-resized(length, length);
     callback escape-unhandled();
     callback tip(string, length, length, length, length);
@@ -150,7 +151,9 @@ export component SetFrame inherits Rectangle {
     changed scroll-y => { fl.content-y = -root.scroll-y; }
     init => { fl.content-y = -root.scroll-y; }
 
-    background: Theme.ground;
+    // No ground of its own: the page behind it already paints the ground, and a second coat over a
+    // see-through window shows twice as dense (0.91 where one coat at 0.7 is meant). The test
+    // windows (FramePreview, SettingsPreview) carry their own ground.
 
     // The rail.
     Rectangle {
@@ -191,7 +194,7 @@ export component SetFrame inherits Rectangle {
             narrow: root.narrow;
             on: item.chosen && !root.searching;
             chosen => { root.page-chosen(item.id); }
-            key(k) => { root.rail-key(k); }
+            key(k) => { root.rail-key(k, i); }
             tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
         }
     }
@@ -377,6 +380,12 @@ export component SetFrame inherits Rectangle {
                     root.escape-unhandled();
                     return reject;
                 }
+                // Tab leaves the field for the rail's first page, as the page reads in order (the focus
+                // order of the whole window would put the next stop elsewhere).
+                if (e.text == Key.Tab && !e.modifiers.shift && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta) {
+                    root.focus-rail-index = 0;
+                    return accept;
+                }
                 if (e.text == Key.DownArrow && root.hits.length > 0) {
                     root.find-key("Down", e.modifiers.shift);
                     return accept;
@@ -525,7 +534,7 @@ export component FramePreview inherits Window {
         find-key(k, shift) => { root.last-key = "find:" + k; root.key-count += 1; }
         hit-chosen(i) => { root.hit-picked = i; }
         hit-key(k) => { root.last-key = "hit:" + k; root.key-count += 1; }
-        rail-key(k) => { root.last-key = "rail:" + k; root.key-count += 1; }
+        rail-key(k, i) => { root.last-key = "rail:" + k; root.key-count += 1; }
         frame-resized(w, h) => { root.resized += 1; }
         escape-unhandled => { root.escape-unhandled-count += 1; }
         tip(t, a, b, c, d) => { root.tip-text = t; }

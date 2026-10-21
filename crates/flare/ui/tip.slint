@@ -1,6 +1,6 @@
 // The tooltip overlay (Task 23). PT core/renderer/components/Tooltips.tsx: a bubble, max width 320,
 // padding 4 8, radius 6, a hairline border, 12 px ink, a 120 ms entrance leaning 2 px from its side.
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 
 export component Tip inherits Rectangle {
     in property <string> text;
@@ -30,9 +30,9 @@ export component Tip inherits Rectangle {
         drop-shadow-offset-y: 6px;
         drop-shadow-blur: 18px;
         drop-shadow-color: #0000008c;
-        animate x { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-        animate y { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-        animate opacity { duration: 120ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate x { duration: Motion.d(120ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate y { duration: Motion.d(120ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+        animate opacity { duration: Motion.d(120ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
 
         measure := Text {
             x: 8px;

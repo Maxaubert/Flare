@@ -12,6 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -44,7 +45,8 @@ use flare_win::dblclick::DoubleClick;
 
 use crate::badge::{BadgeClock, BadgePhase};
 use crate::clip_flow::{
-    AppCopyAdapter, PasteAction, PasteMode, PasteReq, copy_async, paste_action, read_async,
+    AppCopyAdapter, PasteAction, PasteMode, PasteReq, copy_async, is_small_copy, paste_action,
+    read_async,
 };
 use crate::drop_flow::{DROP_QUIET_MS, DropBatcher, type_dropped};
 use crate::term_menu::{TermMenuAct, TermMenuAt, TermMenuRow, term_menu_rows};
@@ -140,6 +142,32 @@ pub struct TickOut {
     pub focus_terminal: bool,
 }
 
+thread_local! {
+    /// The link colour the worn theme chose (`AppliedLook::link_colour`), set by the look apply.
+    static WORN_LINK: Cell<Option<flare_render::color::Rgba>> = const { Cell::new(None) };
+}
+
+/// Records the theme's link colour for the decoration (a hex the theme computed; junk is ignored).
+pub fn set_worn_link(hex: &str) {
+    if let Some(c) = flare_render::color::Rgba::from_hex(hex) {
+        WORN_LINK.with(|w| w.set(Some(c)));
+    }
+}
+
+/// The default ink with the worn theme's link colour, or `None` before any theme was worn.
+fn worn_ink() -> Option<DecorInk> {
+    WORN_LINK.with(Cell::get).map(|link| DecorInk {
+        link: flare_render::color::Rgba::rgb(link.r, link.g, link.b),
+        ..DecorInk::pt_default()
+    })
+}
+
+/// The ink the decoration paints with: the controller's explicit ink, else the worn theme's. The
+/// e2e probes read this too, so they report the colour the links really wear.
+pub fn effective_ink(ink: Option<DecorInk>) -> Option<DecorInk> {
+    ink.or_else(worn_ink)
+}
+
 /// What the frame decoration needs from the controller (shared with `LiveSource::decor`).
 pub struct DecorInputs {
     pub hover: Option<(usize, usize)>,
@@ -176,7 +204,7 @@ impl DecorInputs {
             ink_key: self.ink_key,
             hover: self.hover,
             find_open: self.find_open,
-            ink: self.ink,
+            ink: effective_ink(self.ink),
         };
         handle.decor(&mut req)
     }
@@ -238,6 +266,10 @@ pub struct TermUi {
     ask_pending: bool,
     recheck: bool,
     stale: HashSet<String>,
+    /// Counts the big copies started; a finished read whose number is no longer the last is dropped.
+    copy_gen: Arc<AtomicU64>,
+    /// True from a big copy's start until the UI has its answer: Ctrl+C in between is still a copy.
+    copy_pending: Arc<AtomicBool>,
 }
 
 fn mods(e: &PointerIn) -> MouseMods {
@@ -303,6 +335,8 @@ impl TermUi {
             ask_pending: false,
             recheck: false,
             stale: HashSet::new(),
+            copy_gen: Arc::new(AtomicU64::new(0)),
+            copy_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -382,6 +416,37 @@ impl TermUi {
         );
     }
 
+    /// Ctrl+C with a selection. A small one is read and cleared here, as before. A big one is read
+    /// on a worker in chunks and written there; its selection stands until the copy is read, and
+    /// `copy_pending` keeps Ctrl+C a copy (not the interrupt) until the UI has the answer. A newer
+    /// copy drops the older one's answer.
+    fn copy_selection(&self, tab: &TabInfo) {
+        let rows = tab.handle.with_emu_quiet(|em| em.sel_row_count());
+        if is_small_copy(rows) {
+            let text = tab.handle.with_emu_quiet(|em| em.sel_text());
+            tab.handle.with_emu(|em| em.sel_clear());
+            self.copy(text, COPY_MAX);
+            return;
+        }
+        let mine = self.copy_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.copy_pending.store(true, Ordering::SeqCst);
+        let latest = Arc::clone(&self.copy_gen);
+        let post = Arc::clone(&self.deps.post);
+        let clip = Arc::clone(&self.deps.clipboard);
+        let handle = Arc::clone(tab.handle);
+        tab.handle.selection_text_async(Box::new(move |text| {
+            if latest.load(Ordering::SeqCst) != mine {
+                return;
+            }
+            let Some(text) = text else {
+                // The selection changed while it was read: nothing is copied and no badge shows.
+                post(TermMsg::Copied(false));
+                return;
+            };
+            handle.with_emu(|em| em.sel_clear());
+            copy_async(clip, text, COPY_MAX, move |ok| post(TermMsg::Copied(ok)));
+        }));
+    }
     fn read_clipboard(&self, tab: &str, mode: PasteMode) {
         let post = Arc::clone(&self.deps.post);
         read_async(
@@ -754,9 +819,7 @@ impl TermUi {
     pub fn on_key(&mut self, tab: &TabInfo, ev: &KeyEvent, action: TermKeyAction) -> KeyDone {
         match action {
             TermKeyAction::Copy => {
-                let text = tab.handle.with_emu_quiet(|em| em.sel_text());
-                tab.handle.with_emu(|em| em.sel_clear());
-                self.copy(text, COPY_MAX);
+                self.copy_selection(tab);
                 KeyDone::Handled
             }
             TermKeyAction::Deleted => KeyDone::Handled,
@@ -808,7 +871,8 @@ impl TermUi {
     }
 
     pub fn has_selection(&self, tab: &TabInfo) -> bool {
-        tab.handle.with_emu_quiet(|em| em.has_selection())
+        self.copy_pending.load(Ordering::SeqCst)
+            || tab.handle.with_emu_quiet(|em| em.has_selection())
     }
 
     // ---- find ----
@@ -828,26 +892,19 @@ impl TermUi {
         self.redraw();
     }
 
-    fn apply_scroll(handle: &TermHandle, res: Option<(find::FindMatch, Option<i32>)>) {
-        if let Some((_, Some(s))) = res {
-            handle.scroll_view(-s);
-        }
-    }
-
+    /// Typing starts a search from the active match; the tick walks it a slice at a time and the
+    /// match lands when it is found (the bar keeps its text until then).
     pub fn find_edited(&mut self, tab: &TabInfo, q: &str) {
         if !self.find.open || self.find.tab.as_deref() != Some(tab.id) {
             return;
         }
         self.find.query = q.to_string();
-        let res = tab.handle.with_emu(|em| {
+        tab.handle.with_emu(|em| {
             em.find_set(q);
-            if q.is_empty() {
-                None
-            } else {
-                em.find_next(q, true)
+            if !q.is_empty() {
+                em.find_start(q, find::Dir::Next, true);
             }
         });
-        Self::apply_scroll(tab.handle, res);
     }
 
     pub fn find_next(&mut self, tab: &TabInfo) {
@@ -855,8 +912,8 @@ impl TermUi {
             return;
         }
         let q = self.find.query.clone();
-        let res = tab.handle.with_emu(|em| em.find_next(&q, false));
-        Self::apply_scroll(tab.handle, res);
+        tab.handle
+            .with_emu(|em| em.find_start(&q, find::Dir::Next, false));
     }
 
     pub fn find_prev(&mut self, tab: &TabInfo) {
@@ -864,8 +921,8 @@ impl TermUi {
             return;
         }
         let q = self.find.query.clone();
-        let res = tab.handle.with_emu(|em| em.find_prev(&q));
-        Self::apply_scroll(tab.handle, res);
+        tab.handle
+            .with_emu(|em| em.find_start(&q, find::Dir::Prev, false));
     }
 
     /// Closing clears the highlights and keeps the selection.
@@ -889,10 +946,12 @@ impl TermUi {
             .handle
             .as_ref()
             .map(|h| h.with_emu_quiet(|em| em.find_view()));
+        let searching = view.as_ref().is_some_and(|v| v.searching);
         let (count, index, done) = view.map_or((0, None, true), |v| (v.count, v.index, v.done));
-        // While a new query is still being counted and nothing is found yet, the readout stays
-        // empty rather than saying "none" (Prism Terminal's search answers in one pass).
-        let counting = count == 0 && !done;
+        // While a new query is still being counted or searched and nothing is found yet, the
+        // readout stays empty rather than saying "none" (Prism Terminal's search answers in one
+        // pass). A search that lands moves the active match, and only then does the readout change.
+        let counting = count == 0 && (!done || searching);
         FindBarState {
             open: self.find.open,
             query: self.find.query.clone(),
@@ -937,6 +996,7 @@ impl TermUi {
                 }
             }
             TermMsg::Copied(ok) => {
+                self.copy_pending.store(false, Ordering::SeqCst);
                 if ok {
                     self.badge.borrow_mut().copied(now);
                     self.redraw();
@@ -1103,10 +1163,12 @@ impl TermUi {
         if self.find.open
             && let Some(h) = self.find.handle.clone()
         {
-            if !h.with_emu_quiet(|em| em.find_view().done) {
+            if h.with_emu_quiet(|em| em.find_busy()) {
                 let t0 = Instant::now();
                 let clock = move || t0.elapsed().as_secs_f64() * 1000.0;
-                h.with_emu(|em| em.find_step(&clock));
+                if let Some(scroll) = h.with_emu(|em| em.find_step(&clock)) {
+                    h.scroll_view(-scroll);
+                }
                 out.redraw = true;
                 due.push(now + 16);
             }
@@ -1204,6 +1266,13 @@ impl MenuStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_worn_theme_link_colour_reaches_the_ink() {
+        set_worn_link("#1a4f9c");
+        let ink = worn_ink().expect("worn");
+        assert_eq!(ink.link, flare_render::color::Rgba::rgb(0x1a, 0x4f, 0x9c));
+        assert_eq!(ink.selection, DecorInk::pt_default().selection);
+    }
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use flare_agent::kinds::AgentKind;
@@ -1214,6 +1283,7 @@ mod tests {
     use flare_term::handle::StartOptions;
     use flare_term::keys::{KeyState, term_key_action};
     use flare_term::path_open::FsStat;
+    use flare_term::sel_machine::{Anchor, SelSpec};
     use flare_term::session::{SessionManager, SessionOptions};
     use flare_win::clipboard_port::MemoryClipboard;
     use flare_win::dblclick::FALLBACK;
@@ -1585,10 +1655,10 @@ mod tests {
             f(&mut self.ui, &tab)
         }
 
-        /// Ticks until the find count has finished.
+        /// Ticks until the find count and any search have finished.
         fn settle_find(&mut self) {
             for _ in 0..3000 {
-                if self.handle.with_emu_quiet(|e| e.find_view().done) {
+                if self.handle.with_emu_quiet(|e| !e.find_busy()) {
                     return;
                 }
                 self.tick(10);
@@ -1720,6 +1790,92 @@ mod tests {
         assert!(!r.written().contains(&3));
     }
 
+    /// Selects every row of history and screen, from the first cell to the last.
+    fn select_everything(r: &Rig) {
+        r.handle.with_emu(|e| {
+            let total = e.history_size() + e.rows();
+            e.sel_apply(SelOut::Set(SelSpec {
+                block: false,
+                start: Anchor { row: 0, b: 0 },
+                end: Anchor {
+                    row: total - 1,
+                    b: COLS,
+                },
+            }));
+        });
+    }
+
+    #[test]
+    fn a_big_copy_is_read_on_a_worker_and_the_badge_waits_for_the_clipboard() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        let want = r.text();
+        r.key(ctrl("c", "KeyC"));
+        // Nothing shows until the UI has the answer from the worker.
+        assert_eq!(r.badge(), BadgePhase::Gone);
+        until("the copy", || {
+            r.pump();
+            r.clip.read_text().is_some()
+        });
+        assert_eq!(r.clip.read_text(), Some(want));
+        assert!(!r.has_sel());
+        assert_eq!(r.badge(), BadgePhase::Shown);
+    }
+
+    #[test]
+    fn a_big_copy_that_the_clipboard_refuses_raises_no_badge() {
+        let mut r = Rig::with_port(1.0, Arc::new(Refusing));
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        r.key(ctrl("c", "KeyC"));
+        until("the answer", || {
+            r.pump();
+            !r.ui.copy_pending.load(Ordering::SeqCst)
+        });
+        assert_eq!(r.badge(), BadgePhase::Gone);
+    }
+
+    #[test]
+    fn ctrl_c_with_a_selection_in_flight_is_not_the_interrupt() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        r.key(ctrl("c", "KeyC"));
+        let (a, d) = r.key(ctrl("c", "KeyC"));
+        assert_eq!((a, d), (TermKeyAction::Copy, KeyDone::Handled));
+    }
+
+    #[test]
+    fn a_second_copy_supersedes_an_unfinished_first() {
+        let mut r = Rig::new(1.0);
+        r.feed(&(0..300).map(|i| format!("row {i}\r\n")).collect::<String>());
+        select_everything(&r);
+        let want = r.text();
+        r.key(ctrl("c", "KeyC"));
+        r.key(ctrl("c", "KeyC"));
+        until("the copy", || {
+            r.pump();
+            r.clip.read_text().is_some()
+        });
+        assert_eq!(r.clip.read_text(), Some(want));
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn pressing_ctrl_c_on_10000_lines_costs_the_ui_thread_under_2_ms() {
+        let mut r = Rig::new(1.0);
+        r.feed(
+            &(0..10_000)
+                .map(|i| format!("line {i}\r\n"))
+                .collect::<String>(),
+        );
+        select_everything(&r);
+        let started = Instant::now();
+        r.key(ctrl("c", "KeyC"));
+        let cost = started.elapsed();
+        assert!(cost < Duration::from_millis(2), "the key cost {cost:?}");
+    }
     #[test]
     fn ctrl_c_without_a_selection_is_the_interrupt() {
         let mut r = Rig::new(1.0);
@@ -2177,10 +2333,12 @@ mod tests {
         let mut seen = Vec::new();
         for _ in 0..3 {
             r.with_tab(|ui, t| ui.find_next(t));
+            r.settle_find();
             seen.push(r.ui.find_state().readout);
         }
         assert_eq!(seen, ["2 of 3", "3 of 3", "1 of 3"]);
         r.with_tab(|ui, t| ui.find_prev(t));
+        r.settle_find();
         assert_eq!(r.ui.find_state().readout, "3 of 3");
     }
 
@@ -2193,10 +2351,32 @@ mod tests {
         let before = r.top();
         assert!(before > 0);
         r.find_edited("foo");
+        r.settle_find();
         assert_eq!(r.top(), before, "a match in view does not scroll");
         r.find_edited("needle");
+        r.settle_find();
         assert!(r.top() < before, "a match outside the view scrolls");
         assert!(r.top() == 0);
+    }
+
+    #[test]
+    fn the_readout_keeps_the_old_text_until_the_job_finishes_and_says_none_after() {
+        let mut r = Rig::new(1.0);
+        r.feed("foo x foo x foo");
+        r.with_tab(|ui, t| ui.toggle_find(t));
+        r.find_edited("foo");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "1 of 3");
+        // Enter starts a walk: the match has not landed, so the text stays.
+        r.with_tab(|ui, t| ui.find_next(t));
+        assert_eq!(r.ui.find_state().readout, "1 of 3");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "2 of 3");
+        // A query with no match: never "none" while the walk runs, "none" once it has finished.
+        r.find_edited("zzz");
+        assert_ne!(r.ui.find_state().readout, "none");
+        r.settle_find();
+        assert_eq!(r.ui.find_state().readout, "none");
     }
 
     #[test]
@@ -2230,6 +2410,7 @@ mod tests {
         assert_eq!(r.ui.find_state().readout, "1 of 1000");
         // The last match lies beyond the thousand that are counted.
         r.with_tab(|ui, t| ui.find_prev(t));
+        r.settle_find();
         assert_eq!(r.ui.find_state().readout, "1000+");
     }
 
@@ -2374,6 +2555,14 @@ mod tests {
         assert_eq!(r.badge(), BadgePhase::Leaving);
         assert!(t.redraw);
         r.tick(200);
+        assert_eq!(r.badge(), BadgePhase::Gone);
+    }
+
+    #[test]
+    fn a_failed_copy_raises_no_badge() {
+        // Parity line 48: the badge is raised only by a successful copy.
+        let mut r = Rig::new(1.0);
+        r.ui.on_msg(None, TermMsg::Copied(false));
         assert_eq!(r.badge(), BadgePhase::Gone);
     }
 

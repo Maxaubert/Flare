@@ -4,7 +4,7 @@
 //
 // Every row and divider sits at a whole device pixel (Px.snap), so the hover fill and the
 // dividers stay crisp at 100 to 300 percent: the nav's spacing is written out, not a layout's.
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { AppMark } from "mark.slint";
 import { Place } from "types.slint";
@@ -34,11 +34,13 @@ component StartRow inherits Rectangle {
         // its top).
         Rectangle {
             width: 16px;
+            // Slint fits a stroked path into its box less the stroke: the box is the glyph grown by one stroke, moved
+            // back by half of it, so the 24 units cover the 16 px the svg covers and the centre stays put (Task 52).
             Path {
-                x: 0;
-                y: Px.snap((parent.height - 16px) / 2);
-                width: 16px;
-                height: 16px;
+                x: 0 - self.stroke-width / 2;
+                y: Px.snap((parent.height - 16px) / 2) - self.stroke-width / 2;
+                width: 16px + self.stroke-width;
+                height: 16px + self.stroke-width;
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: root.glyph;
@@ -157,7 +159,7 @@ export component StartScreen inherits Rectangle {
     property <length> block-top: Px.snap((root.height - root.foot-h - root.block-h) / 2);
     // The entrance: 0 to 1 over 420 ms on the ease-out of PT's `.p-start-in`.
     property <float> t: root.shown ? 1 : 0;
-    animate t { duration: 420ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+    animate t { duration: Motion.d(420ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
 
     // Everything above the footer: it rises 6 px and fades in with t.
     content := Rectangle {

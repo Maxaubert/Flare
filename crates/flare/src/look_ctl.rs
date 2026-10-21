@@ -19,7 +19,7 @@ use flare_settings::kv::Subscription;
 use flare_settings::look::{LookSnapshot, LookStore};
 use flare_theme::edges::WindowEdges;
 use flare_theme::look::{AppliedLook, apply_look};
-use flare_theme::marks::Mode;
+use flare_theme::marks::{Mode, ground_mode};
 use flare_theme::reports::{
     NUDGE_AFTER_MS, NUDGE_HOLD_MS, THEME_REPORTS_OFF, ThemeReports, nudge_widths, theme_push,
 };
@@ -50,6 +50,11 @@ pub trait LookMaterial {
     fn set_glass(&mut self, on: bool, now: Instant);
     /// What the material wears now: false when the OS refused the backdrop or full screen holds it off.
     fn glass_on(&self) -> bool;
+    /// The backdrop comes off before the window goes full screen (D7).
+    fn before_fullscreen(&mut self);
+    /// The window was maximised, restored, moved or went full screen: the edge goes flat and a held-off
+    /// backdrop comes back.
+    fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant);
 }
 
 /// The window material shared with the window's own timer and state callbacks.
@@ -77,6 +82,20 @@ impl LookMaterial for SharedMaterial {
     fn glass_on(&self) -> bool {
         self.borrow().as_ref().is_some_and(WindowMaterial::glass_on)
     }
+    fn before_fullscreen(&mut self) {
+        if let Ok(mut m) = self.try_borrow_mut()
+            && let Some(m) = m.as_mut()
+        {
+            m.before_fullscreen();
+        }
+    }
+    fn on_window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
+        if let Ok(mut m) = self.try_borrow_mut()
+            && let Some(m) = m.as_mut()
+        {
+            m.on_window_state(maximised, fullscreen, now);
+        }
+    }
 }
 
 struct SlintUi {
@@ -102,7 +121,57 @@ pub trait ThemePushTarget {
     fn write_report(&self, bytes: &str);
     fn size(&self) -> (usize, usize);
     fn resize(&self, cols: usize, rows: usize);
+    /// The colours the tab's colour queries are answered with.
+    fn set_colours(&self, _fg: &str, _bg: &str) {}
+    /// Whether the tab already answers colour queries with these (a look apply skips such a tab).
+    fn colours_are(&self, _fg: &str, _bg: &str) -> bool {
+        false
+    }
+    /// What tells one tab from another across tab lists (a list wraps its tabs anew each time).
+    fn identity(&self) -> usize {
+        self as *const Self as *const () as usize
+    }
 }
+
+impl ThemePushTarget for Arc<flare_term::handle::TermHandle> {
+    fn reports(&self) -> ThemeReports {
+        self.theme_reports()
+    }
+    fn set_reports(&self, s: ThemeReports) {
+        self.set_theme_reports(s);
+    }
+    fn write_report(&self, bytes: &str) {
+        flare_term::handle::TermHandle::write_report(self, bytes.as_bytes());
+    }
+    fn size(&self) -> (usize, usize) {
+        flare_term::handle::TermHandle::size(self)
+    }
+    fn resize(&self, cols: usize, rows: usize) {
+        flare_term::handle::TermHandle::resize(self, cols, rows);
+    }
+    fn set_colours(&self, fg: &str, bg: &str) {
+        flare_term::handle::TermHandle::set_colours(self, fg, bg);
+    }
+    fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        flare_term::handle::TermHandle::colours_are(self, fg, bg)
+    }
+    fn identity(&self) -> usize {
+        Arc::as_ptr(self) as usize
+    }
+}
+
+/// Gives the colours only to the tabs that do not already wear them: a look apply that changed nothing
+/// for a tab (an opacity slider dragged) leaves it alone (perf rule, core/renderer/lib/lookApply.ts).
+fn colours_to_tabs(tabs: &[Rc<dyn ThemePushTarget>], fg: &str, bg: &str) {
+    for tab in tabs {
+        if !tab.colours_are(fg, bg) {
+            tab.set_colours(fg, bg);
+        }
+    }
+}
+
+/// Where the controller finds every live tab (front and background); the app sets it once.
+pub type TabSource = Rc<dyn Fn() -> Vec<Rc<dyn ThemePushTarget>>>;
 
 /// A tab whose handle does not expose the program's `?2031h` state: it is never told anything.
 /// (M2's emulator parses `?2031h` but the handle keeps no per-tab report state, so every tab is this
@@ -138,6 +207,8 @@ struct Nudge {
 // ---- the controller ----------------------------------------------------------------------------
 
 thread_local! {
+    /// The live tabs, as the app lists them (the UI thread only).
+    static TABS: RefCell<Option<TabSource>> = const { RefCell::new(None) };
     /// The controller the coalesced apply reaches (the UI thread only).
     static CURRENT: RefCell<Option<Rc<RefCell<LookCtl>>>> = const { RefCell::new(None) };
 }
@@ -170,6 +241,8 @@ pub struct LookCtl {
     queued: Arc<AtomicBool>,
     scheduler: Arc<dyn Fn() + Send + Sync>,
     nudges: Vec<Nudge>,
+    /// One-shot: runs the nudges when they fall due; never repeats, and idle when none is due.
+    nudge_timer: slint::Timer,
     sub: Option<Subscription>,
 }
 
@@ -220,6 +293,7 @@ impl LookCtl {
             queued: Arc::new(AtomicBool::new(false)),
             scheduler,
             nudges: Vec::new(),
+            nudge_timer: slint::Timer::default(),
             sub: None,
         }
     }
@@ -356,8 +430,46 @@ impl LookCtl {
         self.was_glass = worn_glass;
         self.was_wanted = look.glass;
         self.last_light = worn.light;
+        self.theme_to_tabs(&worn, now);
     }
 
+    /// Hands the new colours to every live tab's colour queries, tells each program that asked the new
+    /// mode (?2031h), and arms the one-shot timer for the nudges that follow.
+    fn theme_to_tabs(&mut self, look: &AppliedLook, now: Instant) {
+        let Some(source) = TABS.with(|t| t.borrow().clone()) else {
+            return;
+        };
+        let tabs = source();
+        colours_to_tabs(&tabs, &look.term.foreground, &look.term.background);
+        self.push_theme(&tabs, ground_mode(&look.term.background), now);
+        self.arm_timer();
+    }
+
+    /// The tab list the theme push reaches.
+    pub fn set_tab_source(source: TabSource) {
+        TABS.with(|t| *t.borrow_mut() = Some(source));
+    }
+
+    /// One timer for the next due nudge; stopped when none is.
+    fn arm_timer(&mut self) {
+        let Some(at) = self.next_deadline() else {
+            self.nudge_timer.stop();
+            return;
+        };
+        let wait = at.saturating_duration_since(Instant::now());
+        self.nudge_timer
+            .start(slint::TimerMode::SingleShot, wait, || {
+                LookCtl::with_current(|l| {
+                    l.tick(Instant::now());
+                    l.arm_timer();
+                });
+            });
+    }
+
+    /// Whether the nudge timer is armed.
+    pub fn nudge_timer_running(&self) -> bool {
+        self.nudge_timer.running()
+    }
     fn apply_material(&mut self, look: &AppliedLook, wanted_changed: bool, now: Instant) {
         if let Some(m) = self.material.as_mut() {
             m.set_solid_ground(&look.solid_ground, look.edges, now);
@@ -369,17 +481,15 @@ impl LookCtl {
 
     /// Before the window goes full screen: the UI turns solid FIRST, then the backdrop comes off (D7).
     pub fn before_fullscreen(&mut self) {
-        let Some(shared) = self.shared.clone() else {
+        if self.material.is_none() {
             return;
-        };
+        }
         if self.was_glass {
             let opaque = self.opaque_look();
             self.ui.apply(&opaque);
             self.was_glass = false;
         }
-        if let Ok(mut m) = shared.try_borrow_mut()
-            && let Some(m) = m.as_mut()
-        {
+        if let Some(m) = self.material.as_mut() {
             m.before_fullscreen();
         }
     }
@@ -387,19 +497,18 @@ impl LookCtl {
     /// The window was maximised, restored, moved or went full screen. Going full screen turns the UI
     /// solid before the backdrop leaves; when the backdrop comes back the UI follows it.
     pub fn window_state(&mut self, maximised: bool, fullscreen: bool, now: Instant) {
-        let Some(shared) = self.shared.clone() else {
+        if self.material.is_none() {
             return;
-        };
+        }
         if fullscreen && self.was_glass {
             let opaque = self.opaque_look();
             self.ui.apply(&opaque);
             self.was_glass = false;
         }
         let after = {
-            let Ok(mut m) = shared.try_borrow_mut() else {
+            let Some(m) = self.material.as_mut() else {
                 return;
             };
-            let Some(m) = m.as_mut() else { return };
             m.on_window_state(maximised, fullscreen, now);
             m.glass_on()
         };
@@ -448,6 +557,21 @@ impl LookCtl {
             tab.set_reports(state);
             let Some(sent) = send else { continue };
             tab.write_report(&flare_term::replies::dsr_theme_reply(sent));
+            // Several switches in a row give one nudge (PT termReplyHandlers.ts): the pending one
+            // goes, and a tab standing one column narrower gets its full width back first.
+            let mut full = None;
+            self.nudges.retain(|n| {
+                if n.target.identity() != tab.identity() {
+                    return true;
+                }
+                if let NudgeStage::Back(_) = n.stage {
+                    full = Some((n.cols, n.rows));
+                }
+                false
+            });
+            if let Some((cols, rows)) = full {
+                tab.resize(cols, rows);
+            }
             self.nudges.push(Nudge {
                 target: Rc::clone(tab),
                 cols: 0,
@@ -520,6 +644,8 @@ mod tests {
         chrome_calls: Rc<Cell<usize>>,
         on: bool,
         refuse: bool,
+        wanted: bool,
+        flat: Rc<Cell<bool>>,
     }
     impl LookMaterial for FakeMat {
         fn attached(&self) -> bool {
@@ -533,10 +659,23 @@ mod tests {
         }
         fn set_glass(&mut self, on: bool, _now: Instant) {
             self.log.borrow_mut().push("material");
+            self.wanted = on;
             self.on = on && !self.refuse;
         }
         fn glass_on(&self) -> bool {
             self.on
+        }
+        fn before_fullscreen(&mut self) {
+            self.on = false;
+        }
+        fn on_window_state(&mut self, maximised: bool, fullscreen: bool, _now: Instant) {
+            self.flat.set(maximised || fullscreen);
+            self.log.borrow_mut().push(if fullscreen {
+                "state:full"
+            } else {
+                "state:windowed"
+            });
+            self.on = self.wanted && !fullscreen && !self.refuse;
         }
     }
 
@@ -568,6 +707,8 @@ mod tests {
             chrome_calls: Rc::new(Cell::new(0)),
             on: false,
             refuse: false,
+            wanted: false,
+            flat: Rc::new(Cell::new(false)),
         })
     }
 
@@ -700,6 +841,8 @@ mod tests {
             chrome_calls: Rc::new(Cell::new(0)),
             on: false,
             refuse: true,
+            wanted: false,
+            flat: Rc::new(Cell::new(false)),
         }));
         store.set_see_through(40);
         c.apply_now();
@@ -714,11 +857,56 @@ mod tests {
         assert_eq!(grounds.borrow().last().unwrap().len(), 7);
     }
 
+    #[test]
+    fn full_screen_reaches_the_page_and_the_edge_goes_flat() {
+        let prefs = PrefStore::memory();
+        let store = LookStore::new(prefs);
+        let grounds = Rc::new(RefCell::new(Vec::new()));
+        let mut c = LookCtl::with_parts(
+            Box::new(GroundUi(grounds.clone())),
+            store.clone(),
+            true,
+            LookOverrides::default(),
+            noop_scheduler(),
+        );
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let flat = Rc::new(Cell::new(false));
+        store.set_see_through(40);
+        c.attach_port(Box::new(FakeMat {
+            log: log.clone(),
+            supported: true,
+            chrome_calls: Rc::new(Cell::new(0)),
+            on: false,
+            refuse: false,
+            wanted: false,
+            flat: flat.clone(),
+        }));
+        assert!(c.was_glass);
+        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass worn");
+        let t0 = Instant::now();
+        // Entering full screen: the material hears it, the edge is flat, the page turns solid.
+        let before = grounds.borrow().len();
+        c.window_state(false, true, t0);
+        assert!(log.borrow().contains(&"state:full"), "{:?}", log.borrow());
+        assert!(flat.get(), "the edge is flat in full screen");
+        assert!(!c.was_glass);
+        assert!(grounds.borrow().len() > before, "the page was told");
+        assert_eq!(grounds.borrow().last().unwrap().len(), 7, "solid page");
+        // Leaving it: the material hears that too, the edge is back, glass returns to the page.
+        c.window_state(false, false, t0);
+        assert_eq!(log.borrow().last(), Some(&"state:windowed"));
+        assert!(!flat.get(), "the edge is drawn again");
+        assert!(c.was_glass);
+        assert_eq!(grounds.borrow().last().unwrap().len(), 9, "glass back");
+    }
+
     struct FakeTab {
         reports: Cell<ThemeReports>,
         written: RefCell<Vec<String>>,
         size: Cell<(usize, usize)>,
         resizes: RefCell<Vec<(usize, usize)>>,
+        colours: RefCell<(String, String)>,
+        colour_sets: Cell<usize>,
     }
 
     impl FakeTab {
@@ -728,6 +916,8 @@ mod tests {
                 written: RefCell::new(Vec::new()),
                 size: Cell::new((80, 24)),
                 resizes: RefCell::new(Vec::new()),
+                colours: RefCell::new((String::new(), String::new())),
+                colour_sets: Cell::new(0),
             })
         }
     }
@@ -749,8 +939,31 @@ mod tests {
             self.resizes.borrow_mut().push((cols, rows));
             self.size.set((cols, rows));
         }
+        fn colours_are(&self, fg: &str, bg: &str) -> bool {
+            *self.colours.borrow() == (fg.to_string(), bg.to_string())
+        }
+        fn set_colours(&self, fg: &str, bg: &str) {
+            self.colour_sets.set(self.colour_sets.get() + 1);
+            self.colours.replace((fg.to_string(), bg.to_string()));
+        }
     }
 
+    #[test]
+    fn a_look_apply_touches_only_the_tabs_whose_look_changed() {
+        let a = FakeTab::new(false, Mode::Dark);
+        let b = FakeTab::new(false, Mode::Dark);
+        let tabs = tab_set(&[&a, &b]);
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 1));
+        // The same look again (an opacity slider dragged): nobody is touched.
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        colours_to_tabs(&tabs, "#111111", "#222222");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 1));
+        // A new colour reaches both; a tab that already wears it is left alone.
+        a.colours.replace(("#333333".into(), "#444444".into()));
+        colours_to_tabs(&tabs, "#333333", "#444444");
+        assert_eq!((a.colour_sets.get(), b.colour_sets.get()), (1, 2));
+    }
     #[test]
     fn a_mode_change_pushes_once_then_nudges_one_column_and_back() {
         let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
@@ -785,6 +998,226 @@ mod tests {
         assert!(c.next_deadline().is_none());
     }
 
+    // ---- Task 17: a theme change reaches running programs ------------------------------------------
+
+    fn tab_set(tabs: &[&Rc<FakeTab>]) -> Vec<Rc<dyn ThemePushTarget>> {
+        tabs.iter()
+            .map(|t| Rc::clone(*t) as Rc<dyn ThemePushTarget>)
+            .collect()
+    }
+
+    fn mode_of_preset(id: &str) -> Mode {
+        let theme = flare_theme::resolve::resolve_preset(
+            flare_theme::preset::presets()
+                .iter()
+                .find(|p| p.id == id)
+                .expect("preset"),
+        );
+        ground_mode(&theme.background)
+    }
+
+    #[test]
+    fn a_theme_change_pushes_one_report_to_each_reporting_tab() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let a = FakeTab::new(true, Mode::Dark);
+        let b = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&a, &b]), Mode::Light, t0);
+        assert_eq!(*a.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        assert_eq!(*b.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        // The same mode again tells nobody anything.
+        c.push_theme(&tab_set(&[&a, &b]), Mode::Light, t0);
+        assert_eq!(a.written.borrow().len(), 1);
+        assert_eq!(b.written.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_tab_that_never_asked_gets_neither_report_nor_nudge() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let quiet = FakeTab::new(false, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&quiet]), Mode::Light, t0);
+        assert!(quiet.written.borrow().is_empty());
+        c.tick(t0 + Duration::from_secs(1));
+        assert!(quiet.resizes.borrow().is_empty());
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn the_nudge_is_never_a_key() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        c.tick(t0 + Duration::from_millis(250));
+        c.tick(t0 + Duration::from_millis(330));
+        // The only bytes a program is ever sent are the one report: no printable byte, no CR, no LF.
+        let all: String = tab.written.borrow().concat();
+        assert_eq!(all, "\x1b[?997;2n");
+        assert!(!all.contains(['\r', '\n', '\x07']));
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+    }
+
+    #[test]
+    fn several_switches_in_a_row_give_one_nudge() {
+        // PT termReplyHandlers.ts: a push clears the pending nudge and schedules one anew.
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        let t1 = t0 + Duration::from_millis(100);
+        c.push_theme(&tab_set(&[&tab]), Mode::Dark, t1);
+        c.tick(t0 + Duration::from_millis(250));
+        assert!(
+            tab.resizes.borrow().is_empty(),
+            "the first nudge was replaced"
+        );
+        c.tick(t1 + Duration::from_millis(250));
+        c.tick(t1 + Duration::from_millis(330));
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn a_switch_during_the_hold_leaves_the_tab_at_its_full_width() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        let narrow = t0 + Duration::from_millis(250);
+        c.tick(narrow);
+        assert_eq!(tab.size(), (79, 24));
+        // A second switch while the tab stands one column narrower.
+        let t1 = narrow + Duration::from_millis(40);
+        c.push_theme(&tab_set(&[&tab]), Mode::Dark, t1);
+        let mut t = t1;
+        while let Some(at) = c.next_deadline() {
+            t = at.max(t);
+            c.tick(t);
+        }
+        assert_eq!(tab.size(), (80, 24), "never left a column narrower");
+        let resizes = tab.resizes.borrow();
+        assert_eq!(resizes.last(), Some(&(80, 24)));
+        assert!(resizes.iter().all(|&(cols, _)| cols >= 79), "{resizes:?}");
+    }
+
+    #[test]
+    fn two_switches_closer_than_the_hold_leave_the_tab_at_its_full_width() {
+        // Two nudges of one tab, the second narrowing while the first holds, would each restore the
+        // width it found: the first 80, the second 79, and the tab would stay a column narrower.
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Dark);
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), Mode::Light, t0);
+        c.push_theme(
+            &tab_set(&[&tab]),
+            Mode::Dark,
+            t0 + Duration::from_millis(50),
+        );
+        let mut t = t0;
+        while let Some(at) = c.next_deadline() {
+            t = at.max(t);
+            c.tick(t);
+        }
+        assert_eq!(tab.size(), (80, 24), "{:?}", tab.resizes.borrow());
+        assert_eq!(*tab.resizes.borrow(), vec![(79, 24), (80, 24)]);
+    }
+
+    #[test]
+    fn no_report_when_the_mode_did_not_change() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        assert_eq!(mode_of_preset("pt-default"), Mode::Dark);
+        assert_eq!(mode_of_preset("nord"), Mode::Dark);
+        let tab = FakeTab::new(true, mode_of_preset("pt-default"));
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("nord"), Instant::now());
+        assert!(tab.written.borrow().is_empty());
+        assert!(c.next_deadline().is_none());
+    }
+
+    #[test]
+    fn fawn_tells_light_once_and_back_to_default_tells_dark() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, mode_of_preset("pt-default"));
+        let t0 = Instant::now();
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("fawn"), t0);
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("fawn"), t0);
+        assert_eq!(*tab.written.borrow(), vec!["\x1b[?997;2n".to_string()]);
+        let t1 = t0 + Duration::from_secs(1);
+        c.tick(t1);
+        c.tick(t1 + Duration::from_millis(100));
+        c.push_theme(&tab_set(&[&tab]), mode_of_preset("pt-default"), t1);
+        assert_eq!(
+            *tab.written.borrow(),
+            vec!["\x1b[?997;2n".to_string(), "\x1b[?997;1n".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_timer_runs_when_no_nudge_is_due() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        c.arm_timer();
+        assert!(!c.nudge_timer_running());
+        let quiet = FakeTab::new(false, Mode::Dark);
+        c.push_theme(&tab_set(&[&quiet]), Mode::Light, Instant::now());
+        c.arm_timer();
+        assert!(!c.nudge_timer_running());
+    }
+
+    #[test]
+    fn an_applied_look_reaches_every_tab_the_app_lists() {
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let tab = FakeTab::new(true, Mode::Light);
+        let listed = Rc::clone(&tab);
+        LookCtl::set_tab_source(Rc::new(move || {
+            vec![Rc::clone(&listed) as Rc<dyn ThemePushTarget>]
+        }));
+        c.apply_now();
+        // The first look is dark and the program was last told light: one dark report.
+        assert_eq!(*tab.written.borrow(), vec!["\x1b[?997;1n".to_string()]);
+        assert!(c.next_deadline().is_some());
+        assert!(c.nudge_timer_running());
+    }
+
+    #[test]
+    fn the_handle_reports_what_the_program_asked() {
+        use flare_term::fake::{FakeShells, FakeSpawner};
+        use flare_term::session::{SessionManager, SessionOptions};
+        let sp = FakeSpawner::new();
+        let mgr = SessionManager::new(sp.clone(), FakeShells::new(), SessionOptions::default());
+        let handle = flare_term::handle::TermHandle::new("th", Arc::clone(&mgr), 80, 24);
+        handle.start(flare_term::handle::StartOptions {
+            root: "C:\\x".to_string(),
+            ..Default::default()
+        });
+        let t = Instant::now();
+        while handle.shell_id().is_none() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tab: Rc<dyn ThemePushTarget> = Rc::new(Arc::clone(&handle));
+        assert!(!tab.reports().on);
+        handle.with_emu(|e| {
+            e.feed(b"\x1b[?2031h");
+        });
+        assert!(tab.reports().on);
+        tab.set_colours("#3d2a1f", "#e6d8c0");
+        let (mut c, _, _, _) = ctl_with(false, LookOverrides::default());
+        let t0 = Instant::now();
+        c.push_theme(&[Rc::clone(&tab)], Mode::Light, t0);
+        // The report reaches the pty as itself.
+        let fake = Arc::clone(&sp.made()[0]);
+        let t = Instant::now();
+        while !String::from_utf8_lossy(&fake.written()).contains("\x1b[?997;2n")
+            && t.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(String::from_utf8_lossy(&fake.written()).contains("\x1b[?997;2n"));
+        assert_eq!(tab.size(), (80, 24));
+        c.tick(t0 + Duration::from_millis(250));
+        assert_eq!(tab.size(), (79, 24));
+        c.tick(t0 + Duration::from_millis(330));
+        assert_eq!(tab.size(), (80, 24));
+    }
     fn with_custom(prefs: &PrefStore) {
         prefs.set(
             flare_settings::custom_theme::CUSTOM_KEY,

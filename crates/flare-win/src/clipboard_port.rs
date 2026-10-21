@@ -34,6 +34,10 @@ pub trait ClipboardPort: Send + Sync {
     fn read_state(&self) -> ClipboardState;
     /// A number that changes with every clipboard change.
     fn sequence(&self) -> u32;
+    /// `--e2e` only: puts a PNG (base64) on the clipboard. The real clipboard refuses.
+    fn set_image_png_b64(&self, _png_b64: &str) -> Result<(), String> {
+        Err("the real clipboard never takes an image from the harness".to_string())
+    }
 }
 
 fn check_write(text: &str, max: usize) -> Result<(), String> {
@@ -198,6 +202,7 @@ struct Inner {
     text: Option<String>,
     files: Vec<String>,
     image: bool,
+    png_b64: Option<String>,
 }
 
 /// The `--e2e` and test stand-in.
@@ -256,6 +261,19 @@ impl ClipboardPort for MemoryClipboard {
     fn sequence(&self) -> u32 {
         self.seq.load(Ordering::SeqCst)
     }
+
+    fn set_image_png_b64(&self, png_b64: &str) -> Result<(), String> {
+        if png_b64.is_empty() {
+            return Err("an empty image".to_string());
+        }
+        {
+            let mut g = self.lock();
+            g.image = true;
+            g.png_b64 = Some(png_b64.to_string());
+        }
+        self.seq.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +319,16 @@ mod tests {
         c.set_text("c");
         let e = c.sequence();
         assert!(a < b && b < d && d < e);
+    }
+
+    #[test]
+    fn an_image_set_from_the_harness_shows_in_the_state() {
+        let c = MemoryClipboard::new();
+        let a = c.sequence();
+        assert!(c.set_image_png_b64("").is_err());
+        c.set_image_png_b64("iVBORw0KGgo=").unwrap();
+        assert!(c.read_state().image);
+        assert!(c.sequence() > a);
     }
 
     #[test]

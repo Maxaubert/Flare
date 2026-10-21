@@ -244,3 +244,50 @@ These older rules gained test names when M6 made them testable.
 - Rule 62 (every working tab has its own mark; the taskbar counts): held by `working_outranks_question_outranks_failed_outranks_done` and `the_badge_counts_marked_tabs_and_clears`.
 - Rule 63 (Ring or Bar only): held by `the_stored_word_minimal_is_bar_everything_else_ring` and `the_indicator_pick_turns_a_ring_row_into_a_run_bar`.
 - Rule 64 (a folder path is not the program): held by `a_title_names_the_agent_only_when_it_is_the_program` and `never_clears_on_a_shell_title_nor_on_a_folder_called_claude`.
+
+## Parity sweep, the e2e and performance (M10)
+
+These rules came with the M10 parity sweep. Each names the tests that hold it; `docs/e2e.md` and
+`docs/performance.md` say how the suite and the bar are run.
+
+170. **The test hook exists only under `--e2e`, and only for the current user.** Without the flag no pipe is
+created, no handler is registered and no probe answers. The pipe's DACL grants the current user's SID alone
+and `FILE_FLAG_FIRST_PIPE_INSTANCE` stops a second launch on the same profile taking it over. Held by
+`start_without_the_flag_is_not_enabled_and_creates_no_pipe`, `the_pipe_is_refused_to_another_user`,
+`a_second_server_on_the_same_profile_cannot_take_the_pipe` and `the_hook_is_only_started_from_one_place_behind_the_flag`.
+171. **The e2e never takes the foreground and never touches the owner's apps.** The window is parked and
+unfocusable; the foreground window and the OS clipboard sequence number are read around the run; the reaper
+matches the world's profile path only. Held by `the_foreground_guard_flags_a_window_of_the_run_and_only_notes_another_app`,
+`the_clipboard_guard_flags_a_sequence_change`, `the_reaper_spares_a_process_without_the_world_path`,
+`park_moves_the_window_off_every_monitor` and `the_world_removes_itself_and_leaves_nothing_in_temp`.
+172. **A selection stands while a program redraws.** A redraw that rewrites the whole screen keeps the
+selection on its text, and a block selection survives the same redraw. Held by
+`a_selection_survives_a_cursor_home_redraw_of_the_whole_screen` and `a_block_selection_survives_a_redraw`.
+173. **No search or copy holds the UI thread over its slice.** Find walks the scrollback in slices of at most
+8 ms that stop before the row that would cross the budget; a big copy is read on a worker. Held by
+`walks_a_10000_line_backlog_bottom_up_in_slices_of_at_most_8_ms`, `count_slices_stay_at_or_under_the_budget`
+and `a_big_copy_is_read_on_a_worker_and_the_badge_waits_for_the_clipboard`.
+174. **A stroked glyph's box grows by its stroke.** A glyph drawn with a stroke takes its nominal size plus one
+stroke width, so the stroke is never clipped. Held by `expected_extent_adds_one_stroke_at_the_nominal_size` and
+`every_stroked_path_has_a_size_test`.
+175. **The first-run import shares one 1.5 s budget.** Every profile's import draws on the same budget, and an
+expired budget skips the next profile. Held by `two_profiles_share_one_budget`,
+`the_whole_import_never_exceeds_the_budget_plus_a_margin` and `an_expired_budget_skips_the_next_profile_and_counts_a_retry`.
+176. **A theme change reaches running programs as one report and a one-column nudge.** A tab that asked for
+the mode gets one report and one nudge of one column, then the column comes back; a tab that never asked gets
+neither. Held by `a_mode_change_pushes_once_then_nudges_one_column_and_back`,
+`a_tab_that_never_asked_gets_neither_report_nor_nudge` and `the_nudge_is_one_column_narrower_and_back`.
+177. **Start-up: the first frame waits only for what it draws.** Work that the first frame does not show is put
+off until after it, and runs once. Held by `nothing_on_the_deferral_list_is_read_by_the_first_frame`,
+`deferred_work_runs_exactly_once_after_the_first_frame` and `the_first_frame_wears_the_saved_theme`.
+178. **Only the faces the terminal needs are loaded.** The font database holds the named faces and the fallbacks,
+and the installed faces come from the registry, not from a walk of the font folder. Held by
+`the_database_holds_only_the_named_faces_plus_the_fallbacks` and
+`installed_faces_reads_the_registry_without_walking_the_font_folder`.
+179. **The performance bar is measured the way `docs/performance.md` defines it.** Each rule passes or fails at
+its edge, and a rule that needs a Prism Terminal baseline that is missing is unknown, never a pass. Held by
+`the_bar_evaluator_passes_and_fails_each_rule_at_its_edge` and `a_missing_baseline_makes_pt_relative_rules_unknown_not_pass`.
+180. **A display-scaling change leaves the prompt line, the grid size rule and the hairline widths intact.** The
+grid follows the new cell size at every scale, a resize never loses the prompt line, and the hairline is the
+floor of the scale. Held by `the_expected_grid_changes_with_the_scale`, `a_grid_that_kept_the_old_cell_size_is_not_the_rule`,
+`a_hairline_is_the_floor_of_the_scale_and_at_least_one` and `a_resize_nudge_never_loses_the_prompt_line`.

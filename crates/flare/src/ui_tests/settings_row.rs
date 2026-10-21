@@ -178,6 +178,35 @@ fn the_flash_fills_the_row() {
 }
 
 #[test]
+fn the_panel_fill_is_3_6_percent_of_the_text_ink_over_the_ground() {
+    for scale in SCALES {
+        let h = harness(scale, 560.0);
+        let t = h.comp.global::<Theme>();
+        let ground = rgb(t.get_ground());
+        let ink = rgb(t.get_text());
+        // The panel's own fill, clear of text and the control: row 1, well right of the label.
+        let got = h.render().px(dev(scale, 400.0), dev(scale, 40.0));
+        let want: Vec<u8> = (0..3)
+            .map(|i| {
+                let g = ground[i] as f32;
+                (g + (ink[i] as f32 - g) * 0.036).round() as u8
+            })
+            .collect();
+        for i in 0..3 {
+            assert!(
+                (got[i] as i32 - want[i] as i32).abs() <= 1,
+                "scale {scale}: panel {got:?} is not ground {ground:?} mixed 3.6% with ink {ink:?} ({want:?})"
+            );
+        }
+        assert_ne!(
+            &got[..3],
+            &ground[..3],
+            "scale {scale}: the panel differs from the ground"
+        );
+    }
+}
+
+#[test]
 fn the_panel_clips_its_corners() {
     for scale in SCALES {
         let h = harness(scale, 560.0);

@@ -52,6 +52,8 @@ pub struct SidebarCtl {
     queued: Vec<SidebarEvent>,
     /// The latest time any call carried: the grip calls have no clock of their own.
     last_now: u64,
+    /// The pointer as the last move left it, so letting go of the grip can judge it again.
+    last_pointer: Option<Point>,
 }
 
 impl SidebarCtl {
@@ -68,6 +70,7 @@ impl SidebarCtl {
             dragging: false,
             queued: Vec::new(),
             last_now: now,
+            last_pointer: None,
         }
     }
 
@@ -105,6 +108,7 @@ impl SidebarCtl {
     /// The pointer in window css coordinates (None: it left the window). Collapsed only.
     pub fn pointer(&mut self, p: Option<Point>, now: u64) {
         self.last_now = now;
+        self.last_pointer = p;
         if !self.collapsed() {
             return;
         }
@@ -156,6 +160,12 @@ impl SidebarCtl {
         self.drag_w = None;
         self.dragging = false;
         self.apply_hold(self.last_now);
+        // The last move was judged against the width the grip had before it moved; the pointer that
+        // sits on the new edge is judged again now, or the sidebar leaves the moment it is resized.
+        if self.collapsed() {
+            let wants = side_wants(self.last_pointer, self.reveal.shown(), BAR_H, self.width());
+            self.reveal.feel(wants, self.last_now);
+        }
     }
 
     /// When the next `tick` has something to do.
@@ -237,6 +247,29 @@ mod tests {
         c.grip_moved(300.0);
         c.pointer(pt(500.0, 300.0), 100);
         assert!(c.tick(5000).is_empty());
+        c.grip_released(&p, 300.0);
+        assert_eq!(c.tick(5100), vec![SidebarEvent::Revealed(false)]);
+    }
+
+    // Task 23 (verticalTabs): the cursor event is judged against the width the grip had BEFORE it
+    // moved, so a quick drag ends with the pointer judged "past the edge" even though it sits on the
+    // new edge. Letting go must judge it again, or the slid-out sidebar leaves the moment it is resized.
+    #[test]
+    fn letting_go_of_the_grip_at_the_new_edge_keeps_a_revealed_sidebar_out() {
+        let (mut c, p) = revealed_ctl();
+        c.grip_moved(255.0);
+        c.pointer(pt(262.0, 300.0), 100);
+        c.grip_moved(262.0);
+        c.grip_released(&p, 262.0);
+        assert!(c.tick(10_000).is_empty());
+        assert!(c.view(1.0, 10_000).revealed);
+    }
+
+    #[test]
+    fn letting_go_of_the_grip_far_from_the_sidebar_still_lets_it_go() {
+        let (mut c, p) = revealed_ctl();
+        c.grip_moved(300.0);
+        c.pointer(pt(500.0, 300.0), 100);
         c.grip_released(&p, 300.0);
         assert_eq!(c.tick(5100), vec![SidebarEvent::Revealed(false)]);
     }

@@ -17,6 +17,32 @@ pub enum ScanEvent {
     Osc { end: usize, payload: Vec<u8> },
     /// ESC [ > q or ESC [ > 0 q (XTVERSION). `end` as above.
     Xtversion { end: usize },
+    /// ESC [ ? 996 n: the program asks which mode the ground wears.
+    ThemeQuery { end: usize },
+    /// ESC [ ? Pn $ p: a private-mode query (DECRQM), a single plain number only.
+    Decrqm { end: usize, mode: u32 },
+    /// ESC [ ? 2031 h or l: the program turns theme reports on or off.
+    PrivateMode { end: usize, mode: u32, set: bool },
+    /// ESC c: a full reset.
+    Ris { end: usize },
+    /// A CSI erase that alacritty answers by dropping the selection (EL and ED, with their `?`
+    /// forms). `start` is where the sequence begins in THIS chunk (0 when it began in an earlier
+    /// chunk), `end` just after its final byte. The caller feeds up to `start`, saves the
+    /// selection, feeds to `end`, and puts the selection back (xterm keeps it, decision O23).
+    SelectionGuard {
+        start: usize,
+        end: usize,
+        erase: Erase,
+    },
+}
+
+/// What a guarded erase does to the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Erase {
+    /// EL, ED 0 and ED 1: nothing scrolls, the selection keeps its place.
+    InPlace,
+    /// ED 2: alacritty scrolls the screen into the history.
+    Screen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +58,7 @@ pub struct Scanner {
     state: State,
     osc: Vec<u8>,
     csi: Vec<u8>,
+    csi_start: usize,
     overflow: bool,
     limit: usize,
 }
@@ -52,6 +79,7 @@ impl Scanner {
             state: State::Ground,
             osc: Vec::new(),
             csi: Vec::new(),
+            csi_start: 0,
             overflow: false,
             limit,
         }
@@ -81,10 +109,13 @@ impl Scanner {
     }
 
     /// The byte after an ESC, shared by `Esc` and by an ESC that interrupts an OSC.
-    fn after_esc(&mut self, b: u8) {
+    fn after_esc(&mut self, b: u8, esc_at: usize) {
         match b {
             b']' => self.start_osc(),
-            b'[' => self.start_csi(),
+            b'[' => {
+                self.start_csi();
+                self.csi_start = esc_at;
+            }
             0x1b => self.state = State::Esc,
             _ => self.state = State::Ground,
         }
@@ -93,6 +124,9 @@ impl Scanner {
     pub fn scan(&mut self, chunk: &[u8]) -> Vec<ScanEvent> {
         let mut out = Vec::new();
         let mut i = 0;
+        if self.state == State::Csi {
+            self.csi_start = 0;
+        }
         while i < chunk.len() {
             match self.state {
                 State::Ground => match memchr::memchr(0x1b, &chunk[i..]) {
@@ -103,7 +137,10 @@ impl Scanner {
                     None => break,
                 },
                 State::Esc => {
-                    self.after_esc(chunk[i]);
+                    if chunk[i] == b'c' {
+                        out.push(ScanEvent::Ris { end: i + 1 });
+                    }
+                    self.after_esc(chunk[i], i.saturating_sub(1));
                     i += 1;
                 }
                 State::OscBody => {
@@ -146,7 +183,7 @@ impl Scanner {
                     if b == b'\\' {
                         self.finish_osc(i, &mut out);
                     } else {
-                        self.after_esc(b);
+                        self.after_esc(b, i.saturating_sub(2));
                     }
                 }
                 State::Csi => {
@@ -165,6 +202,14 @@ impl Scanner {
                         0x40..=0x7e => {
                             if b == b'q' && (self.csi == b">" || self.csi == b">0") {
                                 out.push(ScanEvent::Xtversion { end: i });
+                            } else if let Some(ev) = private_event(b, &self.csi, i) {
+                                out.push(ev);
+                            } else if let Some(erase) = guarded_erase(b, &self.csi) {
+                                out.push(ScanEvent::SelectionGuard {
+                                    start: self.csi_start,
+                                    end: i,
+                                    erase,
+                                });
                             }
                             self.state = State::Ground;
                         }
@@ -175,6 +220,47 @@ impl Scanner {
             }
         }
         out
+    }
+}
+
+/// The theme-related private sequences: `?996n`, `?Pn` and `?2031h/l`.
+fn private_event(final_byte: u8, params: &[u8], end: usize) -> Option<ScanEvent> {
+    let rest = params.strip_prefix(b"?")?;
+    let number = |d: &[u8]| -> Option<u32> {
+        if d.is_empty() || d.len() > 6 || !d.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(d).ok()?.parse().ok()
+    };
+    match final_byte {
+        b'n' if rest == b"996" => Some(ScanEvent::ThemeQuery { end }),
+        b'p' => {
+            let digits = rest.strip_suffix(b"$")?;
+            Some(ScanEvent::Decrqm {
+                end,
+                mode: number(digits)?,
+            })
+        }
+        b'h' | b'l' if rest == b"2031" => Some(ScanEvent::PrivateMode {
+            end,
+            mode: 2031,
+            set: final_byte == b'h',
+        }),
+        _ => None,
+    }
+}
+
+/// The erase a CSI final byte and its parameters make, when alacritty drops the selection for it.
+fn guarded_erase(final_byte: u8, params: &[u8]) -> Option<Erase> {
+    let params = params.strip_prefix(b"?").unwrap_or(params);
+    if !params.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match (final_byte, params) {
+        (b'K', _) => Some(Erase::InPlace),
+        (b'J', b"" | b"0" | b"1") => Some(Erase::InPlace),
+        (b'J', b"2") => Some(Erase::Screen),
+        _ => None,
     }
 }
 
@@ -307,5 +393,79 @@ mod tests {
     fn esc_osc_inside_an_osc_restarts_it() {
         let mut s = Scanner::new();
         assert_eq!(s.scan(b"\x1b]0;a\x1b]0;b\x07"), vec![osc(11, b"0;b")]);
+    }
+
+    #[test]
+    fn theme_sequences_are_found() {
+        use super::ScanEvent::{Decrqm, PrivateMode, ThemeQuery};
+        let mut s = Scanner::new();
+        assert_eq!(s.scan(b"\x1b[?996n"), vec![ThemeQuery { end: 7 }]);
+        assert_eq!(s.scan(b"\x1b[?2031$p"), vec![Decrqm { end: 9, mode: 2031 }]);
+        assert_eq!(
+            s.scan(b"\x1b[?2031h\x1b[?2031l"),
+            vec![
+                PrivateMode {
+                    end: 8,
+                    mode: 2031,
+                    set: true
+                },
+                PrivateMode {
+                    end: 16,
+                    mode: 2031,
+                    set: false
+                },
+            ]
+        );
+        assert_eq!(s.scan(b"\x1b[?1004h\x1b[?996;1n\x1b[996n"), vec![]);
+    }
+
+    #[test]
+    fn esc_c_is_a_full_reset() {
+        let mut s = Scanner::new();
+        assert_eq!(s.scan(b"ab\x1bcd"), vec![ScanEvent::Ris { end: 4 }]);
+    }
+
+    #[test]
+    fn erases_are_guarded_with_their_span() {
+        use super::{Erase, ScanEvent::SelectionGuard};
+        let mut s = Scanner::new();
+        assert_eq!(
+            s.scan(b"ab\x1b[2Kc"),
+            vec![SelectionGuard {
+                start: 2,
+                end: 6,
+                erase: Erase::InPlace
+            }]
+        );
+        assert_eq!(
+            s.scan(b"\x1b[?J\x1b[2J\x1b[3J\x1b[1;3J"),
+            vec![
+                SelectionGuard {
+                    start: 0,
+                    end: 4,
+                    erase: Erase::InPlace
+                },
+                SelectionGuard {
+                    start: 4,
+                    end: 8,
+                    erase: Erase::Screen
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_guarded_erase_split_across_chunks_starts_at_zero() {
+        use super::{Erase, ScanEvent::SelectionGuard};
+        let mut s = Scanner::new();
+        assert_eq!(s.scan(b"xxxx\x1b[2"), vec![]);
+        assert_eq!(
+            s.scan(b"Jyy"),
+            vec![SelectionGuard {
+                start: 0,
+                end: 1,
+                erase: Erase::Screen
+            }]
+        );
     }
 }

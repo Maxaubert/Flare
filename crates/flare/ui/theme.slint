@@ -145,3 +145,13 @@ export global SettingsFixed {
     out property <string> font-fallback: "Segoe UI";
     out property <string> font-mono: "Cascadia Mono";
 }
+
+// Reduced motion, app-wide (parity line 37, PT index.css: every transition and animation drops to
+// 0.01 ms). Rust sets `reduced` from `crate::e2e::animations_enabled()` with the other globals; every
+// `animate` duration in the UI is wrapped in `Motion.d()` (scan: `no_animate_block_bypasses_the_motion_global`).
+export global Motion {
+    in property <bool> reduced: false;
+    pure public function d(ms: duration) -> duration {
+        return reduced ? 0ms : ms;
+    }
+}

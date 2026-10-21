@@ -457,13 +457,25 @@ pub fn run_live_tabs(user_data_dir: Option<&Path>, n: u32) -> i32 {
 }
 
 /// The folder of the Claude plugin, found ONCE at startup (two small stats and the install of the
-/// plugin copy). None under `--e2e`: a test run never installs into the real profile folder.
+/// plugin copy). None under `--e2e` unless the run asks for it with the plugin seam: the harness
+/// then sets `LOCALAPPDATA` to its sandbox, so the copy lands there and never in the real profile.
 pub fn production_plugin_dir(e2e: bool) -> Option<String> {
-    if e2e {
+    if e2e
+        && !plugin_seam_on(
+            crate::e2e::global()
+                .env(&["FLARE_E2E", "_PLUGIN"].concat())
+                .as_deref(),
+        )
+    {
         return None;
     }
     // sync-ok: startup, two small stats
     flare_agent::plugin::plugin_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// True when the plugin seam variable says "1": a test run that wants the real plugin.
+fn plugin_seam_on(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 /// Puts the exe's own icon on the window (M9 Task 32): once its handle exists, and again on every
@@ -474,9 +486,27 @@ pub fn apply_window_icon(hwnd: Option<isize>) {
     }
 }
 
-/// The restore's Claude session lookup: the real transcript store of the home folder.
-pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
-    std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::from_env())
+/// The lookup a start uses. Under `--e2e` nothing resumes the owner's real conversations (no
+/// sessions), unless a scenario hands over its own sandboxed HOME and says so with the
+/// `FLARE_E2E_SESSIONS=1` seam (`seam` is its value): then the transcript store of that HOME is read.
+pub fn session_lookup(
+    e2e_on: bool,
+    seam: Option<&str>,
+) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    session_lookup_at(e2e_on, seam, flare_agent::resume::claude_home())
+}
+
+/// `session_lookup` over a given home folder (the seam for the test).
+pub fn session_lookup_at(
+    e2e_on: bool,
+    seam: Option<&str>,
+    home: Option<std::path::PathBuf>,
+) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    if e2e_on && seam != Some("1") {
+        std::sync::Arc::new(flare_tabs::restore::NoSessions)
+    } else {
+        std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::new(home))
+    }
 }
 
 // ---- M7 Task 44: the first-run import, the Settings ports and the warm-up ----------------------
@@ -484,7 +514,8 @@ pub fn production_lookup() -> std::sync::Arc<dyn flare_tabs::restore::SessionLoo
 /// The licence file; its `Copyright` line is the About page's copyright (decision: read, never typed).
 pub const LICENCE: &str = include_str!("../../../LICENSE");
 
-/// The import's ceiling: one bounded wait before the first paint (decision D14).
+/// The whole import's ceiling, shared by every Prism Terminal profile: one bounded wait before the first paint
+/// (decision D14, M10 Task 53).
 pub const IMPORT_CEILING: Duration = Duration::from_millis(1500);
 
 /// Where the first-run import reads from, or why it does not run this start.
@@ -518,7 +549,7 @@ pub fn import_plan(args: &Args, e2e_seam: Option<&str>, appdata: Option<&str>) -
 }
 
 /// Runs the once-only import when the plan says so and the settings file does not record it yet.
-/// Called before anything reads a setting; it waits at most `IMPORT_CEILING`. None when nothing ran.
+/// Called before anything reads a setting; the whole import waits at most `IMPORT_CEILING`. None when nothing ran.
 pub fn import_at_start(
     prefs: &PrefStore,
     plan: &ImportPlan,
@@ -583,17 +614,11 @@ pub fn glass_support(effective: RendererChoice, os: OsVersion) -> GlassSupport {
     }
 }
 
-/// Builds the help catalogue and runs one search on a worker, so the first query is quick.
-pub fn warm_help_index() {
-    let spawned = std::thread::Builder::new()
-        .name("flare-help-warm".into())
-        .spawn(|| {
-            let all = flare_help::entries::all_help();
-            let _ = flare_help::search::search_help(all, "warm", &Default::default());
-        });
-    if let Err(e) = spawned {
-        log::warn!("could not warm the help index: {e}");
-    }
+/// The help warm-up's work: builds the help catalogue and runs one search, so the first query is quick.
+/// It runs on a worker when the panel opens (M10 Task 66); nothing builds it at start.
+pub fn help_warm_work() {
+    let all = flare_help::entries::all_help();
+    let _ = flare_help::search::search_help(all, "warm", &Default::default());
 }
 
 #[cfg(test)]
@@ -608,6 +633,35 @@ mod tests {
 
     fn names_of(a: &str, ink: &str) -> String {
         format!("<font color=\"{ink}\">{a}</font>")
+    }
+
+    #[test]
+    fn a_test_run_reads_sessions_only_when_its_scenario_hands_over_a_home() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let id = "5a1d0c2e-1111-4222-8333-94445555a666";
+        let dir = tmp.path().join(".claude").join("projects").join("C--w");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join(format!("{id}.jsonl")),
+            "{\"type\":\"user\",\"entrypoint\":\"cli\"}\n",
+        )
+        .expect("transcript");
+        let home = || Some(tmp.path().to_path_buf());
+        let sessions = |e2e, seam| session_lookup_at(e2e, seam, home()).sessions("C:\\w");
+        assert!(sessions(true, None).is_empty(), "e2e alone resumes nothing");
+        assert!(sessions(true, Some("0")).is_empty());
+        assert_eq!(sessions(true, Some("1")), vec![id.to_string()]);
+        assert_eq!(sessions(false, None), vec![id.to_string()]);
+    }
+
+    #[test]
+    fn a_test_run_gets_the_plugin_only_when_it_asks_for_it() {
+        assert!(!plugin_seam_on(None), "no variable, no plugin");
+        assert!(!plugin_seam_on(Some("")));
+        assert!(!plugin_seam_on(Some("0")));
+        assert!(plugin_seam_on(Some("1")));
+        // Off, or without --e2e, it is the old answer: nothing is installed or handed out.
+        assert_eq!(production_plugin_dir(true), None);
     }
 
     #[test]
@@ -1073,6 +1127,12 @@ mod m7_start_tests {
         assert!(
             import < at("app.show()?"),
             "the import precedes the first paint"
+        );
+        // Parity line 21: the window is shown only once its state is applied (the look
+        // before the first paint), and maximised after it exists, never at creation.
+        assert!(
+            at("app.show()?") < at("app.window().set_maximized(true)"),
+            "maximised is applied after the window is shown"
         );
     }
 }

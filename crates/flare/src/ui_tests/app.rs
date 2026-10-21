@@ -168,6 +168,70 @@ fn the_open_sidebar_cuts_the_terminals_corner_and_draws_its_edge() {
     }
 }
 
+/// A pixel the cut corner may show: the sidebar's fill, the page, or a mix of the two with the
+/// divider line (grey or red-grey, never the ground's black seam).
+fn seamless(p: [u8; 4]) -> bool {
+    let [r, g, b, _] = p;
+    // The divider ink is 39 grey; every blend of grey and red keeps green equal to blue.
+    g == b && g <= 40 && r >= 10
+}
+
+#[test]
+fn the_terminals_top_edge_is_drawn_once_along_the_page_at_every_scale() {
+    // PT TermEdge.tsx: a border-top in the divider ink under the bar, one draw (not two layers).
+    for s in SCALES {
+        let h = harness(s);
+        h.comp.set_layout_vertical(true);
+        h.comp.set_sidebar_width(220.0);
+        h.advance(0);
+        let f = h.render();
+        let top = h.phys(36.0);
+        for x in [h.phys(232.0), h.phys(400.0), h.phys(990.0)] {
+            // The edge row: the divider over the red page, one blend (G 18, not the double ~28).
+            assert!(
+                Frame::near(f.px(x, top), [255, 18, 18, 255], 2),
+                "scale {s}: edge at x {x} is {:?}",
+                f.px(x, top)
+            );
+            // The page starts under the edge's own device rows.
+            assert!(
+                is_red(f.px(x, top + hair(s))),
+                "scale {s}: page under the edge at x {x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_cut_corner_is_one_curve_with_no_seam_at_every_scale() {
+    // PT cornerShapes.ts: the page's mask and the corner piece are inverse masks of one path, so
+    // every pixel of the corner box is the sidebar, the page, or a blend of them. A seam shows
+    // as a pixel of the window's ground (black here), which this test refuses.
+    for s in SCALES {
+        let h = harness(s);
+        h.comp.set_layout_vertical(true);
+        h.comp.set_sidebar_width(220.0);
+        h.advance(0);
+        let f = h.render();
+        let (x0, y0) = (h.phys(220.0), h.phys(36.0));
+        let (x1, y1) = (h.phys(230.0), h.phys(46.0));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = f.px(x, y);
+                assert!(seamless(p), "scale {s}: pixel ({x}, {y}) is {p:?}, a seam");
+            }
+        }
+        assert!(
+            f.count_where(x0, y0, x1, y1, |p| Frame::near(p, SECONDARY, 3)) > 0,
+            "scale {s}: the sidebar's fill is in the corner"
+        );
+        assert!(
+            f.count_where(x0, y0, x1, y1, is_red) > 0,
+            "scale {s}: the page is in the corner"
+        );
+    }
+}
+
 #[test]
 fn a_collapsed_sidebar_takes_no_room_and_slides_over_the_page() {
     let h = harness(1.0);
@@ -346,4 +410,119 @@ fn double_click_on_the_empty_strip_maximises() {
     h.click(800.0, 18.0);
     h.click(800.0, 18.0);
     assert_eq!(n.get(), 1);
+}
+
+/// Parity line 26: the buttons at the right end of the top row run Command help, Settings,
+/// Minimise, Maximise, Close, in that order, and no app menu sits in the window (PT TitleBar.tsx).
+/// A source scan of the Slint component, because the order is the declaration order.
+#[test]
+fn the_title_buttons_run_help_settings_minimise_maximise_close_and_no_menu() {
+    let src = include_str!("../../ui/app.slint");
+    let start = src
+        .find("component TitleButtons")
+        .expect("app.slint declares TitleButtons");
+    let body = &src[start..];
+    let at = |label: &str| {
+        body.find(&format!("label: \"{label}\""))
+            .unwrap_or_else(|| panic!("TitleButtons has a button labelled {label}"))
+    };
+    let order = [
+        at("Command help"),
+        at("Settings"),
+        at("Minimize"),
+        at("Maximize"),
+        at("Close"),
+    ];
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "the buttons run help, settings, minimise, maximise, close"
+    );
+    assert!(
+        !src.contains("MenuBar") && !src.contains("MenuItem"),
+        "no app menu"
+    );
+}
+
+/// The title buttons' centres, from the right (close, maximise, minimise, the cog), in css px.
+const TITLE_CENTRES: [f32; 4] = [978.0, 942.0, 906.0, 870.0];
+/// `Theme.accent-hi`, the focus ring's colour.
+const ACCENT_HI: [u8; 4] = [0xf6, 0xa2, 0x5b, 255];
+
+fn lit(p: [u8; 4]) -> bool {
+    !Frame::near(p, GROUND, 6)
+}
+
+/// Parity line 27: every caption button is 32 px wide and 28 px tall, and its hover fill covers exactly that box,
+/// at all eight display scalings (PT TitleBar.tsx BTN: h-7 w-8, hover:bg-hover-hi).
+#[test]
+fn the_title_buttons_are_32_by_28_and_the_hover_fills_that_box_at_every_scale() {
+    for s in SCALES {
+        for cx in TITLE_CENTRES {
+            let h = harness(s);
+            h.advance(0);
+            h.move_to(cx, 18.0);
+            let f = h.render();
+            let (x0, y0, x1, y1) = f
+                .bbox_where(
+                    ((cx - 17.0) * s) as u32,
+                    0,
+                    ((cx + 17.0) * s) as u32,
+                    (34.0 * s) as u32,
+                    lit,
+                )
+                .unwrap_or_else(|| panic!("the hover fill is drawn at {cx} at {s}"));
+            let (w, ht) = ((x1 + 1 - x0) as f32, (y1 + 1 - y0) as f32);
+            assert!(
+                (w - 32.0 * s).abs() <= 1.5 && (ht - 28.0 * s).abs() <= 1.5,
+                "button at {cx}, scale {s}: fill {w} x {ht} px, want {} x {}",
+                32.0 * s,
+                28.0 * s
+            );
+            assert!(
+                ((x0 + x1 + 1) as f32 / 2.0 - cx * s).abs() <= 1.5
+                    && ((y0 + y1 + 1) as f32 / 2.0 - 18.0 * s).abs() <= 1.5,
+                "button at {cx}, scale {s}: the fill is centred on the button"
+            );
+        }
+    }
+}
+
+/// Parity line 27: Tab reaches a caption button and draws the 2 px accent-hi ring just outside its 32 x 28 box
+/// (PT focus-visible:ring-2); a click does not draw it (focus-visible is for the keyboard), at every scaling.
+#[test]
+fn a_caption_button_reached_by_tab_has_a_2px_accent_ring_and_a_click_has_none() {
+    let tab: String = char::from(slint::platform::Key::Tab).into();
+    let ring = |p: [u8; 4]| Frame::near(p, ACCENT_HI, 4);
+    for s in SCALES {
+        let h = harness(s);
+        h.advance(0);
+        h.click(870.0, 18.0);
+        h.move_to(500.0, 300.0);
+        let f = h.render();
+        assert!(
+            f.bbox_where((850.0 * s) as u32, 0, f.w, (36.0 * s) as u32, ring)
+                .is_none(),
+            "scale {s}: a click draws no ring"
+        );
+        let mut found = None;
+        for _ in 0..24 {
+            h.key_text(&tab);
+            h.advance(0);
+            let f = h.render();
+            if let Some(b) = f.bbox_where((850.0 * s) as u32, 0, f.w, (36.0 * s) as u32, ring) {
+                found = Some(b);
+                break;
+            }
+        }
+        let (x0, y0, x1, y1) =
+            found.unwrap_or_else(|| panic!("scale {s}: Tab reaches a caption button"));
+        let (w, ht) = ((x1 + 1 - x0) as f32, (y1 + 1 - y0) as f32);
+        // The ring is the box grown by 2 px on every side.
+        assert!(
+            (w - 36.0 * s).abs() <= 1.5 && (ht - 32.0 * s).abs() <= 1.5,
+            "scale {s}: ring {w} x {ht} px, want {} x {}",
+            36.0 * s,
+            32.0 * s
+        );
+    }
 }

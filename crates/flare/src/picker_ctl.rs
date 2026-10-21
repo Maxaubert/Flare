@@ -241,6 +241,23 @@ impl PickerCtl {
         self.start(row, in_editor, anchor, ctx, None, None);
     }
 
+    /// The open picker's swatch moved (the format toggle widens the code fields): the popover is
+    /// placed again against the swatch's new box. Anything but the open picker's own swatch is ignored.
+    pub fn reanchor(&mut self, row: &str, in_editor: bool, anchor: Rect, ctx: &PickerCtx) {
+        if !self.is_open_for(row, in_editor) {
+            return;
+        }
+        if let Some(s) = self.session.as_mut() {
+            let h = if s.range.alpha {
+                POP_H_ALPHA
+            } else {
+                POP_H_PLAIN
+            };
+            s.anchor = anchor;
+            s.pos = place_popover_at(anchor, (POPOVER_W, h), ctx.window, ctx.scale);
+        }
+    }
+
     pub fn on_sv(&mut self, x: f64, y: f64, key: bool) {
         if let Some(s) = &mut self.session {
             s.picker.drag_sv(x, y);
@@ -921,6 +938,30 @@ mod tests {
         );
         assert!(f.ctl.is_open_for("window-accent", false));
         assert!(!f.ctl.is_open_for("window-secondary", false));
+    }
+
+    #[test]
+    fn the_popover_follows_its_swatch_when_the_swatch_moves() {
+        let mut f = fx();
+        f.window = (800.0, 600.0);
+        let at = |x: f64| Rect {
+            x,
+            y: 100.0,
+            w: 36.0,
+            h: 24.0,
+        };
+        f.with(|c, ctx| c.open("window-secondary", false, at(200.0), ctx));
+        let first = f.ctl.position().unwrap();
+        f.with(|c, ctx| c.reanchor("window-secondary", false, at(296.0), ctx));
+        let moved = f.ctl.position().unwrap();
+        assert!(f.ctl.is_open(), "moving the swatch keeps the picker open");
+        assert!(
+            (moved.0 - first.0 - 96.0).abs() < 0.5,
+            "{first:?} to {moved:?}"
+        );
+        // Another row's swatch moving is not this picker's business.
+        f.with(|c, ctx| c.reanchor("window-accent", false, at(500.0), ctx));
+        assert_eq!(f.ctl.position().unwrap(), moved);
     }
 
     #[test]

@@ -414,6 +414,16 @@ pub trait OverlayShell {
     fn set_overlay(&mut self, icon: Option<&Disc>, text: &str) -> bool;
 }
 
+/// A shell that takes every overlay and shows it nowhere: an `--e2e` run has a badge to read
+/// (`last_description`) and never touches the real taskbar.
+pub struct RecordShell;
+
+impl OverlayShell for RecordShell {
+    fn set_overlay(&mut self, _icon: Option<&Disc>, _text: &str) -> bool {
+        true
+    }
+}
+
 /// The shell used where there is no taskbar.
 #[cfg(not(windows))]
 struct NoShell;
@@ -422,6 +432,34 @@ impl OverlayShell for NoShell {
     fn set_overlay(&mut self, _icon: Option<&Disc>, _text: &str) -> bool {
         false
     }
+}
+
+std::thread_local! {
+    /// What the shell was last told on this thread: the description, or empty once cleared. The
+    /// test hook's agent probe reads it (the window and its probes share the UI thread).
+    static LAST_DESCRIPTION: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+std::thread_local! {
+    /// The width in device pixels of the disc the shell last took on this thread; 0 once cleared.
+    static LAST_OVERLAY_PX: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The width of the overlay picture the shell last took on this thread (`badge_px` of the scale it
+/// was drawn at), 0 when the overlay is clear. The test hook reads it: the picture itself is never
+/// kept.
+pub fn last_overlay_px() -> u32 {
+    LAST_OVERLAY_PX.with(std::cell::Cell::get)
+}
+
+fn remember_description(text: &str) {
+    LAST_DESCRIPTION.with(|d| *d.borrow_mut() = text.to_string());
+}
+
+/// The description the shell last took on this thread ("1 tab needs a look"), empty when the
+/// overlay is clear or was never set.
+pub fn last_description() -> String {
+    LAST_DESCRIPTION.with(|d| d.borrow().clone())
 }
 
 /// The overlay icon on the window's taskbar button (lower right).
@@ -462,8 +500,11 @@ impl TaskbarBadge {
             return true;
         }
         let disc = compose_disc(size, &text_mask(size, &count_text(count)));
-        let ok = self.shell.set_overlay(Some(&disc), &description(count));
+        let text = description(count);
+        let ok = self.shell.set_overlay(Some(&disc), &text);
         if ok {
+            remember_description(&text);
+            LAST_OVERLAY_PX.with(|p| p.set(size));
             self.last = Some((count, size));
             self.cleared = false;
         }
@@ -476,6 +517,8 @@ impl TaskbarBadge {
         }
         let ok = self.shell.set_overlay(None, "");
         if ok {
+            remember_description("");
+            LAST_OVERLAY_PX.with(|p| p.set(0));
             self.last = None;
             self.cleared = true;
         }
@@ -646,6 +689,39 @@ mod tests {
                 .push((icon.map(|d| d.size), text.to_string()));
             true
         }
+    }
+
+    #[test]
+    fn the_last_description_is_what_the_shell_was_last_told() {
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut b = TaskbarBadge::with_shell(Box::new(Fake(log)));
+        assert_eq!(last_description(), "");
+        assert!(b.set(1, 1.0));
+        assert_eq!(last_description(), "1 tab needs a look");
+        assert!(b.set(2, 1.0));
+        assert_eq!(last_description(), "2 tabs need a look");
+        assert!(b.clear());
+        assert_eq!(last_description(), "", "a cleared badge says nothing");
+    }
+
+    #[test]
+    fn the_last_overlay_width_is_the_disc_the_shell_was_last_given() {
+        let mut b = TaskbarBadge::with_shell(Box::new(RecordShell));
+        assert!(b.set(1, 1.0));
+        assert_eq!(last_overlay_px(), 16);
+        assert!(b.set(1, 2.25));
+        assert_eq!(last_overlay_px(), 36);
+        assert!(b.clear());
+        assert_eq!(last_overlay_px(), 0, "a cleared badge has no picture");
+    }
+
+    #[test]
+    fn the_recording_shell_keeps_the_badge_readable_without_a_taskbar() {
+        let mut b = TaskbarBadge::with_shell(Box::new(RecordShell));
+        assert!(b.set(2, 2.25));
+        assert_eq!(last_description(), "2 tabs need a look");
+        assert!(b.clear());
+        assert_eq!(last_description(), "");
     }
 
     #[test]

@@ -377,6 +377,27 @@ fn a_click_on_a_card_picks_it_and_the_pencil_edits_it() {
 }
 
 #[test]
+fn a_chosen_cards_pencil_takes_the_keys_when_asked_and_enter_edits() {
+    let h = harness(1.0);
+    h.comp.set_solo(card("s", "Solo", true, true, 0.0, 0.0));
+    h.advance(0);
+    h.comp.set_solo_take_pencil(true);
+    h.advance(0);
+    assert_eq!(
+        h.comp.get_pencil_takes(),
+        1,
+        "the card says it took the keys"
+    );
+    h.key_text(&key(Key::Return));
+    assert_eq!(h.comp.get_edited_id().as_str(), "s");
+    assert_eq!(
+        h.comp.get_picked_id().as_str(),
+        "",
+        "Enter on the pencil edits, it does not pick"
+    );
+}
+
+#[test]
 fn the_wall_clips_at_the_given_height_and_grows_over_240_ms() {
     let h = harness(1.0);
     h.comp.set_cards(three_cards());

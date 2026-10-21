@@ -1,0 +1,749 @@
+{
+  "taken": "2026-10-19",
+  "exe": "C:/Users/Admin/Documents/Claude/Github/Flare/.claude/targets/t1/release/flare.exe",
+  "runs": 7,
+  "scale_dpi": 216,
+  "shell": "cmd",
+  "baseline": "docs/perf/pt-baseline-2026-10-19.json",
+  "values": {
+    "B1": {
+      "gpu": 814.3245000000001,
+      "software": 169.9559
+    },
+    "B2": {
+      "gpu": 76.58203125,
+      "software": 66.484375
+    },
+    "B3": {
+      "gpu": 2.4767221553149494,
+      "software": 2.3882124615421665
+    },
+    "B4": {
+      "gpu": 10.2285,
+      "software": 3.17355
+    },
+    "B5": {
+      "gpu": 144.0154828172587,
+      "software": 59.93384268606618
+    },
+    "B6": {
+      "gpu": 0.1561445961518137,
+      "software": 0.3122236664440137
+    },
+    "B7": {
+      "gpu": 4.731800000000001
+    }
+  },
+  "measures": [
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "gpu",
+      "value": 814.3245000000001,
+      "unit": "ms",
+      "detail": {
+        "shell": "cmd",
+        "runs_ms": [
+          795.0116,
+          814.3245000000001,
+          840.9472,
+          789.6659999999999,
+          803.1197,
+          814.9767999999999,
+          817.2491
+        ],
+        "prompt_median_ms": 795.8773,
+        "echo_median_ms": 13.62779999999998,
+        "outside_median_ms": 815.8278,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 15.3482
+          },
+          {
+            "name": "args",
+            "ms": 15.4207
+          },
+          {
+            "name": "backend",
+            "ms": 474.761
+          },
+          {
+            "name": "component",
+            "ms": 609.9313
+          },
+          {
+            "name": "profile",
+            "ms": 618.5199
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 738.3806000000001
+          },
+          {
+            "name": "render_setup",
+            "ms": 664.7207000000001
+          },
+          {
+            "name": "first_frame",
+            "ms": 728.7303
+          },
+          {
+            "name": "first_prompt",
+            "ms": 807.8507999999999
+          }
+        ]
+      },
+      "rule": "<= 300 ms and <= pt",
+      "pt": 436.18,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "software",
+      "value": 169.9559,
+      "unit": "ms",
+      "detail": {
+        "shell": "cmd",
+        "runs_ms": [
+          153.35670000000002,
+          170.30020000000002,
+          134.9785,
+          172.4111,
+          170.9964,
+          160.2356,
+          169.9559
+        ],
+        "prompt_median_ms": 154.064,
+        "echo_median_ms": 16.42390000000003,
+        "outside_median_ms": 182.55689999999998,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 14.6031
+          },
+          {
+            "name": "args",
+            "ms": 14.6403
+          },
+          {
+            "name": "backend",
+            "ms": 18.8507
+          },
+          {
+            "name": "component",
+            "ms": 23.0294
+          },
+          {
+            "name": "profile",
+            "ms": 31.8673
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 75.9866
+          },
+          {
+            "name": "first_frame",
+            "ms": 42.9804
+          },
+          {
+            "name": "first_prompt",
+            "ms": 154.1527
+          },
+          {
+            "name": "usable",
+            "ms": 154.1896
+          }
+        ]
+      },
+      "rule": "<= 300 ms and <= pt",
+      "pt": 436.18,
+      "verdict": "pass"
+    },
+    {
+      "id": "B2",
+      "metric": "idle private working set",
+      "renderer": "gpu",
+      "value": 76.58203125,
+      "unit": "MB",
+      "detail": {
+        "sessions_mb": [
+          78.23046875,
+          76.58203125,
+          75.296875
+        ],
+        "processes": [
+          {
+            "name": "flare.exe",
+            "pid": 68020,
+            "mb": 75.296875
+          }
+        ],
+        "breakdown": {
+          "atlas_cpu": 13609,
+          "atlas_gpu": 16777216,
+          "grid_texture": 17777880,
+          "cpu_frame_buffer": 238080,
+          "glyph_cache": 64751,
+          "scrollback": [
+            {
+              "tab": "t1a154707625-1",
+              "bytes": 0
+            }
+          ],
+          "scrollback_total": 0,
+          "font_database": 219939192,
+          "help_index": 0,
+          "settings_catalogue": 5304,
+          "private_ws": 79654912,
+          "regions": {
+            "image_total": 4165632,
+            "image": [
+              {
+                "name": "nvgpucomp64.dll",
+                "bytes": 1077248
+              },
+              {
+                "name": "nvwgf2umx.dll",
+                "bytes": 1007616
+              },
+              {
+                "name": "opengl32.dll",
+                "bytes": 122880
+              },
+              {
+                "name": "D3DCompiler_47.dll",
+                "bytes": 81920
+              },
+              {
+                "name": "D3D12Core.dll",
+                "bytes": 77824
+              },
+              {
+                "name": "shell32.dll",
+                "bytes": 73728
+              },
+              {
+                "name": "windows.storage.dll",
+                "bytes": 69632
+              },
+              {
+                "name": "KernelBase.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "UIAutomationCore.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "ntdll.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "DWrite.dll",
+                "bytes": 49152
+              },
+              {
+                "name": "crypt32.dll",
+                "bytes": 45056
+              }
+            ],
+            "mapped": 0,
+            "private": 75489280,
+            "heap_allocated": 19026550,
+            "heap_committed": 25219072,
+            "largest_private": [
+              {
+                "base": "0x256d43e0000",
+                "bytes": 17874944,
+                "heap": false
+              },
+              {
+                "base": "0x257163e0000",
+                "bytes": 15052800,
+                "heap": false
+              },
+              {
+                "base": "0x257143e0000",
+                "bytes": 9728000,
+                "heap": false
+              },
+              {
+                "base": "0x25728b00000",
+                "bytes": 8081408,
+                "heap": false
+              },
+              {
+                "base": "0x2571bae0000",
+                "bytes": 4194304,
+                "heap": false
+              },
+              {
+                "base": "0x2571b3e0000",
+                "bytes": 4096000,
+                "heap": false
+              },
+              {
+                "base": "0x25728600000",
+                "bytes": 3932160,
+                "heap": false
+              },
+              {
+                "base": "0x257183e0000",
+                "bytes": 3403776,
+                "heap": false
+              },
+              {
+                "base": "0x257266d0000",
+                "bytes": 2818048,
+                "heap": false
+              },
+              {
+                "base": "0x256d3fa0000",
+                "bytes": 2088960,
+                "heap": false
+              }
+            ]
+          },
+          "accounted": 316440,
+          "unaccounted": 79338472
+        }
+      },
+      "rule": "<= pt / 3",
+      "pt": 126.5,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B2",
+      "metric": "idle private working set",
+      "renderer": "software",
+      "value": 66.484375,
+      "unit": "MB",
+      "detail": {
+        "sessions_mb": [
+          66.484375,
+          66.3984375,
+          66.48828125
+        ],
+        "processes": [
+          {
+            "name": "flare.exe",
+            "pid": 36608,
+            "mb": 66.48828125
+          }
+        ],
+        "breakdown": {
+          "atlas_cpu": 0,
+          "atlas_gpu": 0,
+          "grid_texture": 0,
+          "cpu_frame_buffer": 18015960,
+          "glyph_cache": 55157,
+          "scrollback": [
+            {
+              "tab": "t1a15470fa71-1",
+              "bytes": 0
+            }
+          ],
+          "scrollback_total": 0,
+          "font_database": 219939192,
+          "help_index": 0,
+          "settings_catalogue": 5304,
+          "private_ws": 69812224,
+          "regions": {
+            "image_total": 1339392,
+            "image": [
+              {
+                "name": "opengl32.dll",
+                "bytes": 122880
+              },
+              {
+                "name": "shell32.dll",
+                "bytes": 73728
+              },
+              {
+                "name": "ntdll.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "UIAutomationCore.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "KernelBase.dll",
+                "bytes": 53248
+              },
+              {
+                "name": "DWrite.dll",
+                "bytes": 49152
+              },
+              {
+                "name": "ExplorerFrame.dll",
+                "bytes": 45056
+              },
+              {
+                "name": "combase.dll",
+                "bytes": 40960
+              },
+              {
+                "name": "advapi32.dll",
+                "bytes": 36864
+              },
+              {
+                "name": "msvcp_win.dll",
+                "bytes": 32768
+              },
+              {
+                "name": "twinapi.appcore.dll",
+                "bytes": 32768
+              },
+              {
+                "name": "clbcatq.dll",
+                "bytes": 32768
+              }
+            ],
+            "mapped": 0,
+            "private": 68472832,
+            "heap_allocated": 50280419,
+            "heap_committed": 54919168,
+            "largest_private": [
+              {
+                "base": "0x1650e7e0000",
+                "bytes": 18640896,
+                "heap": false
+              },
+              {
+                "base": "0x16510ab0000",
+                "bytes": 17780736,
+                "heap": false
+              },
+              {
+                "base": "0x1650f9b0000",
+                "bytes": 17780736,
+                "heap": false
+              },
+              {
+                "base": "0x16511fb0000",
+                "bytes": 4849664,
+                "heap": false
+              },
+              {
+                "base": "0x16511bb0000",
+                "bytes": 4067328,
+                "heap": false
+              },
+              {
+                "base": "0x1650ba50000",
+                "bytes": 2043904,
+                "heap": false
+              },
+              {
+                "base": "0x16508450000",
+                "bytes": 1044480,
+                "heap": true
+              },
+              {
+                "base": "0x1650a770000",
+                "bytes": 1015808,
+                "heap": false
+              },
+              {
+                "base": "0x314ee00000",
+                "bytes": 323584,
+                "heap": false
+              },
+              {
+                "base": "0x314ec00000",
+                "bytes": 274432,
+                "heap": false
+              }
+            ]
+          },
+          "accounted": 18071117,
+          "unaccounted": 51741107
+        }
+      },
+      "rule": "<= pt",
+      "pt": 126.5,
+      "verdict": "pass"
+    },
+    {
+      "id": "B3",
+      "metric": "flood throughput",
+      "renderer": "gpu",
+      "value": 2.4767221553149494,
+      "unit": "MB/s",
+      "detail": {
+        "mb": 100.0,
+        "seconds": 40.375946,
+        "short": false,
+        "frames": {
+          "count": 5434,
+          "mean_ms": 7.337586416344576,
+          "p50_ms": 6.6401,
+          "p95_ms": 12.7988,
+          "p99_ms": 13.7445,
+          "max_ms": 15.9515,
+          "over_33": 0,
+          "render_p95_ms": 5.7359
+        }
+      },
+      "rule": ">= pt * 2 and no frame over 33 ms",
+      "pt": 2.47,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B3",
+      "metric": "flood throughput",
+      "renderer": "software",
+      "value": 2.3882124615421665,
+      "unit": "MB/s",
+      "detail": {
+        "mb": 100.0,
+        "seconds": 41.872321500000005,
+        "short": false,
+        "frames": {
+          "count": 1990,
+          "mean_ms": 20.79817782805429,
+          "p50_ms": 20.6163,
+          "p95_ms": 22.9824,
+          "p99_ms": 25.0972,
+          "max_ms": 27.6837,
+          "over_33": 0,
+          "render_p95_ms": 8.6966
+        }
+      },
+      "rule": ">= pt",
+      "pt": 2.47,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B4",
+      "metric": "key to frame (median)",
+      "renderer": "gpu",
+      "value": 10.2285,
+      "unit": "ms",
+      "detail": {
+        "n": 200,
+        "p95_ms": 11.7536,
+        "max_ms": 17.0428
+      },
+      "rule": "median <= pt and p95 <= 25 ms",
+      "pt": 19.3,
+      "verdict": "pass"
+    },
+    {
+      "id": "B4",
+      "metric": "key to frame (median)",
+      "renderer": "software",
+      "value": 3.17355,
+      "unit": "ms",
+      "detail": {
+        "n": 200,
+        "p95_ms": 5.186299999999999,
+        "max_ms": 19.7641
+      },
+      "rule": "median <= pt and p95 <= 25 ms",
+      "pt": 19.3,
+      "verdict": "pass"
+    },
+    {
+      "id": "B5",
+      "metric": "scroll frames per second",
+      "renderer": "gpu",
+      "value": 144.0154828172587,
+      "unit": "fps",
+      "detail": {
+        "seconds": 32.7881413,
+        "events": 5000,
+        "max_ms": 9.552,
+        "over_33": 0,
+        "frames": {
+          "count": 4722,
+          "mean_ms": 6.9441640754077385,
+          "p50_ms": 6.9398,
+          "p95_ms": 7.8192,
+          "p99_ms": 8.5077,
+          "max_ms": 9.552,
+          "over_33": 0,
+          "render_p95_ms": 5.0516
+        }
+      },
+      "rule": ">= 55 fps and no frame over 33 ms",
+      "pt": 130.97,
+      "verdict": "pass"
+    },
+    {
+      "id": "B5",
+      "metric": "scroll frames per second",
+      "renderer": "software",
+      "value": 59.93384268606618,
+      "unit": "fps",
+      "detail": {
+        "seconds": 77.3185865,
+        "events": 5000,
+        "max_ms": 27.5036,
+        "over_33": 0,
+        "frames": {
+          "count": 4634,
+          "mean_ms": 16.690198035829916,
+          "p50_ms": 16.3579,
+          "p95_ms": 18.8878,
+          "p99_ms": 21.3452,
+          "max_ms": 27.5036,
+          "over_33": 0,
+          "render_p95_ms": 5.7354
+        }
+      },
+      "rule": ">= 55 fps",
+      "pt": 130.97,
+      "verdict": "pass"
+    },
+    {
+      "id": "B6",
+      "metric": "idle cpu",
+      "renderer": "gpu",
+      "value": 0.1561445961518137,
+      "unit": "% of a core",
+      "detail": {
+        "wall_ms": 10006.750399999999,
+        "cpu_ms": 15.625,
+        "processes": 1
+      },
+      "rule": "<= 0.5% of a core and <= pt",
+      "pt": 3.47,
+      "verdict": "pass"
+    },
+    {
+      "id": "B6",
+      "metric": "idle cpu",
+      "renderer": "software",
+      "value": 0.3122236664440137,
+      "unit": "% of a core",
+      "detail": {
+        "wall_ms": 10008.850499999999,
+        "cpu_ms": 31.25,
+        "processes": 1
+      },
+      "rule": "<= 0.5% of a core and <= pt",
+      "pt": 3.47,
+      "verdict": "pass"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 5.6282,
+      "unit": "ms",
+      "detail": {
+        "phase": "flood",
+        "css_size": [
+          1000.0,
+          640.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 17.0219,
+        "frames": {
+          "count": 5632,
+          "mean_ms": 7.10059071212927,
+          "p50_ms": 6.7598,
+          "p95_ms": 12.2543,
+          "p99_ms": 13.2767,
+          "max_ms": 17.0219,
+          "over_33": 0,
+          "render_p95_ms": 5.6282
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 4.4771,
+      "unit": "ms",
+      "detail": {
+        "phase": "resize",
+        "css_size": [
+          1000.0,
+          640.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 19.34,
+        "frames": {
+          "count": 499,
+          "mean_ms": 5.9710811244979904,
+          "p50_ms": 4.9697,
+          "p95_ms": 14.0701,
+          "p99_ms": 18.4222,
+          "max_ms": 19.34,
+          "over_33": 0,
+          "render_p95_ms": 4.4771
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 6.1672,
+      "unit": "ms",
+      "detail": {
+        "phase": "flood",
+        "css_size": [
+          1707.0,
+          960.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 19.9038,
+        "frames": {
+          "count": 5611,
+          "mean_ms": 7.324082370766496,
+          "p50_ms": 6.750500000000001,
+          "p95_ms": 13.1118,
+          "p99_ms": 14.0483,
+          "max_ms": 19.9038,
+          "over_33": 0,
+          "render_p95_ms": 6.1672
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "pass"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 4.731800000000001,
+      "unit": "ms",
+      "detail": {
+        "phase": "resize",
+        "css_size": [
+          1707.0,
+          960.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 20.5176,
+        "frames": {
+          "count": 454,
+          "mean_ms": 6.538575938189845,
+          "p50_ms": 5.197,
+          "p95_ms": 16.2093,
+          "p99_ms": 19.2248,
+          "max_ms": 20.5176,
+          "over_33": 0,
+          "render_p95_ms": 4.731800000000001
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "pass"
+    }
+  ]
+}

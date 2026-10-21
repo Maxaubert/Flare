@@ -32,22 +32,52 @@ pub fn ime_area(row: usize, col: usize, m: &CellMetrics, grid_origin_phys: (i32,
     }
 }
 
+thread_local! {
+    /// The rectangle last handed to the window (read by the e2e ime.rect probe).
+    static LAST_AREA: std::cell::Cell<Option<ImeArea>> = const { std::cell::Cell::new(None) };
+}
+
+/// Remembers the rectangle just given to the window's input method.
+pub fn record_area(a: ImeArea) {
+    LAST_AREA.with(|c| c.set(Some(a)));
+}
+
+/// The rectangle last given to the window's input method, if a frame has placed one.
+pub fn last_area() -> Option<ImeArea> {
+    LAST_AREA.with(std::cell::Cell::get)
+}
+
 /// The caret hold as the window drives it: a key opens the window, each frame reports the cursor.
 #[derive(Clone, Copy, Debug)]
 pub struct CaretFollower {
     state: CaretHoldState,
+    key_ms: i64,
 }
 
 impl CaretFollower {
     pub fn new() -> Self {
         Self {
             state: initial_caret_hold(),
+            key_ms: i64::MIN,
         }
     }
 
     /// A key was typed at `now_ms`: the 250 ms hold window opens.
     pub fn on_key(&mut self, now_ms: i64) {
         self.state = on_caret_key(&self.state, now_ms);
+        self.key_ms = now_ms;
+    }
+
+    /// The positions the cursor stopped at while output was parsed since the last frame (the
+    /// echo of a key can end on the input line and be overwritten before any frame shows it).
+    /// Each stop made after the last key is taken as a write's end, in order.
+    pub fn on_stops(&mut self, stops: &[(CaretPos, i64)]) {
+        for &(pos, at_ms) in stops {
+            if at_ms >= self.key_ms {
+                let (next, _) = on_caret_move(&self.state, pos, at_ms);
+                self.state = next;
+            }
+        }
     }
 
     /// Each frame: the position the IME rectangle goes to. `release` is true on the alternate
@@ -91,6 +121,18 @@ mod tests {
     }
 
     #[test]
+    fn the_last_area_given_to_the_window_is_kept_for_the_probe() {
+        let a = ImeArea {
+            x: 5,
+            y: 7,
+            w: 9,
+            h: 11,
+        };
+        record_area(a);
+        assert_eq!(last_area(), Some(a));
+    }
+
+    #[test]
     fn the_area_is_the_cell_at_every_scale() {
         let origin = (37, 61);
         for scale in SCALES {
@@ -120,6 +162,24 @@ mod tests {
         assert_eq!(f.on_frame(pos(10, 3), false, 1050), pos(24, 4));
         // And after the window closes, a cursor still above the held line is held back.
         assert_eq!(f.on_frame(pos(10, 3), false, 1400), pos(24, 4));
+    }
+
+    #[test]
+    fn an_echo_stop_no_frame_saw_still_holds_the_caret() {
+        let mut f = CaretFollower::new();
+        f.on_key(1000);
+        // The echo ended on the input line, then the stream parked the cursor above it, and
+        // only the second position ever reached a frame.
+        f.on_stops(&[(pos(24, 4), 1010), (pos(10, 3), 1020)]);
+        assert_eq!(f.on_frame(pos(10, 3), false, 1030), pos(24, 4));
+    }
+
+    #[test]
+    fn a_stop_from_before_the_key_is_not_its_echo() {
+        let mut f = CaretFollower::new();
+        f.on_key(1000);
+        f.on_stops(&[(pos(24, 4), 990)]);
+        assert_eq!(f.on_frame(pos(10, 3), false, 1010), pos(10, 3));
     }
 
     #[test]

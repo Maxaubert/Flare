@@ -19,6 +19,26 @@ use std::time::Instant;
 
 /// The largest slice of output parsed under one hold of the emulator lock.
 const SLICE: usize = 64 * 1024;
+/// The rows a copy worker reads under one hold of the emulator lock (the lock is let go between them).
+pub const CHUNK_ROWS: usize = 250;
+
+/// Where the cursor stood when one parsed slice of output ended (screen row, column, wall-clock ms).
+/// A frame may show only the last of several such stops; the caret hold needs each of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CursorStop {
+    pub line: i32,
+    pub col: usize,
+    pub at_ms: i64,
+}
+
+/// The most stops kept between two frames.
+const STOPS_KEPT: usize = 64;
+
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
 
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -49,6 +69,8 @@ struct Shared {
     t0: Instant,
     reveal: Mutex<Option<RevealState>>,
     clock: Mutex<Option<Clock>>,
+    /// Where the cursor stood at the end of each parsed slice, for the IME caret hold.
+    cursor_log: Mutex<Vec<CursorStop>>,
 }
 
 impl Shared {
@@ -192,7 +214,23 @@ impl SessionSink for Sink {
 
 fn feed_slices(sh: &Shared, bytes: &[u8]) {
     for slice in bytes.chunks(SLICE) {
-        let evs = sh.emu.lock().feed(slice);
+        let (evs, stop) = {
+            let mut e = sh.emu.lock();
+            let evs = e.feed(slice);
+            let stop = (!e.mode().alt_screen).then(|| e.cursor());
+            (evs, stop)
+        };
+        if let Some((line, col)) = stop {
+            let mut log = lk(&sh.cursor_log);
+            if log.len() >= STOPS_KEPT {
+                log.remove(0);
+            }
+            log.push(CursorStop {
+                line,
+                col,
+                at_ms: epoch_ms(),
+            });
+        }
         sh.handle(evs);
     }
 }
@@ -259,6 +297,7 @@ impl TermHandle {
             t0: Instant::now(),
             reveal: Mutex::new(None),
             clock: Mutex::new(None),
+            cursor_log: Mutex::new(Vec::new()),
         });
         Arc::new(Self { sh, emu })
     }
@@ -347,6 +386,26 @@ impl TermHandle {
         self.emu.lock().snapshot()
     }
 
+    /// [`TermHandle::snapshot`] into a grid the caller keeps and refills each frame (M10 Task 67):
+    /// the lock is held only for the copy of the visible rows, which allocates nothing once the
+    /// buffer has the viewport's size. The wait for the lock and the copy go to the frame trace.
+    pub fn snapshot_into(&self, out: &mut flare_render::grid::Grid) {
+        self.sh.dirty.store(false, Ordering::SeqCst);
+        let trace = flare_render::stats::FrameTrace::global();
+        if !trace.on() {
+            self.emu.lock().snapshot_into(out);
+            return;
+        }
+        use flare_render::stats::TracePhase;
+        let asked = Instant::now();
+        let emu = self.emu.lock();
+        let held = Instant::now();
+        emu.snapshot_into(out);
+        drop(emu);
+        trace.add(TracePhase::LockWait, held.duration_since(asked));
+        trace.add(TracePhase::Snapshot, held.elapsed());
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.sh.dirty.load(Ordering::SeqCst)
     }
@@ -369,8 +428,10 @@ impl TermHandle {
         self.sh.dirty.store(true, Ordering::SeqCst);
     }
 
-    /// `notches` > 0 is wheel up. Never typing, never snaps the view.
-    pub fn wheel(&self, notches: i32, col: usize, row: usize) {
+    /// `notches` > 0 is wheel up. Never typing, never snaps the view. True when the view itself
+    /// moved: no output follows such a scroll, so the window must ask for the redraw (the GPU
+    /// path paints only on a request, M10 Task 70).
+    pub fn wheel(&self, notches: i32, col: usize, row: usize) -> bool {
         let m = self.mode();
         let ctx = WheelContext {
             mouse: m.mouse,
@@ -380,9 +441,15 @@ impl TermHandle {
             app_cursor: m.app_cursor,
         };
         match wheel_action(notches, &ctx, col, row) {
-            WheelAction::ScrollView(n) => self.scroll_view(n),
-            WheelAction::Bytes(b) => self.sh.mgr.write(&self.sh.id, &b),
-            WheelAction::None => {}
+            WheelAction::ScrollView(n) => {
+                self.scroll_view(n);
+                true
+            }
+            WheelAction::Bytes(b) => {
+                self.sh.mgr.write(&self.sh.id, &b);
+                false
+            }
+            WheelAction::None => false,
         }
     }
 
@@ -434,6 +501,31 @@ impl TermHandle {
         self.sh.mgr.write(&self.sh.id, bytes);
     }
 
+    /// What the program asked of theme reports (?2031h) and the mode it was last told.
+    pub fn theme_reports(&self) -> flare_theme::reports::ThemeReports {
+        self.emu.lock().theme_reports()
+    }
+
+    pub fn set_theme_reports(&self, s: flare_theme::reports::ThemeReports) {
+        self.emu.lock().set_theme_reports(s);
+    }
+
+    /// The colours OSC 10 and 11 queries are answered with (the theme the tab wears).
+    pub fn set_colours(&self, fg: &str, bg: &str) {
+        self.emu.lock().set_colours(fg, bg);
+    }
+
+    /// Whether the colour queries are already answered with these.
+    pub fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        self.emu.lock().colours_are(fg, bg)
+    }
+
+    /// The size in columns and rows.
+    pub fn size(&self) -> (usize, usize) {
+        let e = self.emu.lock();
+        (e.cols(), e.rows())
+    }
+
     /// The id the RUNNING shell was spawned with, resolved by the session even when the tab asked
     /// for none; None before the spawn finished or after it failed.
     pub fn shell_id(&self) -> Option<String> {
@@ -476,9 +568,47 @@ impl TermHandle {
         r
     }
 
+    /// The cursor stops since the last call, oldest first (the IME caret hold reads them each frame).
+    pub fn take_cursor_stops(&self) -> Vec<CursorStop> {
+        std::mem::take(&mut *lk(&self.sh.cursor_log))
+    }
+
+    /// Bytes this tab's scrollback holds (see `Emulator::scrollback_bytes`).
+    pub fn scrollback_bytes(&self) -> usize {
+        self.emu.lock().scrollback_bytes()
+    }
+
     /// Read only: no dirty flag, no wake.
     pub fn with_emu_quiet<R>(&self, f: impl FnOnce(&Emulator) -> R) -> R {
         f(&self.emu.lock())
+    }
+
+    /// Reads the selection on a worker, `CHUNK_ROWS` rows per hold of the emulator lock, so the UI's
+    /// snapshot and the pty reader wait at most one chunk. `done(Some(text))` carries the text
+    /// the selection covers when the read ends; `done(None)` when the selection changed meanwhile
+    /// (nothing is copied). The selection's generation is taken here, before the worker starts.
+    pub fn selection_text_async(&self, done: Box<dyn FnOnce(Option<String>) + Send>) {
+        let emu = Arc::clone(&self.emu);
+        let generation = emu.lock().sel_generation();
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let mut from = 0usize;
+            let text = loop {
+                let g = emu.lock();
+                if g.sel_generation() != generation {
+                    break None;
+                }
+                let total = g.sel_row_count();
+                if from >= total {
+                    break Some(out);
+                }
+                let (piece, _) = g.sel_text_rows(from..(from + CHUNK_ROWS).min(total));
+                drop(g);
+                out.push_str(&piece);
+                from += CHUNK_ROWS;
+            };
+            done(text);
+        });
     }
 
     /// One frame's decoration (Task 16d). Locks the emulator (the link scan may run) and does not
@@ -496,6 +626,7 @@ impl TermHandle {
 mod tests {
     use super::*;
     use crate::fake::{FakeShells, FakeSpawner, FakeState};
+    use crate::sel_machine::{Anchor, SelOut, SelSpec};
     use crate::session::SessionOptions;
     use flare_render::color::Color;
     use std::sync::atomic::AtomicUsize;
@@ -811,6 +942,20 @@ mod tests {
     }
 
     #[test]
+    fn every_parsed_slice_leaves_a_cursor_stop() {
+        let t = T::started();
+        let _ = t.h.take_cursor_stops();
+        t.fake().feed(b"\x1b[10;3Hinput");
+        wait_until("the first slice", || t.text().contains("input"));
+        t.fake().feed(b"\x1b[2;1Hstream");
+        wait_until("the second slice", || t.text().contains("stream"));
+        let stops = t.h.take_cursor_stops();
+        assert!(stops.iter().any(|s| s.line == 9), "{stops:?}");
+        assert_eq!(stops.last().map(|s| s.line), Some(1), "{stops:?}");
+        assert!(t.h.take_cursor_stops().is_empty());
+    }
+
+    #[test]
     fn cd_is_not_typing() {
         let t = T::started();
         assert!(t.h.cd("C:\\x"));
@@ -886,6 +1031,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_says_when_the_view_moved_so_the_window_can_redraw() {
+        let t = T::started();
+        feed_lines(&t, 100);
+        assert!(t.h.wheel(1, 0, 0), "a scroll of the view must be reported");
+        t.fake().feed(b"\x1b[?1049h");
+        wait_until("the alt screen", || t.h.mode().alt_screen);
+        assert!(
+            !t.h.wheel(1, 0, 0),
+            "arrows sent to the program are not a view change"
+        );
+    }
+
+    #[test]
     fn a_paste_is_bracketed_only_when_asked() {
         let t = T::started();
         t.h.paste("a\nb");
@@ -916,6 +1074,81 @@ mod tests {
         assert!(!t.h.is_dirty());
     }
 
+    /// Fills the history with `n` numbered rows and selects all of them.
+    fn select_all_rows(t: &T, n: usize) {
+        t.h.with_emu(|e| {
+            for i in 0..n {
+                e.feed(format!("row {i:05}\r\n").as_bytes());
+            }
+            let total = e.history_size() + e.rows();
+            e.sel_apply(SelOut::Set(SelSpec {
+                block: false,
+                start: Anchor { row: 0, b: 0 },
+                end: Anchor {
+                    row: total - 1,
+                    b: 80,
+                },
+            }));
+        });
+    }
+
+    fn read_async(t: &T) -> Option<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        rx.recv_timeout(Duration::from_secs(20)).expect("done")
+    }
+
+    #[test]
+    fn a_big_copy_delivers_the_exact_text_later() {
+        let t = T::started();
+        select_all_rows(&t, 600);
+        let want = t.h.with_emu_quiet(|e| e.sel_text());
+        assert_eq!(read_async(&t), Some(want));
+    }
+
+    #[test]
+    fn a_selection_changed_mid_read_copies_nothing() {
+        // 10,000 rows take many chunks; the change lands while the worker is still reading.
+        let t = T::started();
+        select_all_rows(&t, 10_000);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        t.h.with_emu(|e| e.sel_clear());
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(20)).expect("done"),
+            None
+        );
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn the_ui_snapshot_never_waits_more_than_5_ms_for_a_copy() {
+        let t = T::started();
+        select_all_rows(&t, 10_000);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.h.selection_text_async(Box::new(move |text| {
+            let _ = tx.send(text);
+        }));
+        let mut longest = Duration::ZERO;
+        let text = loop {
+            let started = Instant::now();
+            let _ = t.h.snapshot();
+            longest = longest.max(started.elapsed());
+            if let Ok(text) = rx.try_recv() {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(text.is_some());
+        assert!(
+            longest < Duration::from_millis(5),
+            "the longest snapshot wait was {longest:?}"
+        );
+    }
     #[test]
     fn with_emu_marks_dirty_and_wakes() {
         let t = T::started();

@@ -17,6 +17,10 @@ fn row(label: &str) -> MenuRow {
         trailing_icon: "".into(),
         trailing_filled: false,
         trailing_tip: "".into(),
+        keep_open: false,
+        flyout: false,
+        flyout_pick: false,
+        parent: -1,
     }
 }
 
@@ -147,6 +151,40 @@ fn every_row_is_28_tall_including_the_last_and_the_border_closes_it() {
             "panel {} tall, want {want_h} at {scale}",
             h.comp.get_panel_h()
         );
+    }
+}
+
+/// Parity line 43: the panel is at least 156 wide and ends on a whole device pixel, and its
+/// metrics are the ones PT's ContextMenu sets (1 px divider border, 2 px radius, the shadow
+/// 0 10px 28px rgba(0,0,0,.5)). The metrics are read from menus.slint, the source they live in.
+#[test]
+fn the_menu_panel_has_156_min_width_1px_border_2px_radius_and_the_shadow() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, vec![row("A")], 20.0, 20.0);
+        let _ = h.render();
+        let w = h.comp.get_panel_w();
+        assert!(
+            w >= 156.0 - 0.01,
+            "a short menu is {w} css px wide at {scale}"
+        );
+        let dev = w * scale;
+        assert!(
+            (dev - dev.round()).abs() < 0.01,
+            "the panel is {dev} device px wide at {scale}"
+        );
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/menus.slint");
+    let src = std::fs::read_to_string(path).expect("menus.slint"); // sync-ok: test code only
+    for want in [
+        "min(max(156px",
+        "border-radius: 2px;",
+        "border-width: Px.hair();",
+        "drop-shadow-offset-y: 10px;",
+        "drop-shadow-blur: 28px;",
+        "drop-shadow-color: #00000080;",
+    ] {
+        assert!(src.contains(want), "menus.slint lost `{want}`");
     }
 }
 
@@ -400,4 +438,327 @@ fn a_label_is_never_cut_for_its_key_hint() {
             }
         }
     }
+}
+
+// ---- Parity line 44: one flyout level, keepOpen rows (PT ContextMenu.tsx) ----
+
+/// Row 0 "Open with" carries two children (flat rows 3 and 4, `parent: 0`); rows 1 and 2 are plain.
+fn flyout_rows() -> Vec<MenuRow> {
+    let mut a = row("Open with");
+    a.flyout = true;
+    let mut x = row("Notepad");
+    x.parent = 0;
+    let mut y = row("Paint");
+    y.parent = 0;
+    vec![a, row("Two"), row("Three"), x, y]
+}
+
+/// One css hairline at this scale (the divider and border thickness the menu draws).
+fn hair(scale: f32) -> f32 {
+    scale.floor().max(1.0) / scale
+}
+
+/// The middle of top-level row `i` of the open panel.
+fn top_row(h: &Harness<MenusPreview>, scale: f32, i: usize) -> (f32, f32) {
+    let hr = hair(scale);
+    (
+        h.comp.get_panel_x() + 20.0,
+        h.comp.get_panel_y() + hr + i as f32 * (28.0 + hr) + 14.0,
+    )
+}
+
+/// The middle of flyout row `i`.
+fn fly_row(h: &Harness<MenusPreview>, scale: f32, i: usize) -> (f32, f32) {
+    let hr = hair(scale);
+    (
+        h.comp.get_fly_x() + 20.0,
+        h.comp.get_fly_y() + hr + i as f32 * (28.0 + hr) + 14.0,
+    )
+}
+
+fn hover_row(h: &Harness<MenusPreview>, scale: f32, i: usize) {
+    let (x, y) = top_row(h, scale, i);
+    h.move_to(x, y);
+    h.advance(0);
+}
+
+#[test]
+fn a_flyout_row_opens_one_panel_beside_it_overlapping_6_px_and_level_with_the_row() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, flyout_rows(), 20.0, 20.0);
+        let _ = h.render();
+        assert!(
+            !h.comp.get_fly_open(),
+            "no flyout before a hover at {scale}"
+        );
+        hover_row(&h, scale, 0);
+        let f = h.render();
+        assert!(
+            h.comp.get_fly_open(),
+            "hovering the row opens it at {scale}"
+        );
+        let tol = 1.0 / scale + 0.01;
+        let (px, pw) = (h.comp.get_panel_x(), h.comp.get_panel_w());
+        assert!(
+            (h.comp.get_fly_x() - (px + pw - 6.0)).abs() <= tol,
+            "the flyout overlaps the panel by 6 px at {scale}: fly {} panel right {}",
+            h.comp.get_fly_x(),
+            px + pw
+        );
+        // Its first row meets the parent row's top (the parent row starts one hairline in).
+        let row_top = h.comp.get_panel_y() + hair(scale);
+        assert!(
+            (h.comp.get_fly_y() + hair(scale) - row_top).abs() <= tol,
+            "the flyout is level with its row at {scale}"
+        );
+        let fw = h.comp.get_fly_w();
+        assert!(
+            (176.0 - 0.01..=260.0 + 0.01).contains(&fw),
+            "flyout {fw} wide"
+        );
+        assert!(
+            ((fw * scale) - (fw * scale).round()).abs() < 0.01,
+            "flyout ends on a whole device pixel at {scale}"
+        );
+        // Two children, 28 tall each, hairlines between and around.
+        let want_h = 2.0 * 28.0 + 3.0 * hair(scale);
+        assert!(
+            (h.comp.get_fly_h() - want_h).abs() < 0.01,
+            "flyout {} tall, want {want_h} at {scale}",
+            h.comp.get_fly_h()
+        );
+        // It is drawn: a point inside it, past the parent panel, is the panel's flat colour.
+        let (ix, iy) = (
+            h.phys(h.comp.get_fly_x() + fw - 10.0),
+            h.phys(h.comp.get_fly_y() + 20.0),
+        );
+        assert!(
+            Frame::near(f.px(ix, iy), SIDE_FLAT, 2),
+            "flyout drawn at {scale}"
+        );
+    }
+}
+
+#[test]
+fn the_flyout_flips_left_at_the_right_edge() {
+    for scale in SCALES {
+        let h = harness(scale);
+        // Asked far right: the panel clamps to the window, so the flyout has no room on the right.
+        open_menu(&h, flyout_rows(), 390.0, 20.0);
+        hover_row(&h, scale, 0);
+        let _ = h.render();
+        assert!(h.comp.get_fly_open());
+        let tol = 1.0 / scale + 0.01;
+        let want = h.comp.get_panel_x() - h.comp.get_fly_w() + 6.0;
+        assert!(
+            (h.comp.get_fly_x() - want).abs() <= tol,
+            "flipped left at {scale}: fly {} want {want}",
+            h.comp.get_fly_x()
+        );
+        assert!(
+            h.comp.get_fly_x() >= 8.0 - 0.01,
+            "and still inside the window"
+        );
+    }
+}
+
+#[test]
+fn the_flyout_never_runs_off_the_bottom_or_top() {
+    for scale in SCALES {
+        let h = harness(scale);
+        let mut rows = flyout_rows();
+        for n in 0..4 {
+            let mut c = row(&format!("Child {n}"));
+            c.parent = 0;
+            rows.push(c);
+        }
+        open_menu(&h, rows, 20.0, 150.0);
+        hover_row(&h, scale, 0);
+        let _ = h.render();
+        assert!(h.comp.get_fly_open());
+        assert!(
+            h.comp.get_fly_y() + h.comp.get_fly_h() <= 300.0 - 8.0 + 0.01,
+            "bottom at {scale}: {} + {}",
+            h.comp.get_fly_y(),
+            h.comp.get_fly_h()
+        );
+        assert!(h.comp.get_fly_y() >= 8.0 - 0.01, "top at {scale}");
+    }
+}
+
+#[test]
+fn leaving_a_flyout_row_gives_a_grace_period_and_reaching_the_flyout_cancels_the_close() {
+    let scale = 1.0;
+    let h = harness(scale);
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    hover_row(&h, scale, 0);
+    assert!(h.comp.get_fly_open());
+    // The diagonal path to the flyout crosses the rows below: row 1 does not close it at once.
+    hover_row(&h, scale, 1);
+    h.advance(150);
+    assert!(
+        h.comp.get_fly_open(),
+        "still open 150 ms after leaving the row"
+    );
+    // Reaching the flyout inside the grace period cancels the close for good.
+    let (fx, fy) = fly_row(&h, scale, 0);
+    h.move_to(fx, fy);
+    h.advance(0);
+    h.advance(600);
+    assert!(
+        h.comp.get_fly_open(),
+        "the pointer in the flyout keeps it up"
+    );
+    // Back to a plain row and staying there closes it once the grace period is over.
+    hover_row(&h, scale, 2);
+    h.advance(200);
+    assert!(h.comp.get_fly_open(), "200 ms is inside the 300 ms grace");
+    h.advance(150);
+    assert!(!h.comp.get_fly_open(), "closed after the grace period");
+    // The parent row again opens it, and coming back to the parent cancels a pending close.
+    hover_row(&h, scale, 0);
+    assert!(h.comp.get_fly_open());
+    hover_row(&h, scale, 1);
+    h.advance(100);
+    hover_row(&h, scale, 0);
+    h.advance(600);
+    assert!(
+        h.comp.get_fly_open(),
+        "back on the parent cancels the close"
+    );
+}
+
+#[test]
+fn a_keep_open_row_acts_and_leaves_the_menu_and_the_flyout_up() {
+    for scale in [1.0_f32, 2.25] {
+        let h = harness(scale);
+        let mut rows = flyout_rows();
+        rows[3].keep_open = true; // Notepad, in the flyout
+        rows[1].keep_open = true; // Two, on the panel
+        open_menu(&h, rows, 20.0, 20.0);
+        hover_row(&h, scale, 0);
+        let (fx, fy) = fly_row(&h, scale, 0);
+        h.click(fx, fy);
+        assert_eq!(
+            h.comp.get_picked_index(),
+            3,
+            "the flyout row reports its flat index"
+        );
+        assert_eq!(
+            h.comp.get_menu_dismissed(),
+            0,
+            "keepOpen: not dismissed at {scale}"
+        );
+        assert!(h.comp.get_menu_open() && h.comp.get_fly_open());
+        // A second pick (undoing a tick) still works while it stands.
+        h.comp.set_picked_index(-1);
+        h.click(fx, fy);
+        assert_eq!(h.comp.get_picked_index(), 3);
+        // A plain flyout row picks and closes the whole menu.
+        let (fx2, fy2) = fly_row(&h, scale, 1);
+        h.click(fx2, fy2);
+        assert_eq!(h.comp.get_picked_index(), 4);
+        assert_eq!(
+            h.comp.get_menu_dismissed(),
+            1,
+            "an ordinary row closes at {scale}"
+        );
+        // A keepOpen row on the panel itself also keeps it up.
+        open_menu(
+            &h,
+            {
+                let mut r = flyout_rows();
+                r[1].keep_open = true;
+                r
+            },
+            20.0,
+            20.0,
+        );
+        h.comp.set_menu_dismissed(0);
+        let (x, y) = top_row(&h, scale, 1);
+        h.click(x, y);
+        assert_eq!(h.comp.get_picked_index(), 1);
+        assert_eq!(h.comp.get_menu_dismissed(), 0);
+        assert!(h.comp.get_menu_open());
+    }
+}
+
+#[test]
+fn a_flyout_row_is_flyout_only_unless_it_brings_its_own_pick() {
+    let scale = 1.0;
+    let h = harness(scale);
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    let (x, y) = top_row(&h, scale, 0);
+    h.click(x, y);
+    assert_eq!(
+        h.comp.get_picked_index(),
+        -1,
+        "no pick from a flyout-only parent"
+    );
+    assert_eq!(h.comp.get_menu_dismissed(), 0);
+    assert!(
+        h.comp.get_menu_open() && h.comp.get_fly_open(),
+        "the click leaves the flyout up"
+    );
+    let mut rows = flyout_rows();
+    rows[0].flyout_pick = true;
+    open_menu(&h, rows, 20.0, 20.0);
+    h.click(x, y);
+    assert_eq!(
+        h.comp.get_picked_index(),
+        0,
+        "the parent picks when it brings its own"
+    );
+    assert_eq!(h.comp.get_menu_dismissed(), 1);
+}
+
+#[test]
+fn there_is_one_flyout_level_only() {
+    let scale = 1.0;
+    let h = harness(scale);
+    let mut rows = flyout_rows();
+    rows[3].flyout = true; // a child that claims a flyout of its own
+    open_menu(&h, rows, 20.0, 20.0);
+    hover_row(&h, scale, 0);
+    let (fx, fy) = fly_row(&h, scale, 0);
+    h.move_to(fx, fy);
+    h.advance(600);
+    assert!(h.comp.get_fly_open(), "the first level stays");
+    assert_eq!(
+        h.comp.get_open_sub(),
+        0,
+        "no second level replaces or nests it"
+    );
+}
+
+#[test]
+fn escape_closes_the_whole_menu_and_a_fresh_open_starts_without_a_flyout() {
+    let scale = 1.0;
+    let h = harness(scale);
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    hover_row(&h, scale, 0);
+    assert!(h.comp.get_fly_open());
+    h.key_text(slint::SharedString::from(slint::platform::Key::Escape).as_str());
+    assert_eq!(h.comp.get_menu_dismissed(), 1);
+    assert!(!h.comp.get_menu_open());
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    assert!(!h.comp.get_fly_open(), "a reopened menu has no flyout up");
+}
+
+#[test]
+fn a_press_on_the_flyout_does_not_dismiss_and_one_outside_both_does() {
+    let scale = 1.0;
+    let h = harness(scale);
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    hover_row(&h, scale, 0);
+    // The hairline between the two flyout rows is panel, not a row: still not "outside".
+    let hr = hair(scale);
+    h.click(
+        h.comp.get_fly_x() + 20.0,
+        h.comp.get_fly_y() + hr + 28.0 + hr / 2.0,
+    );
+    assert_eq!(h.comp.get_menu_dismissed(), 0);
+    h.click(390.0, 290.0);
+    assert_eq!(h.comp.get_menu_dismissed(), 1);
 }

@@ -10,10 +10,18 @@ import { LoadingRing } from "tabs.slint";
 component MenuItem inherits Rectangle {
     in property <MenuRow> item;
     in property <int> index;
+    in property <bool> expanded;
     callback picked(int);
     callback trailing(int);
+    // The pointer came onto the row: its index and its top edge in window coordinates.
+    callback hovered(int, length);
     height: 28px;
-    background: ta.has-hover && !root.item.disabled ? Theme.hover : transparent;
+    property <bool> lit: (ta.has-hover || root.expanded) && !root.item.disabled;
+    property <bool> over: ta.has-hover;
+    changed over => {
+        if root.over { root.hovered(root.index, root.absolute-position.y); }
+    }
+    background: root.lit ? Theme.hover : transparent;
     opacity: root.item.disabled ? 0.5 : 1;
     ta := TouchArea {
         enabled: !root.item.disabled;
@@ -35,14 +43,17 @@ component MenuItem inherits Rectangle {
         spacing: 8px;
         if root.item.icon != "": Rectangle {
             width: 13px;
+            // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
             Path {
-                width: 13px;
-                height: 13px;
+                width: 13px + 1.7 * 13px / 24;
+                height: 13px + 1.7 * 13px / 24;
+                x: (parent.width - 13px) / 2 - (1.7 * 13px / 24) / 2;
+                y: (parent.height - 13px) / 2 - (1.7 * 13px / 24) / 2;
                 viewbox-width: 24;
                 viewbox-height: 24;
                 commands: root.item.icon;
                 fill: root.item.filled-icon ? Theme.tree-folder : transparent;
-                stroke: root.item.filled-icon ? transparent : (ta.has-hover ? Theme.text : Theme.text-soft);
+                stroke: root.item.filled-icon ? transparent : (root.lit ? Theme.text : Theme.text-soft);
                 stroke-width: 1.7 * 13px / 24;
                 stroke-line-cap: round;
                 stroke-line-join: round;
@@ -54,7 +65,7 @@ component MenuItem inherits Rectangle {
             vertical-alignment: center;
             font-family: Theme.font-ui;
             font-size: 12px;
-            color: ta.has-hover && !root.item.disabled ? Theme.text : Theme.text-soft;
+            color: root.lit ? Theme.text : Theme.text-soft;
             overflow: elide;
             // An eliding Text asks for no width, so the label claims what the unelided probe
             // measures (up to 320 px, past which it elides) and the panel grows to it.
@@ -78,8 +89,10 @@ component MenuItem inherits Rectangle {
                 border-radius: 4px;
                 background: tta.has-hover ? Theme.hover : transparent;
                 Path {
-                    width: 12px;
-                    height: 12px;
+                    width: 12px + 1.8 * 12px / 24;
+                    height: 12px + 1.8 * 12px / 24;
+                    x: (parent.width - 12px) / 2 - (1.8 * 12px / 24) / 2;
+                    y: (parent.height - 12px) / 2 - (1.8 * 12px / 24) / 2;
                     viewbox-width: 24;
                     viewbox-height: 24;
                     commands: root.item.trailing-icon;
@@ -92,6 +105,25 @@ component MenuItem inherits Rectangle {
                 tta := TouchArea {
                     clicked => { root.trailing(root.index); }
                 }
+            }
+        }
+        // A row with a flyout says so (PT's chevron, 11 px, 2.2 stroke, 70 percent).
+        if root.item.flyout && root.item.parent < 0: Rectangle {
+            width: 11px;
+            Path {
+                width: 11px + 2.2 * 11px / 24;
+                height: 11px + 2.2 * 11px / 24;
+                x: (parent.width - 11px) / 2 - (2.2 * 11px / 24) / 2;
+                y: (parent.height - 11px) / 2 - (2.2 * 11px / 24) / 2;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: "M9 6l6 6-6 6";
+                fill: transparent;
+                stroke: root.lit ? Theme.text : Theme.text-soft;
+                stroke-width: 2.2 * 11px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                opacity: 0.7;
             }
         }
     }
@@ -109,8 +141,52 @@ export component ContextMenu inherits Rectangle {
     out property <length> panel-y: panel.y;
     out property <length> panel-w: panel.width;
     out property <length> panel-h: panel.height;
+    // The one flyout level (PT ContextMenu children): the rows whose `parent` is `open-sub`,
+    // listed together right after their parent row. -1 while none is up.
+    in-out property <int> open-sub: -1;
+    out property <bool> fly-open: root.open && root.open-sub >= 0;
+    out property <length> fly-x: fly.x;
+    out property <length> fly-y: fly.y;
+    out property <length> fly-w: fly.width;
+    out property <length> fly-h: fly.height;
+    // The parent row's top edge, relative to this component.
+    property <length> sub-anchor;
+    // Leaving a flyout row starts a grace period: the diagonal path into the flyout crosses the
+    // rows below, so closing on the first touch would flicker the menu shut.
+    property <bool> close-pending;
 
     visible: root.open;
+
+    function row-hovered(i: int, y: length) {
+        if root.rows[i].parent >= 0 {
+            root.close-pending = false;
+        } else if root.rows[i].flyout {
+            root.close-pending = false;
+            if root.open-sub != i {
+                root.open-sub = i;
+                root.sub-anchor = y - root.absolute-position.y;
+            }
+        } else if root.open-sub >= 0 {
+            root.close-pending = true;
+        }
+    }
+    function pick(n: int) {
+        // A flyout row without a pick of its own only opens its flyout (by hover).
+        if root.rows[n].parent < 0 && root.rows[n].flyout && !root.rows[n].flyout-pick {
+            return;
+        }
+        root.picked(n);
+        if !root.rows[n].keep-open { root.dismissed(); }
+    }
+
+    Timer {
+        interval: 300ms;
+        running: root.close-pending && root.open;
+        triggered => {
+            root.close-pending = false;
+            root.open-sub = -1;
+        }
+    }
 
     // A press outside (the panel's own touch area swallows the ones inside).
     TouchArea {
@@ -127,7 +203,11 @@ export component ContextMenu inherits Rectangle {
             return reject;
         }
     }
-    changed open => { if root.open { fs.focus(); } }
+    changed open => {
+        root.open-sub = -1;
+        root.close-pending = false;
+        if root.open { fs.focus(); }
+    }
 
     panel := Rectangle {
         // At least 156 and as wide as its rows want (PT's min-w-[156px] on a fit-content
@@ -150,12 +230,59 @@ export component ContextMenu inherits Rectangle {
         col := VerticalLayout {
             padding: Px.hair();
             for r[i] in root.rows: VerticalLayout {
-                if i > 0: Rectangle { height: Px.hair(); background: Theme.divider; }
-                MenuItem {
+                if r.parent < 0 && i > 0: Rectangle { height: Px.hair(); background: Theme.divider; }
+                if r.parent < 0: MenuItem {
                     item: r;
                     index: i;
-                    picked(n) => { root.picked(n); root.dismissed(); }
+                    expanded: root.open-sub == i;
+                    picked(n) => { root.pick(n); }
                     trailing(n) => { root.trailing(n); }
+                    hovered(n, y) => { root.row-hovered(n, y); }
+                }
+            }
+        }
+    }
+
+    // The flyout is a layer over its parent, not an extension: it overlaps by 6 px, flips to the
+    // left when the right edge has no room, and never leaves the window.
+    fly := Rectangle {
+        visible: root.fly-open;
+        width: Px.snap(min(max(176px, fcol.preferred-width + 2 * Px.hair()), 260px));
+        height: fcol.preferred-height;
+        property <length> right-x: panel.x + panel.width - 6px;
+        x: Px.snap(self.right-x + self.width > root.width - 8px ? max(8px, panel.x - self.width + 6px) : self.right-x);
+        // Its first row meets the parent row's top, which is one hairline below the panel's.
+        y: Px.snap(max(8px, min(root.sub-anchor - Px.hair(), root.height - self.height - 8px)));
+        background: Theme.side-flat;
+        border-radius: 2px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: #00000080;
+        clip: true;
+        TouchArea {
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.move { root.close-pending = false; }
+            }
+        }
+        fcol := VerticalLayout {
+            padding: Px.hair();
+            for r[i] in root.rows: VerticalLayout {
+                if r.parent == root.open-sub && root.open-sub >= 0 && (i == 0 || root.rows[i - 1].parent != r.parent): MenuItem {
+                    item: r;
+                    index: i;
+                    picked(n) => { root.pick(n); }
+                    hovered(n, y) => { root.row-hovered(n, y); }
+                }
+                if r.parent == root.open-sub && root.open-sub >= 0 && i > 0 && root.rows[i - 1].parent == r.parent: VerticalLayout {
+                    Rectangle { height: Px.hair(); background: Theme.divider; }
+                    MenuItem {
+                        item: r;
+                        index: i;
+                        picked(n) => { root.pick(n); }
+                        hovered(n, y) => { root.row-hovered(n, y); }
+                    }
                 }
             }
         }
@@ -323,8 +450,10 @@ export component OverflowList inherits Rectangle {
                 Rectangle {
                     width: 13px;
                     Path {
-                        width: 13px;
-                        height: 13px;
+                        width: 13px + 2 * 13px / 24;
+                        height: 13px + 2 * 13px / 24;
+                        x: (parent.width - 13px) / 2 - (2 * 13px / 24) / 2;
+                        y: (parent.height - 13px) / 2 - (2 * 13px / 24) / 2;
                         viewbox-width: 24;
                         viewbox-height: 24;
                         commands: Glyphs.search-small;
@@ -410,6 +539,12 @@ export component MenusPreview inherits Window {
     out property <length> panel-y: menu.panel-y;
     out property <length> panel-w: menu.panel-w;
     out property <length> panel-h: menu.panel-h;
+    out property <bool> fly-open: menu.fly-open;
+    out property <int> open-sub: menu.open-sub;
+    out property <length> fly-x: menu.fly-x;
+    out property <length> fly-y: menu.fly-y;
+    out property <length> fly-w: menu.fly-w;
+    out property <length> fly-h: menu.fly-h;
 
     in-out property <bool> ov-open;
     in-out property <[OverflowRow]> ov-rows;

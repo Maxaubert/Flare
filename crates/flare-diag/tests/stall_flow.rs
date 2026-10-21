@@ -428,8 +428,9 @@ fn a_clipboard_copy_is_never_written_down() {
 
 #[test]
 fn the_watchdog_takes_no_lock_the_ui_thread_holds() {
-    let src =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/stall.rs")).unwrap();
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/stall.rs"))
+        .unwrap()
+        .replace("\r\n", "\n"); // LF whatever the checkout's line endings are
     let start = src.find("pub fn beat(&self)").expect("beat exists");
     let body = &src[start..];
     let end = body.find("\n    }\n").expect("beat ends");

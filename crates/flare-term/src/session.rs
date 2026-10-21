@@ -5,7 +5,7 @@
 //! banner until a tab adopts it. Nothing here waits on the caller's thread except `spawn` and
 //! `prewarm`, which say so.
 
-use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher};
+use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, ReadSizer};
 use crate::exit_poll::{ExitPoller, PollStep};
 use crate::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_shells::cwd::cd_command;
@@ -87,6 +87,21 @@ impl Default for SessionOptions {
     }
 }
 
+/// `FLARE_TRACE_KEY=1` logs each hop a key takes (M10 Task 68), one line per hop with microseconds
+/// since the first line: key, write, read, deliver, wake. Off: one cached branch.
+pub fn trace_key(hop: &str) {
+    static ON: std::sync::OnceLock<Option<Instant>> = std::sync::OnceLock::new();
+    let on = ON.get_or_init(|| {
+        std::env::var("FLARE_TRACE_KEY")
+            .ok()
+            .filter(|v| v == "1")
+            .map(|_| Instant::now())
+    });
+    if let Some(t0) = on {
+        log::info!(target: "flare_key", "{hop} t={}us", t0.elapsed().as_micros());
+    }
+}
+
 fn lk<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -161,6 +176,7 @@ impl Session {
         };
         self.space_cv.notify_all();
         if let Some(bytes) = chunk {
+            trace_key("deliver");
             match &mut *dest {
                 Dest::Buffer(buf) => append_capped(buf, &bytes, self.banner_cap),
                 Dest::Sink { id, sink } => sink.data(id, bytes),
@@ -253,13 +269,15 @@ fn reader_loop(
     mut reader: Box<dyn Read + Send>,
     backlog_max: usize,
 ) {
-    let mut buf = vec![0u8; 64 * 1024];
+    let mut buf = vec![0u8; READ_MIN];
+    let mut sizer = ReadSizer::new();
     loop {
         let n = match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
         sh.ticks.fetch_add(1, Ordering::SeqCst);
+        trace_key("read");
         let mut st = lk(&s.state);
         while st.batcher.len() >= backlog_max && !st.stop {
             st = s.space_cv.wait(st).unwrap_or_else(|p| p.into_inner()); // sync-ok: the reader thread throttles a flooding shell
@@ -275,6 +293,15 @@ fn reader_loop(
         drop(st);
         if was_empty || big {
             s.pump_cv.notify_one();
+        }
+        // Sustained output reads bigger pieces (up to 1 MiB); a short read goes back to 64 KiB. The
+        // bytes just read are already in the batcher, so the buffer may change size now.
+        sizer.after_read(n);
+        if sizer.cap() != buf.len() {
+            buf.resize(sizer.cap(), 0);
+            if buf.len() == READ_MIN {
+                buf.shrink_to_fit();
+            }
         }
     }
 }
@@ -309,6 +336,7 @@ fn pump_loop(s: Arc<Session>) {
 fn writer_loop(rx: std::sync::mpsc::Receiver<Vec<u8>>, mut w: Box<dyn std::io::Write + Send>) {
     // sync-ok: the writer thread of a session, ended by dropping the sender
     while let Ok(bytes) = rx.recv() {
+        trace_key("write");
         if w.write_all(&bytes).is_err() {
             break;
         }
@@ -1612,6 +1640,35 @@ mod tests {
     }
 
     #[test]
+    fn output_wakes_the_ui_without_the_timer() {
+        // A lone echo after a quiet spell reaches the sink long before the batch window (400 ms)
+        // could end: nothing waits for a timer tick (M10 Task 68).
+        let sp = FakeSpawner::new();
+        let m = mgr_with(
+            &sp,
+            FakeShells::new(),
+            SessionOptions {
+                batch_window: Duration::from_millis(400),
+                ..fast()
+            },
+        );
+        let rec = Arc::new(RecSink::default());
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), rec.clone(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        f.feed(b"prompt");
+        assert!(wait_until(|| rec.bytes() == b"prompt"));
+        std::thread::sleep(Duration::from_millis(500));
+        let t0 = Instant::now();
+        f.feed(b"x");
+        assert!(wait_until(|| rec.bytes() == b"promptx"));
+        assert!(
+            t0.elapsed() < Duration::from_millis(150),
+            "the echo waited {:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[test]
     fn flush_output_delivers_pending_bytes_now() {
         let sp = FakeSpawner::new();
         let m = mgr_with(
@@ -1633,6 +1690,26 @@ mod tests {
         assert!(wait_until(|| m.output_ticks() >= 2));
         m.flush_output("a");
         assert_eq!(rec.bytes(), b"abcd");
+    }
+
+    #[test]
+    fn the_key_write_does_not_block_on_a_full_pipe() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        assert!(spawn_a(&m));
+        let f = Arc::clone(&sp.made()[0]);
+        f.block_writes();
+        let t0 = Instant::now();
+        for _ in 0..200 {
+            m.write("a", b"k");
+        }
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "the caller waited on the pty"
+        );
+        assert!(f.written().is_empty() || f.written().len() <= 1);
+        f.unblock_writes();
+        assert!(wait_until(|| f.written().len() == 200));
     }
 
     #[test]

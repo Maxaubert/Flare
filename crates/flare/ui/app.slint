@@ -1,4 +1,4 @@
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { AppMark } from "mark.slint";
 import { TabStrip, TabStripPreview } from "tabs.slint";
@@ -10,6 +10,7 @@ import { Dialog, DialogPreview } from "dialog.slint";
 import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "types.slint";
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
+import { TermScrollbar } from "scrollbar.slint";
 import { MarkMotion } from "tabmark.slint";
 import { ResumeSkeleton } from "skeleton.slint";
 import { SettingsView, SettingsBridge } from "settings/view.slint";
@@ -19,11 +20,12 @@ import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { HelpPanel } from "settings/help_panel.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
-export { Theme, Px, SettingsFixed } from "theme.slint";
+export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
 export { MarkMotion, MarkPreview } from "tabmark.slint";
 export { SkeletonPreview } from "skeleton.slint";
 export { FindBarPreview } from "find.slint";
 export { BadgePreview } from "badge.slint";
+export { ScrollbarPreview } from "scrollbar.slint";
 export { TabStripPreview } from "tabs.slint";
 export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
@@ -79,6 +81,18 @@ component TitleButton inherits Rectangle {
         stroke-line-cap: round;
         stroke-line-join: round;
     }
+    // The keyboard focus ring (PT focus-visible:ring-2 ring-accent-hi): 2 px, drawn outside the box.
+    // A click never takes the focus, so the ring is for the keyboard only, as :focus-visible is.
+    if keys.has-focus : ring := Rectangle {
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
+        border-radius: Theme.radius-button + 2px;
+        border-width: 2px;
+        border-color: Theme.accent-hi;
+        background: transparent;
+    }
     ta := TouchArea {
         clicked => { root.clicked(); }
         changed has-hover => {
@@ -91,6 +105,19 @@ component TitleButton inherits Rectangle {
             }
         }
     }
+    // Zero-sized, so it never takes a pointer: the Tab key reaches it, Space and Enter press the button.
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    out property <bool> keyboard-focused: keys.has-focus;
 }
 
 // The window buttons (command help while it is on, settings, minimise, maximise, close),
@@ -100,6 +127,7 @@ component TitleButton inherits Rectangle {
 component TitleButtons inherits Rectangle {
     in property <bool> help-visible;
     in property <string> help-tip;
+    in property <string> settings-tip;
     callback help();
     callback settings();
     callback minimize();
@@ -128,10 +156,12 @@ component TitleButtons inherits Rectangle {
             alignment: center;
             TitleButton {
                 label: "Settings";
+                tip-text: root.settings-tip;
                 icon-size: 15px;
                 stroke-units: 1.7;
                 commands: Glyphs.cog;
                 clicked => { root.settings(); }
+                tip(a, b, c, d, e) => { root.tip(a, b, c, d, e); }
             }
         }
         VerticalLayout {
@@ -179,6 +209,9 @@ export component AppWindow inherits Window {
     out property <int> grid-phys-width: round(grid-box.width / 1phx);
     out property <int> grid-phys-height: round(grid-box.height / 1phx);
     out property <float> scale: 1px / 1phx;
+    // The hairline the chrome draws, in device pixels (`Px.hair()`: the strip's bottom line, the
+    // tab separators and the sidebar's edge all use it). The DPI probe reads it.
+    out property <int> hair-phys: round(Px.hair() / 1phx);
 
     callback grid-resized(int, int, float);
 
@@ -204,6 +237,8 @@ export component AppWindow inherits Window {
     in property <StripGeom> strip-geom;
     in property <bool> carrying;
     in property <bool> drag-in-flight;
+    // Whether the strip is window-drag (off while a file drag is in flight); read by the e2e probe.
+    out property <bool> strip-has-move-area: strip.has-move-area;
     in property <string> new-tab-title;
     in property <string> find-tab-key;
     in property <string> new-key;
@@ -270,6 +305,30 @@ export component AppWindow inherits Window {
     out property <length> update-notice-w: unote.width;
     out property <length> update-notice-h: unote.height;
     out property <bool> update-window-focus: uwin.chrome-has-focus;
+    // The update window's boxes, for the e2e probe `update.window` (Task 39). All in window
+    // coordinates, because the window covers the whole client area.
+    out property <length> update-chip-icon-h: top-chip.icon-h;
+    out property <int> update-focus-idx: uwin.focus-idx;
+    out property <length> update-box-x: uwin.box-x;
+    out property <length> update-box-y: uwin.box-y;
+    out property <length> update-box-w: uwin.box-w;
+    out property <length> update-box-h: uwin.box-h;
+    out property <length> update-track-x: uwin.track-x;
+    out property <length> update-track-y: uwin.track-y;
+    out property <length> update-track-w: uwin.track-w;
+    out property <length> update-track-h: uwin.track-h;
+    out property <length> update-fill-w: uwin.fill-w;
+    out property <length> update-notes-y: uwin.notes-y;
+    out property <length> update-notes-h: uwin.notes-h;
+    out property <length> update-notes-content-h: uwin.notes-content-h;
+    out property <length> update-install-x: uwin.install-x;
+    out property <length> update-install-y: uwin.install-y;
+    out property <length> update-install-w: uwin.install-w;
+    out property <length> update-install-h: uwin.install-h;
+    out property <length> update-cancel-x: uwin.cancel-x;
+    out property <length> update-cancel-y: uwin.cancel-y;
+    out property <length> update-cancel-w: uwin.cancel-w;
+    out property <length> update-cancel-h: uwin.cancel-h;
     in property <bool> dialog-open;
     in property <string> dialog-title;
     in property <styled-text> dialog-body;
@@ -305,13 +364,52 @@ export component AppWindow inherits Window {
     out property <length> help-sheet-w: help-panel.sheet-w;
     in-out property <length> help-viewport-y <=> help-panel.viewport-y;
     out property <length> title-buttons-w: top-buttons.width;
+    // The find bar, the badge and the start screen in the window, for ui.rect.
+    out property <length> find-bar-x: find.bar-x;
+    out property <length> find-bar-y: find.bar-y;
+    out property <length> find-bar-w: find.bar-w;
+    out property <length> find-bar-h: find.bar-h;
+    out property <length> badge-x: badge.pill-x;
+    out property <length> badge-y: badge.pill-y;
+    out property <length> badge-w: badge.pill-w;
+    out property <length> badge-h: badge.pill-h;
+    out property <length> start-x: start-screen.absolute-position.x;
+    out property <length> start-y: start-screen.absolute-position.y;
+    out property <length> start-w: start-screen.width;
+    out property <length> start-h: start-screen.height;
+    out property <length> menu-panel-x: menu.panel-x;
+    out property <length> menu-panel-y: menu.panel-y;
+    out property <length> menu-w: menu.panel-w;
+    out property <length> menu-h: menu.panel-h;
+    out property <length> dialog-box-x: dlg.box-x;
+    out property <length> dialog-box-y: dlg.box-y;
+    out property <length> dialog-box-w: dlg.box-w;
+    out property <length> dialog-box-h: dlg.box-h;
+    out property <int> dialog-focus: dlg.focused-button;
     callback find-edited(string);
     callback find-next();
     callback find-prev();
     callback find-close();
     in property <int> copied-phase;
+    // The terminal's scrollbar (M10 D11): the thumb as fractions of the track, set by scrollbar.rs.
+    in property <bool> scroll-on: false;
+    in property <float> scroll-top: 0;
+    in property <float> scroll-len: 1;
+    in property <bool> scroll-back: false;
+    out property <length> scroll-strip-x: scroll-bar.strip-x;
+    out property <length> scroll-strip-w: scroll-bar.strip-w;
+    out property <length> scroll-thumb-x: scroll-bar.thumb-x;
+    out property <length> scroll-thumb-y: scroll-bar.thumb-y;
+    out property <length> scroll-thumb-w: scroll-bar.thumb-w;
+    out property <length> scroll-thumb-h: scroll-bar.thumb-h;
     // The grid area's origin in the window.
     out property <length> grid-left: grid-box.absolute-position.x;
+    // The switch question's three buttons in window pixels, x y w h each: Cancel, Discard, Save as Custom.
+    out property <[length]> ask-rects: [
+        ask.cancel-x, ask.cancel-y, ask.cancel-w, ask.cancel-h,
+        ask.discard-x, ask.discard-y, ask.discard-w, ask.discard-h,
+        ask.save-x, ask.save-y, ask.save-w, ask.save-h,
+    ];
     out property <length> grid-top: grid-box.absolute-position.y;
 
     // ---- callbacks (UI -> Rust) ----
@@ -462,6 +560,7 @@ export component AppWindow inherits Window {
                     top-buttons := TitleButtons {
                         help-visible: root.help-visible;
                         help-tip: "Command help (" + root.help-key + ")";
+                        settings-tip: "Settings (" + root.settings-key + ")";
                         help => { root.help-clicked(); }
                         tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                         settings => { root.settings-clicked(); }
@@ -512,6 +611,7 @@ export component AppWindow inherits Window {
                     x: parent.width - self.width;
                     help-visible: root.help-visible;
                     help-tip: "Command help (" + root.help-key + ")";
+                        settings-tip: "Settings (" + root.settings-key + ")";
                     help => { root.help-clicked(); }
                     tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     settings => { root.settings-clicked(); }
@@ -567,6 +667,16 @@ export component AppWindow inherits Window {
                                     e.modifiers.control, e.modifiers.shift, e.modifiers.alt);
                             }
                         }
+                        scroll-bar := TermScrollbar {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: parent.height;
+                            on: root.scroll-on;
+                            top: root.scroll-top;
+                            len: root.scroll-len;
+                            back: root.scroll-back;
+                        }
                     }
                     settings-view := SettingsView {
                         visible: root.front-kind == 1;
@@ -575,7 +685,7 @@ export component AppWindow inherits Window {
                         width: parent.width;
                         height: parent.height;
                     }
-                    StartScreen {
+                    start-screen := StartScreen {
                         x: 0px;
                         y: 0px;
                         width: parent.width;
@@ -725,6 +835,30 @@ export component AppWindow inherits Window {
         }
 
         // (4) OVERLAYS, last so they are on top. Each is pointer-transparent while closed.
+        // The pop layer (PT LAYER.pop): the update notice and the Settings dropdown, under every menu.
+        unote := UpdateNotice {
+            text: root.update-notice;
+            x: root.update-chip-x + root.update-chip-w - self.width;
+            y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
+            dismissed => { root.update-notice-dismissed(); }
+        }
+        SelectMenu {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: SettingsBridge.select-open;
+            options: SettingsBridge.select-options;
+            value: SettingsBridge.select-value;
+            menu-x: SettingsBridge.select-x;
+            menu-y: SettingsBridge.select-y;
+            menu-w: SettingsBridge.select-w;
+            menu-h: SettingsBridge.select-h;
+            highlight <=> SettingsBridge.select-highlight;
+            chosen(id) => { SettingsBridge.select-chosen(id); }
+            dismissed => { SettingsBridge.select-dismissed(); }
+            key(k) => { SettingsBridge.select-key(k); }
+        }
         menu := ContextMenu {
             x: 0px;
             y: 0px;
@@ -755,6 +889,11 @@ export component AppWindow inherits Window {
         }
         // The Settings overlays (M7 Task 41), above the page and below the dialog. Each is
         // pointer-transparent while closed. The Command help panel joins them in Task 43.
+        Timer {
+            interval: 600ms;
+            running: SettingsBridge.pencil-pending;
+            triggered => { SettingsBridge.pencil-pending = false; }
+        }
         ThemeEditor {
             x: 0px;
             y: 0px;
@@ -768,32 +907,18 @@ export component AppWindow inherits Window {
             well-swatch(k, x, y, w, h) => { SettingsBridge.editor-well-swatch(k, x, y, w, h); }
             save => { SettingsBridge.editor-save(); }
             cancel => { SettingsBridge.editor-cancel(); }
+            swatch-back: SettingsBridge.swatch-back;
+            swatch-back-taken => { SettingsBridge.swatch-back = ""; }
+            focus-restore => { SettingsBridge.pencil-pending = SettingsBridge.pencil-id != ""; }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
-        AskThree {
+        ask := AskThree {
             x: 0px;
             y: 0px;
             width: root.width;
             height: root.height;
             open: SettingsBridge.ask-open;
             answered(n) => { SettingsBridge.ask-answered(n); }
-        }
-        SelectMenu {
-            x: 0px;
-            y: 0px;
-            width: root.width;
-            height: root.height;
-            open: SettingsBridge.select-open;
-            options: SettingsBridge.select-options;
-            value: SettingsBridge.select-value;
-            menu-x: SettingsBridge.select-x;
-            menu-y: SettingsBridge.select-y;
-            menu-w: SettingsBridge.select-w;
-            menu-h: SettingsBridge.select-h;
-            highlight <=> SettingsBridge.select-highlight;
-            chosen(id) => { SettingsBridge.select-chosen(id); }
-            dismissed => { SettingsBridge.select-dismissed(); }
-            key(k) => { SettingsBridge.select-key(k); }
         }
         ColourPopover {
             x: 0px;
@@ -828,19 +953,15 @@ export component AppWindow inherits Window {
             slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
             format-clicked => { SettingsBridge.picker-format-clicked(); }
             dropper-clicked => { SettingsBridge.picker-dropper(); }
-            escape-pressed => { SettingsBridge.picker-escape(); }
+            escape-pressed => {
+                SettingsBridge.swatch-back = SettingsBridge.editor-open ? "editor:" + SettingsBridge.picker-label : SettingsBridge.picker-label;
+                SettingsBridge.picker-escape();
+            }
             outside-pressed => { SettingsBridge.picker-outside(); }
             focus-left => { SettingsBridge.picker-focus-left(); }
             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
         }
-        // The update notice under the chip, then the update window: above the page and the Settings
-        // overlays, below the close question (M9 Task 30).
-        unote := UpdateNotice {
-            text: root.update-notice;
-            x: root.update-chip-x + root.update-chip-w - self.width;
-            y: Px.snap(root.update-chip-y + root.update-chip-h + 8px);
-            dismissed => { root.update-notice-dismissed(); }
-        }
+        // The update window: a modal, above the Settings overlays, below the close question (M9 Task 30).
         uwin := UpdateWindow {
             x: 0px;
             y: 0px;
@@ -867,7 +988,7 @@ export component AppWindow inherits Window {
             abort => { root.update-abort(); }
             tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
-        Dialog {
+        dlg := Dialog {
             x: 0px;
             y: 0px;
             width: root.width;
@@ -881,7 +1002,7 @@ export component AppWindow inherits Window {
             confirm => { root.dialog-confirm(); }
         }
         // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
-        CopiedBadge {
+        badge := CopiedBadge {
             x: 0px;
             y: 0px;
             width: root.width;

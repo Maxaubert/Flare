@@ -20,25 +20,28 @@ use flare_shells::cwd::{has_control, parse_osc9};
 
 use crate::alt_click::{MoveRow, MoveScreen, move_to_cell_sequence};
 use crate::cells::{
-    BufferLike, CellInfo, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
+    BufferLike, CellInfo, LineLike, ScratchCell, buffer_row_cells, char_at_cell, logical_line,
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
-use crate::find::{CountJob, FindMatch, FindOpts, Finder, index_of, scroll_to_show};
-use crate::grid_map::snapshot_grid;
+use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
+use crate::grid_map::{snapshot_grid, snapshot_grid_into};
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
 use crate::link_target::{TermPathAt, menu_link, shown_link_over};
 use crate::links::find_links;
 use crate::osc8::is_web_link;
 use crate::osc52::{OSC52_MAX, Osc52, parse_osc52};
 use crate::path_links::{Found, PathLinks, path_candidates};
-use crate::replies::{Ground, colour_query_replies, xtversion_reply};
-use crate::scan::{ScanEvent, Scanner};
+use crate::replies::{
+    Ground, colour_query_replies, decrqm_reply, dsr_theme_reply, ground_mode, xtversion_reply,
+};
+use crate::scan::{Erase, ScanEvent, Scanner};
 use crate::sel_machine::{Anchor, SelEnv, SelOut, SelSpec, Span};
 use crate::sel_text::selection_text;
 use crate::selection_edit::{SelectionGate, selection_delete_allowed, selection_delete_keys};
 use crate::term_buf::{TermBuf, abs_to_line, line_to_abs, total_rows, viewport_top};
 use crate::version::{ALACRITTY_TERMINAL_VERSION, FLARE_TERM_VERSION};
 use crate::word_at::word_range;
+use flare_theme::reports::{THEME_REPORTS_OFF, ThemeReports, note_theme_mode, theme_reports};
 
 /// The size handed to `Term::new` and `Term::resize`.
 pub struct Dims {
@@ -117,6 +120,8 @@ pub struct Emulator {
     events: Receiver<Event>,
     fg: String,
     bg: String,
+    /// What the program asked of theme reports (?2031h) and the mode it was last told.
+    reports: ThemeReports,
     find_query: String,
     find_job: Option<CountJob>,
     /// A recount after output: the previous count stays on show until the new one is done, so
@@ -124,9 +129,14 @@ pub struct Emulator {
     find_recount: bool,
     find_hits: Vec<FindMatch>,
     find_active: Option<FindMatch>,
+    /// The search Enter, the arrows or typing started, walked a slice at a time; None when none runs.
+    search: Option<StepJob>,
     links: LinkScanner,
     /// The marks of the last `link_marks` call; None before the first scan.
     link_last: Option<Vec<LinkMark>>,
+    /// Bumped on every change of the selection (a copy in flight reads it). A redraw or a scroll that
+    /// moves the selection does not bump it.
+    sel_gen: u64,
 }
 
 /// What the find bar shows: the counted matches (at most `HIGHLIGHT_LIMIT`), the active match
@@ -137,8 +147,11 @@ pub struct FindView {
     pub active: Option<FindMatch>,
     pub count: usize,
     pub index: Option<usize>,
-    /// True when the count has walked the whole buffer, or no search runs.
+    /// True when the count has walked the whole buffer.
     pub done: bool,
+    /// True while a search (Enter, the arrows, typing) is walking; the active match changes only
+    /// when it lands, so the readout keeps its text until then.
+    pub searching: bool,
 }
 
 /// alacritty answers DA1 with `ESC[?6c`; xterm.js (and the e2e parity check) say `ESC[?1;2c`.
@@ -169,14 +182,26 @@ impl Emulator {
             events: rx,
             fg: "#dedacf".to_string(),
             bg: "#171717".to_string(),
+            reports: THEME_REPORTS_OFF,
             find_query: String::new(),
             find_job: None,
             find_recount: false,
             find_hits: Vec::new(),
             find_active: None,
+            search: None,
             links: LinkScanner::new(),
             link_last: None,
+            sel_gen: 0,
         }
+    }
+
+    /// What the program asked of theme reports, and the mode it was last told.
+    pub fn theme_reports(&self) -> ThemeReports {
+        self.reports
+    }
+
+    pub fn set_theme_reports(&mut self, s: ThemeReports) {
+        self.reports = s;
     }
 
     /// What OSC 10 and 11 queries are answered with.
@@ -185,34 +210,88 @@ impl Emulator {
         self.bg = bg.to_string();
     }
 
+    pub fn colours_are(&self, fg: &str, bg: &str) -> bool {
+        self.fg == fg && self.bg == bg
+    }
+
     /// Scans the chunk, then feeds `vte` in slices that end at each scanner event, acting on the
     /// event between slices. Returns the events in stream order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermEvent> {
+        let had_sel = self.term.selection.is_some();
         let scanned = self.scanner.scan(bytes);
         let mut out = Vec::new();
         let mut at = 0;
         for ev in scanned {
-            let end = match &ev {
-                ScanEvent::Osc { end, .. } | ScanEvent::Xtversion { end } => {
-                    (*end).min(bytes.len())
+            if let ScanEvent::SelectionGuard { start, end, erase } = ev {
+                let (start, end) = (start.min(bytes.len()), end.min(bytes.len()));
+                if start > at {
+                    self.processor.advance(&mut self.term, &bytes[at..start]);
+                    at = start;
                 }
+                let saved = self.term.selection.clone();
+                let moved = if erase == Erase::Screen {
+                    self.viewport_used_lines()
+                } else {
+                    0
+                };
+                if end > at {
+                    self.processor.advance(&mut self.term, &bytes[at..end]);
+                    at = end;
+                }
+                self.restore_selection(saved, moved);
+                continue;
+            }
+            let end = match &ev {
+                ScanEvent::Osc { end, .. }
+                | ScanEvent::Xtversion { end }
+                | ScanEvent::ThemeQuery { end }
+                | ScanEvent::Decrqm { end, .. }
+                | ScanEvent::PrivateMode { end, .. }
+                | ScanEvent::Ris { end } => (*end).min(bytes.len()),
+                ScanEvent::SelectionGuard { .. } => continue,
             };
             if end > at {
                 self.processor.advance(&mut self.term, &bytes[at..end]);
                 at = end;
             }
             self.drain(&mut out);
+            if matches!(ev, ScanEvent::Decrqm { mode: 2031, .. })
+                && matches!(out.last(), Some(TermEvent::Reply(r)) if r == b"\x1b[?2031;0$y")
+            {
+                // alacritty does not know the mode and says so; the answer is Flare's.
+                out.pop();
+            }
             self.act(ev, &mut out);
         }
         if at < bytes.len() {
             self.processor.advance(&mut self.term, &bytes[at..]);
         }
         self.drain(&mut out);
+        if had_sel != self.term.selection.is_some() {
+            self.sel_changed();
+        }
         out
     }
 
     fn act(&mut self, ev: ScanEvent, out: &mut Vec<TermEvent>) {
         match ev {
+            ScanEvent::SelectionGuard { .. } => {}
+            ScanEvent::ThemeQuery { .. } => {
+                let mode = ground_mode(&self.bg);
+                out.push(TermEvent::Reply(dsr_theme_reply(mode).into_bytes()));
+                self.reports = note_theme_mode(self.reports, mode);
+            }
+            ScanEvent::Decrqm { mode, .. } => {
+                if mode == 2031 {
+                    out.push(TermEvent::Reply(
+                        decrqm_reply(2031, self.reports.on).into_bytes(),
+                    ));
+                }
+            }
+            ScanEvent::PrivateMode { set, .. } => {
+                self.reports = theme_reports(self.reports, set, ground_mode(&self.bg));
+            }
+            ScanEvent::Ris { .. } => self.reports = THEME_REPORTS_OFF,
             ScanEvent::Xtversion { .. } => out.push(TermEvent::Reply(
                 xtversion_reply(FLARE_TERM_VERSION, ALACRITTY_TERMINAL_VERSION).into_bytes(),
             )),
@@ -239,6 +318,10 @@ impl Emulator {
                             bg: &self.bg,
                         };
                         if let Some(rs) = colour_query_replies(ident as u8, data, &ground) {
+                            if ident == 11 || rs.len() > 1 {
+                                let mode = ground_mode(&self.bg);
+                                self.reports = note_theme_mode(self.reports, mode);
+                            }
                             out.extend(rs.into_iter().map(|r| TermEvent::Reply(r.into_bytes())));
                         }
                     }
@@ -267,7 +350,60 @@ impl Emulator {
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // alacritty drops the selection when the column count changes; xterm keeps it (decision
+        // O23), so it is read before and set again after with its columns clamped to the width.
+        let kept = if cols != self.cols() {
+            self.sel_bounds()
+        } else {
+            None
+        };
         crate::resize::resize_conpty(&mut self.term, cols, rows);
+        if let Some((s, e, block)) = kept
+            && self.term.selection.is_none()
+        {
+            let c = self.cols();
+            self.sel_apply(SelOut::Set(SelSpec {
+                block,
+                start: Anchor {
+                    row: s.0,
+                    b: s.1.min(c),
+                },
+                end: Anchor {
+                    row: e.0,
+                    b: e.1.min(c),
+                },
+            }));
+        }
+    }
+
+    /// Screen lines `clear_viewport` (ED 2) pushes into the history: down to the last line that
+    /// holds anything, counted the way alacritty counts it (none on the alternate screen).
+    fn viewport_used_lines(&self) -> usize {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return 0;
+        }
+        let grid = self.term.grid();
+        for line in (0..self.rows()).rev() {
+            for col in 0..self.cols() {
+                let at = Point::new(Line(line as i32), Column(col));
+                if !alacritty_terminal::grid::GridCell::is_empty(&grid[at]) {
+                    return line + 1;
+                }
+            }
+        }
+        0
+    }
+
+    /// Puts back the selection an erase took away (decision O23). `moved` is the number of lines an
+    /// ED 2 scrolled into the history: the selection rides up with the text it was on.
+    fn restore_selection(&mut self, saved: Option<Selection>, moved: usize) {
+        let Some(sel) = saved else { return };
+        let lines = Line(self.rows() as i32);
+        self.term.selection = if moved == 0 {
+            Some(sel)
+        } else {
+            sel.rotate(&self.term, &(Line(0)..lines), moved as i32)
+        };
     }
 
     pub fn cols(&self) -> usize {
@@ -280,6 +416,11 @@ impl Emulator {
 
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
+    }
+
+    /// Bytes the scrollback holds: `history_size * cols * size_of::<Cell>()` (M10 Task 66).
+    pub fn scrollback_bytes(&self) -> usize {
+        self.history_size() * self.cols() * size_of::<alacritty_terminal::term::cell::Cell>()
     }
 
     pub fn display_offset(&self) -> usize {
@@ -326,6 +467,12 @@ impl Emulator {
 
     pub fn snapshot(&self) -> Grid {
         snapshot_grid(&self.term)
+    }
+
+    /// [`Emulator::snapshot`] into a grid the caller keeps and refills each frame, so the copy under
+    /// the lock allocates nothing.
+    pub fn snapshot_into(&self, out: &mut Grid) {
+        snapshot_grid_into(&self.term, out);
     }
 
     /// The cells of one screen line as text, trailing blanks trimmed, wide spacers skipped.
@@ -580,6 +727,9 @@ impl Emulator {
 
     /// Applies a machine output. Marks nothing dirty by itself (the handle does).
     pub fn sel_apply(&mut self, out: SelOut) {
+        if !matches!(out, SelOut::Nothing) {
+            self.sel_changed();
+        }
         match out {
             SelOut::Nothing => {}
             SelOut::Clear => self.term.selection = None,
@@ -652,6 +802,58 @@ impl Emulator {
         selection_text(&TermBuf::all(&self.term), self.cols(), s, e, block)
     }
 
+    /// The generation of the selection: it changes when the selection is made, moved by the user,
+    /// cleared or dropped by the terminal. A redraw that keeps it does not change it.
+    pub fn sel_generation(&self) -> u64 {
+        self.sel_gen
+    }
+
+    fn sel_changed(&mut self) {
+        self.sel_gen = self.sel_gen.wrapping_add(1);
+    }
+
+    /// The rows the selection covers, from its first row now.
+    pub fn sel_row_count(&self) -> usize {
+        self.sel_bounds()
+            .map_or(0, |(s, e, _)| e.0.saturating_sub(s.0) + 1)
+    }
+
+    /// The text of the selection rows `rel` (counted from its first row now), cut so that the pieces
+    /// for consecutive ranges concatenate to `sel_text()`. A piece that starts below the first row
+    /// begins with the line break that sel_text() puts there. The flag: the piece's last row soft-wraps
+    /// into the row after it.
+    pub fn sel_text_rows(&self, rel: std::ops::Range<usize>) -> (String, bool) {
+        let Some((s, e, block)) = self.sel_bounds() else {
+            return (String::new(), false);
+        };
+        if block && s.1.min(e.1) == s.1.max(e.1) {
+            return (String::new(), false);
+        }
+        let total = e.0.saturating_sub(s.0) + 1;
+        let lo = rel.start.min(total);
+        let hi = rel.end.min(total);
+        if lo >= hi {
+            return (String::new(), false);
+        }
+        let (a, c) = (s.0 + lo, s.0 + hi - 1);
+        let cols = self.cols();
+        let buf = TermBuf::all(&self.term);
+        let wrapped = |y: usize| buf.line(y).is_some_and(LineLike::is_wrapped);
+        let mut out = String::new();
+        if lo > 0 && (block || !wrapped(a)) {
+            out.push_str("\r\n");
+        }
+        let text = if block {
+            selection_text(&buf, cols, (a, s.1), (c, e.1), true)
+        } else {
+            let start = (a, if lo == 0 { s.1 } else { 0 });
+            let end = (c, if hi == total { e.1 } else { cols });
+            selection_text(&buf, cols, start, end, false)
+        };
+        out.push_str(&text);
+        (out, wrapped(c + 1))
+    }
+
     /// The selection's pieces on viewport rows.
     pub fn sel_spans(&self) -> Vec<RowSpan> {
         let Some((s, e, block)) = self.sel_bounds() else {
@@ -685,6 +887,7 @@ impl Emulator {
     }
 
     pub fn sel_clear(&mut self) {
+        self.sel_changed();
         self.term.selection = None;
     }
 
@@ -737,7 +940,8 @@ impl Emulator {
     }
 
     /// A new query: forgets the counted matches and starts a new count, but keeps the active
-    /// match, so the incremental search that follows starts at it. No scroll, no selection.
+    /// match, so the incremental search that follows starts at it. No scroll, no selection. A
+    /// search still walking for the old query is cancelled.
     pub fn find_set(&mut self, query: &str) {
         if query.is_empty() {
             self.find_clear();
@@ -746,6 +950,7 @@ impl Emulator {
         self.find_query = query.to_string();
         self.find_hits.clear();
         self.find_recount = false;
+        self.search = None;
         self.find_restart();
     }
 
@@ -755,61 +960,99 @@ impl Emulator {
             Finder::new(&self.find_query, FindOpts::default()).map(|f| CountJob::new(f, total));
     }
 
+    /// Starts a search from the anchor, cancelling one that runs. `incremental` (typing) keeps the
+    /// active match when it still matches; Enter and the arrows (`false`) step past it. The walk
+    /// happens in `find_step`, a slice at a time; the match lands then.
+    pub fn find_start(&mut self, query: &str, dir: Dir, incremental: bool) {
+        self.search = None;
+        let Some(f) = Finder::new(query, FindOpts::default()) else {
+            return;
+        };
+        let prev = self.find_anchor();
+        let total = self.total_rows();
+        self.search = Some(StepJob::new(f, dir, prev, !incremental, total));
+    }
+
     /// Enter (`incremental: false`) and typing (`incremental: true`): the next match after the
-    /// anchor. Returns the match and the scroll the caller applies as `scroll_view(-scroll)`.
+    /// anchor, answered at once. Returns the match and the scroll the caller applies as
+    /// `scroll_view(-scroll)`.
     pub fn find_next(
         &mut self,
         query: &str,
         incremental: bool,
     ) -> Option<(FindMatch, Option<i32>)> {
-        let f = Finder::new(query, FindOpts::default())?;
-        let prev = self.find_anchor();
-        let cols = self.cols();
-        let found = {
-            let b = TermBuf::all(&self.term);
-            f.next(&b, cols, prev.as_ref(), !incremental)
-        };
-        self.find_land(found)
+        self.find_now(query, Dir::Next, !incremental)
     }
 
-    /// Shift+Enter and the up button: the match before the anchor.
+    /// Shift+Enter and the up button: the match before the anchor, answered at once.
     pub fn find_prev(&mut self, query: &str) -> Option<(FindMatch, Option<i32>)> {
+        self.find_now(query, Dir::Prev, true)
+    }
+
+    /// A search run to its end in this call (no budget).
+    fn find_now(
+        &mut self,
+        query: &str,
+        dir: Dir,
+        same_term: bool,
+    ) -> Option<(FindMatch, Option<i32>)> {
         let f = Finder::new(query, FindOpts::default())?;
         let prev = self.find_anchor();
         let cols = self.cols();
+        let total = self.total_rows();
         let found = {
             let b = TermBuf::all(&self.term);
-            f.previous(&b, cols, prev.as_ref(), true)
+            let mut job = StepJob::new(f, dir, prev, same_term, total);
+            job.run(&b, cols)
         };
         self.find_land(found)
     }
 
-    /// Runs one slice of the count job. True when the counted matches or the done state changed.
-    pub fn find_step(&mut self, now: &dyn Fn() -> f64) -> bool {
-        let cols = self.cols();
-        let Some(job) = self.find_job.as_mut() else {
-            return false;
-        };
-        let before_hits = self.find_hits.clone();
-        let before_done = job.done();
-        let done = {
-            let b = TermBuf::all(&self.term);
-            job.step(&b, cols, now)
-        };
-        if done || !self.find_recount {
-            self.find_hits = job.results();
-        }
-        if done {
-            self.find_recount = false;
-        }
-        self.find_hits != before_hits || done != before_done
+    /// Whether the count or a search still has slices to run.
+    pub fn find_busy(&self) -> bool {
+        self.search.is_some() || self.find_job.as_ref().is_some_and(|j| !j.done())
     }
 
-    /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match.
+    /// Runs ONE slice: the running search's, else the count job's, so one UI turn holds one slice.
+    /// Returns the scroll that a search landing asks for (`scroll_view(-scroll)`), None when
+    /// nothing landed or none is needed.
+    pub fn find_step(&mut self, now: &dyn Fn() -> f64) -> Option<i32> {
+        let cols = self.cols();
+        if self.search.is_some() {
+            let slice = {
+                let b = TermBuf::all(&self.term);
+                self.search
+                    .as_mut()
+                    .and_then(|search| search.step(&b, cols, now))
+            };
+            let found = slice?;
+            self.search = None;
+            return self.find_land(found).and_then(|(_, scroll)| scroll);
+        }
+        if let Some(job) = self.find_job.as_mut() {
+            let done = {
+                let b = TermBuf::all(&self.term);
+                job.step(&b, cols, now)
+            };
+            if done || !self.find_recount {
+                self.find_hits = job.results();
+            }
+            if done {
+                self.find_recount = false;
+            }
+        }
+        None
+    }
+
+    /// A fresh count after output or a resize, WITHOUT scrolling or moving the active match. A
+    /// search that runs starts again from its anchor, as the count does.
     pub fn find_refresh(&mut self) {
         if !self.find_query.is_empty() {
             self.find_recount = true;
             self.find_restart();
+            if let Some(search) = self.search.as_mut() {
+                search.restart();
+            }
         }
     }
 
@@ -817,6 +1060,7 @@ impl Emulator {
     pub fn find_clear(&mut self) {
         self.find_query.clear();
         self.find_job = None;
+        self.search = None;
         self.find_recount = false;
         self.find_hits.clear();
         self.find_active = None;
@@ -829,6 +1073,7 @@ impl Emulator {
             count: self.find_hits.len(),
             index: self.find_active.and_then(|a| index_of(&self.find_hits, &a)),
             done: self.find_job.as_ref().is_none_or(|j| j.done()),
+            searching: self.search.is_some(),
         }
     }
 
@@ -1286,6 +1531,90 @@ mod tests {
         format!("\x1bP>|Flare {FLARE_TERM_VERSION} (alacritty_terminal 0.26.0)\x1b\\").into_bytes()
     }
 
+    /// A busy 480 x 135 screen: coloured, bold and wide cells on every row.
+    fn busy_emulator() -> Emulator {
+        let mut e = Emulator::new(480, 135);
+        let mut s = String::new();
+        for i in 0..400 {
+            s.push_str(&format!(
+                "\x1b[3{}m\x1b[1m{i:05} the quick brown fox \x1b[0m\x1b[44m jumps \x1b[0m over \u{4e2d}\u{6587} {}\r\n",
+                i % 8,
+                "0123456789".repeat(40)
+            ));
+        }
+        e.feed(s.as_bytes());
+        e
+    }
+
+    #[test]
+    fn snapshot_into_equals_snapshot_and_survives_a_resize() {
+        let mut e = busy_emulator();
+        let mut buf = Grid::new(3, 3);
+        e.snapshot_into(&mut buf);
+        assert_eq!(buf, e.snapshot());
+        // Refilled from a buffer that held something else, and after the screen changed size.
+        e.feed(b"\x1b[2J\x1b[Hnew");
+        e.snapshot_into(&mut buf);
+        assert_eq!(buf, e.snapshot());
+        e.resize(100, 30);
+        e.snapshot_into(&mut buf);
+        assert_eq!((buf.cols(), buf.rows()), (100, 30));
+        assert_eq!(buf, e.snapshot());
+    }
+
+    #[test]
+    fn snapshot_holds_the_lock_under_1_ms() {
+        // The UI copies the visible rows under the emulator's lock while the parser waits for it, so the
+        // hold must be short: 480 x 135 is a maximised window on a 4K screen at 100%. The copy refills
+        // a reused buffer, so it allocates nothing. The 90th percentile of 300 holds, not the worst one,
+        // because a test must not fail on a scheduler hiccup.
+        let emu = alacritty_terminal::sync::FairMutex::new(busy_emulator());
+        let mut buf = Grid::new(1, 1);
+        emu.lock().snapshot_into(&mut buf);
+        let mut holds = Vec::new();
+        for _ in 0..300 {
+            let t = std::time::Instant::now();
+            emu.lock().snapshot_into(&mut buf);
+            holds.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        holds.sort_by(|a, b| a.total_cmp(b));
+        let p90 = holds[holds.len() * 9 / 10];
+        let mut fresh = Vec::new();
+        for _ in 0..300 {
+            let t = std::time::Instant::now();
+            drop(emu.lock().snapshot());
+            fresh.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        fresh.sort_by(|a, b| a.total_cmp(b));
+        println!(
+            "480 x 135 hold, p90: reused buffer {p90:.3} ms, fresh grid {:.3} ms",
+            fresh[fresh.len() * 9 / 10]
+        );
+        let limit = if cfg!(debug_assertions) { 40.0 } else { 1.0 };
+        assert!(
+            p90 < limit,
+            "the 90th percentile hold was {p90:.3} ms (limit {limit} ms)"
+        );
+    }
+
+    #[test]
+    fn scrollback_matches_the_reference_terminals_line_count() {
+        // Prism Terminal's xterm is built with `scrollback: 10000` (core/renderer/components/
+        // TerminalPanel.tsx, v0.55.6). Parity of lines stays; the memory diet leaves it alone because
+        // alacritty's cell cannot be made smaller (size_of::<Cell>() is what it is).
+        assert_eq!(Emulator::SCROLLBACK, 10_000);
+    }
+    #[test]
+    fn scrollback_bytes_follow_the_history_and_the_width() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(e.scrollback_bytes(), 0);
+        for i in 0..100 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let cell = size_of::<alacritty_terminal::term::cell::Cell>();
+        assert_eq!(e.scrollback_bytes(), e.history_size() * 80 * cell);
+        assert!(e.history_size() >= 70);
+    }
     #[test]
     fn scrollback_is_ten_thousand_lines() {
         let mut e = Emulator::new(80, 24);
@@ -1420,8 +1749,87 @@ mod tests {
     #[test]
     fn unasked_things_are_not_answered() {
         let mut e = Emulator::new(80, 24);
-        let evs = e.feed(b"\x1b[?1004h\x1b[?9001h\x1b[?996n\x1b[?2031h");
+        let evs = e.feed(b"\x1b[?1004h\x1b[?9001h");
         assert!(replies(&evs).is_empty());
+    }
+
+    const DARK_DSR: &[u8] = b"\x1b[?997;1n";
+    const LIGHT_DSR: &[u8] = b"\x1b[?997;2n";
+
+    #[test]
+    fn csi_996n_answers_the_ground_mode() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(replies(&e.feed(b"\x1b[?996n")), vec![DARK_DSR.to_vec()]);
+        e.set_colours("#3d2a1f", "#e6d8c0");
+        assert_eq!(replies(&e.feed(b"\x1b[?996n")), vec![LIGHT_DSR.to_vec()]);
+        assert_eq!(
+            e.theme_reports().last,
+            Some(flare_theme::marks::Mode::Light)
+        );
+        assert!(!e.theme_reports().on);
+    }
+
+    #[test]
+    fn decrqm_2031_answers_set_after_2031h_and_reset_after_2031l() {
+        let mut e = Emulator::new(80, 24);
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;2$y".to_vec()]
+        );
+        e.feed(b"\x1b[?2031h");
+        assert!(e.theme_reports().on);
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;1$y".to_vec()]
+        );
+        e.feed(b"\x1b[?2031l");
+        assert_eq!(
+            replies(&e.feed(b"\x1b[?2031$p")),
+            vec![b"\x1b[?2031;2$y".to_vec()]
+        );
+    }
+
+    #[test]
+    fn another_decrqm_is_left_to_alacritty() {
+        let mut e = Emulator::new(80, 24);
+        let r = replies(&e.feed(b"\x1b[?2004$p"));
+        assert_eq!(r, vec![b"\x1b[?2004;2$y".to_vec()]);
+    }
+
+    #[test]
+    fn replies_keep_stream_order_with_da1_last() {
+        let mut e = Emulator::new(80, 24);
+        let got = replies(&e.feed(
+            b"\x1b]11;?\x07\x1b]10;?\x07\x1b[?996n\x1b[?2031h\x1b[?2031$p\x1b[>q\x1b[>q\x1b[c",
+        ));
+        assert_eq!(got.len(), 7, "{got:?}");
+        assert!(got[0].starts_with(b"\x1b]11;"));
+        assert!(got[1].starts_with(b"\x1b]10;"));
+        assert_eq!(got[2], DARK_DSR);
+        assert_eq!(got[3], b"\x1b[?2031;1$y");
+        assert_eq!(got[4], xt());
+        assert_eq!(got[5], xt());
+        assert_eq!(got[6], b"\x1b[?1;2c");
+    }
+
+    #[test]
+    fn ris_turns_theme_reports_off() {
+        let mut e = Emulator::new(80, 24);
+        e.feed(b"\x1b[?2031h");
+        assert!(e.theme_reports().on);
+        e.feed(b"\x1bc");
+        assert_eq!(e.theme_reports(), THEME_REPORTS_OFF);
+    }
+
+    #[test]
+    fn osc11_notes_the_mode() {
+        let mut e = Emulator::new(80, 24);
+        e.set_colours("#3d2a1f", "#e6d8c0");
+        e.feed(b"\x1b]11;?\x07");
+        assert_eq!(
+            e.theme_reports().last,
+            Some(flare_theme::marks::Mode::Light)
+        );
     }
 
     #[test]
@@ -1685,14 +2093,301 @@ mod tests {
     }
 
     #[test]
-    fn an_erase_over_the_selection_clears_it() {
+    fn an_erase_over_the_selection_keeps_it_and_copies_the_new_text() {
         let mut e = Emulator::new(20, 3);
         e.feed(b"hello world");
         e.sel_apply(sel(false, 0, 0, 0, 5));
         e.feed(b"\x1b[2K");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "");
+        e.feed(b"\rHELLO");
+        assert_eq!(e.sel_text(), "HELLO");
+    }
+
+    #[test]
+    fn el_inside_a_selection_keeps_it() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 11));
+        e.feed(b"\x1b[1;6H\x1b[K");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "hello");
+    }
+
+    /// Claude-style: cursor home and rewrite the whole screen, many times.
+    #[test]
+    fn a_selection_survives_a_cursor_home_redraw_of_the_whole_screen() {
+        let mut e = Emulator::new(20, 24);
+        for i in 0..20 {
+            e.feed(format!("row {i:02}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 3, 0, 5, 6));
+        for pass in 0..3 {
+            e.feed(b"\x1b[H");
+            for i in 0..20 {
+                e.feed(format!("\x1b[2Kline {pass}{i:02}\r\n").as_bytes());
+            }
+            e.feed(b"\x1b[J");
+            assert!(e.has_selection(), "pass {pass}");
+        }
+        assert_eq!(e.sel_text(), "line 203\r\nline 204\r\nline 2");
+    }
+
+    #[test]
+    fn a_selection_follows_the_text_when_history_trims() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..6 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 2, 0, 2, 5));
+        assert_eq!(e.sel_text(), "line2");
+        for i in 6..30 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert_eq!(e.sel_text(), "line2");
+    }
+
+    #[test]
+    fn ed2_keeps_the_selection_on_the_text_it_moved_into_history() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"aaa\r\nbbb\r\nccc");
+        e.sel_apply(sel(false, 1, 0, 1, 3));
+        assert_eq!(e.sel_text(), "bbb");
+        e.feed(b"\x1b[2J");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "bbb");
+        e.feed(b"\x1b[Hnew");
+        assert_eq!(e.sel_text(), "bbb");
+    }
+
+    #[test]
+    fn ed2_on_a_selection_over_the_screen_keeps_it_in_history() {
+        let mut e = Emulator::new(10, 4);
+        for i in 0..8 {
+            e.feed(format!("l{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 5, 0, 6, 2));
+        let before = e.sel_text();
+        assert_eq!(before, "l5\r\nl6");
+        e.feed(b"\x1b[2J");
+        assert_eq!(e.sel_text(), before);
+    }
+
+    #[test]
+    fn ed3_clears_a_selection_in_the_cleared_history() {
+        let mut e = Emulator::new(10, 3);
+        for i in 0..10 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        e.sel_apply(sel(false, 1, 0, 1, 5));
+        e.feed(b"\x1b[3J");
         assert!(!e.has_selection());
     }
 
+    #[test]
+    fn the_alt_screen_clears_the_selection() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"hello");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1b[?1049h");
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn ris_clears_the_selection() {
+        let mut e = Emulator::new(10, 3);
+        e.feed(b"hello");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1bc");
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn a_column_resize_clamps_the_selection() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world foo");
+        e.sel_apply(sel(false, 0, 6, 0, 15));
+        e.resize(10, 3);
+        assert!(e.has_selection());
+        let (s, end, _) = e.sel_bounds().expect("selection");
+        assert_eq!(s.1, 6);
+        assert_eq!(end.1, 10);
+        e.resize(20, 3);
+        assert!(e.has_selection());
+    }
+
+    #[test]
+    fn a_column_resize_drops_a_selection_that_became_empty() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world foo");
+        e.sel_apply(sel(false, 0, 12, 0, 15));
+        e.resize(10, 3);
+        assert!(!e.has_selection());
+    }
+
+    #[test]
+    fn a_row_resize_keeps_the_selection() {
+        let mut e = Emulator::new(20, 6);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.resize(20, 4);
+        assert_eq!(e.sel_text(), "hello");
+        e.resize(20, 8);
+        assert_eq!(e.sel_text(), "hello");
+    }
+
+    #[test]
+    fn a_block_selection_survives_a_redraw() {
+        let mut e = Emulator::new(20, 4);
+        e.feed(b"abcdef\r\nghijkl");
+        e.sel_apply(sel(true, 0, 2, 1, 4));
+        e.feed(b"\x1b[H\x1b[2Kabcdef\r\n\x1b[2Kghijkl\x1b[J");
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "cd\r\nij");
+    }
+
+    #[test]
+    fn find_still_selects_a_match() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.find_next("world", false);
+        assert!(e.has_selection());
+        assert_eq!(e.sel_text(), "world");
+    }
+
+    #[test]
+    fn an_insert_line_above_moves_the_selection_down() {
+        let mut e = Emulator::new(10, 5);
+        e.feed(b"one\r\ntwo\r\nthree");
+        e.sel_apply(sel(false, 1, 0, 1, 3));
+        assert_eq!(e.sel_text(), "two");
+        e.feed(b"\x1b[1;1H\x1b[L");
+        assert_eq!(e.sel_text(), "two");
+        let (s, _, _) = e.sel_bounds().expect("selection");
+        assert_eq!(s.0, 2);
+    }
+
+    #[test]
+    fn a_guard_split_across_two_feeds_still_keeps_the_selection() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        e.feed(b"\x1b[2");
+        e.feed(b"Kx");
+        assert!(e.has_selection());
+    }
+
+    /// 200 selections over a static screen (history and screen, simple and block): the text
+    /// `sel_text` returns is the text captured into the fixture before the redraw change.
+    #[test]
+    fn copy_text_is_unchanged_for_an_unchanged_screen() {
+        let mut e = Emulator::new(24, 8);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |m: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m as u64) as usize
+        };
+        for i in 0..40 {
+            let n = next(24);
+            let body: String = (0..n)
+                .map(|k| (b'a' + ((i + k) % 26) as u8) as char)
+                .collect();
+            e.feed(format!("{i:02} {body}\r\n").as_bytes());
+        }
+        let total = e.history_size() + e.rows();
+        let mut got = String::new();
+        for k in 0..200 {
+            let (r0, r1) = (next(total), next(total));
+            let (b0, b1) = (next(25), next(25));
+            e.sel_apply(sel(k % 3 == 0, r0, b0, r1, b1));
+            got.push_str(&format!("{:?}\n", e.sel_text()));
+        }
+        if std::env::var_os("FLARE_WRITE_SEL_FIXTURE").is_some() {
+            std::fs::write(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/sel_text_200.txt"
+                ),
+                &got,
+            )
+            .expect("write fixture");
+        }
+        let want = include_str!("../tests/fixtures/sel_text_200.txt");
+        assert_eq!(got.replace("\r\n", "\n"), want.replace("\r\n", "\n"));
+    }
+
+    /// Chunked reads (random sizes, wrapped and block selections over history and screen) join to
+    /// exactly `sel_text()`.
+    #[test]
+    fn chunked_text_equals_sel_text() {
+        let mut e = Emulator::new(16, 6);
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |m: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % m as u64) as usize
+        };
+        for i in 0..120 {
+            let n = next(40);
+            let body: String = (0..n)
+                .map(|k| (b'a' + ((i + k) % 26) as u8) as char)
+                .collect();
+            e.feed(format!("{i:03} {body}\r\n").as_bytes());
+        }
+        let total = e.history_size() + e.rows();
+        for case in 0..200 {
+            let block = next(2) == 0;
+            let (mut r0, mut r1) = (next(total), next(total));
+            if r1 < r0 {
+                std::mem::swap(&mut r0, &mut r1);
+            }
+            e.sel_apply(sel(block, r0, next(17), r1, next(17)));
+            let want = e.sel_text();
+            let chunk = 1 + next(300);
+            let rows = e.sel_row_count();
+            let mut got = String::new();
+            let mut from = 0;
+            while from < rows {
+                let end = (from + chunk).min(rows);
+                got.push_str(&e.sel_text_rows(from..end).0);
+                from = end;
+            }
+            assert_eq!(got, want, "case {case} (block {block}, chunk {chunk})");
+        }
+    }
+
+    #[test]
+    fn the_selection_generation_moves_on_a_change_and_not_on_output() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"hello world");
+        let g0 = e.sel_generation();
+        e.sel_apply(sel(false, 0, 0, 0, 5));
+        let g1 = e.sel_generation();
+        assert_ne!(g0, g1, "a new selection is a change");
+        e.feed(b"\r\nmore output below");
+        assert_eq!(
+            e.sel_generation(),
+            g1,
+            "output that keeps the selection is not"
+        );
+        e.sel_clear();
+        assert_ne!(e.sel_generation(), g1, "a clear is a change");
+        assert_eq!(e.sel_row_count(), 0);
+    }
+
+    #[test]
+    fn sel_row_count_follows_the_selection() {
+        let mut e = Emulator::new(10, 4);
+        e.feed(b"aaaa\r\nbbbb\r\ncccc");
+        assert_eq!(e.sel_row_count(), 0);
+        e.sel_apply(sel(false, 0, 2, 2, 3));
+        assert_eq!(e.sel_row_count(), 3);
+        assert_eq!(e.sel_text_rows(1..2).0, "\r\nbbbb");
+        assert_eq!(e.sel_text_rows(5..9).0, "");
+    }
     #[test]
     fn a_block_selection_is_rectangular() {
         let mut e = Emulator::new(20, 3);
@@ -1823,6 +2518,81 @@ mod tests {
             let (m, _) = e.find_next(q, true).unwrap();
             assert_eq!((m.row, m.col), (0, 0));
         }
+    }
+
+    #[test]
+    fn a_new_query_cancels_the_running_job() {
+        let mut e = Emulator::new(20, 3);
+        for _ in 0..300 {
+            e.feed(b"row of text\r\n");
+        }
+        e.feed(b"foo bar");
+        let ticks = std::cell::Cell::new(0.0f64);
+        // Every read of the clock is 5 ms later: one row per slice, so the walk cannot finish.
+        let slow = || {
+            ticks.set(ticks.get() + 5.0);
+            ticks.get()
+        };
+        e.find_start("foo", Dir::Next, true);
+        e.find_step(&slow);
+        assert!(
+            e.find_view().searching,
+            "one slice does not finish the walk"
+        );
+        assert_eq!(e.find_view().active, None, "nothing has landed yet");
+        e.find_set("bar");
+        assert!(
+            !e.find_view().searching,
+            "the new query cancels the old walk"
+        );
+        e.find_start("bar", Dir::Next, true);
+        assert_eq!(
+            e.find_step(&|| 0.0),
+            None,
+            "a match in view does not scroll"
+        );
+        assert_eq!(e.sel_text(), "bar");
+    }
+
+    #[test]
+    fn a_search_with_a_match_near_the_top_lands_in_one_step() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo\r\n");
+        for _ in 0..300 {
+            e.feed(b"row of text\r\n");
+        }
+        e.find_start("foo", Dir::Next, true);
+        let ticks = std::cell::Cell::new(0.0f64);
+        let slow = || {
+            ticks.set(ticks.get() + 5.0);
+            ticks.get()
+        };
+        e.find_step(&slow);
+        assert!(!e.find_view().searching);
+        assert_eq!(e.find_view().active.map(|m| (m.row, m.col)), Some((0, 0)));
+    }
+
+    #[test]
+    #[ignore = "release timing"]
+    fn typing_a_letter_with_no_match_holds_the_ui_thread_under_10_ms() {
+        let mut e = Emulator::new(40, 5);
+        for i in 0..10_000 {
+            e.feed(format!("line {i} of the scrollback\r\n").as_bytes());
+        }
+        let t0 = Instant::now();
+        let clock = move || t0.elapsed().as_secs_f64() * 1000.0;
+        let mut longest = 0.0f64;
+        let started = Instant::now();
+        e.find_set("zq");
+        e.find_start("zq", Dir::Next, true);
+        longest = longest.max(started.elapsed().as_secs_f64() * 1000.0);
+        while e.find_busy() {
+            let turn = Instant::now();
+            e.find_step(&clock);
+            longest = longest.max(turn.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!("longest UI-thread turn over 10,000 lines: {longest:.2} ms");
+        assert!(longest < 10.0, "the longest turn took {longest:.2} ms");
     }
 
     #[test]

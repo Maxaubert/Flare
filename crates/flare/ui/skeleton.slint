@@ -1,7 +1,7 @@
 // The resume skeleton (M6, Task 26): the page of lines a restored agent tab shows while its
 // conversation resumes (PT ResumeSkeleton.tsx). The ground and the ink come from the theme; a
 // line is the ink at 7 percent; the lines pulse on MarkMotion's clock and stand still when asked.
-import { Px, Theme } from "theme.slint";
+import { Px, Theme, Motion } from "theme.slint";
 import { MarkMotion } from "tabmark.slint";
 
 // One line: 11 px high (snapped), 4 px corners, the ink at 7 percent.
@@ -31,7 +31,7 @@ export component ResumeSkeleton inherits Rectangle {
     background: root.ground;
     clip: true;
     opacity: root.leaving ? 0 : 1;
-    animate opacity { duration: 180ms; easing: ease; }
+    animate opacity { duration: Motion.d(180ms); easing: ease; }
 
     // The whole page pulses: 1.0 when still, otherwise the clock's pulse.
     Rectangle {

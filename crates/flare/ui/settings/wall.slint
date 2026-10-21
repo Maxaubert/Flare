@@ -5,7 +5,7 @@
 // Rust owns every rule (the wall order, the card positions, the clip heights, what a pick does);
 // this file draws what it is given and reports events back. Every edge snaps to a whole device pixel.
 // The wall's card is the same height at every scale: 124 px plus its two 1 device pixel borders.
-import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
 import { WallCard, EditorWell } from "types.slint";
 import { ColourField } from "colour.slint";
 
@@ -26,7 +26,24 @@ export component ThemeCard inherits Rectangle {
     in property <bool> focusable: true;
     callback picked(string);
     callback edit(string);
+    // The pencil took the keys (a closed editor hands them back to it).
+    callback pencil-focused();
     callback tip(string, length, length, length, length);
+    // The editor this card's pencil opened has closed: the pencil takes the keys, so Enter opens it
+    // again. A rebuilt wall makes a new card, so this works from init as well as from a change.
+    in property <bool> take-pencil;
+    changed take-pencil => {
+        root.take-the-pencil();
+    }
+    init => {
+        root.take-the-pencil();
+    }
+    function take-the-pencil() {
+        if (root.take-pencil && root.card.on && root.card.edit) {
+            pencil-fs.focus();
+            root.pencil-focused();
+        }
+    }
 
     property <length> hair: Px.hair();
     property <bool> by-key;
@@ -169,7 +186,7 @@ export component ThemeCard inherits Rectangle {
         border-radius: 6px;
         border-width: root.hair;
         border-color: root.card.on ? Theme.accent-hi : (root.key-focus ? SettingsInk.focus-edge : (ta.has-hover ? Theme.divider : Theme.line));
-        animate border-color { duration: 120ms; }
+        animate border-color { duration: Motion.d(120ms); }
     }
 
     fs := FocusScope {
@@ -210,6 +227,8 @@ export component ThemeCard inherits Rectangle {
         height: 20px;
         visible: root.card.on && root.card.edit;
         border-radius: 4px;
+        border-width: pencil-fs.has-focus ? Px.hair() * 2 : 0px;
+        border-color: Theme.accent-hi;
         background: pta.has-hover ? Theme.hover : transparent;
         accessible-role: button;
         accessible-label: root.card.edit-name != "" ? root.card.edit-name : "Edit " + root.card.name;
@@ -231,6 +250,20 @@ export component ThemeCard inherits Rectangle {
             stroke-width: 1.9 * 11px / 24;
             stroke-line-cap: round;
             stroke-line-join: round;
+        }
+
+        // The keys: the pencil is a tab stop of its own after its card, and Enter or Space edits.
+        pencil-fs := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            enabled: parent.visible;
+            key-pressed(e) => {
+                if e.text == Key.Space || e.text == Key.Return {
+                    root.edit(root.card.id);
+                    return accept;
+                }
+                return reject;
+            }
         }
 
         pta := TouchArea {
@@ -264,13 +297,17 @@ export component ThemeWallView inherits Rectangle {
     in property <bool> still;
     callback picked(string);
     callback edit(string);
+    // The card whose pencil opened the editor, and whether the keys are due back to it.
+    in property <string> pencil-id;
+    in property <bool> pencil-pending;
+    callback pencil-taken();
     callback toggled();
     callback tip(string, length, length, length, length);
 
     property <length> shown-h: root.expanded ? root.full-h : root.clip-h;
     // Ease OPEN only: the duration is 240 ms exactly while the wall is (being) expanded.
     animate shown-h {
-        duration: root.expanded && !root.still ? 240ms : 0ms;
+        duration: Motion.d(root.expanded && !root.still ? 240ms : 0ms);
         easing: cubic-bezier(0.16, 1, 0.3, 1);
     }
     out property <length> clip-now: root.shown-h;
@@ -294,6 +331,10 @@ export component ThemeWallView inherits Rectangle {
             x: c.x + 8px;
             y: c.y + 8px;
             card: c;
+            take-pencil: root.pencil-pending && root.pencil-id == c.id;
+            pencil-focused => {
+                root.pencil-taken();
+            }
             picked(id) => {
                 root.picked(id);
             }
@@ -457,6 +498,15 @@ component WellRow inherits Rectangle {
     callback swatch(length, length, length, length);
     callback reveal();
     callback tip(string, length, length, length, length);
+    // Escape closed this well's picker: its swatch takes the keys back ("editor:" and the label).
+    in property <string> swatch-back;
+    callback swatch-back-taken();
+    changed swatch-back => {
+        if (root.swatch-back == "editor:" + root.well.label) {
+            cf.focus-swatch();
+            root.swatch-back-taken();
+        }
+    }
 
     width: root.col-w;
     height: 24px;
@@ -520,6 +570,8 @@ export component ThemeEditor inherits Rectangle {
     callback well-swatch(string, length, length, length, length);
     callback save();
     callback cancel();
+    in property <string> swatch-back;
+    callback swatch-back-taken();
     callback focus-restore();
     callback tip(string, length, length, length, length);
 
@@ -702,6 +754,10 @@ export component ThemeEditor inherits Rectangle {
                         swatch(sx, sy, sw, sh) => {
                             root.well-swatch(root.wells[0].key, sx, sy, sw, sh);
                         }
+                        swatch-back: root.swatch-back;
+                        swatch-back-taken => {
+                            root.swatch-back-taken();
+                        }
                         reveal => {
                             root.reveal(self.y);
                         }
@@ -724,6 +780,10 @@ export component ThemeEditor inherits Rectangle {
                         }
                         swatch(sx, sy, sw, sh) => {
                             root.well-swatch(root.wells[k + 1].key, sx, sy, sw, sh);
+                        }
+                        swatch-back: root.swatch-back;
+                        swatch-back-taken => {
+                            root.swatch-back-taken();
                         }
                         reveal => {
                             root.reveal(self.y);
@@ -1007,6 +1067,8 @@ export component WallPreview inherits Window {
     in-out property <string> edit-text;
     in-out property <string> committed-key;
     in-out property <int> restores;
+    in-out property <bool> solo-take-pencil;
+    in-out property <int> pencil-takes;
     in-out property <int> popover-clicks;
     in-out property <string> tip-text;
     out property <bool> page-has-focus: page-fs.has-focus;
@@ -1128,6 +1190,10 @@ export component WallPreview inherits Window {
         x: Px.snap(760px);
         y: Px.snap(40px);
         card: root.solo;
+        take-pencil: root.solo-take-pencil;
+        pencil-focused => {
+            root.pencil-takes += 1;
+        }
         picked(id) => {
             root.picked-id = id;
         }

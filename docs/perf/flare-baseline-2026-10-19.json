@@ -1,0 +1,491 @@
+{
+  "taken": "2026-10-19",
+  "exe": "C:/Users/Admin/Documents/Claude/Github/Flare/.claude/targets/t1/release/flare.exe",
+  "runs": 7,
+  "scale_dpi": 216,
+  "shell": "cmd",
+  "baseline": "docs/perf/pt-baseline-2026-10-19.json",
+  "values": {
+    "B1": {
+      "gpu": 1699.9113000000002,
+      "software": 231.7031
+    },
+    "B2": {
+      "gpu": 115.33984375,
+      "software": 69.39453125
+    },
+    "B3": {
+      "gpu": 2.788594550131434,
+      "software": 2.5582306703640096
+    },
+    "B4": {
+      "gpu": 252.85559999999998,
+      "software": 22.12545
+    },
+    "B5": {
+      "gpu": 0.0,
+      "software": 56.75440681753394
+    },
+    "B6": {
+      "gpu": 0.1561566604793317,
+      "software": 0.15613624225661668
+    },
+    "B7": {
+      "gpu": 4.4456
+    }
+  },
+  "measures": [
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "gpu",
+      "value": 1699.9113000000002,
+      "unit": "ms",
+      "detail": {
+        "shell": "cmd",
+        "runs_ms": [
+          1693.9724,
+          1733.3924,
+          1699.9113000000002,
+          1709.9061,
+          1698.0219000000002,
+          1751.9137,
+          1677.1776
+        ],
+        "prompt_median_ms": 1447.1022,
+        "echo_median_ms": 251.37259999999992,
+        "outside_median_ms": 1702.7803000000001,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 15.7214
+          },
+          {
+            "name": "args",
+            "ms": 15.7525
+          },
+          {
+            "name": "backend",
+            "ms": 387.8652
+          },
+          {
+            "name": "component",
+            "ms": 661.3050000000001
+          },
+          {
+            "name": "profile",
+            "ms": 705.5663
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 1243.6281
+          },
+          {
+            "name": "render_setup",
+            "ms": 1212.6517
+          },
+          {
+            "name": "first_frame",
+            "ms": 1223.9697
+          },
+          {
+            "name": "first_prompt",
+            "ms": 1435.8101
+          },
+          {
+            "name": "usable",
+            "ms": 1435.8516
+          }
+        ]
+      },
+      "rule": "<= 300 ms and <= pt",
+      "pt": 436.18,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B1",
+      "metric": "start to usable prompt",
+      "renderer": "software",
+      "value": 231.7031,
+      "unit": "ms",
+      "detail": {
+        "shell": "cmd",
+        "runs_ms": [
+          231.7031,
+          243.3463,
+          233.7886,
+          224.8682,
+          231.0388,
+          228.8618,
+          240.409
+        ],
+        "prompt_median_ms": 209.4104,
+        "echo_median_ms": 20.56219999999999,
+        "outside_median_ms": 242.8326,
+        "phases": [
+          {
+            "name": "main",
+            "ms": 15.2796
+          },
+          {
+            "name": "args",
+            "ms": 15.3094
+          },
+          {
+            "name": "backend",
+            "ms": 19.9152
+          },
+          {
+            "name": "component",
+            "ms": 24.1234
+          },
+          {
+            "name": "profile",
+            "ms": 66.38589999999999
+          },
+          {
+            "name": "shell_spawn",
+            "ms": 153.7683
+          },
+          {
+            "name": "first_frame",
+            "ms": 124.7956
+          },
+          {
+            "name": "first_prompt",
+            "ms": 231.7788
+          }
+        ]
+      },
+      "rule": "<= 300 ms and <= pt",
+      "pt": 436.18,
+      "verdict": "pass"
+    },
+    {
+      "id": "B2",
+      "metric": "idle private working set",
+      "renderer": "gpu",
+      "value": 115.33984375,
+      "unit": "MB",
+      "detail": {
+        "sessions_mb": [
+          115.9453125,
+          115.33984375,
+          115.2421875
+        ],
+        "processes": [
+          {
+            "name": "flare.exe",
+            "pid": 67364,
+            "mb": 115.2421875
+          }
+        ]
+      },
+      "rule": "<= pt / 3",
+      "pt": 126.5,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B2",
+      "metric": "idle private working set",
+      "renderer": "software",
+      "value": 69.39453125,
+      "unit": "MB",
+      "detail": {
+        "sessions_mb": [
+          69.5,
+          69.1171875,
+          69.39453125
+        ],
+        "processes": [
+          {
+            "name": "flare.exe",
+            "pid": 42952,
+            "mb": 69.39453125
+          }
+        ]
+      },
+      "rule": "<= pt",
+      "pt": 126.5,
+      "verdict": "pass"
+    },
+    {
+      "id": "B3",
+      "metric": "flood throughput",
+      "renderer": "gpu",
+      "value": 2.788594550131434,
+      "unit": "MB/s",
+      "detail": {
+        "mb": 100.0,
+        "seconds": 35.8603584,
+        "short": false,
+        "frames": {
+          "count": 140,
+          "mean_ms": 256.16566834532375,
+          "p50_ms": 252.3062,
+          "p95_ms": 265.5679,
+          "p99_ms": 265.9207,
+          "max_ms": 266.27250000000004,
+          "over_33": 139,
+          "render_p95_ms": 6.3481
+        }
+      },
+      "rule": ">= pt * 2 and no frame over 33 ms",
+      "pt": 2.47,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B3",
+      "metric": "flood throughput",
+      "renderer": "software",
+      "value": 2.5582306703640096,
+      "unit": "MB/s",
+      "detail": {
+        "mb": 100.0,
+        "seconds": 39.089516499999995,
+        "short": false,
+        "frames": {
+          "count": 1863,
+          "mean_ms": 20.716407733619775,
+          "p50_ms": 20.5071,
+          "p95_ms": 23.1479,
+          "p99_ms": 25.2436,
+          "max_ms": 27.3125,
+          "over_33": 0,
+          "render_p95_ms": 8.7033
+        }
+      },
+      "rule": ">= pt",
+      "pt": 2.47,
+      "verdict": "pass"
+    },
+    {
+      "id": "B4",
+      "metric": "key to frame (median)",
+      "renderer": "gpu",
+      "value": 252.85559999999998,
+      "unit": "ms",
+      "detail": {
+        "n": 200,
+        "p95_ms": 265.7691,
+        "max_ms": 268.425
+      },
+      "rule": "median <= pt and p95 <= 25 ms",
+      "pt": 19.3,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B4",
+      "metric": "key to frame (median)",
+      "renderer": "software",
+      "value": 22.12545,
+      "unit": "ms",
+      "detail": {
+        "n": 200,
+        "p95_ms": 38.4924,
+        "max_ms": 42.6288
+      },
+      "rule": "median <= pt and p95 <= 25 ms",
+      "pt": 19.3,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B5",
+      "metric": "scroll frames per second",
+      "renderer": "gpu",
+      "value": 0.0,
+      "unit": "fps",
+      "detail": {
+        "seconds": 4.9993933,
+        "events": 5000,
+        "max_ms": 0.0,
+        "over_33": 0,
+        "frames": {
+          "count": 0,
+          "mean_ms": 0.0,
+          "p50_ms": 0.0,
+          "p95_ms": 0.0,
+          "p99_ms": 0.0,
+          "max_ms": 0.0,
+          "over_33": 0,
+          "render_p95_ms": 0.0
+        }
+      },
+      "rule": ">= 55 fps and no frame over 33 ms",
+      "pt": 130.97,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B5",
+      "metric": "scroll frames per second",
+      "renderer": "software",
+      "value": 56.75440681753394,
+      "unit": "fps",
+      "detail": {
+        "seconds": 6.166922,
+        "events": 5000,
+        "max_ms": 28.9512,
+        "over_33": 0,
+        "frames": {
+          "count": 350,
+          "mean_ms": 17.61271117478512,
+          "p50_ms": 16.062,
+          "p95_ms": 22.8218,
+          "p99_ms": 25.485,
+          "max_ms": 28.9512,
+          "over_33": 0,
+          "render_p95_ms": 5.0554
+        }
+      },
+      "rule": ">= 55 fps",
+      "pt": 130.97,
+      "verdict": "pass"
+    },
+    {
+      "id": "B6",
+      "metric": "idle cpu",
+      "renderer": "gpu",
+      "value": 0.1561566604793317,
+      "unit": "% of a core",
+      "detail": {
+        "wall_ms": 10005.9773,
+        "cpu_ms": 15.625,
+        "processes": 1
+      },
+      "rule": "<= 0.5% of a core and <= pt",
+      "pt": 3.47,
+      "verdict": "pass"
+    },
+    {
+      "id": "B6",
+      "metric": "idle cpu",
+      "renderer": "software",
+      "value": 0.15613624225661668,
+      "unit": "% of a core",
+      "detail": {
+        "wall_ms": 10007.2858,
+        "cpu_ms": 15.625,
+        "processes": 1
+      },
+      "rule": "<= 0.5% of a core and <= pt",
+      "pt": 3.47,
+      "verdict": "pass"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 5.9022,
+      "unit": "ms",
+      "detail": {
+        "phase": "flood",
+        "css_size": [
+          1000.0,
+          640.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 266.9257,
+        "frames": {
+          "count": 143,
+          "mean_ms": 255.01530633802824,
+          "p50_ms": 252.717,
+          "p95_ms": 265.6377,
+          "p99_ms": 266.8443,
+          "max_ms": 266.9257,
+          "over_33": 141,
+          "render_p95_ms": 5.9022
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 4.1987,
+      "unit": "ms",
+      "detail": {
+        "phase": "resize",
+        "css_size": [
+          1000.0,
+          640.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 244.6628,
+        "frames": {
+          "count": 296,
+          "mean_ms": 9.368140000000004,
+          "p50_ms": 4.856199999999999,
+          "p95_ms": 25.2859,
+          "p99_ms": 37.8031,
+          "max_ms": 244.6628,
+          "over_33": 3,
+          "render_p95_ms": 4.1987
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 6.3532,
+      "unit": "ms",
+      "detail": {
+        "phase": "flood",
+        "css_size": [
+          1707.0,
+          960.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 268.9256,
+        "frames": {
+          "count": 145,
+          "mean_ms": 260.2488722222222,
+          "p50_ms": 263.8474,
+          "p95_ms": 266.68199999999996,
+          "p99_ms": 267.8873,
+          "max_ms": 268.9256,
+          "over_33": 144,
+          "render_p95_ms": 6.3532
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "FAIL"
+    },
+    {
+      "id": "B7",
+      "metric": "render p95 at 225%",
+      "renderer": "gpu",
+      "value": 4.4456,
+      "unit": "ms",
+      "detail": {
+        "phase": "resize",
+        "css_size": [
+          1707.0,
+          960.0
+        ],
+        "scale_dpi": 216,
+        "max_ms": 394.3894,
+        "frames": {
+          "count": 242,
+          "mean_ms": 11.34341161825726,
+          "p50_ms": 5.0625,
+          "p95_ms": 27.654,
+          "p99_ms": 38.9769,
+          "max_ms": 394.3894,
+          "over_33": 9,
+          "render_p95_ms": 4.4456
+        }
+      },
+      "rule": "render p95 <= 8.3 ms and interval <= 33 ms",
+      "pt": null,
+      "verdict": "FAIL"
+    }
+  ]
+}

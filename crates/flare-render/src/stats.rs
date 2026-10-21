@@ -51,6 +51,37 @@ impl FrameStats {
         Some(sorted[idx])
     }
 
+    /// How many samples the window holds.
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// Drops every sample.
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    /// Nearest-rank percentile (`p` in 0..=100) over a sorted copy of the window.
+    pub fn percentile(&self, p: f64) -> Option<f64> {
+        let n = self.samples.len();
+        if n == 0 {
+            return None;
+        }
+        let mut sorted: Vec<f64> = self.samples.iter().copied().collect();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let rank = ((p.clamp(0.0, 100.0) * n as f64) / 100.0 - 1e-9).ceil() as usize;
+        Some(sorted[rank.clamp(1, n) - 1])
+    }
+
+    /// How many samples are above `ms`.
+    pub fn over(&self, ms: f64) -> usize {
+        self.samples.iter().filter(|s| **s > ms).count()
+    }
+
     /// One line, for logs and the overlay: `last 1.20 ms, avg 1.10 ms, p95 1.90 ms, max 2.00 ms (n=20)`,
     /// or `no frames` when the window is empty.
     pub fn summary(&self) -> String {
@@ -60,6 +91,225 @@ impl FrameStats {
                 self.samples.len()
             ),
             _ => "no frames".to_string(),
+        }
+    }
+}
+
+/// The parts of one frame the trace times (M10 Task 67), in the order they happen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TracePhase {
+    /// Waiting for the emulator lock.
+    LockWait,
+    /// Copying the visible rows out while holding it.
+    Snapshot,
+    /// Laying the grid out into rects and glyph draws.
+    Scene,
+    /// Rasterising new glyphs and uploading them to the atlas (a part of `Paint`).
+    GlyphUpload,
+    /// Painting the scene, the glyph upload included.
+    Paint,
+    /// Handing the image to Slint (the set-property call and what follows it).
+    SetImage,
+    /// The whole render callback, `BeforeRendering` to `AfterRendering`.
+    Render,
+    /// From `AfterRendering` to the next `BeforeRendering`: the present and the wait for the next frame.
+    Gap,
+}
+
+/// How many phases there are.
+pub const TRACE_PHASES: usize = 8;
+
+impl TracePhase {
+    /// Every phase, in order (the index of a phase is its position here).
+    pub const ALL: [TracePhase; TRACE_PHASES] = [
+        TracePhase::LockWait,
+        TracePhase::Snapshot,
+        TracePhase::Scene,
+        TracePhase::GlyphUpload,
+        TracePhase::Paint,
+        TracePhase::SetImage,
+        TracePhase::Render,
+        TracePhase::Gap,
+    ];
+
+    /// The name the trace line uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            TracePhase::LockWait => "lock_wait",
+            TracePhase::Snapshot => "snapshot",
+            TracePhase::Scene => "scene",
+            TracePhase::GlyphUpload => "glyph_upload",
+            TracePhase::Paint => "paint",
+            TracePhase::SetImage => "set_image",
+            TracePhase::Render => "render",
+            TracePhase::Gap => "gap",
+        }
+    }
+}
+
+/// Per-frame timings in microseconds, summed per phase until `take` (M10 Task 67, step 1). Off unless
+/// `FLARE_TRACE_FRAME=1`; an off trace records nothing and costs one branch.
+pub struct FrameTrace {
+    on: bool,
+    micros: [std::sync::atomic::AtomicU64; TRACE_PHASES],
+    frames: std::sync::atomic::AtomicU64,
+}
+
+impl FrameTrace {
+    pub fn new(on: bool) -> Self {
+        Self {
+            on,
+            micros: [const { std::sync::atomic::AtomicU64::new(0) }; TRACE_PHASES],
+            frames: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Whether the variable's value turns the trace on: only "1".
+    pub fn enabled_by(value: Option<&str>) -> bool {
+        value == Some("1")
+    }
+
+    /// The process-wide trace, read from `FLARE_TRACE_FRAME` once.
+    pub fn global() -> &'static FrameTrace {
+        static TRACE: std::sync::OnceLock<FrameTrace> = std::sync::OnceLock::new();
+        TRACE.get_or_init(|| {
+            FrameTrace::new(Self::enabled_by(
+                std::env::var("FLARE_TRACE_FRAME").ok().as_deref(),
+            ))
+        })
+    }
+
+    pub fn on(&self) -> bool {
+        self.on
+    }
+
+    /// Adds `d` to the phase.
+    pub fn add(&self, phase: TracePhase, d: std::time::Duration) {
+        if !self.on {
+            return;
+        }
+        let us = u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
+        self.micros[phase as usize].fetch_add(us, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Times `f` into the phase (just runs it when the trace is off).
+    pub fn time<R>(&self, phase: TracePhase, f: impl FnOnce() -> R) -> R {
+        if !self.on {
+            return f();
+        }
+        let start = std::time::Instant::now();
+        let r = f();
+        self.add(phase, start.elapsed());
+        r
+    }
+
+    /// The sums since the last `take`, which are reset.
+    pub fn take(&self) -> [u64; TRACE_PHASES] {
+        let mut out = [0u64; TRACE_PHASES];
+        for (o, m) in out.iter_mut().zip(&self.micros) {
+            *o = m.swap(0, std::sync::atomic::Ordering::Relaxed);
+        }
+        out
+    }
+
+    /// Ends a frame: when on, logs the phase sums at `trace` level and resets them.
+    pub fn end_frame(&self) {
+        if !self.on {
+            return;
+        }
+        let n = self
+            .frames
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        log::trace!("{}", Self::format_line(n, &self.take()));
+    }
+
+    /// `frame 12 lock_wait=3us snapshot=250us ...`, every phase in order.
+    pub fn format_line(frame: u64, micros: &[u64; TRACE_PHASES]) -> String {
+        let mut s = format!("frame {frame}");
+        for (p, us) in TracePhase::ALL.iter().zip(micros) {
+            s.push_str(&format!(" {}={us}us", p.name()));
+        }
+        s
+    }
+}
+
+/// Adds the time between its creation and its drop to a phase of the global trace.
+pub struct TraceSpan {
+    phase: TracePhase,
+    start: Option<std::time::Instant>,
+}
+
+impl TraceSpan {
+    pub fn new(phase: TracePhase) -> Self {
+        Self {
+            phase,
+            start: FrameTrace::global().on().then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for TraceSpan {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            FrameTrace::global().add(self.phase, start.elapsed());
+        }
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn only_the_value_1_turns_the_trace_on() {
+        assert!(FrameTrace::enabled_by(Some("1")));
+        for v in [None, Some(""), Some("0"), Some("true"), Some("yes")] {
+            assert!(!FrameTrace::enabled_by(v), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn an_off_trace_records_nothing() {
+        let t = FrameTrace::new(false);
+        t.add(TracePhase::Scene, Duration::from_micros(500));
+        assert_eq!(t.time(TracePhase::Paint, || 7), 7);
+        assert_eq!(t.take(), [0; TRACE_PHASES]);
+    }
+
+    #[test]
+    fn phases_add_up_and_take_resets() {
+        let t = FrameTrace::new(true);
+        t.add(TracePhase::Snapshot, Duration::from_micros(120));
+        t.add(TracePhase::Snapshot, Duration::from_micros(30));
+        t.add(TracePhase::Gap, Duration::from_micros(9));
+        let got = t.take();
+        assert_eq!(got[TracePhase::Snapshot as usize], 150);
+        assert_eq!(got[TracePhase::Gap as usize], 9);
+        assert_eq!(got.iter().sum::<u64>(), 159);
+        assert_eq!(t.take(), [0; TRACE_PHASES]);
+    }
+
+    #[test]
+    fn time_measures_the_closure() {
+        let t = FrameTrace::new(true);
+        t.time(TracePhase::Paint, || {
+            std::thread::sleep(Duration::from_millis(3)); // sync-ok: test timing
+        });
+        assert!(t.take()[TracePhase::Paint as usize] >= 3000);
+    }
+
+    #[test]
+    fn the_line_names_every_phase_in_microseconds() {
+        let line = FrameTrace::format_line(4, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            line,
+            "frame 4 lock_wait=1us snapshot=2us scene=3us glyph_upload=4us paint=5us set_image=6us render=7us gap=8us"
+        );
+        assert_eq!(TracePhase::ALL.len(), TRACE_PHASES);
+        for (i, p) in TracePhase::ALL.iter().enumerate() {
+            assert_eq!(*p as usize, i);
         }
     }
 }
@@ -109,6 +359,34 @@ mod tests {
         let mut one = FrameStats::new(100);
         one.push_ms(5.0);
         assert_eq!(one.p95(), Some(5.0));
+    }
+
+    #[test]
+    fn frame_stats_percentiles_match_a_known_series() {
+        let mut s = FrameStats::new(200);
+        for i in 1..=100 {
+            s.push_ms(f64::from(i));
+        }
+        assert_eq!(s.percentile(50.0), Some(50.0));
+        assert_eq!(s.percentile(95.0), Some(95.0));
+        assert_eq!(s.percentile(99.0), Some(99.0));
+        assert_eq!(s.max(), Some(100.0));
+        assert_eq!(s.over(33.0), 67);
+        assert_eq!(s.len(), 100);
+        assert_eq!(FrameStats::new(5).percentile(50.0), None);
+        s.clear();
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn the_ring_keeps_only_the_last_200000() {
+        let mut s = FrameStats::new(200_000);
+        for i in 0..200_005 {
+            s.push_ms(f64::from(i));
+        }
+        assert_eq!(s.len(), 200_000);
+        assert_eq!(s.percentile(0.0), Some(5.0));
+        assert_eq!(s.max(), Some(200_004.0));
     }
 
     #[test]

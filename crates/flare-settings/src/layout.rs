@@ -116,7 +116,15 @@ pub struct SnapGrid {
 impl SnapGrid {
     /// The device pixel an edge at `css` lands on, as logical pixels.
     pub fn edge(&self, css: f64) -> f64 {
-        (css * self.scale).round() / self.scale
+        // Half a device pixel rounds up, with a tolerance, so an edge that lands on .5 moves the same
+        // way as one 73 device pixels further on (a row of whole device pixels keeps its height).
+        (css * self.scale + 0.5 + 1e-7).floor() / self.scale
+    }
+
+    /// `css` rounded UP to whole device pixels: a row never draws shorter than its CSS height (at
+    /// 225 percent, 58 css is 130.5 device pixels, which a plain snap would draw as 130).
+    pub fn at_least(&self, css: f64) -> f64 {
+        (css * self.scale - 1e-9).ceil() / self.scale
     }
 
     /// `(top, height)` for a box at `y` and `h`: the top and the bottom are both snapped.
@@ -222,7 +230,13 @@ struct Child {
 }
 
 /// The CSS height of a block. A wall is its clip plus 66 (the heading gap, the toggle and the paddings).
-fn child_of(block: &BlockModel, wall: &WallLayout, slint_badge_h: f64, m: &Metrics) -> Child {
+fn child_of(
+    block: &BlockModel,
+    wall: &WallLayout,
+    slint_badge_h: f64,
+    m: &Metrics,
+    grid: SnapGrid,
+) -> Child {
     let (kind, id, css_h) = match block {
         BlockModel::Row(r) => (BlockKind::Row, r.id, m.row_h),
         BlockModel::Wall => (BlockKind::Wall, "", wall.clip_h + m.wall_overhead),
@@ -230,7 +244,11 @@ fn child_of(block: &BlockModel, wall: &WallLayout, slint_badge_h: f64, m: &Metri
         BlockModel::SlintBadge => (BlockKind::Slint, "", slint_badge_h),
         BlockModel::Note(_) => (BlockKind::Note, "", m.note_h),
     };
-    Child { kind, id, css_h }
+    Child {
+        kind,
+        id,
+        css_h: grid.at_least(css_h),
+    }
 }
 
 /// Places one section below `top` (CSS px): the heading, 8 px above the panel, the panel's border and
@@ -310,7 +328,7 @@ pub fn layout_page(
         let children: Vec<Child> = s
             .blocks
             .iter()
-            .map(|b| child_of(b, wall, slint_badge_h, &m))
+            .map(|b| child_of(b, wall, slint_badge_h, &m, grid))
             .collect();
         let (section, bottom) = place_section(
             grid,
@@ -551,7 +569,7 @@ mod tests {
                             assert!(is_whole(v, scale), "{id} at {scale}: {v} is not whole");
                         }
                         assert!(
-                            r.h >= 58.0 - 1.0 / scale,
+                            r.h >= 58.0 - 1e-9,
                             "{id} at {scale}: block {:?} is {}",
                             r.block,
                             r.h

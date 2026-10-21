@@ -282,6 +282,46 @@ pub fn snap_alpha_step(a: f64, held: f64, key: bool, opts: &SnapOpts) -> f64 {
     was
 }
 
+/// The desktop a see-through window without acrylic is assumed to sit on: mid grey (Task 57; the measured
+/// table in `tools/glass-light/contrast.csv`).
+pub const ASSUMED_DESKTOP: Rgba = Rgba {
+    r: 128.0,
+    g: 128.0,
+    b: 128.0,
+    a: 1.0,
+};
+
+/// What the eye sees behind the text: the ground at `alpha` over the assumed desktop. Alpha 1 is the ground.
+pub fn effective_ground(ground: &Rgba, alpha: f64, assumed_desktop: &Rgba) -> Rgba {
+    let a = alpha.clamp(0.0, 1.0);
+    Rgba {
+        r: assumed_desktop.r + (ground.r - assumed_desktop.r) * a,
+        g: assumed_desktop.g + (ground.g - assumed_desktop.g) * a,
+        b: assumed_desktop.b + (ground.b - assumed_desktop.b) * a,
+        a: 1.0,
+    }
+}
+
+/// The sixteen for a see-through window without acrylic (alpha below 1): on a LIGHT ground each is walked
+/// to the 3:1 ANSI floor against the effective ground (Task 57, DIFF-12 PROPOSED: readability beyond
+/// Prism Terminal, which floors against the theme ground only). A solid window (alpha 1) and a dark ground come
+/// back unchanged.
+pub fn lift_ansi_for_see_through(
+    ansi: &[Option<String>; 16],
+    ground: &str,
+    alpha: f64,
+) -> [Option<String>; 16] {
+    let opaque_ground = opaque(ground, "#000000");
+    if alpha >= 1.0 || crate::ansi::luminance(&opaque_ground) <= crate::ground::LIGHT_GROUND {
+        return ansi.clone();
+    }
+    let Some(g) = parse_colour(&opaque_ground) else {
+        return ansi.clone();
+    };
+    let eff = to_stored(&effective_ground(&g, alpha, &ASSUMED_DESKTOP));
+    ansi.clone()
+        .map(|e| e.map(|c| legible_on_strict(&c, &eff, crate::ansi::ANSI_CONTRAST_FLOOR)))
+}
 #[cfg(test)]
 mod tests {
     use super::*;

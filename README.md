@@ -34,6 +34,15 @@ cargo nextest run --workspace
 Also run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
 `cargo deny check` before a PR.
 
+The end-to-end suite drives the built release exe (offscreen, one profile per scenario; see [docs/e2e.md](docs/e2e.md)):
+
+```
+cargo build --release -p flare --target-dir <TARGET>
+cargo run -p flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release\flare.exe [names]
+cargo run -p flare-e2e --release --target-dir <TARGET> -- perf all --exe <TARGET>\release\flare.exe
+```
+The performance bar, its method and the M10 verdict are in [docs/performance.md](docs/performance.md); the scaling images are in [docs/screenshots/m10/dpi/README.md](docs/screenshots/m10/dpi/README.md).
+
 To read the diagnostics log after a run: `cargo diag` (the newest problems, with the crumbs before each), or `cargo diag -- --since 10m --all`. The flags and what each stall kind means are in [docs/diagnostics.md](docs/diagnostics.md).
 
 ## Dependencies

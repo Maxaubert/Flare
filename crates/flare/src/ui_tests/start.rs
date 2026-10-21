@@ -313,6 +313,26 @@ fn a_long_place_name_elides_and_never_pushes_pinned_out() {
     );
 }
 
+#[test]
+fn the_start_screen_has_no_greeting_and_no_explanation() {
+    // The words the screen draws as literals are the wordmark, the pinned tag and the footer link.
+    // Place names, key labels and the version come from the app, never from the screen's own text.
+    let src = include_str!("../../ui/start.slint");
+    let mut drawn: Vec<&str> = src
+        .lines()
+        // A property's default ("Version 0.1.0" in the preview) is the app's text, set at run time.
+        .filter(|l| !l.contains("property"))
+        .filter_map(|l| l.split_once("text: \"").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.split_once('"').map(|(words, _)| words))
+        .collect();
+    drawn.sort_unstable();
+    assert_eq!(
+        drawn,
+        ["Flare", "GitHub", "Pinned"],
+        "the screen draws no greeting or explanation of its own"
+    );
+}
+
 /// The ink in a device-pixel box, by column, grouped into runs that `gap` empty columns
 /// split: each run's (x0, y0, x1, y1).
 fn ink_runs(

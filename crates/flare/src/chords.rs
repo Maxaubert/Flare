@@ -35,6 +35,8 @@ pub trait ChordTarget {
     fn new_tab(&mut self);
     fn close_tab(&mut self);
     fn find(&mut self);
+    /// Alt+Space: the system menu at the window's top-left.
+    fn open_system_menu(&mut self);
 }
 
 /// App.tsx `onKey`, in order: a Ctrl chord that is not Tab, Control or Shift ends a Most recent walk;
@@ -79,6 +81,7 @@ pub fn dispatch(ev: &KeyEvent, ctx: &KeyContext, t: &mut dyn ChordTarget) -> Dis
         ChordId::NewTab => t.new_tab(),
         ChordId::CloseTab => t.close_tab(),
         ChordId::Find => t.find(),
+        ChordId::SystemMenu => t.open_system_menu(),
     }
     Dispatch::Taken
 }
@@ -139,6 +142,9 @@ mod tests {
         fn find(&mut self) {
             self.calls.push("find".into());
         }
+        fn open_system_menu(&mut self) {
+            self.calls.push("system_menu".into());
+        }
     }
 
     fn on() -> KeyContext {
@@ -156,6 +162,19 @@ mod tests {
 
     fn k(key: &str, code: &str) -> KeyEvent {
         KeyEvent::new(key, code)
+    }
+
+    #[test]
+    fn alt_space_opens_the_system_menu_and_is_taken_even_under_a_question() {
+        for blocked in [false, true] {
+            let mut t = FakeTarget {
+                blocked,
+                ..FakeTarget::default()
+            };
+            let d = dispatch(&k(" ", "Space").alt(), &on(), &mut t);
+            assert_eq!(d, Dispatch::Taken);
+            assert_eq!(t.calls, vec!["system_menu".to_string()]);
+        }
     }
 
     fn run(ev: &KeyEvent, ctx: &KeyContext) -> (Dispatch, Vec<String>) {

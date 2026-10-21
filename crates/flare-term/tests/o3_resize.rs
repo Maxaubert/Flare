@@ -122,6 +122,18 @@ fn o3_cmd_banner_stays_on_screen_when_narrowing() {
     );
 }
 
+/// The theme nudge (one column narrower, then back, 80 ms apart) must not cost the prompt line.
+#[test]
+fn a_resize_nudge_never_loses_the_prompt_line() {
+    let (_dir, mut rig, folder) = cmd_in_long_dir();
+    prompt_up(&rig);
+    type_and_see(&rig, "abcdef");
+    resize_steps(&mut rig, &[(79, 24), (80, 24)]);
+    type_and_see(&rig, "XYZ");
+    typed_line_checks(&rig, &folder, 80);
+    assert_eq!(rig.history(), 0, "{}", dump(&rig));
+}
+
 fn fill_screen(rig: &Rig) {
     rig.type_str("for /L %i in (1,1,60) do @echo line%i\r");
     let ok = rig.wait_for(15_000, |e| {

@@ -63,6 +63,8 @@ export component Dialog inherits Rectangle {
     // 0 is Cancel, 1 is the primary button.
     property <int> focus-idx: 1;
     out property <bool> chrome-has-focus: fs.has-focus;
+    // Where the keys reach: -1 nowhere, 0 Cancel, 1 the primary button (the close question's e2e reads it).
+    out property <int> focused-button: fs.has-focus ? root.focus-idx : -1;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;

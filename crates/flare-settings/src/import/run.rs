@@ -3,8 +3,8 @@
 //! Reads Prism Terminal's Local Storage (the Stable profile first, then the Main one) from a copy,
 //! maps the keys with the table of `map.rs`, folds the legacy keys with `legacy.rs` and writes what
 //! Flare does not hold yet. The run is recorded in `DONE_KEY`, so it happens once. Nothing under the
-//! source folders is ever written. Call it from a worker thread: every candidate waits up to the
-//! ceiling for its read.
+//! source folders is ever written. Call it from a worker thread: the whole import waits at most the
+//! ceiling, shared by every candidate's read (M10 Task 53).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -91,6 +91,50 @@ pub fn should_run(prefs: &PrefStore) -> bool {
     prefs.get(DONE_KEY).is_none()
 }
 
+/// One budget for a whole import (M10 Task 53): every candidate's read gets what is left of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deadline {
+    end: Instant,
+}
+
+impl Deadline {
+    pub fn after(d: Duration, now: Instant) -> Self {
+        Deadline { end: now + d }
+    }
+
+    pub fn remaining(&self, now: Instant) -> Duration {
+        self.end.saturating_duration_since(now)
+    }
+
+    pub fn expired(&self, now: Instant) -> bool {
+        now >= self.end
+    }
+}
+
+/// The ceiling for the next read: the time left on `d`, or None once it has run out.
+pub fn next_ceiling(d: &Deadline, now: Instant) -> Option<Duration> {
+    if d.expired(now) {
+        None
+    } else {
+        Some(d.remaining(now))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Each candidate's ceiling in order, for the budget tests (the import runs on the calling thread).
+    static CEILINGS_SEEN: std::cell::RefCell<Vec<Duration>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn record_ceiling(c: Duration) {
+    CEILINGS_SEEN.with(|s| s.borrow_mut().push(c));
+}
+
+#[cfg(not(test))]
+fn record_ceiling(_: Duration) {}
+
+/// Runs the whole import within `ceiling`, the budget shared by every Prism profile.
 pub fn run_once(prefs: &PrefStore, paths: &ImportPaths, ceiling: Duration) -> ImportReport {
     run_once_with(prefs, paths, ceiling, Arc::new(real_reader))
 }
@@ -166,8 +210,15 @@ fn run_inner(
     }
     let mut winner: Option<(Origin, LocalStorage)> = None;
     let mut failed = false;
+    let deadline = Deadline::after(ceiling, Instant::now());
     for (origin, profile) in candidates(&paths.appdata) {
-        match read_with_ceiling(reader, profile, paths.temp_root.clone(), ceiling) {
+        // An expired budget: this profile is not started, and the run counts as a timeout.
+        let Some(left) = next_ceiling(&deadline, Instant::now()) else {
+            failed = true;
+            break;
+        };
+        record_ceiling(left);
+        match read_with_ceiling(reader, profile, paths.temp_root.clone(), left) {
             Got::Read(Ok(ls)) if has_prism_keys(&ls) => {
                 winner = Some((origin, ls));
                 break;
@@ -278,6 +329,7 @@ mod tests {
     use rusty_leveldb::{CompressorId, DB, Options};
     use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, Once};
     use std::time::SystemTime;
 
@@ -622,5 +674,179 @@ mod tests {
         let lines = LOG.lock().unwrap().clone();
         assert!(lines.iter().any(|l| l.contains("prism.window.edges")));
         assert!(lines.iter().all(|l| !l.contains("SECRETdiagonal")));
+    }
+
+    fn seen() -> Vec<Duration> {
+        CEILINGS_SEEN.with(|s| s.borrow().clone())
+    }
+
+    /// Two profile folders, both present, with no Prism keys in either.
+    fn two_empty_profiles(appdata: &Path) {
+        fs::create_dir_all(appdata.join("PrismTerminalStable")).unwrap();
+        fs::create_dir_all(appdata.join("PrismTerminal")).unwrap();
+    }
+
+    /// A reader whose first call sleeps `first` and answers "no Prism keys"; later calls answer at once.
+    fn slow_then_empty(first: Duration, calls: Arc<AtomicUsize>) -> Reader {
+        Arc::new(move |_: &Path, _: &Path| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::thread::sleep(first); // sync-ok: a test reader
+            }
+            Ok(LocalStorage::default())
+        })
+    }
+
+    #[test]
+    fn next_ceiling_shrinks_with_the_clock_and_ends() {
+        let base = Instant::now();
+        let d = Deadline::after(Duration::from_millis(1500), base);
+        assert_eq!(next_ceiling(&d, base), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            next_ceiling(&d, base + Duration::from_millis(1400)),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(next_ceiling(&d, base + Duration::from_millis(1500)), None);
+    }
+
+    #[test]
+    fn two_profiles_share_one_budget() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        two_empty_profiles(a.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reader = slow_then_empty(Duration::from_millis(300), calls.clone());
+        CEILINGS_SEEN.with(|s| s.borrow_mut().clear());
+        let prefs = PrefStore::memory();
+        let r = run_once_with(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(400),
+            reader,
+        );
+        let seen = seen();
+        assert_eq!(seen.len(), 2, "both profiles are read");
+        assert!(
+            seen[1] <= Duration::from_millis(100),
+            "the second profile got {:?}",
+            seen[1]
+        );
+        assert_eq!(r.status, Status::Nothing);
+    }
+
+    #[test]
+    fn an_expired_budget_skips_the_next_profile_and_counts_a_retry() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        two_empty_profiles(a.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reader = slow_then_empty(Duration::from_millis(150), calls.clone());
+        let prefs = PrefStore::memory();
+        let r = run_once_with(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(100),
+            reader,
+        );
+        assert_eq!(r.status, Status::Retry);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the second profile never starts"
+        );
+        assert_eq!(prefs.get(ATTEMPTS_KEY).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn the_whole_import_never_exceeds_the_budget_plus_a_margin() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        two_empty_profiles(a.path());
+        let slow: Reader = Arc::new(|_: &Path, _: &Path| {
+            std::thread::sleep(Duration::from_millis(300)); // sync-ok: a test reader
+            Ok(LocalStorage::default())
+        });
+        let prefs = PrefStore::memory();
+        let started = Instant::now();
+        let r = run_once_with(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(400),
+            slow,
+        );
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(550),
+            "two slow profiles took {took:?} against a 400 ms budget"
+        );
+        assert_eq!(r.status, Status::Retry);
+    }
+
+    #[test]
+    fn a_generated_50_mb_leveldb_reads_inside_the_budget_or_times_out() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let ldb = a
+            .path()
+            .join("PrismTerminalStable")
+            .join("Local Storage")
+            .join("leveldb");
+        fs::create_dir_all(&ldb).unwrap();
+        let o = Options {
+            create_if_missing: true,
+            compressor: SnappyCompressor::ID,
+            ..Options::default()
+        };
+        let mut db = DB::open(&ldb, o).unwrap();
+        let mut seed: u32 = 1;
+        for i in 0..50 {
+            let mut v = vec![1u8];
+            // 1 MiB with its prefix byte: the reader's per-value cap is 1 MiB, so a larger value is skipped.
+            v.extend((0..(1usize << 20) - 1).map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            }));
+            db.put(&entry_key(&format!("prism.big{i}")), &v).unwrap();
+        }
+        db.flush().unwrap();
+        db.close().unwrap();
+        let prefs = PrefStore::memory();
+        let r = run_once(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(1500),
+        );
+        assert!(
+            matches!(r.status, Status::Imported | Status::Retry),
+            "got {:?}",
+            r.status
+        );
+        assert!(
+            r.elapsed_ms < 1900,
+            "the 50 MB read took {} ms against a 1500 ms budget",
+            r.elapsed_ms
+        );
+    }
+
+    #[test]
+    fn a_quick_import_uses_almost_none_of_the_budget() {
+        let a = tempfile::tempdir().unwrap();
+        let t = tempfile::tempdir().unwrap();
+        profile(
+            a.path(),
+            "PrismTerminalStable",
+            &[("prism.term.theme", "dracula")],
+        );
+        let prefs = PrefStore::memory();
+        let r = run_once(
+            &prefs,
+            &paths(a.path(), t.path()),
+            Duration::from_millis(1500),
+        );
+        assert_eq!(r.status, Status::Imported);
+        assert!(
+            r.elapsed_ms < 500,
+            "a quick import took {} ms",
+            r.elapsed_ms
+        );
     }
 }

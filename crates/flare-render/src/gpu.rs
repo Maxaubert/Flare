@@ -4,6 +4,7 @@
 use crate::atlas::{AtlasError, GlyphAtlas};
 use crate::glyph::GlyphSource;
 use crate::scene::{RectFill, Scene};
+use crate::stats::{TracePhase, TraceSpan};
 use bytemuck::{Pod, Zeroable};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -87,6 +88,19 @@ pub struct GpuPainter {
     straight_pipeline: wgpu::RenderPipeline,
     straight_bgl: wgpu::BindGroupLayout,
     straight_target: Option<wgpu::Texture>,
+}
+
+/// Bytes the GPU painter holds, for the memory breakdown (M10 Task 66).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuMemory {
+    /// The glyph atlas on the CPU side (slot table, uploads waiting).
+    pub atlas_cpu: usize,
+    /// The glyph atlas texture.
+    pub atlas_gpu: usize,
+    /// The grid texture (and the straight-alpha copy under glass).
+    pub grid_texture: usize,
+    /// The instance buffers.
+    pub buffers: usize,
 }
 
 /// The un-premultiply pass: one fullscreen triangle reading the painted grid texel for texel.
@@ -305,6 +319,7 @@ impl GpuPainter {
         if scene.clear.a == 255 {
             return painted;
         }
+        let _straight = TraceSpan::new(TracePhase::Paint);
         let (w, h) = (painted.width(), painted.height());
         let stale = self
             .straight_target
@@ -375,6 +390,7 @@ impl GpuPainter {
     /// Paints the scene into a texture of exactly `scene.width x scene.height` (recreated on size
     /// change, clamped to the device limit), submits, and returns a clone of it.
     pub fn paint(&mut self, scene: &Scene, glyphs: &mut dyn GlyphSource) -> wgpu::Texture {
+        let _span = TraceSpan::new(TracePhase::Paint);
         let max = self.device.limits().max_texture_dimension_2d;
         let (w, h) = (scene.width.clamp(1, max), scene.height.clamp(1, max));
         let stale = self
@@ -401,6 +417,7 @@ impl GpuPainter {
         }
         let target = self.target.clone().expect("target was just created");
 
+        let uploading = TraceSpan::new(TracePhase::GlyphUpload);
         let glyph_instances = self.build_glyph_instances(scene, glyphs);
         for up in self.atlas.take_uploads() {
             self.queue.write_texture(
@@ -427,6 +444,7 @@ impl GpuPainter {
                 },
             );
         }
+        drop(uploading);
 
         let rect_instances: Vec<RectInstance> = scene
             .rects
@@ -507,6 +525,20 @@ impl GpuPainter {
         }
         self.queue.submit(Some(encoder.finish()));
         target
+    }
+
+    /// What this painter holds (a texture counts width x height x 4).
+    pub fn memory(&self) -> GpuMemory {
+        let tex = |t: &Option<wgpu::Texture>| {
+            t.as_ref()
+                .map_or(0, |t| t.width() as usize * t.height() as usize * 4)
+        };
+        GpuMemory {
+            atlas_cpu: self.atlas.cpu_bytes(),
+            atlas_gpu: GlyphAtlas::gpu_bytes(),
+            grid_texture: tex(&self.target) + tex(&self.straight_target),
+            buffers: (self.rect_buf.cap + self.glyph_buf.cap) as usize,
+        }
     }
 
     /// The font scale changed, so every cached bitmap is wrong.

@@ -18,7 +18,10 @@ fn root() -> PathBuf {
 }
 
 fn read(rel: &str) -> String {
-    fs::read_to_string(root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    fs::read_to_string(root().join(rel))
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+        // A Windows checkout may hold CRLF (core.autocrlf); the tests split on "\n".
+        .replace("\r\n", "\n")
 }
 
 fn at(s: &str, needle: &str) -> usize {

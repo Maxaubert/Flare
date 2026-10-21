@@ -90,6 +90,15 @@ pub fn paste_action(
     }
 }
 
+/// A selection of at most this many rows is read on the UI thread, as before; a bigger one is read
+/// on a worker in chunks (`TermHandle::selection_text_async`).
+pub const SYNC_COPY_ROWS: usize = 200;
+
+/// Whether a selection of `rows` rows is copied inline.
+pub fn is_small_copy(rows: usize) -> bool {
+    rows <= SYNC_COPY_ROWS
+}
+
 /// Writes on a worker thread; `done(true)` only when the clipboard took the exact text. Refuses
 /// empty or over `max` (the port does, before it touches the clipboard).
 pub fn copy_async(
@@ -438,6 +447,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_small_copy_is_inline_and_immediate() {
+        assert!(is_small_copy(0));
+        assert!(is_small_copy(SYNC_COPY_ROWS));
+        assert!(!is_small_copy(SYNC_COPY_ROWS + 1));
+    }
     #[test]
     fn copy_async_writes_the_exact_text_and_reports_success() {
         let port = Arc::new(Probe::new());

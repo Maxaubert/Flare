@@ -282,11 +282,52 @@ fn fingerprint(entries: &[HelpEntry]) -> u64 {
     h.finish()
 }
 
+fn cache() -> &'static IndexCache {
+    static CACHE: OnceLock<IndexCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+impl Index {
+    /// About how many heap bytes the index holds (strings by capacity, vectors by capacity).
+    fn bytes(&self) -> usize {
+        const ENTRY: usize = 48; // a hash-map slot, roughly
+        let strings = |v: &[String]| v.iter().map(String::capacity).sum::<usize>();
+        let nested = |v: &[Vec<String>]| {
+            v.iter()
+                .map(|s| s.capacity() * size_of::<String>() + strings(s))
+                .sum::<usize>()
+        };
+        let postings: usize = self
+            .postings
+            .iter()
+            .map(|(k, p)| k.capacity() + p.at.capacity() * 8 + p.worth.capacity() * 8 + ENTRY)
+            .sum();
+        let rarity: usize = self.rarity.keys().map(|k| k.capacity() + ENTRY).sum();
+        postings
+            + rarity
+            + strings(&self.vocabulary)
+            + strings(&self.commands)
+            + nested(&self.variants)
+            + nested(&self.stages)
+            + nested(&self.phrases)
+    }
+}
+
+/// Bytes the built search indexes hold now (0 when none is built).
+pub fn index_bytes() -> usize {
+    let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard.iter().map(|(.., ix)| ix.bytes()).sum()
+}
+
+/// Drops every built index; the next search builds again.
+pub fn release_index() {
+    cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// One index per catalogue slice, found again by its address and length. A fingerprint of the
 /// text guards against a freed slice whose address is reused by a different catalogue.
 fn index_for(entries: &[HelpEntry]) -> Arc<Index> {
-    static CACHE: OnceLock<IndexCache> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    let cache = cache();
     let (ptr, len) = (entries.as_ptr() as usize, entries.len());
     let fp = fingerprint(entries);
     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -591,6 +632,19 @@ mod tests {
         assert!(search_help(&other, "widget", &opts).is_empty());
     }
 
+    #[test]
+    fn the_index_counts_its_bytes_and_a_release_drops_them() {
+        let opts = HelpSearchOptions::default();
+        search_help(all_help(), "kill process", &opts);
+        let held = index_bytes();
+        assert!(held > 100_000, "the real catalogue's index is {held} bytes");
+        release_index();
+        assert_eq!(index_bytes(), 0);
+        // The next search builds it again and answers the same.
+        let hits = search_help(all_help(), "kill process", &opts);
+        assert!(!hits.is_empty());
+        assert!(index_bytes() > 0);
+    }
     #[test]
     fn stages_split_on_every_pipe_kind() {
         assert_eq!(

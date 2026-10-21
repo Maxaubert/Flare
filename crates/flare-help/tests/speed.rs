@@ -49,3 +49,47 @@ fn a_keystroke_is_quick_on_the_whole_catalogue() {
         "mean keystroke {mean_ms:.2} ms, bound {mean_bound} ms"
     );
 }
+
+/// M10 Task 46 (parity line 820): the release figures of the catalogue search, unscaled. The
+/// panel runs release builds, so the bounds are the parity line's own: the first search under
+/// 150 ms, a keystroke under 20 ms. Run it alone (it must be the first search of its process):
+/// `cargo test --release -p flare-help --test speed -- --ignored --nocapture`.
+#[test]
+#[ignore = "release timing"]
+fn help_search_release_timings_hold() {
+    let opts = HelpSearchOptions {
+        shell: Some(HelpShell::Powershell),
+        category: None,
+        limit: None,
+    };
+    let cold_start = Instant::now();
+    let cold_hits = search_help(all_help(), "warm the index", &opts);
+    let cold_ms = cold_start.elapsed().as_secs_f64() * 1000.0;
+    assert!(!cold_hits.is_empty(), "the warm-up query found nothing");
+
+    let question = "how do I find the biggest files in a folder";
+    let mut worst_ms: f64 = 0.0;
+    let t0 = Instant::now();
+    for _ in 0..20 {
+        let k0 = Instant::now();
+        let hits = search_help(all_help(), question, &opts);
+        worst_ms = worst_ms.max(k0.elapsed().as_secs_f64() * 1000.0);
+        assert!(!hits.is_empty());
+    }
+    let mean_ms = t0.elapsed().as_secs_f64() * 1000.0 / 20.0;
+    eprintln!(
+        "release: first build {cold_ms:.2} ms; keystroke mean {mean_ms:.3} ms, worst {worst_ms:.3} ms"
+    );
+    assert!(
+        cold_ms < 150.0,
+        "first build took {cold_ms:.1} ms, bound 150 ms"
+    );
+    assert!(
+        mean_ms < 20.0,
+        "mean keystroke {mean_ms:.2} ms, bound 20 ms"
+    );
+    assert!(
+        worst_ms < 20.0,
+        "worst keystroke {worst_ms:.2} ms, bound 20 ms"
+    );
+}

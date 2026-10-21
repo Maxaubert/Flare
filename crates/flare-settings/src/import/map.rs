@@ -15,6 +15,10 @@
 /// reads it from here).
 pub const PREFIX: &str = "prism.";
 
+/// The folder name of Prism Terminal's main profile under the roaming app data (the e2e's stand-in
+/// profile writer uses it; the importer's own candidates list keeps its own literals).
+pub const MAIN_PROFILE_FOLDER: &str = "PrismTerminal";
+
 use flare_theme::colour::{ColourFormat, canonical_stored};
 use flare_theme::fonts::{font_id_or_default, font_pct_from};
 use flare_theme::retired::live_theme_id;
@@ -945,5 +949,67 @@ mod tests {
         );
         assert_eq!(map_one("prism.term.opacity", "0.5"), Mapped::Legacy);
         assert_eq!(map_one("prism.something.else", "x"), Mapped::Unknown);
+    }
+
+    /// M10 Task 46 (parity line 793): every Appendix D key has a rule, and every rule writes
+    /// its `flare.*` twin and nothing else.
+    #[test]
+    fn the_import_map_covers_every_prism_key_and_writes_only_flare_keys() {
+        for key in APPENDIX_D {
+            assert!(
+                RULES.iter().any(|r| r.from == key),
+                "{key} has no import rule"
+            );
+        }
+        for r in RULES {
+            match map_one(r.from, "x") {
+                Mapped::Write { key, .. } => {
+                    assert_eq!(key, r.to, "{} writes the wrong key", r.from);
+                    assert!(key.starts_with("flare."), "{key} is not a flare.* key");
+                }
+                Mapped::Skip { .. } => {}
+                other => panic!("{} is neither written nor skipped: {other:?}", r.from),
+            }
+        }
+    }
+
+    /// M10 Task 46 (parity line 793): outside the importer, which names Prism's keys in order
+    /// to read them, no source file spells a `prism.*` key. The scan is not empty: it also
+    /// counts the `flare.*` literals it finds.
+    #[test]
+    fn every_stored_key_starts_with_flare() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src];
+        let mut files = 0usize;
+        let mut flare_literals = 0usize;
+        let mut bad = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("src is readable") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    if path.file_name().and_then(|n| n.to_str()) != Some("import") {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                files += 1;
+                let text = std::fs::read_to_string(&path).expect("source is readable");
+                for (n, line) in text.lines().enumerate() {
+                    if line.contains("\"prism.") {
+                        bad.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                    flare_literals += line.matches("\"flare.").count();
+                }
+            }
+        }
+        assert!(files > 10, "the scan found only {files} source files");
+        assert!(
+            flare_literals > 20,
+            "the scan found only {flare_literals} flare keys"
+        );
+        assert!(bad.is_empty(), "prism.* keys outside the importer: {bad:?}");
     }
 }

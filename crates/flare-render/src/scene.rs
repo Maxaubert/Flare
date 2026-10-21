@@ -211,6 +211,35 @@ mod tests {
     }
 
     #[test]
+    fn cursor_block_is_never_a_hole() {
+        // Parity line 34: the ground is the clear colour, painted once; a blank cell has no
+        // glyph to punch through it; the cursor block is drawn in the cursor colour on top.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        g.cursor = Cursor {
+            col: 1,
+            row: 0,
+            visible: true,
+        };
+        let s = scene(&g);
+        assert_eq!(
+            s.clear, p.bg,
+            "the ground is the clear colour, painted once"
+        );
+        assert!(s.glyphs.is_empty(), "a blank cell has no glyph");
+        assert_eq!(
+            s.rects,
+            vec![RectFill {
+                x: 12,
+                y: 4,
+                w: 8,
+                h: 16,
+                color: p.cursor
+            }]
+        );
+    }
+
+    #[test]
     fn cursor_on_spacer_marks_the_wide_cell() {
         let p = Palette::pt_default();
         let mut g = Grid::new(3, 2);

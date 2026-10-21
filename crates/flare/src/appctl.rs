@@ -72,7 +72,7 @@ use flare_win::taskbar::TaskbarBadge;
 use flare_win::window_state::{NormalBounds, Observed, WindowStateStore};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::agent_hub::{AgentHub, HubDeps, sonara_post};
+use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
 use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
@@ -390,6 +390,9 @@ pub struct AppCtl {
     agent_view: Rc<dyn AgentView>,
     /// The window has the keyboard focus (a look needs it).
     focused: bool,
+    /// Asks the taskbar to flash its button (a bell rang). The window decides whether anyone is
+    /// looking: the real one flashes only while the window is not in front.
+    flash: Rc<dyn Fn()>,
     /// What the hub was last told is being looked at.
     looked: Option<(Option<String>, bool)>,
     /// The taskbar overlay, made once the window has a handle.
@@ -414,6 +417,8 @@ pub struct AppCtl {
     install_cb: Option<Box<dyn FnOnce(bool)>>,
     /// The engine's worker sets this once the installer is started: the next close goes through.
     update_agreed: Arc<AtomicBool>,
+    /// The update window was put away for a close question: it comes back when that is cancelled.
+    update_stepped_aside: bool,
     /// The tab in front when the last `tab-switch` crumb was said.
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
@@ -514,6 +519,8 @@ impl Backends {
                     log.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(url.to_string());
+                    // The test hook's url.log probe answers from its own list: both see the open.
+                    crate::e2e_probes::input_b::record_url(url);
                 })
             }
             None => Rc::new(|url: &str| {
@@ -560,6 +567,10 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_icon: r.trailing_icon.map_or("", glyph_path).into(),
         trailing_filled: r.trailing_filled,
         trailing_tip: r.trailing_tip.as_str().into(),
+        keep_open: false,
+        flyout: false,
+        flyout_pick: false,
+        parent: -1,
     }
 }
 
@@ -606,6 +617,16 @@ impl AppCtl {
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
         let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
+        {
+            // The look controller reaches every live tab (front and background) through this.
+            let live = Rc::clone(&handles);
+            crate::look_ctl::LookCtl::set_tab_source(Rc::new(move || {
+                live.borrow()
+                    .values()
+                    .map(|h| Rc::new(Arc::clone(h)) as Rc<dyn crate::look_ctl::ThemePushTarget>)
+                    .collect()
+            }));
+        }
         let hub = {
             let mgr = deps.host.manager();
             let by_id = Rc::clone(&handles);
@@ -615,9 +636,9 @@ impl AppCtl {
                 now: Rc::clone(&deps.clock),
                 handle: Rc::new(move |id| by_id.borrow().get(id).cloned()),
                 token: Rc::new(move |id| mgr.tab_token(id)),
-                // Under --e2e and in tests nothing is posted to a real Sonara.
+                // Under --e2e the post reads only a SONARA_HOME (the test's sandbox), never the owner's Sonara.
                 post_question: if deps.e2e {
-                    Arc::new(|_, _| {})
+                    e2e_sonara_post()
                 } else {
                     sonara_post()
                 },
@@ -698,13 +719,14 @@ impl AppCtl {
             marks_rainbow,
             _look_subs: look_subs,
             clock: MarkClock::new(),
-            animations: Rc::new(flare_win::motion::animations_enabled),
+            animations: Rc::new(crate::e2e::animations_enabled),
             minimised: false,
             skeleton: Rc::new(Cell::new(false)),
             skel: Skel::Gone,
             skel_resumed: false,
             agent_view,
             focused: true,
+            flash: Rc::new(|| {}),
             looked: None,
             badge: None,
             restoring: HashMap::new(),
@@ -718,6 +740,7 @@ impl AppCtl {
             update: None,
             install_cb: None,
             update_agreed: Arc::new(AtomicBool::new(false)),
+            update_stepped_aside: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
         };
@@ -864,6 +887,10 @@ impl AppCtl {
 
     /// F1, the title button and the terminal menu row.
     fn help_toggle(&mut self) {
+        // A question is up: the popup waits for the answer.
+        if self.ask.is_some() {
+            return;
+        }
         let Some(h) = self.help.clone() else { return };
         *self.help_front.borrow_mut() = self.front_handle().and_then(|t| t.shell_id());
         if let Ok(mut h) = h.try_borrow_mut() {
@@ -1088,6 +1115,12 @@ impl AppCtl {
         self.deps.host.handle(&t.id)
     }
 
+    /// Whether the front tab's grid shows a non-empty row (the start-up trace's prompt test).
+    fn front_shows_prompt(&self) -> bool {
+        self.front_handle()
+            .is_some_and(|h| h.screen_tail(1).iter().any(|r| !r.trim().is_empty()))
+    }
+
     /// What the grid source reads each frame: the selection, the find matches, the links.
     pub fn decor_inputs(&self) -> Rc<RefCell<crate::term_ui::DecorInputs>> {
         self.term.inputs()
@@ -1237,7 +1270,7 @@ impl AppCtl {
         app.set_new_tab_title(
             format!("New tab ({new_key}). Right-click for recent folders").into(),
         );
-        app.set_version_text(format!("Version {}", env!("CARGO_PKG_VERSION")).into());
+        app.set_version_text(format!("Version {}", crate::app_facts::version()).into());
 
         if view.front_kind == 2 {
             let places: Vec<Place> =
@@ -1418,6 +1451,11 @@ impl AppCtl {
         self.looked = Some(now);
     }
 
+    /// Where a bell's flash goes (the window sets it once it has a handle).
+    pub fn set_flash(&mut self, flash: Rc<dyn Fn()>) {
+        self.flash = flash;
+    }
+
     /// The window gained or lost the keyboard focus. Coming back is a look.
     pub fn on_focus(&mut self, focused: bool) {
         if focused == self.focused {
@@ -1492,6 +1530,21 @@ impl AppCtl {
             .filter(|id| !live.contains_key(*id))
             .cloned()
             .collect();
+        // A tab that is new wears the colours the look already wears, so its colour queries and
+        // theme reports are right from its first byte.
+        let fresh: Vec<Arc<TermHandle>> = live
+            .iter()
+            .filter(|(id, _)| !self.hub_known.contains(*id))
+            .map(|(_, h)| Arc::clone(h))
+            .collect();
+        if !fresh.is_empty() {
+            crate::look_ctl::LookCtl::with_current(|l| {
+                let term = l.current_look().term;
+                for h in &fresh {
+                    h.set_colours(&term.foreground, &term.background);
+                }
+            });
+        }
         *self.handles.borrow_mut() = live;
         for id in gone {
             self.hub.on_closed(&id);
@@ -1546,6 +1599,11 @@ impl AppCtl {
         let now = self.now();
         self.clock.pause.borrow_mut().set_minimized(minimised, now);
         self.update_clock();
+    }
+
+    /// Whether a minimised window holds the marks (what `marks.state` reports as `paused`).
+    pub fn marks_paused(&self) -> bool {
+        self.minimised
     }
 
     /// Whether the mark clock's timer is running (it must not while no mark moves).
@@ -1637,6 +1695,11 @@ impl AppCtl {
     /// The hub, for the tests and the headless scenes (a scene answers the process poll itself).
     pub(crate) fn hub_mut(&mut self) -> &mut AgentHub {
         &mut self.hub
+    }
+
+    /// The hub, read only: what the test hook's agent probe asks.
+    pub(crate) fn hub(&self) -> &AgentHub {
+        &self.hub
     }
 
     /// The live terminal of a tab (window flow tests send keys through it, as the window does).
@@ -1737,6 +1800,7 @@ impl AppCtl {
 
     /// A tab was added and its shell asked for: the `tab-open` crumb, and the clock of `shell-spawn`.
     fn note_spawn(&mut self, id: &str, cwd: &str, resume: bool) {
+        crate::startup_trace::mark(crate::startup_trace::Phase::ShellSpawn);
         crate::diag_ctl::crumb(
             "tab-open",
             &[
@@ -2397,6 +2461,12 @@ impl AppCtl {
         };
         self.term_due = out.next_due_ms;
         self.term_hot = self.term_hot.saturating_sub(1);
+        // Start-up trace: the first tick in which the front grid shows a non-empty row.
+        if !crate::startup_trace::is_marked(crate::startup_trace::Phase::FirstPrompt)
+            && self.front_shows_prompt()
+        {
+            crate::startup_trace::mark(crate::startup_trace::Phase::FirstPrompt);
+        }
         if out.focus_terminal {
             self.focus_terminal();
         }
@@ -2633,6 +2703,9 @@ impl AppCtl {
 
     /// Order: the chord table first; then a Slint control with the keys, else the front shell.
     pub fn on_key(&mut self, ev: &KeyEvent) -> KeyOutcome {
+        if ev.pressed {
+            flare_term::session::trace_key("key");
+        }
         // A right-click menu takes no keyboard (PT ContextMenu.tsx): Escape closes it and never
         // reaches the shell; every other key goes where it would without the menu.
         if ev.pressed && ev.key == "Escape" && self.menu.is_some() {
@@ -2642,6 +2715,16 @@ impl AppCtl {
         let ctx = self.key_context();
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
         let shell_in_front = self.front_handle().is_some();
+        // Start-up trace: the first key that reaches a tab already showing a prompt row is the
+        // usable mark, and the one place the phase line is logged.
+        if shell_in_front
+            && crate::startup_trace::is_marked(crate::startup_trace::Phase::FirstPrompt)
+            && !crate::startup_trace::is_marked(crate::startup_trace::Phase::Usable)
+            && self.front_shows_prompt()
+        {
+            crate::startup_trace::mark(crate::startup_trace::Phase::Usable);
+            log::info!("{}", crate::startup_trace::line());
+        }
         match d {
             Dispatch::Taken => KeyOutcome::Consumed,
             Dispatch::ActedShellToo => {
@@ -2652,9 +2735,12 @@ impl AppCtl {
                 }
             }
             Dispatch::NotAChord => {
-                if self
-                    .app()
-                    .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                // The Settings page has no shell, and its own fields (the find field, a colour code,
+                // the popover's Escape) are Slint's: a key that is no chord goes to Slint there.
+                if self.view.front_kind == 1
+                    || self
+                        .app()
+                        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
                 {
                     KeyOutcome::Slint
                 } else if shell_in_front {
@@ -2681,19 +2767,24 @@ impl AppCtl {
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
 
-    /// The pointer in window css pixels.
-    pub fn on_cursor(&mut self, x_css: f32, y_css: f32) {
-        if self.tips.shown() {
-            self.clear_tip();
-        }
+    /// A pointer moving over an unfocused window is a look (the indicator throttles it). The test
+    /// hook tells the controller this much of every pointer move, as the real window does.
+    pub fn on_pointer_look(&mut self) {
         if !self.focused {
-            // A pointer moving over an unfocused window is a look (the indicator throttles it).
             self.hub.pointer_moved();
             if self.hub.take_changed() {
                 self.sync_model_agents();
                 self.refresh();
             }
         }
+    }
+
+    /// The pointer in window css pixels.
+    pub fn on_cursor(&mut self, x_css: f32, y_css: f32) {
+        if self.tips.shown() {
+            self.clear_tip();
+        }
+        self.on_pointer_look();
         let now = self.now();
         self.sidebar.pointer(
             Some(Point {
@@ -2722,6 +2813,11 @@ impl AppCtl {
             self.flight.pointer_down();
             self.refresh();
         }
+    }
+
+    /// Whether a file drag hovers the window (the strip is off window-drag meanwhile).
+    pub fn drag_in_flight(&self) -> bool {
+        self.flight.on()
     }
 
     pub fn on_hovered_file(&mut self) {
@@ -2993,6 +3089,24 @@ impl AppCtl {
         self.clear_tip();
         self.close_menu_quietly();
         self.close_overflow_quietly();
+        // A question is asked over nothing: the Command help popup is put away first, so it is never
+        // underneath it and its field does not hold the keys the question needs.
+        if self.ask.is_some()
+            && let Some(h) = self.help.clone()
+            && let Ok(mut h) = h.try_borrow_mut()
+        {
+            h.close();
+        }
+        // The update window steps aside for any close question, as an install's does (it is
+        // already borrowed while an install asks, and that path hides it itself).
+        if self.ask.is_some()
+            && let Some(u) = self.update.clone()
+            && let Ok(mut u) = u.try_borrow_mut()
+            && u.window_up()
+        {
+            u.hide();
+            self.update_stepped_aside = true;
+        }
         if let Some(app) = self.app() {
             match &self.ask {
                 Some(a) => {
@@ -3015,15 +3129,28 @@ impl AppCtl {
         self.ask = None;
         let install = self.install_cb.take();
         self.show_ask();
+        let stepped = std::mem::take(&mut self.update_stepped_aside);
         match install {
             // The update window comes back and lands its own focus.
             Some(cb) => cb(false),
+            None if stepped => self.update_show_again(),
             None => self.focus_terminal(),
+        }
+    }
+
+    /// The update window that stepped aside for a close question comes back (the question was cancelled).
+    fn update_show_again(&mut self) {
+        if let Some(u) = self.update.clone()
+            && let Ok(mut u) = u.try_borrow_mut()
+        {
+            u.show_again();
         }
     }
 
     fn dialog_confirm(&mut self) {
         let Some(ask) = self.ask.take() else { return };
+        // Confirmed: the window stays put away (the tab is closing, or the install is going ahead).
+        self.update_stepped_aside = false;
         let install = self.install_cb.take();
         self.show_ask();
         if ask.install {
@@ -3115,7 +3242,13 @@ impl AppCtl {
     /// The waker: drain what the shells reported. A folder report that is a share or holds a
     /// control character is never adopted (a program must not steer a tab to SMB), and a shell
     /// that exited closes its tab unasked.
+    /// Each live tab's scrollback bytes (the memory breakdown).
+    pub fn scrollbacks(&self) -> Vec<(String, usize)> {
+        self.deps.host.scrollbacks()
+    }
+
     pub fn host_wake(&mut self) {
+        flare_term::session::trace_key("wake");
         let events = self.deps.host.drain_events();
         let mut changed = false;
         let mut terminal_news = false;
@@ -3151,6 +3284,8 @@ impl AppCtl {
                         .on_term_event(&id, &TermEvent::ClipboardWrite(text));
                     terminal_news = true;
                 }
+                // The handle lets one bell through a second per tab: the button flashes, no sound.
+                HostEvent::Bell { .. } => (self.flash)(),
                 _ => {}
             }
         }
@@ -3247,6 +3382,45 @@ impl ChordTarget for Target<'_> {
 
     fn find(&mut self) {
         self.0.toggle_find();
+    }
+
+    fn open_system_menu(&mut self) {
+        self.0.open_system_menu();
+    }
+}
+
+/// How many times the system menu was asked for (the `--e2e` hook reads it; a pointer event
+/// never raises it).
+static SYSTEM_MENU_REQUESTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The system menu requests so far.
+pub fn system_menu_requests() -> u32 {
+    SYSTEM_MENU_REQUESTS.load(Ordering::SeqCst)
+}
+
+impl AppCtl {
+    /// The page the Settings tab holds (kept while its tab stays open); `None` before the Settings
+    /// controller exists or while it is borrowed. The `settings.state` probe reads it (Task 21).
+    pub fn settings_page(&self) -> Option<&'static str> {
+        self.settings
+            .as_ref()
+            .and_then(|s| s.try_borrow().ok().map(|c| c.current_page()))
+    }
+
+    /// Alt+Space: counts the request; outside `--e2e` the system menu shows at the window's
+    /// top-left (the e2e never opens a native menu: it would take the foreground).
+    pub fn open_system_menu(&mut self) {
+        SYSTEM_MENU_REQUESTS.fetch_add(1, Ordering::SeqCst);
+        if self.deps.e2e {
+            return;
+        }
+        if let Some(hwnd) = self.app().and_then(|a| crate::window::hwnd_of(&a)) {
+            // The menu runs its own message loop: shown from a zero timer, once this key is handled
+            // and the controller is let go, so shell output and timers reach it while the menu is up.
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                flare_win::sysmenu::show_at_top_left(hwnd)
+            });
+        }
     }
 }
 
@@ -3702,6 +3876,56 @@ mod tests {
         f.pump_until("the tab to close", |f| f.rows() == 1);
         assert_eq!(f.cwds(), ["C:\\a"]);
         assert_eq!(f.ctl.borrow().model().active().unwrap().cwd, "C:\\a");
+    }
+
+    #[test]
+    fn keyboard_focus_returns_to_the_terminal_on_the_frame_after_a_drag() {
+        let f = fx();
+        let a = f.ctl.borrow_mut().open_folder("C:\\a");
+        let _ = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.wait_made("C:\\a");
+        f.wait_made("C:\\b");
+        // The find box holds the keys when the drag starts.
+        f.h.comp.set_find_open(true);
+        f.h.comp.invoke_focus_find();
+        assert!(f.h.comp.get_find_input_focused());
+        let x = {
+            let c = f.ctl.borrow();
+            let r = &c.view().rows[0];
+            (f64::from(r.x) + f64::from(r.w) / 2.0) / c.scale
+        };
+        f.h.comp
+            .invoke_strip_press(a.as_str().into(), 0, x as f32, 0.0);
+        f.h.comp.invoke_strip_moved((x + 80.0) as f32);
+        f.h.comp.invoke_strip_released();
+        f.pump();
+        assert!(
+            !f.h.comp.get_find_input_focused(),
+            "the keys went back to the terminal when the drag ended"
+        );
+    }
+
+    #[test]
+    fn restore_runs_once_even_if_asked_twice() {
+        let lookup = FixedSessions::new(&[SESSION_A]);
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", Some(AgentKind::Claude))],
+            active: 1,
+            lookup: lookup_of(&lookup),
+            ..Opts::default()
+        });
+        AppCtl::start_restore(&f.ctl);
+        AppCtl::start_restore(&f.ctl);
+        f.pump_until("the restore", |f| f.ctl.borrow().model().restore_done());
+        f.pump_until("both spawns", |f| f.sp.made().len() >= 2);
+        // A second run would answer after the first: give it the time to.
+        std::thread::sleep(Duration::from_millis(100));
+        f.pump();
+        // The lookup is asked once, and each saved folder is spawned once.
+        assert_eq!(lookup.asked(), ["C:\\b"], "the lookup runs once");
+        assert_eq!(f.made_with("C:\\a").len(), 1, "a spawned once");
+        assert_eq!(f.made_with("C:\\b").len(), 1, "b spawned once");
+        assert_eq!(f.cwds(), ["C:\\a", "C:\\b"]);
     }
 
     #[test]
@@ -4211,6 +4435,42 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_the_strip_calls_no_system_menu() {
+        let f = fx_with(Opts::default());
+        let before = system_menu_requests();
+        for x in [300.0, 500.0, 700.0] {
+            f.h.right_click(x, BAR_H / 2.0);
+        }
+        assert_eq!(system_menu_requests(), before);
+    }
+
+    #[test]
+    fn the_system_menu_opens_after_the_controller_is_let_go() {
+        // The menu runs its own message loop. Opened inside on_key, the controller stays borrowed
+        // for as long as the menu is up, and every message for it (shell output, timers) finds it
+        // busy and is posted again at once: a spin. The menu is shown from a zero timer instead.
+        let src = include_str!("appctl.rs");
+        let at = src
+            .find("pub fn open_system_menu")
+            .expect("the method exists");
+        let body = &src[at..at + src[at..].find("\n    }").expect("its end")];
+        assert!(
+            !body.contains("sysmenu::show_at_top_left(hwnd);"),
+            "the menu must not open while the controller is borrowed"
+        );
+        assert!(body.contains("Timer::single_shot"), "the menu is deferred");
+    }
+
+    #[test]
+    fn alt_space_asks_for_the_system_menu_once() {
+        let f = fx_with(Opts::default());
+        let before = system_menu_requests();
+        let alt_space = KeyEvent::new(" ", "Space").alt();
+        assert_eq!(f.key(alt_space), KeyOutcome::Consumed);
+        assert_eq!(system_menu_requests(), before + 1);
+    }
+
+    #[test]
     fn a_front_change_closes_the_menu_and_the_find_bar() {
         let f = fx_with(Opts {
             saved: vec![("C:\\a", None), ("C:\\b", None)],
@@ -4278,6 +4538,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bell_asks_the_taskbar_to_flash_and_a_burst_asks_once() {
+        let (f, _h, fake) = live(Opts::default());
+        let count = Rc::new(std::cell::Cell::new(0_u32));
+        {
+            let c = Rc::clone(&count);
+            f.ctl
+                .borrow_mut()
+                .set_flash(Rc::new(move || c.set(c.get() + 1)));
+        }
+        fake.feed(b"\x07");
+        f.pump_until("the flash", |_| count.get() == 1);
+        // Ten more at once: the handle's one-a-second gate lets none of them through.
+        fake.feed(&[7_u8; 10]);
+        for _ in 0..20 {
+            f.pump();
+        }
+        assert_eq!(count.get(), 1, "a burst is one flash");
+    }
+
+    #[test]
     fn clipboard_writes_from_osc_52_reach_the_port() {
         let (f, _h, fake) = live(Opts::default());
         fake.feed(b"\x1b]52;c;T1NDNTIgw6Y=\x07");
@@ -4297,6 +4577,12 @@ mod tests {
         open("https://example.com/x");
         let urls = b.urls.as_ref().unwrap().lock().unwrap().clone();
         assert_eq!(urls, ["https://example.com/x"]);
+        // The test hook's url.log probe reads the same opens.
+        assert!(
+            crate::e2e_probes::input_b::recorded_urls()
+                .contains(&"https://example.com/x".to_string()),
+            "the probe sees what the opener recorded"
+        );
         // A click on a printed url reaches the recorder, never the desktop.
         let (f, h, _) = live(Opts::default());
         feed(&h, "see https://example.com/x now");
@@ -4472,6 +4758,39 @@ mod tests {
         // 1400 ms stood for 7600 ms: the clock reads 1400 now, 400 ms after it started at 1000.
         let want = flare_agent::mark_motion::mark_phase(400).spin_deg;
         assert_eq!(f.motion().1, want, "goes on from where it stood");
+    }
+
+    /// Parity line 24: only the mark animation pauses while minimised; the agents keep their clocks
+    /// (PT: no background throttling, `marksPause.ts` pauses the marks alone).
+    #[test]
+    fn a_minimised_window_pauses_marks_only() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert!(f.clock_running());
+        f.ctl.borrow_mut().on_minimised(true);
+        assert!(f.ctl.borrow().marks_paused());
+        assert!(!f.clock_running(), "the mark clock stops while minimised");
+    }
+
+    #[test]
+    fn the_agents_keep_reporting_while_minimised() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        f.clock.set(1000);
+        f.say("C:\\a", OSC_WORKING);
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        f.ctl.borrow_mut().on_minimised(true);
+        // The agents are not throttled: a state they report while the window is down still lands.
+        f.clock.set(2000);
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("finished while minimised", |f| f.row(0).mark_state == 3);
+        assert!(
+            !f.clock_running(),
+            "a finished mark is still, so no clock runs"
+        );
     }
 
     #[test]
@@ -4708,7 +5027,13 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 3);
+        // Wait for the three shells the test reads, not for a count: the gone folder's shell may be
+        // one of the first three made, and the codex tab's would then not exist yet.
+        f.pump_until("the spawns", |f| {
+            ["C:\\c", "C:\\p", "C:\\x"]
+                .iter()
+                .all(|cwd| !f.made_with(cwd).is_empty())
+        });
         assert_eq!(
             lookup.asked(),
             ["C:\\c"],
@@ -5138,6 +5463,22 @@ mod tests {
             !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
             "a pointer move is a look"
         );
+        // The look alone, without the rest of a cursor move, does the same.
+        let h = fx();
+        let ids = h.open_tabs(&["C:\\a"]);
+        h.ctl.borrow_mut().on_focus_lost();
+        h.say("C:\\a", OSC_WORKING);
+        h.say("C:\\a", OSC_DONE);
+        h.pump_until("the finished mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        h.clock.set(h.clock.get() + 2_000);
+        h.ctl.borrow_mut().on_pointer_look();
+        h.ctl.borrow_mut().on_pointer_look();
+        assert!(
+            !h.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "a pointer look on an unfocused window is a look"
+        );
         // Coming back to the window is a look.
         let g = fx();
         let ids = g.open_tabs(&["C:\\a"]);
@@ -5188,6 +5529,27 @@ mod tests {
         assert_eq!(f.h.comp.get_front_kind(), 1);
         assert_eq!(f.key(f1()), KeyOutcome::Consumed);
         assert!(help_open(&f));
+        assert!(fake.written().is_empty(), "nothing reached the shell");
+    }
+
+    #[test]
+    fn a_key_over_the_settings_page_goes_to_slint_not_the_void() {
+        // The e2e found it (colourPicker, settingsSearch): with the Settings page in front there is no
+        // shell, so a key that is no chord was consumed and never reached the find field, a code field
+        // or the colour popover's Escape.
+        let (f, _h, fake) = live(Opts::default());
+        assert_eq!(
+            f.key(KeyEvent::new("a", "KeyA")),
+            KeyOutcome::Pty,
+            "a shell: the shell's"
+        );
+        f.ctl.borrow_mut().toggle_settings();
+        assert_eq!(f.h.comp.get_front_kind(), 1);
+        assert_eq!(f.key(KeyEvent::new("a", "KeyA")), KeyOutcome::Slint);
+        assert_eq!(f.key(KeyEvent::new("Escape", "Escape")), KeyOutcome::Slint);
+        assert_eq!(f.key(KeyEvent::new("Enter", "Enter")), KeyOutcome::Slint);
+        // A chord is still the app's, and nothing reached the shell.
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
         assert!(fake.written().is_empty(), "nothing reached the shell");
     }
 
@@ -5338,6 +5700,23 @@ mod tests {
     }
 
     #[test]
+    fn the_close_question_puts_the_help_panel_away_and_f1_waits() {
+        let f = fx();
+        with_a_working_agent(&f);
+        assert_eq!(f.key(f1()), KeyOutcome::Consumed);
+        assert!(help_open(&f));
+        let id = f.ctl.borrow().front_id().expect("a tab in front");
+        f.ctl.borrow_mut().request_close(&id);
+        assert!(f.h.comp.get_dialog_open(), "the close question is up");
+        assert!(
+            !help_open(&f),
+            "the panel is put away, so the question is never underneath it"
+        );
+        f.key(f1());
+        assert!(!help_open(&f), "F1 does not open it over a question");
+    }
+
+    #[test]
     fn the_update_install_asks_first_when_an_agent_works() {
         use flare_update::engine::Mode;
         let f = fx();
@@ -5374,6 +5753,31 @@ mod tests {
         assert!(f.h.comp.get_update_open());
         assert_eq!(f.log.borrow().quit, 0);
         assert!(!f.ctl.borrow().ended);
+    }
+
+    #[test]
+    fn a_tab_close_question_puts_the_update_window_away() {
+        use flare_update::engine::Mode;
+        let f = fx();
+        with_a_working_agent(&f);
+        let (engine, _jobs) = attach_update(&f, Mode::Live);
+        engine.tick();
+        f.pump();
+        f.h.comp.invoke_update_chip_clicked();
+        assert!(f.h.comp.get_update_open(), "the update window is up");
+        let id = f.ctl.borrow().front_id().expect("a tab in front");
+        f.ctl.borrow_mut().request_close(&id);
+        assert!(f.h.comp.get_dialog_open(), "the close question is up");
+        assert!(
+            !f.h.comp.get_update_open(),
+            "the update window gives way to the question"
+        );
+        // Cancelled: the window comes back, nothing installs, and the tab stays.
+        f.h.comp.invoke_dialog_cancel();
+        assert!(!f.h.comp.get_dialog_open());
+        assert!(f.h.comp.get_update_open(), "the window comes back");
+        assert_eq!(engine.calls().installs, 0);
+        assert_eq!(f.ctl.borrow().model().state.tabs.len(), 1);
     }
 
     #[test]

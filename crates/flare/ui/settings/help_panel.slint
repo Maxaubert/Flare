@@ -1,7 +1,7 @@
 // The command help panel (M7 Task 39). Prism Terminal v0.55.6 core/renderer/components/HelpPanel.tsx.
 // Rust drives it through HelpBridge: the panel draws what it is handed and reports events back.
 // It shows and copies on request and nothing else (rule 82): the only outward effect is a callback.
-import { Theme, Px, SettingsInk, SettingsFixed } from "../theme.slint";
+import { Theme, Px, SettingsInk, SettingsFixed, Motion } from "../theme.slint";
 import { HelpRowData, HelpChip } from "types.slint";
 
 export global HelpBridge {
@@ -116,10 +116,10 @@ component HelpRow inherits Rectangle {
     body := Rectangle {
         y: root.risen ? 0px : 6px;
         opacity: root.risen ? 1 : 0;
-        animate y { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
-        animate opacity { duration: root.rise-time; delay: root.rise-delay; easing: ease-out; }
+        animate y { duration: Motion.d(root.rise-time); delay: Motion.d(root.rise-delay); easing: ease-out; }
+        animate opacity { duration: Motion.d(root.rise-time); delay: Motion.d(root.rise-delay); easing: ease-out; }
         background: root.d.active ? SettingsInk.help-active : (root.hov ? SettingsInk.help-hover : (root.d.striped ? SettingsInk.help-stripe : transparent));
-        animate background { duration: root.still ? 0ms : 120ms; }
+        animate background { duration: Motion.d(root.still ? 0ms : 120ms); }
 
         ta := TouchArea {
             enabled: root.interactive;
@@ -274,7 +274,7 @@ component HelpRow inherits Rectangle {
                     stroke-line-cap: round;
                     stroke-line-join: round;
                     opacity: root.d.copied ? 0 : 1;
-                    animate opacity { duration: root.still ? 0ms : 200ms; easing: ease-out; }
+                    animate opacity { duration: Motion.d(root.still ? 0ms : 200ms); easing: ease-out; }
                 }
                 // The path is revealed left to right over 340 ms, 60 ms after the press.
                 check-clip := Rectangle {
@@ -283,7 +283,7 @@ component HelpRow inherits Rectangle {
                     width: 17px * root.check-t;
                     height: 17px;
                     clip: true;
-                    animate width { duration: root.still ? 0ms : (root.d.copied ? 340ms : 0ms); delay: root.still ? 0ms : (root.d.copied ? 60ms : 0ms); easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                    animate width { duration: Motion.d(root.still ? 0ms : (root.d.copied ? 340ms : 0ms)); delay: Motion.d(root.still ? 0ms : (root.d.copied ? 60ms : 0ms)); easing: cubic-bezier(0.16, 1, 0.3, 1); }
                     Path {
                         x: (0px) - (2.4 * 17px / 24) / 2;
                         y: (0px) - (2.4 * 17px / 24) / 2;
@@ -318,7 +318,9 @@ export component HelpPanel inherits Rectangle {
     in-out property <length> row0-h;
     out property <length> footer-y: foot.y;
     // One of the panel's own controls has the keyboard: the window leaves non-chord keys to Slint.
-    out property <bool> focused: input.has-focus || keys.has-focus || grip.has-focus;
+    // Only while the panel is open: a closed panel's edge can still hold the focus (a press on it
+    // takes it), and then the shell would never get a key.
+    out property <bool> focused: root.is-open && (input.has-focus || keys.has-focus || grip.has-focus);
     in-out property <length> viewport-y <=> flick.content-y;
 
     // The panel sits flush to the right edge of the container and takes no part in its layout.
@@ -337,6 +339,8 @@ export component HelpPanel inherits Rectangle {
             root.shown = true;
             focus-timer.running = true;
         } else {
+            // Closed before the field took the keys: it must not take them from whoever has them now.
+            focus-timer.running = false;
             hide-timer.interval = HelpBridge.still ? 1ms : 220ms;
             hide-timer.running = true;
         }
@@ -367,7 +371,7 @@ export component HelpPanel inherits Rectangle {
         height: parent.height;
         x: HelpBridge.open ? parent.width - self.width : parent.width - self.width + 1.04 * self.width;
         animate x {
-            duration: HelpBridge.still ? 0ms : (HelpBridge.open ? 460ms : 220ms);
+            duration: Motion.d(HelpBridge.still ? 0ms : (HelpBridge.open ? 460ms : 220ms));
             easing: HelpBridge.open ? cubic-bezier(0.16, 1, 0.3, 1) : cubic-bezier(0.4, 0, 0.6, 1);
         }
         background: Theme.side-flat;
@@ -378,8 +382,9 @@ export component HelpPanel inherits Rectangle {
         accessible-label: "Command help";
 
         // Out, the panel takes no keys and no clicks; open, it handles the list keys itself.
+        // Never nabled: false: a disabled FocusScope ignores the focus-out, so it would go on saying it
+        // has the keys after the shell took them. The handlers below check interactive themselves.
         keys := FocusScope {
-            enabled: root.interactive;
             capture-key-pressed(e) => {
                 if (!root.interactive || e.modifiers.control || e.modifiers.alt || e.modifiers.meta) {
                     return EventResult.reject;
@@ -489,7 +494,7 @@ export component HelpPanel inherits Rectangle {
                             border-width: Px.hair();
                             border-color: input.has-focus ? Theme.accent-hi : Theme.line;
                             background: SettingsInk.help-field;
-                            animate border-color { duration: HelpBridge.still ? 0ms : 120ms; }
+                            animate border-color { duration: Motion.d(HelpBridge.still ? 0ms : 120ms); }
                             // The 3 px focus glow.
                             Rectangle {
                                 x: -3px;
@@ -718,13 +723,15 @@ export component HelpPanel inherits Rectangle {
                 x: -4px;
                 width: 8px;
                 height: parent.height;
-                enabled: root.interactive;
                 accessible-role: slider;
                 accessible-label: "Panel width";
                 accessible-value: round(root.w / 1px);
                 accessible-value-minimum: 420;
                 accessible-value-maximum: 1100;
                 key-pressed(e) => {
+                    if (!root.interactive) {
+                        return EventResult.reject;
+                    }
                     if (e.text == Key.LeftArrow) {
                         HelpBridge.grip-key("Left", e.modifiers.shift);
                         return EventResult.accept;
@@ -793,4 +800,11 @@ export component HelpPanelPreview inherits Window {
         width: parent.width;
         height: parent.height - 36px;
     }
+    // A stand-in for the shell: it takes the keys, as the host does when the panel closes.
+    shell-keys := FocusScope {
+        width: 0px;
+        height: 0px;
+    }
+    out property <bool> panel-focused: panel.focused;
+    public function focus-shell() { shell-keys.focus(); }
 }

@@ -120,30 +120,36 @@ fn the_chosen_option_wears_the_accent_hi_ink_and_a_check() {
 
 #[test]
 fn the_font_options_are_drawn_in_their_own_face() {
-    let h = make(
-        1.0,
-        vec![
-            opt("mono", "WWWWiiiilll", "Consolas"),
-            opt("ui", "WWWWiiiilll", "Segoe UI"),
-        ],
-        "",
-    );
-    let f = open(&h);
-    let c = &h.comp;
-    let (mx, my, mw) = (c.get_menu_x(), c.get_menu_y(), c.get_menu_w());
-    let ink = |i: usize| {
-        let top = my + 2.0 + 28.0 * i as f32;
-        f.bbox_where(
-            px(mx + 4.0, 1.0),
-            px(top, 1.0),
-            px(mx + mw - 30.0, 1.0),
-            px(top + 28.0, 1.0),
-            |p| !Frame::near(p, MENU, 12),
-        )
-    };
-    let a = ink(0).expect("row 0 has text");
-    let b = ink(1).expect("row 1 has text");
-    assert_ne!(a.2 - a.0, b.2 - b.0, "the two faces draw different widths");
+    for s in SCALES {
+        let h = make(
+            s,
+            vec![
+                opt("mono", "WWWWiiiilll", "Consolas"),
+                opt("ui", "WWWWiiiilll", "Segoe UI"),
+            ],
+            "",
+        );
+        let f = open(&h);
+        let c = &h.comp;
+        let (mx, my, mw) = (c.get_menu_x(), c.get_menu_y(), c.get_menu_w());
+        let ink = |i: usize| {
+            let top = my + 2.0 + 28.0 * i as f32;
+            f.bbox_where(
+                px(mx + 4.0, s),
+                px(top, s),
+                px(mx + mw - 30.0, s),
+                px(top + 28.0, s),
+                |p| !Frame::near(p, MENU, 12),
+            )
+        };
+        let a = ink(0).expect("row 0 has text");
+        let b = ink(1).expect("row 1 has text");
+        assert_ne!(
+            a.2 - a.0,
+            b.2 - b.0,
+            "scale {s}: the two faces draw different widths"
+        );
+    }
 }
 
 #[test]

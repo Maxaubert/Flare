@@ -82,6 +82,11 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// Bytes the cell storage holds.
+    pub fn bytes(&self) -> usize {
+        self.cells.capacity() * size_of::<Cell>()
+    }
+
     /// Creates a grid of default cells. `cols` and `rows` are clamped to at least 1.
     pub fn new(cols: usize, rows: usize) -> Self {
         let cols = cols.max(1);
@@ -96,6 +101,21 @@ impl Grid {
                 visible: true,
             },
         }
+    }
+
+    /// Makes the grid `cols` x `rows` (each at least 1), keeping the cell storage when the size is
+    /// the same so a caller that refills the grid every frame allocates nothing. The cells keep
+    /// whatever they held; the caller overwrites every one.
+    pub fn reshape(&mut self, cols: usize, rows: usize) {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.cells.clear();
+        self.cells.resize(cols * rows, Cell::default());
     }
 
     pub fn cols(&self) -> usize {

@@ -16,7 +16,7 @@ use flare_theme::resolve::TermTheme;
 use slint::{Color, Global};
 
 use crate::host::GridHost;
-use crate::{AppWindow, Theme};
+use crate::{AppWindow, Motion, Theme};
 
 /// (`--p-` token, Slint property, its setter, its getter), in `CHROME_COLOUR_TOKENS` order.
 macro_rules! token_table {
@@ -124,6 +124,8 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     };
     theme.set_window_clear(clear);
     theme.set_light(look.light);
+    // Reduced motion, app-wide (parity line 37): every animate duration goes through Motion.d().
+    Motion::get(app).set_reduced(!crate::e2e::animations_enabled());
     if let Ok(mut slot) = TEXT_INK.lock() {
         *slot = ink_of(look);
     }
@@ -158,6 +160,7 @@ pub fn ground_paint(look: &AppliedLook) -> GroundPaint {
 
 /// Hands the grid its palette and who paints the ground (marks it dirty only on a change).
 pub fn apply_to_host(host: &mut GridHost, look: &AppliedLook) {
+    crate::term_ui::set_worn_link(&look.link_colour);
     host.set_look(palette_of(&look.term), ground_paint(look));
 }
 

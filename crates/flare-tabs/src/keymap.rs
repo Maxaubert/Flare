@@ -19,10 +19,12 @@ pub enum ChordId {
     CloseTab,
     Find,
     AgentGuard,
+    /// Alt+Space: the system menu of the frameless window.
+    SystemMenu,
 }
 
 /// Every chord, in search order.
-pub const ORDER: [ChordId; 11] = [
+pub const ORDER: [ChordId; 12] = [
     ChordId::Help,
     ChordId::Fullscreen,
     ChordId::NextTab,
@@ -34,6 +36,7 @@ pub const ORDER: [ChordId; 11] = [
     ChordId::CloseTab,
     ChordId::Find,
     ChordId::AgentGuard,
+    ChordId::SystemMenu,
 ];
 
 /// What the chords depend on, handed in by the window (never read here).
@@ -163,6 +166,14 @@ fn agent_guard_matches(e: &KeyEvent, c: &KeyContext) -> bool {
         && (letter(e, 'd') || (letter(e, 'c') && !c.agent_working && !c.agent_selecting))
 }
 
+fn system_menu_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
+    e.alt
+        && !e.ctrl
+        && !e.shift
+        && !e.meta
+        && (e.key == " " || e.key == "Space" || e.code == "Space")
+}
+
 static HELP: ChordDef = ChordDef {
     label: "F1",
     shell_too: false,
@@ -257,6 +268,14 @@ static AGENT_GUARD: ChordDef = ChordDef {
     agent: None,
 };
 
+static SYSTEM_MENU: ChordDef = ChordDef {
+    label: "Alt+Space",
+    shell_too: false,
+    under_modal: UnderModal::Act,
+    matches: system_menu_matches,
+    agent: None,
+};
+
 /// The definition of one chord.
 pub fn chord(id: ChordId) -> &'static ChordDef {
     match id {
@@ -271,6 +290,7 @@ pub fn chord(id: ChordId) -> &'static ChordDef {
         ChordId::CloseTab => &CLOSE_TAB,
         ChordId::Find => &FIND,
         ChordId::AgentGuard => &AGENT_GUARD,
+        ChordId::SystemMenu => &SYSTEM_MENU,
     }
 }
 
@@ -415,6 +435,23 @@ mod tests {
         );
         assert_eq!(
             chord_of(&KeyEvent::new("C", "").ctrl().shift(), &on()),
+            None
+        );
+    }
+
+    #[test]
+    fn alt_space_is_a_host_chord_and_never_reaches_the_pty() {
+        let c = on();
+        for e in [
+            KeyEvent::new(" ", "Space").alt(),
+            KeyEvent::new("Space", "").alt(),
+        ] {
+            assert_eq!(chord_of(&e, &c), Some(ChordId::SystemMenu));
+            assert!(app_owns_key(&e, &c));
+        }
+        assert_eq!(chord_of(&KeyEvent::new(" ", "Space"), &c), None);
+        assert_eq!(
+            chord_of(&KeyEvent::new(" ", "Space").alt().ctrl(), &c),
             None
         );
     }
@@ -617,7 +654,9 @@ mod tests {
     fn under_a_question_these_are_swallowed_and_these_act() {
         for id in ORDER {
             let expected = match id {
-                ChordId::Help | ChordId::Fullscreen | ChordId::CloseTab => UnderModal::Act,
+                ChordId::Help | ChordId::Fullscreen | ChordId::CloseTab | ChordId::SystemMenu => {
+                    UnderModal::Act
+                }
                 _ => UnderModal::Swallow,
             };
             assert_eq!(chord(id).under_modal, expected, "{id:?}");

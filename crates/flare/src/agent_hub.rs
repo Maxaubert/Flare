@@ -159,6 +159,20 @@ pub fn sonara_post() -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
     threaded_post(Arc::new(|k| std::env::var(k).ok()), SONARA_TIMEOUT)
 }
 
+/// The environment of a `--e2e` run's post: the process's `SONARA_HOME` (the test points it at a
+/// sandbox) and nothing else, so a run with no sandbox never reaches the owner's `%LOCALAPPDATA%\Sonara`.
+pub fn e2e_sonara_env(real: impl Fn(&str) -> Option<String>) -> impl Fn(&str) -> Option<String> {
+    move |k| if k == "SONARA_HOME" { real(k) } else { None }
+}
+
+/// The Sonara post of a `--e2e` run: [`e2e_sonara_env`] over the real environment, PT's 1500 ms.
+pub fn e2e_sonara_post() -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
+    threaded_post(
+        Arc::new(e2e_sonara_env(|k| std::env::var(k).ok())),
+        SONARA_TIMEOUT,
+    )
+}
+
 pub struct AgentHub {
     deps: HubDeps,
     ind: Indicator,
@@ -166,6 +180,8 @@ pub struct AgentHub {
     watches: HashMap<String, QuestionWatch>,
     /// Tabs the hub has heard of and not yet been told closed.
     tabs: HashSet<String>,
+    /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
+    polled: HashSet<String>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -183,6 +199,7 @@ impl AgentHub {
             arms: ArmMap::default(),
             watches: HashMap::new(),
             tabs: HashSet::new(),
+            polled: HashSet::new(),
             diag,
             poll: None,
             tx,
@@ -416,6 +433,7 @@ impl AgentHub {
             w.dispose();
         }
         self.tabs.remove(tab);
+        self.polled.remove(tab);
         self.diag.forget(tab, now);
         self.settle(now);
     }
@@ -439,6 +457,7 @@ impl AgentHub {
             if !self.tabs.contains(&msg.id) {
                 continue;
             }
+            self.polled.insert(msg.id.clone());
             self.ind_handle(
                 now,
                 Event::Poll {
@@ -522,6 +541,11 @@ impl AgentHub {
             return None;
         }
         self.ind.agent_kind(tab).and_then(DetectedAgent::resumable)
+    }
+
+    /// True once the process poll has answered for the tab (the first word is said once).
+    pub fn polled(&self, tab: &str) -> bool {
+        self.polled.contains(tab)
     }
 
     pub fn agent_here(&self, tab: &str) -> bool {
@@ -971,6 +995,19 @@ mod tests {
     }
 
     #[test]
+    fn the_poll_has_said_its_first_word_once_an_answer_is_applied() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        assert!(!r.hub.polled("a"), "nothing was said yet");
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        assert!(r.hub.polled("a"), "a no-agent verdict is a word too");
+        assert!(!r.hub.polled("b"), "another tab has heard nothing");
+        r.hub.on_closed("a");
+        assert!(!r.hub.polled("a"), "a closed tab is forgotten");
+    }
+
+    #[test]
     fn a_title_armed_agent_is_armed_before_the_poll_and_leaves_with_its_title() {
         let mut r = Rig::new();
         r.open("a", None);
@@ -1090,6 +1127,25 @@ mod tests {
         r.print("b", &paint(&screens("run2-01-question-1")));
         r.advance(150);
         assert_eq!(r.posts.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn under_e2e_the_sonara_env_names_only_the_sandbox_home() {
+        let real = |k: &str| match k {
+            "SONARA_HOME" => Some("C:\\sandbox".to_string()),
+            "LOCALAPPDATA" => Some("C:\\owner".to_string()),
+            _ => None,
+        };
+        // The sandbox home is read, so the post reaches the test's Sonara stand-in.
+        let read = e2e_sonara_env(real);
+        assert_eq!(
+            flare_agent::sonara::sonara_home(&read),
+            Some(std::path::PathBuf::from("C:\\sandbox"))
+        );
+        // With no sandbox home nothing falls back to the owner's %LOCALAPPDATA%\Sonara.
+        let owner_only = |k: &str| (k == "LOCALAPPDATA").then(|| "C:\\owner".to_string());
+        let read = e2e_sonara_env(owner_only);
+        assert_eq!(flare_agent::sonara::sonara_home(&read), None);
     }
 
     #[test]

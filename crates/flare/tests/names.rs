@@ -638,8 +638,29 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_UPDATE_NOTES",
     "FLARE_E2E_UPDATE_SOURCE",
     "FLARE_E2E_PICK_COLOUR",
+    // M10 Appendix F: reduced motion under --e2e (read in e2e.rs as a concatenated name).
+    "FLARE_E2E_REDUCED_MOTION",
+    // M10 Appendix F: the ScaleFactorChanged fallback for DPI changes (e2e_glue.rs, the lifecycle scenario).
+    "FLARE_E2E_DPI_MODE",
+    // M10 Appendix F: harness-only, set by the runner for a packaged build (tools/e2e).
+    "FLARE_E2E_PACKAGED",
+    // M10 Appendix F: harness-only, which renderers hookSmoke runs (software, gpu).
+    "FLARE_E2E_HOOKSMOKE_RENDERERS",
+    // M10 Appendix F: harness-only, which renderers the other scenarios run (tools/e2e input_b).
+    "FLARE_E2E_RENDERERS",
+    // M10 Appendix F: the Claude plugin copy is made under --e2e only when asked (startup.rs; the
+    // harness sets LOCALAPPDATA to its sandbox first).
+    "FLARE_E2E_PLUGIN",
+    // M10 Appendix F (M7, unchanged): the importer's source folder under --e2e (tools/e2e settings_c).
+    "FLARE_E2E_IMPORT_APPDATA",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
+    // M3, unchanged: the folder picker answers from this path with no dialog (window.rs reads it as a
+    // concatenated name; tools/e2e newTabFolder and spawn set it).
+    "FLARE_E2E_PICK",
+    // M10 Appendix F: with a sandboxed HOME, the transcript store of that HOME is read for the Claude
+    // session lookup (startup.rs, window.rs; the agentLaunch scenario sets it).
+    "FLARE_E2E_SESSIONS",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

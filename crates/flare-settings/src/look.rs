@@ -127,6 +127,12 @@ impl LookSnapshot {
 type Callback = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
+struct DraftShared {
+    draft: Mutex<Option<CustomPalette>>,
+    listeners: Mutex<DraftListeners>,
+}
+
+#[derive(Default)]
 struct DraftListeners {
     next_id: u64,
     list: Vec<(u64, Callback)>,
@@ -140,16 +146,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct LookStore {
     store: PrefStore,
-    draft: Arc<Mutex<Option<CustomPalette>>>,
-    listeners: Arc<Mutex<DraftListeners>>,
+    shared: Arc<DraftShared>,
 }
 
 impl LookStore {
     pub fn new(store: PrefStore) -> Self {
         Self {
+            shared: store.shared::<DraftShared>(),
             store,
-            draft: Arc::new(Mutex::new(None)),
-            listeners: Arc::new(Mutex::new(DraftListeners::default())),
         }
     }
 
@@ -233,13 +237,13 @@ impl LookStore {
 
     /// The colour editor's draft. Memory only.
     pub fn draft(&self) -> Option<CustomPalette> {
-        lock(&self.draft).clone()
+        lock(&self.shared.draft).clone()
     }
 
     /// Sets or drops the draft and tells every listener once.
     pub fn set_draft(&self, d: Option<CustomPalette>) {
-        *lock(&self.draft) = d;
-        let hits: Vec<Callback> = lock(&self.listeners)
+        *lock(&self.shared.draft) = d;
+        let hits: Vec<Callback> = lock(&self.shared.listeners)
             .list
             .iter()
             .map(|(_, cb)| Arc::clone(cb))
@@ -406,16 +410,16 @@ impl LookStore {
             move || for_keys(),
         );
         let id = {
-            let mut l = lock(&self.listeners);
+            let mut l = lock(&self.shared.listeners);
             l.next_id += 1;
             let id = l.next_id;
             l.list.push((id, cb));
             id
         };
-        let listeners = Arc::clone(&self.listeners);
+        let shared = Arc::clone(&self.shared);
         Subscription::new(move || {
             drop(keys);
-            lock(&listeners).list.retain(|(i, _)| *i != id);
+            lock(&shared.listeners).list.retain(|(i, _)| *i != id);
         })
     }
 
@@ -1022,5 +1026,17 @@ mod tests {
         drop(sub);
         l.set_theme_id("dracula");
         assert_eq!(n.load(Ordering::SeqCst), expect);
+    }
+
+    #[test]
+    fn two_stores_over_one_pref_store_share_the_draft_and_its_listeners() {
+        let p = PrefStore::memory();
+        let (a, b) = (LookStore::new(p.clone()), LookStore::new(p.clone()));
+        let (n, cb) = counter();
+        let _sub = b.on_look_change(cb);
+        a.set_draft(parse_custom(CUSTOM_JSON).map(|c| c.palette));
+        assert!(b.draft().is_some(), "the other store sees the draft");
+        assert_eq!(n.load(Ordering::SeqCst), 1, "and hears it set");
+        assert!(LookStore::new(PrefStore::memory()).draft().is_none());
     }
 }

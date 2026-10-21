@@ -5,7 +5,7 @@
 //! `notes & calc.jsonl` is skipped and never takes a tab's slot. This is the first of the three
 //! places a resume id is validated (the lookup, `TabHost::spawn`, `SessionManager::spawn`).
 
-use flare_agent::resume::{claude_home, claude_sessions, valid_resume};
+use flare_agent::resume::{claude_sessions, valid_resume};
 use flare_tabs::restore::SessionLookup;
 use std::path::PathBuf;
 
@@ -17,11 +17,6 @@ pub struct ClaudeSessionLookup {
 impl ClaudeSessionLookup {
     pub fn new(home: Option<PathBuf>) -> Self {
         Self { home }
-    }
-
-    /// The real home (`USERPROFILE`); an empty answer when there is none.
-    pub fn from_env() -> Self {
-        Self::new(claude_home())
     }
 }
 

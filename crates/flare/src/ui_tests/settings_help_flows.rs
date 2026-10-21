@@ -314,6 +314,15 @@ fn the_field_says_try_find_big_files_what_is_using_port_3000() {
 }
 
 #[test]
+fn the_search_field_is_named_by_the_long_search_label() {
+    let (f, _) = live(Opts::default());
+    assert_eq!(
+        f.bridge().get_search_label(),
+        flare_help::panel::SEARCH_LABEL
+    );
+}
+
+#[test]
 fn find_big_files_finds_the_shell_specific_answer() {
     let (f, _) = live(Opts::default());
     f.open();

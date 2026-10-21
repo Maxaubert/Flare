@@ -199,6 +199,49 @@ fn attempt(
     Ok((ls, kept))
 }
 
+/// Writes a stand-in Prism Terminal profile for the e2e: `<appdata>/<folder>/Local Storage/leveldb`
+/// holding `entries` as Latin-1 values under the page origin, as Chromium would. The import reads
+/// it back through `read_local_storage`. Test support only (the e2e scenario `opacityAlpha` seeds
+/// the old app's storage with it); nothing in the app calls it.
+pub fn write_stand_in_profile(
+    appdata: &Path,
+    folder: &str,
+    entries: &[(&str, &str)],
+) -> Result<(), String> {
+    use rusty_leveldb::CompressorId;
+    use rusty_leveldb::compressor::SnappyCompressor;
+    let ldb = appdata.join(folder).join("Local Storage").join("leveldb");
+    fs::create_dir_all(&ldb).map_err(|e| e.to_string())?; // sync-ok: test support, off the app
+    let options = Options {
+        create_if_missing: true,
+        compressor: SnappyCompressor::ID,
+        ..Options::default()
+    };
+    let mut db = DB::open(&ldb, options).map_err(|e| e.to_string())?;
+    for (name, value) in entries {
+        let mut key = ORIGIN_PREFIX.to_vec();
+        key.extend_from_slice(name.as_bytes());
+        let mut raw = vec![1u8];
+        raw.extend(value.chars().map(|c| c as u32 as u8));
+        db.put(&key, &raw).map_err(|e| e.to_string())?;
+    }
+    db.flush().map_err(|e| e.to_string())?;
+    db.close().map_err(|e| e.to_string())
+}
+
+/// `write_stand_in_profile` for the old app's main profile, with the settings named by their short
+/// name (`theme`, `acrylic`, `opacity`, `custom`): the e2e scenarios never spell the old app's folder
+/// or key prefix; `map.rs` holds both.
+pub fn write_old_app_profile(appdata: &Path, entries: &[(&str, &str)]) -> Result<(), String> {
+    let prefix = super::map::PREFIX;
+    let keyed: Vec<(String, &str)> = entries
+        .iter()
+        .map(|(short, value)| (format!("{prefix}term.{short}"), *value))
+        .collect();
+    let refs: Vec<(&str, &str)> = keyed.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    write_stand_in_profile(appdata, super::map::MAIN_PROFILE_FOLDER, &refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +317,36 @@ mod tests {
         let ls = read(p.path(), t.path()).unwrap();
         assert_eq!(ls.values["a"], "pt-default");
         assert_eq!(ls.values["b"], "Ærø");
+    }
+
+    #[test]
+    fn an_old_app_profile_is_written_under_its_folder_with_prefixed_keys() {
+        let appdata = tempfile::tempdir().unwrap();
+        write_old_app_profile(appdata.path(), &[("theme", "dracula"), ("opacity", "60")]).unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let ls = read(&appdata.path().join("PrismTerminal"), t.path()).unwrap();
+        assert_eq!(ls.values["prism.term.theme"], "dracula");
+        assert_eq!(ls.values["prism.term.opacity"], "60");
+        assert_eq!(ls.values.len(), 2);
+    }
+
+    #[test]
+    fn a_stand_in_profile_reads_back_what_was_written() {
+        let appdata = tempfile::tempdir().unwrap();
+        write_stand_in_profile(
+            appdata.path(),
+            "PrismTerminal",
+            &[
+                ("prism.term.opacity", "60"),
+                ("prism.term.theme", "dracula"),
+            ],
+        )
+        .unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let ls = read(&appdata.path().join("PrismTerminal"), t.path()).unwrap();
+        assert_eq!(ls.values["prism.term.opacity"], "60");
+        assert_eq!(ls.values["prism.term.theme"], "dracula");
+        assert_eq!(ls.values.len(), 2);
     }
 
     #[test]

@@ -311,6 +311,14 @@ impl TabHost {
         self.order.clone()
     }
 
+    /// Each live tab's scrollback bytes, in spawn order (the memory breakdown).
+    pub fn scrollbacks(&self) -> Vec<(String, usize)> {
+        self.order
+            .iter()
+            .filter_map(|id| Some((id.clone(), self.handles.get(id)?.scrollback_bytes())))
+            .collect()
+    }
+
     /// Kills every handle and every spare, then waits (3 s cap) for the shells to be gone.
     pub fn shutdown(&mut self) -> bool {
         for h in self.handles.values() {
@@ -471,6 +479,26 @@ mod tests {
         assert_eq!(h.dims(), (100, 30));
     }
 
+    #[test]
+    fn a_zero_size_or_hidden_panel_does_not_refit_the_grid() {
+        let (mut h, sp, _p) = host();
+        for (i, id) in ["a", "b"].iter().enumerate() {
+            h.spawn(id, "C:\\a", None);
+            made(&sp, i + 1);
+        }
+        h.refit_all(100, 30);
+        wait_until("both resized", || {
+            sp.made().iter().all(|m| m.size() == (100, 30))
+        });
+        // A hidden or collapsed panel measures 0 x 0 (or a sliver): nothing refits, in either path.
+        for (c, r) in [(0, 0), (0, 30), (100, 0), (1, 30)] {
+            h.refit_all(c, r);
+            h.set_dims(c, r, Some("a"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(h.dims(), (100, 30));
+        assert!(sp.made().iter().all(|m| m.size() == (100, 30)));
+    }
     #[test]
     fn the_font_override_is_per_tab_and_dies_with_the_tab() {
         let (mut h, sp, _p) = host();

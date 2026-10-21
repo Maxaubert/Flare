@@ -741,3 +741,28 @@ fn an_unknown_scene_names_the_m6_scenes() {
     }
     assert!(!png.exists(), "no screenshot for an unknown scene");
 }
+
+/// `--scene list` prints the scene names, one per line, and exits 0 without drawing anything.
+#[test]
+fn scene_list_prints_every_scene_and_exits_0() {
+    let out = run(&["--scene", "list"], &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let names: Vec<&str> = text.lines().collect();
+    // SCENES holds 45 names (37 non-update scenes and the 8 update scenes); the list prints all of them.
+    assert_eq!(names.len(), 45, "listed: {names:?}");
+    for want in [
+        "strip-3",
+        "term-copied",
+        "marks-close",
+        "settings",
+        "update-window-empty",
+    ] {
+        assert!(names.contains(&want), "{want} is not listed");
+    }
+}

@@ -1,7 +1,7 @@
 // The settings controls (M7 Task 31): the switch, the segmented pill, the Save button, the row
 // button and the Reset link (PT settings/fields.tsx). Controls are neutral: only Save when dirty
 // and an ON switch wear the accent (rule 78). Each control is its own FocusScope.
-import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk } from "../theme.slint";
+import { Theme, Px, SettingsShape, SettingsFixed, SettingsInk, Motion } from "../theme.slint";
 import { SetOption } from "types.slint";
 
 // PT Switch: h-[20px] w-[36px], a 16 px knob at 2 px, moving 16 px over 150 ms.
@@ -9,6 +9,8 @@ export component SetSwitch inherits Rectangle {
     in property <bool> on;
     in property <bool> disabled;
     in property <string> label;
+    // the row's subtext, read out as the switch's description
+    in property <string> sub;
     // focus that came from the keyboard: the row draws the hover fill, the switch draws no ring
     out property <bool> keyboard-focus: fs.has-focus && root.by-key;
     out property <length> knob-x: root.on ? 18px : 2px;
@@ -27,6 +29,7 @@ export component SetSwitch inherits Rectangle {
     background: root.on ? (ta.has-hover && !root.disabled ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg) : Theme.track;
     accessible-role: switch;
     accessible-label: root.label;
+    accessible-description: root.sub;
     accessible-checked: root.on;
     accessible-action-default => {
         if !root.disabled {
@@ -42,7 +45,7 @@ export component SetSwitch inherits Rectangle {
         border-radius: SettingsShape.switch-knob / 2;
         background: root.on ? Theme.switch-knob : SettingsFixed.white;
         animate x {
-            duration: 150ms;
+            duration: Motion.d(150ms);
             easing: ease-out;
         }
     }
@@ -82,6 +85,7 @@ export component SetSegmented inherits Rectangle {
     in property <[SetOption]> options;
     in property <string> value;
     in property <string> label;
+    in property <string> sub;
     property <length> pad: 3px + Px.hair();
     out property <length> content-w: segs.preferred-width + 2 * root.pad;
     callback chosen(string);
@@ -94,6 +98,7 @@ export component SetSegmented inherits Rectangle {
     border-color: Theme.divider;
     accessible-role: groupbox;
     accessible-label: root.label;
+    accessible-description: root.sub;
 
     segs := HorizontalLayout {
         x: root.pad;

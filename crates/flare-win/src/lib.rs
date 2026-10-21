@@ -16,13 +16,17 @@ pub mod monitors;
 pub mod motion;
 pub mod openers;
 pub mod os_build;
+pub mod paths;
 pub mod pick;
 pub mod procs;
 pub mod session_end;
 pub mod shell_open;
 pub mod single_instance;
+pub mod sysmenu;
 pub mod taskbar;
+pub mod taskbar_flash;
 pub mod window_edge;
+pub mod window_park;
 pub mod window_state;
 
 pub mod names;

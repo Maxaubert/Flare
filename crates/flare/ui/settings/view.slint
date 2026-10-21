@@ -20,6 +20,15 @@ export global SettingsBridge {
     in-out property <[RailItem]> rail;
     in-out property <string> page-title;
     in-out property <[SetSection]> sections;
+    // The slider that holds the keys. The page is rebuilt on every change, which makes new sliders,
+    // so the new one with this id takes the keys back and Left and Right keep stepping.
+    in-out property <string> slider-focus-id;
+    in-out property <string> slider-focus-page;
+    // The theme card whose pencil opened the editor, and whether the keys are due back to it. Set when
+    // the editor closes and held for a moment (the wall is rebuilt by the close, perhaps more than once),
+    // then dropped by the timer next to the editor, so a later rebuild never takes the keys.
+    in-out property <string> pencil-id;
+    in-out property <bool> pencil-pending;
     in-out property <length> content-h;
     in-out property <bool> narrow;
     in-out property <string> find-text;
@@ -55,6 +64,8 @@ export global SettingsBridge {
     in-out property <length> select-w;
     in-out property <length> select-h;
     in-out property <bool> picker-open;
+    // Escape closed the popover opened from the row with this label: that row's swatch takes the focus back.
+    in-out property <string> swatch-back;
     in-out property <length> picker-x;
     in-out property <length> picker-y;
     in-out property <string> picker-label;
@@ -86,7 +97,7 @@ export global SettingsBridge {
     callback find-key(string, bool);
     callback hit-chosen(int);
     callback hit-key(string);
-    callback rail-key(string);
+    callback rail-key(string, int);
     callback row-switch(string, bool);
     callback row-choose(string, string);
     callback row-slide(string, int);
@@ -167,6 +178,7 @@ component RowControls inherits HorizontalLayout {
             on: root.data.on;
             disabled: root.data.off;
             label: root.data.label;
+            sub: root.data.sub;
             toggled(v) => { SettingsBridge.row-switch(root.data.id, v); }
         }
     }
@@ -182,6 +194,7 @@ component RowControls inherits HorizontalLayout {
             options: root.data.options;
             value: root.data.value;
             label: root.data.label;
+            sub: root.data.sub;
             chosen(id) => { SettingsBridge.row-choose(root.data.id, id); }
         }
     }
@@ -200,6 +213,7 @@ component RowControls inherits HorizontalLayout {
             value: root.data.value;
             disabled: root.data.off;
             label: root.data.label;
+            sub: root.data.sub;
             open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;
             open-request(x, y, w, h) => { SettingsBridge.select-open-request(root.data.id, Px.snap(x), Px.snap(y), Px.snap(x + w) - Px.snap(x), Px.snap(y + h) - Px.snap(y)); }
         }
@@ -221,6 +235,16 @@ component RowControls inherits HorizontalLayout {
             text: root.data.num-text;
             disabled: root.data.off;
             label: root.data.label;
+            sub: root.data.sub;
+            want-focus: SettingsBridge.slider-focus-id == root.data.id && SettingsBridge.slider-focus-page == SettingsBridge.page-title;
+            focus-changed(on) => {
+                if (on) {
+                    SettingsBridge.slider-focus-id = root.data.id;
+                    SettingsBridge.slider-focus-page = SettingsBridge.page-title;
+                } else if (SettingsBridge.slider-focus-id == root.data.id) {
+                    SettingsBridge.slider-focus-id = "";
+                }
+            }
             changed(v) => { SettingsBridge.row-slide(root.data.id, v); }
         }
     }
@@ -239,8 +263,16 @@ component RowControls inherits HorizontalLayout {
                 SettingsBridge.focus-id = "";
             }
         }
+        property <bool> back: SettingsBridge.swatch-back == root.data.label;
+        changed back => {
+            if self.back {
+                fld.focus-swatch();
+                SettingsBridge.swatch-back = "";
+            }
+        }
         fld := ColourField {
             label: root.data.label;
+            sub: root.data.sub;
             text: root.data.code;
             colour: root.data.colour;
             wide: root.data.code-wide;
@@ -330,7 +362,7 @@ export component SettingsView inherits Rectangle {
         find-key(k, s) => { SettingsBridge.find-key(k, s); }
         hit-chosen(i) => { SettingsBridge.hit-chosen(i); }
         hit-key(k) => { SettingsBridge.hit-key(k); }
-        rail-key(k) => { SettingsBridge.rail-key(k); }
+        rail-key(k, i) => { SettingsBridge.rail-key(k, i); }
         frame-resized(w, h) => {
             root.report();
             SettingsBridge.frame-resized(w, h);
@@ -407,8 +439,14 @@ export component SettingsView inherits Rectangle {
                             toggle-aria: SettingsBridge.wall-toggle-aria;
                             toggle-title: SettingsBridge.wall-toggle-title;
                             still: SettingsBridge.still;
+                            pencil-id: SettingsBridge.pencil-id;
+                            pencil-pending: SettingsBridge.pencil-pending;
                             picked(id) => { SettingsBridge.wall-pick(id); }
-                            edit(id) => { SettingsBridge.wall-edit(id); }
+                            edit(id) => {
+                                SettingsBridge.pencil-id = id;
+                                SettingsBridge.pencil-pending = false;
+                                SettingsBridge.wall-edit(id);
+                            }
                             toggled => { SettingsBridge.wall-toggle(); }
                             tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
                         }
@@ -551,7 +589,7 @@ export component SettingsPreview inherits Window {
         slider-key(w, k, s) => { SettingsBridge.picker-key(w, k, s); }
         format-clicked => { SettingsBridge.picker-format-clicked(); }
         dropper-clicked => { SettingsBridge.picker-dropper(); }
-        escape-pressed => { SettingsBridge.picker-escape(); }
+        escape-pressed => { SettingsBridge.swatch-back = SettingsBridge.picker-label; SettingsBridge.picker-escape(); }
         outside-pressed => { SettingsBridge.picker-outside(); }
         focus-left => { SettingsBridge.picker-focus-left(); }
         tip(t, x, y, w, h) => { SettingsBridge.tip(t, x, y, w, h); }
