@@ -955,8 +955,27 @@ fn a_partial_for_another_model_or_language_is_answered_warming_not_run_inline() 
     assert_eq!(w.launched_count(), 1);
     assert_eq!(ask(&w, req("small", "auto", false)), no(Reason::Warming));
     assert_eq!(ask(&w, req("base", "en", false)), no(Reason::Warming));
-    // The right partial still goes straight through the warm server.
-    assert!(ask(&w, base(false)).is_ok());
+    // Those answers started a warm-up, which replaces the base/auto server on the worker's own time:
+    // whether it has yet is scheduling, so the test waits for that launch (the old server is let go
+    // before the new one starts), then warms base/auto again (`warm` answers Warming while another
+    // warm-up is queued or running, and Ok once base/auto is warm).
+    until(|| w.launched_count() >= 2, 30_000);
+    until(
+        || {
+            let r = warm(&w);
+            assert!(
+                r.is_ok() || r == no(Reason::Warming),
+                "a warm-up failed: {r:?}"
+            );
+            r.is_ok()
+        },
+        30_000,
+    );
+    // The right partial now goes straight through the warm server: no launch on the caller's pass.
+    let launched = w.launched_count();
+    let r = ask(&w, base(false));
+    assert!(r.is_ok(), "got {r:?}");
+    assert_eq!(w.launched_count(), launched, "the partial started a server");
 }
 
 // L33: dropping the engine (dictation switched off, on the UI thread) never waits for the worker.
