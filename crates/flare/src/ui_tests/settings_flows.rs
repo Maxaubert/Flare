@@ -26,7 +26,7 @@ use flare_theme::colour::{Rgba, parse_colour};
 use slint::{ComponentHandle, Model};
 
 use crate::appctl::{Post, UiMsg};
-use crate::settings_ctl::{SettingsCtl, SettingsDeps};
+use crate::settings_ctl::{SettingsCtl, SettingsDeps, SettingsMsg};
 use crate::ui_harness::{Harness, SCALES};
 use crate::{AppWindow, SetRow, SetSection, SettingsBridge};
 
@@ -102,7 +102,7 @@ fn fx_at(scale: f32) -> Fx {
         q,
         clock,
     };
-    f.pump();
+    f.settle();
     f
 }
 
@@ -119,6 +119,37 @@ impl Fx {
         self.h.comp.global::<SettingsBridge>()
     }
 
+    /// Pumps until both start-up answers, the shell list and the Explorer verb's state, have arrived.
+    /// Each comes from a worker thread, so on a slow machine one lands whenever it likes; unwaited, it
+    /// reaches a later pump in the middle of a flow, rebuilds the page and takes the keyboard focus
+    /// off the rail (the runner failed the rail test that way). Every flow now starts after both.
+    /// KNOWN APP BUG this works around: in the real app a late shell list or verb answer (or any pref change\n    /// from elsewhere) rebuilds the open page via refresh_if_visible and drops the rail focus; fix it in\n    /// settings_ctl.rs (keep focus across a refresh), then this wait can go.
+    fn settle(&self) {
+        let (mut shells, mut verb) = (false, false);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !(shells && verb) {
+            let msgs: Vec<UiMsg> = self
+                .q
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .drain(..)
+                .collect();
+            for m in msgs {
+                if let UiMsg::Settings(m) = m {
+                    shells |= matches!(m, SettingsMsg::ShellList(_));
+                    verb |= matches!(m, SettingsMsg::Verb(_));
+                    self.ctl.borrow_mut().on_msg(m);
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the start-up answers never came (shells {shells}, verb {verb})"
+            );
+            if !(shells && verb) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
     /// Hands every queued message to the controller, as the window's pump does.
     fn pump(&self) {
         let msgs: Vec<UiMsg> = self

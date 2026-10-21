@@ -56,9 +56,18 @@ fn shell_def(id: &str) -> Option<ShellDef> {
         .find(|d| d.id == id)
 }
 
+/// A folder as comparable text: the canonical long path, lowercase. The runner's temp folder is
+/// an 8.3 short name (`RUNNER~1`) while a shell reports the long one (`runneradmin`); both are
+/// the same folder, and `canonicalize` gives both spellings the long form. A path that cannot be
+/// resolved (gone, or never existed) is compared as written.
 fn norm_path(p: &str) -> String {
-    p.strip_prefix(r"\\?\")
-        .unwrap_or(p)
+    let trimmed = p.strip_prefix(r"\\?\").unwrap_or(p);
+    let canon = std::fs::canonicalize(trimmed)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| trimmed.to_string());
+    canon
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canon)
         .trim_end_matches('\\')
         .to_lowercase()
 }
