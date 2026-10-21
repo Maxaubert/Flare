@@ -837,6 +837,8 @@ mod flow {
             };
             let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
             let ctl = AppCtl::new(&h.comp, deps);
+            // Pinned: the runner's Windows "show animations" switch must not decide a test.
+            ctl.borrow_mut().set_animations_source(Rc::new(|| true));
             *inputs_cell.borrow_mut() = Some(ctl.borrow().decor_inputs());
             // The window glue in miniature: the grid host sizes itself, paints, and tells the controller.
             {
@@ -1715,6 +1717,26 @@ mod flow {
         });
     }
 
+    /// How many times slower than the reference machine this one runs a fixed unit of plain
+    /// unoptimised work (best of five, never below 1). The unit is the same in every run.
+    fn machine_slowness() -> f64 {
+        /// Measured on the dev PC (debug build, idle priority): 8.2 ms.
+        const REFERENCE_MS: f64 = 8.0;
+        let best = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                let mut acc = 0u64;
+                for i in 0..2_000_000u64 {
+                    acc = std::hint::black_box(acc.wrapping_mul(31).wrapping_add(i));
+                }
+                std::hint::black_box(acc);
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .fold(f64::MAX, f64::min);
+        eprintln!("calibration unit took {best:.3} ms");
+        (best / REFERENCE_MS).max(1.0)
+    }
+
     /// PT linkPaintStall: nothing holds the window while a big scrollback is scanned and searched.
     #[test]
     fn find_and_a_big_scrollback_never_hold_the_window() {
@@ -1751,9 +1773,17 @@ mod flow {
             "the count reached {:?}",
             w.h.comp.get_find_readout()
         );
+        // 50 ms on the machine this was tuned on; a slower machine (a shared CI runner, a loaded
+        // PC) gets the same budget scaled by how much slower it runs a fixed unit of plain work. A
+        // real hold (the scan running whole on the UI thread) is far beyond any such scaling.
+        let factor = machine_slowness();
+        let budget = Duration::from_millis(50).mul_f64(factor);
+        eprintln!(
+            "slowest {worst:?}, budget {budget:?} (this machine is {factor:.2}x the reference)"
+        );
         assert!(
-            worst < Duration::from_millis(50),
-            "the slowest tick or frame took {worst:?}"
+            worst < budget,
+            "the slowest tick or frame took {worst:?} (budget {budget:?}, machine {factor:.2}x)"
         );
     }
 

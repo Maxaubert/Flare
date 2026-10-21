@@ -252,6 +252,8 @@ impl Fx {
         let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         h.comp.set_grid_image(grid_image());
         let ctl = AppCtl::new(&h.comp, deps);
+        // Pinned: the runner's Windows "show animations" switch must not decide a test.
+        ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         {
             let weak = Rc::downgrade(&ctl);
             h.comp.on_grid_resized(move |w, hgt, _scale| {

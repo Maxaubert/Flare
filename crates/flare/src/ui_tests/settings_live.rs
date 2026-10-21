@@ -122,6 +122,8 @@ impl Fx {
         };
         let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
+        // Pinned: the runner's Windows "show animations" switch must not decide a test.
+        ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         // The look and the font, as the window glue makes them over the same store.
         let grid = Rc::new(RefCell::new(GridHost::new(
             Box::new(flare_render::glyph::FakeGlyphs::new(8, 16)),

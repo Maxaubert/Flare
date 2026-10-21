@@ -3855,6 +3855,8 @@ mod tests {
         let scale = if opts.scale > 0.0 { opts.scale } else { 1.0 };
         let h = Harness::new(scale, 1000, 640, || AppWindow::new().unwrap());
         let ctl = AppCtl::new(&h.comp, deps);
+        // Pinned: the runner's Windows "show animations" switch must not decide a test.
+        ctl.borrow_mut().set_animations_source(Rc::new(|| true));
         Fx {
             h,
             ctl,

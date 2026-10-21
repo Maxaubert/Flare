@@ -840,7 +840,12 @@ mod tests {
             let mut new = Rasterizer::new(DEFAULT_FAMILIES, scale);
             assert_eq!(old.family(), new.family());
             let mut checked = 0;
-            for ch in text.chars().filter(|c| !c.is_whitespace()) {
+            // Control characters (the sample holds raw ESC bytes) draw no glyph: a terminal never rasterises
+            // them, and what a font puts at .notdef depends on which fonts the machine has installed.
+            for ch in text
+                .chars()
+                .filter(|c| !c.is_whitespace() && !c.is_control())
+            {
                 let k = key(&ch.to_string());
                 assert_eq!(
                     glyph_settled(&mut old, &k),

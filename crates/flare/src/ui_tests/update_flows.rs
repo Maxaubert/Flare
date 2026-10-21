@@ -125,6 +125,8 @@ fn make(mode: Mode, feed: Arc<dyn Feed>, probe: FakeFeed, current: &str) -> Fx {
     };
     let h = Harness::new(1.0, 1000, 640, || AppWindow::new().unwrap());
     let ctl = AppCtl::new(&h.comp, deps);
+    // Pinned: the runner's Windows "show animations" switch must not decide a test.
+    ctl.borrow_mut().set_animations_source(Rc::new(|| true));
     h.advance(0);
     ctl.borrow_mut().refresh();
     let engine = Engine::new(
