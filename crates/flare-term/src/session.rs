@@ -72,6 +72,10 @@ pub struct SessionOptions {
     /// The control channel of this Flare instance: every shell gets its own secret token plus the
     /// pipe name (and the MCP server's path) in its environment. None: no channel (tests, headless).
     pub ctl: Option<CtlInstance>,
+    /// Whether the control channel is really serving. None: always (tests, headless). Some: a shell is
+    /// told about the channel only while this reads true, so a server that failed to start (the name is
+    /// taken by another process) leaves no tab holding a secret that anyone else could be listening for.
+    pub ctl_up: Option<Arc<AtomicBool>>,
 }
 
 /// What every shell of one Flare instance shares about the control channel.
@@ -79,6 +83,8 @@ pub struct SessionOptions {
 pub struct CtlInstance {
     /// `\.\pipelare-ctl-...`, per user and profile.
     pub pipe: String,
+    /// The process id of this Flare, the one that serves the pipe.
+    pub pid: u32,
     /// `flare-mcp.exe` beside `flare.exe`, when present.
     pub mcp_exe: Option<String>,
 }
@@ -133,6 +139,7 @@ impl Default for SessionOptions {
             is_ours: IsOurs::default(),
             base_env: None,
             ctl: None,
+            ctl_up: None,
         }
     }
 }
@@ -665,9 +672,16 @@ impl SessionManager {
             Some(b) => b.clone(),
             None => std::env::vars().collect(),
         };
-        let ctl = self.sh.opts.ctl.as_ref().map(|c| CtlEnv {
+        let up = self
+            .sh
+            .opts
+            .ctl_up
+            .as_ref()
+            .is_none_or(|flag| flag.load(Ordering::Acquire));
+        let ctl = self.sh.opts.ctl.as_ref().filter(|_| up).map(|c| CtlEnv {
             tab_token: tokens.ctl.clone(),
             pipe: c.pipe.clone(),
+            pid: c.pid,
             mcp_exe: c.mcp_exe.clone(),
         });
         let mut env = pty_env(
@@ -1697,6 +1711,7 @@ mod tests {
         SessionOptions {
             ctl: Some(CtlInstance {
                 pipe: "\\\\.\\pipe\\flare-ctl-test".into(),
+                pid: 4242,
                 mcp_exe: Some("C:\\Flare\\flare-mcp.exe".into()),
             }),
             base_env: Some(vec![(
@@ -1802,6 +1817,33 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_that_did_not_start_leaves_no_control_variable_in_a_new_shell() {
+        let sp = FakeSpawner::new();
+        let up = Arc::new(AtomicBool::new(false));
+        let opts = SessionOptions {
+            ctl_up: Some(Arc::clone(&up)),
+            ..ctl_opts()
+        };
+        let m = mgr_with(&sp, FakeShells::new(), opts);
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        for k in [
+            "FLARE_TAB_TOKEN",
+            "FLARE_CTL_PIPE",
+            "FLARE_CTL_PID",
+            "FLARE_MCP_EXE",
+        ] {
+            assert_eq!(env_value(&f, k), None, "{k}");
+        }
+        // Once the server is serving, the next shell is told.
+        up.store(true, Ordering::Release);
+        assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, None));
+        let f = Arc::clone(&sp.made()[1]);
+        assert_eq!(env_value(&f, "FLARE_CTL_PID").as_deref(), Some("4242"));
+        assert!(env_value(&f, "FLARE_TAB_TOKEN").is_some());
+    }
+
+    #[test]
     fn with_no_channel_no_control_variable_is_set() {
         let sp = FakeSpawner::new();
         let opts = SessionOptions {
@@ -1811,7 +1853,12 @@ mod tests {
         let m = mgr_with(&sp, FakeShells::new(), opts);
         assert!(spawn_a(&m));
         let f = Arc::clone(&sp.made()[0]);
-        for k in ["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE", "FLARE_MCP_EXE"] {
+        for k in [
+            "FLARE_TAB_TOKEN",
+            "FLARE_CTL_PIPE",
+            "FLARE_CTL_PID",
+            "FLARE_MCP_EXE",
+        ] {
             assert_eq!(env_value(&f, k), None, "{k}");
         }
         assert_eq!(m.tab_for_ctl_token("x"), None);

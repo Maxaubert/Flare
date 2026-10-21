@@ -41,7 +41,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 ## Processes, lifetime, quit
 
 27. **Closing the window quits; closing the last tab does not.** Native: the window's close-request handler flushes tabs.json and window.json synchronously, kills every shell, waits, exits; no tray; the last tab removal shows the start screen. Source: regression-rules.md close-quits; src/main/index.ts; e2e lastTab.
-28. **The quit waits for every shell to be gone (3 s cap), on the child's exit code.** A native callback landing during teardown aborted the process (0xc0000409). Native: every kill goes through one function that waits for exit with reader threads joined and a 3 s timeout; no detached thread outlives main; a test kills ten shells and asserts none remain. Source: regression-rules.md quit-waits-for-shells (#127); core/main/terminal.ts shellsGone.
+28. **The quit waits for every shell to be gone (3 s cap), on the child's exit code.** A native callback landing during teardown aborted the process (0xc0000409). Native: every kill goes through one function that waits for exit with reader threads joined and a 3 s timeout; no detached thread outlives main (one recorded exception: the control channel's accept thread, a timed-out call and a handler still running at the end of its 2 s stop wait may outlive the stop; they touch only `post`, which fails once the loop has ended, the stop flag and their own pipe, and a call arriving after the stop is never posted, rule 186); a test kills ten shells and asserts none remain. Source: regression-rules.md quit-waits-for-shells (#127); core/main/terminal.ts shellsGone.
 29. **Bundled ConPTY.** The inbox conhost fast-fails the process when a pty is killed mid-read. Native: ship `conpty.dll` and `OpenConsole.exe` beside the exe, load the bundled DLL first, a startup check fails loudly if missing. Source: regression-rules.md bundled-conpty; core/main/terminal.ts PTY_OPTS.
 30. **Warm shells never leak, and a spawn killed while pending starts nothing.** Native: a warm entry is removed only by identity (compare the handle), every eviction kills its process; a spawn state holds a cancel flag set by kill. Source: core/main/terminal.sessions.test.ts (#2, #12).
 31. **Output is coalesced every 8 ms and flushed before the exit event.** Native: batch per tab, flush before the exit message so the last words are painted. Source: core/main/terminal.ts OutputBatcher.
@@ -345,8 +345,13 @@ the last rule above and kept under their design names S1 to S6. The contract the
 
 186. **S1. The control channel is per user and per tab, and never listens on a network.** The pipe is
 `\\.\pipe\flare-ctl-<hash of the SID>` (plus a hash of the profile folder for any profile but the default), created first-instance
-with the descriptor `D:P(A;;GA;;;<SID>)` and `PIPE_REJECT_REMOTE_CLIENTS`; a client refuses a server of another user. On top of
-that a connection acts as a tab only by presenting that tab's secret: 64 hex digits from two random UUIDs (the OS generator),
+with the descriptor `D:P(A;;GA;;;<SID>)` and `PIPE_REJECT_REMOTE_CLIENTS`; a client refuses a server of another user, **and a
+client that was told which process serves the pipe (`FLARE_CTL_PID`, put in every shell next to `FLARE_CTL_PIPE`, an inherited copy
+dropped, rule 12) refuses any other process**: the name is predictable from the SID, so a process of the same user at low integrity
+or with a restricted token could create it first and would otherwise be handed the tab's secret and be able to put its words in a
+tool result (`flare-mcp` also cleans a refusal's text to one short line and refuses to connect with no pid). The shells are told
+about the channel only once its server is serving: a server that failed to start leaves no tab with a secret or a pipe name. On top
+of that a connection acts as a tab only by presenting that tab's secret: 64 hex digits from two random UUIDs (the OS generator),
 made when the tab's shell is started and put in its environment as `FLARE_TAB_TOKEN`; never on a command line (rule 3), never
 logged, never sent to Sonara or printed in a hook line (those carry the public `FLARE_TAB_ID`). `hello` takes `tab_token` and
 refuses a `tab` name (`bad_params`); an unknown token is `unauthorized` and closes; the token is looked up again on every request,
@@ -355,18 +360,28 @@ so a closed tab's token stops working at once; a restored tab gets a new secret 
 `the_live_pipe_carries_the_owner_only_descriptor`, `the_pipe_is_closed_to_other_users`, `a_second_server_on_the_same_name_fails_to_start`,
 `the_pipe_name_has_known_answers`, `every_shell_gets_its_own_unguessable_control_token_and_the_pipe`,
 `an_unknown_empty_or_partial_token_names_no_tab`, `a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one`,
-`a_warm_spare_belongs_to_no_tab_until_one_adopts_it`, `an_unknown_tab_token_is_refused_and_closes_the_client`,
+`a_channel_that_did_not_start_leaves_no_control_variable_in_a_new_shell`,
+`a_client_told_which_process_serves_the_pipe_speaks_to_no_other`, `a_pipe_served_by_another_process_is_never_given_the_secret`,
+`a_refusal_shown_to_the_model_is_one_short_clean_line`, `a_warm_spare_belongs_to_no_tab_until_one_adopts_it`, `an_unknown_tab_token_is_refused_and_closes_the_client`,
 `a_tab_name_is_refused_because_only_the_secret_names_a_tab`, `a_closed_tab_loses_its_connection_s_tab_at_once`, and the e2e
-`ctlChannel` (a wrong secret, the tab's id and a tab named in `hello` are all refused). Source: the design spec; the stage 2
-security review (2026-10-21).
+`ctlChannel` (a wrong secret, the tab's id and a tab named in `hello` are all refused; the shell's `FLARE_CTL_PID` is the app's) and
+`mcpRoundTrip` (a server named as another process, or none, is never connected to). Source: the design spec; the stage 2 security
+review (2026-10-21).
 187. **S2. A `view.*` path is resolved again by the backend and shown only if the user could already open it.** The call's own
 worker resolves it with the click's function (rule 13), requires the click allowlist as named AND as the file system names it
 (rule 14), requires the kind asked for (a picture for `view.image`, text or code for `view.file`), and answers `not_found` for
 anything else a probe could learn from (missing, a share, a program, outside the list); a program is never shown and never run.
 `view.text` is a string, capped at 4 MB. The UI thread is only given a path that passed. Native: `crates/flare/src/ctl_app.rs`
-(`view_file`). Held by `a_path_nobody_may_open_is_not_found_and_never_reaches_the_ui_thread`,
+(`view_file`). A call has ONE deadline for all its steps (10 s, inside the channel's 15 s), an absolute path never asks the UI for a
+folder, and the UI thread does nothing for a request that arrives after its deadline (answers `timeout`), so a call told it timed
+out never changes the window. A file shown by a click clears the title and the handed-over text of an earlier call, so a real file
+is never under a title an agent chose. Held by `every_request_carries_one_deadline_inside_the_channel_s_own_timeout`,
+`an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does`, `a_request_that_arrives_after_its_deadline_changes_nothing`,
+`a_click_after_a_titled_call_shows_the_file_under_its_own_name`, `a_path_nobody_may_open_is_not_found_and_never_reaches_the_ui_thread`,
 `the_kind_must_match_and_a_link_that_changes_kind_shows_nothing`, `view_text_is_capped_and_a_title_is_one_short_line` and the e2e
-`ctlChannel` (a missing file, a program, a program named like a picture and a network path).
+`ctlChannel` (a missing file, a program, a program named like a picture and a network path; a relative name is read from the folder
+of the tab that asks, two pictures of different sizes telling the folders apart) and `mcpRoundTrip` (the server's own folder rules a
+relative name).
 188. **S3. The agent grant shows content and drives its own tab's panel; it cannot type into a shell, read other tabs' screens,
 change settings or enable mods.** `shell.input`, `settings.set` and `mods.enable` exist as names only so the refusal is a pinned
 test, and the `ui` grant never crosses the pipe. `tabs.list` gives the agent its own tab only (ids and titles, never a screen); a
@@ -383,3 +398,10 @@ is unknown. Held by `disabling_a_mod_kills_its_open_connection`, `a_mod_token_ge
 `the_token_decides_the_tab` (no token resolves to a mod).
 191. **S6. Downloads from web panels go to the user's Downloads with the WebView2 prompt; no silent saves.** Stage 3; nothing is
 built yet, and the channel has no method that saves a file.
+192. **The plugin manifest never names the MCP server by a variable.** `plugin.json` is a template with `@@FLARE_MCP_EXE@@` and the
+install step writes the absolute path of `flare-mcp.exe` beside the running exe into the installed copy (like the System32 `cmd.exe` in
+`hooks.json`, rule 161); with no such file the `mcpServers` block is left out, so a build without it never gives Claude Code a server
+that fails in every tab and the status hooks of the same plugin are never affected. No secret, pipe name or `${...}` is written in the
+manifest. Native: `flare-agent` `plugin.rs` (`render_manifest`, `install_plugin_with`). Held by
+`declares_the_flare_mcp_server_by_a_written_in_absolute_path_and_never_by_expansion` and
+`install_writes_the_mcp_server_only_when_the_program_exists`. Source: the stage 2 review (2026-10-21).

@@ -2830,7 +2830,7 @@ impl AppCtl {
             })
             .collect();
         let info = self.ctl_info.clone().unwrap_or_default();
-        serde_json::json!({"pipe": info.pipe, "mcp_exe": info.mcp_exe, "tabs": tabs})
+        serde_json::json!({"pipe": info.pipe, "pid": std::process::id(), "mcp_exe": info.mcp_exe, "tabs": tabs})
     }
 
     /// `PanelInfo` of a tab's panel, as the protocol writes it.
@@ -3820,8 +3820,17 @@ impl AppCtl {
                 }
             }
             UiMsg::Ctl(CtlRequestBox(req)) => {
-                let answer = self.ctl_op(req.op);
-                let _ = req.reply.send(answer);
+                // The caller stopped waiting at its deadline and was told `timeout`: a request that
+                // arrives later changes nothing (and the late answer has no reader).
+                if std::time::Instant::now() > req.deadline {
+                    let _ = req.reply.send(Err(flare_ctl::CtlError::new(
+                        flare_ctl::code::TIMEOUT,
+                        "Flare's window did not answer in time",
+                    )));
+                } else {
+                    let answer = self.ctl_op(req.op);
+                    let _ = req.reply.send(answer);
+                }
             }
             UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
                 self.show_preview(&tab, kind, &abs);
@@ -5836,7 +5845,11 @@ mod tests {
         f.ctl
             .borrow_mut()
             .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
-                crate::ctl_app::CtlRequest { op, reply: tx },
+                crate::ctl_app::CtlRequest {
+                    op,
+                    deadline: std::time::Instant::now() + Duration::from_secs(5),
+                    reply: tx,
+                },
             )));
         rx.try_recv().expect("the UI thread answers at once")
     }
@@ -6051,13 +6064,100 @@ mod tests {
             Duration::from_millis(30),
         ));
         f.ctl.borrow_mut().set_panel_store(store.clone());
-        let id = f.ctl.borrow().front_id().unwrap();
-        ctl_call(&f, show_text_op(&id, "private notes", Some("T"))).unwrap();
+        // Tab a holds handed-over text; tab b holds a real file, so the store has something to write
+        // and a missing file cannot pass for "nothing was saved".
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        let note = f.dir.path().join("kept.txt");
+        std::fs::write(&note, "kept").unwrap(); // sync-ok: test code only
+        ctl_call(&f, show_text_op(&a, "private notes", Some("T"))).unwrap();
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: b.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: note.to_string_lossy().into_owned(),
+                title: None,
+            },
+        )
+        .unwrap();
         f.ctl.borrow_mut().refresh();
         store.flush();
-        let raw = std::fs::read_to_string(&file).unwrap_or_default(); // sync-ok: test code only
+        let raw = std::fs::read_to_string(&file).expect("the store wrote the file"); // sync-ok: test code only
+        assert!(raw.contains("kept.txt"), "the file panel is saved: {raw}");
         assert!(!raw.contains("private notes"), "{raw}");
         assert!(!raw.contains("inline"), "{raw}");
+        let back = flare_surfaces::store::parse_panels(&raw);
+        assert_eq!(back.len(), 2);
+        assert!(back[0].panel.is_none(), "the text tab saves no panel");
+        assert!(back[1].panel.is_some());
+        // A new run restores from that file: tab b gets its file, tab a gets nothing.
+        let g = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", None)],
+            ..Opts::default()
+        });
+        let gfile = g.dir.path().join("panels.json");
+        std::fs::copy(&file, &gfile).unwrap(); // sync-ok: test code only
+        g.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &gfile,
+                Duration::from_millis(30),
+            )));
+        g.start_restore_and_wait();
+        assert_eq!(g.ctl.borrow().open_panels(), 1, "only the file came back");
+        assert!(
+            !g.h.comp.get_panel_open(),
+            "the text tab (in front) has no panel"
+        );
+    }
+
+    #[test]
+    fn a_click_after_a_titled_call_shows_the_file_under_its_own_name() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "x", Some("Plan"))).unwrap();
+        f.pump_until("the title", |f| {
+            f.h.comp.get_panel_title().as_str() == "Plan"
+        });
+        let events = recorded_events(&f);
+        let note = f.dir.path().join("clicked.txt");
+        std::fs::write(&note, "c").unwrap(); // sync-ok: test code only
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.pump_until("the file's name", |f| {
+            f.h.comp.get_panel_title().as_str() == "clicked.txt"
+        });
+        let state = ctl_call(&f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        assert_eq!(state["panel"]["title"], "clicked.txt", "{state}");
+        let ev = events.lock().unwrap().clone();
+        assert_eq!(ev.last().unwrap().1["panel"]["title"], "clicked.txt");
+        // A file given a title keeps it only until the next click or call.
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: note.to_string_lossy().into_owned(),
+                title: Some("Fake".into()),
+            },
+        )
+        .unwrap();
+        f.pump_until("the given title", |f| {
+            f.h.comp.get_panel_title().as_str() == "Fake"
+        });
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.pump_until("the name again", |f| {
+            f.h.comp.get_panel_title().as_str() == "clicked.txt"
+        });
     }
 
     #[test]
@@ -6092,6 +6192,28 @@ mod tests {
     }
 
     #[test]
+    fn a_request_that_arrives_after_its_deadline_changes_nothing() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let past = std::time::Instant::now() - Duration::from_secs(1);
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op: show_text_op(&id, "too late", Some("Late")),
+                    deadline: past,
+                    reply: tx,
+                },
+            )));
+        let answer = rx.try_recv().expect("answered at once");
+        assert_eq!(answer.unwrap_err().code, flare_ctl::code::TIMEOUT);
+        f.pump();
+        assert_eq!(f.ctl.borrow().open_panels(), 0, "no panel was shown");
+        assert!(!f.h.comp.get_panel_open());
+    }
+
+    #[test]
     fn a_message_after_the_end_of_life_is_dropped_so_its_waiter_lets_go() {
         let (f, _h, _) = live(Opts::default());
         let id = f.ctl.borrow().front_id().unwrap();
@@ -6102,6 +6224,7 @@ mod tests {
             .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
                 crate::ctl_app::CtlRequest {
                     op: show_text_op(&id, "late", None),
+                    deadline: std::time::Instant::now() + Duration::from_secs(5),
                     reply: tx,
                 },
             )));

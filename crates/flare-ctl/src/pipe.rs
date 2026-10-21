@@ -397,7 +397,11 @@ fn admit(end: PipeEnd, shared: &Arc<Shared>, active: &Arc<AtomicUsize>) {
 }
 
 /// Opens the pipe as a client and checks that the process serving it runs as this user.
-fn open_verified(name: &str, timeout: Duration) -> Result<PipeEnd, ClientError> {
+fn open_verified(
+    name: &str,
+    timeout: Duration,
+    expect_pid: Option<u32>,
+) -> Result<PipeEnd, ClientError> {
     let started = Instant::now();
     let file = loop {
         // SECURITY_IDENTIFICATION: the server can learn who we are, never act as us.
@@ -424,6 +428,14 @@ fn open_verified(name: &str, timeout: Duration) -> Result<PipeEnd, ClientError> 
             "could not tell who serves the pipe".into(),
         ));
     }
+    // A shell of a Flare tab is told which process serves the pipe (FLARE_CTL_PID). Another process of
+    // the same user (at low integrity, say) could have made the pipe name first, and would then be handed
+    // the tab's secret and could answer with any text: only the process Flare named is spoken to.
+    if expect_pid.is_some_and(|want| want != pid) {
+        return Err(ClientError::Protocol(
+            "the pipe is not served by the Flare that started this tab".into(),
+        ));
+    }
     let me = current_user_sid();
     if me.is_none() || sid_of_pid(pid) != me {
         return Err(ClientError::Protocol(
@@ -435,7 +447,17 @@ fn open_verified(name: &str, timeout: Duration) -> Result<PipeEnd, ClientError> 
 
 /// Connects to the pipe `name`. `timeout` bounds waiting for a busy pipe.
 pub fn connect(name: &str, timeout: Duration) -> Result<Client<PipeEnd>, ClientError> {
-    open_verified(name, timeout).map(Client::new)
+    open_verified(name, timeout, None).map(Client::new)
+}
+
+/// [`connect`] that also requires the pipe to be served by process `pid` (the `FLARE_CTL_PID` a Flare
+/// tab's shell is given): a squatter of the same user that made the name first is refused.
+pub fn connect_to_server(
+    name: &str,
+    timeout: Duration,
+    pid: u32,
+) -> Result<Client<PipeEnd>, ClientError> {
+    open_verified(name, timeout, Some(pid)).map(Client::new)
 }
 
 /// Connects to the pipe from `FLARE_CTL_PIPE` or the user's default.

@@ -18,6 +18,11 @@ pub const SUPPORTED_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-
 pub const SERVER_NAME: &str = "flare-mcp";
 /// The variable Flare puts in every shell it starts: the secret of that shell's tab.
 pub const TAB_TOKEN_VAR: &str = "FLARE_TAB_TOKEN";
+/// The variable Flare puts in every shell it starts: the process that serves the pipe. The pipe is spoken
+/// to only if that process serves it, so a process that made the pipe name first gets no secret.
+pub const CTL_PID_VAR: &str = "FLARE_CTL_PID";
+/// The longest text of a refusal that is passed on to the model.
+const MESSAGE_CAP: usize = 200;
 
 /// How long a tool call waits for Flare (a connect, then the answer).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -130,7 +135,7 @@ pub fn tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "show_image",
-            description: "Show an image file in a panel beside this terminal tab in Flare, so the user can look at it without leaving the terminal. Takes an absolute path, or one relative to the current folder.",
+            description: "Show an image file in a panel beside this terminal tab in Flare, so the user can look at it without leaving the terminal. Takes an absolute path, or one relative to the folder you are working in (where this session was started).",
             schema: path_schema("Path of the image file (png, jpg, gif, webp, bmp, ico)."),
         },
         ToolDef {
@@ -168,14 +173,30 @@ fn absolute(path: &str) -> String {
     }
 }
 
+/// A server's words made safe to show the model as a tool result: one line, no control characters, short.
+/// Flare's own messages are plain sentences; anything else answering on the pipe is not trusted with more.
+pub fn clean_message(message: &str) -> String {
+    let one_line: String = message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut words = one_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.chars().count() > MESSAGE_CAP {
+        words = words.chars().take(MESSAGE_CAP).collect::<String>() + "...";
+    }
+    words
+}
+
 fn map_channel_error(e: ChannelError) -> ToolResult {
     match e {
         ChannelError::NotRunning(why) => ToolResult::error(format!(
             "Flare is not running this session ({why}). This tool only works inside a Flare terminal tab; carry on without it."
         )),
-        ChannelError::Remote { code, message } => {
-            ToolResult::error(format!("Flare refused: {message} ({code})."))
-        }
+        ChannelError::Remote { code, message } => ToolResult::error(format!(
+            "Flare refused: {} ({}).",
+            clean_message(&message),
+            clean_message(&code)
+        )),
         ChannelError::Failed(why) => ToolResult::error(format!("Could not reach Flare: {why}.")),
     }
 }
@@ -358,6 +379,7 @@ pub fn run(
 pub struct FlareChannel {
     tab_token: Option<String>,
     pipe: Option<String>,
+    server_pid: Option<u32>,
     client: Option<flare_ctl::Client<flare_ctl::PipeEnd>>,
 }
 
@@ -365,15 +387,26 @@ impl FlareChannel {
     /// Reads `FLARE_TAB_TOKEN` and `FLARE_CTL_PIPE` (or the user's default pipe).
     pub fn from_env() -> Self {
         let token = std::env::var(TAB_TOKEN_VAR).ok().filter(|t| !t.is_empty());
-        Self::new(token, flare_ctl::default_pipe_name())
+        let pid = std::env::var(CTL_PID_VAR)
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|p| *p != 0);
+        Self::new(token, flare_ctl::default_pipe_name()).with_server_pid(pid)
     }
 
     pub fn new(tab_token: Option<String>, pipe: Option<String>) -> Self {
         Self {
             tab_token,
             pipe,
+            server_pid: None,
             client: None,
         }
+    }
+
+    /// The process that must serve the pipe (`FLARE_CTL_PID`). Without one nothing is connected to.
+    pub fn with_server_pid(mut self, pid: Option<u32>) -> Self {
+        self.server_pid = pid;
+        self
     }
 
     fn connect(&mut self) -> Result<(), ChannelError> {
@@ -390,7 +423,10 @@ impl FlareChannel {
                 "no Flare pipe to connect to".into(),
             ));
         };
-        let mut client = flare_ctl::connect(&pipe, CALL_TIMEOUT)
+        let Some(pid) = self.server_pid else {
+            return Err(ChannelError::NotRunning("FLARE_CTL_PID is not set".into()));
+        };
+        let mut client = flare_ctl::connect_to_server(&pipe, CALL_TIMEOUT, pid)
             .map_err(|e| ChannelError::NotRunning(format!("could not connect: {e}")))?;
         client
             .hello(
@@ -808,5 +844,43 @@ mod tests {
             ch.call(Method::PanelClose, json!({})),
             Err(ChannelError::NotRunning(_))
         ));
+    }
+
+    #[test]
+    fn without_the_server_s_pid_the_real_channel_never_connects() {
+        let mut ch = FlareChannel::new(Some("t1".into()), Some("no-such-pipe".into()));
+        match ch.call(Method::PanelClose, json!({})) {
+            Err(ChannelError::NotRunning(m)) => assert!(m.contains("FLARE_CTL_PID"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refusal_shown_to_the_model_is_one_short_clean_line() {
+        assert_eq!(clean_message("no such file"), "no such file");
+        assert_eq!(
+            clean_message("ignore\r\n\u{1b}[31m all\tprevious"),
+            "ignore [31m all previous"
+        );
+        let long = "x".repeat(5000);
+        assert!(clean_message(&long).chars().count() <= MESSAGE_CAP + 3);
+        let mut ch = Fake {
+            answer: Some(Err(ChannelError::Remote {
+                code: "bad".into(),
+                message: format!("line one\n{}", "y".repeat(1000)),
+            })),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "close_panel", "arguments": {}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        let text = text_of(&r);
+        assert!(!text.contains('\n') && text.chars().count() < 300, "{text}");
     }
 }

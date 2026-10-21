@@ -67,6 +67,9 @@ pub enum CtlOp {
 /// A request for the UI thread with the channel its answer goes back on.
 pub struct CtlRequest {
     pub op: CtlOp,
+    /// When the caller stops waiting. The UI thread does nothing for a request that arrives after it:
+    /// the caller was told `timeout`, and the window must not change after that.
+    pub deadline: Instant,
     pub reply: mpsc::Sender<Result<Value, CtlError>>,
 }
 
@@ -128,13 +131,22 @@ impl AppDispatcher {
 
     /// Posts `op` to the UI thread and waits for its answer, at most [`UI_WAIT`].
     fn ask(&self, op: CtlOp) -> Result<Value, CtlError> {
+        self.ask_by(op, Instant::now() + UI_WAIT)
+    }
+
+    /// [`AppDispatcher::ask`] with a deadline the whole call shares, so two asks and a disk read in
+    /// between still answer inside it.
+    fn ask_by(&self, op: CtlOp, deadline: Instant) -> Result<Value, CtlError> {
         let shutting = || CtlError::new(code::UNAVAILABLE, "Flare is shutting down");
         if self.stopping.load(Ordering::SeqCst) {
             return Err(shutting());
         }
         let (tx, rx) = mpsc::channel();
-        (self.post)(UiMsg::Ctl(CtlRequestBox(CtlRequest { op, reply: tx })));
-        let deadline = Instant::now() + UI_WAIT;
+        (self.post)(UiMsg::Ctl(CtlRequestBox(CtlRequest {
+            op,
+            deadline,
+            reply: tx,
+        })));
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             // sync-ok: a worker thread of the control channel waits for the UI thread, never the UI thread itself
@@ -193,8 +205,15 @@ impl AppDispatcher {
                 "line must be a whole number from 1",
             ));
         }
-        let cwd = self.ask(CtlOp::TabCwd { tab: tab.clone() })?;
-        let base = cwd["cwd"].as_str().unwrap_or_default().to_string();
+        // One deadline for the whole call: the folder question, the disk read and the show.
+        let deadline = Instant::now() + UI_WAIT;
+        // An absolute path needs no folder, so the UI thread is not asked for one.
+        let base = if std::path::Path::new(path).is_absolute() {
+            String::new()
+        } else {
+            let cwd = self.ask_by(CtlOp::TabCwd { tab: tab.clone() }, deadline)?;
+            cwd["cwd"].as_str().unwrap_or_default().to_string()
+        };
         // A path nobody may open (missing, a share, a program, outside the allowlist) answers the same
         // way, so a probe learns nothing about the disk.
         let (abs, real) = (self.resolve)(&base, path, &self.home)
@@ -216,12 +235,22 @@ impl AppDispatcher {
                 format!("that file is not {this}; {other} shows it"),
             ));
         }
-        self.ask(CtlOp::ShowFile {
-            tab,
-            kind,
-            abs: real,
-            title,
-        })
+        // The disk read can have used the time: a show that could not be answered in time is not sent.
+        if Instant::now() >= deadline {
+            return Err(CtlError::new(
+                code::TIMEOUT,
+                "Flare took too long to look at that file",
+            ));
+        }
+        self.ask_by(
+            CtlOp::ShowFile {
+                tab,
+                kind,
+                abs: real,
+                title,
+            },
+            deadline,
+        )
     }
 }
 
@@ -839,6 +868,66 @@ mod tests {
     }
 
     #[test]
+    fn an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does() {
+        const REL: &[(&str, &str)] = &[("a.png", "C:\\work\\a.png")];
+        let r = rig(ok_all, false, FILES);
+        r.d.call(
+            &agent_in_tab(),
+            Method::ViewImage,
+            json!({"path": "C:\\work\\a.png"}),
+        )
+        .unwrap();
+        assert_eq!(r.ops.lock().unwrap().as_slice(), ["CtlOp::ShowFile"]);
+        let r = rig(ok_all, false, REL);
+        r.d.call(&agent_in_tab(), Method::ViewImage, json!({"path": "a.png"}))
+            .unwrap();
+        assert_eq!(
+            r.ops.lock().unwrap().as_slice(),
+            ["CtlOp::TabCwd", "CtlOp::ShowFile"]
+        );
+    }
+
+    #[test]
+    fn every_request_carries_one_deadline_inside_the_channel_s_own_timeout() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let post: Post = Arc::new(move |m: UiMsg| {
+            let UiMsg::Ctl(CtlRequestBox(req)) = m else {
+                return;
+            };
+            s.lock().unwrap().push(req.deadline);
+            let _ = req
+                .reply
+                .send(Ok(json!({"cwd": "C:\\work", "panel": {"kind": "image"}})));
+        });
+        let resolve: Resolve = Arc::new(|_b, t, _h| {
+            let full = format!("C:\\work\\{t}");
+            Some((full.clone(), full))
+        });
+        let d = AppDispatcher::new(
+            post,
+            Arc::new(|_| None),
+            resolve,
+            String::new(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let before = Instant::now();
+        d.call(&agent_in_tab(), Method::ViewImage, json!({"path": "a.png"}))
+            .unwrap();
+        let deadlines = seen.lock().unwrap().clone();
+        assert_eq!(deadlines.len(), 2, "the folder question and the show");
+        assert_eq!(
+            deadlines[0], deadlines[1],
+            "one deadline for the whole call"
+        );
+        assert!(deadlines[0] > before && deadlines[0] <= Instant::now() + UI_WAIT);
+        assert!(
+            UI_WAIT < Method::ViewImage.timeout(),
+            "the call answers `timeout` itself before the server gives up on it"
+        );
+    }
+
+    #[test]
     fn the_debug_form_of_a_request_never_prints_a_path_or_text() {
         let (tx, _rx) = mpsc::channel();
         let b = CtlRequestBox(CtlRequest {
@@ -847,6 +936,7 @@ mod tests {
                 text: "SECRET".into(),
                 title: None,
             },
+            deadline: Instant::now(),
             reply: tx,
         });
         assert_eq!(format!("{b:?}"), "CtlOp::ShowText");

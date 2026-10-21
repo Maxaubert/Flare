@@ -882,10 +882,14 @@ pub fn run_window(
             .clone()
             .map(|pipe| flare_term::session::CtlInstance {
                 pipe,
+                pid: std::process::id(),
                 mcp_exe: std::env::current_exe() // sync-ok: startup, before the window shows
                     .ok()
                     .and_then(|exe| crate::ctl_app::mcp_exe_beside(&exe)),
             });
+        // Shells are told about the channel only once its server is really serving (set below): a server
+        // that failed to start leaves no tab with a secret and a pipe name someone else might own.
+        let ctl_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tab_host = TabHost::with_options(
             Arc::new(PortableSpawner),
             Arc::new(RealShells),
@@ -894,6 +898,7 @@ pub fn run_window(
             crate::startup::production_plugin_dir(e2e_on),
             flare_term::session::SessionOptions {
                 ctl: ctl_instance.clone(),
+                ctl_up: Some(Arc::clone(&ctl_up)),
                 ..flare_term::session::SessionOptions::default()
             },
         );
@@ -1059,6 +1064,7 @@ pub fn run_window(
                         },
                     );
                     ctl_server = Some(server);
+                    ctl_up.store(true, std::sync::atomic::Ordering::Release);
                 }
                 Err(e) => log::warn!("the control channel did not start: {e}"),
             }

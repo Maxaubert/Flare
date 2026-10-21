@@ -827,7 +827,7 @@ the notes for the port: `docs/surfaces/lessons.md` (Stage 2). Issues #18 and #19
   every tab when it starts its shell and puts them in that shell's environment as `FLARE_TAB_TOKEN`, with `FLARE_CTL_PIPE` and
   `FLARE_MCP_EXE` (rule 12). `hello` takes `tab_token` and refuses a `tab`; an unknown token is `unauthorized`; a closed tab's token
   stops working at once; a restored tab gets a new one every launch. Held by `every_shell_gets_its_own_unguessable_control_token_and_the_pipe`,
-  `an_unknown_empty_or_partial_token_names_no_tab`, `a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one`,
+  `a_channel_that_did_not_start_leaves_no_control_variable_in_a_new_shell`, `an_unknown_empty_or_partial_token_names_no_tab`, `a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one`,
   `a_warm_spare_belongs_to_no_tab_until_one_adopts_it`, `with_no_channel_no_control_variable_is_set`, `the_secret_compare_looks_at_every_byte`
   (`flare-term`), `the_control_channel_variables_reach_the_shell_and_replace_the_users_own`, `without_a_channel_an_inherited_token_never_passes`
   (`flare-shells`), `an_unknown_tab_token_is_refused_and_closes_the_client`, `a_tab_name_is_refused_because_only_the_secret_names_a_tab`,
@@ -855,18 +855,25 @@ the notes for the port: `docs/surfaces/lessons.md` (Stage 2). Issues #18 and #19
   (`preview.rs`).
 - **`flare-mcp` ships and Claude gets it with no setup.** Built by the workspace and by its own step in the three packing workflows,
   copied beside `Flare.exe` by `pack.ps1`, required in the portable zip by `verify-pack.ps1`, and named in the bundled `flare-status`
-  plugin's `mcpServers` through `${FLARE_MCP_EXE}` (plugin version 1.1.0). Tools: `show_image`, `show_file`, `show_text`, `close_panel`;
-  it reads `FLARE_TAB_TOKEN` and `FLARE_CTL_PIPE`. Held by `declares_the_flare_mcp_server_by_environment_and_never_by_name_or_secret`,
+  plugin's `mcpServers` with the absolute path written in at install, or no block when the file is missing (plugin version 1.1.0, rule
+  192). Tools: `show_image`, `show_file`, `show_text`, `close_panel`; it reads `FLARE_TAB_TOKEN`, `FLARE_CTL_PIPE` and `FLARE_CTL_PID`
+  and connects only to the pipe that process serves. Held by `declares_the_flare_mcp_server_by_a_written_in_absolute_path_and_never_by_expansion`,
+  `install_writes_the_mcp_server_only_when_the_program_exists`, `without_the_server_s_pid_the_real_channel_never_connects`,
+  `a_pipe_served_by_another_process_is_never_given_the_secret`,
   `has_a_manifest_claude_code_accepts` (`flare-agent`), `show_text_routes_to_view_text_with_its_title`,
   `tools_list_has_the_four_tools_with_object_schemas`, `a_tool_call_reaches_the_server_with_the_tab`,
   `an_unknown_tab_token_is_reported_as_flare_refusing` (`flare-mcp`),
   `the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_builds_it` (`release_files.rs`) and the e2e `mcpRoundTrip`.
-- **End to end (the release exe, its own profile, offscreen):** `ctlChannel` (42 checks) reads a tab's secret through the `ctl.info`
+- **End to end (the release exe, its own profile, offscreen):** `ctlChannel` (44 checks) reads a tab's secret through the `ctl.info`
   probe and from inside a real shell, connects to the pipe, opens a picture, a text and a file in the panel, reads them back with
   `panel.state`, is refused for a wrong secret, the tab's id, a tab named in `hello`, a missing file, a program, a program named like a
   picture, a network path, a picture through `view.file`, over-long text, `browser.eval` and `shell.input`, stores a behind tab's panel
-  without switching, closes, and quits with a client connected. `mcpRoundTrip` (14 checks) runs the built `flare-mcp.exe` as Claude Code
+  without switching, closes, and quits with a client connected. `mcpRoundTrip` (22 checks) runs the built `flare-mcp.exe` as Claude Code
   would (`initialize`, `tools/list`, `tools/call show_text`, `show_image`, `show_file`, `close_panel`) and reads what the window shows.
 - **Not built in this stage:** the web panel and `browser.*` (stage 3 and 4), `convo.state` (6), mods and tokens for them (8), `tabs.changed`,
-  scrolling `view.file` to a line, syntax colouring for `view.text`, and the by-hand check that Claude Code expands the manifest's
-  `${FLARE_MCP_EXE}` (see `lessons.md`).
+  scrolling `view.file` to a line, syntax colouring for `view.text`, and the by-hand check that Claude Code starts the `flare` server
+  from the installed manifest (`/mcp`, see `lessons.md`: a merge gate).
+- **Review fixes (2026-10-21, same stage):** a click clears an agent's title and handed-over text; shells get the channel's variables
+  only once the server runs, plus `FLARE_CTL_PID` so `flare-mcp` talks only to the app's own pipe (a squatter gets no secret) and a
+  refusal's text is cleaned; one deadline per call with the UI dropping a late request; the manifest rendered at install; tests that
+  prove what they say (a panels file that must exist, folders told apart by picture size). See `decisions.md` and `lessons.md`.

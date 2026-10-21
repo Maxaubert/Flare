@@ -25,6 +25,9 @@ mod winid;
 pub use client::{Client, ClientError, HelloInfo, HelloParams};
 pub use grant::{Grant, Permission};
 pub use method::Method;
-pub use pipe::{ENV_PIPE, PipeEnd, Server, connect, connect_default, default_pipe_name, pipe_name};
+pub use pipe::{
+    ENV_PIPE, PipeEnd, Server, connect, connect_default, connect_to_server, default_pipe_name,
+    pipe_name,
+};
 pub use proto::{CtlError, Event, MAX_LINE, PROTOCOL, code};
 pub use session::{CallContext, Dispatcher, ServerConfig};

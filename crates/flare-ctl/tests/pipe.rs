@@ -8,7 +8,7 @@ use std::time::Duration;
 use flare_ctl::framing::Wire;
 use flare_ctl::{
     CallContext, Client, ClientError, CtlError, Dispatcher, Grant, HelloParams, Method, Permission,
-    Server, ServerConfig, code, connect, pipe_name,
+    Server, ServerConfig, code, connect, connect_to_server, pipe_name,
 };
 use serde_json::{Value, json};
 
@@ -217,6 +217,26 @@ fn an_oversize_line_closes_only_that_client() {
 fn a_second_server_on_the_same_name_fails_to_start() {
     let (server, name) = start(ServerConfig::default());
     assert!(Server::start(&name, ServerConfig::default(), Arc::new(Fake)).is_err());
+    server.stop();
+}
+
+#[test]
+fn a_client_told_which_process_serves_the_pipe_speaks_to_no_other() {
+    // A process of the same user that made the pipe name first (a squatter) is not the Flare the shell
+    // was told about: the client leaves before it says a word, so the tab's secret is never handed over.
+    let (server, name) = start(ServerConfig::default());
+    let me = std::process::id();
+    assert!(
+        connect_to_server(&name, WAIT, me).is_ok(),
+        "the named process serves it"
+    );
+    for wrong in [me.wrapping_add(4), 4, 0] {
+        match connect_to_server(&name, WAIT, wrong) {
+            Err(ClientError::Protocol(m)) => assert!(m.contains("not served by the Flare"), "{m}"),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("connected to a server that is not process {wrong}"),
+        }
+    }
     server.stop();
 }
 

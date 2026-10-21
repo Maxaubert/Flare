@@ -41,9 +41,12 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   the owner) the scope is the profile folder as a string, so that Flare never meets the owner's. The shell
   gets the whole name in `FLARE_CTL_PIPE`, so a client never has to compute it.
 - **Discovery for a client**: environment variable `FLARE_CTL_PIPE` when set and non-empty, else the
-  user's default name. The app sets three variables in every shell it starts (the `pty_env` function,
-  regression rule 12): `FLARE_CTL_PIPE` (this instance's pipe), `FLARE_TAB_TOKEN` (the tab's secret, section 4)
-  and `FLARE_MCP_EXE` (the absolute path of `flare-mcp.exe`, when it sits beside the app). A value the user
+  user's default name. The app sets four variables in every shell it starts (the `pty_env` function,
+  regression rule 12): `FLARE_CTL_PIPE` (this instance's pipe), `FLARE_CTL_PID` (the process id of the app
+  that serves it), `FLARE_TAB_TOKEN` (the tab's secret, section 4) and `FLARE_MCP_EXE` (the absolute path of
+  `flare-mcp.exe`, when it sits beside the app). **Only once the server is really serving**: if it could not
+  start (the pipe name is taken, no SID) no shell is given a secret or a pipe name, and a copy the user
+  already had is dropped too. A value the user
   already had under any of these names is replaced, and none is inherited. So a child finds the right app
   even when the owner runs two profiles, and a Flare started inside a Flare tab does not pass on the outer
   tab's secret. `FLARE_TAB_ID` still exists, for hook lines and Sonara; it is public and opens nothing.
@@ -53,7 +56,13 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
   `FILE_FLAG_FIRST_PIPE_INSTANCE`: if the name already exists it does not start, and it never serves on
   a pipe somebody else made. It never listens on a network.
 - **Client check**: before sending a byte a client reads the server process id of the pipe
-  (`GetNamedPipeServerProcessId`) and refuses a server that runs as another user. It opens the pipe
+  (`GetNamedPipeServerProcessId`) and refuses a server that runs as another user, **and, when it was told
+  which process serves the pipe (`FLARE_CTL_PID`), a server that is any other process**. The second rule
+  closes the squatter: another process of the same user, at low integrity or under a restricted token (both
+  still carry the user's SID), could create the predictable pipe name before the app starts, be handed the
+  tab's secret and answer with any text that a tool result would carry to the model. `flare-mcp` requires
+  `FLARE_CTL_PID`; without it, or with another process serving, it says Flare is not running and sends
+  nothing. A client outside a Flare tab (no pid) may still use the plain check. It opens the pipe
   with `SECURITY_IDENTIFICATION`, so a server can learn who the client is but never act as it.
 - **Reading**: the server never parks in a blocking read: it asks the pipe how many bytes are ready
   (`PeekNamedPipe`) and sleeps a few milliseconds when none are. A Node port gets the same from its
@@ -109,7 +118,10 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
    library, not only the app, keeps the `ui` namespace off the pipe.
 6. Grant allows the method? No: `forbidden` (stays). The reason text names the rule. A method in the
    `ui` namespace is refused here whatever the grant says.
-7. Run the method with its **timeout**: 15 s, and 60 s for every `browser.*` method. The app's
+7. Run the method with its **timeout**: 15 s, and 60 s for every `browser.*` method. The app's own
+   waits on the UI thread end earlier (10 s, one deadline shared by every step of a call, `view.*` included),
+   and the request carries that deadline: a request the window picks up after it changes nothing, so a
+   call that was answered `timeout` never acts later. The app's
    handler runs off the connection's thread; when the timeout passes the client gets `timeout` and the
    late result is discarded. Only handlers **past their timeout** that are still running count as
    stuck: if more than 32 are, new calls answer `unavailable` until they finish. Slow calls still
@@ -190,8 +202,11 @@ above. A port must keep the same table and the same tests.
 `tab` below is the tab of the connection (from `hello`). Methods that act on a tab fail with `no_tab`
 when the connection has none. Paths are **resolved again by the backend** (S2): the app opens only
 files the user could already open, shows a runnable file (an `.exe`, `.bat`, a script) as text or
-refuses it, and never runs anything. A relative path is relative to the app's idea of the tab's folder,
-so clients send absolute paths (`flare-mcp` makes them absolute).
+refuses it, and never runs anything. A relative path on the channel is relative to the app's idea of
+the **tab's** folder (its tracked cwd); an absolute path never asks the UI for a folder. `flare-mcp`
+makes a path absolute against **its own** working folder (the agent's, where Claude Code started it)
+before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
+is, from its own connection.
 
 `PanelInfo` is `{"kind": "image"|"text"|"web"|..., "title": string, "path"?: string, "url"?: string}`.
 
@@ -378,7 +393,8 @@ A client of this channel, not part of it. A stdio MCP server (JSON-RPC 2.0, one 
 protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05`; the client's version is echoed when listed,
 else the newest). Methods: `initialize`, `notifications/initialized` (no reply), `ping`, `tools/list`,
 `tools/call`. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
-connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`), then
+connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`, and
+only if `FLARE_CTL_PID` is the process that serves it), then
 calls:
 
 | Tool | Params | Channel method |
@@ -392,9 +408,10 @@ calls:
 call waits for the method's own timeout plus 5 s (`call_wait`), not a fixed 20 s, so a 60 s
 `browser.wait` is not given up on early; 20 s bounds only connecting and `hello`. Results are MCP
 content: text, and image content (`{"type":"image","data","mimeType"}`) reserved for `browser_look`.
-Outside Flare (no `FLARE_TAB_TOKEN`, no pipe, no server) every tool answers `isError: true` with "Flare is
+Outside Flare (no `FLARE_TAB_TOKEN`, no `FLARE_CTL_PID`, no pipe, no server) every tool answers `isError: true` with "Flare is
 not running this session ...". A channel error `forbidden` or `not_found` becomes `isError` text
-("Flare refused: ... (code)"), so the model sees it. A bad argument is `isError`, not a JSON-RPC error;
+("Flare refused: ... (code)"), so the model sees it. The words of a refusal are cleaned first (one
+line, control characters turned to spaces, at most 200 characters), because the text came over a pipe. A bad argument is `isError`, not a JSON-RPC error;
 an unknown tool name is JSON-RPC `-32602`. An implementation in another app only needs the same tool
 names and the same method mapping, so Prism Terminal can reuse the binary unchanged if its server
 speaks this protocol.
@@ -403,16 +420,18 @@ speaks this protocol.
 
 The `flare-status` plugin (`crates/flare-agent/claude-plugin`, handed to Claude Code through
 `CLAUDE_CODE_PLUGIN_DIRS` in every Flare shell) declares the server in its `plugin.json`, so Claude in a
-Flare tab has the four tools with no setup:
+Flare tab has the four tools with no setup. The shipped `plugin.json` is a **template** (like
+`hooks.json`): its server's `command` is `@@FLARE_MCP_EXE@@`, and the install step writes the absolute path of
+`flare-mcp.exe` beside the running app into the installed copy:
 
 ```json
-"mcpServers": {"flare": {"command": "${FLARE_MCP_EXE}", "args": [],
-  "env": {"FLARE_TAB_TOKEN": "${FLARE_TAB_TOKEN:-}", "FLARE_CTL_PIPE": "${FLARE_CTL_PIPE:-}"}}}
+"mcpServers": {"flare": {"command": "C:\\Path\\To\\Flare\\flare-mcp.exe", "args": []}}
 ```
 
-The program is named by the variable Flare sets (an absolute path; a bare name could be answered by
-`PATH` or the current folder, the way `hooks.json` also never names a program by name). The tab's secret
-and the pipe are passed through `env` rather than assumed inherited, with an empty default so a shell
-that has no channel (Flare could not make the pipe) gives the server an empty value, which it treats as
-"not set". The secret is never in `args`. The installed plugin copy (`%LOCALAPPDATA%\Flare\claude-plugin`)
-is refreshed from the template at every start, so a new version of the manifest reaches existing installs.
+When that file is not beside the app (a development build, a package without it) the `mcpServers` block is
+left out, so Claude Code has nothing to fail on and the status hooks in the same plugin are unaffected.
+Nothing relies on Claude Code expanding `${VAR}` in a manifest. The tab's secret, the pipe and the server's
+process id reach the server through Claude Code's own environment (a stdio server inherits it); they are never
+in `args` and never in the manifest. The installed plugin copy (`%LOCALAPPDATA%\Flare\claude-plugin`)
+is refreshed from the template at every start, so a new manifest reaches existing installs and a program that
+appears later is written in.

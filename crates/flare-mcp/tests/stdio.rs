@@ -74,7 +74,7 @@ fn session(call: Value) -> Vec<Value> {
 fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
     let replies = drive(
         &[],
-        &["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE"],
+        &["FLARE_TAB_TOKEN", "FLARE_CTL_PIPE", "FLARE_CTL_PID"],
         &session(json!({"name":"show_image","arguments":{"path":"C:\\a.png"}})),
     );
     assert_eq!(replies.len(), 3, "the notification gets no reply");
@@ -103,8 +103,13 @@ fn a_tool_call_reaches_the_server_with_the_tab() {
     let pipe = format!("\\\\.\\pipe\\flare-mcp-test-{}", std::process::id());
     let rec = Arc::new(Recorder::default());
     let server = Server::start(&pipe, ServerConfig::default(), rec.clone()).unwrap();
+    let pid = std::process::id().to_string();
     let replies = drive(
-        &[("FLARE_TAB_TOKEN", "secret-7"), ("FLARE_CTL_PIPE", &pipe)],
+        &[
+            ("FLARE_TAB_TOKEN", "secret-7"),
+            ("FLARE_CTL_PIPE", &pipe),
+            ("FLARE_CTL_PID", &pid),
+        ],
         &[],
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
@@ -148,8 +153,13 @@ fn an_unknown_tab_token_is_reported_as_flare_refusing() {
         Arc::new(Recorder::default()),
     )
     .unwrap();
+    let pid = std::process::id().to_string();
     let replies = drive(
-        &[("FLARE_TAB_TOKEN", "guess"), ("FLARE_CTL_PIPE", &pipe)],
+        &[
+            ("FLARE_TAB_TOKEN", "guess"),
+            ("FLARE_CTL_PIPE", &pipe),
+            ("FLARE_CTL_PID", &pid),
+        ],
         &[],
         &session(json!({"name":"close_panel"})),
     );
@@ -157,4 +167,32 @@ fn an_unknown_tab_token_is_reported_as_flare_refusing() {
     let t = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(t.contains("unauthorized"), "{t}");
     server.stop();
+}
+
+#[test]
+fn a_pipe_served_by_another_process_is_never_given_the_secret() {
+    // The server here is this process; the shell was told another process serves the pipe. The binary
+    // leaves before it says hello, so the recorder never sees a token, and the model is told Flare is
+    // not running.
+    let pipe = format!("\\\\.\\pipe\\flare-mcp-test-squat-{}", std::process::id());
+    let rec = Arc::new(Recorder::default());
+    let server = Server::start(&pipe, ServerConfig::default(), rec.clone()).unwrap();
+    let other = std::process::id().wrapping_add(4).to_string();
+    let replies = drive(
+        &[
+            ("FLARE_TAB_TOKEN", "secret-7"),
+            ("FLARE_CTL_PIPE", &pipe),
+            ("FLARE_CTL_PID", &other),
+        ],
+        &[],
+        &session(json!({"name":"close_panel"})),
+    );
+    server.stop();
+    assert_eq!(replies[2]["result"]["isError"], true);
+    let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Flare is not running this session"), "{text}");
+    assert!(
+        rec.calls.lock().unwrap().is_empty(),
+        "the server saw no call"
+    );
 }

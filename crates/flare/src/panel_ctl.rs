@@ -266,6 +266,10 @@ impl PanelCtl {
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
             self.reload = true;
         }
+        // A click or a restore shows the file under its own name: a title an agent gave an earlier
+        // call, and text it handed over, end with what they were for.
+        self.titles.remove(tab);
+        self.inline.remove(tab);
         self.panels.show(tab, kind, target)
     }
 
@@ -303,7 +307,6 @@ impl PanelCtl {
         if !self.show(tab, kind, target) {
             return false;
         }
-        self.inline.remove(tab);
         match title {
             Some(t) => {
                 self.titles.insert(tab.to_string(), t.to_string());

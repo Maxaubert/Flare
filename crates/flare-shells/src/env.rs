@@ -12,6 +12,9 @@ pub const TAB_ID_VAR: &str = "FLARE_TAB_ID";
 pub const TAB_TOKEN_VAR: &str = "FLARE_TAB_TOKEN";
 /// The control channel's pipe of the Flare instance that started the shell (per profile).
 pub const CTL_PIPE_VAR: &str = "FLARE_CTL_PIPE";
+/// The process id of the Flare that serves the pipe. A client takes the pipe's server to be this process
+/// and no other, so a process that squatted the pipe name first is not trusted with the tab's secret.
+pub const CTL_PID_VAR: &str = "FLARE_CTL_PID";
 /// Where `flare-mcp.exe` is, for the bundled Claude Code plugin's `.mcp.json`.
 pub const MCP_EXE_VAR: &str = "FLARE_MCP_EXE";
 /// The Claude Code plugin folder list (`;`-separated).
@@ -38,6 +41,8 @@ pub const SESSION_MARKERS: [&str; 12] = [
 pub struct CtlEnv {
     pub tab_token: String,
     pub pipe: String,
+    /// The process id of the Flare that serves the pipe.
+    pub pid: u32,
     /// The absolute path of `flare-mcp.exe`, when it was found beside `flare.exe`.
     pub mcp_exe: Option<String>,
 }
@@ -112,8 +117,11 @@ pub fn pty_env(
         let is_session = SESSION_MARKERS.iter().any(|m| *m == up);
         // The variables Flare sets itself are never inherited: a Flare started from a Flare tab must not
         // hand its shells the outer tab's secret.
-        let ours =
-            up == TAB_ID_VAR || up == TAB_TOKEN_VAR || up == CTL_PIPE_VAR || up == MCP_EXE_VAR;
+        let ours = up == TAB_ID_VAR
+            || up == TAB_TOKEN_VAR
+            || up == CTL_PIPE_VAR
+            || up == CTL_PID_VAR
+            || up == MCP_EXE_VAR;
         if silences_colour || is_session || up == "TERM" || up == "COLORTERM" || ours {
             continue;
         }
@@ -127,6 +135,7 @@ pub fn pty_env(
     if let Some(c) = ctl {
         out.push((TAB_TOKEN_VAR.to_string(), c.tab_token.clone()));
         out.push((CTL_PIPE_VAR.to_string(), c.pipe.clone()));
+        out.push((CTL_PID_VAR.to_string(), c.pid.to_string()));
         if let Some(exe) = &c.mcp_exe {
             out.push((MCP_EXE_VAR.to_string(), exe.clone()));
         }
@@ -214,6 +223,7 @@ mod tests {
         CtlEnv {
             tab_token: "ab".repeat(32),
             pipe: "\\\\.\\pipe\\flare-ctl-1-2".to_string(),
+            pid: 4242,
             mcp_exe: Some("C:\\Flare\\flare-mcp.exe".to_string()),
         }
     }
@@ -223,6 +233,7 @@ mod tests {
         let r = pty_env(
             &e(&[
                 ("FLARE_TAB_TOKEN", "stolen"),
+                ("Flare_Ctl_Pid", "1"),
                 ("flare_ctl_pipe", "\\\\.\\pipe\\other"),
                 ("Flare_Mcp_Exe", "C:\\evil.exe"),
             ]),
@@ -235,7 +246,8 @@ mod tests {
         assert_eq!(get(&r, TAB_TOKEN_VAR), Some("ab".repeat(32).as_str()));
         assert_eq!(get(&r, CTL_PIPE_VAR), Some("\\\\.\\pipe\\flare-ctl-1-2"));
         assert_eq!(get(&r, MCP_EXE_VAR), Some("C:\\Flare\\flare-mcp.exe"));
-        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, MCP_EXE_VAR] {
+        assert_eq!(get(&r, CTL_PID_VAR), Some("4242"));
+        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, CTL_PID_VAR, MCP_EXE_VAR] {
             assert_eq!(count_upper(&r, k), 1, "{k}");
         }
         // The secret and the tab's public id are different variables with different values.
@@ -248,6 +260,7 @@ mod tests {
             &e(&[
                 ("FLARE_TAB_TOKEN", "outer"),
                 ("FLARE_CTL_PIPE", "p"),
+                ("FLARE_CTL_PID", "7"),
                 ("FLARE_MCP_EXE", "x"),
             ]),
             Some("pwsh"),
@@ -256,7 +269,7 @@ mod tests {
             None,
             None,
         );
-        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, MCP_EXE_VAR] {
+        for k in [TAB_TOKEN_VAR, CTL_PIPE_VAR, CTL_PID_VAR, MCP_EXE_VAR] {
             assert!(!env_has(&r, k), "{k}");
         }
     }

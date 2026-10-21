@@ -111,9 +111,10 @@ browser inside of Flare and look around and click around instead of opening Chro
 - Transport: a named pipe `\\.\pipe\flare-ctl-<hash of the user SID>`, ACL to the current user only,
   created by the running Flare. JSON, one object per line, request `{id, method, params}`, answer
   `{id, result}` or `{id, error: {code, message}}`, events `{event, params}`.
-- First message is `hello {client, version, token?}`. The answer lists `protocol: 1`, the
-  capabilities, and the caller's grants. A tab-scoped client passes `tab` (from `FLARE_TAB_ID`, which
-  every shell already has, rule 12). A caller with no token gets the **agent** grant; a mod's token
+- First message is `hello {client, version, token?, tab_token?}`. The answer lists `protocol: 1`, the
+  capabilities, and the caller's grants. A tab-scoped client passes `tab_token` (from `FLARE_TAB_TOKEN`, a
+  per-tab secret every shell gets, rule 12); `tab` is refused, because the public `FLARE_TAB_ID` would let
+  any process act as a tab (stage 2 review; `protocol.md` and `decisions.md` are the source of truth). A caller with no token gets the **agent** grant; a mod's token
   maps to its manifest permissions.
 - Methods are namespaced: `panel.*`, `view.*` (show content), `browser.*` (drive the web panel),
   `convo.*` (read what Flare knows about the conversation), `tabs.*` (list only). Every method is
@@ -124,7 +125,8 @@ browser inside of Flare and look around and click around instead of opening Chro
 ### Agent tools (flare-mcp)
 
 - `flare-mcp.exe` ships beside `flare.exe`. It is a stdio MCP server (JSON-RPC 2.0, no network) that
-  connects to the control channel with the tab from `FLARE_TAB_ID`. Outside Flare it answers every
+  connects to the control channel with the tab's secret from `FLARE_TAB_TOKEN`, only to the pipe served by the
+  process in `FLARE_CTL_PID`. Outside Flare it answers every
   tool with "not running inside Flare".
 - The bundled `flare-status` Claude Code plugin declares it in its manifest, so Claude in a Flare tab
   gets the tools with no setup. Users of other MCP clients add it by path.

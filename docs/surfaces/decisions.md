@@ -225,14 +225,44 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
 - 2026-10-21, stage 2, events: `panel.changed` is published for every change of a tab's panel (a channel call, a click on a path,
   the close button, the toggle chord); `tabs.changed` is not sent yet (the tab strip has no single place that says "a tab was
   retitled"; it comes with the board in stage 7).
-- 2026-10-21, stage 2, MCP in the plugin: the manifest names the server by `${FLARE_MCP_EXE}` and passes the secret and the pipe
-  in `env` with an empty default. Why an environment variable and not a path in the plugin folder: the plugin is installed as a
-  copy under `%LOCALAPPDATA%` and refreshed at every start, but the exe lives with the app (Velopack moves it on every update);
-  one variable set by the running app is always the right file, with no copy of a binary to keep fresh and no bare name for
-  `PATH` to answer. The plugin version is 1.1.0.
+- 2026-10-21, stage 2, MCP in the plugin (changed by the review, see "Stage 2 review fixes" below): the shipped manifest is a
+  template and the install step writes the absolute path of `flare-mcp.exe` into the installed copy. First draft: the manifest
+  named the server by `${FLARE_MCP_EXE}` and passed the secret in `env` with an empty default; that relied on Claude Code
+  expanding variables in `plugin.json`, which nobody had verified. Why a path written in at install and not a path in the plugin
+  folder: the plugin is installed as a copy under `%LOCALAPPDATA%` and refreshed at every start, but the exe lives with the app
+  (Velopack moves it on every update); the running app knows where its own exe is and rewrites the copy when it changes, with no
+  binary copied and no bare name for `PATH` to answer. The plugin version is 1.1.0.
 - 2026-10-21, stage 2, packing: `flare-mcp.exe` is built by its own step in the three workflows that pack (release,
   installer-e2e, update-e2e), copied beside `Flare.exe` by `pack.ps1` and required in the portable zip by `verify-pack.ps1`;
   a release test reads the three files so none of them can lose it.
 - 2026-10-21, stage 2, e2e: the shell's secret is read through the `ctl.info` probe (only answered under `--e2e`), which also
   reports the pipe and the MCP path; the scenario plays the shell. The first scenario also reads the three variables from
   inside a real shell and compares them. `flare-mcp.exe` is run with `CREATE_NO_WINDOW` and killed on every way out.
+
+### Stage 2 review fixes (2026-10-21)
+
+- Plugin manifest: `plugin.json` is a template with `@@FLARE_MCP_EXE@@`; `install_plugin_with` renders it with the absolute path of
+  `flare-mcp.exe` beside the running exe, or drops the whole `mcpServers` block when the file is not there (a development build,
+  a package without it). No `env` block: a stdio server inherits Claude Code's environment, and a literal `${VAR:-}` that is not
+  expanded would have overwritten the real value. A manifest problem must never take down the status hooks of the same plugin.
+- A tab's own panel title ends with its call: a click on a path (and a restore) clears the title and the handed-over text an agent
+  gave an earlier call, so a real file is never shown under a title the agent chose.
+- The shells hear about the channel only once its server runs (`SessionOptions.ctl_up`, set after a successful start). A server that
+  could not start (the name is taken, no SID) means no shell gets a secret or a pipe name, so nothing is ever sent to whoever owns
+  the name, and the agent is told "not running" and not "unauthorized".
+- A call has one deadline, shared by every step (the UI is asked for the tab's folder only for a relative path; an absolute path never
+  asks), and the request carries it: the UI thread answers `timeout` and does nothing for a request that arrives after it. A call that
+  was told it timed out never changes the window later. The wait on the UI is 10 s, inside the 15 s of the channel.
+- Squatter: the shell is given the app's process id (`FLARE_CTL_PID`, rule 12 drops an inherited copy) and `flare-mcp` connects only
+  to a pipe served by that process. We chose the pid over comparing integrity levels because it is exact and cheap (one call the
+  client already makes), where an integrity comparison still trusts any same-integrity process. `flare-mcp` also cleans a refusal's
+  words (one line, no control characters, at most 200 characters) before the model reads them. Without a pid `flare-mcp` does not
+  connect at all (it only works in a Flare tab).
+- Relative paths from the agent: kept absolute in `flare-mcp`, against the folder the agent was started in (the process's cwd), and
+  the tool text says so. The channel's own rule (a relative path is the tab's cwd) stays for other clients. Why not send the path
+  as it is: Claude's idea of "the current folder" is where it started, which is not the tab's tracked cwd once the shell has moved
+  on; the model reasons in its own folder.
+- Rule 28 (no detached thread outlives main) has one recorded exception: the control channel's accept thread, a call that timed out
+  and a handler still running when the 2 s stop wait ends may outlive the stop. They touch only the `post` function (which fails once
+  the loop has ended), the stop flag and their own pipe. A call that arrives after the stop is never posted (pinned by
+  `an_unanswered_call_times_out_and_a_stop_ends_the_wait_within_a_slice`).

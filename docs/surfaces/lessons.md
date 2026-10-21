@@ -147,14 +147,16 @@ Newest last.
 - **Moving the test that reads source order.** `the_import_runs_before_the_look_and_the_first_paint` searches `window.rs` for the
   text `TabHost::new(`; the constructor changed name and the test failed with "window.rs has ...". A test that reads source text
   should name the function it protects in its failure.
-- **An env var in a plugin manifest is expanded by Claude Code, not by Flare.** `${FLARE_MCP_EXE}` as the server's `command` and
-  `${VAR:-}` for the secrets rely on Claude Code expanding them when it reads `plugin.json` (documented for `.mcp.json`; the
-  plugin manifest uses the same server format). **Not machine-verified:** the e2e starts `flare-mcp.exe` the way Claude Code is
-  documented to (stdio, the tab's environment) but cannot start Claude itself without touching the owner's Claude settings and
-  plugins, which the safe rules forbid. Do this by hand once: open a Flare tab, run `claude`, `/mcp` should list `flare` as
-  connected with four tools, then ask Claude to "show README.md in a panel". If the expansion does not happen, the fallback is
-  to ship `.mcp.json` in the plugin folder with the same content, or to have Flare write the absolute path into the installed
-  copy at install time (`install_plugin` already rewrites `hooks.json` that way).
+- **Do not rely on Claude Code expanding `${VAR}` in `plugin.json`.** The first draft named the server `${FLARE_MCP_EXE}` and passed
+  the secrets as `${VAR:-}`; the review found that expansion unverified for a plugin manifest (documented for `.mcp.json`), and that
+  a build with no `flare-mcp.exe` left the variable unset, which makes Claude Code report an error for the `flare` server in every
+  tab. Fixed the way `hooks.json` already is: a template, with the absolute path written in at install and the block left out when
+  the file is missing. Electron: do the same (render `plugin.json` when the plugin is copied, `process.execPath`'s folder as the
+  place of the exe), never a variable. **Merge gate, by hand (not machine-verified, the safe rules forbid starting Claude against
+  the owner's settings):** open a Flare tab, run `claude`, `/mcp` must list `flare` connected with four tools, then ask Claude to
+  "show README.md in a panel". If a stdio server turns out not to inherit the shell's environment, put `FLARE_TAB_TOKEN`,
+  `FLARE_CTL_PIPE` and `FLARE_CTL_PID` in the manifest's `env` by rendering them at install; the secret must then never be written to
+  disk, so prefer fixing the inheritance (a wrapper) over writing it.
 - **Hands-on list for the owner (not machine-tested):** Claude Code lists the `flare` server in `/mcp`; the tools appear to Claude
   and `show_text` fills a panel; the agent in a tab that is behind shows its panel without the tab switching; the Velopack
   install path finds `flare-mcp.exe` beside `Flare.exe` (the portable zip is checked by `verify-pack.ps1`, an install is not run
@@ -164,3 +166,31 @@ Newest last.
   now written into both folders. Electron: resolve a relative `path` against the tab's cwd, not the main process's.
 - **Merge leftovers hide in docs.** `docs/features.md` still held the conflict markers of the stage 2 library merge (two sections
   between `<<<<<<<` and `>>>>>>>`), found only because this stage edited the same file. Grep for `^<<<<<<<` before a PR.
+
+## Stage 2 review fixes, 2026-10-21
+
+- **A click must reset what a call set.** The tab's title and handed-over text were set by the channel and only cleared by the next
+  channel call, so a user's click showed a real file under the agent's title. Any path that puts a file in a panel clears both.
+  Electron: keep the title in the panel record and write it on every show.
+- **Tell the shells about a channel only after it runs.** Building the environment before starting the server meant a failed start
+  (the name taken by another process) still handed every shell a secret and a pipe name. The environment is read at spawn time from a
+  flag the start sets. Electron: set the variables in the pty options only after `server.listen` succeeds.
+- **A squatted pipe name is the one gap a per-user ACL cannot close.** The name is predictable from the SID, and a process of the same
+  user (low integrity, restricted token) can create it first. The server fails to start (`FILE_FLAG_FIRST_PIPE_INSTANCE`) and the
+  client trusted whoever answered. Give the shell the server's process id and have the client compare it with the pipe's server
+  (`GetNamedPipeServerProcessId` on Windows). Electron: `net.createServer` cannot say who connected; if the port keeps a pipe, pass
+  the pid and check it with the same API from a small native helper, or use a random pipe name that only this app and its shells know
+  (no predictable name at all), which is simpler and also closes it.
+- **A refusal's text is a prompt-injection path.** Whatever answers on the pipe, `message` ended in the model's tool result. The
+  client cleans it (one line, no control characters, 200 characters).
+- **One deadline per call, carried by the request.** Two UI round trips of 10 s each plus a disk read can pass the server's 15 s, and
+  a request still queued then acts after the caller was told it timed out. Share one deadline, skip the folder ask for an absolute
+  path and let the UI thread drop a request that arrives late. Electron: an IPC handler checks `Date.now() > deadline` before it acts.
+- **A test that reads a file with `unwrap_or_default()` can pass with no file.** The panels.json test did exactly that for text that
+  was never written. Make the store write something real first (a file panel on another tab), assert the file exists, then assert the
+  text is absent and that a restore brings back only the file.
+- **Identical fixtures hide a wrong folder.** The relative-path e2e wrote the same picture into both folders. Different sizes now say
+  which folder was read, from each tab's own connection, and `mcpRoundTrip` starts `flare-mcp.exe` in a folder that is not the tab's
+  to pin its own rule.
+- **The design spec is a source too.** It still said `hello` carries `tab` from `FLARE_TAB_ID`; a later stage reading it first would
+  rebuild the hole stage 2 closed. Fixed in the spec; protocol.md and decisions.md are the truth.
