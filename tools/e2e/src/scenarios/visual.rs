@@ -1183,7 +1183,7 @@ mod tests {
     /// Prism Terminal's frames are PowerShell ("PS C:\...>"), so the tour must not seed Flare to cmd (audit
     /// shell-mismatch): the tour runs the default shell and waits for a PowerShell prompt.
     #[test]
-    fn the_tour_runs_powershell_like_prism_terminal_not_cmd() {
+    fn the_tour_runs_powershell_like_pt_not_cmd() {
         let src = include_str!("visual.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         assert!(

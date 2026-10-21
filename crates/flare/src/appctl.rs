@@ -3871,6 +3871,16 @@ mod tests {
                 .collect()
         }
 
+        /// The fake process of tab `id`: the one whose environment carries that tab's token. `None` until
+        /// the spawn has registered the session.
+        fn shell_of_tab(&self, id: &str) -> Option<Arc<flare_term::fake::FakeState>> {
+            let token = self.ctl.borrow().deps.host.manager().tab_token(id)?;
+            self.sp
+                .made()
+                .into_iter()
+                .find(|m| env_of(m, flare_shells::env::TAB_ID_VAR).as_deref() == Some(&token))
+        }
+
         fn wait_made(&self, cwd: &str) {
             self.pump_until("a spawn", |f| !f.made_with(cwd).is_empty());
         }
@@ -5263,11 +5273,15 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
-        let got: Vec<Option<String>> = f
-            .made_with("C:\\c")
+        // Each tab's shell starts on its own worker thread, so the spawner's list is in finishing
+        // order, not strip order. Read each tab's own shell (by its tab token), in strip order.
+        let ids = f.ids();
+        f.pump_until("each tab's shell", |f| {
+            ids.iter().all(|id| f.shell_of_tab(id).is_some())
+        });
+        let got: Vec<Option<String>> = ids
             .iter()
-            .map(|m| env_of(m, "FLARE_RESUME_ID"))
+            .map(|id| env_of(&f.shell_of_tab(id).expect("its shell"), "FLARE_RESUME_ID"))
             .collect();
         assert_eq!(
             got,

@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn the_warning_waits_for_the_switch_as_prism_terminal_does() {
+    fn the_warning_waits_for_the_switch_as_pt_does() {
         // PT: `noModelYet = d.enabled && d.noModel`. Off with no model reads the plain line.
         with_env(false, |env| {
             let off = sections(env, &data(false));
