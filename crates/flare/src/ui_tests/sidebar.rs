@@ -1,13 +1,14 @@
 //! Component tests for the tab sidebar (Task 21), headless: pointer events, the platform clock and
 //! pixel measuring at every display scaling.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use flare_tabs::keymap::{ChordId, key_label};
 use slint::platform::{Key, PointerEventButton};
 use slint::{ModelRc, SharedString, VecModel};
 
+use crate::side_slide::{SideSlide, SlideAim};
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{TabRow, TabSidebarPreview};
 
@@ -41,6 +42,43 @@ fn harness(scale: f32) -> Harness<TabSidebarPreview> {
         .set_find_key(key_label(ChordId::FindTab, true).into());
     h.advance(0);
     h
+}
+
+/// The glue's slide in miniature (`side_slide.rs`, audit V3): the preview's state is aimed at, and every
+/// step is a frame at the harness clock, as the live window's frames are.
+struct Glide {
+    slide: RefCell<SideSlide>,
+    t: Cell<f64>,
+}
+
+impl Glide {
+    fn new(h: &Harness<TabSidebarPreview>) -> Self {
+        let g = Self {
+            slide: RefCell::new(SideSlide::default()),
+            t: Cell::new(0.0),
+        };
+        g.step(h, 0);
+        g
+    }
+
+    /// A frame now, `ms` on the clock, and a frame there.
+    fn step(&self, h: &Harness<TabSidebarPreview>, ms: u64) {
+        let c = &h.comp;
+        let mut s = self.slide.borrow_mut();
+        s.aim(&SlideAim {
+            collapsed: c.get_collapsed(),
+            revealed: c.get_revealed(),
+            width: f64::from(c.get_side_width()),
+            sliding: c.get_sliding(),
+            reduced: false,
+        });
+        s.frame(self.t.get());
+        self.t.set(self.t.get() + ms as f64);
+        h.advance(ms);
+        let (slot, panel) = s.frame(self.t.get());
+        c.set_slot_now(slot);
+        c.set_slide_now(panel);
+    }
 }
 
 fn is_panel(p: [u8; 4]) -> bool {
@@ -100,6 +138,60 @@ fn a_row_is_46_tall_8_in_from_the_edges_with_4_between() {
     }
 }
 
+/// PT's title-to-folder baseline gap in a row: 37 device px at 225% (owner's capture, audit V9).
+const PT_BASELINE_GAP_CSS: f32 = 37.0 / 2.25;
+
+/// The runs of text ink in the column strip `x0..x1`, `y0..y1`: each as (first row, last row).
+fn ink_runs(f: &Frame, x0: u32, x1: u32, y0: u32, y1: u32) -> Vec<(u32, u32)> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for y in y0..y1 {
+        let ink = (x0..x1).any(|x| f.px(x, y)[0] >= 90);
+        match (ink, runs.last_mut()) {
+            (true, Some(run)) if run.1 + 1 == y => run.1 = y,
+            (true, _) => runs.push((y, y)),
+            (false, _) => {}
+        }
+    }
+    runs
+}
+
+#[test]
+fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
+    for scale in SCALES {
+        let h = harness(scale);
+        // One row, the name and folder without a descender, so each run's last row is its baseline.
+        let row = TabRow {
+            id: "t0".into(),
+            label: "web".into(),
+            tip: "C:\\work".into(),
+            folder: "work".into(),
+            kept: true,
+            ..TabRow::default()
+        };
+        h.comp.set_rows(ModelRc::new(VecModel::from(vec![row])));
+        h.advance(0);
+        let f = h.render();
+        let runs = ink_runs(
+            &f,
+            dev(&h, 60.0),
+            dev(&h, 150.0),
+            dev(&h, 50.0),
+            dev(&h, 96.0),
+        );
+        assert_eq!(
+            runs.len(),
+            2,
+            "scale {scale}: a name run and a folder run: {runs:?}"
+        );
+        let gap = i64::from(runs[1].1) - i64::from(runs[0].1);
+        let want = (PT_BASELINE_GAP_CSS * scale).round() as i64;
+        assert!(
+            (gap - want).abs() <= 2,
+            "scale {scale}: name-to-folder baseline {gap} device px, PT {want}"
+        );
+    }
+}
+
 #[test]
 fn the_active_row_is_tinted_with_the_accent_and_the_icon_band_is_square() {
     let h = harness(1.0);
@@ -144,10 +236,11 @@ fn the_panel_width_is_what_it_is_told_and_snaps() {
 #[test]
 fn collapsed_slots_take_no_room_and_slide_in_on_reveal() {
     let h = harness(1.0);
+    let g = Glide::new(&h);
     h.comp.set_collapsed(true);
-    h.advance(0);
+    g.step(&h, 0);
     assert_eq!(h.comp.get_slot_width(), 0.0);
-    h.advance(400);
+    g.step(&h, 400);
     assert!(
         (h.comp.get_panel_left() + 230.0).abs() < 0.5,
         "waits 230 off the edge"
@@ -159,12 +252,12 @@ fn collapsed_slots_take_no_room_and_slide_in_on_reveal() {
         "nothing of it is on screen"
     );
     h.comp.set_revealed(true);
-    h.advance(0);
+    g.step(&h, 0);
     assert!(h.comp.get_panel_left() < -200.0, "still off at t = 0");
-    h.advance(120);
+    g.step(&h, 120);
     let mid = h.comp.get_panel_left();
     assert!(mid > -230.0 && mid < 0.0, "partly out at 120 ms: {mid}");
-    h.advance(240);
+    g.step(&h, 240);
     assert!(h.comp.get_panel_left().abs() < 0.5);
     let f = h.render();
     assert!(
@@ -174,26 +267,46 @@ fn collapsed_slots_take_no_room_and_slide_in_on_reveal() {
         "the first rows are on screen"
     );
     h.comp.set_revealed(false);
-    h.advance(0);
-    h.advance(240);
+    g.step(&h, 0);
+    let leaving = h.comp.get_panel_left();
+    assert!(leaving.abs() < 0.5, "still out at t = 0: {leaving}");
+    g.step(&h, 120);
+    let mid = h.comp.get_panel_left();
+    assert!(mid > -230.0 && mid < 0.0, "partly back at 120 ms: {mid}");
+    g.step(&h, 240);
     assert!((h.comp.get_panel_left() + 230.0).abs() < 0.5, "slides back");
 }
 
 #[test]
 fn pinning_animates_the_slot_when_sliding() {
     let h = harness(1.0);
+    let g = Glide::new(&h);
     h.comp.set_sliding(true);
-    h.advance(0);
+    g.step(&h, 0);
     assert!((h.comp.get_slot_visual() - 220.0).abs() < 0.5);
     h.comp.set_collapsed(true);
     assert_eq!(h.comp.get_slot_width(), 0.0, "the target changes at once");
-    h.advance(0);
+    g.step(&h, 0);
     assert!(h.comp.get_slot_visual() > 200.0, "still about 220 at t = 0");
-    h.advance(120);
+    g.step(&h, 120);
     let mid = h.comp.get_slot_visual();
     assert!(mid > 0.0 && mid < 220.0, "easing at 120 ms: {mid}");
-    h.advance(240);
+    g.step(&h, 240);
     assert!(h.comp.get_slot_visual().abs() < 0.5);
+}
+
+/// Left alone (no glue easing it), the sidebar is at its rest at once: the slide is the glue's.
+#[test]
+fn unset_the_slide_values_are_the_rest() {
+    let h = harness(1.0);
+    h.comp.set_sliding(true);
+    h.comp.set_collapsed(true);
+    h.advance(0);
+    assert_eq!(h.comp.get_slot_visual(), 0.0);
+    assert_eq!(h.comp.get_panel_left(), -230.0);
+    h.comp.set_revealed(true);
+    h.advance(0);
+    assert_eq!(h.comp.get_panel_left(), 0.0);
 }
 
 #[test]
@@ -438,20 +551,21 @@ fn the_collapsed_corner_and_line_are_drawn_hairline_thin() {
 fn the_sliding_panel_keeps_to_whole_device_pixels() {
     for scale in SCALES {
         let h = harness(scale);
+        let g = Glide::new(&h);
         h.comp.set_collapsed(true);
-        h.advance(0);
-        h.advance(400);
+        g.step(&h, 0);
+        g.step(&h, 400);
         assert!(
             (h.comp.get_panel_left() + 230.0).abs() < 0.5,
             "waits off the edge"
         );
         for reveal in [true, false] {
             h.comp.set_revealed(reveal);
-            h.advance(0);
+            g.step(&h, 0);
             let _ = h.comp.get_panel_left();
             let mut moving = 0;
             for _ in 0..60 {
-                h.advance(5);
+                g.step(&h, 5);
                 let dev_x = h.comp.get_panel_left() * scale;
                 assert!(
                     (dev_x - dev_x.round()).abs() < 0.01,

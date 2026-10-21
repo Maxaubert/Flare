@@ -4,7 +4,7 @@
 //! and a line whose text, hyperlinks, ink and cwd are unchanged is not scanned again. No decoration
 //! is stored: the marks are rebuilt from the per-line cache on every call.
 
-use crate::cells::{BufferLike, LogicalLine, logical_line};
+use crate::cells::{BufferLike, LogicalLine, logical_line_in};
 use crate::osc8::is_web_link;
 use crate::path_links::PathLinks;
 use std::collections::hash_map::DefaultHasher;
@@ -127,7 +127,9 @@ impl LinkScanner {
         let mut next: HashMap<usize, (u64, Vec<LinkMark>)> = HashMap::new();
         let mut y = first;
         while y <= last {
-            let ll = logical_line(b, cols, y);
+            // Across rows a program broke by hand too (`cells::by_hand`): a path it cut at the
+            // edge is read whole, and each row keeps its own piece of the mark.
+            let ll = logical_line_in(b, cols, y, true);
             let row_end = ll.last;
             let links = line_links(&ll, cols, ctx);
             let blank = ll.text_end == 0 && links.iter().all(Option::is_none);
@@ -180,6 +182,7 @@ fn line_key(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &LinkCtx) -> u64
     ctx.ink_key.hash(&mut h);
     ctx.cwd.hash(&mut h);
     ll.widths.hash(&mut h);
+    ll.joins.hash(&mut h);
     links.hash(&mut h);
     h.finish()
 }
@@ -218,7 +221,7 @@ fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &mut LinkCtx) -
     let chars: Vec<char> = ll.text.chars().collect();
     let ranges = ctx
         .paths
-        .link_ranges(&ll.text, ctx.cwd, ctx.owner, ctx.now_ms);
+        .link_ranges_in(&ll.text, ctx.cwd, ctx.owner, ctx.now_ms, &ll.joins);
     let mut spans: Vec<(LinkMark, usize, usize)> = Vec::new();
     for r in ranges {
         let (s, e) = cell_range(ll, r.start, r.end);
@@ -239,7 +242,12 @@ fn scan_line(ll: &LogicalLine, cols: usize, links: &[Link], ctx: &mut LinkCtx) -
             continue;
         };
         let mut j = i + 1;
-        while j < links.len() && links[j].as_ref() == Some(link) {
+        // A run stops where a hand break starts a row: two labels there, as the stream spans
+        // Prism Terminal paints from are, and `mark_chars` reads one row.
+        while j < links.len()
+            && links[j].as_ref() == Some(link)
+            && !(j % cols == 0 && ll.index.get(j).is_some_and(|c| ll.joins.contains(c)))
+        {
             j += 1;
         }
         let uri = &link.1;
@@ -526,6 +534,40 @@ mod tests {
     }
 
     #[test]
+    fn a_path_broken_by_hand_is_one_mark_with_a_piece_per_row() {
+        let mut h = H::new();
+        h.cwd = Some("C:\\w");
+        let b = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", false)]);
+        h.scan(&b, 12, 1, 1);
+        answer_all(&mut h);
+        h.scanner.revisit();
+        // Scanned from its second row alone, the line still starts on the first.
+        let m = h.scan(&b, 12, 1, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Path {
+                text: "C:\\t\\scratch\\a.exe".into()
+            }
+        );
+        assert_eq!(
+            m[0].pieces,
+            vec![
+                Piece {
+                    row: 0,
+                    col: 3,
+                    width: 9
+                },
+                Piece {
+                    row: 1,
+                    col: 0,
+                    width: 9
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn an_unchanged_waiting_line_is_scanned_again_only_after_revisit() {
         let mut h = H::new();
         h.cwd = Some("C:\\w");
@@ -604,6 +646,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_osc8_label_cut_by_hand_is_a_mark_per_row() {
+        let mut h = H::new();
+        h.runs.push((0, 3, 12, "1", "https://x.io/a"));
+        h.runs.push((1, 0, 9, "1", "https://x.io/a"));
+        let b = buf(&[("at C:\\t\\scra", false), ("tch\\a.exe", false)]);
+        let m = h.scan(&b, 12, 0, 1);
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert!(m.iter().all(|k| k.pieces.len() == 1), "{m:?}");
+    }
     #[test]
     fn a_hyperlink_that_repeats_a_web_link_is_one_mark() {
         let mut h = H::new();

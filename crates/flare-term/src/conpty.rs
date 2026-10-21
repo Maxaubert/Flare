@@ -97,8 +97,17 @@ pub fn candidate_dirs_with(env_dir: Option<&str>, exe_dir: Option<&Path>) -> Vec
     out
 }
 
+/// FLARE_CONPTY_DIR is a test seam: only a debug build (which the tests and e2e run) honours it,
+/// so a release build can never be pointed at another folder through the environment.
+fn env_override(allowed: bool, raw: Option<String>) -> Option<String> {
+    if allowed { raw } else { None }
+}
+
 pub fn candidate_dirs() -> Vec<PathBuf> {
-    let env_dir = std::env::var("FLARE_CONPTY_DIR").ok();
+    let env_dir = env_override(
+        cfg!(debug_assertions),
+        std::env::var("FLARE_CONPTY_DIR").ok(),
+    );
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
@@ -164,36 +173,47 @@ fn wide(p: &Path) -> Vec<u16> {
 
 static LOADED: OnceLock<Result<Bundled, ConptyError>> = OnceLock::new();
 
-/// Preloads the bundled conpty.dll by absolute path. Must run before the first `openpty`.
+/// Hashes both files, then loads the dll, all while the dll is held open with writes denied so it
+/// cannot change between the check and the load (DllMain runs inside the load).
+fn load_from(dirs: &[PathBuf]) -> Result<Bundled, ConptyError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::LibraryLoader::{
+        LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
+    };
+    const FILE_SHARE_READ: u32 = 1;
+    let b = bundled_in(dirs)?;
+    let _guard = std::fs::OpenOptions::new() // sync-ok: startup check only
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&b.dll)
+        .map_err(|_| ConptyError::Missing(b.dll.clone()))?;
+    check_hashes(&b)?;
+    let path = wide(&b.dll);
+    // SAFETY: `path` is a NUL-terminated UTF-16 buffer that outlives the call; the file handle
+    // argument must be null for this API.
+    let h = unsafe {
+        LoadLibraryExW(
+            path.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_WITH_ALTERED_SEARCH_PATH,
+        )
+    };
+    if h.is_null() {
+        // SAFETY: GetLastError has no preconditions.
+        let os_error = unsafe { GetLastError() };
+        return Err(ConptyError::LoadFailed {
+            path: b.dll.clone(),
+            os_error,
+        });
+    }
+    Ok(b)
+}
+
+/// Preloads the bundled conpty.dll by absolute path, after its hash is checked. Must run before the
+/// first `openpty`.
 pub fn load_bundled() -> Result<Bundled, ConptyError> {
-    LOADED
-        .get_or_init(|| {
-            use windows_sys::Win32::Foundation::GetLastError;
-            use windows_sys::Win32::System::LibraryLoader::{
-                LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
-            };
-            let b = bundled_in(&candidate_dirs())?;
-            let path = wide(&b.dll);
-            // SAFETY: `path` is a NUL-terminated UTF-16 buffer that outlives the call; the file handle
-            // argument must be null for this API.
-            let h = unsafe {
-                LoadLibraryExW(
-                    path.as_ptr(),
-                    std::ptr::null_mut(),
-                    LOAD_WITH_ALTERED_SEARCH_PATH,
-                )
-            };
-            if h.is_null() {
-                // SAFETY: GetLastError has no preconditions.
-                let os_error = unsafe { GetLastError() };
-                return Err(ConptyError::LoadFailed {
-                    path: b.dll.clone(),
-                    os_error,
-                });
-            }
-            Ok(b)
-        })
-        .clone()
+    LOADED.get_or_init(|| load_from(&candidate_dirs())).clone()
 }
 
 /// The path of the module Windows calls "conpty.dll" in this process, if loaded.

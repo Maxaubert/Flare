@@ -34,6 +34,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -142,16 +143,37 @@ pub fn threaded_post(
     env: Arc<EnvOf>,
     timeout: Duration,
 ) -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
-    Arc::new(move |token, shown| {
-        let env = Arc::clone(&env);
-        let spawned = std::thread::Builder::new()
-            .name("flare-sonara-post".into())
-            .spawn(move || {
+    threaded_post_counted(env, timeout, Arc::new(AtomicUsize::new(0)))
+}
+
+/// How many posts may wait for the worker; a Sonara that hangs cannot grow the backlog past this.
+const POST_BACKLOG: usize = 8;
+
+/// [`threaded_post`] with a count of the worker threads it started (a test reads it: it is one, once,
+/// however many posts come; audit L22).
+pub fn threaded_post_counted(
+    env: Arc<EnvOf>,
+    timeout: Duration,
+    started: Arc<AtomicUsize>,
+) -> Arc<dyn Fn(String, ShownQuestion) + Send + Sync> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(String, ShownQuestion)>(POST_BACKLOG);
+    let worker = std::thread::Builder::new()
+        .name("flare-sonara-post".into())
+        .spawn(move || {
+            while let Ok((token, shown)) = rx.recv() {
+                // sync-ok: the Sonara post worker, never the UI thread
                 post_question_shown(&token, &shown, &|k| env(k), timeout);
-            });
-        if let Err(e) = spawned {
-            log::warn!("could not start the Sonara post thread: {e}");
+            }
+        });
+    match worker {
+        Ok(_) => {
+            started.fetch_add(1, Ordering::SeqCst);
         }
+        Err(e) => log::warn!("could not start the Sonara post thread: {e}"),
+    }
+    Arc::new(move |token, shown| {
+        // Full or gone: the post is dropped, quietly, like every other Sonara failure.
+        let _ = tx.try_send((token, shown));
     })
 }
 
@@ -562,6 +584,12 @@ impl AgentHub {
             .map(|(id, _)| id.clone())
             .collect();
         for tab in due {
+            // Not Claude (yet): the screen is not read, and nothing is remembered as shown, so a
+            // question that is still up when Claude is recognised is posted then.
+            if !self.is_claude(&tab) {
+                self.watches.remove(&tab);
+                continue;
+            }
             let Some(handle) = (self.deps.handle)(&tab) else {
                 self.watches.remove(&tab);
                 continue;
@@ -578,6 +606,13 @@ impl AgentHub {
         }
         self.diag.tick(now);
         self.settle(now);
+    }
+
+    /// A tab that runs Claude Code (known by the poll or the title, or armed): only Claude asks through
+    /// the question widget, so only its screen is believed (audit L22).
+    fn is_claude(&self, tab: &str) -> bool {
+        self.ind.agent_kind(tab) == Some(DetectedAgent::Claude)
+            || flare_agent::keys::AgentView::armed(&self.arms, tab) == Some(AgentKind::Claude)
     }
 
     pub fn next_due(&self) -> Option<u64> {
@@ -1318,9 +1353,46 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_shell_cannot_forge_a_question_shown_post() {
+        // Anything a program prints is on the screen: a shell tab that paints the question widget is not
+        // Claude asking, so nothing reaches Sonara (audit L22).
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.print("a", &paint(&screens("run2-01-question-1")));
+        r.advance(150);
+        assert!(r.posts.lock().unwrap().is_empty());
+        // A Codex tab asks nothing through AskUserQuestion either.
+        r.hub
+            .queue_poll_answer("a", true, Some(DetectedAgent::Codex));
+        r.hub.drain_poll();
+        r.print("a", &paint(&screens("run2-02-right")));
+        r.advance(150);
+        assert!(r.posts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_posts_of_many_questions_share_one_worker_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_string_lossy().into_owned();
+        let started = Arc::new(AtomicUsize::new(0));
+        let post = threaded_post_counted(
+            Arc::new(move |k| (k == "SONARA_HOME").then(|| home.clone())),
+            Duration::from_millis(50),
+            Arc::clone(&started),
+        );
+        for i in 0..40 {
+            post(format!("tab-{i}"), ShownQuestion::Text("Pick?".into()));
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn the_question_widget_is_posted_once_per_change_with_the_tab_token() {
         let mut r = Rig::new();
         r.open("a", None);
+        r.hub
+            .queue_poll_answer("a", true, Some(DetectedAgent::Claude));
+        r.hub.drain_poll();
         let token = r.host.borrow().manager().tab_token("a").expect("a token");
         r.print("a", &paint(&screens("run2-01-question-1")));
         r.advance(150);
@@ -1339,6 +1411,9 @@ mod tests {
         );
         // A tab with no token posts nothing.
         r.open("b", None);
+        r.hub
+            .queue_poll_answer("b", true, Some(DetectedAgent::Claude));
+        r.hub.drain_poll();
         r.no_token.borrow_mut().insert("b".into());
         r.print("b", &paint(&screens("run2-01-question-1")));
         r.advance(150);
@@ -1373,7 +1448,10 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::fs::write(
             dir.path().join("runtime.json"),
-            format!("{{\"http_port\":{port},\"token\":\"tok\"}}"),
+            format!(
+                "{{\"http_port\":{port},\"token\":\"tok\",\"pid\":{}}}",
+                std::process::id()
+            ),
         )
         .unwrap();
         let (release_tx, release_rx) = mpsc::channel::<()>();

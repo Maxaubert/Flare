@@ -48,7 +48,7 @@ const PT: &[(&str, u32)] = &[
     ("quitManyShells", 3),
     ("lastTab", 7),
     ("closeAsk", 12),
-    ("pathLinks", 11),
+    ("pathLinks", 13),
     ("linkPaintStall", 6),
     ("sonaraQuestion", 10),
     ("termReplies", 17),
@@ -388,10 +388,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pt_counts_are_the_76_scenarios_and_their_1113_calls() {
-        // 74 scenarios and 1094 calls at v0.55.6, plus dictateAnywhere (9) and dictateTwoCopies (10) at e5848cb.
+    fn the_pt_counts_are_the_76_scenarios_and_their_1115_calls() {
+        // 74 scenarios and 1094 calls at v0.55.6, plus dictateAnywhere (9) and dictateTwoCopies (10) at e5848cb, plus two pathLinks checks (PT #250) at a168a12.
         assert_eq!(PT.len(), 76);
-        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1113);
+        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1115);
     }
 
     #[test]

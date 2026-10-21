@@ -219,9 +219,10 @@ fn button(id: &'static str, label: &str) -> Button {
     }
 }
 
-/// The master row: on or off, and the warning while no model is installed.
+/// The master row: on or off, and the warning while it is on and no model is installed (PT's
+/// `noModelYet = d.enabled && d.noModel`: switched off, the row keeps its plain line).
 fn master(d: &DictationData) -> RowModel {
-    let warn = !d.any_model_installed();
+    let warn = d.prefs.enabled && !d.any_model_installed();
     RowModel {
         warn,
         sub: if warn {
@@ -684,6 +685,17 @@ mod tests {
             d.items.push(installed("base"));
             let some = sections(env, &d);
             let master = rows(&some)[0];
+            assert!(!master.warn);
+            assert_eq!(master.sub, "Speech to text on this PC, never sent.");
+        });
+    }
+
+    #[test]
+    fn the_warning_waits_for_the_switch_as_pt_does() {
+        // PT: `noModelYet = d.enabled && d.noModel`. Off with no model reads the plain line.
+        with_env(false, |env| {
+            let off = sections(env, &data(false));
+            let master = rows(&off)[0];
             assert!(!master.warn);
             assert_eq!(master.sub, "Speech to text on this PC, never sent.");
         });

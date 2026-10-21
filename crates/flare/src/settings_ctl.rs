@@ -175,6 +175,7 @@ pub struct SettingsCtl {
     poll_timer: slint::Timer,
     wall_timer: slint::Timer,
     mark_timer: slint::Timer,
+    verb_q: VerbQueue,
     /// How many full rebuilds ran (the tests count them).
     pub rebuilds: u32,
 }
@@ -537,6 +538,48 @@ fn spawn_worker(name: &str, f: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// One serial worker for the Explorer verb: every status read and every toggle runs here in the
+/// order asked, so the last request wins and the marker follows the registry. The thread starts on
+/// first use and ends when the queue is dropped.
+#[derive(Default)]
+struct VerbQueue {
+    tx: std::sync::Mutex<Option<std::sync::mpsc::Sender<VerbJob>>>,
+}
+
+type VerbJob = Box<dyn FnOnce() + Send>;
+
+impl VerbQueue {
+    fn run(&self, job: impl FnOnce() + Send + 'static) {
+        let mut slot = self
+            .tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<VerbJob>();
+            let started = std::thread::Builder::new()
+                .name("flare-verb".into())
+                .spawn(move || {
+                    // sync-ok: the verb worker thread
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                });
+            match started {
+                Ok(_) => *slot = Some(tx),
+                Err(e) => {
+                    log::warn!("could not start flare-verb: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(tx) = slot.as_ref()
+            && tx.send(Box::new(job)).is_err()
+        {
+            *slot = None;
+        }
+    }
+}
+
 /// Binds one callback of `SettingsBridge` to a method of the controller.
 macro_rules! on {
     ($app:expr, $rc:expr, $reg:ident, |$c:ident $(, $a:ident : $t:ty)*| $body:expr) => {{
@@ -597,6 +640,7 @@ impl SettingsCtl {
             poll_timer: slint::Timer::default(),
             wall_timer: slint::Timer::default(),
             mark_timer: slint::Timer::default(),
+            verb_q: VerbQueue::default(),
             rebuilds: 0,
             deps,
         };
@@ -1011,7 +1055,7 @@ impl SettingsCtl {
     }
 
     /// The wall's layout at this frame: the cards as they sit now, the clip as it is now.
-    fn wall_for(&self, frame_w: f64) -> (WallLayout, f64) {
+    fn wall_for(&self, frame_w: f64, scale: f64) -> (WallLayout, f64) {
         let m = layout::Metrics::reference();
         let narrow = layout::is_narrow(frame_w);
         let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
@@ -1019,8 +1063,8 @@ impl SettingsCtl {
         let content = (m.column_max.min(pane) - 2.0 * pad_x).max(0.0);
         let width = (content - 2.0 * m.border - WALL_SIDE_PADS).max(0.0);
         let total = wall::total_themes(self.deps.look.custom().is_some());
-        let base = wall::layout(width, total, self.wall_expanded);
-        let full = wall::layout(width, total, true);
+        let base = wall::layout(width, total, self.wall_expanded, scale);
+        let full = wall::layout(width, total, true, scale);
         let clip_h = match &self.wall_anim {
             Some(a) => {
                 wall::expand_height((self.deps.clock)().saturating_sub(a.start_ms), a.from, a.to)
@@ -1041,7 +1085,7 @@ impl SettingsCtl {
         let (frame_w, _) = self.frame_size(&app);
         let scale = Self::scale_of(&app);
         let model = self.page_model();
-        let (wall, wall_full_h) = self.wall_for(frame_w);
+        let (wall, wall_full_h) = self.wall_for(frame_w, scale);
         let badge_h = f64::from(app.global::<SettingsBridge>().get_about_badge_h());
         let badge_h = if badge_h > 0.0 { badge_h } else { BADGE_H };
         let layout = layout_page(&model, frame_w, scale, &wall, wall_full_h, badge_h);
@@ -1186,8 +1230,8 @@ impl SettingsCtl {
         b.set_wall_full_h(built.wall_full_h as f32);
         let cards: Vec<WallCard> = wall::wall_cards(&self.deps.look)
             .iter()
-            .zip(&built.wall.positions)
-            .map(|(c, (x, y))| WallCard {
+            .zip(built.wall.positions.iter().zip(&built.wall.widths))
+            .map(|(c, ((x, y), w))| WallCard {
                 id: c.id.as_str().into(),
                 name: c.name.as_str().into(),
                 on: c.on,
@@ -1207,6 +1251,7 @@ impl SettingsCtl {
                 red: colour_of(&c.red),
                 x: *x as f32,
                 y: *y as f32,
+                w: *w as f32,
             })
             .collect();
         b.set_wall_cards(ModelRc::new(VecModel::from(cards)));
@@ -1301,6 +1346,7 @@ impl SettingsCtl {
             red: colour_of(&ca.red),
             x: 0.0,
             y: 0.0,
+            w: 0.0,
         };
         b.set_editor_wells(ModelRc::new(VecModel::from(wells)));
         b.set_editor_preview(preview);
@@ -1394,7 +1440,7 @@ impl SettingsCtl {
             Effect::SetVerb(on) => {
                 let verb = Arc::clone(&self.deps.verb);
                 let post = Arc::clone(&self.deps.post);
-                spawn_worker("flare-verb", move || {
+                self.verb_q.run(move || {
                     post(UiMsg::Settings(SettingsMsg::Verb(verb.set(on))));
                 });
             }
@@ -2009,11 +2055,10 @@ impl SettingsCtl {
         let from = self.built.as_ref().map_or(0.0, |b| b.wall.clip_h);
         self.wall_expanded = !self.wall_expanded;
         let to = {
-            let frame_w = self
-                .weak
-                .upgrade()
-                .map_or(FALLBACK_FRAME.0, |a| self.frame_size(&a).0);
-            let (target, _) = self.wall_for(frame_w);
+            let (frame_w, scale) = self.weak.upgrade().map_or((FALLBACK_FRAME.0, 1.0), |a| {
+                (self.frame_size(&a).0, Self::scale_of(&a))
+            });
+            let (target, _) = self.wall_for(frame_w, scale);
             target.clip_h
         };
         // Opening animates; closing is instant (and so is everything under reduced motion).
@@ -2067,7 +2112,7 @@ impl SettingsCtl {
     fn ask_verb(&self) {
         let verb = Arc::clone(&self.deps.verb);
         let post = Arc::clone(&self.deps.post);
-        spawn_worker("flare-verb-status", move || {
+        self.verb_q.run(move || {
             // sync-ok: runs on this worker thread, never on the UI thread
             post(UiMsg::Settings(SettingsMsg::Verb(verb.status())));
         });
@@ -2594,6 +2639,54 @@ mod tests {
         f.b().invoke_row_switch("explorer-verb".into(), true);
         f.settle_workers();
         assert!(f.row("explorer-verb").unwrap().on);
+    }
+
+    /// A verb whose "on" is slow, so an unserialised second request overtakes the first.
+    struct SlowOnVerb {
+        state: Mutex<VerbState>,
+    }
+
+    impl ExplorerVerb for SlowOnVerb {
+        fn status(&self) -> VerbState {
+            *self.state.lock().unwrap()
+        }
+        fn set(&self, on: bool) -> VerbState {
+            if on {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let next = if on { VerbState::On } else { VerbState::Off };
+            *self.state.lock().unwrap() = next;
+            next
+        }
+    }
+
+    #[test]
+    fn two_quick_verb_toggles_run_in_order_so_the_last_request_wins() {
+        let verb = Arc::new(SlowOnVerb {
+            state: Mutex::new(VerbState::Off),
+        });
+        let f = fx_with(1.0, verb.clone());
+        f.page("terminal");
+        f.settle_workers();
+        f.b().invoke_row_switch("explorer-verb".into(), true);
+        f.b().invoke_row_switch("explorer-verb".into(), false);
+        let start = std::time::Instant::now();
+        let mut got = 0;
+        while got < 2 && start.elapsed() < Duration::from_secs(5) {
+            got += f.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        f.pump();
+        assert_eq!(
+            verb.status(),
+            VerbState::Off,
+            "the registry follows the last request"
+        );
+        assert!(
+            !f.row("explorer-verb").unwrap().on,
+            "the marker follows the registry"
+        );
     }
 
     #[test]

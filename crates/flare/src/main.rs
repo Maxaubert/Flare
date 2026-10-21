@@ -38,6 +38,7 @@ mod sessions;
 mod settings_ctl;
 mod settings_scene;
 mod ship_ctl;
+mod side_slide;
 mod sidebar_ui;
 mod startup;
 mod startup_trace;
@@ -47,6 +48,7 @@ mod term_menu;
 mod term_ui;
 mod theme_scene;
 mod timer_registry;
+mod ui_clock;
 mod update_ctl;
 mod window;
 

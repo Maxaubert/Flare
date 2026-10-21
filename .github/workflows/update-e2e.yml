@@ -48,6 +48,13 @@ jobs:
       - name: Build with live-updates, into its own target folder
         run: cargo build --release -p flare --features live-updates --target-dir target-update
 
+      - name: Build the Parakeet host beside it (pack.ps1 copies it from beside flare.exe)
+        run: cargo build --release -p flare-dictation --bin flare-parakeet-host --target-dir target-update
+
+      - name: Fetch the speech engine (vendor/whisper, gitignored)
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/fetch-whisper.ps1 -Out vendor/whisper
+
       - name: Pack 0.0.1 and 0.0.2 (the same exe; the version comes from the package manifest)
         shell: pwsh
         run: |

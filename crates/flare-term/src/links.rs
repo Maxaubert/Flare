@@ -48,6 +48,45 @@ pub fn find_links(text: &str) -> Vec<LinkSpan> {
     out
 }
 
+/// The pieces of `text` (`len` chars) between the rows a program broke by hand
+/// (`cells::by_hand`), as [start, end) char offsets.
+pub fn segments_of(len: usize, joins: &[usize]) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(joins.len() + 1);
+    let mut from = 0;
+    for &j in joins {
+        out.push((from, j));
+        from = j;
+    }
+    out.push((from, len));
+    out
+}
+
+/// The chars `start..end` of `text`.
+pub(crate) fn char_slice(text: &str, start: usize, end: usize) -> &str {
+    let at = |n: usize| text.char_indices().nth(n).map_or(text.len(), |(i, _)| i);
+    let (s, e) = (at(start), at(end.max(start)));
+    &text[s..e]
+}
+
+/// `find_links`, never across a row broken by hand: only a PATH is read across one, where
+/// existing on disk says it was one path (PT termLinks.ts `findLinksIn`).
+pub fn find_links_in(text: &str, joins: &[usize]) -> Vec<LinkSpan> {
+    if joins.is_empty() {
+        return find_links(text);
+    }
+    segments_of(text.chars().count(), joins)
+        .into_iter()
+        .flat_map(|(s, e)| {
+            find_links(char_slice(text, s, e))
+                .into_iter()
+                .map(move |l| LinkSpan {
+                    start: l.start + s,
+                    end: l.end + s,
+                })
+        })
+        .collect()
+}
+
 static CANDIDATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)https?://[^\s"'<>`]+"#).expect("static regex"));
 static SCHEME_AND_HOST: LazyLock<Regex> =
@@ -107,6 +146,19 @@ mod tests {
     #[test]
     fn find_links_bare_scheme_is_nothing() {
         assert!(found("https:// and http://").is_empty());
+    }
+
+    #[test]
+    fn find_links_in_never_crosses_a_hand_break() {
+        let top = "go https://a.io/x";
+        let text = format!("{top}/y/z and 日 https://b.io");
+        let n = top.chars().count();
+        let got: Vec<String> = find_links_in(&text, &[n])
+            .into_iter()
+            .map(|l| slice(&text, l.start, l.end))
+            .collect();
+        assert_eq!(got, vec!["https://a.io/x", "https://b.io"]);
+        assert_eq!(segments_of(5, &[2, 4]), vec![(0, 2), (2, 4), (4, 5)]);
     }
 
     #[test]

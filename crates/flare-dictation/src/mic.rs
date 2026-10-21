@@ -170,6 +170,10 @@ pub fn opens_on_this_thread() -> usize {
 /// The answer to `start_capture_async`.
 pub type DoneFn = Box<dyn FnOnce(Result<Box<dyn Capture>, CaptureFailure>) + Send>;
 
+/// Told once if a running capture loses its device (unplugged, disabled, invalidated), with the words'
+/// failure. Runs on the capture thread, which then ends; `stop` still returns what was heard (audit L37).
+pub type LostFn = Box<dyn FnOnce(CaptureFailure) + Send>;
+
 /// Opens the microphone on a worker and answers through `done`, so the caller (the UI thread) never waits
 /// on a slow or hung endpoint or on the fake's file read. `done` runs on the worker.
 pub fn start_capture_async(
@@ -178,10 +182,28 @@ pub fn start_capture_async(
     on_frame: FrameFn,
     done: DoneFn,
 ) {
+    start_capture_async_watched(source, device, on_frame, done, None);
+}
+
+/// `start_capture_async` that also hears `lost` if the device goes away mid-recording.
+pub fn start_capture_async_watched(
+    source: MicSource,
+    device: Option<String>,
+    on_frame: FrameFn,
+    done: DoneFn,
+    lost: Option<LostFn>,
+) {
     count_open();
     let spawned = std::thread::Builder::new()
         .name("flare-mic-open".into())
-        .spawn(move || done(start_capture_from(&source, device.as_deref(), on_frame)));
+        .spawn(move || {
+            done(start_capture_watched(
+                &source,
+                device.as_deref(),
+                on_frame,
+                lost,
+            ));
+        });
     // A thread that cannot even be created is dropped with its callback; nothing else can answer.
     drop(spawned);
 }
@@ -193,12 +215,71 @@ pub fn start_capture_from(
     on_frame: FrameFn,
 ) -> Result<Box<dyn Capture>, CaptureFailure> {
     count_open();
+    start_capture_watched(source, device, on_frame, None)
+}
+
+fn start_capture_watched(
+    source: &MicSource,
+    device: Option<&str>,
+    on_frame: FrameFn,
+    lost: Option<LostFn>,
+) -> Result<Box<dyn Capture>, CaptureFailure> {
     match source {
         MicSource::File(path) => start_file(path, on_frame),
         MicSource::Device => {
             let shared = Arc::new(Mutex::new(on_frame));
-            let ep = wasapi::Real { on_frame: shared };
+            let ep = wasapi::Real {
+                on_frame: shared,
+                on_lost: Arc::new(Mutex::new(lost)),
+            };
             open_with_fallback(&ep, device)
+        }
+    }
+}
+
+/// What one look at the device found.
+enum Poll {
+    /// A packet of 16 kHz mono samples.
+    Frames(Vec<f32>),
+    /// Nothing yet (the poll has waited a short while).
+    Quiet,
+    /// The device is gone.
+    Lost(CaptureFailure),
+}
+
+/// The capture loop, apart from WASAPI so it can be tested: polls until `stop`, keeps and forwards what
+/// arrives, and on a lost device tells `on_lost` ONCE (unless the owner already asked to stop) and ends.
+fn pump(
+    stop: &AtomicBool,
+    samples: &Mutex<Vec<f32>>,
+    on_frame: &SharedFrameFn,
+    on_lost: &Mutex<Option<LostFn>>,
+    mut poll: impl FnMut() -> Poll,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        match poll() {
+            Poll::Frames(out) => {
+                if out.is_empty() {
+                    continue;
+                }
+                samples
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend_from_slice(&out);
+                if let Ok(mut f) = on_frame.lock() {
+                    f(&out);
+                }
+            }
+            Poll::Quiet => {}
+            Poll::Lost(why) => {
+                if !stop.load(Ordering::SeqCst) {
+                    let cb = on_lost.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(cb) = cb {
+                        cb(why);
+                    }
+                }
+                return;
+            }
         }
     }
 }
@@ -424,6 +505,7 @@ mod wasapi {
 
     pub struct Real {
         pub on_frame: SharedFrameFn,
+        pub on_lost: Arc<Mutex<Option<LostFn>>>,
     }
 
     impl Endpoints for Real {
@@ -432,10 +514,11 @@ mod wasapi {
             let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
             let (tx, rx) = channel::<Result<(), OpenError>>();
             let (st, sm, cb) = (stop.clone(), samples.clone(), self.on_frame.clone());
+            let lost = self.on_lost.clone();
             let dev = device.map(str::to_string);
             let join = std::thread::Builder::new()
                 .name("flare-mic".into())
-                .spawn(move || capture_thread(dev, st, sm, cb, tx))
+                .spawn(move || capture_thread(dev, st, sm, cb, lost, tx))
                 .map_err(|_| OpenError::Other)?;
             // sync-ok: worker-only call; the capture thread answers as soon as the endpoint is open or refused.
             match rx.recv_timeout(OPEN_TIMEOUT) {
@@ -631,6 +714,7 @@ mod wasapi {
         stop: Arc<AtomicBool>,
         samples: Arc<Mutex<Vec<f32>>>,
         on_frame: SharedFrameFn,
+        on_lost: Arc<Mutex<Option<LostFn>>>,
         tx: std::sync::mpsc::Sender<Result<(), OpenError>>,
     ) {
         init_com();
@@ -648,55 +732,44 @@ mod wasapi {
         let _ = tx.send(Ok(()));
         // SAFETY: the event and clients are owned by this thread for the whole loop and released after it.
         unsafe {
-            while !stop.load(Ordering::SeqCst) {
-                // A short wait, so a stop is seen quickly even when the device goes quiet.
-                windows_sys::Win32::System::Threading::WaitForSingleObject(opened.event.0, 50);
-                loop {
-                    let Ok(next) = opened.capture.GetNextPacketSize() else {
-                        break;
-                    };
-                    if next == 0 {
-                        break;
-                    }
-                    let mut data: *mut u8 = std::ptr::null_mut();
-                    let mut frames = 0u32;
-                    let mut flags = 0u32;
-                    if opened
+            pump(&stop, &samples, &on_frame, &on_lost, || {
+                // A packet already waiting is taken at once; otherwise a short wait, so a stop is seen
+                // quickly even when the device goes quiet.
+                let next = match opened.capture.GetNextPacketSize() {
+                    Ok(n) => n,
+                    Err(e) => return Poll::Lost(failure_of(hr_of(&e))),
+                };
+                if next == 0 {
+                    windows_sys::Win32::System::Threading::WaitForSingleObject(opened.event.0, 50);
+                    return Poll::Quiet;
+                }
+                let mut data: *mut u8 = std::ptr::null_mut();
+                let mut frames = 0u32;
+                let mut flags = 0u32;
+                if let Err(e) =
+                    opened
                         .capture
                         .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
-                        .is_err()
-                    {
-                        break;
-                    }
-                    let n = frames as usize;
-                    let raw = if flags & 0x2 != 0 || data.is_null() {
-                        vec![0.0f32; n] // AUDCLNT_BUFFERFLAGS_SILENT
-                    } else {
-                        plane0(
-                            std::slice::from_raw_parts(data, n * opened.block_align),
-                            n,
-                            &opened,
-                        )
-                    };
-                    let _ = opened.capture.ReleaseBuffer(frames);
-                    let out = downsample(&raw, opened.rate, TARGET_RATE);
-                    if out.is_empty() {
-                        continue;
-                    }
-                    samples
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .extend_from_slice(&out);
-                    if let Ok(mut f) = on_frame.lock() {
-                        f(&out);
-                    }
+                {
+                    return Poll::Lost(failure_of(hr_of(&e)));
                 }
-            }
+                let n = frames as usize;
+                let raw = if flags & 0x2 != 0 || data.is_null() {
+                    vec![0.0f32; n] // AUDCLNT_BUFFERFLAGS_SILENT
+                } else {
+                    plane0(
+                        std::slice::from_raw_parts(data, n * opened.block_align),
+                        n,
+                        &opened,
+                    )
+                };
+                let _ = opened.capture.ReleaseBuffer(frames);
+                Poll::Frames(downsample(&raw, opened.rate, TARGET_RATE))
+            });
             let _ = opened.client.Stop();
             windows_sys::Win32::Foundation::CloseHandle(opened.event.0);
         }
     }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -915,6 +988,61 @@ mod tests {
         let (pcm, rate) = read_wav(&v).unwrap();
         assert_eq!(rate, 8000);
         assert_eq!(pcm, vec![0.5, 0.5]);
+    }
+
+    type PumpRig = (
+        AtomicBool,
+        Mutex<Vec<f32>>,
+        SharedFrameFn,
+        Arc<Mutex<Vec<usize>>>,
+    );
+
+    fn pump_rig() -> PumpRig {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let cb: SharedFrameFn = Arc::new(Mutex::new(Box::new(move |f: &[f32]| {
+            s.lock().unwrap().push(f.len());
+        })));
+        (AtomicBool::new(false), Mutex::new(Vec::new()), cb, seen)
+    }
+
+    #[test]
+    fn a_device_lost_mid_recording_is_reported_once_and_the_capture_ends_keeping_what_was_heard() {
+        let (stop, samples, cb, seen) = pump_rig();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let t = told.clone();
+        let lost: Mutex<Option<LostFn>> = Mutex::new(Some(Box::new(move |why| {
+            t.lock().unwrap().push(why);
+        })));
+        let mut script = vec![
+            Poll::Frames(vec![0.1; 160]),
+            Poll::Quiet,
+            Poll::Lost(CaptureFailure::NoDevice),
+            Poll::Frames(vec![0.2; 160]),
+        ]
+        .into_iter();
+        pump(&stop, &samples, &cb, &lost, || {
+            script.next().expect("the loop went on after the loss")
+        });
+        assert_eq!(*told.lock().unwrap(), vec![CaptureFailure::NoDevice]);
+        assert_eq!(samples.lock().unwrap().len(), 160);
+        assert_eq!(*seen.lock().unwrap(), vec![160]);
+        assert!(lost.lock().unwrap().is_none(), "the callback is single use");
+    }
+
+    #[test]
+    fn a_loss_after_the_owner_asked_to_stop_is_not_reported() {
+        let (stop, samples, cb, _seen) = pump_rig();
+        let told = Arc::new(Mutex::new(0usize));
+        let t = told.clone();
+        let lost: Mutex<Option<LostFn>> = Mutex::new(Some(Box::new(move |_| {
+            *t.lock().unwrap() += 1;
+        })));
+        pump(&stop, &samples, &cb, &lost, || {
+            stop.store(true, Ordering::SeqCst);
+            Poll::Lost(CaptureFailure::Failed)
+        });
+        assert_eq!(*told.lock().unwrap(), 0);
     }
 
     #[test]

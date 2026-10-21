@@ -1,11 +1,12 @@
 //! Component tests for the assembled window (Task 25), headless: sample properties set directly,
 //! no Rust glue. Pixel facts are measured at every display scaling.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
+use crate::side_slide::{SideSlide, SlideAim};
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{AppWindow, Place, StripGeom, TabRow};
 
@@ -49,6 +50,43 @@ fn red_image() -> Image {
         };
     }
     Image::from_rgba8(buf)
+}
+
+/// The glue's slide in miniature (`side_slide.rs`, audit V3): the window's sidebar state is aimed at, and
+/// every step is a frame at the harness clock, as the live window's frames are.
+struct Glide {
+    slide: RefCell<SideSlide>,
+    t: Cell<f64>,
+}
+
+impl Glide {
+    fn new(h: &Harness<AppWindow>) -> Self {
+        let g = Self {
+            slide: RefCell::new(SideSlide::default()),
+            t: Cell::new(0.0),
+        };
+        g.step(h, 0);
+        g
+    }
+
+    /// A frame now, `ms` on the clock, and a frame there.
+    fn step(&self, h: &Harness<AppWindow>, ms: u64) {
+        let c = &h.comp;
+        let mut s = self.slide.borrow_mut();
+        s.aim(&SlideAim {
+            collapsed: c.get_sidebar_collapsed(),
+            revealed: c.get_sidebar_revealed(),
+            width: f64::from(c.get_sidebar_width()),
+            sliding: c.get_sidebar_sliding(),
+            reduced: false,
+        });
+        s.frame(self.t.get());
+        self.t.set(self.t.get() + ms as f64);
+        h.advance(ms);
+        let (slot, panel) = s.frame(self.t.get());
+        c.set_sidebar_slot_now(slot);
+        c.set_sidebar_slide_now(panel);
+    }
 }
 
 /// A 1000 x 640 window with three tabs and a red grid image.
@@ -238,15 +276,22 @@ fn a_collapsed_sidebar_takes_no_room_and_slides_over_the_page() {
     h.comp.set_layout_vertical(true);
     h.comp.set_sidebar_width(220.0);
     h.comp.set_sidebar_collapsed(true);
-    h.advance(0);
+    let g = Glide::new(&h);
     let f = h.render();
     assert!(is_red(f.px(2, 150)), "the page starts at x 0");
     assert_eq!(f.count_where(0, 80, 200, 300, bright), 0);
     h.comp.set_sidebar_revealed(true);
+    g.step(&h, 0);
+    let mut seen = 0;
     for _ in 0..16 {
-        h.advance(16);
+        g.step(&h, 16);
+        let x = h.comp.get_sidebar_panel_left();
+        if x > -229.0 && x < -1.0 {
+            seen += 1;
+        }
     }
-    h.advance(240);
+    assert!(seen > 3, "the panel slid out ({seen} frames on the way)");
+    g.step(&h, 240);
     let f = h.render();
     assert!(!is_red(f.px(100, 150)), "the sidebar is over the page");
     assert!(f.count_where(0, 80, 200, 300, bright) > 0);
@@ -261,6 +306,7 @@ fn the_grid_keeps_its_width_while_frozen() {
     h.comp.set_sidebar_collapsed(true);
     h.comp.set_grid_frozen_width(500.0);
     h.advance(0);
+    let g = Glide::new(&h);
     let counter = Rc::new(Cell::new(0));
     {
         let c = counter.clone();
@@ -274,8 +320,10 @@ fn the_grid_keeps_its_width_while_frozen() {
     // Pin the sidebar: the slot animates, the page column slides right, the grid image keeps its width.
     h.comp.set_sidebar_sliding(true);
     h.comp.set_sidebar_collapsed(false);
+    g.step(&h, 0);
+    let mut lefts = Vec::new();
     for _ in 0..15 {
-        h.advance(16);
+        g.step(&h, 16);
         let f = h.render();
         let (x0, _, x1, _) = f
             .bbox_where(0, 100, f.w, 400, is_red)
@@ -285,8 +333,13 @@ fn the_grid_keeps_its_width_while_frozen() {
             (499..=501).contains(&w),
             "frozen width during the slide: {w}"
         );
+        lefts.push(x0);
     }
-    h.advance(40);
+    assert!(
+        lefts.windows(2).all(|p| p[0] <= p[1]) && lefts.iter().any(|&x| x > 2 && x < 218),
+        "the page column slid right: {lefts:?}"
+    );
+    g.step(&h, 40);
     let f = h.render();
     let (x0, _, x1, _) = f.bbox_where(0, 100, f.w, 400, is_red).unwrap();
     assert!(x0 == 220 || x0 == 221, "left edge {x0}");
@@ -410,6 +463,32 @@ fn double_click_on_the_empty_strip_maximises() {
     h.click(800.0, 18.0);
     h.click(800.0, 18.0);
     assert_eq!(n.get(), 1);
+}
+
+/// A TouchArea declared after an empty WindowMoveArea sits above it and takes the press, so the
+/// window never moves (the bar beside the sidebar, owner bug 2026-10-21). A move area's own
+/// TouchArea goes inside it: the move area filters before its children and still starts the move.
+#[test]
+fn no_touch_area_sits_on_top_of_a_window_move_area() {
+    for (name, src) in [
+        ("app.slint", include_str!("../../ui/app.slint")),
+        ("tabs.slint", include_str!("../../ui/tabs.slint")),
+    ] {
+        let lines: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        for (i, l) in lines.iter().enumerate() {
+            if l.ends_with("WindowMoveArea { }") {
+                let next = lines.get(i + 1).copied().unwrap_or("");
+                assert!(
+                    !next.starts_with("TouchArea"),
+                    "{name}: a TouchArea is declared over an empty WindowMoveArea"
+                );
+            }
+        }
+    }
 }
 
 /// Parity line 26: the buttons at the right end of the top row run Command help, Settings,

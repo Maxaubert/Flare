@@ -12,7 +12,7 @@ use flare_render::metrics::{BASE_FONT_PX, CellMetrics, cell_metrics_at, grid_dim
 use flare_render::sample::sample_grid;
 use flare_render::scene::{GroundPaint, Scene};
 use flare_render::stats::{FrameStats, FrameTrace, TracePhase};
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, Rgb8Pixel, Rgba8Pixel, SharedPixelBuffer};
 
 /// Where the grid on screen comes from: the sample, or a live terminal.
 pub trait GridSource {
@@ -92,6 +92,8 @@ pub struct GridHost {
     families: Vec<String>,
     base_px: f32,
     dirty: bool,
+    /// The caret is an outline (the keyboard is on a popup or a field): audit V11.
+    hollow_cursor: bool,
     pub stats: FrameStats,
 }
 
@@ -114,6 +116,7 @@ impl GridHost {
             families: Vec::new(),
             base_px: BASE_FONT_PX,
             dirty: true,
+            hollow_cursor: false,
             stats: FrameStats::new(120),
         }
     }
@@ -143,6 +146,15 @@ impl GridHost {
         }
         self.palette = palette;
         self.ground = ground;
+        self.dirty = true;
+    }
+
+    /// Draws the caret as an outline (on) or a block; marks dirty only when it changes.
+    pub fn set_hollow_cursor(&mut self, on: bool) {
+        if self.hollow_cursor == on {
+            return;
+        }
+        self.hollow_cursor = on;
         self.dirty = true;
     }
 
@@ -220,7 +232,7 @@ impl GridHost {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.dirty || self.source.dirty()
+        self.dirty || self.source.dirty() || self.glyphs.fallback_ready()
     }
 
     /// Replaces the grid source; the next render tells it the size again.
@@ -254,6 +266,13 @@ impl GridHost {
         if w == 0 || h == 0 {
             return None;
         }
+        // A fallback font found off the UI thread (audit M2): cells drawn blank get their glyphs,
+        // and the GPU atlas forgets the blanks it holds. The CPU painter reads the same source.
+        if self.glyphs.apply_fallbacks()
+            && let Some(gpu) = self.gpu.as_mut()
+        {
+            gpu.on_font_change();
+        }
         let metrics = cell_metrics_at(&self.glyphs.font_units(), self.base_px, self.scale);
         let (cols, rows) = grid_dims(w, h, &metrics);
         if self.dims != Some((cols, rows)) {
@@ -261,6 +280,7 @@ impl GridHost {
             self.dims = Some((cols, rows));
         }
         self.source.grid_into(&mut self.grid_buf);
+        self.grid_buf.cursor.hollow = self.hollow_cursor;
         let decor = self.source.decor();
         let mut scene = FrameTrace::global().time(TracePhase::Scene, || {
             build_scene_decor(
@@ -314,13 +334,7 @@ impl GridHost {
                 FrameTrace::global().time(TracePhase::Paint, || {
                     paint_scene(&scene, self.glyphs.as_mut(), &mut self.cpu_image);
                 });
-                let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                    &self.cpu_image.data,
-                    self.cpu_image.width,
-                    self.cpu_image.height,
-                );
-                // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
-                Image::from_rgba8_premultiplied(buffer)
+                slint_image(&self.cpu_image)
             }
         };
         self.stats.push_ms(start.elapsed().as_secs_f64() * 1000.0);
@@ -349,6 +363,30 @@ impl GridHost {
         self.dirty = false;
         Some(&self.cpu_image)
     }
+}
+
+/// The grid image Slint shows. A picture with every pixel opaque (the software renderer's, which has no
+/// glass) goes over as RGB: Slint's software renderer copies an RGB image and blends an RGBA one pixel by
+/// pixel, which is the cost of repainting a 2.25x window on every frame of the sidebar slide (audit V4).
+/// A picture with any see-through pixel stays premultiplied RGBA.
+fn slint_image(img: &RgbaImage) -> Image {
+    let (w, h) = (img.width, img.height);
+    if img.data.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
+        let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
+        let out = buffer.make_mut_bytes();
+        for (dst, src) in out
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(img.data.as_chunks::<4>().0)
+        {
+            dst.copy_from_slice(&src[..3]);
+        }
+        return Image::from_rgb8(buffer);
+    }
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&img.data, w, h);
+    // Premultiplied: at alpha 255 identical to straight, right on a clear ground.
+    Image::from_rgba8_premultiplied(buffer)
 }
 
 #[cfg(test)]
@@ -404,6 +442,30 @@ mod tests {
             x: false,
             flag: None,
         })
+    }
+
+    #[test]
+    fn an_opaque_grid_image_goes_to_slint_as_rgb() {
+        let mut img = RgbaImage::new(3, 2);
+        for p in img.data.as_chunks_mut::<4>().0 {
+            p.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        let s = slint_image(&img);
+        let rgb = s.to_rgb8().expect("an opaque picture is an RGB image");
+        assert_eq!((rgb.width(), rgb.height()), (3, 2));
+        assert_eq!(rgb.as_bytes()[..3], [10, 20, 30]);
+    }
+
+    #[test]
+    fn a_see_through_grid_image_stays_premultiplied_rgba() {
+        let mut img = RgbaImage::new(3, 2);
+        for p in img.data.as_chunks_mut::<4>().0 {
+            p.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        img.data[3] = 128;
+        let s = slint_image(&img);
+        assert!(s.to_rgb8().is_none());
+        assert_eq!(s.to_rgba8_premultiplied().expect("rgba").as_bytes()[3], 128);
     }
 
     #[test]
@@ -468,6 +530,20 @@ mod tests {
         assert_eq!(img.pixel(8, 12), [0xde, 0xda, 0xcf, 0xff]);
     }
 
+    #[test]
+    fn the_hollow_caret_redraws_only_when_it_changes() {
+        let mut h = host(GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        let _ = h.render();
+        assert!(!h.is_dirty());
+        h.set_hollow_cursor(false);
+        assert!(!h.is_dirty(), "the same state is no change");
+        h.set_hollow_cursor(true);
+        assert!(h.is_dirty(), "a popup took the keys: the caret redraws");
+        let _ = h.render();
+        h.set_hollow_cursor(true);
+        assert!(!h.is_dirty());
+    }
     #[test]
     fn dirty_follows_the_source() {
         let calls = Calls::default();
@@ -612,6 +688,54 @@ mod tests {
         GridHost::new(Box::new(FakeGlyphs::new(8, 16)), painter)
     }
 
+    /// A glyph source whose fallback font arrives later (audit M2).
+    struct Late {
+        inner: FakeGlyphs,
+        ready: Rc<std::cell::Cell<bool>>,
+        applied: Rc<std::cell::Cell<u32>>,
+    }
+
+    impl flare_render::glyph::GlyphSource for Late {
+        fn glyph(
+            &mut self,
+            key: &flare_render::glyph::GlyphKey,
+        ) -> Option<&flare_render::glyph::GlyphBitmap> {
+            self.inner.glyph(key)
+        }
+        fn font_units(&self) -> flare_render::metrics::FontUnits {
+            self.inner.font_units()
+        }
+        fn set_scale(&mut self, scale: f32) {
+            self.inner.set_scale(scale);
+        }
+        fn fallback_ready(&self) -> bool {
+            self.ready.get()
+        }
+        fn apply_fallbacks(&mut self) -> bool {
+            self.applied.set(self.applied.get() + 1);
+            self.ready.replace(false)
+        }
+    }
+
+    #[test]
+    fn a_fallback_font_that_arrives_repaints_without_any_other_change() {
+        let ready = Rc::new(std::cell::Cell::new(false));
+        let applied = Rc::new(std::cell::Cell::new(0));
+        let late = Late {
+            inner: FakeGlyphs::new(8, 16),
+            ready: ready.clone(),
+            applied: applied.clone(),
+        };
+        let mut h = GridHost::new(Box::new(late), GridPainter::Cpu);
+        h.resize(200, 100, 1.0);
+        h.render();
+        assert!(!h.is_dirty());
+        ready.set(true);
+        assert!(h.is_dirty(), "the worker's answer asks for a frame");
+        h.render();
+        assert_eq!(applied.get(), 2, "the frame took the answer");
+        assert!(!h.is_dirty());
+    }
     #[test]
     fn cpu_render_returns_image_of_size() {
         let mut h = host(GridPainter::Cpu);

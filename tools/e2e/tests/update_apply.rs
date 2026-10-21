@@ -1,7 +1,10 @@
 //! M9 Task 38: the update applied for real, against packages on disk (CI only).
 //!
-//! `FLARE_E2E_INSTALL=1` runs the three install scenarios; without it they return at once (and
-//! are `#[ignore]` too). The inputs, all made by `.github/workflows/update-e2e.yml`:
+//! `FLARE_E2E_INSTALL=1` runs the three install scenarios on CI (`GITHUB_ACTIONS` set); a local run
+//! also needs `FLARE_E2E_INSTALL_LOCAL=1`, because they write the machine's Explorer verb and
+//! Velopack keys. Without it they return at once (and are `#[ignore]` too).
+//!
+//! The inputs, all made by `.github/workflows/update-e2e.yml`:
 //!
 //! - `FLARE_PACKED_DIR`: a `Releases` folder with `Flare-win-Setup.exe` and the `0.0.1` and `0.0.2`
 //!   packages of a `live-updates` build.
@@ -213,8 +216,20 @@ fn handle(
 
 // ---- the scenarios' tools -----------------------------------------------------------------------
 
+/// Whether the install scenarios may run: asked for AND on CI (`GITHUB_ACTIONS`) or explicitly
+/// opted in with `FLARE_E2E_INSTALL_LOCAL=1`. They write the Explorer verb and the Velopack keys
+/// of the machine they run on, so a stray local `FLARE_E2E_INSTALL=1` must not be enough (L53).
+fn install_allowed(install: Option<&str>, ci: Option<&str>, local: Option<&str>) -> bool {
+    install == Some("1") && (ci.is_some_and(|v| !v.is_empty()) || local == Some("1"))
+}
+
 fn install_enabled() -> bool {
-    std::env::var("FLARE_E2E_INSTALL").as_deref() == Ok("1")
+    let get = |k: &str| std::env::var(k).ok();
+    install_allowed(
+        get("FLARE_E2E_INSTALL").as_deref(),
+        get("GITHUB_ACTIONS").as_deref(),
+        get("FLARE_E2E_INSTALL_LOCAL").as_deref(),
+    )
 }
 
 fn env_dir(name: &str) -> PathBuf {
@@ -292,7 +307,9 @@ fn send(profile: &Path, word: &str) {
         until(Duration::from_secs(5), || !path.exists()),
         "an earlier command was never taken"
     );
-    std::fs::write(&path, word).expect("write the command");
+    let tmp = profile.join("update-command.tmp");
+    std::fs::write(&tmp, word).expect("write the command");
+    std::fs::rename(&tmp, &path).expect("write the command");
     assert!(
         until(Duration::from_secs(10), || !path.exists()),
         "the app never took `{word}`"
@@ -375,6 +392,17 @@ fn assert_restarted(inst: &Path, profile: &Path, old_pid: u32) -> u32 {
 }
 
 // ---- tests that need no install -------------------------------------------------------------------
+
+#[test]
+fn the_install_scenarios_need_ci_or_an_explicit_local_opt_in() {
+    // L53: they write the real Explorer verb and Velopack keys of the machine they run on.
+    assert!(!install_allowed(None, Some("true"), None));
+    assert!(!install_allowed(Some("1"), None, None));
+    assert!(!install_allowed(Some("1"), Some(""), None));
+    assert!(!install_allowed(Some("1"), None, Some("0")));
+    assert!(install_allowed(Some("1"), Some("true"), None));
+    assert!(install_allowed(Some("1"), None, Some("1")));
+}
 
 #[test]
 fn deltas_are_removed_from_the_feed_and_everything_else_is_kept() {

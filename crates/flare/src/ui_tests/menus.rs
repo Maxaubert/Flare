@@ -440,6 +440,24 @@ fn a_label_is_never_cut_for_its_key_hint() {
     }
 }
 
+#[test]
+fn a_menu_opens_on_the_pointers_device_pixel_at_every_scale() {
+    // Audit visual review (V10): the tab menu was drawn one device pixel below PT's frame. The
+    // pointer is a whole device pixel; the panel's top lands on that same row (Px.snap rounds to
+    // the device grid), so a pointer on device row N draws the border on row N at every scale.
+    for scale in SCALES {
+        let h = harness(scale);
+        for dev in [100.0_f32, 101.0, 102.0] {
+            open_menu(&h, vec![row("Close tab")], 20.0, dev / scale);
+            let top = h.comp.get_panel_y() * scale;
+            assert!(
+                (top - dev).abs() < 0.01,
+                "scale {scale}: a pointer on device row {dev} drew the panel at {top}"
+            );
+        }
+    }
+}
+
 // ---- Parity line 44: one flyout level, keepOpen rows (PT ContextMenu.tsx) ----
 
 /// Row 0 "Open with" carries two children (flat rows 3 and 4, `parent: 0`); rows 1 and 2 are plain.

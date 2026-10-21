@@ -93,11 +93,15 @@ fn the_wall_cards_are_one_height_in_rows_of_the_right_count() {
                 .count()
                 .max(1);
             let inner = sec.panel_w - 2.0 - 32.0;
-            let want_cols = (((inner + 12.0) / (196.0 + 12.0)).floor() as usize).max(1);
+            let want_cols = (((inner + 12.0) / (172.0 + 12.0)).floor() as usize).max(1);
             assert_eq!(cols, want_cols, "{w} @{s}: columns");
             assert_eq!(sc.wall.cols, want_cols);
             for (i, (x, y)) in sc.wall.positions.iter().enumerate() {
-                assert_eq!(*x, (i % cols) as f64 * 208.0, "{w} @{s}: card {i} x");
+                assert_eq!(
+                    *x,
+                    sc.wall.positions[i % cols].0,
+                    "{w} @{s}: card {i} x is its column's"
+                );
                 assert_eq!(
                     *y,
                     (i / cols) as f64 * 138.0,
@@ -146,17 +150,17 @@ fn the_wall_cards_are_one_height_in_rows_of_the_right_count() {
                 .bbox_where(
                     start,
                     sc.dev(ny - 8.0),
-                    start + sc.dev(196.0),
+                    start + sc.dev(sc.wall.widths[i0]),
                     sc.dev(ny + 126.0 + 8.0),
                     |p| !differs(p, ground_of(i0), 0),
                 )
                 .unwrap_or_else(|| panic!("{w} @{s}: card {i0} paints its own ground"));
             let card_w = bb0.2 - bb0.0 + 1;
-            // A card's ground is 196 minus its two hairlines wide, 92 high.
+            // A card's ground is the card's own width (the wall lays them out, 172 or more) minus its two hairlines wide, 92 high.
             assert!(
-                card_w.abs_diff(sc.dev(196.0) - 2 * hair) <= 1,
+                card_w.abs_diff(sc.dev(sc.wall.widths[i0]) - 2 * hair) <= 1,
                 "{w} @{s}: the card's ground is {card_w} device px wide, wanted {}",
-                sc.dev(196.0) - 2 * hair
+                sc.dev(sc.wall.widths[i0]) - 2 * hair
             );
             let ground_h = bb0.3 - bb0.1 + 1;
             assert!(
@@ -183,7 +187,7 @@ fn the_wall_cards_are_one_height_in_rows_of_the_right_count() {
                     .bbox_where(
                         start1,
                         sc.dev(qy - 8.0),
-                        start1 + sc.dev(196.0),
+                        start1 + sc.dev(sc.wall.widths[j]),
                         sc.dev(qy + 126.0 + 8.0),
                         |p| !differs(p, ground_of(j), 0),
                     )

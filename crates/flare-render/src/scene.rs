@@ -107,17 +107,24 @@ pub fn build_scene_ground(
             let under_cursor = cursor.visible
                 && cursor.row == row
                 && (cursor.col == col || (wide && cursor.col == col + 1));
-            if under_cursor {
+            // A hollow caret (the keyboard is on a popup or a field) is an outline: the cell keeps
+            // its own colours and the edges are drawn on top below (audit V11).
+            let block = under_cursor && !cursor.hollow;
+            if block {
                 bg = palette.cursor;
                 fg = palette.cursor_accent;
+            }
+
+            if cell.flags.contains(CellFlags::DIM) {
+                fg = dimmed(fg, bg);
             }
 
             let w = span * m.cell_w;
             let draw_bg = if by_ui {
                 // An explicit background that equals the ground is still drawn, as xterm does.
-                under_cursor || inverse || cell.bg != Color::DefaultBg
+                block || inverse || cell.bg != Color::DefaultBg
             } else {
-                under_cursor || bg != palette.bg
+                block || bg != palette.bg
             };
             if draw_bg {
                 scene.rects.push(RectFill {
@@ -127,6 +134,14 @@ pub fn build_scene_ground(
                     h: m.cell_h,
                     color: bg,
                 });
+            }
+            if under_cursor && cursor.hollow {
+                caret_outline(
+                    &mut scene.overlays,
+                    (x, y, w, m.cell_h),
+                    m.underline_h,
+                    palette.cursor,
+                );
             }
             if cell.ch != ' ' || cell.combining.is_some() {
                 scene.glyphs.push(GlyphDraw {
@@ -149,9 +164,57 @@ pub fn build_scene_ground(
                     color: fg,
                 });
             }
+            if cell.flags.contains(CellFlags::STRIKE) {
+                // A one-line rule about the middle of the lowercase letters: a fixed share of the
+                // baseline's height above the cell top, the same at every scale.
+                scene.overlays.push(RectFill {
+                    x,
+                    y: y + (m.baseline as f32 * 0.6).round() as i32,
+                    w,
+                    h: m.underline_h,
+                    color: fg,
+                });
+            }
         }
     }
     scene
+}
+
+/// The hollow caret: four edges drawn INSIDE the cell `(x, y, w, h)`, `thickness` device pixels
+/// thick (the underline's, so it follows the scale), in the cursor colour.
+fn caret_outline(
+    out: &mut Vec<RectFill>,
+    (x, y, w, h): (i32, i32, u32, u32),
+    thickness: u32,
+    color: Rgba,
+) {
+    let t = thickness.clamp(1, (w.min(h) / 2).max(1));
+    let (ti, wi, hi) = (t as i32, w as i32, h as i32);
+    for (ex, ey, ew, eh) in [
+        (x, y, w, t),
+        (x, y + hi - ti, w, t),
+        (x, y, t, h),
+        (x + wi - ti, y, t, h),
+    ] {
+        out.push(RectFill {
+            x: ex,
+            y: ey,
+            w: ew,
+            h: eh,
+            color,
+        });
+    }
+}
+
+/// SGR 2 (dim): `fg` halfway to `bg`, channel by channel, keeping `fg`'s alpha.
+fn dimmed(fg: Rgba, bg: Rgba) -> Rgba {
+    let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+    Rgba {
+        r: half(fg.r, bg.r),
+        g: half(fg.g, bg.g),
+        b: half(fg.b, bg.b),
+        a: fg.a,
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +283,7 @@ mod tests {
             col: 1,
             row: 0,
             visible: true,
+            hollow: false,
         };
         let s = scene(&g);
         assert_eq!(
@@ -255,6 +319,7 @@ mod tests {
             col: 1,
             row: 0,
             visible: true,
+            hollow: false,
         };
         let s = scene(&g);
         assert_eq!(
@@ -344,6 +409,114 @@ mod tests {
     }
 
     #[test]
+    fn a_hollow_cursor_is_an_outline_and_keeps_its_glyph() {
+        // Audit V11: with a popup or a field holding the keys the caret is an outline, as PT's
+        // inactive xterm cursor is; no filled block, and the glyph under it keeps its colour.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        g.put_str(
+            0,
+            0,
+            "A",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::empty(),
+        );
+        g.cursor = Cursor {
+            col: 0,
+            row: 0,
+            visible: true,
+            hollow: true,
+        };
+        let s = scene(&g);
+        assert!(s.rects.is_empty(), "no filled block");
+        let edges: Vec<RectFill> = s
+            .overlays
+            .iter()
+            .copied()
+            .filter(|r| r.color == p.cursor)
+            .collect();
+        assert_eq!(edges.len(), 4, "four edges of the caret");
+        for e in &edges {
+            assert!(e.x >= 4 && e.y >= 4, "inside the cell at (4, 4): {e:?}");
+            assert!(e.x + e.w as i32 <= 12 && e.y + e.h as i32 <= 20, "{e:?}");
+        }
+        assert_eq!(s.glyphs[0].color, p.fg, "the glyph keeps its own colour");
+    }
+
+    #[test]
+    fn a_hollow_cursor_on_a_wide_cell_outlines_both_halves() {
+        let p = Palette::pt_default();
+        let mut g = Grid::new(4, 2);
+        g.put_str(
+            0,
+            0,
+            "中",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::empty(),
+        );
+        g.cursor = Cursor {
+            col: 1,
+            row: 0,
+            visible: true,
+            hollow: true,
+        };
+        let s = scene(&g);
+        assert!(s.rects.is_empty());
+        let top = s
+            .overlays
+            .iter()
+            .find(|r| r.color == p.cursor && r.y == 4 && r.h == 1)
+            .expect("the top edge");
+        assert_eq!((top.x, top.w), (4, 16), "the top edge spans both halves");
+    }
+
+    #[test]
+    fn a_hollow_cursor_edge_follows_the_scale() {
+        // The edge is the underline's thickness, so it is one device pixel at 100% and grows with
+        // the scale; the outline stays inside its cell at every scale (100 to 300%).
+        let p = Palette::pt_default();
+        let f = FontUnits {
+            units_per_em: 2048.0,
+            ascent: 1900.0,
+            descent: -480.0,
+            leading: 0.0,
+            advance: 1200.0,
+        };
+        for scale in [1.0_f32, 1.5, 2.25, 3.0] {
+            let m = crate::metrics::cell_metrics(&f, scale);
+            let mut g = Grid::new(3, 2);
+            g.cursor = Cursor {
+                col: 1,
+                row: 1,
+                visible: true,
+                hollow: true,
+            };
+            let s = build_scene(&g, &p, &m, 3 * m.cell_w, 2 * m.cell_h);
+            let (x, y) = cell_origin(1, 1, &m);
+            let edges: Vec<RectFill> = s
+                .overlays
+                .iter()
+                .copied()
+                .filter(|r| r.color == p.cursor)
+                .collect();
+            assert_eq!(edges.len(), 4, "scale {scale}");
+            for e in &edges {
+                assert!(e.x >= x && e.y >= y, "scale {scale}: {e:?}");
+                assert!(
+                    e.x + e.w as i32 <= x + m.cell_w as i32,
+                    "scale {scale}: {e:?}"
+                );
+                assert!(
+                    e.y + e.h as i32 <= y + m.cell_h as i32,
+                    "scale {scale}: {e:?}"
+                );
+                assert_eq!(e.w.min(e.h), m.underline_h.max(1), "scale {scale}");
+            }
+        }
+    }
+    #[test]
     fn cursor_inverts_glyph() {
         let p = Palette::pt_default();
         let mut g = Grid::new(3, 2);
@@ -383,6 +556,93 @@ mod tests {
                 color: p.fg
             }]
         );
+    }
+
+    #[test]
+    fn dim_fades_the_glyph_halfway_to_the_ground() {
+        // Audit L10, SGR 2: the glyph is drawn halfway between its colour and the cell's ground.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        no_cursor(&mut g);
+        g.put_str(
+            0,
+            0,
+            "a",
+            Color::Rgb(255, 255, 255),
+            Color::DefaultBg,
+            CellFlags::DIM,
+        );
+        let s = scene(&g);
+        let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+        assert_eq!(
+            s.glyphs[0].color,
+            Rgba::rgb(half(255, p.bg.r), half(255, p.bg.g), half(255, p.bg.b))
+        );
+    }
+
+    #[test]
+    fn strikethrough_draws_a_line_through_the_glyph() {
+        // Audit L10, SGR 9: a one-line overlay about the middle of the glyph, in its colour.
+        let p = Palette::pt_default();
+        let mut g = Grid::new(3, 2);
+        no_cursor(&mut g);
+        g.put_str(
+            0,
+            0,
+            "a",
+            Color::DefaultFg,
+            Color::DefaultBg,
+            CellFlags::STRIKE,
+        );
+        let s = scene(&g);
+        let m = metrics();
+        let y = 4 + (m.baseline as f32 * 0.6).round() as i32;
+        assert_eq!(
+            s.overlays,
+            vec![RectFill {
+                x: 4,
+                y,
+                w: 8,
+                h: m.underline_h,
+                color: p.fg
+            }]
+        );
+    }
+
+    #[test]
+    fn strikethrough_stays_inside_its_cell_at_every_scale() {
+        // The rule is cell-relative, so it holds from 100% to 300%.
+        for scale in [1.0_f32, 1.25, 1.5, 2.0, 2.25, 3.0] {
+            let m = cell_metrics(
+                &FontUnits {
+                    units_per_em: 2048.0,
+                    ascent: 1900.0,
+                    descent: -480.0,
+                    leading: 0.0,
+                    advance: 1200.0,
+                },
+                scale,
+            );
+            let mut g = Grid::new(3, 2);
+            no_cursor(&mut g);
+            g.put_str(
+                0,
+                0,
+                "a",
+                Color::DefaultFg,
+                Color::DefaultBg,
+                CellFlags::STRIKE,
+            );
+            let s = build_scene(&g, &Palette::pt_default(), &m, 1000, 1000);
+            let (cx, cy) = cell_origin(0, 0, &m);
+            let r = s.overlays[0];
+            assert!(r.h >= 1, "scale {scale}: {r:?}");
+            assert!(
+                r.y >= cy && r.y + r.h as i32 <= cy + m.cell_h as i32,
+                "scale {scale}: {r:?} outside the cell at {cy}"
+            );
+            assert!(r.x == cx && r.w == m.cell_w, "scale {scale}: {r:?}");
+        }
     }
 
     #[test]
@@ -443,6 +703,7 @@ mod tests {
             col: 3,
             row: 1,
             visible: true,
+            hollow: false,
         };
         let s = by_ui_scene(&g);
         assert_eq!(s.rects.len(), 3);

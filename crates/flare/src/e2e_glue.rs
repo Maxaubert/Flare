@@ -81,12 +81,34 @@ fn ms_between(later: Instant, earlier: Instant) -> f64 {
     later.saturating_duration_since(earlier).as_secs_f64() * 1000.0
 }
 
+/// The most frames the series keeps (about eight minutes at 60 fps); later frames are not kept.
+pub const SERIES_CAP: usize = 30_000;
+
+/// One presented frame, for the visual tour (audit 2026-10-20): when it was (ms since the process
+/// started), the gap since the frame before, the time it took, and the sidebar's animated slot width
+/// and panel x at that frame. A value the frame did not have is `None`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameSample {
+    pub age_ms: f64,
+    pub gap_ms: Option<f64>,
+    pub render_ms: Option<f64>,
+    pub slot: Option<f32>,
+    pub panel_left: Option<f32>,
+}
+
 /// The frame series: the gap between frames and the time each frame took.
 pub struct FrameRecorder {
     gaps: FrameStats,
     renders: FrameStats,
     before: Option<Instant>,
     last_after: Option<Instant>,
+    /// The gap and render time of the frame `after` just closed, for the series.
+    cur: (Option<f64>, Option<f64>),
+    series: Vec<FrameSample>,
+    /// The software renderer has no rendering notifier, so its frames are the window's redraw requests
+    /// (`redraw_sample`), and a grid render adds nothing to the series.
+    redraw_series: bool,
+    last_redraw: Option<Instant>,
     on: bool,
 }
 
@@ -103,11 +125,16 @@ impl FrameRecorder {
             renders: FrameStats::new(200_000),
             before: None,
             last_after: None,
+            cur: (None, None),
+            series: Vec::new(),
+            redraw_series: false,
+            last_redraw: None,
             on: false,
         }
     }
 
-    /// Recording starts at the first `Frames` or `Latency` request.
+    /// Recording of the statistics starts at the first `Frames` or `Latency` request (the series
+    /// needs no request: it runs from the first frame, so start-up is in it).
     pub fn start(&mut self) {
         self.on = true;
     }
@@ -117,25 +144,80 @@ impl FrameRecorder {
         self.renders.clear();
         self.before = None;
         self.last_after = None;
+        self.cur = (None, None);
+        self.series.clear();
+        self.last_redraw = None;
+    }
+
+    /// From now on the series is the window's redraw requests (the software renderer).
+    pub fn use_redraw_series(&mut self) {
+        self.redraw_series = true;
+    }
+
+    /// One redraw request of the window, with the slide it will show (software renderer only).
+    pub fn redraw_sample(&mut self, now: Instant, age_ms: f64, slide: Option<(f32, f32)>) {
+        if !self.redraw_series || self.series.len() >= SERIES_CAP {
+            return;
+        }
+        let gap = self.last_redraw.map(|p| ms_between(now, p));
+        self.last_redraw = Some(now);
+        self.series.push(FrameSample {
+            age_ms,
+            gap_ms: gap,
+            render_ms: None,
+            slot: slide.map(|s| s.0),
+            panel_left: slide.map(|s| s.1),
+        });
     }
 
     pub fn before(&mut self, now: Instant) {
-        if self.on {
-            self.before = Some(now);
-        }
+        self.before = Some(now);
     }
 
     pub fn after(&mut self, now: Instant) {
+        let render = self.before.take().map(|b| ms_between(now, b));
+        let gap = self.last_after.map(|p| ms_between(now, p));
+        self.last_after = Some(now);
+        self.cur = (gap, render);
         if !self.on {
             return;
         }
-        if let Some(b) = self.before.take() {
-            self.renders.push_ms(ms_between(now, b));
+        if let Some(r) = render {
+            self.renders.push_ms(r);
         }
-        if let Some(p) = self.last_after {
-            self.gaps.push_ms(ms_between(now, p));
+        if let Some(g) = gap {
+            self.gaps.push_ms(g);
         }
-        self.last_after = Some(now);
+    }
+
+    /// Adds the frame `after` just closed to the series, with the slide it showed.
+    pub fn sample(&mut self, age_ms: f64, slide: Option<(f32, f32)>) {
+        if self.redraw_series || self.series.len() >= SERIES_CAP {
+            return;
+        }
+        self.series.push(FrameSample {
+            age_ms,
+            gap_ms: self.cur.0,
+            render_ms: self.cur.1,
+            slot: slide.map(|s| s.0),
+            panel_left: slide.map(|s| s.1),
+        });
+    }
+
+    /// Every frame since the last reset.
+    #[cfg(test)]
+    pub fn series(&self) -> &[FrameSample] {
+        &self.series
+    }
+
+    /// The series as rows `[age_ms, gap_ms, render_ms, slot, panel_left]` (null for a missing value).
+    pub fn series_json(&self) -> serde_json::Value {
+        let rows: Vec<serde_json::Value> = self
+            .series
+            .iter()
+            .map(|s| serde_json::json!([s.age_ms, s.gap_ms, s.render_ms, s.slot, s.panel_left]))
+            .collect();
+        serde_json::Value::Array(rows)
     }
 
     /// The statistics of everything since the last reset.
@@ -165,6 +247,10 @@ pub struct FrameView {
 pub trait FrameEnv {
     fn view(&self, tab: Option<&str>) -> Result<FrameView, String>;
     fn press_down(&self, chord: &str) -> Result<(), String>;
+    /// The sidebar's animated slot width and panel x (css px) as this frame shows them.
+    fn slide(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 /// A key-to-frame measurement: done at the first frame that holds the text.
@@ -182,12 +268,23 @@ pub enum LatencyStep {
     TimedOut,
 }
 
+/// The longest wait a pipe request may ask for (ten minutes). A larger one would overflow the
+/// deadline `Instant` and panic the app (L59).
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// The most moves one `Drag` request may make; more would build an event list without bound (L59).
+pub const MAX_DRAG_STEPS: u32 = 2_000;
+
+pub fn clamp_timeout_ms(ms: u64) -> u64 {
+    ms.min(MAX_TIMEOUT_MS)
+}
+
 impl LatencyWatch {
     pub fn new(t0: Instant, expect: &str, timeout_ms: u64) -> Self {
         Self {
             t0,
             expect: expect.to_string(),
-            deadline: t0 + Duration::from_millis(timeout_ms),
+            deadline: t0 + Duration::from_millis(clamp_timeout_ms(timeout_ms)),
         }
     }
 
@@ -284,6 +381,13 @@ pub struct FrameState {
     prompt: Option<(PromptWatch, String)>,
     seq: u64,
     snap: Option<Snap>,
+    /// The sidebar's slot and panel x read right after the last snapshot's picture was taken, so a
+    /// label made from it names the frame the picture shows (not the frame before or after).
+    snap_slide: Option<(f32, f32)>,
+    /// The breathing marks' opacity read right after the last snapshot's picture (1.0 when the window
+    /// is still): a question dot or line in the picture is drawn at this strength, so a scenario can
+    /// tell a faded breath from a missing mark.
+    snap_breathe: Option<f32>,
     marks: (Option<f64>, Option<f64>),
     env: Option<Rc<dyn FrameEnv>>,
 }
@@ -302,8 +406,36 @@ impl FrameState {
             prompt: None,
             seq: 0,
             snap: None,
+            snap_slide: None,
+            snap_breathe: None,
             marks: (None, None),
             env: None,
+        }
+    }
+
+    /// Keeps the slide the last snapshot's picture shows.
+    pub fn set_snap_slide(&mut self, slide: Option<(f32, f32)>) {
+        self.snap_slide = slide;
+    }
+
+    /// The last picture's slide as `[slot, panel_left]`, or null when it had none.
+    pub fn snap_slide_json(&self) -> serde_json::Value {
+        match self.snap_slide {
+            Some((slot, left)) => serde_json::json!([slot, left]),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// Keeps the breath the last snapshot's picture shows.
+    pub fn set_snap_breathe(&mut self, breathe: Option<f32>) {
+        self.snap_breathe = breathe;
+    }
+
+    /// The last picture's breath (0 to 1), or null when it had none.
+    pub fn snap_breathe_json(&self) -> serde_json::Value {
+        match self.snap_breathe {
+            Some(b) => serde_json::json!(b),
+            None => serde_json::Value::Null,
         }
     }
 
@@ -346,6 +478,7 @@ impl FrameState {
     /// One finished frame. Returns the keys to inject (from the event loop).
     pub fn after(&mut self, now: Instant, age_ms: f64, env: &dyn FrameEnv) -> Vec<String> {
         self.rec.after(now);
+        self.rec.sample(age_ms, env.slide());
         if let Some(p) = self.latency.take() {
             match env.view(p.tab.as_deref()) {
                 Err(m) => p.resp.reply(err(m)),
@@ -523,14 +656,39 @@ fn print_window_snapshot(hwnd: isize) -> Result<Snap, String> {
     }
 }
 
+/// The strength a breathing mark is drawn at: the clock's breath, or full when the window is still
+/// (tabmark.slint draws a still question at opacity 1 whatever `breathe` last held).
+fn shown_breathe(still: bool, breathe: f32) -> f32 {
+    if still { 1.0 } else { breathe }
+}
+
 /// Slint's own snapshot of the window.
 fn slint_snapshot(window: &slint::Window) -> Result<Snap, String> {
     let buf = window.take_snapshot().map_err(|e| e.to_string())?;
+    let mut rgba = buf.as_bytes().to_vec();
+    // The window's pixels come back premultiplied (a see-through ground at alpha 153 holds 23 * 153 / 255 =
+    // 14), but `Snap` and the PNG are straight RGBA: convert, or the sheet shows the glass twice as dark.
+    unpremultiply(&mut rgba);
     Ok(Snap {
         w: buf.width(),
         h: buf.height(),
-        rgba: buf.as_bytes().to_vec(),
+        rgba,
     })
+}
+
+/// Premultiplied RGBA8 to straight, in place. Alpha 0 becomes clear black; alpha 255 is untouched.
+pub fn unpremultiply(rgba: &mut [u8]) {
+    for p in rgba.as_chunks_mut::<4>().0 {
+        match p[3] {
+            255 => {}
+            0 => *p = [0; 4],
+            a => {
+                for c in &mut p[..3] {
+                    *c = (u32::from(*c) * 255 / u32::from(a)).min(255) as u8;
+                }
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -964,26 +1122,56 @@ pub fn pointer_events(x: f32, y: f32, action: &PointerAction) -> Vec<WindowEvent
     }
 }
 
-/// The notches an injected wheel of `dy` css px makes (positive is up, winit's convention): a notch
-/// is 40 px, at least one for any movement. The real window counts the cell height instead; the
-/// e2e only needs "far enough" and a stable sign.
-pub fn wheel_notches(dy: f32) -> i32 {
-    if dy == 0.0 {
-        return 0;
-    }
-    match (dy / 40.0).round() as i32 {
-        0 => dy.signum() as i32,
-        n => n.clamp(-4096, 4096),
-    }
+/// The wheel lines an injected wheel of `dy` css px makes (positive is up, winit's convention): a
+/// notch is 40 px. It goes to the shared wheel as lines, so a small movement adds up in the
+/// accumulator and is never rounded up to a notch (audit 2026-10-20: M6); only the size is capped.
+pub fn wheel_lines(dy: f32) -> f32 {
+    (dy / 40.0).clamp(-4096.0, 4096.0)
 }
 
-/// Whether the point (css px) lies inside the rectangle (left, top, width, height).
-pub fn in_rect(p: (f32, f32), r: (f32, f32, f32, f32)) -> bool {
-    p.0 >= r.0 && p.0 <= r.0 + r.2 && p.1 >= r.1 && p.1 <= r.1 + r.3
+/// The placement a restore asks for: the normal size and place, shown WITHOUT activation, so a
+/// restore from the pipe can never take the foreground from the user's window (L58).
+fn restore_placement(
+    mut p: windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT,
+) -> windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT {
+    p.showCmd = windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE as u32;
+    p
+}
+
+/// Restores a minimised or maximised window with `SetWindowPlacement(SW_SHOWNOACTIVATE)`; the
+/// Slint calls (`set_minimized(false)`, `set_maximized(false)`) end in `SW_RESTORE`, which activates.
+fn restore_without_activating(app: &AppWindow) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, IsIconic, SW_SHOWNOACTIVATE, SetWindowPlacement, ShowWindow,
+        WINDOWPLACEMENT,
+    };
+    let hwnd = crate::window::hwnd_of(app).ok_or("the window has no handle")?;
+    let h = hwnd as windows_sys::Win32::Foundation::HWND;
+    // SAFETY: WINDOWPLACEMENT is plain data.
+    let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    p.length = size_of::<WINDOWPLACEMENT>() as u32;
+    // SAFETY: `h` is this process's window and `p` is a sized out pointer.
+    if unsafe { GetWindowPlacement(h, &mut p) } == 0 {
+        return Err("GetWindowPlacement failed".into());
+    }
+    let p = restore_placement(p);
+    // SAFETY: as above; `p` is a fully read placement.
+    if unsafe { SetWindowPlacement(h, &p) } == 0 {
+        return Err("SetWindowPlacement failed".into());
+    }
+    // A minimised window can stay minimised under the placement call alone; this shows it, still
+    // without activation.
+    // SAFETY: as above.
+    if unsafe { IsIconic(h) } != 0 {
+        // SAFETY: as above; shows the window in place without activating it.
+        unsafe { ShowWindow(h, SW_SHOWNOACTIVATE) };
+    }
+    Ok(())
 }
 
 /// Press at `from`, `steps` equal moves, release at `to`.
 pub fn drag_events(from: (f32, f32), to: (f32, f32), steps: u32, b: Button) -> Vec<WindowEvent> {
+    let steps = steps.min(MAX_DRAG_STEPS);
     let mut out = pointer_events(from.0, from.1, &PointerAction::Down { button: b });
     for i in 1..=steps {
         let t = i as f32 / steps as f32;
@@ -1099,31 +1287,18 @@ impl GlueCtx {
     }
 
     /// An injected Slint wheel never reaches winit's `MouseWheel`, where the real window scrolls the
-    /// terminal. Over the grid, the front tab gets the same call that handler makes.
+    /// terminal. It takes the same path the real one does (`KeyPath::wheel`: the grid gate, the
+    /// accumulated notches, the cell under the pointer, the redraw), so the two cannot drift.
     fn term_wheel(&self, x: f32, y: f32, dy: f32) {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        let k = app.window().scale_factor().max(0.01);
-        let grid = (
-            app.get_grid_left(),
-            app.get_grid_top(),
-            app.get_grid_phys_width() as f32 / k,
-            app.get_grid_phys_height() as f32 / k,
+        let k = f64::from(app.window().scale_factor()).max(0.01);
+        self.kp.wheel(
+            crate::window::WheelDelta::Lines(wheel_lines(dy)),
+            (f64::from(x) * k, f64::from(y) * k),
+            false,
         );
-        let on_settings = self.ctl.upgrade().is_some_and(|rc| {
-            rc.try_borrow().is_ok_and(|c| {
-                c.model().state.active_id.as_deref() == Some(flare_tabs::tabs::SETTINGS_ID)
-            })
-        });
-        if on_settings || app.get_chrome_has_focus() || !in_rect((x, y), grid) {
-            return;
-        }
-        if let Some(handle) = self.kp.front.borrow().clone()
-            && handle.wheel(wheel_notches(dy), 0, 0)
-        {
-            app.window().request_redraw();
-        }
     }
 
     /// One key through the path a real key takes; a key the app leaves to Slint reaches it too,
@@ -1165,6 +1340,10 @@ impl GlueCtx {
         match op {
             "minimise" | "minimize" => w.set_minimized(true),
             "restore" => {
+                // The window is restored first without activation; the Slint calls then only bring
+                // its own minimised/maximised state in step (winit does nothing for a window that
+                // is already restored).
+                restore_without_activating(&app)?;
                 w.set_minimized(false);
                 w.set_maximized(false);
             }
@@ -1192,6 +1371,14 @@ impl GlueCtx {
         apply_dpi(hwnd, app.window(), dpi, origin, DpiMode::from_env());
         Ok(())
     }
+    /// `SlideHold`: the sidebar's slide at an offset, held for a picture (or let go).
+    fn slide_hold(&self, ms: Option<f64>) -> Result<(), String> {
+        let ctl = self.ctl.upgrade().ok_or("the window is gone")?;
+        let mut c = ctl.try_borrow_mut().map_err(|_| "the controller is busy")?;
+        c.hold_slide(ms);
+        Ok(())
+    }
+
     /// `Snapshot`: Slint's own snapshot first, then `PrintWindow`; the PNG is in device pixels.
     fn snapshot(&self, path: &str, mode: Option<SnapMode>) -> Reply {
         let Some(app) = self.app.upgrade() else {
@@ -1235,9 +1422,19 @@ impl GlueCtx {
             w: snap.w,
             h: snap.h,
         };
+        // Read now, on the UI thread, straight after the picture: the slide the picture shows (audit V14).
+        let slide = self.slide();
+        // And the breath it shows: a question mark breathes from full to nothing and back, so a picture
+        // of it is only judged against the strength it was drawn at (the indicatorStyles flake, 2026-10-21).
+        let breathe = {
+            let g = app.global::<crate::MarkMotion>();
+            shown_breathe(g.get_still(), g.get_breathe())
+        };
         FRAMES.with(|f| {
             if let Ok(mut st) = f.try_borrow_mut() {
                 st.snap = Some(snap);
+                st.set_snap_slide(slide);
+                st.set_snap_breathe(Some(breathe));
             }
         });
         reply
@@ -1277,6 +1474,11 @@ impl FrameEnv for GlueCtx {
     fn press_down(&self, chord: &str) -> Result<(), String> {
         event_from_chord(chord, true).and_then(|e| self.key(&e))
     }
+
+    fn slide(&self) -> Option<(f32, f32)> {
+        let app = self.app.upgrade()?;
+        Some((app.get_sidebar_slot_visual(), app.get_sidebar_panel_left()))
+    }
 }
 
 impl GlueCtx {
@@ -1307,6 +1509,7 @@ impl GlueCtx {
         timeout_ms: u64,
         resp: Responder,
     ) {
+        let timeout_ms = clamp_timeout_ms(timeout_ms);
         FRAMES.with(|f| {
             if let Ok(mut st) = f.try_borrow_mut() {
                 st.rec.start();
@@ -1370,6 +1573,54 @@ fn pixel_reply(x: u32, y: u32) -> Reply {
             },
         },
         Err(_) => err("the frame state is busy"),
+    })
+}
+
+/// The software renderer has no rendering notifier: the series is the window's redraw requests from now on.
+pub fn series_from_redraws() {
+    FRAMES.with(|f| {
+        if let Ok(mut st) = f.try_borrow_mut() {
+            st.rec.use_redraw_series();
+        }
+    });
+}
+
+/// Called for every redraw request of the window (software renderer only; a no-op otherwise).
+pub fn on_redraw() {
+    if !crate::e2e::global().on() {
+        return;
+    }
+    let now = Instant::now();
+    let age = crate::startup_trace::since_process_start().as_secs_f64() * 1000.0;
+    let env = FRAMES.with(|f| f.try_borrow().ok().and_then(|st| st.env.clone()));
+    let slide = env.and_then(|e| e.slide());
+    FRAMES.with(|f| {
+        if let Ok(mut st) = f.try_borrow_mut() {
+            st.rec.redraw_sample(now, age, slide);
+        }
+    });
+}
+
+/// `frames.series`: every presented frame since the last `Frames` reset (or since the start), as
+/// `[age_ms, gap_ms, render_ms, slot, panel_left]` rows, and the process age now.
+pub fn frame_series() -> serde_json::Value {
+    let (frames, snap_slide, snap_breathe) = FRAMES.with(|f| match f.try_borrow() {
+        Ok(st) => (
+            st.rec.series_json(),
+            st.snap_slide_json(),
+            st.snap_breathe_json(),
+        ),
+        Err(_) => (
+            serde_json::json!([]),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+    });
+    serde_json::json!({
+        "frames": frames,
+        "snap_slide": snap_slide,
+        "snap_breathe": snap_breathe,
+        "now_age_ms": crate::startup_trace::since_process_start().as_secs_f64() * 1000.0,
     })
 }
 
@@ -1573,6 +1824,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
             resp.reply(frames_reply(reset));
             return;
         }
+        Request::SlideHold { ms } => ctx.slide_hold(ms),
         Request::Latency {
             chord,
             expect,
@@ -1638,6 +1890,32 @@ pub fn install(
 
 #[cfg(test)]
 mod tests {
+    // L59: pipe input must not panic the app or exhaust memory.
+    #[test]
+    fn a_huge_latency_timeout_does_not_overflow_the_deadline() {
+        let w = LatencyWatch::new(Instant::now(), "x", u64::MAX);
+        assert_eq!(w.frame(Instant::now(), "no"), LatencyStep::Waiting);
+        assert_eq!(clamp_timeout_ms(u64::MAX), MAX_TIMEOUT_MS);
+        assert_eq!(clamp_timeout_ms(500), 500);
+    }
+
+    #[test]
+    fn a_drag_with_absurd_steps_stays_bounded() {
+        let drag = drag_events((0.0, 0.0), (10.0, 0.0), u32::MAX, Button::Left);
+        assert_eq!(drag.len(), 2 + MAX_DRAG_STEPS as usize + 1);
+    }
+
+    // L58: a restore from the pipe must not take the foreground.
+    #[test]
+    fn a_restore_shows_the_window_without_activating_it() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, WINDOWPLACEMENT};
+        // SAFETY: WINDOWPLACEMENT is plain data.
+        let mut p: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        p.showCmd = 3; // SW_SHOWMAXIMIZED
+        let r = restore_placement(p);
+        assert_eq!(r.showCmd, SW_SHOWNOACTIVATE as u32);
+    }
+
     // Task 23: a collapsed sidebar is revealed by the cursor, which the real window hears from winit
     // (`CursorMoved`) and an injected Slint pointer event never reaches.
     #[test]
@@ -1664,23 +1942,18 @@ mod tests {
     }
 
     #[test]
-    fn an_injected_wheel_is_whole_notches_up_for_positive_dy() {
-        assert_eq!(wheel_notches(0.0), 0);
-        assert_eq!(wheel_notches(1.0), 1);
-        assert_eq!(wheel_notches(-1.0), -1);
-        assert_eq!(wheel_notches(120.0), 3);
-        assert_eq!(wheel_notches(-120.0), -3);
-        assert_eq!(wheel_notches(20_000.0), 500);
-    }
-
-    #[test]
-    fn a_wheel_is_the_terminals_only_inside_the_grid() {
-        let grid = (100.0, 40.0, 800.0, 500.0);
-        assert!(in_rect((300.0, 200.0), grid));
-        assert!(!in_rect((99.0, 200.0), grid));
-        assert!(!in_rect((300.0, 39.0), grid));
-        assert!(!in_rect((901.0, 200.0), grid));
-        assert!(!in_rect((300.0, 541.0), grid));
+    fn an_injected_wheel_keeps_what_is_less_than_a_notch() {
+        use crate::live::WheelAccum;
+        assert_eq!(wheel_lines(0.0), 0.0);
+        assert_eq!(wheel_lines(120.0), 3.0);
+        assert_eq!(wheel_lines(-120.0), -3.0);
+        assert_eq!(wheel_lines(20_000.0), 500.0);
+        assert_eq!(wheel_lines(1.0e9), 4096.0);
+        // 1 px used to count as a whole notch; now it adds up, as a touchpad's fractions do.
+        let mut acc = WheelAccum::new();
+        assert_eq!(acc.add_lines(wheel_lines(1.0)), 0);
+        let total: i32 = (0..4).map(|_| acc.add_lines(wheel_lines(10.0))).sum();
+        assert_eq!(total, 1, "four 10 px turns are one notch");
     }
 
     #[test]
@@ -2144,6 +2417,7 @@ mod frame_tests {
     struct FakeEnv {
         view: RefCell<Result<FrameView, String>>,
         pressed: Cell<u32>,
+        slide: Cell<Option<(f32, f32)>>,
     }
 
     impl FakeEnv {
@@ -2154,6 +2428,7 @@ mod frame_tests {
                     cursor_row: row.into(),
                 })),
                 pressed: Cell::new(0),
+                slide: Cell::new(None),
             }
         }
 
@@ -2173,10 +2448,29 @@ mod frame_tests {
             self.pressed.set(self.pressed.get() + 1);
             Ok(())
         }
+        fn slide(&self) -> Option<(f32, f32)> {
+            self.slide.get()
+        }
     }
 
     fn at(base: Instant, ms: u64) -> Instant {
         base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_see_through_snapshot_is_written_as_straight_alpha() {
+        // Slint hands back the window's pixels premultiplied (what the window shows over the desktop). The
+        // PNG says straight RGBA, so a ground of (23,23,23) at alpha 153 must read (23,23,23,153), not (14,14,14,153).
+        let mut px = vec![14, 14, 14, 153, 5, 6, 7, 0, 10, 20, 30, 255, 100, 0, 0, 128];
+        unpremultiply(&mut px);
+        assert_eq!(&px[0..4], &[23, 23, 23, 153]);
+        assert_eq!(&px[4..8], &[0, 0, 0, 0], "a clear pixel stays clear");
+        assert_eq!(
+            &px[8..12],
+            &[10, 20, 30, 255],
+            "an opaque pixel is untouched"
+        );
+        assert_eq!(&px[12..16], &[199, 0, 0, 128]);
     }
 
     #[test]
@@ -2231,6 +2525,119 @@ mod frame_tests {
             assert_eq!(info.height, (100.0 * s).round() as u32, "height at {s}");
             assert!(!snap.is_blank(), "something is drawn at {s}");
         }
+    }
+
+    #[test]
+    fn the_series_keeps_every_frame_with_its_gap_its_render_time_and_the_slide() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        for i in 0..3u64 {
+            env.slide
+                .set(Some((220.0 - 70.0 * i as f32, -10.0 * i as f32)));
+            st.rec.before(at(base, i * 16));
+            st.after(at(base, i * 16 + 2), 1000.0 + (i * 16) as f64, &env);
+        }
+        let s = st.rec.series();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].gap_ms, None, "the first frame has no gap behind it");
+        assert!((s[1].gap_ms.unwrap() - 16.0).abs() < 0.5);
+        assert!((s[2].render_ms.unwrap() - 2.0).abs() < 0.5);
+        assert_eq!(s[1].age_ms, 1016.0);
+        assert_eq!(s[2].slot, Some(80.0));
+        assert_eq!(s[2].panel_left, Some(-20.0));
+    }
+
+    #[test]
+    fn the_series_runs_from_the_first_frame_without_a_frames_request() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.rec.before(at(base, 0));
+        st.after(at(base, 3), 10.0, &env);
+        assert_eq!(
+            st.rec.series().len(),
+            1,
+            "start-up frames are in the series"
+        );
+        assert!(matches!(
+            st.frames_request(false),
+            Reply::Frames { count: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn a_software_series_is_the_redraws_and_not_the_grid_renders() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.rec.use_redraw_series();
+        // A grid render in software mode is not a presented frame: it adds nothing.
+        st.rec.before(at(base, 0));
+        st.after(at(base, 2), 5.0, &env);
+        assert!(st.rec.series().is_empty());
+        st.rec
+            .redraw_sample(at(base, 10), 100.0, Some((200.0, -20.0)));
+        st.rec
+            .redraw_sample(at(base, 27), 117.0, Some((150.0, -70.0)));
+        let s = st.rec.series();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].gap_ms, None);
+        assert!((s[1].gap_ms.unwrap() - 17.0).abs() < 0.5);
+        assert_eq!(s[1].render_ms, None, "a redraw request has no render time");
+        assert_eq!(s[1].slot, Some(150.0));
+    }
+
+    #[test]
+    fn a_frames_reset_empties_the_series_and_the_series_stops_at_its_cap() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        let mut st = FrameState::new();
+        st.after(at(base, 1), 1.0, &env);
+        assert_eq!(st.rec.series().len(), 1);
+        assert_eq!(st.frames_request(true), Reply::Ok);
+        assert!(st.rec.series().is_empty());
+        for i in 0..(SERIES_CAP as u64 + 5) {
+            st.after(at(base, i), i as f64, &env);
+        }
+        assert_eq!(st.rec.series().len(), SERIES_CAP);
+    }
+
+    #[test]
+    fn the_series_is_json_rows_of_age_gap_render_slot_and_left() {
+        let base = Instant::now();
+        let env = FakeEnv::showing("", "");
+        env.slide.set(Some((150.0, -5.0)));
+        let mut st = FrameState::new();
+        st.after(at(base, 1), 12.5, &env);
+        let v = st.rec.series_json();
+        assert_eq!(v[0][0], 12.5);
+        assert!(v[0][1].is_null() && v[0][2].is_null());
+        assert_eq!(v[0][3], 150.0);
+        assert_eq!(v[0][4], -5.0);
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_slide_its_picture_shows() {
+        let mut st = FrameState::new();
+        assert!(st.snap_slide_json().is_null(), "no picture taken yet");
+        st.set_snap_slide(Some((66.0, 12.0)));
+        assert_eq!(st.snap_slide_json(), serde_json::json!([66.0, 12.0]));
+        st.set_snap_slide(None);
+        assert!(st.snap_slide_json().is_null(), "a picture with no slide");
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_breath_its_picture_shows() {
+        let mut st = FrameState::new();
+        assert!(st.snap_breathe_json().is_null(), "no picture taken yet");
+        st.set_snap_breathe(Some(shown_breathe(false, 0.25)));
+        assert_eq!(st.snap_breathe_json(), serde_json::json!(0.25));
+        // A still window draws the breathing marks at full strength, whatever the clock last said.
+        st.set_snap_breathe(Some(shown_breathe(true, 0.25)));
+        assert_eq!(st.snap_breathe_json(), serde_json::json!(1.0));
+        st.set_snap_breathe(None);
+        assert!(st.snap_breathe_json().is_null(), "a picture with no window");
     }
 
     #[test]

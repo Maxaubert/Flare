@@ -7,7 +7,7 @@
 //! the owners to wake instead. Per folder, since `docs/a.pdf` differs in every shell. A "no" is
 //! forgotten after `NO_TTL_MS`, a "yes" stays. Text positions are char indices.
 
-use crate::links::find_links;
+use crate::links::{LinkSpan, char_slice, find_links_in, segments_of};
 use crate::path_open::{PATHS_MAX, PathHit, PathKind};
 use crate::paths::{PathCandidate, find_paths};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -97,15 +97,47 @@ pub fn parent_dir(dir: &str) -> Option<String> {
 /// The path candidates in `text` that are not inside a web link, and not a PROMPT: a path that
 /// runs straight into `>` (`PS C:\work>`, `C:\work>`) is left alone.
 pub fn path_candidates(text: &str) -> Vec<PathCandidate> {
+    path_candidates_in(text, None, &[])
+}
+
+/// `path_candidates`, with `joins` saying where rows broken by hand start (`cells::by_hand`): a
+/// path is read ACROSS each join first, then within each piece as before (PT termPathLinks.ts
+/// `pathCandidates(text, links, joins)`). `links` are the web links already found, if any.
+pub fn path_candidates_in(
+    text: &str,
+    links: Option<&[LinkSpan]>,
+    joins: &[usize],
+) -> Vec<PathCandidate> {
     let chars: Vec<char> = text.chars().collect();
-    let links = find_links(text);
-    find_paths(text)
+    let found;
+    let web: &[LinkSpan] = match links {
+        Some(l) => l,
+        None => {
+            found = find_links_in(text, joins);
+            &found
+        }
+    };
+    let keep = |c: &PathCandidate| {
+        chars.get(c.end) != Some(&'>') && !web.iter().any(|l| c.start < l.end && l.start < c.end)
+    };
+    if joins.is_empty() {
+        return find_paths(text).into_iter().filter(keep).collect();
+    }
+    let across = find_paths(text)
         .into_iter()
-        .filter(|c| {
-            chars.get(c.end) != Some(&'>')
-                && !links.iter().any(|l| c.start < l.end && l.start < c.end)
-        })
-        .collect()
+        .filter(|c| joins.iter().any(|&j| c.start < j && j < c.end));
+    let pieces = segments_of(chars.len(), joins)
+        .into_iter()
+        .flat_map(|(s, e)| {
+            find_paths(char_slice(text, s, e))
+                .into_iter()
+                .map(move |c| PathCandidate {
+                    start: c.start + s,
+                    end: c.end + s,
+                    path: c.path,
+                })
+        });
+    across.chain(pieces).filter(keep).collect()
 }
 
 fn key(cwd: &str, path: &str) -> String {
@@ -314,8 +346,56 @@ impl PathLinks {
         owner: &str,
         now_ms: u64,
     ) -> Vec<LinkRange> {
+        self.link_ranges_in(text, cwd, owner, now_ms, &[])
+    }
+
+    /// The candidates that name something, each with what it names (PT `pathsFound`). A path
+    /// across a row broken by hand comes first and, when it exists, covers its pieces:
+    /// `C:\a\scrat` + `chpad\b.exe` is one file, and neither piece is a link. When it names
+    /// nothing, its pieces are read as they always were. Read only, like `find_path`.
+    pub fn paths_found(
+        &self,
+        owner: &str,
+        cwd: &str,
+        candidates: Vec<PathCandidate>,
+        now_ms: u64,
+    ) -> Vec<(PathCandidate, PathFound)> {
+        self.paths_found_inner(owner, cwd, candidates, now_ms, &mut Vec::new())
+    }
+
+    fn paths_found_inner(
+        &self,
+        owner: &str,
+        cwd: &str,
+        candidates: Vec<PathCandidate>,
+        now_ms: u64,
+        ask: &mut Vec<(String, String)>,
+    ) -> Vec<(PathCandidate, PathFound)> {
+        let mut out: Vec<(PathCandidate, PathFound)> = Vec::new();
+        for c in candidates {
+            if out.iter().any(|(o, _)| o.start < c.end && c.start < o.end) {
+                continue;
+            }
+            if let Found::Hit(f) = self.find_inner(owner, cwd, &c.path, now_ms, ask) {
+                out.push((c, f));
+            }
+        }
+        out
+    }
+
+    /// `link_ranges`, with `joins` saying where rows broken by hand start in `text`
+    /// (`cells::by_hand`): a path is read across them, a web link never is.
+    pub fn link_ranges_in(
+        &mut self,
+        text: &str,
+        cwd: Option<&str>,
+        owner: &str,
+        now_ms: u64,
+        joins: &[usize],
+    ) -> Vec<LinkRange> {
         self.asked.remove(owner);
-        let mut out: Vec<LinkRange> = find_links(text)
+        let links = find_links_in(text, joins);
+        let mut out: Vec<LinkRange> = links
             .iter()
             .map(|l| LinkRange {
                 start: l.start,
@@ -328,17 +408,16 @@ impl PathLinks {
             return out;
         }
         let mut ask: Vec<(String, String)> = Vec::new();
-        for c in path_candidates(text) {
-            if let Found::Hit(f) = self.find_inner(owner, cwd, &c.path, now_ms, &mut ask) {
-                if !is_relative(&c.path) {
-                    self.learn_anchor(owner, &f.hit);
-                }
-                out.push(LinkRange {
-                    start: c.start,
-                    end: c.end,
-                    path: Some(c.path),
-                });
+        let candidates = path_candidates_in(text, Some(&links), joins);
+        for (c, f) in self.paths_found_inner(owner, cwd, candidates, now_ms, &mut ask) {
+            if !is_relative(&c.path) {
+                self.learn_anchor(owner, &f.hit);
             }
+            out.push(LinkRange {
+                start: c.start,
+                end: c.end,
+                path: Some(c.path),
+            });
         }
         if !ask.is_empty() {
             let mut by_base: Vec<(String, Vec<String>)> = Vec::new();
@@ -577,6 +656,67 @@ mod tests {
             texts("see https://github.com/a/b/blob/main/README.md and README.md"),
             vec!["README.md"]
         );
+    }
+
+    // Owner, 2026-10-21 (PT #250): a long path Claude printed was not a link. Claude Code breaks
+    // its own lines at the window's width, so `C:\...\scrat` and `chpad\...\Flare-win-Setup.exe`
+    // each named nothing.
+    const EXE: &str = "C:\\t\\scratchpad\\flare-pack\\Flare-win-Setup.exe";
+
+    fn hand_ranges(p: &mut Pump, text: &str, joins: &[usize]) -> Vec<(usize, usize)> {
+        for _ in 0..3 {
+            p.pl.link_ranges_in(text, Some("C:\\w"), "A", p.now, joins);
+            p.pump();
+        }
+        p.pl.link_ranges_in(text, Some("C:\\w"), "A", p.now, joins)
+            .into_iter()
+            .map(|r| (r.start, r.end))
+            .collect()
+    }
+
+    #[test]
+    fn a_path_broken_by_hand_is_one_link_over_both_rows() {
+        let top = "- Location: C:\\t\\scrat";
+        let text = format!("{top}chpad\\flare-pack\\Flare-win-Setup.exe");
+        let n = top.chars().count();
+        let mut p = Pump::new(set_resolver(&[EXE, "C:\\t\\a.txt"]));
+        assert_eq!(
+            hand_ranges(&mut p, &text, &[n]),
+            vec![(12, text.chars().count())]
+        );
+        // Without the break known, the top half alone is all there is: no link.
+        let mut p = Pump::new(set_resolver(&[EXE, "C:\\t\\a.txt"]));
+        assert!(hand_ranges(&mut p, top, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_path_ending_at_the_edge_keeps_its_link_when_the_joined_text_names_nothing() {
+        let top = "see C:\\t\\a.txt";
+        let n = top.chars().count();
+        let mut p = Pump::new(set_resolver(&[EXE, "C:\\t\\a.txt"]));
+        assert_eq!(
+            hand_ranges(&mut p, &format!("{top}\\more"), &[n]),
+            vec![(4, n)]
+        );
+    }
+
+    #[test]
+    fn a_web_link_is_never_carried_across_a_hand_break() {
+        let top = "go https://a.io/x";
+        let n = top.chars().count();
+        let text = format!("{top}/y/z");
+        let mut pl = PathLinks::new();
+        let r: Vec<(usize, usize)> = pl
+            .link_ranges_in(&text, Some("C:\\w"), "A", 0, &[n])
+            .into_iter()
+            .map(|r| (r.start, r.end))
+            .collect();
+        assert_eq!(r, vec![(3, n)]);
+        let paths: Vec<String> = path_candidates_in(&text, None, &[n])
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
+        assert_eq!(paths, vec!["/y/z"]);
     }
 
     #[test]

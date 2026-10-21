@@ -2,16 +2,25 @@
 //! to the painters through `GlyphSource`.
 
 use crate::blend::blend_premul;
+use crate::fallback;
 use crate::font_catalog::{
     FALLBACK_FAMILIES, LAZY_FALLBACK_FAMILIES, database_for, files_for_family, installed_faces,
 };
 use crate::glyph::{GlyphBitmap, GlyphKey, GlyphKind, GlyphMemory, GlyphSource};
-use crate::metrics::{BASE_FONT_PX, FontUnits, font_px_for};
+use crate::metrics::{BASE_FONT_PX, FontUnits, cell_metrics_at, font_px_for};
+use crate::shapes;
 use cosmic_text::{
     Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache, SwashContent,
     SwashImage, Weight,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Rasterised clusters kept before the cache starts over. A screen needs a few thousand at most;
+/// the cap is what stops a stream of new clusters growing it for the session (audit M1).
+const CACHE_MAX: usize = 8192;
+
+/// Characters remembered as covered by no family; the set starts over past this (audit R5).
+const UNCOVERED_MAX: usize = 4096;
 
 /// The locale the font system is built with (the fallback lists pick Han fonts by it).
 const LOCALE: &str = "en-US";
@@ -23,17 +32,32 @@ pub struct Rasterizer {
     fs: FontSystem,
     swash: SwashCache,
     family: String,
+    /// The whole stack, in order: a private-use character is looked up in each of these and never\n    /// in a symbol font that happens to map it to something else.
+    stack: Vec<String>,
     scale: f32,
     base_px: f32,
     generation: u64,
     units: FontUnits,
     cache: HashMap<GlyphKey, Option<GlyphBitmap>>,
-    /// The lazy fallback families already asked for (loaded or found useless), once each.
-    tried_fallbacks: Vec<&'static str>,
+    /// Entries the cache holds before it starts over (the atlas keeps what is on screen).
+    cache_cap: usize,
+    /// The (lazy family, character) pairs already asked for and found useless: a family is tried
+    /// again for a character it was not asked about, never twice for the same one.
+    rejected: HashSet<(&'static str, char)>,
+    /// Characters every lazy family was asked about and none covers, never walked again.
+    uncovered: HashSet<char>,
     /// The ones that were kept, so a rebuilt database brings them back.
     kept_fallbacks: Vec<&'static str>,
     /// (faces, bytes) of the last `font_bytes` count.
     font_bytes: std::cell::Cell<Option<(usize, usize)>>,
+    /// Characters sent to the fallback worker and not answered yet (audit M2).
+    pending: HashSet<char>,
+    /// The worker that reads cmaps and parses font files off the UI thread, started on first need.
+    worker: Option<fallback::Worker>,
+    /// What the worker shares: the answer-waiting flag, its cmap read count, the test gate.
+    shared: fallback::Shared,
+    /// How many font files were loaded into the database for a fallback walk.
+    family_loads: usize,
 }
 
 impl Rasterizer {
@@ -51,19 +75,26 @@ impl Rasterizer {
 
     fn from_system(mut fs: FontSystem, families: &[&str], scale: f32) -> Self {
         let family = pick_family(&fs, families);
-        let units = measure(&mut fs, &family, BASE_FONT_PX);
+        let units = measure(&mut fs, &family, BASE_FONT_PX).unwrap_or(FALLBACK_UNITS);
         Self {
             fs,
             swash: SwashCache::new(),
             family,
+            stack: families.iter().map(|f| (*f).to_string()).collect(),
             scale,
             base_px: BASE_FONT_PX,
             generation: 0,
             units,
             cache: HashMap::new(),
-            tried_fallbacks: Vec::new(),
+            cache_cap: CACHE_MAX,
+            rejected: HashSet::new(),
+            uncovered: HashSet::new(),
             kept_fallbacks: Vec::new(),
             font_bytes: std::cell::Cell::new(None),
+            pending: HashSet::new(),
+            worker: None,
+            shared: fallback::Shared::default(),
+            family_loads: 0,
         }
     }
 
@@ -106,36 +137,93 @@ impl Rasterizer {
         has_family(&self.fs, name)
     }
 
-    /// A character nothing loaded covers: loads, once per family, the next lazy fallback family
-    /// that covers it. True when one was added.
-    fn fallback_for(&mut self, ch: char) -> bool {
-        let faces = installed_faces();
-        for &family in LAZY_FALLBACK_FAMILIES {
-            if self.tried_fallbacks.contains(&family) {
-                continue;
-            }
-            self.tried_fallbacks.push(family);
-            let files = files_for_family(&faces, family);
-            let mut ids = Vec::new();
-            for file in files {
-                ids.extend(
-                    self.fs
-                        .db_mut()
-                        .load_font_source(cosmic_text::fontdb::Source::File(file)),
-                );
-            }
-            let covers = self.covers(ch);
-            if covers {
-                self.kept_fallbacks.push(family);
-                return true;
-            }
-            for id in ids {
-                self.fs.db_mut().remove_face(id);
-            }
-        }
-        false
+    #[cfg(test)]
+    fn set_cache_cap(&mut self, cap: usize) {
+        self.cache_cap = cap;
     }
 
+    /// Asks the worker for a family for a character nothing loaded covers. Never blocks: the cell
+    /// stays blank until `apply_fallbacks` has the answer. Each character is walked once.
+    fn request_fallback(&mut self, ch: char) {
+        if self.uncovered.contains(&ch) || self.pending.contains(&ch) {
+            return;
+        }
+        self.pending.insert(ch);
+        self.send_request(ch);
+    }
+
+    fn send_request(&mut self, ch: char) {
+        let mut skip: Vec<&'static str> = self.kept_fallbacks.clone();
+        skip.extend(
+            LAZY_FALLBACK_FAMILIES
+                .iter()
+                .copied()
+                .filter(|f| self.rejected.contains(&(*f, ch))),
+        );
+        let shared = self.shared.clone();
+        self.worker
+            .get_or_insert_with(|| fallback::Worker::spawn(shared))
+            .send(fallback::Request { ch, skip });
+    }
+
+    /// Takes the worker's answers: pushes a found family's parsed faces into the database, keeps it
+    /// when it shapes the character, and drops the cached blanks of that character. True when
+    /// something changed and the cells must be painted again.
+    fn take_fallbacks(&mut self) -> bool {
+        self.shared
+            .ready
+            .store(false, std::sync::atomic::Ordering::Release);
+        let mut changed = false;
+        while let Some(answer) = self.worker.as_ref().and_then(|w| w.try_recv()) {
+            match answer {
+                fallback::Answer::Found { ch, family, faces } => {
+                    if self.kept_fallbacks.contains(&family) {
+                        self.evict(ch);
+                        self.pending.remove(&ch);
+                        changed = true;
+                        continue;
+                    }
+                    self.rejected.insert((family, ch));
+                    let ids: Vec<_> = faces
+                        .into_iter()
+                        .map(|f| self.fs.db_mut().push_face_info(f))
+                        .collect();
+                    self.family_loads += ids.len();
+                    if self.covers(ch) {
+                        self.kept_fallbacks.push(family);
+                        self.evict(ch);
+                        self.pending.remove(&ch);
+                        changed = true;
+                    } else {
+                        for id in ids {
+                            self.fs.db_mut().remove_face(id);
+                        }
+                        // Next family for the same character.
+                        self.send_request(ch);
+                    }
+                }
+                fallback::Answer::None { ch } => {
+                    if self.uncovered.len() >= UNCOVERED_MAX {
+                        self.uncovered.clear();
+                    }
+                    if self.rejected.len() >= UNCOVERED_MAX {
+                        self.rejected.clear();
+                    }
+                    self.uncovered.insert(ch);
+                    self.pending.remove(&ch);
+                    // It draws the missing-glyph box from here on.
+                    self.evict(ch);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Forgets the cached bitmaps of clusters holding `ch` (they were drawn before its font came).
+    fn evict(&mut self, ch: char) {
+        self.cache.retain(|k, _| !k.text.contains(ch));
+    }
     /// Whether shaping `ch` in the current stack draws a real glyph (not the missing-glyph box).
     fn covers(&mut self, ch: char) -> bool {
         let px = font_px_for(self.base_px, 1.0);
@@ -191,6 +279,19 @@ impl Rasterizer {
         if key.text.chars().all(|c| c == ' ') {
             return None;
         }
+        // The first character decides; a trailing variation selector or combining mark is ignored.
+        let mut chars = key.text.chars();
+        if let Some(ch) = chars.next()
+            && chars.all(is_mark)
+            && shapes::has_shape(ch)
+        {
+            // Drawn here, cell-exact, never from a font (owner bug 2026-10-21).
+            let m = cell_metrics_at(&self.units, self.base_px, self.scale);
+            return shapes::shape_bitmap(ch, m.cell_w, m.cell_h, m.baseline, self.scale.max(1.0));
+        }
+        if key.text.chars().next().is_some_and(is_private_use) {
+            return self.rasterize_private_use(key);
+        }
         let px = font_px_for(self.base_px, self.scale);
         let family = self.family.clone();
         let mut attrs = Attrs::new().family(Family::Name(&family));
@@ -203,14 +304,13 @@ impl Rasterizer {
         let mut buffer = Buffer::new_empty(Metrics::new(px, px));
         buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.fs, false);
-        // A glyph id of 0 is the missing-glyph box: ask for one more fallback family and shape
-        // again, until the text is covered or no lazy family is left.
-        while let Some(missing) = missing_char(&buffer) {
-            if !self.fallback_for(missing) {
-                break;
+        // A glyph id of 0 is the missing-glyph box. The family that covers it is found on the
+        // worker (audit M2): until it answers the cell stays blank, and the paint goes on.
+        if let Some(missing) = missing_char(&buffer) {
+            self.request_fallback(missing);
+            if self.pending.contains(&missing) {
+                return None;
             }
-            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(&mut self.fs, false);
         }
         let run = buffer.layout_runs().next()?;
 
@@ -230,10 +330,75 @@ impl Rasterizer {
     }
 }
 
+impl Rasterizer {
+    /// A private-use character (Nerd Font icons and the like) has no meaning outside the font that
+    /// was made for it, and a symbol font in the fallback list maps some of them to unrelated
+    /// drawings (a star for a Powerline cap). Like Prism Terminal's stack, it is looked up in the
+    /// stack's own faces in order; where none has it, the cell stays blank.
+    fn rasterize_private_use(&mut self, key: &GlyphKey) -> Option<GlyphBitmap> {
+        let px = font_px_for(self.base_px, self.scale);
+        for name in self.stack.clone() {
+            if !has_family(&self.fs, &name) {
+                continue;
+            }
+            let mut attrs = Attrs::new().family(Family::Name(&name));
+            if key.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if key.italic {
+                attrs = attrs.style(Style::Italic);
+            }
+            let mut buffer = Buffer::new_empty(Metrics::new(px, px));
+            buffer.set_text(&key.text, &attrs, Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut self.fs, false);
+            let Some(run) = buffer.layout_runs().next() else {
+                continue;
+            };
+            let own = run.glyphs.iter().all(|g| {
+                g.glyph_id != 0
+                    && self.fs.db().face(g.font_id).is_some_and(|f| {
+                        f.families
+                            .iter()
+                            .any(|(n, _)| n.eq_ignore_ascii_case(&name))
+                    })
+            });
+            if !own {
+                continue;
+            }
+            let mut images: Vec<(i32, i32, SwashImage)> = Vec::new();
+            for glyph in run.glyphs.iter() {
+                let physical = glyph.physical((0.0, 0.0), 1.0);
+                if let Some(image) = self
+                    .swash
+                    .get_image(&mut self.fs, physical.cache_key)
+                    .clone()
+                {
+                    images.push((physical.x, physical.y, image));
+                }
+            }
+            return compose(&images);
+        }
+        None
+    }
+}
+
+/// A variation selector, joiner or combining mark: it adds nothing a cell-exact shape could draw.
+fn is_mark(c: char) -> bool {
+    matches!(c as u32, 0x0300..=0x036F | 0x200D | 0xFE00..=0xFE0F | 0x20D0..=0x20FF)
+}
+
+/// The private-use areas: U+E000 to U+F8FF and the two supplementary planes.
+fn is_private_use(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
 impl GlyphSource for Rasterizer {
     fn glyph(&mut self, key: &GlyphKey) -> Option<&GlyphBitmap> {
         if !self.cache.contains_key(key) {
             let bitmap = self.rasterize(key);
+            if self.cache.len() >= self.cache_cap {
+                self.cache.clear();
+            }
             self.cache.insert(key.clone(), bitmap);
         }
         self.cache.get(key).and_then(|bitmap| bitmap.as_ref())
@@ -241,6 +406,14 @@ impl GlyphSource for Rasterizer {
 
     fn font_units(&self) -> FontUnits {
         self.units
+    }
+
+    fn fallback_ready(&self) -> bool {
+        self.shared.ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn apply_fallbacks(&mut self) -> bool {
+        self.take_fallbacks()
     }
 
     fn set_scale(&mut self, scale: f32) {
@@ -266,15 +439,28 @@ impl GlyphSource for Rasterizer {
         let wanted = families
             .iter()
             .find(|f| !files_for_family(&installed, f).is_empty());
-        if wanted.is_some_and(|f| !has_family(&self.fs, f)) {
-            // The stack's first installed family is not loaded: swap the database for the new stack.
+        let _ = wanted;
+        let missing = families
+            .iter()
+            .any(|f| !files_for_family(&installed, f).is_empty() && !has_family(&self.fs, f));
+        if missing {
+            // An installed family of the stack is not loaded (a Nerd Font the old stack lacked):
+            // swap the database for the new stack.
             self.rebuild_for(families);
         }
+        let stack: Vec<String> = families.iter().map(|f| (*f).to_string()).collect();
+        let stack_changed = stack != self.stack;
+        self.stack = stack;
         let family = pick_family(&self.fs, families);
         if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
+            if stack_changed || missing {
+                // Same first face, other private-use sources: what was cached may now differ.
+                self.cache.clear();
+                self.generation += 1;
+            }
             return;
         }
-        self.units = measure(&mut self.fs, &family, base_px);
+        self.units = measure(&mut self.fs, &family, base_px).unwrap_or(FALLBACK_UNITS);
         self.family = family;
         self.base_px = base_px;
         self.cache.clear();
@@ -316,27 +502,41 @@ fn has_family(fs: &FontSystem, name: &str) -> bool {
         .any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
 }
 
-/// Shapes "M" at the base size and reads the font's metrics, in font units.
-fn measure(fs: &mut FontSystem, family: &str, base_px: f32) -> FontUnits {
+/// The metrics used when no font can be measured (the registry yielded nothing, or no face shapes
+/// "M"): a monospace face's usual proportions, so the grid still lays out (audit L8).
+const FALLBACK_UNITS: FontUnits = FontUnits {
+    units_per_em: 2048.0,
+    ascent: 1900.0,
+    descent: -480.0,
+    leading: 0.0,
+    advance: 1200.0,
+};
+
+/// Shapes "M" at the base size and reads the font's metrics, in font units. `None` when no font
+/// shapes it.
+fn measure(fs: &mut FontSystem, family: &str, base_px: f32) -> Option<FontUnits> {
+    // cosmic-text panics ("no default font found") when shaping has no face at all, so an empty
+    // database is answered here, before any shaping.
+    if fs.db().is_empty() {
+        return None;
+    }
     let px = font_px_for(base_px, 1.0);
     let attrs = Attrs::new().family(Family::Name(family));
     let mut buffer = Buffer::new_empty(Metrics::new(px, px));
     buffer.set_text("M", &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fs, false);
-    let run = buffer.layout_runs().next().expect("a layout run for M");
-    let glyph = &run.glyphs[0];
-    let font = fs
-        .get_font(glyph.font_id, Weight::NORMAL)
-        .expect("the font that shaped M");
+    let run = buffer.layout_runs().next()?;
+    let glyph = run.glyphs.first()?;
+    let font = fs.get_font(glyph.font_id, Weight::NORMAL)?;
     let metrics = font.metrics();
     let upem = metrics.units_per_em as f32;
-    FontUnits {
+    Some(FontUnits {
         units_per_em: upem,
         ascent: metrics.ascent,
         descent: metrics.descent,
         leading: metrics.leading,
         advance: glyph.w / px * upem,
-    }
+    })
 }
 
 /// Composes the glyph images of one cluster into one bitmap. Positions are relative to the pen at
@@ -434,6 +634,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_font_system_with_no_faces_measures_the_fallback() {
+        // Audit L8: the registry yielded nothing, so "M" shapes to no run and measure() used to
+        // panic. It must fall back to the default metrics instead.
+        let fs =
+            FontSystem::new_with_locale_and_db(LOCALE.into(), cosmic_text::fontdb::Database::new());
+        let r = Rasterizer::from_system(fs, &["No Such Font"], 1.0);
+        assert_eq!(r.units, FALLBACK_UNITS);
+        assert!(r.units.units_per_em > 0.0);
+    }
+
+    /// Waits for every fallback the worker was asked for and applies the answers (the UI thread
+    /// does this on its next frame).
+    impl Rasterizer {
+        fn settle(&mut self) {
+            let start = std::time::Instant::now();
+            while !self.pending.is_empty() {
+                assert!(
+                    start.elapsed().as_secs() < 60,
+                    "the fallback worker never answered"
+                );
+                self.take_fallbacks();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// The glyph as it is once any fallback font has arrived.
+    fn glyph_settled(r: &mut Rasterizer, k: &GlyphKey) -> Option<GlyphBitmap> {
+        r.glyph(k);
+        r.settle();
+        r.glyph(k).cloned()
+    }
+
     fn bold_key(text: &str) -> GlyphKey {
         GlyphKey {
             text: text.to_string(),
@@ -486,7 +720,7 @@ mod tests {
     fn cjk_falls_back() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         let m_width = r.glyph(&key("M")).expect("M").width;
-        match r.glyph(&key("中")).map(|g| g.width) {
+        match glyph_settled(&mut r, &key("中")).map(|g| g.width) {
             Some(w) => assert!(w > m_width, "CJK is wider than M"),
             None => {
                 if installed("Microsoft YaHei UI") {
@@ -500,7 +734,7 @@ mod tests {
     #[test]
     fn emoji_is_color() {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
-        match r.glyph(&key("😀")).map(|g| g.kind) {
+        match glyph_settled(&mut r, &key("😀")).map(|g| g.kind) {
             Some(kind) => assert_eq!(kind, GlyphKind::Color),
             None => {
                 if installed("Segoe UI Emoji") {
@@ -609,8 +843,8 @@ mod tests {
             for ch in text.chars().filter(|c| !c.is_whitespace()) {
                 let k = key(&ch.to_string());
                 assert_eq!(
-                    old.glyph(&k).cloned(),
-                    new.glyph(&k).cloned(),
+                    glyph_settled(&mut old, &k),
+                    glyph_settled(&mut new, &k),
                     "U+{:04X} differs at scale {scale}",
                     ch as u32
                 );
@@ -632,24 +866,152 @@ mod tests {
         assert!(!r.has_family_loaded("Javanese Text"));
         let before = r.face_count();
         let java = key("\u{A9B2}");
-        assert!(r.glyph(&java).is_some());
+        assert!(glyph_settled(&mut r, &java).is_some());
         assert!(r.has_family_loaded("Javanese Text"));
         let after = r.face_count();
         assert!(after > before);
         // The same family is not loaded again, by this character or another of its script.
-        r.glyph(&key("\u{A9B3}"));
-        r.glyph(&java);
+        glyph_settled(&mut r, &key("\u{A9B3}"));
+        glyph_settled(&mut r, &java);
         assert_eq!(r.face_count(), after);
-        let tried = r.tried_fallbacks.len();
+        let tried = r.rejected.len();
         // A character nothing covers tries every lazy family once and keeps none.
-        r.glyph(&key("\u{10FFFD}"));
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
         let after_tofu = r.face_count();
         assert_eq!(after_tofu, after);
-        let tried_after = r.tried_fallbacks.len();
+        let tried_after = r.rejected.len();
         assert!(tried_after >= tried);
-        r.glyph(&key("\u{10FFFC}"));
-        assert_eq!(r.tried_fallbacks.len(), tried_after);
+        // The same character again walks nothing (audit M2: a different one may, see the test
+        // a_char_no_family_covers_does_not_burn_the_families_for_another_script).
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
+        glyph_settled(&mut r, &key("a\u{3FFFD}"));
+        assert_eq!(r.rejected.len(), tried_after);
         assert_eq!(r.face_count(), after);
+    }
+
+    #[test]
+    fn many_uncovered_characters_load_no_font_file() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        // Unassigned codepoints: no lazy family has them in its cmap (audit R5), so a flood of
+        // them reads each family's cmap at most once and loads nothing into the database.
+        let faces = r.face_count();
+        for i in 0..40u32 {
+            r.glyph(&key(&char::from_u32(0x10FF00 + i).unwrap().to_string()));
+        }
+        r.settle();
+        assert_eq!(
+            r.family_loads, 0,
+            "a family was loaded for an uncovered char"
+        );
+        assert_eq!(r.face_count(), faces);
+        assert!(
+            r.shared
+                .cmap_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+                <= LAZY_FALLBACK_FAMILIES.len()
+        );
+    }
+
+    #[test]
+    fn the_uncovered_set_is_bounded() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for i in 0..(UNCOVERED_MAX as u32 + 50) {
+            r.glyph(&key(&char::from_u32(0x100000 + i).unwrap().to_string()));
+        }
+        r.settle();
+        assert!(r.uncovered.len() <= UNCOVERED_MAX);
+    }
+
+    #[test]
+    fn the_glyph_cache_is_bounded() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.set_cache_cap(8);
+        for i in 0..40u32 {
+            // Longer and longer clusters, the shape of a mark flood.
+            let text = format!("e{}", "\u{301}".repeat(i as usize));
+            r.glyph(&key(&text));
+            assert!(r.cached() <= 8, "{} cached after {i}", r.cached());
+        }
+        assert!(r.glyph(&key("M")).is_some(), "still draws after evictions");
+    }
+
+    #[test]
+    fn a_char_no_family_covers_does_not_burn_the_families_for_another_script() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
+            eprintln!("skipped: Javanese Text is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        // Nothing covers this one: every lazy family is asked about it.
+        glyph_settled(&mut r, &key("\u{3FFFD}"));
+        assert!(!r.has_family_loaded("Javanese Text"));
+        let walked = r.rejected.len();
+        assert!(r.uncovered.contains(&'\u{3FFFD}'));
+        // The same character is never walked again (a prompt icon redrawn every frame).
+        glyph_settled(&mut r, &key("x\u{3FFFD}"));
+        assert_eq!(r.rejected.len(), walked);
+        // A different script still reaches its family.
+        assert!(glyph_settled(&mut r, &key("\u{A9B2}")).is_some());
+        assert!(r.has_family_loaded("Javanese Text"));
+    }
+
+    /// A gate that holds the fallback worker, standing in for a slow disk.
+    fn gated() -> (Rasterizer, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        r.shared.gate = Some(gate.clone());
+        (r, gate)
+    }
+
+    #[test]
+    fn paint_never_blocks_on_a_family_load() {
+        // Audit M2: a character no loaded font covers used to read cmaps and load a family inside
+        // glyph(), on the UI thread. With the worker held shut, glyph() must still return, draw
+        // blank, load nothing and read nothing; it only asks.
+        let (mut r, gate) = gated();
+        let faces = r.face_count();
+        assert!(r.glyph(&key("\u{3FFFD}")).is_none(), "blank while it waits");
+        r.glyph(&key("\u{A9B2}"));
+        assert_eq!(r.face_count(), faces, "nothing was loaded by the paint");
+        assert_eq!(r.family_loads, 0);
+        assert_eq!(
+            r.shared
+                .cmap_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(r.pending.contains(&'\u{3FFFD}'));
+        assert!(!r.fallback_ready(), "nothing has answered yet");
+        // The same character asked again while it waits is not sent twice.
+        r.glyph(&key("x\u{3FFFD}"));
+        assert_eq!(r.pending.len(), 2);
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        r.settle();
+        assert!(r.uncovered.contains(&'\u{3FFFD}'));
+    }
+
+    #[test]
+    fn a_family_that_arrives_repaints_the_blank_cell() {
+        use crate::font_catalog::{files_for_family, installed_faces};
+        if files_for_family(&installed_faces(), "Javanese Text").is_empty() {
+            eprintln!("skipped: Javanese Text is not installed");
+            return;
+        }
+        let (mut r, gate) = gated();
+        let java = key("\u{A9B2}");
+        assert!(r.glyph(&java).is_none());
+        assert!(!r.has_family_loaded("Javanese Text"));
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        let start = std::time::Instant::now();
+        while !r.fallback_ready() {
+            assert!(start.elapsed().as_secs() < 60, "no answer");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(r.apply_fallbacks(), "the host is told to paint again");
+        assert!(r.has_family_loaded("Javanese Text"));
+        assert!(!r.fallback_ready(), "the flag is taken with the answers");
+        assert!(r.glyph(&java).is_some(), "the cell now draws");
     }
 
     #[test]
@@ -687,5 +1049,91 @@ mod tests {
             all.db().len()
         );
         assert!(new_ms < 150, "{new_ms} ms");
+    }
+
+    #[test]
+    fn powerline_shapes_are_drawn_to_the_cell_at_every_scale() {
+        // Owner bug 2026-10-21: U+E0B1 was a tofu box and U+E0B4 / U+E0B6 a star (Segoe UI Symbol).
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 2.25, 3.0] {
+            r.set_scale(scale);
+            let m = cell_metrics_at(&r.font_units(), r.base_px(), scale);
+            for ch in ["\u{E0B0}", "\u{E0B1}", "\u{E0B4}", "\u{E0B6}", "\u{E0BF}"] {
+                let b = r.glyph(&key(ch)).cloned().expect("a built-in shape");
+                assert_eq!(b.kind, GlyphKind::Mask);
+                assert_eq!(
+                    (b.width, b.height, b.left),
+                    (m.cell_w, m.cell_h, 0),
+                    "{ch:?} at {scale}"
+                );
+                assert_eq!(b.top, m.baseline as i32);
+                assert!(
+                    b.data.iter().any(|&v| v >= 100),
+                    "{ch:?} has solid or stroke ink"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_statusline_pill_has_no_seam_between_cap_and_bar() {
+        // chevron, cap, bar cell, cap: the cap's flat side is solid, so painted over the bar's
+        // background it leaves no gap column.
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 2.25);
+        let m = cell_metrics_at(&r.font_units(), r.base_px(), 2.25);
+        let open = r.glyph(&key("\u{E0B6}")).cloned().unwrap();
+        let close = r.glyph(&key("\u{E0B4}")).cloned().unwrap();
+        for y in 0..m.cell_h {
+            let i = (y * open.width + open.width - 1) as usize;
+            assert!(open.data[i] >= 200, "left cap meets the bar at row {y}");
+            assert!(
+                close.data[(y * close.width) as usize] >= 200,
+                "right cap meets the bar at row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_private_use_character_is_never_a_symbol_fonts_unrelated_glyph() {
+        // U+E0C0 is not a built-in shape. Segoe UI Symbol must not answer it; the stack's own
+        // faces may (JetBrainsMono NF has it), and with none that has it the cell is blank.
+        let mut plain = Rasterizer::new(&["Cascadia Mono"], 1.0);
+        assert!(glyph_settled(&mut plain, &key("\u{E0C0}")).is_none());
+        assert!(glyph_settled(&mut plain, &key("\u{F8FF}")).is_none());
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        if r.has_family_loaded("JetBrainsMono NF") {
+            assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
+        } else {
+            eprintln!("skipped: JetBrainsMono NF is not installed");
+        }
+    }
+
+    #[test]
+    fn a_shape_with_a_trailing_variation_selector_is_still_the_shape() {
+        let mut r = Rasterizer::new(&["Cascadia Mono"], 1.0);
+        let plain = r.glyph(&key("\u{E0B4}")).cloned().unwrap();
+        let sel = r.glyph(&key("\u{E0B4}\u{FE0F}")).cloned().unwrap();
+        assert_eq!(plain.data, sel.data);
+    }
+
+    #[test]
+    fn switching_the_stack_loads_its_nerd_font() {
+        let nf = ["JetBrainsMono NF", "Cascadia Mono"];
+        if files_for_family(&installed_faces(), "JetBrainsMono NF").is_empty() {
+            eprintln!("skipped: JetBrainsMono NF is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(&["Consolas", "Cascadia Mono"], 1.0);
+        r.set_font(&nf, 14.0);
+        assert!(r.has_family_loaded("JetBrainsMono NF"));
+        assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
+    }
+
+    #[test]
+    fn box_drawing_and_shades_still_come_from_the_font() {
+        let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+        for ch in ["\u{2500}", "\u{253C}", "\u{2591}", "\u{2593}"] {
+            assert!(glyph_settled(&mut r, &key(ch)).is_some(), "{ch:?}");
+        }
     }
 }

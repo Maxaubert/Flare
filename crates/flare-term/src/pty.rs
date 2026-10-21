@@ -177,8 +177,9 @@ impl PtyProcess for PortablePty {
     }
 }
 
-/// Pure: every process below `root` in a (pid, parent pid) list, cycle-safe, `root` excluded.
-fn descendants_of(rows: &[(u32, u32)], root: u32) -> Vec<u32> {
+/// Pure: the processes below `root` in a (pid, parent pid) list, cycle-safe, `root` excluded. A child is
+/// followed only when `accept(parent, child)` says so; a refused child and everything under it is left out.
+fn walk(rows: &[(u32, u32)], root: u32, accept: &dyn Fn(u32, u32) -> bool) -> Vec<u32> {
     let mut seen = std::collections::HashSet::from([root]);
     let mut out = Vec::new();
     let mut queue = vec![root];
@@ -187,7 +188,8 @@ fn descendants_of(rows: &[(u32, u32)], root: u32) -> Vec<u32> {
         let p = queue[i];
         i += 1;
         for &(pid, ppid) in rows {
-            if ppid == p && seen.insert(pid) {
+            if ppid == p && !seen.contains(&pid) && accept(p, pid) {
+                seen.insert(pid);
                 out.push(pid);
                 queue.push(pid);
             }
@@ -196,7 +198,99 @@ fn descendants_of(rows: &[(u32, u32)], root: u32) -> Vec<u32> {
     out
 }
 
-/// Ends every process below `root` (TerminateProcess). Never waits; failures are ignored.
+#[cfg(test)]
+fn descendants_of(rows: &[(u32, u32)], root: u32) -> Vec<u32> {
+    walk(rows, root, &|_, _| true)
+}
+
+/// What the kill needs to know about one process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcInfo {
+    /// Creation time (FILETIME ticks); None when it cannot be read.
+    created: Option<u64>,
+    /// The image is GUI-subsystem: a window app, not a console client.
+    gui: bool,
+}
+
+/// Pure: the processes below `root` that closing the tab may end. A GUI-subsystem process is an app the
+/// user started from the shell (Notepad, Excel, Chrome): it is spared, with everything under it. A process
+/// created before its listed parent only carries a recycled parent id (the real parent died and the number
+/// was reused): it is spared too, and so is one whose creation time cannot be read (audit H1, L1).
+fn kill_set(rows: &[(u32, u32)], root: u32, info: &dyn Fn(u32) -> ProcInfo) -> Vec<u32> {
+    walk(rows, root, &|parent, child| {
+        let c = info(child);
+        if c.gui {
+            return false;
+        }
+        match (info(parent).created, c.created) {
+            (_, None) => false,
+            (Some(p), Some(c)) => c >= p,
+            (None, Some(_)) => true,
+        }
+    })
+}
+
+/// The subsystem word of a PE image: 2 is GUI, 3 is console. None when the file is not a readable PE.
+fn pe_subsystem(path: &std::path::Path) -> Option<u16> {
+    use std::io::{Seek, SeekFrom};
+    // sync-ok: runs on the closing thread for a few processes, reading 6 bytes of a header
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut w = [0u8; 4];
+    f.seek(SeekFrom::Start(0x3C)).ok()?;
+    f.read_exact(&mut w).ok()?;
+    let pe = u32::from_le_bytes(w) as u64;
+    f.seek(SeekFrom::Start(pe)).ok()?;
+    f.read_exact(&mut w).ok()?;
+    if &w != b"PE\0\0" {
+        return None;
+    }
+    // Optional header starts 24 bytes after the signature; the subsystem sits 68 bytes into it.
+    f.seek(SeekFrom::Start(pe + 24 + 68)).ok()?;
+    let mut s = [0u8; 2];
+    f.read_exact(&mut s).ok()?;
+    Some(u16::from_le_bytes(s))
+}
+
+fn proc_info(pid: u32) -> ProcInfo {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    let none = ProcInfo {
+        created: None,
+        gui: false,
+    };
+    // SAFETY: plain values in; a null handle means failure and is checked.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return none;
+    }
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut cr, mut ex, mut kr, mut us) = (zero, zero, zero, zero);
+    // SAFETY: `h` is a live handle; the four out structs are live.
+    let ok = unsafe { GetProcessTimes(h, &mut cr, &mut ex, &mut kr, &mut us) } != 0;
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: `buf` holds `len` units and `len` is updated to the count written.
+    let named = unsafe { QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0;
+    // SAFETY: `h` is ours and closed once.
+    unsafe { CloseHandle(h) };
+    let gui = named
+        && pe_subsystem(std::path::Path::new(&String::from_utf16_lossy(
+            &buf[..len as usize],
+        )))
+        .is_some_and(|s| s == 2);
+    ProcInfo {
+        created: ok.then(|| (u64::from(cr.dwHighDateTime) << 32) | u64::from(cr.dwLowDateTime)),
+        gui,
+    }
+}
+
+/// Ends the console processes below `root` (TerminateProcess), sparing GUI apps. Never waits; failures are
+/// ignored.
 fn kill_descendants(root: u32) {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -222,8 +316,16 @@ fn kill_descendants(root: u32) {
     }
     // SAFETY: `snap` is closed once.
     unsafe { CloseHandle(snap) };
+    // Each process is read once: the walk asks about a parent for every child it has.
+    let cache = std::cell::RefCell::new(std::collections::HashMap::<u32, ProcInfo>::new());
+    let info = |pid: u32| {
+        *cache
+            .borrow_mut()
+            .entry(pid)
+            .or_insert_with(|| proc_info(pid))
+    };
     // Deepest first is not needed: a parent's death does not stop a child.
-    for pid in descendants_of(&rows, root) {
+    for pid in kill_set(&rows, root, &info) {
         // SAFETY: OpenProcess takes plain values; a null handle means failure and is checked.
         let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
         if h.is_null() {
@@ -236,17 +338,18 @@ fn kill_descendants(root: u32) {
         }
     }
 }
-
 /// One job object for the whole process, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: every shell the process
 /// starts joins it, so when the process ends (a panic that aborts, a timeout kill, a crash) Windows
-/// ends the shells and their children with it. Nothing outlives its owner.
+/// ends the shells with it. SILENT_BREAKAWAY_OK: only the shells themselves are members, what a shell starts
+/// is not, so a window app the user opened (Notepad, Excel) outlives the tab, the quit and a crash. The
+/// console processes of a shell end with their pseudo console, and kill ends them first (audit H1).
 fn join_kill_on_close_job(pid: u32) {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -264,7 +367,8 @@ fn join_kill_on_close_job(pid: u32) {
         }
         // SAFETY: plain data, zero is a valid initial state.
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
         // SAFETY: `info` is a live struct of the size passed.
         let ok = unsafe {
             SetInformationJobObject(
@@ -323,6 +427,51 @@ mod tests {
         assert_eq!(descendants_of(&rows, 5), vec![6]);
     }
 
+    fn info_of(table: &[(u32, u64, bool)]) -> impl Fn(u32) -> ProcInfo + '_ {
+        move |pid| {
+            table
+                .iter()
+                .find(|r| r.0 == pid)
+                .map(|r| ProcInfo {
+                    created: Some(r.1),
+                    gui: r.2,
+                })
+                .unwrap_or(ProcInfo {
+                    created: None,
+                    gui: false,
+                })
+        }
+    }
+
+    #[test]
+    fn a_gui_child_and_everything_under_it_is_spared() {
+        // shell 10 -> notepad 20 (GUI) -> helper 30; shell 10 -> ping 40 (console)
+        let rows = [(20, 10), (30, 20), (40, 10)];
+        let table = [
+            (10, 100, false),
+            (20, 110, true),
+            (30, 120, false),
+            (40, 130, false),
+        ];
+        let mut k = kill_set(&rows, 10, &info_of(&table));
+        k.sort();
+        assert_eq!(k, vec![40]);
+    }
+
+    #[test]
+    fn a_process_older_than_its_parent_is_a_recycled_pid_and_is_spared() {
+        // 20 claims parent 10 but was created before 10: its real parent died and the pid was reused.
+        let rows = [(20, 10), (30, 20), (40, 10)];
+        let table = [
+            (10, 100, false),
+            (20, 50, false),
+            (30, 120, false),
+            (40, 130, false),
+        ];
+        let mut k = kill_set(&rows, 10, &info_of(&table));
+        k.sort();
+        assert_eq!(k, vec![40]);
+    }
     type Shared = Arc<Mutex<Vec<u8>>>;
     type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -466,7 +615,12 @@ mod tests {
 
     #[test]
     fn a_missing_folder_is_an_error_not_home() {
-        let r = PortableSpawner.spawn(&cmd_spec(&[], "C:\\no\\such\\folder\\flare", std_env()));
+        let r = PortableSpawner.spawn(&cmd_spec(
+            &[],
+            "C:\
+o\\such\\folder\\flare",
+            std_env(),
+        ));
         let Err(msg) = r else {
             panic!("expected an error")
         };
@@ -555,6 +709,183 @@ mod tests {
         std::process::abort();
     }
 
+    /// Two copies of ping.exe in `dir`: a console one and one whose PE header says GUI subsystem (a window
+    /// app with no window), named uniquely so they can be found by name.
+    fn probes(dir: &std::path::Path, tag: &str) -> (String, String) {
+        let src =
+            std::path::Path::new(&std::env::var("SystemRoot").unwrap()).join("System32\\PING.EXE");
+        let mut bytes = std::fs::read(src).unwrap();
+        let con = format!("flare-con-{tag}.exe");
+        let gui = format!("flare-gui-{tag}.exe");
+        std::fs::write(dir.join(&con), &bytes).unwrap();
+        let pe = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap()) as usize;
+        let at = pe + 24 + 68;
+        assert_eq!(
+            u16::from_le_bytes([bytes[at], bytes[at + 1]]),
+            3,
+            "ping is a console image"
+        );
+        bytes[at] = 2;
+        std::fs::write(dir.join(&gui), &bytes).unwrap();
+        (con, gui)
+    }
+
+    fn pids_named(name: &str) -> Vec<u32> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        };
+        let mut out = Vec::new();
+        // SAFETY: plain values; the snapshot is closed once; the entry is plain data with its size set.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut e) != 0;
+            while ok {
+                let n = String::from_utf16_lossy(&e.szExeFile);
+                if n.trim_end_matches('\0').eq_ignore_ascii_case(name) {
+                    out.push(e.th32ProcessID);
+                }
+                ok = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+        }
+        out
+    }
+
+    fn end_pid(pid: u32) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+
+    /// A cmd shell that starts the console probe and the GUI probe, both under the shell.
+    fn start_probes(dir: &std::path::Path, con: &str, gui: &str) -> Box<dyn PtyProcess> {
+        let script = dir.join("go.cmd");
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r
+start \"\" /b \"{d}\\{con}\" -n 120 127.0.0.1 >nul\r
+start \"\" /b \"{d}\\{gui}\" -n 120 127.0.0.1 >nul\r
+",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        PortableSpawner
+            .spawn(&cmd_spec(
+                &["/k", &script.to_string_lossy()],
+                &temp_cwd(),
+                std_env(),
+            ))
+            .unwrap()
+    }
+
+    fn wait_pid(name: &str) -> Option<u32> {
+        let end = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < end {
+            if let Some(p) = pids_named(name).first() {
+                return Some(*p);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
+    #[test]
+    fn closing_a_tab_ends_its_console_children_and_spares_a_gui_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("kill{}", std::process::id());
+        let (con, gui) = probes(dir.path(), &tag);
+        let p = start_probes(dir.path(), &con, &gui);
+        let mut g = Reap(Some(p));
+        let (_buf, _w, _h) = pump(g.0.as_mut().unwrap());
+        let con_pid = wait_pid(&con).expect("the console child started");
+        let gui_pid = wait_pid(&gui).expect("the GUI child started");
+        g.0.as_mut().unwrap().kill();
+        let end = Instant::now() + Duration::from_secs(10);
+        while alive(con_pid) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let gui_alive = alive(gui_pid);
+        let con_alive = alive(con_pid);
+        end_pid(gui_pid);
+        end_pid(con_pid);
+        assert!(!con_alive, "a console child ends with its tab");
+        assert!(gui_alive, "a GUI app the user started outlives the tab");
+    }
+
+    /// Helper half: starts a shell with a GUI child, writes its pid, then dies without a destructor.
+    #[test]
+    fn gui_job_helper_starts_a_gui_app_then_aborts() {
+        let (Ok(out), Ok(dir)) = (
+            std::env::var("FLARE_GUI_JOB_HELPER_OUT"),
+            std::env::var("FLARE_GUI_JOB_HELPER_DIR"),
+        ) else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let (con, gui) = (
+            format!(
+                "flare-con-job{}.exe",
+                std::env::var("FLARE_GUI_JOB_TAG").unwrap()
+            ),
+            format!(
+                "flare-gui-job{}.exe",
+                std::env::var("FLARE_GUI_JOB_TAG").unwrap()
+            ),
+        );
+        let p = start_probes(&dir, &con, &gui);
+        let gui_pid = wait_pid(&gui).expect("the GUI child started");
+        let con_pid = wait_pid(&con).expect("the console child started");
+        std::mem::forget(p);
+        std::fs::write(&out, format!("{gui_pid} {con_pid}")).unwrap();
+        std::process::abort();
+    }
+
+    #[test]
+    fn a_gui_app_outlives_a_crash_of_the_terminal_that_started_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = format!("{}", std::process::id());
+        probes(dir.path(), &format!("job{tag}"));
+        let out = dir.path().join("pids.txt");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pty::tests::gui_job_helper_starts_a_gui_app_then_aborts",
+                "--nocapture",
+            ])
+            .env("FLARE_GUI_JOB_HELPER_OUT", &out)
+            .env("FLARE_GUI_JOB_HELPER_DIR", dir.path())
+            .env("FLARE_GUI_JOB_TAG", &tag)
+            .status()
+            .unwrap();
+        assert!(!status.success(), "the helper aborts");
+        let pids: Vec<u32> = std::fs::read_to_string(&out)
+            .expect("helper wrote its pids")
+            .split_whitespace()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        // Give the job time to end whatever it is going to end.
+        std::thread::sleep(Duration::from_secs(2));
+        let end = Instant::now() + Duration::from_secs(10);
+        while alive(pids[1]) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let gui_alive = alive(pids[0]);
+        let con_alive = alive(pids[1]);
+        for p in &pids {
+            end_pid(*p);
+        }
+        assert!(gui_alive, "a GUI app the user started outlives the crash");
+        assert!(
+            !con_alive,
+            "a console child still ends with a crash of its terminal"
+        );
+    }
     #[test]
     fn shells_die_with_the_process_that_started_them() {
         let dir = tempfile::tempdir().unwrap();

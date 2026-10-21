@@ -365,8 +365,54 @@ macro_rules! bounded {
     }};
 }
 
+/// The sessions this module itself paused, each under a token id of its own. Two sessions can share one
+/// AppUserModelId (two windows of a browser), so the id is the AUMID plus a number, and resume plays only
+/// the sessions it holds: a sibling the user paused by hand is never started (audit L36).
+struct PausedSet<S> {
+    next: u64,
+    held: Vec<(String, S)>,
+}
+
+/// Most sessions held at once; the oldest go first (a token nobody resumed).
+const HELD_MAX: usize = 64;
+
+impl<S> PausedSet<S> {
+    fn new() -> Self {
+        Self {
+            next: 1,
+            held: Vec::new(),
+        }
+    }
+
+    /// Keeps `session` and returns the id its token carries.
+    fn add(&mut self, aumid: &str, session: S) -> String {
+        let id = format!("{aumid}#{}", self.next);
+        self.next += 1;
+        self.held.push((id.clone(), session));
+        if self.held.len() > HELD_MAX {
+            self.held.remove(0);
+        }
+        id
+    }
+
+    /// The sessions of exactly these ids, forgotten as they are handed back.
+    fn take(&mut self, ids: &[String]) -> Vec<S> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.held.len() {
+            if ids.contains(&self.held[i].0) {
+                out.push(self.held.remove(i).1);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+}
+
 struct RealPort {
     manager: Option<Manager>,
+    paused: PausedSet<Session>,
 }
 
 impl RealPort {
@@ -412,10 +458,8 @@ impl MediaPort for RealPort {
                 .and_then(|op| bounded!(op))
                 .unwrap_or(false);
             if paused {
-                if let Some(id) = session_id(&s) {
-                    if !found.contains(&id) {
-                        found.push(id);
-                    }
+                if let Some(aumid) = session_id(&s) {
+                    found.push(self.paused.add(&aumid, s));
                 }
             }
         }
@@ -423,9 +467,8 @@ impl MediaPort for RealPort {
     }
 
     fn resume(&mut self, ids: &[String]) {
-        for s in self.sessions() {
-            let Some(id) = session_id(&s) else { continue };
-            if ids.contains(&id) && is_status(&s, Status::Paused) {
+        for s in self.paused.take(ids) {
+            if is_status(&s, Status::Paused) {
                 if let Ok(op) = s.TryPlayAsync() {
                     let _ = bounded!(op);
                 }
@@ -438,7 +481,10 @@ fn real_port() -> Option<Box<dyn MediaPort>> {
     // SAFETY: CoInitializeEx takes no pointers we own; this thread is the worker and is made MTA.
     // A repeat call on a thread already initialised is harmless (S_FALSE) and the result is ignored.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    Some(Box::new(RealPort { manager: None }))
+    Some(Box::new(RealPort {
+        manager: None,
+        paused: PausedSet::new(),
+    }))
 }
 
 #[cfg(test)]
@@ -567,6 +613,39 @@ mod tests {
             assert!(Instant::now() < end, "waited too long");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn two_sessions_with_one_aumid_resume_only_the_one_that_was_paused() {
+        let mut set = PausedSet::new();
+        let mine = set.add("Chrome", "window-a");
+        // window-b has the same AUMID but the user paused it by hand: it was never added.
+        assert_eq!(set.take(&["Chrome".to_string()]), Vec::<&str>::new());
+        assert_eq!(set.take(std::slice::from_ref(&mine)), vec!["window-a"]);
+        assert!(
+            set.take(&[mine]).is_empty(),
+            "a session is handed back once"
+        );
+    }
+
+    #[test]
+    fn same_aumid_twice_gets_two_ids_and_each_resumes_its_own() {
+        let mut set = PausedSet::new();
+        let a = set.add("Chrome", 1);
+        let b = set.add("Chrome", 2);
+        assert_ne!(a, b);
+        assert_eq!(set.take(&[b]), vec![2]);
+        assert_eq!(set.take(&[a]), vec![1]);
+    }
+
+    #[test]
+    fn the_held_sessions_are_capped() {
+        let mut set = PausedSet::new();
+        let first = set.add("X", 0);
+        for i in 1..=HELD_MAX {
+            set.add("X", i);
+        }
+        assert!(set.take(&[first]).is_empty());
     }
 
     fn tok(ids: &[&str]) -> Token {

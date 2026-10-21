@@ -23,7 +23,9 @@ use flare_e2e_proto::{PointerAction, Request};
 use super::agent_misc::{goto_row, open_settings, pick_seg, set_switch, stored, switch_on};
 use super::driver::pick_theme;
 use super::marks_px::{best_ink, covered, dist, foot_thickness, hex_rgb, leading_run, thick_rows};
-use super::strip::{mark_strip, read_png, snap, Snap, MARK_FOLDERS};
+use super::strip::{
+    mark_strip, picture_breathe, read_png, snap, snap_full_breath, Snap, FULL_BREATH, MARK_FOLDERS,
+};
 use crate::ctx::{shot_file, App, Ctx, Launch};
 use crate::pixels::Rgb;
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
@@ -710,10 +712,21 @@ pub fn indicator_styles(ctx: &mut Ctx) -> Result<(), String> {
                     alone,
                     format!("{tag}: every marked tab wears Ring's mark alone ({kinds:?})"),
                 );
-                let fits: Vec<Option<f32>> = marked
-                    .iter()
-                    .map(|&i| ring_ink_fit(&s, k, rects[i], if i == 0 { text } else { dim }))
-                    .collect();
+                // The question tab's dot breathes from full to nothing: its ink is read in a picture
+                // the app says it drew at full breath, not whichever moment the first one caught.
+                let full = snap_full_breath(ctx, &mut app, &format!("marks-{style}-{theme}-full"));
+                let breath = picture_breathe(&mut app);
+                ctx.ok(
+                    full.is_some() && breath.is_some_and(|b| b >= FULL_BREATH),
+                    format!("{tag}: a picture of the question dot at full breath ({breath:?})"),
+                );
+                let fits: Vec<Option<f32>> = match &full {
+                    Some(f) => marked
+                        .iter()
+                        .map(|&i| ring_ink_fit(f, k, rects[i], if i == 0 { text } else { dim }))
+                        .collect(),
+                    None => vec![None; marked.len()],
+                };
                 ctx.ok(
                     fits.iter().all(|f| f.is_some_and(|t| t >= RING_MIN_T)),
                     format!("{tag}: every ring wears its name's ink ({fits:?})"),

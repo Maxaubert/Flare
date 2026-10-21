@@ -1,0 +1,352 @@
+{
+  "surface": "resume",
+  "pct": 225,
+  "renderer": "gpu",
+  "hello": {
+    "renderer": "gpu",
+    "scale": 2.25,
+    "version": "0.1.0"
+  },
+  "first_window_ms": 663.6995999999999,
+  "first_visible_ms": 800.9003,
+  "first_pipe_ms": 650.3662999999999,
+  "ready_ms": 1168.4166,
+  "judged": {
+    "frames": 4,
+    "first_frame_ms": 663.6995999999999,
+    "last_change_ms": 1177.0574000000001,
+    "blank_frames": 1,
+    "wrong_size_frames": 0,
+    "off_brightness_frames": 0,
+    "wrong_bar_colour_frames": 1,
+    "wrong_foot_colour_frames": 1,
+    "first_size": [
+      2655,
+      1755
+    ],
+    "final_size": [
+      2655,
+      1755
+    ],
+    "hidden_frames": 2,
+    "copier_frame_frames": 0,
+    "seen_frames": 2,
+    "first_seen_ms": 800.9003,
+    "first_seen_size": [
+      2655,
+      1755
+    ],
+    "first_seen_painted": true,
+    "seen_blank_frames": 0,
+    "seen_framed_frames": 0,
+    "seen_wrong_size_frames": 0
+  },
+  "app_trace": {
+    "line": "startup: main 15 ms, args 15 ms, backend 481 ms, component 622 ms, profile 632 ms, shell_spawn 786 ms, render_setup 693 ms, first_frame 762 ms, first_prompt 1238 ms",
+    "phases": [
+      {
+        "name": "main",
+        "ms": 15.1231
+      },
+      {
+        "name": "args",
+        "ms": 15.1831
+      },
+      {
+        "name": "backend",
+        "ms": 481.259
+      },
+      {
+        "name": "component",
+        "ms": 622.6455
+      },
+      {
+        "name": "profile",
+        "ms": 632.5351999999999
+      },
+      {
+        "name": "shell_spawn",
+        "ms": 786.7176000000001
+      },
+      {
+        "name": "render_setup",
+        "ms": 693.2631
+      },
+      {
+        "name": "first_frame",
+        "ms": 762.0654
+      },
+      {
+        "name": "first_prompt",
+        "ms": 1238.2188
+      }
+    ],
+    "prompt_ms": null,
+    "usable_ms": null
+  },
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 113.6172,
+  "first_presented_frames": [
+    [
+      649.5133,
+      1.6051,
+      0.9769
+    ],
+    [
+      699.9155999999999,
+      50.3988,
+      6.5344
+    ],
+    [
+      700.5529,
+      0.6419,
+      0.36019999999999996
+    ],
+    [
+      701.1269,
+      0.574,
+      0.5691999999999999
+    ],
+    [
+      762.0635,
+      60.9353,
+      18.7668
+    ],
+    [
+      780.2207,
+      18.1579,
+      3.7919
+    ],
+    [
+      804.7989,
+      24.5746,
+      5.1021
+    ],
+    [
+      811.0493,
+      6.2525,
+      5.1385
+    ],
+    [
+      876.7013000000001,
+      65.6465,
+      4.986199999999999
+    ],
+    [
+      971.1437,
+      94.4425,
+      4.3297
+    ],
+    [
+      976.0629,
+      4.9258,
+      3.7001
+    ],
+    [
+      1086.4042,
+      110.3378,
+      4.2402999999999995
+    ],
+    [
+      1150.4886,
+      64.086,
+      4.5797
+    ],
+    [
+      1167.2339,
+      16.7415,
+      4.5653
+    ],
+    [
+      1237.7986999999998,
+      70.5694,
+      4.8742
+    ],
+    [
+      1242.4103,
+      4.6132,
+      3.4617
+    ],
+    [
+      1314.9309,
+      72.51820000000001,
+      3.8579
+    ],
+    [
+      1409.5528,
+      94.621,
+      3.761
+    ],
+    [
+      1523.1666000000002,
+      113.6172,
+      3.4665
+    ],
+    [
+      1616.8361,
+      93.6687,
+      3.7247
+    ],
+    [
+      1713.4808,
+      96.6453,
+      3.4778
+    ],
+    [
+      1802.6846,
+      89.2039,
+      3.4933
+    ],
+    [
+      1896.5545,
+      93.8699,
+      3.4837
+    ],
+    [
+      1992.4845,
+      95.93,
+      3.606
+    ]
+  ],
+  "timeline": [
+    {
+      "t_ms": 787.3019999999999,
+      "tabs": 3,
+      "front": 1,
+      "cwds": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-gmrxDy\\alpha",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-gmrxDy\\beta",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-gmrxDy\\gamma"
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 663.6995999999999,
+      "w": 2655,
+      "h": 1755,
+      "blank": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bar": [
+        0,
+        0,
+        0
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "000-t00664ms-hidden.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 689.7831,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        11.142907577139235,
+        11.84760691477615,
+        12.564584532041758
+      ],
+      "bar": [
+        191,
+        206,
+        220
+      ],
+      "foot": [
+        215,
+        228,
+        242
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "001-t00690ms-hidden.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 800.9003,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        21.844881746631472,
+        21.722716394725733,
+        21.594798744679988
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "002-t00801ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 1177.0574000000001,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        22.101412610587893,
+        21.974107898030038,
+        21.831984520323836
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "003-t01177ms.png"
+    }
+  ]
+}

@@ -11,6 +11,8 @@ export component SetSelect inherits Rectangle {
     in property <[SetOption]> options;
     in property <string> value;
     in property <bool> disabled;
+    // Disabled because the row is dimmed as a group (PT's off rows): the group already dims it, so no 50 percent of its own.
+    in property <bool> row-dimmed;
     in property <string> label;
     in property <string> sub;
     in property <bool> open;
@@ -25,7 +27,7 @@ export component SetSelect inherits Rectangle {
     background: Theme.control;
     border-width: Px.hair();
     border-color: root.keyboard-focus ? SettingsInk.focus-edge : (ta.has-hover && !root.disabled ? Theme.line : Theme.divider);
-    opacity: root.disabled ? 0.5 : 1;
+    opacity: root.disabled && !root.row-dimmed ? 0.5 : 1;
     accessible-role: combobox;
     accessible-label: root.label;
     accessible-description: root.sub;

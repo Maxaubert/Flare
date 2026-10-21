@@ -28,9 +28,28 @@ pub struct FakeState {
     late_exit: Arc<AtomicBool>,
     /// While set, the pty's write blocks (a full pipe), until `unblock_writes`.
     write_gate: Gate,
+    /// While set, dropping the pty blocks (a ConPTY close that lingers), until `unblock_drop`.
+    drop_gate: Gate,
+    drop_parked: AtomicBool,
 }
 
 impl FakeState {
+    /// The next drop of the pty blocks inside it, as a lingering pseudo console close does.
+    pub fn block_drop(&self) {
+        *lk(&self.drop_gate.0) = true;
+    }
+
+    /// Lets a blocked drop finish.
+    pub fn unblock_drop(&self) {
+        *lk(&self.drop_gate.0) = false;
+        self.drop_gate.1.notify_all();
+    }
+
+    /// Whether a drop is parked in the gate right now.
+    pub fn drop_parked(&self) -> bool {
+        self.drop_parked.load(Ordering::SeqCst)
+    }
+
     /// The next writes block inside the pty, as a full pipe would.
     pub fn block_writes(&self) {
         *lk(&self.write_gate.0) = true;
@@ -198,6 +217,15 @@ impl PtyProcess for FakePty {
 
 impl Drop for FakePty {
     fn drop(&mut self) {
+        {
+            let (m, cv) = &*self.state.drop_gate;
+            let mut blocked = lk(m);
+            while *blocked {
+                self.state.drop_parked.store(true, Ordering::SeqCst);
+                blocked = cv.wait(blocked).unwrap_or_else(|p| p.into_inner()); // sync-ok: a fake pty close held by a test
+            }
+            self.state.drop_parked.store(false, Ordering::SeqCst);
+        }
         // Dropping a real pty closes the pseudo console, which ends the reader.
         self.state.close_reader();
     }
@@ -251,6 +279,8 @@ impl PtySpawner for FakeSpawner {
             reader_tx: Mutex::new(Some(tx)),
             late_exit: Arc::clone(&self.late_exit),
             write_gate: Arc::new((Mutex::new(false), Condvar::new())),
+            drop_gate: Arc::new((Mutex::new(false), Condvar::new())),
+            drop_parked: AtomicBool::new(false),
         });
         let pid = {
             let mut made = lk(&self.made);

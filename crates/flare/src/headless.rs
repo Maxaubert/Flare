@@ -1030,8 +1030,18 @@ impl Scene {
     }
 
     fn advance(&self, ms: u64) {
+        // A frame as the clock leaves and one where it lands: a sidebar slide starts at its first frame.
+        self.frame();
         SCENE_MS.with(|c| c.set(c.get() + ms));
         slint::platform::update_timers_and_animations();
+        self.frame();
+    }
+
+    /// A frame begins (the live window's RedrawRequested): the sidebar's slide takes its place.
+    fn frame(&self) {
+        if let Ok(mut c) = self.ctl.try_borrow_mut() {
+            c.on_frame();
+        }
     }
 
     fn hover(&self, x: f32, y: f32) {
@@ -1099,6 +1109,7 @@ impl Scene {
     pub(crate) fn render(&self) -> Vec<u8> {
         let (w, h) = self.phys;
         let mut pixels = vec![PremultipliedRgbaColor::default(); (w * h) as usize];
+        self.frame();
         self.win.request_redraw();
         self.win.draw_if_needed(|r| {
             r.render(&mut pixels, w as usize);
@@ -1764,6 +1775,8 @@ pub fn run_scene(args: &Args) -> Result<(), String> {
         // page shows the same cards on every PC.
         // SAFETY: the scene runs before any other thread of this process reads the environment.
         unsafe { std::env::set_var(flare_win::names::SEAM_NVIDIA, "1") };
+        // The seam reads only through the gate; a scene run says so for its own fixed answer.
+        flare_win::seam::set_open(true);
     }
     let args = scene_args(name, args);
     let (saved, prep) = setup(name);

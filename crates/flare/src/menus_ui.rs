@@ -135,7 +135,7 @@ pub fn tab_menu_rows(cwd: &str, close_hint: &str) -> Vec<MenuRowData> {
     let mut rows = vec![close];
     if !cwd.is_empty() {
         let mut copy = MenuRowData::plain("Copy folder path");
-        copy.icon = GLYPH_COPY;
+        copy.icon = GLYPH_FOLDER;
         rows.push(copy);
     }
     rows
@@ -276,6 +276,8 @@ mod tests {
         let names: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(names, ["Close tab", "Copy folder path"]);
         assert_eq!(rows[0].hint, "Ctrl+W");
+        // PT's tab menu draws a folder on "Copy folder path" (tabMenus.tsx: icon folder), not a copy glyph.
+        assert_eq!(rows[1].icon, GLYPH_FOLDER);
         let settings = tab_menu_rows("", "Ctrl+W");
         assert_eq!(settings.len(), 1);
         assert_eq!(settings[0].label, "Close tab");

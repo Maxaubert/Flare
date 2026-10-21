@@ -434,14 +434,18 @@ fn first_session(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), Str
     // PT: run.mjs:5289-5296 ERRORS: a worker thread panics; the panic line has its message and stack.
     let panicked = app.session.call(&Request::PanicWorker);
     let panic_line = await_line(ctx, profile, "the panic line", 10_000, |l| {
-        is_kind(l, "panic") && text(l, "msg").is_some_and(|m| m.contains("e2e: worker panic"))
+        // Audit L12 (A14): the line keeps the payload's length and hash, never its text.
+        is_kind(l, "panic")
+            && text(l, "msg").is_some_and(|m| m.contains("panic payload withheld ("))
     });
     ctx.ok(
         panicked.is_ok()
-            && panic_line
-                .as_ref()
-                .is_some_and(|p| text(p, "stack").is_some_and(|s| !s.trim().is_empty())),
-        "a worker panic is a panic line, with its message and its stack",
+            && panic_line.as_ref().is_some_and(|p| {
+                text(p, "msg").is_some_and(|m| m.contains("17 bytes, hash "))
+                    && !text(p, "msg").is_some_and(|m| m.contains("e2e: worker panic"))
+                    && text(p, "stack").is_some_and(|s| !s.trim().is_empty())
+            }),
+        "a worker panic is a panic line, with its length, hash and stack but not its text",
     );
     // DROPPED: a rejected promise is a page-rejection (PT run.mjs:5297) because Rust has no
     // promises; the worker panic above is the one error no handler holds.

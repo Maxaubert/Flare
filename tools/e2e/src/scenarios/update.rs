@@ -270,7 +270,10 @@ fn state_file(profile: &Path, name: &str) -> Option<Value> {
 
 /// Hands the app a one-word command through its command file.
 fn command(app: &App, text: &str) -> bool {
-    std::fs::write(app.profile.join("update-command"), text).is_ok()
+    // Temp file then rename, so the app never reads half a word.
+    let tmp = app.profile.join("update-command.tmp");
+    std::fs::write(&tmp, text).is_ok()
+        && std::fs::rename(&tmp, app.profile.join("update-command")).is_ok()
 }
 
 /// True while the command file is still there (the app deletes it when it has read it).

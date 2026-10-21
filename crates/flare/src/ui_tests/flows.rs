@@ -825,6 +825,122 @@ fn vertical(p: &PrefStore) {
     set_tab_layout(p, TabLayout::Vertical);
 }
 
+/// CSS `cubic-bezier(0.16, 1, 0.3, 1)` at time fraction `t`, solved apart from the app's own code.
+fn css_ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    let at = |a: f64, b: f64, s: f64| {
+        3.0 * a * (1.0 - s).powi(2) * s + 3.0 * b * (1.0 - s) * s * s + s.powi(3)
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if at(0.16, 0.3, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(1.0, 1.0, (lo + hi) / 2.0)
+}
+
+/// The pin/unpin slide starts at its first frame, as a CSS transition does, not at the key: time
+/// that passes between the key and the first frame is not skipped (audit V3, the first frame jumped
+/// well into the curve). `sliding` is true at once, and the slide follows the declared curve.
+#[test]
+fn the_sidebar_slide_starts_at_its_first_frame_and_follows_the_curve() {
+    for scale in [1.0, 1.5, 2.25, 3.0] {
+        let f = Fx::with_prefs(
+            Opts::default()
+                .scale(scale)
+                .saved(&["C:\\w\\api", "C:\\w\\web"]),
+            vertical,
+        );
+        f.restore();
+        for _ in 0..30 {
+            f.step(16);
+        }
+        let from = f64::from(f.h.comp.get_sidebar_slot_visual());
+        assert!(from > 200.0, "scale {scale}: pinned open ({from})");
+        f.key(KeyEvent::new("B", "KeyB").ctrl().shift());
+        assert!(
+            f.h.comp.get_sidebar_sliding() && f.h.comp.get_sidebar_collapsed(),
+            "scale {scale}: sliding and collapsed at once"
+        );
+        // 30 ms go by before the first frame comes.
+        f.clock.set(f.clock.get() + 30);
+        f.h.advance(30);
+        let first = f64::from(f.h.comp.get_sidebar_slot_visual());
+        assert!(
+            (first - from).abs() < 0.5,
+            "scale {scale}: the first frame still shows the open slot ({first} of {from})"
+        );
+        f.step(120);
+        let mid = f64::from(f.h.comp.get_sidebar_slot_visual());
+        let want = from * (1.0 - css_ease(120.0 / 240.0));
+        assert!(
+            (mid - want).abs() < 0.5,
+            "scale {scale}: 120 ms into the slide the slot is {mid}, the curve says {want}"
+        );
+        assert!(
+            f.h.comp.get_sidebar_sliding(),
+            "scale {scale}: still sliding"
+        );
+        f.step(120);
+        let end = f64::from(f.h.comp.get_sidebar_slot_visual());
+        assert!(end.abs() < 0.5, "scale {scale}: arrived ({end})");
+    }
+}
+
+/// Pinning from collapsed: the terminal keeps its width through the slide, read at once after the key
+/// (the e2e verticalTabs "the terminal keeps its width while they do").
+#[test]
+fn pinning_holds_the_terminals_width_from_the_key_on() {
+    let f = Fx::with_prefs(
+        Opts::default().saved(&["C:\\w\\api", "C:\\w\\web"]),
+        vertical,
+    );
+    f.restore();
+    f.key(KeyEvent::new("B", "KeyB").ctrl().shift());
+    for _ in 0..30 {
+        f.step(16);
+    }
+    f.park_pointer();
+    let _ = f.h.render();
+    let before = f.h.comp.get_grid_phys_width();
+    assert!(f.h.comp.get_sidebar_collapsed());
+    f.key(KeyEvent::new("B", "KeyB").ctrl().shift());
+    assert!(f.h.comp.get_sidebar_sliding());
+    assert_eq!(f.h.comp.get_grid_phys_width(), before, "at once");
+    for i in 0..15 {
+        f.step(16);
+        let _ = f.h.render();
+        assert_eq!(f.h.comp.get_grid_phys_width(), before, "frame {i}");
+    }
+}
+
+/// With reduced motion the slot takes its new width at once, with no slide.
+#[test]
+fn the_sidebar_jumps_with_reduced_motion() {
+    let f = Fx::with_prefs(
+        Opts::default().saved(&["C:\\w\\api", "C:\\w\\web"]),
+        vertical,
+    );
+    f.restore();
+    slint::ComponentHandle::global::<crate::Motion>(&f.h.comp).set_reduced(true);
+    for _ in 0..30 {
+        f.step(16);
+    }
+    f.key(KeyEvent::new("B", "KeyB").ctrl().shift());
+    f.h.advance(0);
+    assert!(f.h.comp.get_sidebar_slot_visual().abs() < 0.5, "no slide");
+    f.key(KeyEvent::new("B", "KeyB").ctrl().shift());
+    f.h.advance(0);
+    assert!(
+        f.h.comp.get_sidebar_slot_visual() > 200.0,
+        "and back at once"
+    );
+}
+
 #[test]
 fn vertical_tabs_show_a_sidebar_with_folders_find_and_a_collapse_key() {
     let f = Fx::with_prefs(

@@ -548,7 +548,7 @@ mod tests {
         let pad_x = if narrow { m.pad_x_narrow } else { m.pad_x };
         let pane = frame_w - rail_width(frame_w);
         let content = m.column_max.min(pane) - 2.0 * pad_x;
-        wall_layout(content - 2.0 * m.border, total_themes(false), expanded)
+        wall_layout(content - 2.0 * m.border, total_themes(false), expanded, 1.0)
     }
 
     fn laid_out(id: &str, frame_w: f64, scale: f64) -> PageLayout {

@@ -1,0 +1,361 @@
+{
+  "surface": "startup",
+  "pct": 225,
+  "renderer": "gpu",
+  "hello": {
+    "renderer": "gpu",
+    "scale": 2.25,
+    "version": "0.1.0"
+  },
+  "first_window_ms": 663.8394,
+  "first_visible_ms": 788.2898,
+  "first_pipe_ms": 650.4921999999999,
+  "ready_ms": 1131.4681,
+  "judged": {
+    "frames": 4,
+    "first_frame_ms": 663.8394,
+    "last_change_ms": 1205.2898,
+    "blank_frames": 1,
+    "wrong_size_frames": 0,
+    "off_brightness_frames": 0,
+    "wrong_bar_colour_frames": 1,
+    "wrong_foot_colour_frames": 1,
+    "first_size": [
+      2655,
+      1755
+    ],
+    "final_size": [
+      2655,
+      1755
+    ],
+    "hidden_frames": 2,
+    "copier_frame_frames": 0,
+    "seen_frames": 2,
+    "first_seen_ms": 788.2898,
+    "first_seen_size": [
+      2655,
+      1755
+    ],
+    "first_seen_painted": true,
+    "seen_blank_frames": 0,
+    "seen_framed_frames": 0,
+    "seen_wrong_size_frames": 0
+  },
+  "app_trace": {
+    "line": "startup: main 15 ms, args 15 ms, backend 483 ms, component 624 ms, profile 633 ms, shell_spawn 774 ms, render_setup 689 ms, first_frame 750 ms, first_prompt 1173 ms",
+    "phases": [
+      {
+        "name": "main",
+        "ms": 15.0092
+      },
+      {
+        "name": "args",
+        "ms": 15.0694
+      },
+      {
+        "name": "backend",
+        "ms": 483.6559
+      },
+      {
+        "name": "component",
+        "ms": 624.3613
+      },
+      {
+        "name": "profile",
+        "ms": 633.9907999999999
+      },
+      {
+        "name": "shell_spawn",
+        "ms": 774.1211999999999
+      },
+      {
+        "name": "render_setup",
+        "ms": 689.0236
+      },
+      {
+        "name": "first_frame",
+        "ms": 750.4243
+      },
+      {
+        "name": "first_prompt",
+        "ms": 1173.1186
+      }
+    ],
+    "prompt_ms": null,
+    "usable_ms": null
+  },
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 114.1236,
+  "first_presented_frames": [
+    [
+      648.7049999999999,
+      1.7659,
+      1.1665
+    ],
+    [
+      696.0495,
+      47.3432,
+      6.902
+    ],
+    [
+      696.6679,
+      0.6229,
+      0.3606
+    ],
+    [
+      697.2134,
+      0.5453,
+      0.5403
+    ],
+    [
+      750.4218000000001,
+      53.2068,
+      10.429
+    ],
+    [
+      767.4604,
+      17.0393,
+      2.7123
+    ],
+    [
+      814.7645,
+      47.3012,
+      5.2691
+    ],
+    [
+      818.9438,
+      4.1827000000000005,
+      3.2385
+    ],
+    [
+      890.7384000000001,
+      71.7882,
+      3.9889
+    ],
+    [
+      895.1629,
+      4.4306,
+      3.2403000000000004
+    ],
+    [
+      1000.2312,
+      105.0635,
+      4.315099999999999
+    ],
+    [
+      1004.6029,
+      4.3768,
+      3.2647
+    ],
+    [
+      1114.9208,
+      110.3173,
+      3.3617999999999997
+    ],
+    [
+      1172.6476,
+      57.7229,
+      4.866
+    ],
+    [
+      1177.2928,
+      4.6484,
+      3.3899
+    ],
+    [
+      1266.5283,
+      89.2358,
+      3.6586
+    ],
+    [
+      1343.0762,
+      76.548,
+      3.4232
+    ],
+    [
+      1457.2,
+      114.1236,
+      3.3430999999999997
+    ],
+    [
+      1551.2272,
+      94.0285,
+      3.2142
+    ],
+    [
+      1646.3067,
+      95.0791,
+      3.3479
+    ],
+    [
+      1738.7435999999998,
+      92.4372,
+      3.221
+    ],
+    [
+      1831.681,
+      92.9375,
+      3.1889000000000003
+    ],
+    [
+      1923.9675,
+      92.2861,
+      3.3065
+    ],
+    [
+      2018.4933,
+      94.5263,
+      3.1644
+    ],
+    [
+      2112.5298,
+      94.0363,
+      3.1533
+    ]
+  ],
+  "timeline": [
+    {
+      "t_ms": 774.8277999999999,
+      "tabs": 0,
+      "front": null,
+      "cwds": []
+    },
+    {
+      "t_ms": 819.9719,
+      "tabs": 1,
+      "front": 0,
+      "cwds": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-nx875v\\alpha"
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 663.8394,
+      "w": 2655,
+      "h": 1755,
+      "blank": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bar": [
+        0,
+        0,
+        0
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "000-t00664ms-hidden.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 688.3021,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        11.142907577139235,
+        11.84760691477615,
+        12.564584532041758
+      ],
+      "bar": [
+        191,
+        206,
+        220
+      ],
+      "foot": [
+        215,
+        228,
+        242
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "001-t00688ms-hidden.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 788.2898,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        23.190069210858006,
+        23.15832565909559,
+        23.128616218506206
+      ],
+      "bar": [
+        23,
+        23,
+        23
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "002-t00788ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 1205.2898,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        23.4534054836873,
+        23.416394875962784,
+        23.372102630974076
+      ],
+      "bar": [
+        23,
+        23,
+        23
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "003-t01205ms.png"
+    }
+  ]
+}

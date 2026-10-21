@@ -56,6 +56,8 @@ fn card(id: &str, name: &str, on: bool, edit: bool, x: f32, y: f32) -> WallCard 
         red: colour(RED),
         x,
         y,
+        // 0: the card's own 196 (no wall laid it out)
+        w: 0.0,
     }
 }
 
@@ -345,6 +347,51 @@ fn the_preview_paints_the_cards_own_palette() {
     assert_eq!(f.count_where(x0 + 3, y0 + 3, x1 - 3, y1, is_accent), 0);
 }
 
+#[test]
+fn the_previews_text_sits_on_pts_baselines() {
+    // Line 2 ("src docs run.sh") has no descenders, so the bottom of its ink is the baseline. Measured
+    // on PT's own 05-settings-appearance frames, from the card's outer top edge: 35.0 css px at 100
+    // percent, 34.67 at 150 and 35.67 at 225 (Chromium puts a baseline on a device pixel; 300 percent was not measured, its 35.5 is the middle). Flare's sat
+    // 1.3 to 1.8 css px lower (audit V13, 2026-10-21): the same Cascadia Mono, a different centring
+    // inside the 15.75 px line.
+    for (scale, want, tol) in [
+        (1.0_f32, 35.0_f32, 0.2_f32),
+        (1.5, 34.67, 0.2),
+        // 225 percent sat 0.56 css px high under the old 0.6 tolerance (audit V13-preview, 2026-10-21)
+        (2.25, 35.67, 0.2),
+        // 300 percent was not measured: its 35.5 is the middle, so the band stays wide
+        (3.0, 35.5, 0.6),
+    ] {
+        let h = harness(scale);
+        h.comp.set_solo(card("s", "Solo", false, false, 0.0, 0.0));
+        h.advance(0);
+        h.move_to(990.0, 630.0);
+        let f = h.render();
+        let x0 = (h.comp.get_solo_x() * scale) as u32;
+        let y0 = (h.comp.get_solo_y() * scale) as u32;
+        let ink = |p: [u8; 4]| {
+            (0..3)
+                .map(|i| (i32::from(p[i]) - i32::from(BG[i])).abs())
+                .sum::<i32>()
+                > 60
+        };
+        // the band of line 2 only: from 1 px under line 1's descenders to line 3's ascenders
+        let top = y0 + (26.0 * scale) as u32;
+        let bottom = y0 + (42.0 * scale) as u32;
+        let mut last = None;
+        for py in top..bottom {
+            if (x0 + 12 * scale as u32..x0 + 90 * scale as u32).any(|px| ink(f.px(px, py))) {
+                last = Some(py);
+            }
+        }
+        let last = last.expect("line 2 has ink");
+        let baseline = (last + 1) as f32 / scale - h.comp.get_solo_y();
+        assert!(
+            close(baseline, want, tol),
+            "line 2's baseline is {baseline} css px under the card's top at {scale}, PT's is {want}"
+        );
+    }
+}
 #[test]
 fn a_click_on_a_card_picks_it_and_the_pencil_edits_it() {
     let h = harness(1.0);

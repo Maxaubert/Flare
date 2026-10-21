@@ -1,0 +1,459 @@
+{
+  "surface": "resume",
+  "pct": 225,
+  "renderer": "software",
+  "hello": {
+    "renderer": "software (fallback: no rendering notifier: The rendering backend does not support rendering notifiers.)",
+    "scale": 2.25,
+    "version": "0.1.0"
+  },
+  "first_window_ms": 62.6369,
+  "first_visible_ms": 129.2365,
+  "first_pipe_ms": 49.1734,
+  "ready_ms": 552.1486,
+  "judged": {
+    "frames": 5,
+    "first_frame_ms": 62.6369,
+    "last_change_ms": 930.0089,
+    "blank_frames": 1,
+    "wrong_size_frames": 0,
+    "off_brightness_frames": 0,
+    "wrong_bar_colour_frames": 1,
+    "wrong_foot_colour_frames": 1,
+    "first_size": [
+      2655,
+      1755
+    ],
+    "final_size": [
+      2655,
+      1755
+    ],
+    "hidden_frames": 2,
+    "copier_frame_frames": 1,
+    "seen_frames": 2,
+    "first_seen_ms": 129.2365,
+    "first_seen_size": [
+      2655,
+      1755
+    ],
+    "first_seen_painted": true,
+    "seen_blank_frames": 0,
+    "seen_framed_frames": 0,
+    "seen_wrong_size_frames": 0
+  },
+  "app_trace": {
+    "line": "startup: main 14 ms, args 14 ms, backend 19 ms, component 24 ms, profile 34 ms, shell_spawn 112 ms, first_frame 46 ms, first_prompt 577 ms",
+    "phases": [
+      {
+        "name": "main",
+        "ms": 14.4518
+      },
+      {
+        "name": "args",
+        "ms": 14.4874
+      },
+      {
+        "name": "backend",
+        "ms": 19.2421
+      },
+      {
+        "name": "component",
+        "ms": 24.6129
+      },
+      {
+        "name": "profile",
+        "ms": 34.9009
+      },
+      {
+        "name": "shell_spawn",
+        "ms": 112.552
+      },
+      {
+        "name": "first_frame",
+        "ms": 46.106
+      },
+      {
+        "name": "first_prompt",
+        "ms": 577.0651999999999
+      }
+    ],
+    "prompt_ms": null,
+    "usable_ms": null
+  },
+  "longest_frame_gap_ms_to_1500_after_first_prompt": 27.8898,
+  "first_presented_frames": [
+    [
+      101.6786,
+      null,
+      null
+    ],
+    [
+      112.9632,
+      11.2864,
+      null
+    ],
+    [
+      129.9334,
+      16.968600000000002,
+      null
+    ],
+    [
+      157.8244,
+      27.8898,
+      null
+    ],
+    [
+      168.2177,
+      10.3965,
+      null
+    ],
+    [
+      184.0625,
+      15.8447,
+      null
+    ],
+    [
+      196.2213,
+      12.1515,
+      null
+    ],
+    [
+      220.025,
+      23.8042,
+      null
+    ],
+    [
+      244.149,
+      24.1268,
+      null
+    ],
+    [
+      266.3481,
+      22.1965,
+      null
+    ],
+    [
+      289.5296,
+      23.1836,
+      null
+    ],
+    [
+      312.1969,
+      22.6631,
+      null
+    ],
+    [
+      335.8122,
+      23.6174,
+      null
+    ],
+    [
+      359.1152,
+      23.3017,
+      null
+    ],
+    [
+      382.4165,
+      23.303,
+      null
+    ],
+    [
+      405.5037,
+      23.087300000000003,
+      null
+    ],
+    [
+      428.0496,
+      22.5463,
+      null
+    ],
+    [
+      449.7494,
+      21.6988,
+      null
+    ],
+    [
+      472.0553,
+      22.3101,
+      null
+    ],
+    [
+      485.6033,
+      13.5427,
+      null
+    ],
+    [
+      494.6669,
+      9.0625,
+      null
+    ],
+    [
+      517.7546,
+      23.0894,
+      null
+    ],
+    [
+      540.9775999999999,
+      23.2278,
+      null
+    ],
+    [
+      551.1563,
+      10.1743,
+      null
+    ],
+    [
+      564.5123,
+      13.3607,
+      null
+    ],
+    [
+      586.1802,
+      21.6692,
+      null
+    ],
+    [
+      607.7510000000001,
+      21.5687,
+      null
+    ],
+    [
+      630.2782,
+      22.5275,
+      null
+    ],
+    [
+      652.3571000000001,
+      22.078899999999997,
+      null
+    ],
+    [
+      673.8345,
+      21.4778,
+      null
+    ],
+    [
+      695.3981,
+      21.5637,
+      null
+    ],
+    [
+      717.1227,
+      21.7245,
+      null
+    ],
+    [
+      738.5148,
+      21.3921,
+      null
+    ],
+    [
+      760.0605,
+      21.5468,
+      null
+    ],
+    [
+      781.2776,
+      21.2172,
+      null
+    ],
+    [
+      802.8028,
+      21.5237,
+      null
+    ],
+    [
+      824.6303,
+      21.8288,
+      null
+    ],
+    [
+      845.8855,
+      21.253500000000003,
+      null
+    ],
+    [
+      867.6496,
+      21.7643,
+      null
+    ],
+    [
+      889.3604,
+      21.7123,
+      null
+    ]
+  ],
+  "timeline": [
+    {
+      "t_ms": 113.2395,
+      "tabs": 3,
+      "front": 1,
+      "cwds": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-L8M3zH\\alpha",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-L8M3zH\\beta",
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\flare-e2e-L8M3zH\\gamma"
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 62.6369,
+      "w": 2655,
+      "h": 1755,
+      "blank": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "bar": [
+        0,
+        0,
+        0
+      ],
+      "foot": [
+        0,
+        0,
+        0
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "000-t00063ms-hidden.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 83.9226,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        21.76749538419012,
+        21.646901435745974,
+        21.52902364165992
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": false,
+      "framed": false,
+      "tag": "hidden",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "06cf0000",
+      "ex_style": "00040110",
+      "file": "001-t00084ms-hidden.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 129.2365,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        21.78794466135955,
+        21.667350712915404,
+        21.54947291882935
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "002-t00129ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 196.8308,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        32.05232503113512,
+        32.620779482218055,
+        33.221351557206745
+      ],
+      "bar": [
+        191,
+        206,
+        220
+      ],
+      "foot": [
+        215,
+        227,
+        241
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "copyframe",
+      "client": [
+        2655,
+        1755
+      ],
+      "style": "16cf0000",
+      "ex_style": "08000190",
+      "file": "003-t00197ms-copyframe.png"
+    },
+    {
+      "n": 4,
+      "t_ms": 930.0089,
+      "w": 2655,
+      "h": 1755,
+      "blank": false,
+      "mean": [
+        22.043611704101423,
+        21.91787839500516,
+        21.785874495040165
+      ],
+      "bar": [
+        13,
+        13,
+        13
+      ],
+      "foot": [
+        23,
+        23,
+        23
+      ],
+      "on_screen": true,
+      "framed": false,
+      "tag": "",
+      "client": [
+        2655,
+        1755
+      ],
+      "source": "app snapshot",
+      "file": "004-t00930ms-app.png"
+    }
+  ]
+}

@@ -34,6 +34,24 @@ const WORKING_KEY: &str = "flare.term.agentColor";
 const FINISHED_KEY: &str = "flare.term.agentDoneColor";
 const QUESTION_KEY: &str = "flare.term.agentQuestionColor";
 
+/// Every key on_look_change hears (the draft is heard besides): the theme, the custom theme, see
+/// through, the font and its size, the indicator and the agent colours, the window colours, the edges.
+pub const LOOK_KEYS: [&str; 13] = [
+    THEME_KEY,
+    CUSTOM_KEY,
+    SEE_THROUGH_KEY,
+    FONT_KEY,
+    FONT_PCT_KEY,
+    INDICATOR_KEY,
+    WORKING_KEY,
+    FINISHED_KEY,
+    QUESTION_KEY,
+    ACCENT.key,
+    BACKGROUND.key,
+    SECONDARY.key,
+    EDGES_KEY,
+];
+
 /// How an agent shows on its tab. Flare draws Ring and Minimal; the others read as the default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentIndicator {
@@ -390,25 +408,7 @@ impl LookStore {
     pub fn on_look_change(&self, cb: impl Fn() + Send + Sync + 'static) -> Subscription {
         let cb: Callback = Arc::new(cb);
         let for_keys = Arc::clone(&cb);
-        let keys = on_any_change(
-            &self.store,
-            &[
-                THEME_KEY,
-                CUSTOM_KEY,
-                SEE_THROUGH_KEY,
-                FONT_KEY,
-                FONT_PCT_KEY,
-                INDICATOR_KEY,
-                WORKING_KEY,
-                FINISHED_KEY,
-                QUESTION_KEY,
-                ACCENT.key,
-                BACKGROUND.key,
-                SECONDARY.key,
-                EDGES_KEY,
-            ],
-            move || for_keys(),
-        );
+        let keys = on_any_change(&self.store, &LOOK_KEYS, move || for_keys());
         let id = {
             let mut l = lock(&self.shared.listeners);
             l.next_id += 1;

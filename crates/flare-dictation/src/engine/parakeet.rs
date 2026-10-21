@@ -37,7 +37,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub fn pass_args(model: &Path, threads: u32, kind: EngineKind) -> Vec<String> {
     let mut args: Vec<String> = [
         "-m",
-        &model.to_string_lossy(),
+        &crate::ansi_path::engine_safe_path(model).to_string_lossy(),
         "-f",
         "-",
         "-np",

@@ -272,6 +272,7 @@ component RowControls inherits HorizontalLayout {
             options: root.data.options;
             value: root.data.value;
             disabled: root.data.off || root.data.limited;
+            row-dimmed: root.data.off && !root.data.limited;
             label: root.data.label;
             sub: root.data.sub;
             open: SettingsBridge.select-open && SettingsBridge.select-row == root.data.id;

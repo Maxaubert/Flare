@@ -23,8 +23,8 @@ import { HelpPanel } from "settings/help_panel.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
-export { MarkMotion, MarkPreview, DictationTabMark, DictationTabMarkPreview, DictationTabMarkScene } from "tabmark.slint";
-export { DictationPill, DictationPillPreview } from "dictation_pill.slint";
+export { MarkMotion, MarkPreview, DictationTabMarkPreview, DictationTabMarkScene } from "tabmark.slint";
+export { DictationPillPreview } from "dictation_pill.slint";
 export { DictationWidget } from "dictation_widget.slint";
 export { DictationPageControls } from "settings/dictation.slint";
 export { SkeletonPreview } from "skeleton.slint";
@@ -43,15 +43,15 @@ export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 export { SetKind, BlockKind, SetOption, SetButton, SetRow, SetSection, RailItem, SetHit, WallCard, HelpRowData, HelpChip, EditorWell, RowLook } from "settings/types.slint";
 export { ControlsPreview } from "settings/controls.slint";
 export { SliderPreview } from "settings/slider.slint";
-export { SelectPreview, SelectMenu } from "settings/select.slint";
+export { SelectPreview } from "settings/select.slint";
 export { RowPreview } from "settings/row.slint";
 export { FramePreview } from "settings/frame.slint";
-export { ColourPreview, ColourPopover, PickerOpening } from "settings/colour.slint";
-export { WallPreview, ThemeEditor, AskThree } from "settings/wall.slint";
+export { ColourPreview, PickerOpening } from "settings/colour.slint";
+export { WallPreview } from "settings/wall.slint";
 export { AboutPreview } from "settings/about.slint";
-export { HelpPanelPreview, HelpPanel, HelpBridge } from "settings/help_panel.slint";
-export { SettingsPreview, SettingsView, SettingsBridge } from "settings/view.slint";
-export { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
+export { HelpPanelPreview, HelpBridge } from "settings/help_panel.slint";
+export { SettingsPreview, SettingsBridge } from "settings/view.slint";
+export { UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 // One of the title bar's buttons (PT TitleBar.tsx: h-7 w-8, rounded, an
 // SVG icon on a 24-unit viewbox drawn with a round-capped stroke).
@@ -82,7 +82,8 @@ component TitleButton inherits Rectangle {
         commands: root.commands;
         fill: transparent;
         stroke: ta.has-hover ? (root.danger ? #ffffff : Theme.text) : Theme.icon;
-        stroke-width: root.stroke-units * root.icon-size / 24;
+        // Under glass the stroke is at least two device pixels (audit V7), so it never anti-aliases away.
+        stroke-width: max(root.stroke-units * root.icon-size / 24, Theme.glyph-stroke-floor * 1phx);
         stroke-line-cap: round;
         stroke-line-join: round;
     }
@@ -260,6 +261,12 @@ export component AppWindow inherits Window {
     in property <bool> sidebar-revealed;
     in property <length> sidebar-width: 220px;
     in property <bool> sidebar-sliding;
+    // The slide, eased by the glue frame by frame (side_slide.rs); unset, the rest values.
+    in property <length> sidebar-slot-now: root.sidebar-collapsed ? 0px : root.sidebar-width;
+    in property <length> sidebar-slide-now: (root.sidebar-collapsed && !root.sidebar-revealed) ? -(root.sidebar-width + 10px) : 0px;
+    // Where the slide is NOW (the eased slot width and panel x), for the e2e's per-frame series.
+    out property <length> sidebar-slot-visual: sb.slot-visual;
+    out property <length> sidebar-panel-left: sb.panel-left;
     in-out property <string> sidebar-find <=> sb.find-text;
     // ---- start screen ----
     in property <[Place]> places;
@@ -593,12 +600,15 @@ export component AppWindow inherits Window {
                 height: root.side-mode ? Theme.bar-height : 0px;
                 visible: root.side-mode;
                 background: Theme.secondary;
-                WindowMoveArea { }
-                TouchArea {
-                    pointer-event(e) => {
-                        if e.kind == PointerEventKind.down { root.title-pressed(); }
+                // The TouchArea sits INSIDE the move area, as on the top row: as a sibling above it,
+                // it took the press and the window never moved (owner bug 2026-10-21).
+                WindowMoveArea {
+                    TouchArea {
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down { root.title-pressed(); }
+                        }
+                        double-clicked => { root.bar-double-clicked(); }
                     }
-                    double-clicked => { root.bar-double-clicked(); }
                 }
                 AppMark {
                     x: Px.snap(16px);
@@ -836,6 +846,8 @@ export component AppWindow inherits Window {
                     revealed: root.sidebar-revealed;
                     side-width: root.sidebar-width;
                     sliding: root.sidebar-sliding;
+                    slot-now: root.sidebar-slot-now;
+                    slide-now: root.sidebar-slide-now;
                     carrying: root.carrying;
                     find-key: root.find-tab-key;
                     new-tab-title: root.new-tab-title;

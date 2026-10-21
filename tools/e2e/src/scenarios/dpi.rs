@@ -872,3 +872,254 @@ mod tests {
         assert_eq!(ORIGINS[0], (-32000, -32000));
     }
 }
+
+// ---- resizeEdges: the frameless window's native resize handles ------------------------------------
+
+/// `HTCLIENT`, `HTLEFT`..`HTBOTTOMRIGHT` as `WM_NCHITTEST` answers them.
+const HT_CLIENT: u32 = 1;
+const HT_LEFT: u32 = 10;
+const HT_RIGHT: u32 = 11;
+const HT_TOP: u32 = 12;
+const HT_TOPLEFT: u32 = 13;
+const HT_TOPRIGHT: u32 = 14;
+const HT_BOTTOM: u32 = 15;
+const HT_BOTTOMLEFT: u32 = 16;
+const HT_BOTTOMRIGHT: u32 = 17;
+/// The window's minimum size in css px (Prism Terminal's `minWidth` x `minHeight`).
+const MIN_CSS: (f32, f32) = (560.0, 400.0);
+
+/// The points of a `w` x `h` window (device px, from its top-left) a resize band is checked at,
+/// with the code each answers: the middle of each edge, each corner's outermost pixel and reach, a
+/// point just inside a band, the middle, and, when `close` is given (the Close button's own last
+/// pixel, mid-height), that pixel (client, not a handle).
+fn edge_points(
+    w: i32,
+    h: i32,
+    band: i32,
+    corner: i32,
+    close: Option<(i32, i32)>,
+) -> Vec<((i32, i32), u32, &'static str)> {
+    let mut pts = vec![
+        ((0, h / 2), HT_LEFT, "left edge"),
+        ((w - 1, h / 2), HT_RIGHT, "right edge"),
+        ((w / 2, 0), HT_TOP, "top edge"),
+        ((w / 2, h - 1), HT_BOTTOM, "bottom edge"),
+        ((0, 0), HT_TOPLEFT, "top-left corner"),
+        ((w - 1, 0), HT_TOPRIGHT, "top-right corner"),
+        ((0, h - 1), HT_BOTTOMLEFT, "bottom-left corner"),
+        ((w - 1, h - 1), HT_BOTTOMRIGHT, "bottom-right corner"),
+        (
+            (corner - 1, 0),
+            HT_TOPLEFT,
+            "the corner's last pixel along the top",
+        ),
+        (
+            (corner, 0),
+            HT_TOP,
+            "one pixel past the corner along the top",
+        ),
+        (
+            (0, corner - 1),
+            HT_TOPLEFT,
+            "the corner's last pixel down the left",
+        ),
+        (
+            (0, corner),
+            HT_LEFT,
+            "one pixel past the corner down the left",
+        ),
+        ((w - band, h / 2), HT_RIGHT, "the right band's inner pixel"),
+        (
+            (w - band - 1, h / 2),
+            HT_CLIENT,
+            "one pixel inside the right band",
+        ),
+        ((band - 1, h / 2), HT_LEFT, "the left band's inner pixel"),
+        ((band, h / 2), HT_CLIENT, "one pixel inside the left band"),
+        ((w / 2, band), HT_CLIENT, "one pixel inside the top band"),
+        ((w / 2, h / 2), HT_CLIENT, "the middle"),
+    ];
+    if let Some(p) = close {
+        pts.push((p, HT_CLIENT, "the Close button's last pixel"));
+    }
+    pts
+}
+
+/// The band Prism Terminal's frameless window has at a dpi, as literals: `round(5 * dpi / 96)` for
+/// an edge and `round(16 * dpi / 96)` for a corner (100, 125, 150, 175, 200, 225, 250, 300 percent).
+fn want_band_at(dpi: u32) -> Option<(i64, i64)> {
+    Some(match dpi {
+        96 => (5, 16),
+        120 => (6, 20),
+        144 => (8, 24),
+        168 => (9, 28),
+        192 => (10, 32),
+        216 => (11, 36),
+        240 => (13, 40),
+        288 => (15, 48),
+        _ => return None,
+    })
+}
+
+/// `window.edges` for the points, as `(rect, dpi, band, sizebox, min_track, codes)`.
+type Edges = ([i64; 4], u32, (i64, i64), bool, (i64, i64), Vec<u32>);
+
+fn window_edges(app: &mut App, points: &[(i32, i32)]) -> Option<Edges> {
+    let pts: Vec<Value> = points.iter().map(|p| json!([p.0, p.1])).collect();
+    let v = app
+        .session
+        .probe("window.edges", json!({ "points": pts }))
+        .ok()?;
+    let n = |x: &Value| x.as_i64();
+    let r = v["rect"].as_array()?;
+    let rect = [n(&r[0])?, n(&r[1])?, n(&r[2])?, n(&r[3])?];
+    let m = v["min_track"].as_array()?;
+    let codes = v["codes"]
+        .as_array()?
+        .iter()
+        .map(|c| c.as_u64().unwrap_or(0) as u32)
+        .collect();
+    Some((
+        rect,
+        v["dpi"].as_u64()? as u32,
+        (n(&v["band"][0])?, n(&v["corner"])?),
+        v["sizebox"].as_bool()?,
+        (n(&m[0])?, n(&m[1])?),
+        codes,
+    ))
+}
+
+/// Flare's own scenario: the frameless main window has native resize edges and corners at every
+/// scaling, answers the right `HT*` codes through its real window procedure, keeps the client
+/// everywhere else, and is held to its minimum size. The window stays parked.
+pub fn resize_edges(ctx: &mut Ctx) -> Result<(), String> {
+    let Some(mut app) = start(ctx, "software", false)? else {
+        return Ok(());
+    };
+    let mut checked_close = false;
+    let mut window_dpi = 96;
+    for dpi in [96u32, 144, 216, 288] {
+        let at = format!("at {}%", pct(dpi));
+        let sent = app.session.call(&Request::DpiChange {
+            dpi,
+            x: None,
+            y: None,
+        });
+        ctx.ok(sent.is_ok(), format!("{at}: the DPI change is accepted"));
+        let scale = scale_of(dpi);
+        let followed = ctx.until(&format!("the scale to reach {scale}"), 5_000, &mut || {
+            (dpi_state(&mut app).scale - scale).abs() < 0.005
+        });
+        ctx.ok(followed, format!("{at}: the scale follows"));
+        ctx.poll(300, &mut || false);
+        let Some((rect, got_dpi, band, sizebox, min, _)) = window_edges(&mut app, &[]) else {
+            ctx.ok(false, format!("{at}: window.edges answers"));
+            continue;
+        };
+        let (w, h) = ((rect[2] - rect[0]) as i32, (rect[3] - rect[1]) as i32);
+        window_dpi = got_dpi;
+        ctx.ok(
+            sizebox,
+            format!("{at}: the window can be sized (WS_SIZEBOX, so Snap works)"),
+        );
+        // The band follows the WINDOW's own DPI, which the simulated change does not move (it moves
+        // the app's scale only): every step reads the host monitor's band, Prism Terminal's 5 px
+        // edges and 16 px corners per 96 dpi, from literals. The sizes at 100 to 300 percent are
+        // held by the unit tests (`the_band_scales_with_the_dpi_from_100_to_300_percent`).
+        let (want_band, want_corner) = want_band_at(got_dpi).unwrap_or_else(|| {
+            let s = f64::from(got_dpi) / 96.0;
+            ((5.0 * s).round() as i64, (16.0 * s).round() as i64)
+        });
+        ctx.ok(
+            band.0 == want_band && band.1 == want_corner,
+            format!(
+                "{at} (the window stays at the monitor's {got_dpi} dpi): the edge is {} px and the corner {} px (want {want_band} and {want_corner})",
+                band.0, band.1
+            ),
+        );
+        let want_min = (
+            (MIN_CSS.0 * scale).round() as i64,
+            (MIN_CSS.1 * scale).round() as i64,
+        );
+        ctx.ok(
+            (min.0 - want_min.0).abs() <= 1 && (min.1 - want_min.1).abs() <= 1,
+            format!("{at}: the minimum is {min:?} (about {want_min:?})"),
+        );
+        // The Close button's last pixel: the title buttons pad 6 css px on the right and the bar is
+        // 36 css px, so the pixel is (w - round(6 * scale) - 1, round(18 * scale)). The layout
+        // follows the app's scale, so this is only asserted where that equals the window's own
+        // scale (else the band, from the window's dpi, and the layout disagree by construction).
+        let close = ((got_dpi as f32 / 96.0 - scale).abs() < 0.005).then(|| {
+            (
+                w - (6.0 * scale).round() as i32 - 1,
+                (18.0 * scale).round() as i32,
+            )
+        });
+        checked_close |= close.is_some();
+        let pts = edge_points(w, h, band.0 as i32, band.1 as i32, close);
+        let xy: Vec<(i32, i32)> = pts.iter().map(|p| p.0).collect();
+        let codes = window_edges(&mut app, &xy).map(|e| e.5).unwrap_or_default();
+        for (i, (_, want, what)) in pts.iter().enumerate() {
+            let got = codes.get(i).copied();
+            ctx.ok(
+                got == Some(*want),
+                format!("{at}: {what} answers {want} (got {got:?})"),
+            );
+        }
+    }
+    // The Close button's own last pixel is client, not a resize edge, at the step whose scale is the
+    // window's (any monitor at 100, 150, 225 or 300 percent has one).
+    ctx.ok(
+        checked_close || ![96, 144, 216, 288].contains(&window_dpi),
+        format!("the Close button's last pixel was probed at the step matching the window's {window_dpi} dpi"),
+    );
+    // Back to 100 percent, then a programmatic resize far below the minimum is held to it.
+    let _ = app.session.call(&Request::DpiChange {
+        dpi: 96,
+        x: None,
+        y: None,
+    });
+    ctx.poll(500, &mut || false);
+    let _ = app.session.call(&Request::Resize { w: 100.0, h: 100.0 });
+    let clamped = ctx.until("the clamp to the minimum", 5_000, &mut || {
+        window_edges(&mut app, &[]).is_some_and(|e| {
+            (e.0[2] - e.0[0], e.0[3] - e.0[1]) == (MIN_CSS.0 as i64, MIN_CSS.1 as i64)
+        })
+    });
+    let size = window_edges(&mut app, &[]).map(|e| (e.0[2] - e.0[0], e.0[3] - e.0[1]));
+    ctx.ok(
+        clamped,
+        format!("a resize to 100 x 100 is held at the minimum 560 x 400 (got {size:?})"),
+    );
+    finish(ctx, app, "software");
+    Ok(())
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+
+    #[test]
+    fn the_edge_points_lie_inside_the_window_and_cover_every_handle() {
+        for (w, h, band, corner) in [(1000, 640, 5, 16), (3000, 1920, 15, 48)] {
+            let pts = edge_points(w, h, band, corner, Some((w - 7, h / 20)));
+            let codes: Vec<u32> = pts.iter().map(|p| p.1).collect();
+            for want in [
+                HT_LEFT,
+                HT_RIGHT,
+                HT_TOP,
+                HT_BOTTOM,
+                HT_TOPLEFT,
+                HT_TOPRIGHT,
+                HT_BOTTOMLEFT,
+                HT_BOTTOMRIGHT,
+                HT_CLIENT,
+            ] {
+                assert!(codes.contains(&want), "{want}");
+            }
+            for ((x, y), _, what) in pts {
+                assert!((0..w).contains(&x) && (0..h).contains(&y), "{what}");
+            }
+        }
+    }
+}

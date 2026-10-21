@@ -283,7 +283,9 @@ impl Inner {
                 .download(version, &mut |raw| events.progress(raw.min(99)), cancel);
         match downloaded {
             // An abandoned download still runs and owns its files: discard nothing of its own.
+            // A cancelled download is abandoned the same way: its joiner removes its files.
             Err(FeedError::Failed(m)) if m == "busy" => return false,
+            Err(FeedError::Cancelled) => return false,
             Err(_) => {
                 self.feed.discard();
                 return false;

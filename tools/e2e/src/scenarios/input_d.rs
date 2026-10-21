@@ -619,7 +619,12 @@ fn drop_and_menu_run(ctx: &mut Ctx, app: &mut App, file: &Path) -> Result<(), St
         wait(8_000, &mut || text(app).contains("my notes.txt")),
         "a file dropped on the terminal types its path",
     );
-    let shown = text(app).split_whitespace().collect::<Vec<_>>().join(" ");
+    // The shell echoes the typed path in pieces, so "my notes.txt" can be on screen a moment before
+    // the closing quote is. Wait for the quoted path to settle (or the time to run out) before
+    // reading it back, rather than reading the first frame that shows the name.
+    let flat = |app: &mut App| text(app).split_whitespace().collect::<Vec<_>>().join(" ");
+    wait(8_000, &mut || quoted_path_typed(&flat(app)));
+    let shown = flat(app);
     // PT: run.mjs:4571
     ctx.ok(
         quoted_path_typed(&shown),

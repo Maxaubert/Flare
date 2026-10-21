@@ -1,0 +1,63 @@
+{
+  "surface": "general",
+  "renderer": "pt",
+  "ready": true,
+  "pictures": [
+    {
+      "name": "tabs-strip",
+      "taken": true
+    },
+    {
+      "name": "tab-menu",
+      "taken": true
+    },
+    {
+      "name": "help-panel",
+      "taken": true
+    },
+    {
+      "name": "settings-first-page",
+      "taken": true
+    },
+    {
+      "name": "settings-appearance",
+      "taken": true
+    },
+    {
+      "name": "settings-dictation",
+      "taken": true
+    },
+    {
+      "name": "settings-about",
+      "taken": true
+    },
+    {
+      "name": "theme-nord-at-once",
+      "taken": true
+    },
+    {
+      "name": "theme-nord-settled",
+      "taken": true
+    },
+    {
+      "name": "theme-paper-at-once",
+      "taken": true
+    },
+    {
+      "name": "theme-paper-settled",
+      "taken": true
+    },
+    {
+      "name": "theme-pt-default-at-once",
+      "taken": true
+    },
+    {
+      "name": "theme-pt-default-settled",
+      "taken": true
+    },
+    {
+      "name": "see-through-40",
+      "taken": true
+    }
+  ]
+}

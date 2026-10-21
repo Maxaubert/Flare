@@ -12,6 +12,38 @@ use serde::Deserialize;
 
 const GONE: &str = "the app is gone";
 
+/// Reads one reply line. A line over the limit is read to its end and thrown away (the next
+/// reply stays in step) and comes back as an error (L56).
+fn read_reply_line<R: BufRead>(r: &mut R) -> Result<String, String> {
+    let mut reply = String::new();
+    let mut over = false;
+    loop {
+        let mut chunk = String::new();
+        match r
+            .by_ref()
+            .take(MAX_LINE_BYTES as u64 + 2)
+            .read_line(&mut chunk)
+        {
+            Ok(0) | Err(_) => return Err(GONE.to_string()),
+            Ok(_) => {}
+        }
+        let done = chunk.ends_with('\n');
+        if !over {
+            reply.push_str(&chunk);
+            over = reply.len() > MAX_LINE_BYTES + 1;
+        }
+        if done {
+            break;
+        }
+    }
+    if over {
+        return Err(format!(
+            "the reply is over the {MAX_LINE_BYTES} byte line limit"
+        ));
+    }
+    Ok(reply)
+}
+
 /// The app's `Hello` reply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hello {
@@ -112,16 +144,7 @@ impl Session {
             .write_all(line.as_bytes())
             .map_err(|_| GONE.to_string())?;
         self.writer.flush().map_err(|_| GONE.to_string())?;
-        let mut reply = String::new();
-        match self
-            .reader
-            .by_ref()
-            .take(MAX_LINE_BYTES as u64 + 2)
-            .read_line(&mut reply)
-        {
-            Ok(0) | Err(_) => return Err(GONE.to_string()),
-            Ok(_) => {}
-        }
+        let reply = read_reply_line(&mut self.reader)?;
         match decode_reply(&reply)? {
             Reply::Err { message } => Err(message),
             other => Ok(other),
@@ -222,5 +245,29 @@ impl Session {
         let value = self.probe_str("app.state")?;
         serde_json::from_value(value)
             .map_err(|e| format!("app.state is not the expected shape: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod reply_line_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn a_short_reply_is_one_line() {
+        let mut r = BufReader::new(Cursor::new(b"{\"a\":1}\nnext\n".to_vec()));
+        assert_eq!(read_reply_line(&mut r).unwrap(), "{\"a\":1}\n");
+        assert_eq!(read_reply_line(&mut r).unwrap(), "next\n");
+    }
+
+    #[test]
+    fn an_over_long_reply_is_an_error_and_the_next_reply_stays_in_step() {
+        let mut data = vec![b'a'; MAX_LINE_BYTES + 500];
+        data.push(b'\n');
+        data.extend_from_slice(b"{\"ok\":true}\n");
+        let mut r = BufReader::new(Cursor::new(data));
+        let e = read_reply_line(&mut r).unwrap_err();
+        assert!(e.contains("over"), "{e}");
+        assert_eq!(read_reply_line(&mut r).unwrap(), "{\"ok\":true}\n");
     }
 }

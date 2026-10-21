@@ -113,6 +113,46 @@ pub fn copy_async(
     });
 }
 
+/// One long-lived clipboard writer for the writes a program can flood (OSC 52). A job that is
+/// waiting when a newer one arrives is dropped unanswered, so a flood costs one write and the last
+/// text wins, in order, on one thread (audit 2026-10-20, L39 and L48). The thread ends when the
+/// copier is dropped.
+pub struct LatestCopier {
+    tx: mpsc::Sender<CopyJob>,
+}
+
+struct CopyJob {
+    text: String,
+    max: usize,
+    done: Box<dyn FnOnce(bool) + Send>,
+}
+
+impl LatestCopier {
+    pub fn new(port: Arc<dyn ClipboardPort>) -> Self {
+        let (tx, rx) = mpsc::channel::<CopyJob>();
+        thread::spawn(move || {
+            // sync-ok: the clipboard worker thread
+            while let Ok(mut job) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    job = newer;
+                }
+                let ok = port.write_text(&job.text, job.max).is_ok();
+                (job.done)(ok);
+            }
+        });
+        Self { tx }
+    }
+
+    /// Queues the write; `done(ok)` runs on the worker unless a newer job replaced this one.
+    pub fn submit(&self, text: String, max: usize, done: impl FnOnce(bool) + Send + 'static) {
+        let _ = self.tx.send(CopyJob {
+            text,
+            max,
+            done: Box::new(done),
+        });
+    }
+}
+
 /// The program-copy watch's reader. It starts a worker read and waits at most `WAIT_MS`; a read
 /// that is late keeps running, and its answer is what the NEXT call returns. The text is compared
 /// by the watch and is never kept or logged here.

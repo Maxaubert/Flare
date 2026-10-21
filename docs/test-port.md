@@ -522,7 +522,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `tabWidth` | 6 | `scenarios/strip.rs`, `tab_width` | 5 | 1 | ok |
 | `tabLooks` | 18 | `scenarios/strip.rs`, `tab_looks` | 17 | 1 | ok |
 | `tabSwitch` | 9 | `scenarios/strip.rs`, `tab_switch` | 15 | 1 | ok |
-| `indicatorStyles` | 8 | `scenarios/indicators.rs`, `indicator_styles` | 16 | 0 | ok |
+| `indicatorStyles` | 8 | `scenarios/indicators.rs`, `indicator_styles` | 17 | 0 | ok |
 | `verticalTabs` | 82 | `scenarios/vertical.rs`, `vertical_tabs` | 74 | 8 | ok |
 | `windowColoursSave` | 9 | `scenarios/settings_b.rs`, `window_colours_save` | 10 | 0 | ok |
 | `tooltips` | 11 | `scenarios/strip.rs`, `tooltips` | 18 | 1 | ok |
@@ -540,7 +540,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `quitManyShells` | 3 | `scenarios/lifecycle.rs`, `quit_many_shells` | 3 | 0 | ok |
 | `lastTab` | 7 | `scenarios/lifecycle.rs`, `last_tab` | 6 | 1 | ok |
 | `closeAsk` | 12 | `scenarios/closeask.rs`, `close_ask` | 12 | 0 | ok |
-| `pathLinks` | 11 | `scenarios/input_b.rs`, `path_links` | 22 | 0 | ok |
+| `pathLinks` | 13 | `scenarios/input_b.rs`, `path_links` | 24 | 0 | ok |
 | `linkPaintStall` | 6 | `scenarios/input_d.rs`, `link_paint_stall` | 7 | 0 | ok |
 | `sonaraQuestion` | 10 | `scenarios/agent_launch.rs`, `sonara_question` | 10 | 0 | ok |
 | `termReplies` | 17 | `scenarios/input_c.rs`, `term_replies` | 16 | 2 | ok |
@@ -565,7 +565,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `pickedGround` | 3 | `scenarios/settings_c.rs`, `picked_ground` | 4 | 0 | ok |
 | `opacityAlpha` | 19 | `scenarios/settings_c.rs`, `opacity_alpha` | 19 | 2 | ok |
 | `seeThrough` | 22 | `scenarios/settings_c.rs`, `see_through` | 22 | 2 | ok |
-| `themeCards` | 7 | `scenarios/settings_d.rs`, `theme_cards` | 10 | 0 | ok |
+| `themeCards` | 7 | `scenarios/settings_d.rs`, `theme_cards` | 18 | 0 | ok |
 | `edges` | 25 | `scenarios/settings_d.rs`, `edges` | 25 | 1 | ok |
 | `accent` | 33 | `scenarios/settings_d.rs`, `accent` | 32 | 2 | ok |
 | `updateWindow` | 78 | `scenarios/update.rs`, `update_window` | 78 | 0 | ok |

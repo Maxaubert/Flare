@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 wgpu.workspace = true
 cosmic-text.workspace = true
+ttf-parser.workspace = true
 unicode-width.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true

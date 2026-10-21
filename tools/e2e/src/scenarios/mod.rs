@@ -22,9 +22,11 @@ pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
 pub mod settings_d;
+pub mod settings_live;
 pub mod strip;
 pub mod update;
 pub mod vertical;
+pub mod visual;
 
 use crate::ctx::Scenario;
 
@@ -256,6 +258,12 @@ pub const ALL: &[Scenario] = &[
         name: "closeAsk",
         group: "closeask",
         run: closeask::close_ask,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "powerlineGlyphs",
+        group: "input_b",
+        run: input_b::powerline_glyphs,
         limit_secs: 180,
     },
     Scenario {
@@ -498,4 +506,25 @@ pub const ALL: &[Scenario] = &[
         run: dpi::monitor_move,
         limit_secs: 300,
     },
+    Scenario {
+        name: "resizeEdges",
+        group: "dpi",
+        run: dpi::resize_edges,
+        limit_secs: 120,
+    },
+    Scenario {
+        name: "settingsLive",
+        group: "settings_d",
+        run: settings_live::settings_live,
+        limit_secs: 180,
+    },
 ];
+
+/// Scenarios that are NOT part of the gate: a plain run never picks them, a filter that names one does.
+/// isualTour is the visual comparison capture (audit 2026-10-20); it takes half an hour and writes pictures.
+pub const OPT_IN: &[Scenario] = &[Scenario {
+    name: "visualTour",
+    group: "visual",
+    run: visual::visual_tour,
+    limit_secs: 3_300,
+}];

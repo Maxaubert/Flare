@@ -15,8 +15,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
-    GetLastError, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_NO_DATA, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -189,9 +189,16 @@ pub fn dacl_sddl(sid: &str) -> String {
     format!("D:P(A;;GA;;;{sid})")
 }
 
-/// Builds the pipe's security descriptor (LocalAlloc'd; free with LocalFree).
-fn security_descriptor(sid: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
-    let sddl = wide(&dacl_sddl(sid));
+/// The SDDL of the lock mutex: a protected DACL with one ACE (full access for `sid`) and an explicit
+/// medium integrity label. Without it the mutex takes the creator's token defaults: an elevated first
+/// instance owns it as Administrators and a normal launch of the same user is refused (audit L11).
+pub fn mutex_sddl(sid: &str) -> String {
+    format!("D:P(A;;GA;;;{sid})S:(ML;;NW;;;ME)")
+}
+
+/// Builds a security descriptor from SDDL (LocalAlloc'd; free with LocalFree).
+fn descriptor_from_sddl(sddl: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
+    let sddl = wide(sddl);
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: `sddl` is NUL-terminated and outlives the call; `sd` receives the descriptor.
     let ok = unsafe {
@@ -203,9 +210,15 @@ fn security_descriptor(sid: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
         )
     };
     if ok == 0 || sd.is_null() {
-        return Err("could not build the hand-off pipe's DACL".into());
+        return Err("could not build a security descriptor".into());
     }
     Ok(sd)
+}
+
+/// Builds the pipe's security descriptor (LocalAlloc'd; free with LocalFree).
+fn security_descriptor(sid: &str) -> Result<PSECURITY_DESCRIPTOR, String> {
+    descriptor_from_sddl(&dacl_sddl(sid))
+        .map_err(|_| "could not build the hand-off pipe's DACL".to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,25 +278,72 @@ pub enum Acquired {
     Second,
 }
 
-pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
-    let name = wide(&names.mutex);
-    // SAFETY: `name` is a NUL-terminated UTF-16 buffer that outlives the call; no security attributes.
-    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-    // SAFETY: reads the calling thread's last error; nothing ran between the call above and this.
-    let err = unsafe { GetLastError() };
-    if handle.is_null() {
-        return Err(format!("CreateMutexW failed (error {err})"));
-    }
-    if err == ERROR_ALREADY_EXISTS {
-        // SAFETY: the handle is valid and owned by us.
-        unsafe { CloseHandle(handle) };
-        return Ok(Acquired::Second);
-    }
-    Ok(Acquired::First(InstanceGuard {
-        handle: handle as usize,
-    }))
+/// What `CreateMutexW` said.
+#[derive(Debug, PartialEq, Eq)]
+enum Created {
+    /// This call made the mutex.
+    Fresh,
+    /// The mutex is there already: another instance holds the lock.
+    Held,
 }
 
+/// Reads the result of `CreateMutexW`. ACCESS_DENIED means the mutex exists and this token may not
+/// open it (an older elevated instance, or a squatter): a running instance, not a missing lock.
+fn classify_create(null_handle: bool, err: u32) -> Result<Created, String> {
+    if null_handle {
+        if err == ERROR_ACCESS_DENIED {
+            return Ok(Created::Held);
+        }
+        return Err(format!("CreateMutexW failed (error {err})"));
+    }
+    Ok(if err == ERROR_ALREADY_EXISTS {
+        Created::Held
+    } else {
+        Created::Fresh
+    })
+}
+
+pub fn acquire(names: &InstanceNames) -> Result<Acquired, String> {
+    let name = wide(&names.mutex);
+    // An explicit descriptor, so an elevated first instance still lets a normal launch see the lock.
+    // If it cannot be built the default one is used (the lock still works for same-level launches).
+    let sd = current_identity()
+        .ok_or_else(|| "no identity".to_string())
+        .and_then(|who| descriptor_from_sddl(&mutex_sddl(&who.sid)))
+        .map_err(|e| log::warn!("the lock mutex keeps the default descriptor: {e}"))
+        .ok();
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.unwrap_or(std::ptr::null_mut()),
+        bInheritHandle: 0,
+    };
+    let attrs_ptr: *const SECURITY_ATTRIBUTES = if sd.is_some() {
+        &attrs
+    } else {
+        std::ptr::null()
+    };
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer and `attrs` (when used) points at a valid
+    // descriptor; both outlive the call.
+    let handle = unsafe { CreateMutexW(attrs_ptr, 0, name.as_ptr()) };
+    // SAFETY: reads the calling thread's last error; nothing ran between the call above and this.
+    let err = unsafe { GetLastError() };
+    if let Some(sd) = sd {
+        // SAFETY: the descriptor came from the SDDL conversion; the mutex keeps its own copy.
+        unsafe { LocalFree(sd) };
+    }
+    match classify_create(handle.is_null(), err)? {
+        Created::Held => {
+            if !handle.is_null() {
+                // SAFETY: the handle is valid and owned by us.
+                unsafe { CloseHandle(handle) };
+            }
+            Ok(Acquired::Second)
+        }
+        Created::Fresh => Ok(Acquired::First(InstanceGuard {
+            handle: handle as usize,
+        })),
+    }
+}
 pub struct PipeServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -439,7 +499,7 @@ pub fn serve(
 #[derive(Debug, PartialEq, Eq)]
 pub enum HandoffError {
     /// A server answered the name but is not this user in this session: nothing was written, and the
-    /// caller starts as a normal instance.
+    /// caller refuses to start a second instance on the same profile (audit L41).
     Untrusted(String),
     /// No server, or the write failed.
     Failed(String),
@@ -813,5 +873,73 @@ mod tests {
         assert_eq!(unsafe { (*acl).AceCount }, 1);
         // SAFETY: freeing the descriptor once.
         unsafe { LocalFree(sd) };
+    }
+
+    /// L11 (audit 2026-10-20): the mutex had the creating token's default DACL. An elevated first
+    /// instance owns it as Administrators, a normal launch of the same user then gets ACCESS_DENIED
+    /// from `CreateMutexW`, and used to run a second full instance. The mutex now carries one
+    /// explicit ACE for the user's SID and a medium integrity label, whoever creates it.
+    #[test]
+    fn the_mutex_sddl_is_one_ace_for_the_user_and_a_medium_label() {
+        let sddl = mutex_sddl("S-1-5-21-1-2-3-1001");
+        assert_eq!(sddl, "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)S:(ML;;NW;;;ME)");
+        let sid = current_identity().unwrap().sid;
+        let sd = descriptor_from_sddl(&mutex_sddl(&sid)).unwrap();
+        let (mut present, mut defaulted) = (0, 0);
+        let mut acl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+        // SAFETY: `sd` is a valid descriptor; the out-pointers outlive the calls.
+        unsafe {
+            assert!(
+                windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+                    sd,
+                    &mut present,
+                    &mut acl,
+                    &mut defaulted
+                ) != 0
+                    && present != 0
+                    && !acl.is_null()
+            );
+            assert_eq!((*acl).AceCount, 1);
+            let mut sacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
+            assert!(
+                windows_sys::Win32::Security::GetSecurityDescriptorSacl(
+                    sd,
+                    &mut present,
+                    &mut sacl,
+                    &mut defaulted
+                ) != 0
+                    && present != 0
+                    && !sacl.is_null(),
+                "the integrity label is there"
+            );
+            assert_eq!((*sacl).AceCount, 1);
+            LocalFree(sd);
+        }
+    }
+
+    #[test]
+    fn a_mutex_this_user_cannot_open_means_a_running_instance_not_a_missing_lock() {
+        use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+        assert!(matches!(
+            classify_create(true, ERROR_ACCESS_DENIED),
+            Ok(Created::Held)
+        ));
+        assert!(classify_create(true, 0).is_err());
+        assert!(matches!(
+            classify_create(false, ERROR_ALREADY_EXISTS),
+            Ok(Created::Held)
+        ));
+        assert!(matches!(classify_create(false, 0), Ok(Created::Fresh)));
+    }
+
+    #[test]
+    fn the_lock_still_works_with_the_explicit_label() {
+        let n = names_for_test();
+        let Acquired::First(g) = acquire(&n).unwrap() else {
+            panic!("the first wins");
+        };
+        assert!(matches!(acquire(&n).unwrap(), Acquired::Second));
+        drop(g);
+        assert!(matches!(acquire(&n).unwrap(), Acquired::First(_)));
     }
 }

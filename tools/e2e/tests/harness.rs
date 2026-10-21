@@ -143,3 +143,19 @@ fn launch_adds_the_e2e_flag_and_never_foregrounds() {
         assert!(!src.contains(&call), "{bad}");
     }
 }
+
+#[test]
+fn a_spawned_child_is_in_its_job_and_runs_after_the_resume() {
+    let sb = Sandbox::new();
+    let marker = sb.profile.join("ran.txt");
+    let mut c = Command::new("cmd.exe");
+    c.raw_arg(format!("/c \"echo x> \"{}\"\"", marker.display()))
+        .stdout(Stdio::null());
+    let child = Child::spawn(c, &sb.profile);
+    // The job holds it from before its first instruction (spawned suspended, assigned, resumed).
+    assert!(child.in_job(), "the child is not in its job");
+    assert!(
+        child.wait_for(|| marker.is_file(), Duration::from_secs(5)),
+        "the child never ran: it was left suspended"
+    );
+}

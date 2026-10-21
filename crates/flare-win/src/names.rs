@@ -46,6 +46,8 @@ pub const SEAM_FETCH: &str = concat!("FLARE_E2E", "_FETCH");
 pub const SEAM_DICTATION_ROOT: &str = concat!("FLARE_DICTATION", "_ROOT");
 /// Env seam: the engine folder (else `<exe dir>\whisper`).
 pub const SEAM_WHISPER_DIR: &str = concat!("FLARE_WHISPER", "_DIR");
+/// Env seam: the Claude plugin template folder (read only under --e2e).
+pub const SEAM_PLUGIN_DIR: &str = concat!("FLARE_CLAUDE", "_PLUGIN_DIR");
 /// The name of the Explorer verb key, under `Directory\shell` and `Directory\Background\shell`.
 pub const VERB_KEY: &str = "Flare";
 /// The Explorer verb label.
@@ -110,6 +112,7 @@ mod tests {
             SEAM_FETCH,
             SEAM_DICTATION_ROOT,
             SEAM_WHISPER_DIR,
+            SEAM_PLUGIN_DIR,
         ];
         for name in all {
             assert!(!name.to_ascii_lowercase().contains(&other), "{name}");

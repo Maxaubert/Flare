@@ -662,7 +662,13 @@ mod tests {
         ctl.stop();
         let l = lines(dir.path());
         let p = l.iter().find(|x| x["k"] == "panic").expect("a panic line");
-        assert!(p.to_string().contains("a worker broke"));
+        // Audit L12: the log keeps the payload's length and hash, never its text.
+        let text = p.to_string();
+        assert!(
+            text.contains("panic payload withheld (14 bytes, hash "),
+            "{p}"
+        );
+        assert!(!text.contains("a worker broke"), "{p}");
         assert!(p.get("stack").is_some(), "{p}");
     }
 

@@ -298,6 +298,14 @@ impl LookCtl {
         }
     }
 
+    /// The same controller with another scheduler for its coalesced apply: the UI tests have no event
+    /// loop, so they run its one turn themselves.
+    #[cfg(test)]
+    pub fn with_scheduler(mut self, scheduler: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.scheduler = scheduler;
+        self
+    }
+
     /// Puts this controller where the coalesced apply finds it and listens to the store. Not called by
     /// `--e2e` and the headless scenes (they apply once, with overrides).
     pub fn install(self) -> Rc<RefCell<LookCtl>> {

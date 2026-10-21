@@ -9,6 +9,15 @@ are added as milestones land.
   and paints the terminal grid on the GPU through a shelf-packed glyph atlas. When the GPU cannot
   start (RDP, a VM, WARP only), Flare falls back to the CPU painter and logs
   `renderer: software (fallback: <reason>)`; the debug overlay shows the same reason.
+- **The glyph caches are bounded** (audit 2026-10-20, M1, M2, L7). A cell keeps at most 16 combining marks
+  (`MAX_MARKS`); the rasteriser's cluster cache starts over at 8192 entries; the glyph atlas starts at
+  2048 px square and doubles to 4096 (or the device limit) when a frame does not fit, keeping what it
+  holds instead of clearing and re-uploading every frame. A lazy fallback font is tried again for a
+  character it was not asked about; a character no family covers is walked once. The walk (cmap reads, font file parsing) runs on a worker\n  thread: a paint never waits on it, the cell is blank until the family arrives, and the host then\n  repaints both painters from the same source (audit M2). Held by paint_never_blocks_on_a_family_load,\n  _family_that_arrives_repaints_the_blank_cell, _fallback_font_that_arrives_repaints_without_any_other_change,
+  `marks_beyond_the_cap_are_dropped_in_put_str_and_cluster`, `a_flood_of_combining_marks_is_capped_per_cell`,
+  `the_glyph_cache_is_bounded`, `a_char_no_family_covers_does_not_burn_the_families_for_another_script`,
+  `an_overflowing_atlas_grows_once_and_stops_re_uploading`.
+- **Powerline symbols are Flare's own shapes** (owner bug 2026-10-21). U+E0B0 to U+E0BF (arrows, thin chevrons, half circles, corner triangles) are drawn by `shapes.rs` to the exact cell at every scale, in the cell's foreground, by both painters through the same glyph path, so a status line's caps meet the bar with no seam and never show a tofu box or a symbol font's star. Other private-use characters come from the stack's own families only. Held by the shapes tests, `powerline_shapes_are_drawn_to_the_cell_at_every_scale`, `the_statusline_pill_paints_the_same_on_both_painters` and e2e `powerlineGlyphs`. Details and Prism Terminal's behaviour: `docs/parity.md` (Audit additions).
 - **Debug overlay (F12).** Shows the renderer, the grid painter, frame statistics and memory.
 - **Flags and variables.** `--renderer gpu|software` (or `FLARE_RENDERER`, which applies only when
   the flag is absent); `--screenshot <png>` renders headlessly to a PNG for visual checks;
@@ -111,6 +120,19 @@ are added as milestones land.
   and the scale it was saved at. Minimum 560 x 400, default 1180 x 780. A position off every
   monitor is dropped; a negative position on a second monitor is kept. Held by the `window_state`
   tests and `the_overlap_check_uses_device_pixels`.
+  A size is capped at a quarter over the virtual screen (all monitors) at the saved scale, never below the
+  minimum (audit 2026-10-20, L16). Held by `window_state_clamps_the_size_to_the_virtual_screen_at_every_scale`.
+- **Resize edges (audit 2026-10-21).** The frameless main window resizes from its edges and corners
+  (native cursors, Aero Snap by drag and Win+arrow intact; no snap layouts hover menu yet): `flare_win::resize_edges` answers `WM_NCHITTEST` in a DPI-aware band
+  (Prism Terminal's sizes: `round(5 * dpi / 96)` px edges, `round(16 * dpi / 96)` px corners, inside the window), never while maximized, minimized or full
+  screen (the minimum clamp skips a borderless full-screen position too), and holds a programmatic resize to the 560 x 400 minimum (`WM_WINDOWPOSCHANGING`). The dictation
+  widget and popups are not resizable. Sizes at 100 to 300 percent are held by the unit tests (literals: edge 5, 8, 11, 15; corner 16, 24, 36, 48); the e2e `resizeEdges` reads the band at the host monitor's dpi and probes the Close button's last pixel. Chromium floors the pointer to DIP, so PT's band can be 1 px wider at fractional scales (parity.md).
+  Held by the `resize_edges` tests and the e2e `resizeEdges`.
+- **Diagnostics and hand-off hardening (audit 2026-10-20).** A panic line keeps the payload's length and hash, never its
+  text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance
+  still shows its lock to a normal launch (L11). A hand-off server that is not this user in this session
+  refuses the launch instead of starting a second instance on the same profile (L41). The taskbar badge is
+  drawn again on `TaskbarButtonCreated` (L14). The stack sampler's abandon wait is bounded (L15).
 - **Close.** One rule, not a setting: a plain shell closes unasked; a tab with an agent asks; the
   window close is held only while an agent is working. Held by the `close` tests (flare-agent) and
   `close_flow` (flare-tabs). The shells are killed and waited for, with a 3 s cap.
@@ -160,6 +182,10 @@ are added as milestones land.
   every surface with one coat at the slider value (ground alpha = 1 - level/100). Each theme's own
   see-through is 0; Custom keeps its own. Held by `see_through_reads_clamped_and_nonsense_as_zero`,
   `ground_alpha_is_one_minus_the_level` and `glass_paints_the_ground_once`.
+  Under glass the title buttons' and the new-tab "+" strokes are at least 2 device pixels (audit 2026-10-20,
+  V7): a 1.1 px stroke at 100% anti-aliased into two part-covered rows and dropped out on the GPU window
+  (the minimise glyph vanished, the "+" went faint). The solid window keeps each glyph's own width. Held by
+  `glyph_stroke_floor_device_px` and `the_glyph_stroke_floor_is_set_only_under_glass`.
 - **Edges: None, Faint, Hairline (default), Solid.** The window line and the one-pixel DWM border step
   follow the ground. Nothing is stored until a choice is made. Held by `edges_are_offered_weakest_to_strongest_by_every_number`,
   `default_to_hairline_and_read_anything_else_as_it` and `apply_is_debounced_250_ms`.
@@ -267,7 +293,13 @@ are added as milestones land.
 - **Paths.** A path is a link only when it exists; the backend resolves and checks it again; a click
   opens only allowlisted types and reveals everything else in Explorer (O22, rule 134). A folder opens
   in Explorer. The user's chosen folder handler is M9. Held by `a_path_is_a_link_only_if_it_exists_and_opens_by_the_allowlist`
-  and `a_path_menu_open_and_show_go_through_the_allowlist`.
+  and `a_path_menu_open_and_show_go_through_the_allowlist`. A path a program breaks at the window's
+  edge by hand (Claude Code writes each row on its own, so the next row is not marked wrapped) is
+  read across the break and is ONE link on both rows, for the paint, the click and the menu; a web
+  link never is, and an OSC 8 label cut that way stays one mark per row (owner 2026-10-21, PT #250,
+  core 0.44.2; `cells::by_hand`). Held by
+  `a_path_broken_by_hand_at_the_edge_is_one_link`, `a_web_link_is_never_carried_across_a_row_broken_by_hand`,
+  `an_osc8_label_cut_by_hand_is_a_mark_per_row` and e2e `pathLinks` (`path_cut_at_the_edge`).
 - **Terminal menu.** Right click opens the menu for what was clicked: path rows, link rows, Copy with a
   selection, Paste, Find in scrollback, and Command help last while it is on (M7). No Close tab. It is
   bound to the tab it opened on. Held by `the_menu_fits_what_was_clicked_and_copies_exactly` and the
@@ -284,6 +316,7 @@ are added as milestones land.
   `under_e2e_the_clipboard_is_in_memory_and_openers_record`.
 - **OSC 52.** Write-only; a read query is swallowed and never answered; the accepted write shows the
   badge. Held by `osc_52_lands_with_utf8_intact_says_copied_and_a_read_gets_no_reply`.
+  Only the tab in front may write the clipboard; a background tab's OSC 52 is dropped, and a flood shares one worker where the last wins (audit 2026-10-20, L4 L39 L48). Held by `osc_52_from_a_background_tab_is_ignored` and `an_osc_52_flood_uses_one_worker_and_the_last_write_wins`.
 - **Regression rules.** `docs/regression-rules.md` rules 154 to 159 (cell boundaries, the typed drop,
   mouse reports, link opening and no held UI, the off-thread clipboard, opaque decorations in whole
   pixels). Rules 8 and 19 are amended with their native meaning. The plan's numbers 142 to 147 were
@@ -338,8 +371,13 @@ M6 plan's Tasks 2 to 35.
 - **D7** The resume reveal splice lives in the terminal handle, the one place that sees the raw chunks.
 - **D8** The plugin ships in `crates/flare-agent/claude-plugin/` and is copied beside the exe. It is
   handed to a shell as `CLAUDE_CODE_PLUGIN_DIRS` (`an_inherited_copy_of_our_plugin_is_dropped`).
-- **D9** The question widget is watched for every tab and posted to Sonara on a worker, to 127.0.0.1
-  only, with the token refused if it holds a control character (`only_loopback_is_ever_contacted`).
+- **D9** The question widget is watched for tabs recognised as Claude Code and posted to Sonara on ONE worker
+  thread, to 127.0.0.1 only, with the token refused if it holds a control character (`only_loopback_is_ever_contacted`).
+  Audit 2026-10-20 (A15): the post also needs the listener on the port to be the process runtime.json names in
+  `pid` (`a_port_held_by_another_process_gets_neither_the_token_nor_the_question`), and a plain shell cannot
+  forge a post (`a_plain_shell_cannot_forge_a_question_shown_post`). The dictation engine likewise trusts its
+  port only when its own server is the listener (`a_stranger_answering_on_the_engines_port_is_never_trusted`),
+  and a plugin refresh writes a temp file and renames it (`a_refresh_goes_through_a_temp_file_and_a_rename`).
 - **D10** Diagnostics go through `DiagSink`; M9 implements it over `diag.jsonl`
   (`diagnostics_get_the_four_kinds_and_no_text`).
 - **D11** The agent colours are M4's; the picks replace the theme's working, finished and question
@@ -387,6 +425,19 @@ Prism Terminal's, measured from its Tailwind classes and its layout (Appendix B 
 cards, a section heading, one panel of rows, 32 px icon tiles, one line of subtext, hairlines that start after
 the icon. Every size is held to a layout test (`layout::rows_match_prism_terminals_measured_boxes`).
 
+- **Every row applies at once, Settings still open (owner bug 2026-10-21).** As in Prism Terminal, a change
+  reaches the live window without leaving Settings: Tab position moves the tabs to the side or the top, the
+  look rows (theme, colours, see through, Panel edges) are worn, the terminal font and size reach the grid, the
+  marks and the taskbar count follow their switches, Command help goes, the key rows hold for the next key and
+  Detailed logging switches. The cause was the tab view reading its own rows (the tab position, the taskbar
+  count) only on its next refresh, which closing Settings caused; the controller now listens to every row key
+  the look, the help panel and dictation do not own and refreshes once per turn (`AppCtl::listen_to_rows`).
+  Kept as Prism Terminal has them: the default shell and Exact status from Claude Code apply to terminals
+  opened after the change, the folder for new tabs to the next new tab. Held by `ui_tests::settings_live::*`
+  (a test per row class at 100 to 300 percent, plus `every_other_row_key_reaches_the_main_window`, which
+  makes a row added later live too), `the_mark_rows_and_the_taskbar_count_apply_while_settings_is_open`, and
+  the e2e `settingsLive` (Tab position both ways and Panel edges, read from the main window with Settings in
+  front, at 100 percent and again after a move to a 225 percent monitor).
 - **Find a setting.** The index is built from the same row tables the pages draw, so a row that is not drawn on
   this PC is not indexed (the GPU row needs NVIDIA; the dictation rows wait for M8). Words match by prefix with
   accents folded, ranked label first. Choosing a result switches page, scrolls the row to the middle, flashes it
@@ -442,7 +493,7 @@ the icon. Every size is held to a layout test (`layout::rows_match_prism_termina
 - **D10** The Select menu is an overlay at the window root, placed by `layout::place_menu`.
 - **D11** The colour popover is an overlay inside the window, placed by `picker::place_popover`; a left-open picker comes back when Settings is shown again.
 - **D12** The eyedropper freezes the screen with a Win32 snapshot; the seam answers under `--e2e`.
-- **D13** The theme wall's cards are laid out by Rust; the expand animation is 240 ms with Prism Terminal's curve, none under reduced motion.
+- **D13** The theme wall's cards are laid out by Rust (columns = floor((width + 12) / 184), cards stretched to fill the row and never under 172 px less one device pixel, edges on whole device pixels relative to the wall, PT PR #251; the editor's preview card stays 196 px, see parity.md); the expand animation is 240 ms with Prism Terminal's curve, none under reduced motion.
 - **D14** Import runs once, before the first paint, with a 1.5 s ceiling. A failed copy is retried on the next three launches, then recorded as given up. A profile that is absent or empty is done. There is no "import again" button.
 - **D15** `mic` is not imported (Chromium device ids mean nothing to Flare). Retired keys and the registry-backed verb state are never imported.
 - **D16** The F8 and F9 developer chords of M4 are removed; the look flags stay for headless scenes.
@@ -611,6 +662,10 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   `%LOCALAPPDATA%\PrismDictation` when one is missing and matches by size and SHA-256 (checked the same way; O14, Q9).
   The page refreshes when one was linked. An overridden store root (`FLARE_DICTATION_ROOT`) links nothing, so an isolated
   profile never takes the user's models. Held by `the_first_switch_on_reuses_the_neighbours_models_and_never_while_off`.
+  An uninstalled model is tombstoned (`removed/<id>` in the store root) so the next switch-on does not link it back; asking
+  to download it again clears the tombstone. Uninstall waits up to 5 s for a stopping engine to let go of its files and answers
+  `Err(Disk)` if one stays held (audit 2026-10-20, L28, L29). Held by
+  `a_removed_model_is_not_reused_again_until_it_is_asked_for_again` and `remove_waits_for_a_held_file_and_reports_one_that_stays_held`.
 - **The key is Ctrl+Win by default**, hold or toggle, with the solo rules: a chord of modifiers works, and a stored key
   (Right Alt included) is kept (N1 to N3). "Dictate from any app" is on by default once dictation is on, so Ctrl+Win
   also works with another app in front, as in Prism Terminal. Both apps on Ctrl+Win means both widgets open (Q2): turn

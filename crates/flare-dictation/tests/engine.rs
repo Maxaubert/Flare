@@ -485,6 +485,56 @@ fn falls_back_the_same_way_when_it_never_becomes_ready_and_the_stuck_one_is_kill
 }
 
 #[test]
+fn a_stranger_answering_on_the_engines_port_is_never_trusted() {
+    // A program that grabbed the port the engine picked answers GET / with 200. The real server (here
+    // the stand-in that never listens) is not the owner, so the engine must not take that for ready.
+    let squatter = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let port = squatter.local_addr().expect("addr").port();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = Arc::clone(&stop);
+    let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let posts2 = Arc::clone(&posts);
+    squatter.set_nonblocking(true).expect("nonblocking");
+    let t = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok((mut s, _)) = squatter.accept() {
+                let mut b = [0u8; 512];
+                let _ = s.set_nonblocking(false);
+                let _ = s.set_read_timeout(Some(Duration::from_millis(200)));
+                let n = s.read(&mut b).unwrap_or(0);
+                if b[..n].starts_with(b"POST") {
+                    posts2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            } else {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    });
+    let w = world_with(
+        Knobs {
+            cpu_flags: flags(&["--fake-never-ready"]),
+            ..Knobs::default()
+        },
+        |c| {
+            c.start_timeout = Duration::from_millis(1500);
+            c.port = Some(Box::new(move || Ok(port)));
+        },
+    );
+    let r = ask(&w, base(true));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    t.join().expect("squatter");
+    assert_eq!(
+        posts.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "audio went to a stranger"
+    );
+    assert!(!r.is_ok(), "{r:?}");
+}
+#[test]
 fn is_a_failure_not_a_loop_when_there_is_no_cpu_engine_to_fall_back_to() {
     let w = world(Knobs {
         cpu: false,
@@ -892,4 +942,76 @@ fn every_server_is_in_the_job() {
     let w = world(Knobs::default());
     assert!(ask(&w, base(true)).is_ok());
     assert!(w.job.contains(w.pid(0)), "the server is not in the job");
+}
+
+// ---------------------------------------------------------------- audit 2026-10-20 (A18)
+
+// L30: a partial is served inline only by a server warm for ITS model and language; any other partial
+// is answered Warming at once and warms the right server, never a cold start on the caller's pass.
+#[test]
+fn a_partial_for_another_model_or_language_is_answered_warming_not_run_inline() {
+    let w = world(Knobs::default());
+    assert!(warm(&w).is_ok());
+    assert_eq!(w.launched_count(), 1);
+    assert_eq!(ask(&w, req("small", "auto", false)), no(Reason::Warming));
+    assert_eq!(ask(&w, req("base", "en", false)), no(Reason::Warming));
+    // Those answers started a warm-up, which replaces the base/auto server on the worker's own time:
+    // whether it has yet is scheduling, so the test waits for that launch (the old server is let go
+    // before the new one starts), then warms base/auto again (`warm` answers Warming while another
+    // warm-up is queued or running, and Ok once base/auto is warm).
+    until(|| w.launched_count() >= 2, 30_000);
+    until(
+        || {
+            let r = warm(&w);
+            assert!(
+                r.is_ok() || r == no(Reason::Warming),
+                "a warm-up failed: {r:?}"
+            );
+            r.is_ok()
+        },
+        30_000,
+    );
+    // The right partial now goes straight through the warm server: no launch on the caller's pass.
+    let launched = w.launched_count();
+    let r = ask(&w, base(false));
+    assert!(r.is_ok(), "got {r:?}");
+    assert_eq!(w.launched_count(), launched, "the partial started a server");
+}
+
+// L33: dropping the engine (dictation switched off, on the UI thread) never waits for the worker.
+#[test]
+fn dropping_the_engine_does_not_wait_for_a_worker_stuck_in_a_launch() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().expect("a temp folder");
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let dir_path = dir.path().to_path_buf();
+    let mut cfg = EngineConfig::new(
+        Box::new(move || Some(dir_path.clone())),
+        Box::new(|| None),
+        Box::new(model_path),
+    );
+    cfg.runner_for = Box::new(|_| Runner::Whisper);
+    cfg.threads = 6;
+    let (e, r) = (Arc::clone(&entered), Arc::clone(&release));
+    cfg.command = Some(Box::new(move |_exe: &Path, args: &[String]| {
+        e.store(true, Ordering::SeqCst);
+        let end = Instant::now() + Duration::from_secs(4);
+        while !r.load(Ordering::SeqCst) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (PathBuf::from(FAKE), args.to_vec())
+    }));
+    let job = Arc::new(Job::new().expect("a job object"));
+    let engine = Engine::start(cfg, job);
+    let _rx = engine.transcribe(base(true));
+    until(|| entered.load(Ordering::SeqCst), 6000);
+    let began = Instant::now();
+    drop(engine);
+    let took = began.elapsed();
+    release.store(true, Ordering::SeqCst);
+    assert!(
+        took < Duration::from_millis(1000),
+        "dropping the engine waited {took:?} for the worker"
+    );
 }

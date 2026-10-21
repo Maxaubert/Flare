@@ -97,15 +97,24 @@ impl AtomicWriter {
     /// Synchronous: `<file>.now.tmp` then rename; sets `landed` to its own number, so an older job in
     /// flight never lands over it. The close, quit and session-end path.
     pub fn save_now(&self, data: &str) -> io::Result<()> {
-        let n = {
-            let mut q = lock(&self.inner.queue);
-            q.seq += 1;
-            // Anything waiting is older than this write; it must not land over it.
-            q.next = None;
-            q.seq
-        };
+        let n = self.reserve_now();
+        self.save_now_numbered(n, data)
+    }
+
+    /// Takes the number of a synchronous write and drops what waits in the queue (it is older). A caller
+    /// that orders writes under its own lock reserves here, under that lock, and writes after.
+    pub fn reserve_now(&self) -> u64 {
+        let mut q = lock(&self.inner.queue);
+        q.seq += 1;
+        // Anything waiting is older than this write; it must not land over it.
+        q.next = None;
+        q.seq
+    }
+
+    /// The write of a number from `reserve_now`.
+    pub fn save_now_numbered(&self, n: u64, data: &str) -> io::Result<()> {
         let tmp = suffixed(&self.inner.file, ".now.tmp");
-        fs_write(&tmp, data)?; // sync-ok: close, quit and session end, the process is about to end
+        write_tmp(&tmp, data, fs_write)?; // sync-ok: close, quit and session end, the process is about to end
         let mut landed = lock(&self.inner.landed);
         if let Err(e) = rename_file(&tmp, &self.inner.file) {
             let _ = remove_file(&tmp);
@@ -140,7 +149,7 @@ fn run(inner: &Inner) {
         };
         let (data, n) = job;
         let tmp = suffixed(&inner.file, ".tmp");
-        if let Err(e) = fs_write(&tmp, &data) {
+        if let Err(e) = write_tmp(&tmp, &data, fs_write) {
             log::warn!("could not write {}: {e}", inner.file.display());
             continue;
         }
@@ -159,6 +168,58 @@ fn run(inner: &Inner) {
         } else {
             // A newer write already landed; this temp file is not needed.
             let _ = remove_file(&tmp);
+        }
+    }
+}
+
+/// Writes the temp file with `write`; a failed write (a full disk leaves a partial file) removes the
+/// temp file again, so a failure never leaves a `.tmp` behind (audit 2026-10-20, L20).
+fn write_tmp(
+    tmp: &Path,
+    data: &str,
+    write: impl FnOnce(&Path, &str) -> io::Result<()>,
+) -> io::Result<()> {
+    let r = write(tmp, data);
+    if r.is_err() {
+        let _ = remove_file(tmp);
+    }
+    r
+}
+
+/// What `file` held when it was opened (settings.json, tabs.json).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// No such file: a first run. Writing the file later is safe.
+    Missing,
+    Text(String),
+    /// The file exists but could not be read (locked, denied, not UTF-8). `moved_aside` is true when it
+    /// was renamed to `<file>.bad`, so the next save cannot overwrite it; false when even that failed,
+    /// and the caller must keep its store read-only for the session (audit 2026-10-20, M3).
+    Unreadable {
+        moved_aside: bool,
+    },
+}
+
+/// The startup read: only NotFound reads as empty. Any other error moves the file to `<file>.bad`
+/// (logged), or reports that it could not, and never reads as empty.
+pub fn open_text(file: &Path) -> Opened {
+    match std::fs::read_to_string(file) {
+        // sync-ok: the startup read of a store file
+        Ok(t) => Opened::Text(t),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Opened::Missing,
+        Err(e) => {
+            let bad = suffixed(file, ".bad");
+            let moved_aside = rename_file(file, &bad).is_ok();
+            log::warn!(
+                "could not read {}: {e}; {}",
+                file.display(),
+                if moved_aside {
+                    "kept as .bad"
+                } else {
+                    "left alone and not written this session"
+                }
+            );
+            Opened::Unreadable { moved_aside }
         }
     }
 }

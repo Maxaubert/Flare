@@ -40,6 +40,8 @@ pub fn sonara_home(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
 pub struct Runtime {
     pub http_port: u16,
     pub token: String,
+    /// The process that wrote the file. The post goes only to a port this process listens on.
+    pub pid: Option<u32>,
 }
 
 /// `runtime.json` in the home: `http_port` an integer 1..=65535 (a JSON number with no fraction; `5.0`
@@ -53,9 +55,15 @@ pub fn read_runtime(home: &Path) -> Option<Runtime> {
     if token.is_empty() || token.chars().any(char::is_control) {
         return None;
     }
+    let pid = value
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|p| *p != 0);
     Some(Runtime {
         http_port,
         token: token.to_string(),
+        pid,
     })
 }
 
@@ -85,6 +93,17 @@ pub fn post_question_shown(
     let Some(runtime) = read_runtime(&home) else {
         return false;
     };
+    // The file can outlive Sonara and its port can be taken by another program: the token and the
+    // question go only to a listener owned by the process the file names (audit L21).
+    let Some(pid) = runtime.pid else {
+        return false;
+    };
+    if !flare_win::tcp_owner::only_owner(
+        &flare_win::tcp_owner::listener_pids(runtime.http_port),
+        pid,
+    ) {
+        return false;
+    }
     let body = match shown {
         ShownQuestion::Text(text) => json!({"host_tab": tab_token, "text": text}),
         ShownQuestion::Review => json!({"host_tab": tab_token, "review": true}),
@@ -237,7 +256,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_runtime(
             dir.path(),
-            &json!({"http_port": port, "token": "secret", "port": 1}),
+            &json!({"http_port": port, "token": "secret", "port": 1, "pid": std::process::id()}),
         );
         let env = home_env(dir.path());
         let t = Duration::from_secs(5);
@@ -275,7 +294,10 @@ mod tests {
         let probe = TcpListener::bind((LOOPBACK, 0)).expect("bind");
         let gone = probe.local_addr().expect("addr").port();
         drop(probe);
-        write_runtime(dir.path(), &json!({"http_port": gone, "token": "t"}));
+        write_runtime(
+            dir.path(),
+            &json!({"http_port": gone, "token": "t", "pid": std::process::id()}),
+        );
         assert!(!post_question_shown("tab-1", &text("Q?"), &env, t));
         // An empty tab token does no I/O at all.
         assert!(!post_question_shown("", &text("Q?"), &env, t));
@@ -303,7 +325,10 @@ mod tests {
         // A 500 answer is not a success.
         let (port, server) = fake_sonara(1, "500 Internal Server Error");
         let dir = tempfile::tempdir().expect("tempdir");
-        write_runtime(dir.path(), &json!({"http_port": port, "token": "t"}));
+        write_runtime(
+            dir.path(),
+            &json!({"http_port": port, "token": "t", "pid": std::process::id()}),
+        );
         let env = home_env(dir.path());
         assert!(!post_question_shown(
             "tab-1",
@@ -321,12 +346,57 @@ mod tests {
             thread::sleep(Duration::from_millis(2000));
             drop(s);
         });
-        write_runtime(dir.path(), &json!({"http_port": slow_port, "token": "t"}));
+        write_runtime(
+            dir.path(),
+            &json!({"http_port": slow_port, "token": "t", "pid": std::process::id()}),
+        );
         let timeout = Duration::from_millis(300);
         let started = Instant::now();
         assert!(!post_question_shown("tab-1", &text("Q?"), &env, timeout));
         assert!(started.elapsed() < timeout + Duration::from_secs(1));
         drop(holder);
+    }
+
+    /// A listener that records whether anyone ever connected (nonblocking, so the test never hangs).
+    fn watched_listener() -> (u16, TcpListener) {
+        let listener = TcpListener::bind((LOOPBACK, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        (listener.local_addr().expect("addr").port(), listener)
+    }
+
+    #[test]
+    fn a_port_held_by_another_process_gets_neither_the_token_nor_the_question() {
+        // The listener is THIS process; runtime.json names another pid (System, 4), as a stale file
+        // does after Sonara quit and something else took its port (audit L21).
+        let (port, listener) = watched_listener();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_runtime(
+            dir.path(),
+            &json!({"http_port": port, "token": "secret", "pid": 4}),
+        );
+        let env = home_env(dir.path());
+        assert!(!post_question_shown(
+            "tab-1",
+            &text("Q?"),
+            &env,
+            Duration::from_millis(500)
+        ));
+        assert!(listener.accept().is_err(), "the stranger was connected to");
+    }
+
+    #[test]
+    fn a_runtime_json_without_a_pid_is_not_trusted() {
+        let (port, listener) = watched_listener();
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_runtime(dir.path(), &json!({"http_port": port, "token": "secret"}));
+        let env = home_env(dir.path());
+        assert!(!post_question_shown(
+            "tab-1",
+            &text("Q?"),
+            &env,
+            Duration::from_millis(500)
+        ));
+        assert!(listener.accept().is_err(), "the stranger was connected to");
     }
 
     #[test]

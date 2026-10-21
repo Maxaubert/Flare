@@ -1,0 +1,85 @@
+{
+  "surface": "startup",
+  "pct": 225,
+  "renderer": "pt",
+  "version": "0.58.0.0",
+  "frames": [
+    {
+      "n": 0,
+      "t_ms": 193,
+      "file": "000-t00193ms.png"
+    },
+    {
+      "n": 1,
+      "t_ms": 751,
+      "file": "001-t00751ms.png"
+    },
+    {
+      "n": 2,
+      "t_ms": 1291,
+      "file": "002-t01291ms.png"
+    },
+    {
+      "n": 3,
+      "t_ms": 1799,
+      "file": "003-t01799ms.png"
+    }
+  ],
+  "timeline": [
+    {
+      "t_ms": 374,
+      "tabs": 1,
+      "front": 0,
+      "cwds": [
+        "alpha"
+      ]
+    }
+  ],
+  "readyAt": 843,
+  "tWindow": 188,
+  "clock": {
+    "startEpoch": 1792539678961.832,
+    "fcp_since_process_ms": 243.968017578125
+  },
+  "front": 0,
+  "startEpoch": 1792539678962.1106,
+  "timing": {
+    "runs": [
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 228.4814453125,
+        "tabs_since_process_ms": 214.09375,
+        "prompt_since_process_ms": 742.09375
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 228.385498046875,
+        "tabs_since_process_ms": 210.913818359375,
+        "prompt_since_process_ms": 745.913818359375
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 224.930908203125,
+        "tabs_since_process_ms": 212.62646484375,
+        "prompt_since_process_ms": 746.62646484375
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 224.523681640625,
+        "tabs_since_process_ms": 215.128173828125,
+        "prompt_since_process_ms": 719.128173828125
+      },
+      {
+        "launch_to_window_ms": null,
+        "fcp_since_process_ms": 245.04443359375,
+        "tabs_since_process_ms": 219.372314453125,
+        "prompt_since_process_ms": 702.372314453125
+      }
+    ],
+    "median": {
+      "fcp_since_process_ms": 228.385498046875,
+      "tabs_since_process_ms": 214.09375,
+      "prompt_since_process_ms": 742.09375
+    }
+  }
+}

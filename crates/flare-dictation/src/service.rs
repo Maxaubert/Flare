@@ -488,12 +488,17 @@ impl Service {
         } else {
             None
         };
-        self.cfg = Some(AnywhereConfig {
+        let now = AnywhereConfig {
             on: keys.is_some(),
             ..next.clone()
-        });
-        self.feed.reset();
-        self.clear_tick(fx);
+        };
+        // Any dictation pref arrives here; only the binding or its mode may drop the keys held (L35).
+        let changed = self.cfg.as_ref() != Some(&now);
+        self.cfg = Some(now);
+        if changed {
+            self.feed.reset();
+            self.clear_tick(fx);
+        }
         // The window says this as it loads: the part it may have missed, again.
         fx.push(SvcEffect::Role(self.role));
         let Some(keys) = keys else {
@@ -983,6 +988,35 @@ mod tests {
         assert!(has(&fx, &SvcEffect::AskTabs));
     }
 
+    /* ----- audit L35: a pref change that is not the binding keeps the key feed ----- */
+
+    #[test]
+    fn an_unchanged_binding_config_mid_recording_keeps_the_release_stopping_it() {
+        let mut s = Service::new(opts(true, false));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 0.0);
+        let fx = s.on(key(true, Some(7)), 1.0);
+        assert!(started_ctl(&fx));
+        // Any other dictation pref arrives as the same binding again.
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 2.0);
+        let fx = s.on(key(false, None), 3.0);
+        assert!(
+            has(&fx, &SvcEffect::ToController(OutsideAction::Stop)),
+            "{fx:?}"
+        );
+    }
+
+    #[test]
+    fn a_changed_binding_mid_recording_still_resets_the_key_feed() {
+        let mut s = Service::new(opts(true, false));
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Hold)), 0.0);
+        s.on(key(true, Some(7)), 1.0);
+        s.on(SvcEvent::Config(cfg(f8(), DictMode::Toggle)), 2.0);
+        let fx = s.on(key(false, None), 3.0);
+        assert!(
+            !has(&fx, &SvcEffect::ToController(OutsideAction::Stop)),
+            "{fx:?}"
+        );
+    }
     /* ----- off means off, e2e never hooks ----- */
 
     #[test]

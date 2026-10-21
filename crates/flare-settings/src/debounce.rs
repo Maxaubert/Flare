@@ -17,6 +17,8 @@ pub struct Debounced {
 struct Inner {
     writer: AtomicWriter,
     delay: Duration,
+    /// Test seam: the worker sleeps this long between taking the pending data and handing it to the writer.
+    gap: Duration,
     state: Mutex<State>,
     cv: Condvar,
 }
@@ -30,9 +32,15 @@ struct State {
 
 impl Debounced {
     pub fn new(file: impl Into<PathBuf>, delay: Duration) -> Self {
+        Self::with_gap(file, delay, Duration::ZERO)
+    }
+
+    /// Test seam: the worker waits `gap` after it took the pending data, before it hands it to the writer.
+    pub fn with_gap(file: impl Into<PathBuf>, delay: Duration, gap: Duration) -> Self {
         let inner = Arc::new(Inner {
             writer: AtomicWriter::new(file),
             delay,
+            gap,
             state: Mutex::new(State::default()),
             cv: Condvar::new(),
         });
@@ -54,13 +62,18 @@ impl Debounced {
 
     /// Pending data is written NOW with `save_now`; nothing pending leaves the file alone.
     pub fn flush(&self) {
-        let data = {
+        // The number is taken under the state lock, where the worker also numbers its save: a save the
+        // worker took before this flush gets a lower number and can never land over it (audit L17).
+        let (data, n) = {
             let mut st = lock(&self.inner.state);
             st.deadline = None;
-            st.pending.take()
+            match st.pending.take() {
+                Some(d) => (Some(d), self.inner.writer.reserve_now()),
+                None => (None, 0),
+            }
         };
         if let Some(data) = data
-            && let Err(e) = self.inner.writer.save_now(&data)
+            && let Err(e) = self.inner.writer.save_now_numbered(n, &data)
         {
             log::warn!("could not write the pending save: {e}");
         }
@@ -101,9 +114,12 @@ fn worker_loop(inner: &Inner) {
                 }
                 st.deadline = None;
                 if let Some(data) = st.pending.take() {
-                    drop(st);
+                    // Handed over under the state lock (`save` never blocks on the disk), so its number
+                    // is ordered against a flush's.
+                    if !inner.gap.is_zero() {
+                        thread::sleep(inner.gap); // sync-ok: test seam only, zero in the app
+                    }
                     inner.writer.save(data);
-                    st = lock(&inner.state);
                 }
             }
         }
@@ -163,6 +179,21 @@ mod tests {
         assert!(wait_until(|| file.exists(), Duration::from_secs(2)));
         d.idle();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
+    }
+
+    #[test]
+    fn a_flush_is_never_overwritten_by_a_save_the_worker_already_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("tabs.json");
+        let d = Debounced::with_gap(&file, Duration::from_millis(10), Duration::from_millis(250));
+        d.save("old".to_string());
+        thread::sleep(Duration::from_millis(100)); // the worker has taken "old" and is inside its gap
+        d.save("new".to_string());
+        d.flush();
+        d.idle();
+        thread::sleep(Duration::from_millis(400));
+        d.idle();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
     }
 
     #[test]

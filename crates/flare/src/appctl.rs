@@ -82,6 +82,7 @@ use crate::menus_ui::{
     tab_menu_rows, toggle_pin_in_menu,
 };
 use crate::settings_ctl::{SettingsCtl, SettingsMsg};
+use crate::side_slide::{SideSlide, SlideAim};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
 use crate::startup::{Ask, PendingFolders, ask_view, end_of_life, tab_ask, window_ask};
 use crate::tab_host::{HostEvent, TabHost};
@@ -119,6 +120,9 @@ pub enum UiMsg {
     Term(TermMsgBox),
     /// The theme, the indicator, a colour pick or an attention switch changed.
     LookChanged,
+    /// A setting the tab view reads changed (the tab position, the keys, the taskbar count...): the
+    /// view refreshes at once, Settings open or not (owner bug 2026-10-21). One per turn.
+    PrefsChanged,
     /// A worker's answer or a setting change for the Settings controller (Task 41).
     Settings(SettingsMsg),
     /// A command help setting changed (the switch, the shell chip or the panel width).
@@ -136,6 +140,7 @@ impl std::fmt::Debug for TermMsgBox {
         f.write_str(match self.0 {
             TermMsg::Clip(..) => "TermMsg::Clip",
             TermMsg::Copied(_) => "TermMsg::Copied",
+            TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
         })
     }
@@ -230,6 +235,8 @@ const BAR_H: f32 = 36.0;
 const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
+/// The slide's fallback step when no frame comes.
+const SLIDE_STEP_MS: u64 = 16;
 /// The mark clock's frame (about 60 per second); it runs only while a mark moves.
 const MARK_FRAME_MS: u64 = 16;
 
@@ -342,6 +349,14 @@ pub struct AppCtl {
     scale: f64,
     timer: slint::Timer,
     timer_on: bool,
+    /// The sidebar's slide, eased frame by frame from its first frame (audit V3).
+    side_slide: SideSlide,
+    /// Steps the slide where no OS window draws frames (the tests, the scenes).
+    slide_timer: slint::Timer,
+    /// The slide's clock in fractional ms; the window sets the precise one.
+    frame_clock: Rc<dyn Fn() -> f64>,
+    /// The e2e holds the slide at an offset for a picture: no frame moves it until released.
+    slide_held: bool,
     rows_model: Rc<VecModel<TabRow>>,
     view: View,
     last_geom: Option<GeomData>,
@@ -376,6 +391,10 @@ pub struct AppCtl {
     /// The rainbow switch `marks` was made with.
     marks_rainbow: bool,
     _look_subs: Vec<Subscription>,
+    /// The listeners of every other key a Settings row stores, and the flag that makes many
+    /// changes in one turn one `PrefsChanged`.
+    _prefs_subs: Vec<Subscription>,
+    prefs_dirty: Arc<AtomicBool>,
     /// The mark clock (Task 29).
     clock: MarkClock,
     /// Windows' "animation effects" switch; tests inject it.
@@ -663,7 +682,13 @@ impl AppCtl {
                 on_agent_look_change(&prefs, on_change),
             ]
         };
+        let prefs_dirty = Arc::new(AtomicBool::new(false));
+        let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
         Self::push_rainbow(app, &marks);
+        let frame_clock: Rc<dyn Fn() -> f64> = {
+            let clock = Rc::clone(&deps.clock);
+            Rc::new(move || clock() as f64)
+        };
         let ctl = AppCtl {
             weak: app.as_weak(),
             me: Weak::new(),
@@ -687,6 +712,10 @@ impl AppCtl {
             scale: 1.0,
             timer: slint::Timer::default(),
             timer_on: false,
+            side_slide: SideSlide::default(),
+            slide_timer: slint::Timer::default(),
+            frame_clock,
+            slide_held: false,
             rows_model,
             view: View {
                 rows: Vec::new(),
@@ -720,6 +749,8 @@ impl AppCtl {
             marks,
             marks_rainbow,
             _look_subs: look_subs,
+            _prefs_subs: prefs_subs,
+            prefs_dirty,
             clock: MarkClock::new(),
             animations: Rc::new(crate::e2e::animations_enabled),
             minimised: false,
@@ -753,6 +784,40 @@ impl AppCtl {
         Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
         rc
+    }
+
+    /// Every key a Settings row stores that the look, the help panel and dictation do not listen to
+    /// themselves (the tab position, the sidebar, the keys, the taskbar count, the shell, the folder
+    /// for new tabs...): a change posts one `PrefsChanged` per turn, and the view refreshes at once.
+    /// Before this the view read them only on its next refresh, so the tab position waited for
+    /// Settings to close (owner bug 2026-10-21). Prism Terminal applies every row at once.
+    fn listen_to_rows(
+        prefs: &PrefStore,
+        post: &Post,
+        dirty: &Arc<AtomicBool>,
+    ) -> Vec<Subscription> {
+        let owned: HashSet<&str> = flare_settings::look::LOOK_KEYS
+            .iter()
+            .chain(flare_settings::agent_prefs::AGENT_LOOK_KEYS.iter())
+            .chain(flare_settings::help_prefs::HELP_KEYS.iter())
+            .chain(flare_dictation::prefs::KEYS.iter())
+            .copied()
+            .collect();
+        let keys: std::collections::BTreeSet<&str> = flare_settings::rows::all_rows()
+            .flat_map(|r| r.keys.iter().copied())
+            .filter(|k| !owned.contains(k))
+            .collect();
+        keys.into_iter()
+            .map(|k| {
+                let post = Arc::clone(post);
+                let dirty = Arc::clone(dirty);
+                prefs.on_change(k, move || {
+                    if !dirty.swap(true, Ordering::SeqCst) {
+                        post(UiMsg::PrefsChanged);
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Makes the update controller over this window (M9 Task 30). The engine is built by the glue
@@ -990,9 +1055,12 @@ impl AppCtl {
                 },
             );
         }
-        // untimed: a model row's look is noted in a map and returns at once
-        app.global::<SettingsBridge>()
-            .on_row_look(crate::e2e_probes::dictation::note_look);
+        // The e2e probe keeps what a model row drew; a release build never binds it (audit L42).
+        if crate::e2e::global().on() {
+            // untimed: a model row's look is noted in a map and returns at once
+            app.global::<SettingsBridge>()
+                .on_row_look(crate::e2e_probes::dictation::note_look);
+        }
         {
             let weak = Rc::downgrade(rc);
             // untimed: a tooltip request only records the hover and returns at once
@@ -1300,6 +1368,7 @@ impl AppCtl {
         app.set_sidebar_revealed(sv.revealed);
         app.set_sidebar_width(sv.width_css as f32);
         app.set_sidebar_sliding(sv.sliding);
+        self.aim_slide(&app, &sv);
         if sv.frozen {
             if app.get_grid_frozen_width() <= 0.0 {
                 let w = app.get_grid_phys_width() as f32 / self.scale as f32;
@@ -1372,6 +1441,10 @@ impl AppCtl {
         let on = taskbar_badge_on(&self.prefs);
         let scale = self.scale;
         let Some(b) = self.badge.as_mut() else { return };
+        // Explorer made the taskbar button again (it restarted): the overlay is gone, draw it anew.
+        if flare_win::taskbar::take_button_created() {
+            b.refresh();
+        }
         if !on || n == 0 {
             b.clear();
         } else {
@@ -1575,13 +1648,22 @@ impl AppCtl {
             .set_rainbow(ModelRc::new(VecModel::from(marks.rainbow.clone())));
     }
 
-    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours.
+    /// The theme, the indicator, a pick or a switch changed: the marks wear the new colours, and the
+    /// grid wears the terminal font and size in force (a no-op when they did not change).
     pub fn on_look_changed(&mut self) {
         self.marks = compute_marks(&self.prefs);
         self.marks_rainbow = agent_rainbow(&self.prefs);
         if let Some(app) = self.app() {
             Self::push_rainbow(&app, &self.marks);
         }
+        self.apply_font();
+        self.refresh();
+    }
+
+    /// A setting the tab view reads changed: the view refreshes now (the coalescing flag is cleared
+    /// first, so a change made by the refresh itself is heard again).
+    pub fn on_prefs_changed(&mut self) {
+        self.prefs_dirty.store(false, Ordering::SeqCst);
         self.refresh();
     }
 
@@ -2606,6 +2688,120 @@ impl AppCtl {
         }
     }
 
+    // ---- the sidebar's slide (audit V3) ---------------------------------------------------------------------
+
+    /// The window's precise frame clock (fractional ms, the clock `ui_clock` counts on); the tests keep
+    /// the controller's own clock.
+    pub fn set_frame_clock(&mut self, clock: Rc<dyn Fn() -> f64>) {
+        self.frame_clock = clock;
+    }
+
+    /// The sidebar's state reached the window: the slot and the panel head for their new rest. A slide
+    /// shows its start until its first frame takes the time (`on_frame`).
+    fn aim_slide(&mut self, app: &AppWindow, sv: &crate::sidebar_ui::SidebarView) {
+        use slint::Global;
+        let owed = self.side_slide.aim(&SlideAim {
+            collapsed: sv.collapsed,
+            revealed: sv.revealed,
+            width: sv.width_css,
+            sliding: sv.sliding,
+            reduced: crate::Motion::get(app).get_reduced(),
+        });
+        let (slot, panel) = self.side_slide.shown();
+        app.set_sidebar_slot_now(slot);
+        app.set_sidebar_slide_now(panel);
+        // A window with no OS window behind it (the tests, the scenes) has no frames to step the slide:
+        // a timer does.
+        if owed && !Self::ask_frame(app) {
+            self.start_slide_timer();
+        }
+    }
+
+    /// A frame begins (the window calls this as each frame starts): a slide that has not started starts
+    /// now, and the slot and the panel take their place on the curve at this moment. True while the
+    /// slide owes more frames.
+    pub fn on_frame(&mut self) -> bool {
+        if !self.side_slide.running() {
+            return false;
+        }
+        if self.slide_held {
+            // A picture is being taken at an offset: the slide waits, and asks for nothing more.
+            return false;
+        }
+        let Some(app) = self.app() else { return false };
+        let (slot, panel) = self.side_slide.frame((self.frame_clock)());
+        app.set_sidebar_slot_now(slot);
+        app.set_sidebar_slide_now(panel);
+        let more = self.side_slide.running();
+        if !more {
+            self.slide_timer.stop();
+        }
+        more
+    }
+
+    /// The e2e's picture at an offset (audit V3): Some(ms) puts a running slide ms into its time and
+    /// holds it there, however many frames come, until None lets it go on. A snapshot blocks the UI
+    /// thread for 30 to 90 ms on the GPU path, so a picture asked for at an offset otherwise shows wherever
+    /// the frames had got to when it finished.
+    pub fn hold_slide(&mut self, ms: Option<f64>) {
+        let Some(app) = self.app() else { return };
+        match ms {
+            Some(ms) => {
+                let (slot, panel) = self.side_slide.place((self.frame_clock)(), ms.max(0.0));
+                app.set_sidebar_slot_now(slot);
+                app.set_sidebar_slide_now(panel);
+                self.slide_held = true;
+            }
+            None => {
+                self.slide_held = false;
+                if self.side_slide.running() {
+                    Self::ask_frame(&app);
+                }
+            }
+        }
+    }
+
+    /// A sidebar slide waits for its first frame or still moves.
+    pub fn slide_running(&self) -> bool {
+        self.side_slide.running()
+    }
+
+    /// Asks for a frame at once: straight from the OS window when there is one (true), since Slint's
+    /// own request waits for its frame timer (whole timer ticks on Windows).
+    fn ask_frame(app: &AppWindow) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        let os = app
+            .window()
+            .with_winit_window(|w| w.request_redraw())
+            .is_some();
+        if !os {
+            app.window().request_redraw();
+        }
+        os
+    }
+
+    /// Steps the slide where no OS window draws frames (the tests, the scenes). Never in the app: a
+    /// timer that fired before a slow first frame would take the start from it.
+    fn start_slide_timer(&mut self) {
+        if self.slide_timer.running() {
+            return;
+        }
+        let weak = self.me.clone();
+        self.slide_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(SLIDE_STEP_MS),
+            move || {
+                if let Some(rc) = weak.upgrade()
+                    && let Ok(mut c) = rc.try_borrow_mut()
+                    && c.on_frame()
+                    && let Some(app) = c.app()
+                {
+                    Self::ask_frame(&app);
+                }
+            },
+        );
+    }
+
     // ---- the timer --------------------------------------------------------------------------------------------
 
     fn next_due(&self) -> Option<u64> {
@@ -3251,6 +3447,7 @@ impl AppCtl {
             UiMsg::Handoff(h) => self.handoff(h),
             UiMsg::HostWake => self.host_wake(),
             UiMsg::LookChanged => self.on_look_changed(),
+            UiMsg::PrefsChanged => self.on_prefs_changed(),
             UiMsg::Settings(m) => {
                 if let Some(s) = self.settings.clone()
                     && let Ok(mut s) = s.try_borrow_mut()
@@ -3326,8 +3523,12 @@ impl AppCtl {
                     }
                 }
                 HostEvent::ClipboardWrite { id, text } => {
-                    self.term
-                        .on_term_event(&id, &TermEvent::ClipboardWrite(text));
+                    let front = self.front_id();
+                    self.term.on_term_event(
+                        &id,
+                        front.as_deref(),
+                        &TermEvent::ClipboardWrite(text),
+                    );
                     terminal_news = true;
                 }
                 // The handle lets one bell through a second per tab: the button flashes, no sound.
@@ -3723,6 +3924,16 @@ mod tests {
                 .into_iter()
                 .filter(|m| m.spec().cwd == cwd)
                 .collect()
+        }
+
+        /// The fake process of tab `id`: the one whose environment carries that tab's token. `None` until
+        /// the spawn has registered the session.
+        fn shell_of_tab(&self, id: &str) -> Option<Arc<flare_term::fake::FakeState>> {
+            let token = self.ctl.borrow().deps.host.manager().tab_token(id)?;
+            self.sp
+                .made()
+                .into_iter()
+                .find(|m| env_of(m, flare_shells::env::TAB_ID_VAR).as_deref() == Some(&token))
         }
 
         fn wait_made(&self, cwd: &str) {
@@ -5117,11 +5328,15 @@ mod tests {
             ..Opts::default()
         });
         f.start_restore_and_wait();
-        f.pump_until("the spawns", |f| f.sp.made().len() >= 2);
-        let got: Vec<Option<String>> = f
-            .made_with("C:\\c")
+        // Each tab's shell starts on its own worker thread, so the spawner's list is in finishing
+        // order, not strip order. Read each tab's own shell (by its tab token), in strip order.
+        let ids = f.ids();
+        f.pump_until("each tab's shell", |f| {
+            ids.iter().all(|id| f.shell_of_tab(id).is_some())
+        });
+        let got: Vec<Option<String>> = ids
             .iter()
-            .map(|m| env_of(m, "FLARE_RESUME_ID"))
+            .map(|id| env_of(&f.shell_of_tab(id).expect("its shell"), "FLARE_RESUME_ID"))
             .collect();
         assert_eq!(
             got,

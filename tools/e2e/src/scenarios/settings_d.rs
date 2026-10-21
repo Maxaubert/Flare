@@ -312,9 +312,9 @@ fn wall_cards(app: &mut App) -> Vec<(String, R, bool, bool)> {
         .unwrap_or_default()
 }
 
-/// Opens the wall (its toggle), brings a card into view and clicks it; true when it is the theme in
-/// force afterwards. The wheel steps the pane the way `reveal` does.
-fn pick_card(app: &mut App, id: &str) -> bool {
+/// Opens the wall (its toggle), brings a card into view and waits until the pane has stopped
+/// moving; the card's rect then. The wheel steps the pane the way `reveal` does.
+fn show_card(app: &mut App, id: &str) -> Option<R> {
     if wall(app)["expanded"] == json!(false) {
         let toggle = wall(app)["toggle"].clone();
         click_rect(app, &toggle);
@@ -341,9 +341,9 @@ fn pick_card(app: &mut App, id: &str) -> bool {
         false
     });
     if !in_view {
-        return false;
+        return None;
     }
-    // The pane scrolls with easing: click only once the card has stopped moving.
+    // The pane scrolls with easing: read or click only once the card has stopped moving.
     let mut last = f64::NAN;
     let mut still = 0;
     wait_for(4_000, &mut || {
@@ -359,10 +359,16 @@ fn pick_card(app: &mut App, id: &str) -> bool {
         last = y;
         still >= 4
     });
-    let Some(c) = wall_cards(app).into_iter().find(|c| c.0 == id) else {
+    wall_cards(app).into_iter().find(|c| c.0 == id).map(|c| c.1)
+}
+
+/// Opens the wall, brings a card into view and clicks it; true when it is the theme in force
+/// afterwards.
+fn pick_card(app: &mut App, id: &str) -> bool {
+    let Some(rect) = show_card(app, id) else {
         return false;
     };
-    let (x, y) = centre(c.1);
+    let (x, y) = centre(rect);
     let _ = app.session.click(x, y);
     // A pick over unsaved changes asks first: Discard drops them (settings_b's route, Tab twice from
     // Save as Custom, then Enter), as PT's accent scenario does.
@@ -523,6 +529,29 @@ fn launch_two(ctx: &mut Ctx) -> Result<App, String> {
 
 // ---- themeCards ----------------------------------------------------------------------------------------
 
+/// The wall width, in css px, at which four cards of 172 and three gaps of 12 just fit.
+const FOUR_WIDE: f64 = 724.0;
+
+/// The right edge, in css px, of what is painted at css row `y` just inside `wall_right`: the last
+/// device pixel (scanning from 8 css px inside the wall to 6 outside it) that is not the panel's
+/// ground, which is read 6 css px outside the wall. Reads the last snapshot.
+fn painted_right_edge(app: &mut App, y: f64, wall_right: f64, k: f64) -> Option<f64> {
+    let read = |app: &mut App, x: u32, y: u32| -> Option<[u8; 3]> {
+        match app.session.call(&Request::Pixel { x, y }) {
+            Ok(flare_e2e_proto::Reply::Pixel { rgba }) => Some([rgba[0], rgba[1], rgba[2]]),
+            _ => None,
+        }
+    };
+    let row = (y * k).round().max(0.0) as u32;
+    let ground = read(app, ((wall_right + 6.0) * k).round() as u32, row)?;
+    let from = ((wall_right + 4.0) * k).floor() as u32;
+    let to = ((wall_right - 8.0) * k).floor() as u32;
+    (to..=from)
+        .rev()
+        .find(|x| read(app, *x, row).is_some_and(|p| p != ground))
+        .map(|x| f64::from(x + 1) / k)
+}
+
 /// One measurement of the wall: each card's id, its top in the page (scroll taken off) and its
 /// height, and the top of the row below the wall in the page.
 struct WallPage {
@@ -571,6 +600,29 @@ pub fn theme_cards(ctx: &mut Ctx) -> Result<(), String> {
         ),
     );
 
+    // The window is sized so the wall holds four cards at 172 (724 css px): the four-column check
+    // below is a precondition-checked claim, not one that passes by default on a small window.
+    let wall_w = |app: &mut App| rect_of(&wall(app)["rect"]).map_or(0.0, |r| r.2);
+    if wall_w(&mut app) < FOUR_WIDE + 8.0 {
+        let st = probe(&mut app, "app.state", Value::Null);
+        let k = st["scale"].as_f64().unwrap_or(1.0).max(0.1);
+        let cw = st["window"]["client_w"].as_f64().unwrap_or(1100.0 * k) / k;
+        let ch = st["window"]["client_h"].as_f64().unwrap_or(700.0 * k) / k;
+        let deficit = FOUR_WIDE + 8.0 - wall_w(&mut app);
+        let _ = app.session.call(&Request::Resize {
+            w: (cw + deficit + 8.0) as f32,
+            h: ch as f32,
+        });
+    }
+    let wide = wait_for(8_000, &mut || wall_w(&mut app) >= FOUR_WIDE);
+    ctx.ok(
+        wide,
+        format!(
+            "the window is wide enough for a {FOUR_WIDE} px wall ({:.1} px)",
+            wall_w(&mut app)
+        ),
+    );
+
     // Two rows to pick across.
     let first = measure_wall(&mut app);
     let mut tops: Vec<f64> = Vec::new();
@@ -583,6 +635,82 @@ pub fn theme_cards(ctx: &mut Ctx) -> Result<(), String> {
         tops.len() >= 2,
         format!("the wall has two rows to pick across ({})", tops.len()),
     );
+    // THE COMPACT WALL (owner 2026-10-21, PT PR #251): columns = floor((wall + 12) / (172 + 12)), the
+    // cards stretch, and the strip right of the last card of a row is 0 to 2 css px.
+    let wall_rect = rect_of(&wall(&mut app)["rect"]);
+    let row_cards: Vec<R> = wall_cards(&mut app).into_iter().map(|c| c.1).collect();
+    if let (Some(w), true) = (wall_rect, row_cards.len() > 1) {
+        let first_y = row_cards[0].1;
+        let one_row: Vec<&R> = row_cards
+            .iter()
+            .filter(|r| (r.1 - first_y).abs() < 0.5)
+            .collect();
+        let cols = one_row.len();
+        let want = (((w.2 + 12.0) / 184.0).floor() as usize).max(1);
+        let right = one_row.iter().map(|r| r.0 + r.2).fold(f64::MIN, f64::max);
+        let strip = w.0 + w.2 - right;
+        ctx.ok(
+            cols == want && want >= 1,
+            format!(
+                "the wall has floor((width + 12) / 184) columns ({cols} of {want} at {:.1} px)",
+                w.2
+            ),
+        );
+        ctx.ok(
+            (-0.01..=2.0).contains(&strip),
+            format!("the strip right of the last card of a row is 0 to 2 css px ({strip:.2})"),
+        );
+        ctx.ok(
+            w.2 >= FOUR_WIDE && cols >= 4,
+            format!(
+                "a wall wide enough for four at 172 shows four ({cols} at {:.1} px)",
+                w.2
+            ),
+        );
+        // The pixels, not the model: the last card of the first row is brought into view and the
+        // screenshot's device pixels are read across its right edge. The first pixel (from the right)
+        // that is not the panel's ground is the card's border.
+        let last_id = wall_cards(&mut app)
+            .into_iter()
+            .filter(|c| (c.1 .1 - first_y).abs() < 0.5)
+            .max_by(|a, b| (a.1 .0 + a.1 .2).total_cmp(&(b.1 .0 + b.1 .2)))
+            .map(|c| c.0);
+        let shown = last_id
+            .as_deref()
+            .and_then(|id| show_card(&mut app, id).map(|r| (id.to_string(), r)));
+        let wall_now = rect_of(&wall(&mut app)["rect"]);
+        match (shown, wall_now) {
+            (Some((_, card)), Some(wn)) => {
+                let k = probe(&mut app, "app.state", Value::Null)["scale"]
+                    .as_f64()
+                    .unwrap_or(1.0)
+                    .max(0.1);
+                let _ = ctx.shot(&mut app, "wall-edge");
+                let seen = painted_right_edge(&mut app, card.1 + 20.0, wn.0 + wn.2, k);
+                let model = card.0 + card.2;
+                ctx.ok(
+                    seen.is_some_and(|s| (s - model).abs() * k <= 1.01),
+                    format!(
+                        "the last card's painted right edge is where the layout puts it ({} vs {model:.2} css px at {k})",
+                        seen.map_or("none".to_string(), |s| format!("{s:.2}"))
+                    ),
+                );
+                ctx.ok(
+                    seen.is_some_and(|s| (-0.01..=2.0).contains(&(wn.0 + wn.2 - s))),
+                    format!(
+                        "the painted strip right of the last card is 0 to 2 css px ({})",
+                        seen.map_or("none".to_string(), |s| format!("{:.2}", wn.0 + wn.2 - s))
+                    ),
+                );
+            }
+            _ => ctx.ok(
+                false,
+                "the last card of the first row is in view to be read",
+            ),
+        }
+    } else {
+        ctx.ok(false, "the wall's box and a row of cards are measured");
+    }
     let in_row = |top: f64| {
         first
             .cards

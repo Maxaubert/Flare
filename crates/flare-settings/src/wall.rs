@@ -36,6 +36,10 @@ pub fn preset_look(p: &Preset) -> TermTheme {
     t
 }
 
+/// PT's `grid-template-columns: repeat(auto-fill, minmax(172px, 1fr))` (PT PR #251, owner 2026-10-21):
+/// a card is never narrower than this, and the cards of a row stretch to fill it.
+pub const MIN_CARD_W: f64 = 172.0;
+/// The width a card is drawn at where no wall lays it out (the editor's preview).
 pub const CARD_W: f64 = 196.0;
 pub const GAP: f64 = 12.0;
 pub const TWO_ROWS: f64 = 268.0;
@@ -72,6 +76,8 @@ pub struct WallLayout {
     pub cols: usize,
     pub rows: usize,
     pub positions: Vec<(f64, f64)>,
+    /// Each card's width: whole device pixel edges, so a card may differ from its neighbour by one.
+    pub widths: Vec<f64>,
     pub full_h: f64,
     pub clip_h: f64,
 }
@@ -116,14 +122,29 @@ pub fn wall_cards(look: &LookStore) -> Vec<CardData> {
 }
 
 /// Columns of the wall and the placement of `n` cards. Collapsed, the clip is two rows; expanded, all of it.
-pub fn layout(width: f64, n: usize, expanded: bool) -> WallLayout {
-    let cols = ((width + GAP) / (CARD_W + GAP)).floor().max(1.0) as usize;
-    let positions: Vec<(f64, f64)> = (0..n)
-        .map(|i| {
-            let (row, col) = (i / cols, i % cols);
-            (col as f64 * (CARD_W + GAP), row as f64 * (CARD_H + GAP))
-        })
-        .collect();
+/// `width` is the wall's css width and `scale` the device pixels per css pixel. The columns are PT's
+/// `repeat(auto-fill, minmax(172px, 1fr))` with a 12 px gap: floor((width + 12) / (172 + 12)) of them, each
+/// card stretched to (width - gaps) / cols, and every edge snapped to a whole device pixel.
+pub fn layout(width: f64, n: usize, expanded: bool, scale: f64) -> WallLayout {
+    let k = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let snap = |v: f64| (v * k).round() / k;
+    let cols = ((width + GAP) / (MIN_CARD_W + GAP)).floor().max(1.0) as usize;
+    let card_w = ((width - (cols - 1) as f64 * GAP) / cols as f64).max(MIN_CARD_W);
+    let mut positions = Vec::with_capacity(n);
+    let mut widths = Vec::with_capacity(n);
+    for i in 0..n {
+        let (row, col) = (i / cols, i % cols);
+        let left = col as f64 * (card_w + GAP);
+        // the right edge rounds DOWN, so the last card never reaches past the wall (a strip of 0 to 1 device px)
+        let right = ((left + card_w) * k + 1e-6).floor() / k;
+        let x = snap(left);
+        positions.push((x, row as f64 * (CARD_H + GAP)));
+        widths.push(right - x);
+    }
     let rows = n.div_ceil(cols);
     let full_h = if rows == 0 {
         0.0
@@ -139,6 +160,7 @@ pub fn layout(width: f64, n: usize, expanded: bool) -> WallLayout {
         cols,
         rows,
         positions,
+        widths,
         full_h,
         clip_h,
     }
@@ -362,33 +384,94 @@ mod tests {
     #[test]
     fn layout_wraps_at_the_column_count() {
         let cases = [
-            (196.0, 1, 5370.0),
-            (404.0, 2, 2748.0),
-            (620.0, 3, 1782.0),
-            (1000.0, 4, 1368.0),
+            (172.0, 1, 5370.0),
+            (355.0, 1, 5370.0),
+            (356.0, 2, 2748.0),
+            (540.0, 3, 1782.0),
+            (724.0, 4, 1368.0),
+            (1000.0, 5, 1092.0),
         ];
         for (width, cols, full_h) in cases {
-            let w = layout(width, 39, true);
+            let w = layout(width, 39, true, 1.0);
             assert_eq!(w.cols, cols, "width {width}");
             assert_eq!(w.positions.len(), 39);
+            assert_eq!(w.widths.len(), 39);
             assert!(
                 (w.full_h - full_h).abs() < 1e-9,
                 "width {width}: {}",
                 w.full_h
             );
         }
-        let four = layout(1000.0, 39, true);
+        let four = layout(724.0, 39, true, 1.0);
         assert_eq!(four.positions[0], (0.0, 0.0));
-        assert_eq!(four.positions[3], (3.0 * (CARD_W + GAP), 0.0));
+        assert_eq!(four.widths[0], 172.0);
+        assert_eq!(four.positions[3], (3.0 * (MIN_CARD_W + GAP), 0.0));
         assert_eq!(four.positions[4], (0.0, CARD_H + GAP));
-        assert_eq!(layout(0.0, 39, true).cols, 1);
+        assert_eq!(layout(0.0, 39, true, 1.0).cols, 1);
+    }
+
+    #[test]
+    fn a_width_that_fits_four_at_172_gives_four_and_one_less_gives_three() {
+        let fits = 4.0 * MIN_CARD_W + 3.0 * GAP;
+        for k in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            assert_eq!(layout(fits, 39, false, k).cols, 4, "@{k}");
+            assert_eq!(layout(fits - 0.01, 39, false, k).cols, 3, "@{k}");
+        }
+    }
+
+    /// PT's e2e measures the strip right of the last card of a row: 0 to 2 css px. Every width, every scale,
+    /// and every edge is a whole device pixel.
+    #[test]
+    fn the_cards_fill_the_row_on_whole_device_pixels_at_every_width_and_scale() {
+        for k in [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+            let mut width = 172.0;
+            while width <= 1500.0 {
+                let l = layout(width, 39, true, k);
+                assert_eq!(
+                    l.cols,
+                    (((width + GAP) / (MIN_CARD_W + GAP)).floor() as usize).max(1)
+                );
+                let on_grid = |v: f64| ((v * k).round() - v * k).abs() < 1e-6;
+                for i in 0..l.cols.min(39) {
+                    let (x, _) = l.positions[i];
+                    let w = l.widths[i];
+                    assert!(on_grid(x) && on_grid(x + w), "@{k} width {width}: card {i}");
+                    assert!(
+                        w >= MIN_CARD_W - 1.0 / k - 1e-9,
+                        "@{k} width {width}: {w} wide"
+                    );
+                    if i + 1 < l.cols {
+                        let gap = l.positions[i + 1].0 - (x + w);
+                        assert!(
+                            (gap - GAP).abs() <= 1.0 / k + 1e-9,
+                            "@{k} width {width}: gap {gap}"
+                        );
+                    }
+                }
+                let last = l.cols - 1;
+                let strip = width - (l.positions[last].0 + l.widths[last]);
+                assert!(
+                    (-1e-9..=2.0).contains(&strip),
+                    "@{k} width {width}: {strip} css px right of the last card"
+                );
+                width += 7.3;
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_last_row_keeps_the_same_columns() {
+        let l = layout(724.0, 6, true, 2.25);
+        assert_eq!((l.cols, l.rows), (4, 2));
+        assert_eq!(l.positions[4].0, l.positions[0].0);
+        assert_eq!(l.widths[4], l.widths[0]);
     }
 
     #[test]
     fn collapsed_clip_is_268_and_expanded_is_the_full_height() {
-        let collapsed = layout(1000.0, 39, false);
+        let collapsed = layout(724.0, 39, false, 1.0);
         assert_eq!(collapsed.clip_h, TWO_ROWS);
-        let expanded = layout(1000.0, 39, true);
+        let expanded = layout(724.0, 39, true, 1.0);
         assert_eq!(expanded.clip_h, expanded.full_h);
         assert!((expanded.full_h - 1368.0).abs() < 1e-9);
     }

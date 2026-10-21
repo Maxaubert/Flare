@@ -25,6 +25,7 @@ mod settings_help;
 mod settings_help_flows;
 mod settings_ink;
 mod settings_layout;
+mod settings_live;
 mod settings_look;
 mod settings_row;
 mod settings_select;

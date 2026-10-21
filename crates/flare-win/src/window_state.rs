@@ -63,12 +63,15 @@ pub fn parse_window_state(raw: &str, areas: &[Area]) -> WindowState {
     let (Some(w), Some(h)) = (num("width"), num("height")) else {
         return fallback();
     };
-    let width = (w.round() as i32).max(MIN_WINDOW.0);
-    let height = (h.round() as i32).max(MIN_WINDOW.1);
     let scale = match num("scale") {
         Some(s) if s > 0.0 => s.clamp(0.5, 4.0),
         _ => 1.0,
     };
+    // No larger than the virtual screen (the box round all monitors), in device pixels, so a corrupt
+    // or hand-edited file cannot ask for a window nothing can show (audit L16). Never below the floor.
+    let (max_w, max_h) = max_logical_size(areas, scale);
+    let width = (w.min(f64::from(max_w)).round() as i32).max(MIN_WINDOW.0);
+    let height = (h.min(f64::from(max_h)).round() as i32).max(MIN_WINDOW.1);
     let maximised = obj.get("maximised").and_then(Value::as_bool) == Some(true);
     let (x, y) = match (num("x"), num("y")) {
         (Some(x), Some(y)) => {
@@ -96,6 +99,41 @@ pub fn parse_window_state(raw: &str, areas: &[Area]) -> WindowState {
         maximised,
         scale,
     }
+}
+
+/// The cap when Windows reported no monitor at all, in device pixels.
+const NO_MONITOR_CAP: i64 = 16_384;
+
+/// The largest window, in logical pixels, that fits the virtual screen at `scale`.
+fn max_logical_size(areas: &[Area], scale: f64) -> (i32, i32) {
+    let (vw, vh) = if areas.is_empty() {
+        (NO_MONITOR_CAP, NO_MONITOR_CAP)
+    } else {
+        let left = areas.iter().map(|a| i64::from(a.x)).min().unwrap_or(0);
+        let top = areas.iter().map(|a| i64::from(a.y)).min().unwrap_or(0);
+        let right = areas
+            .iter()
+            .map(|a| i64::from(a.x) + i64::from(a.width))
+            .max()
+            .unwrap_or(0);
+        let bottom = areas
+            .iter()
+            .map(|a| i64::from(a.y) + i64::from(a.height))
+            .max()
+            .unwrap_or(0);
+        // A quarter over: a window saved a little past a work area (the taskbar is not in it) keeps
+        // its size; only the absurd is cut.
+        (
+            ((right - left) * 5 / 4).max(1),
+            ((bottom - top) * 5 / 4).max(1),
+        )
+    };
+    let to_logical = |device: i64| {
+        (device as f64 / scale)
+            .floor()
+            .clamp(1.0, f64::from(i32::MAX)) as i32
+    };
+    (to_logical(vw), to_logical(vh))
 }
 
 /// `window.json` text, x and y omitted when None.
@@ -402,5 +440,51 @@ mod tests {
         store.save(&saved);
         store.flush();
         assert_eq!(WindowStateStore::read(&file, &ONE), saved);
+    }
+
+    /// L16 (audit 2026-10-20): a hand-edited or corrupt `window.json` must not ask for a window
+    /// larger than all the monitors together, at any scaling.
+    #[test]
+    fn window_state_clamps_the_size_to_the_virtual_screen_at_every_scale() {
+        for scale in [1.0, 1.25, 1.5, 2.0, 2.25, 3.0] {
+            let raw = format!(r#"{{"width":100000,"height":99999,"scale":{scale}}}"#);
+            let s = parse_window_state(&raw, &ONE);
+            let (dw, dh) = (f64::from(s.width) * scale, f64::from(s.height) * scale);
+            assert!(
+                dw <= 2400.5 && dh <= 1300.5,
+                "scale {scale}: {dw} x {dh} device px"
+            );
+            assert!(
+                s.width >= MIN_WINDOW.0 && s.height >= MIN_WINDOW.1,
+                "never below the floor"
+            );
+        }
+    }
+
+    #[test]
+    fn window_state_lets_a_window_span_two_monitors_but_no_more() {
+        let areas = [
+            Area {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1040,
+            },
+            ONE[0],
+        ];
+        let s = parse_window_state(r#"{"width":3500,"height":900}"#, &areas);
+        assert_eq!(
+            (s.width, s.height),
+            (3500, 900),
+            "inside the virtual screen: kept"
+        );
+        let s = parse_window_state(r#"{"width":9000,"height":900}"#, &areas);
+        assert_eq!(s.width, 4800, "a quarter over the virtual screen's width");
+    }
+
+    #[test]
+    fn window_state_with_no_monitor_info_still_caps_the_size() {
+        let s = parse_window_state(r#"{"width":1e9,"height":1e9}"#, &[]);
+        assert!(s.width <= 16384 && s.height <= 16384, "{s:?}");
     }
 }

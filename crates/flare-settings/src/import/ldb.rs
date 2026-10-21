@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusty_leveldb::{DB, LdbIterator, Options};
@@ -30,6 +31,8 @@ pub enum ReadError {
 /// Every Prism Terminal entry key starts with the origin, a NUL and a 1 (Latin-1 name follows).
 pub const ORIGIN_PREFIX: &[u8] = b"_file://\x00\x01";
 
+/// The name every copy folder starts with.
+const COPY_PREFIX: &str = "flare-import-";
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL: u64 = 256 * 1024 * 1024;
 const MAX_VALUE: usize = 1024 * 1024;
@@ -89,16 +92,20 @@ fn unique_name(suffix: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("flare-import-{}-{}{}", std::process::id(), nanos, suffix)
+    format!("{COPY_PREFIX}{}-{}{}", std::process::id(), nanos, suffix)
 }
 
 /// Copy the regular files of `src` (not LOCK) into `dst`. Returns the number copied.
-fn copy_folder(src: &Path, dst: &Path) -> Result<usize, ReadError> {
+fn copy_folder(src: &Path, dst: &Path, cancel: &AtomicBool) -> Result<usize, ReadError> {
     fs::create_dir_all(dst).map_err(|e| ReadError::Copy(e.to_string()))?; // sync-ok: runs on the import worker
     let rd = fs::read_dir(src).map_err(|e| ReadError::Copy(e.to_string()))?; // sync-ok: runs on the import worker
     let mut total = 0u64;
     let mut n = 0usize;
     for entry in rd {
+        // The run gave up on this read (its ceiling passed): stop copying, the guard removes the folder.
+        if cancel.load(Ordering::SeqCst) {
+            return Err(ReadError::Copy("cancelled".into()));
+        }
         let entry = entry.map_err(|e| ReadError::Copy(e.to_string()))?;
         let name = entry.file_name();
         if name == "LOCK" {
@@ -160,6 +167,40 @@ pub fn read_local_storage(
     read_local_storage_in(profile, temp_root, pause, false).map(|(ls, _)| ls)
 }
 
+/// As `read_local_storage`, but `cancel` stops the copy at the next file (and skips the retry): the
+/// import run sets it once its ceiling has passed, so a late read stops filling the temp folder.
+pub fn read_local_storage_cancellable(
+    profile: &Path,
+    temp_root: &Path,
+    pause: &dyn Fn(Duration),
+    cancel: &AtomicBool,
+) -> Result<LocalStorage, ReadError> {
+    read_with_cancel(profile, temp_root, pause, false, cancel).map(|(ls, _)| ls)
+}
+
+/// Removes the `flare-import-*` folders under `temp_root` last touched more than `max_age` ago: what a
+/// run that was killed mid-copy left behind (audit 2026-10-20, L19).
+pub fn sweep_stale(temp_root: &Path, max_age: Duration) {
+    // sync-ok: runs on the import worker
+    let Ok(rd) = fs::read_dir(temp_root) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(COPY_PREFIX) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .is_some_and(|age| age >= max_age);
+        if old {
+            let _ = fs::remove_dir_all(entry.path()); // sync-ok: runs on the import worker
+        }
+    }
+}
+
 /// As `read_local_storage`; with `keep` the copy folder is left in place and returned (tests).
 pub fn read_local_storage_in(
     profile: &Path,
@@ -167,18 +208,29 @@ pub fn read_local_storage_in(
     pause: &dyn Fn(Duration),
     keep: bool,
 ) -> Result<(LocalStorage, Option<PathBuf>), ReadError> {
+    read_with_cancel(profile, temp_root, pause, keep, &AtomicBool::new(false))
+}
+
+fn read_with_cancel(
+    profile: &Path,
+    temp_root: &Path,
+    pause: &dyn Fn(Duration),
+    keep: bool,
+    cancel: &AtomicBool,
+) -> Result<(LocalStorage, Option<PathBuf>), ReadError> {
     let src = profile.join("Local Storage").join("leveldb");
     // sync-ok: runs on the import worker
     if !fs::metadata(&src).map(|m| m.is_dir()).unwrap_or(false) {
         return Err(ReadError::NoFolder);
     }
-    match attempt(&src, temp_root, "", keep) {
+    match attempt(&src, temp_root, "", keep, cancel) {
         Ok(done) => Ok(done),
+        Err(e) if cancel.load(Ordering::SeqCst) => Err(e),
         Err(_) => {
             // A copy taken mid-write can be torn, and a file can be held or vanish (a compaction)
             // while it is copied: one more go after the pause.
             pause(Duration::from_millis(300));
-            attempt(&src, temp_root, "-retry", keep)
+            attempt(&src, temp_root, "-retry", keep, cancel)
         }
     }
 }
@@ -189,10 +241,11 @@ fn attempt(
     temp_root: &Path,
     suffix: &str,
     keep: bool,
+    cancel: &AtomicBool,
 ) -> Result<(LocalStorage, Option<PathBuf>), ReadError> {
     let dir = temp_root.join(unique_name(suffix));
     let mut guard = Cleanup(Some(dir.clone()));
-    let files = copy_folder(src, &dir)?;
+    let files = copy_folder(src, &dir, cancel)?;
     let mut ls = open_and_read(&dir).map_err(ReadError::Open)?;
     ls.files_copied = files;
     let kept = if keep { guard.keep() } else { None };
@@ -407,6 +460,32 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_read_copies_nothing_and_leaves_no_folder() {
+        let p = profile(false, |db| db.put(&key("a"), &latin1("1")).unwrap());
+        let t = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(true);
+        let r = read_local_storage_cancellable(p.path(), t.path(), &no_pause(), &cancel);
+        assert_eq!(r.unwrap_err(), ReadError::Copy("cancelled".into()));
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_sweep_removes_old_copy_folders_only() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir(t.path().join("flare-import-1-2")).unwrap();
+        fs::write(t.path().join("flare-import-1-2").join("000003.log"), b"x").unwrap();
+        fs::create_dir(t.path().join("other-folder")).unwrap();
+        sweep_stale(t.path(), Duration::from_secs(3600));
+        assert!(
+            t.path().join("flare-import-1-2").exists(),
+            "a fresh folder stays"
+        );
+        sweep_stale(t.path(), Duration::ZERO);
+        assert!(!t.path().join("flare-import-1-2").exists());
+        assert!(t.path().join("other-folder").exists());
+    }
+
+    #[test]
     fn never_copies_the_lock_file() {
         let p = profile(false, |db| db.put(&key("a"), &latin1("1")).unwrap());
         let lock = p.path().join("Local Storage/leveldb/LOCK");
@@ -475,7 +554,7 @@ mod tests {
             let src = pp.join("Local Storage/leveldb");
             let first = tp.join(unique_name("-panic"));
             let _g = Cleanup(Some(first.clone()));
-            copy_folder(&src, &first).unwrap();
+            copy_folder(&src, &first, &AtomicBool::new(false)).unwrap();
             panic!("inside the iteration");
         });
         assert!(r.is_err());

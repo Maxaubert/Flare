@@ -63,7 +63,12 @@ fn logs_a_panic_by_observing_only_and_writes_it_at_once() {
         .find(|l| l["k"] == "panic")
         .expect("a panic line");
     assert_eq!(panic_line["src"], "main");
-    assert_eq!(panic_line["msg"], "kaput for the log");
+    // Audit L12: the line keeps the payload's length and hash, never its text.
+    assert_eq!(
+        panic_line["msg"],
+        flare_diag::crash::payload_summary("kaput for the log")
+    );
+    assert!(!panic_line.to_string().contains("kaput"));
     assert_eq!(panic_line["origin"], "panic");
     assert_eq!(panic_line["thread"], "crash-test");
     assert!(panic_line["loc"]

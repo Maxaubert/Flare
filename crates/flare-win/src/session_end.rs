@@ -1,7 +1,8 @@
 //! SessionEndWatch (Task 16): learns that Windows is shutting down or logging off.
 //!
 //! No before-quit event arrives at a Windows shutdown or log-off, so the app listens for
-//! `WM_ENDSESSION` on a message-only window of its own thread and flushes its state there.
+//! `WM_ENDSESSION` on a hidden top-level window of its own thread (Windows sends it only to
+//! top-level windows, never to a message-only one; audit H2) and flushes its state there.
 
 use std::cell::RefCell;
 use std::sync::Once;
@@ -11,9 +12,9 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE,
-    MSG, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_DESTROY,
-    WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
+    PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_DESTROY,
+    WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 /// `PBT_APMSUSPEND`: the machine is about to sleep.
@@ -110,7 +111,7 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// A message-only window on its own thread. `WM_QUERYENDSESSION` is answered 1 (never a veto);
+/// A hidden top-level window (never shown) on its own thread. `WM_QUERYENDSESSION` is answered 1 (never a veto);
 /// `WM_ENDSESSION` with `wParam != 0` runs `on_end` on that thread before the message returns;
 /// `wParam == 0` (cancelled) runs nothing.
 pub struct SessionEndWatch {
@@ -157,15 +158,15 @@ impl SessionEndWatch {
                 // SAFETY: the class is registered; the strings outlive the call.
                 let hwnd = unsafe {
                     CreateWindowExW(
-                        0,
+                        WS_EX_TOOLWINDOW,
                         class.as_ptr(),
                         class.as_ptr(),
+                        WS_POPUP,
                         0,
                         0,
                         0,
                         0,
-                        0,
-                        HWND_MESSAGE,
+                        std::ptr::null_mut(),
                         std::ptr::null_mut(),
                         hinstance,
                         std::ptr::null(),
@@ -239,7 +240,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, SendMessageW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_MESSAGE, IsWindow, SendMessageW};
 
     fn counted() -> (SessionEndWatch, Arc<AtomicUsize>) {
         let n = Arc::new(AtomicUsize::new(0));
@@ -337,5 +338,40 @@ mod tests {
         assert_eq!(nb.load(Ordering::SeqCst), 1);
         a.stop();
         b.stop();
+    }
+
+    /// Windows sends `WM_QUERYENDSESSION` / `WM_ENDSESSION` only to top-level windows, and
+    /// `EnumWindows` lists exactly those (a message-only window never appears). The tests above post
+    /// straight to the hwnd, so this is the check that the real broadcast can reach it (audit H2).
+    /// Manual note: a real log-off cannot be driven from a test; sign out with a Flare running and
+    /// read the diagnostics log for the `session_end` line.
+    #[test]
+    fn the_window_is_top_level_and_never_shown() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GA_PARENT, GetAncestor, IsWindowVisible,
+        };
+        unsafe extern "system" fn find(h: HWND, l: LPARAM) -> i32 {
+            // SAFETY: l is the pointer to the pair below, alive for the whole EnumWindows call.
+            let pair = unsafe { &mut *(l as *mut (isize, bool)) };
+            if h as isize == pair.0 {
+                pair.1 = true;
+            }
+            1
+        }
+        let (w, _n) = counted();
+        let mut pair = (w.hwnd(), false);
+        // SAFETY: the callback only reads and writes `pair`, which outlives the call.
+        unsafe { EnumWindows(Some(find), &mut pair as *mut _ as LPARAM) };
+        assert!(pair.1, "the session-end window is not a top-level window");
+        // SAFETY: the window is alive.
+        unsafe {
+            assert_ne!(
+                GetAncestor(w.hwnd() as HWND, GA_PARENT),
+                HWND_MESSAGE,
+                "message-only"
+            );
+            assert_eq!(IsWindowVisible(w.hwnd() as HWND), 0, "must stay hidden");
+        }
+        w.stop();
     }
 }

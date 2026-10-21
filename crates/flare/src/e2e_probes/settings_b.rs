@@ -18,7 +18,6 @@ use crate::{SettingsBridge, Theme};
 const WALL_PAD_X: f64 = 16.0;
 const WALL_TOP: f64 = 14.0;
 /// A wall card (`ThemeCard`) and its pencil.
-const CARD_W: f64 = 196.0;
 const CARD_H: f64 = 124.0;
 const PENCIL: f64 = 20.0;
 /// A colour row's swatch and its right padding (`SetRowFrame`).
@@ -184,11 +183,11 @@ fn wall_box(row: Rect) -> Rect {
 }
 
 /// One card and its pencil, at the card's offset inside the wall.
-fn wall_card(wall: Rect, cx: f64, cy: f64, k: f64) -> (Rect, Rect) {
+fn wall_card(wall: Rect, cx: f64, cy: f64, cw: f64, k: f64) -> (Rect, Rect) {
     let card = Rect {
         x: wall.x + cx,
         y: wall.y + cy,
-        w: CARD_W,
+        w: cw,
         h: CARD_H + 2.0 * hair(k),
     };
     let pencil = Rect {
@@ -367,7 +366,8 @@ pub(super) fn settings_theme(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, Stri
                 .get_wall_cards()
                 .iter()
                 .map(|c| {
-                    let (card, pencil) = wall_card(wall, f64::from(c.x), f64::from(c.y), f.k);
+                    let (card, pencil) =
+                        wall_card(wall, f64::from(c.x), f64::from(c.y), f64::from(c.w), f.k);
                     // A card is hit only while the clip shows it.
                     let shown = f64::from(c.y) + CARD_H <= shown_h + 8.0;
                     json!({

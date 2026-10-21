@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::stats::{FrameTrace, TracePhase};
@@ -44,7 +44,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW,
 };
 
-use crate::AppWindow;
 use crate::appctl::{AppCtl, Backends, CloseDecision, Deps, KeyOutcome, Post, TermPorts, UiMsg};
 use crate::backend::BackendOutcome;
 use crate::config::{Args, RendererChoice};
@@ -53,18 +52,17 @@ use crate::font_ctl::FontCtl;
 use crate::host::{GridHost, GridPainter};
 use crate::ime::{CaretFollower, ime_area};
 use crate::keymap::{key_event_from_parts, reserved_for_slint};
-use crate::live::{LiveSource, WheelAccum, cell_at};
+use crate::live::{LiveSource, WheelAccum, WheelGate, cell_at, wheel_is_terminals};
 use crate::look_ctl::LookCtl;
 use crate::material_ctl::{SlintWake, WindowMaterial};
 use crate::memory::process_memory;
 use crate::startup::{Profile, RaiseStep, raise_plan};
 use crate::tab_host::TabHost;
+use crate::{AppWindow, HelpBridge};
 use flare_win::os_build::os_version;
 
 /// How long the state files wait before they are written (Prism Terminal's debounce).
 const SAVE_DELAY: Duration = Duration::from_millis(400);
-/// The bar's height in css pixels (`Theme.bar-height`).
-const BAR_CSS: f64 = 36.0;
 
 /// The first instance's claim on the profile: the lock, kept for the whole run, and its
 /// hand-off server.
@@ -428,6 +426,11 @@ fn attach_window_material(
     let Some(mut m) = WindowMaterial::new(app, os_version(), e2e) else {
         return false;
     };
+    // The handle exists: the frameless window gets its resize edges and corners (winit gives it no
+    // non-client border, so Windows alone answers every point with the client).
+    if let Some(hwnd) = hwnd_of(app) {
+        flare_win::resize_edges::install(hwnd);
+    }
     // No polling: the material arms a one-shot wake only while the border is due.
     m.set_wake(Box::new(SlintWake::new(Rc::downgrade(material))), now);
     m.on_window_state(
@@ -594,15 +597,9 @@ fn settings_deps(
         version: crate::app_facts::version().to_string(),
         copyright: crate::startup::copyright_line(crate::startup::LICENCE),
         e2e: e2e_on,
-        clock: Rc::new(epoch_ms),
+        clock: Rc::new(crate::ui_clock::monotonic_ms),
         still: Rc::new(|| !crate::e2e::animations_enabled()),
     }
-}
-
-fn epoch_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Hands the probes the renderer the run really got (`Hello` and `app.state` report it).
@@ -689,6 +686,7 @@ pub fn run_window(
         move || {
             crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
             let Some(app) = weak.upgrade() else { return };
+            sync_caret_shape(&app, &host);
             let image = host.borrow_mut().render();
             if let Some(image) = image {
                 FrameTrace::global().time(TracePhase::SetImage, || app.set_grid_image(image));
@@ -706,9 +704,12 @@ pub fn run_window(
         }
     };
 
+    // The controller, once made: the GPU path's frames step the sidebar's slide (audit V3).
+    let slide_ctl: Rc<RefCell<Option<std::rc::Weak<RefCell<AppCtl>>>>> = Rc::default();
     let notifier_result = {
         let host = host.clone();
         let note = note.clone();
+        let slide_ctl = slide_ctl.clone();
         let weak = app.as_weak();
         let front = front.clone();
         let caret = caret.clone();
@@ -738,6 +739,13 @@ pub fn run_window(
                     }
                 }
                 RenderingState::BeforeRendering => {
+                    // The sidebar's slide takes its place here: after the swap chain gave the frame its
+                    // buffer (the vsync wait), right before the items are drawn.
+                    if let Some(rc) = slide_ctl.borrow().as_ref().and_then(std::rc::Weak::upgrade)
+                        && let Ok(mut c) = rc.try_borrow_mut()
+                    {
+                        c.on_frame();
+                    }
                     crate::e2e_glue::on_render(crate::e2e_glue::RenderPhase::Before);
                     let trace = FrameTrace::global();
                     if trace.on() {
@@ -748,6 +756,7 @@ pub fn run_window(
                         }
                     }
                     let Some(app) = weak.upgrade() else { return };
+                    sync_caret_shape(&app, &host);
                     if host.borrow().is_dirty() {
                         let image = host.borrow_mut().render();
                         if let Some(image) = image {
@@ -782,6 +791,7 @@ pub fn run_window(
     };
     if let Err(e) = notifier_result {
         no_notifier.set(true);
+        crate::e2e_glue::series_from_redraws();
         host.borrow_mut().detach_gpu();
         *note.borrow_mut() = Some(format!("no rendering notifier: {e}"));
         log::info!("grid on the CPU: no rendering notifier ({e})");
@@ -802,8 +812,6 @@ pub fn run_window(
     // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
     let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
-    // A font setting changed: the grid takes the new face and size (Task 27).
-    let mut _font_sub = None;
     // The Explorer verb (reconciled on a worker after the restore) and the update engine (started
     // after the window is shown), both made with the controller (M9 Task 32).
     let mut verb_switch: Option<Arc<flare_win::verb_switch::VerbSwitch>> = None;
@@ -884,7 +892,7 @@ pub fn run_window(
             // sync-ok: runs on the stat workers, never on the UI thread
             is_dir: Arc::new(|p: &str| Path::new(p).is_dir()),
             home: crate::app_facts::home().to_string(),
-            clock: Rc::new(epoch_ms),
+            clock: Rc::new(crate::ui_clock::monotonic_ms),
             post: Arc::clone(&post),
             pick_folder: {
                 let weak = app.as_weak();
@@ -993,6 +1001,10 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
+        rc.borrow_mut()
+            .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
+        *slide_ctl.borrow_mut() = Some(Rc::downgrade(&rc));
         crate::dictation_ctl::install(&app, &rc, args);
         // What this run is: installed or not, e2e or not (M9 Task 32). The verb and the update
         // engine follow from it.
@@ -1079,20 +1091,8 @@ pub fn run_window(
             FontCtl::new(LookStore::new(prefs.clone()), host.clone())
                 .with_overrides(args.look.font.clone(), args.look.font_pct),
         );
-        // untimed: the font subscriber only queues one event-loop call and returns at once
-        _font_sub = Some(LookStore::new(prefs.clone()).on_look_change(|| {
-            let queued = slint::invoke_from_event_loop(|| {
-                let target = APP_CTL.with(|cell| cell.borrow().clone());
-                if let Some((rc, _)) = target
-                    && let Ok(mut c) = rc.try_borrow_mut()
-                {
-                    c.apply_font();
-                }
-            });
-            if queued.is_err() {
-                log::debug!("font: event loop closed");
-            }
-        }));
+        // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
+        // wear the new face and size, Settings open or not.
         stores = Some((tabs_store, window_store, prefs));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
@@ -1204,6 +1204,7 @@ pub fn run_window(
                 material: material.clone(),
                 caret: caret.clone(),
                 e2e: args.e2e,
+                software: no_notifier.clone(),
             },
         )
     });
@@ -1237,11 +1238,17 @@ pub fn run_window(
     if no_notifier.get() {
         // When the grid was last painted, by the timer or by a wake-up.
         let last_paint = Rc::new(Cell::new(std::time::Instant::now()));
+        // The caret shape is read here too: a popup opening does not dirty the grid by itself.
+        let caret_weak = app.as_weak();
         frame_timer.start(slint::TimerMode::Repeated, FRAME_POLL, {
             let host = host.clone();
             let render_now = render_now.clone();
             let last_paint = last_paint.clone();
+            let caret_weak = caret_weak.clone();
             move || {
+                if let Some(app) = caret_weak.upgrade() {
+                    sync_caret_shape(&app, &host);
+                }
                 if repaint_due(host.borrow().is_dirty()) {
                     last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
@@ -1251,7 +1258,11 @@ pub fn run_window(
         let hook: Rc<dyn Fn()> = {
             let host = host.clone();
             let render_now = render_now.clone();
+            let caret_weak = caret_weak.clone();
             Rc::new(move || {
+                if let Some(app) = caret_weak.upgrade() {
+                    sync_caret_shape(&app, &host);
+                }
                 if paint_on_wake(last_paint.get().elapsed(), host.borrow().is_dirty()) {
                     last_paint.set(std::time::Instant::now());
                     crate::diag_ctl::timed("frame_render", &render_now);
@@ -1343,6 +1354,7 @@ pub fn run_window(
                 flare_win::taskbar::RecordShell,
             )));
         } else if let Some(hwnd) = hwnd_of(&app) {
+            flare_win::taskbar::watch_button_created(hwnd);
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }
@@ -1478,6 +1490,8 @@ struct FilterState {
     caret: Rc<RefCell<CaretFollower>>,
     /// `--e2e`: the saved position is never applied.
     e2e: bool,
+    /// Slint's software renderer draws (it has no rendering notifier).
+    software: Rc<Cell<bool>>,
 }
 
 /// Everything a key (and a focus change) needs: the winit filter and the e2e glue both go through
@@ -1490,9 +1504,95 @@ pub(crate) struct KeyPath {
     /// Codes whose press the app consumed: their release must not reach the shell either.
     pub consumed: RefCell<HashSet<String>>,
     pub app: slint::Weak<AppWindow>,
+    /// The grid's cell metrics and size: a wheel turn is placed on a cell with them.
+    pub host: Rc<RefCell<GridHost>>,
+    /// The wheel's fractional remainders (lines and touchpad pixels).
+    pub wheel_accum: RefCell<WheelAccum>,
+}
+
+/// One wheel turn as the window or the e2e glue receives it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WheelDelta {
+    /// Wheel lines (a mouse notch is 1.0; a smooth touchpad sends fractions).
+    Lines(f32),
+    /// Touchpad pixels, physical.
+    Pixels(f64),
 }
 
 impl KeyPath {
+    /// Whether a point (css px) is the terminal's to scroll: the one gate the real wheel and the e2e
+    /// wheel share. Over the strip, the sidebar's tab list, the help sheet, a menu or any popup the
+    /// wheel stays with Slint (audit 2026-10-20: M5).
+    pub(crate) fn wheel_is_terminals_at(&self, app: &AppWindow, p_css: (f32, f32)) -> bool {
+        let k = app.get_scale().max(0.01);
+        let help_open = app.global::<HelpBridge>().get_open();
+        let window_w = app.window().size().width as f32 / k;
+        let gate = WheelGate {
+            front_is_grid: app.get_front_kind() == 0,
+            chrome_focus: app.get_chrome_has_focus(),
+            menu_open: app.get_menu_open(),
+            grid: (
+                app.get_grid_left(),
+                app.get_grid_top(),
+                app.get_grid_phys_width() as f32 / k,
+                app.get_grid_phys_height() as f32 / k,
+            ),
+            help_from: help_open.then(|| window_w - app.get_help_sheet_w()),
+        };
+        wheel_is_terminals(p_css, &gate)
+    }
+
+    /// One wheel turn at `cursor_phys` (window pixels), through the path the real window takes and
+    /// the e2e glue shares: the gate, the notches (whole ones, the remainder kept), Ctrl zooms, else
+    /// the front shell scrolls at the cell under the pointer (the grid's own origin, not a repeated
+    /// layout) and the GPU path is woken.
+    pub(crate) fn wheel(
+        &self,
+        delta: WheelDelta,
+        cursor_phys: (f64, f64),
+        ctrl: bool,
+    ) -> EventResult {
+        let Some(app) = self.app.upgrade() else {
+            return EventResult::Propagate;
+        };
+        let Some(handle) = self.front.borrow().clone() else {
+            return EventResult::Propagate;
+        };
+        let k = f64::from(app.get_scale()).max(0.01);
+        let (x, y) = cursor_phys;
+        if !self.wheel_is_terminals_at(&app, ((x / k) as f32, (y / k) as f32)) {
+            return EventResult::Propagate;
+        }
+        let (m, (cols, rows)) = {
+            let h = self.host.borrow();
+            (h.metrics(), h.dims())
+        };
+        let notches = match delta {
+            WheelDelta::Lines(l) => self.wheel_accum.borrow_mut().add_lines(l),
+            WheelDelta::Pixels(px) => self.wheel_accum.borrow_mut().add(px, m.cell_h),
+        };
+        // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
+        if ctrl {
+            for _ in 0..notches.unsigned_abs().min(64) {
+                self.with_ctl(&mut |c| {
+                    c.zoom_front(f64::from(notches.signum()));
+                });
+            }
+            return EventResult::PreventDefault;
+        }
+        if notches != 0 {
+            let origin = (
+                f64::from(app.get_grid_left()) * k,
+                f64::from(app.get_grid_top()) * k,
+            );
+            let (col, row) = cell_at(x, y, origin, &m, cols, rows);
+            if handle.wheel(notches, col, row) {
+                app.window().request_redraw();
+            }
+        }
+        EventResult::PreventDefault
+    }
+
     fn with_ctl(&self, f: &mut dyn FnMut(&mut AppCtl)) {
         if let Some(rc) = self.ctl.upgrade()
             && let Ok(mut c) = rc.try_borrow_mut()
@@ -1510,7 +1610,9 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
     }
     if ev.pressed {
         // A typed key opens the IME caret hold (Task 24b).
-        kp.caret.borrow_mut().on_key(epoch_ms() as i64);
+        kp.caret
+            .borrow_mut()
+            .on_key(crate::ui_clock::monotonic_ms() as i64);
     }
     let chrome_focus = kp
         .app
@@ -1557,6 +1659,16 @@ pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
     }
 }
 
+/// The caret follows the keyboard: an outline while a popup, a dialog or a field holds it (audit V11).
+fn sync_caret_shape(app: &AppWindow, host: &RefCell<GridHost>) {
+    let hollow = crate::live::caret_is_hollow(
+        app.get_chrome_has_focus(),
+        app.get_find_input_focused(),
+        app.get_menu_open(),
+    );
+    host.borrow_mut().set_hollow_cursor(hollow);
+}
+
 /// Each rendered frame: the IME rectangle goes to the cell the caret holds (Task 24b). The hold is
 /// released on the alternate screen, after a resize and on a scrolled-back view. Nothing to place
 /// without a tab in front.
@@ -1597,9 +1709,11 @@ fn place_ime(
         })
         .collect();
     caret.borrow_mut().on_stops(&stops);
-    let held = caret
-        .borrow_mut()
-        .on_frame(cursor, resized || scrolled || alt, epoch_ms() as i64);
+    let held = caret.borrow_mut().on_frame(
+        cursor,
+        resized || scrolled || alt,
+        crate::ui_clock::monotonic_ms() as i64,
+    );
     let scale = app.get_scale();
     let origin = (
         (app.get_grid_left() * scale).round() as i32,
@@ -1632,10 +1746,10 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         material,
         caret,
         e2e,
+        software,
     } = st;
     let mods = Cell::new(ModifiersState::empty());
     let cursor = Cell::new((0.0_f64, 0.0_f64));
-    let accum = RefCell::new(WheelAccum::new());
     // The key path (and the codes whose press the app consumed) is shared with the e2e glue.
     let kp = Rc::new(KeyPath {
         ctl: ctl.clone(),
@@ -1643,6 +1757,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         caret,
         consumed: RefCell::new(HashSet::new()),
         app: app.as_weak(),
+        host: host.clone(),
+        wheel_accum: RefCell::new(WheelAccum::new()),
     });
     let kp_out = kp.clone();
     let reapply = RefCell::new(Reapply::new(
@@ -1716,6 +1832,28 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         };
         let scale = f64::from(window.scale_factor()).max(0.01);
         match event {
+            WindowEvent::RedrawRequested => {
+                // The sidebar's slide (audit V3): while it runs, the next frame is asked for straight from
+                // the OS window, not through Slint's frame timer, and each present paces it (the GPU path on
+                // vsync, the software path on the compositor; measured 2026-10-20, an added wait for the next
+                // refresh only doubled some gaps). The software renderer has no notifier, so its frame steps
+                // the slide here (its start the first time, its place on the curve now); the GPU path's
+                // BeforeRendering does, after the vsync wait.
+                let mut more = false;
+                with_ctl(&mut |c| {
+                    more = if software.get() {
+                        c.on_frame()
+                    } else {
+                        c.slide_running()
+                    }
+                });
+                if more {
+                    window.request_redraw();
+                }
+                // The software renderer's frames, for the e2e's series (a no-op unless it asked for them).
+                crate::e2e_glue::on_redraw();
+                EventResult::Propagate
+            }
             WindowEvent::ModifiersChanged(m) => {
                 mods.set(m.state());
                 EventResult::Propagate
@@ -1777,6 +1915,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                // The software window reads 1.0 until its first resize at the monitor's scale (audit V6).
+                crate::e2e_hook::set_hello_scale(window.scale_factor());
                 let (maximised, fullscreen) = (window.is_maximized(), window.is_fullscreen());
                 // The look controller keeps the UI and the material in step (D7); without one
                 // the material alone follows.
@@ -1790,7 +1930,9 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 with_ctl(&mut |c| c.on_geometry(o));
                 EventResult::Propagate
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Hello reports the window's own scale, not the 1.0 read before the monitor's arrived.
+                crate::e2e_hook::set_hello_scale(*scale_factor as f32);
                 // The saved scale may differ from the monitor the window opened on: set the
                 // saved logical size and physical position once more at the real scale.
                 if let Some(init) = reapply.borrow_mut().take(Instant::now()) {
@@ -1845,47 +1987,11 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let Some(app) = weak.upgrade() else {
-                    return EventResult::Propagate;
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => WheelDelta::Lines(*y),
+                    MouseScrollDelta::PixelDelta(p) => WheelDelta::Pixels(p.y),
                 };
-                let Some(handle) = front.borrow().clone() else {
-                    return EventResult::Propagate;
-                };
-                let scale_f = app.get_scale();
-                let (x, y) = cursor.get();
-                if y < (BAR_CSS * f64::from(scale_f)).round() || app.get_chrome_has_focus() {
-                    return EventResult::Propagate;
-                }
-                // The grid starts right of an open sidebar.
-                let grid_x = if app.get_layout_vertical() && !app.get_sidebar_collapsed() {
-                    f64::from(app.get_sidebar_width()) * f64::from(scale_f)
-                } else {
-                    0.0
-                };
-                let (m, (cols, rows)) = {
-                    let h = host.borrow();
-                    (h.metrics(), h.dims())
-                };
-                let notches = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
-                    MouseScrollDelta::PixelDelta(p) => accum.borrow_mut().add(p.y, m.cell_h),
-                };
-                // Ctrl+wheel zooms the tab in front, one pixel a notch, never saved (Task 27).
-                if mods.get().control_key() {
-                    for _ in 0..notches.unsigned_abs().min(64) {
-                        with_ctl(&mut |c| {
-                            c.zoom_front(f64::from(notches.signum()));
-                        });
-                    }
-                    return EventResult::PreventDefault;
-                }
-                if notches != 0 {
-                    let (col, row) = cell_at((x - grid_x).max(0.0), y, scale_f, &m, cols, rows);
-                    if handle.wheel(notches, col, row) {
-                        app.window().request_redraw();
-                    }
-                }
-                EventResult::PreventDefault
+                kp.wheel(delta, cursor.get(), mods.get().control_key())
             }
             _ => EventResult::Propagate,
         }
@@ -1960,32 +2066,35 @@ mod tests {
         assert_eq!(saved_position(&init, true), None);
     }
 
-    /// A wheel scroll makes no output, so nothing else wakes the GPU path: the arm (and the e2e
-    /// mirror of it) asks for the redraw itself when the view moved (M10 Task 70, B5 counted no
-    /// GPU frame at all before this).
+    /// A wheel scroll makes no output, so nothing else wakes the GPU path: the shared wheel asks for
+    /// the redraw itself when the view moved (M10 Task 70, B5 counted no GPU frame at all before
+    /// this). The winit arm and the e2e wheel both go through that one function (audit 2026-10-20).
     #[test]
     fn a_wheel_that_moves_the_view_asks_for_a_redraw() {
         let src = include_str!("window.rs").replace("\r\n", "\n");
-        let from = src
-            .find("WindowEvent::MouseWheel {")
-            .expect("the filter has a wheel arm");
-        let arm = &src[from..];
-        let arm = &arm[..arm
-            .find("_ => EventResult::Propagate")
-            .expect("the arm ends")];
-        let call = arm
+        let from = src.find("pub(crate) fn wheel(").expect("the shared wheel");
+        let body = &src[from..from + src[from..].find("\n    }\n").expect("end")];
+        let call = body
             .find("if handle.wheel(notches, col, row) {")
             .expect("the wheel's answer is used");
         assert!(
-            arm[call..].contains("app.window().request_redraw();"),
-            "the wheel arm asks for a redraw"
+            body[call..].contains("app.window().request_redraw();"),
+            "the wheel asks for a redraw"
+        );
+        let arm = &src[src
+            .find("WindowEvent::MouseWheel {")
+            .expect("the filter has a wheel arm")..];
+        let arm = &arm[..arm.find("_ => EventResult::Propagate").expect("end")];
+        assert!(
+            arm.contains("kp.wheel("),
+            "the real arm uses the shared wheel"
         );
         let glue = include_str!("e2e_glue.rs").replace("\r\n", "\n");
         let from = glue.find("fn term_wheel(").expect("the e2e wheel");
         let body = &glue[from..from + glue[from..].find("\n    }\n").expect("end")];
         assert!(
-            body.contains("&& handle.wheel(") && body.contains("request_redraw()"),
-            "the e2e wheel asks for a redraw as the real one does"
+            body.contains(".wheel(") && !body.contains("handle.wheel("),
+            "the e2e wheel uses the shared wheel, not its own copy"
         );
     }
 

@@ -139,6 +139,7 @@ fn sonara_stand_in_refuses_a_bad_bearer_and_records_a_good_post() {
         Some(Runtime {
             http_port: sonara.port,
             token: "e2e-token".into(),
+            pid: Some(std::process::id()),
         }),
         "the real reader takes the stand-in's runtime.json"
     );

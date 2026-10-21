@@ -59,6 +59,9 @@ impl Backend for BlockedBackend {
 pub struct FileBackend {
     map: Mutex<BTreeMap<String, String>>,
     file: Debounced,
+    /// The file exists but could not be read, and could not be moved aside: nothing is written this
+    /// session, so the real file is never replaced by an empty one (audit 2026-10-20, M3).
+    read_only: bool,
 }
 
 impl FileBackend {
@@ -66,29 +69,43 @@ impl FileBackend {
     /// (400 ms in the app) and are written at once by `flush`.
     pub fn open(file: impl Into<PathBuf>, delay: Duration) -> Self {
         let file = file.into();
-        let map = read_map(&file);
+        let (map, read_only) = read_map(&file);
         Self {
             map: Mutex::new(map),
             file: Debounced::new(file, delay),
+            read_only,
         }
+    }
+
+    /// True when the file could not be read or set aside, so this session writes nothing.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Hands the whole map to the debounced writer. The caller holds the map lock, so two writers
     /// never reorder their saves.
     fn persist(&self, map: &BTreeMap<String, String>) {
+        if self.read_only {
+            return;
+        }
         if let Ok(text) = serde_json::to_string(map) {
             self.file.save(text);
         }
     }
 }
 
-fn read_map(file: &Path) -> BTreeMap<String, String> {
-    let text = match std::fs::read_to_string(file) {
-        // sync-ok: the startup read of the settings file
-        Ok(t) => t,
-        Err(_) => return BTreeMap::new(),
-    };
-    match serde_json::from_str::<serde_json::Value>(&text) {
+/// The map and whether the store must stay read-only. A missing file is empty and writable; a file that
+/// cannot be read is set aside as `.bad` (writable, empty) or, when that fails, left alone (read-only).
+fn read_map(file: &Path) -> (BTreeMap<String, String>, bool) {
+    match crate::atomic::open_text(file) {
+        crate::atomic::Opened::Missing => (BTreeMap::new(), false),
+        crate::atomic::Opened::Unreadable { moved_aside } => (BTreeMap::new(), !moved_aside),
+        crate::atomic::Opened::Text(text) => (parse_map(&text), false),
+    }
+}
+
+fn parse_map(text: &str) -> BTreeMap<String, String> {
+    match serde_json::from_str::<serde_json::Value>(text) {
         Ok(serde_json::Value::Object(obj)) => obj
             .into_iter()
             .filter_map(|(k, v)| match v {
@@ -396,6 +413,42 @@ mod tests {
             let b = FileBackend::open(&file, Duration::from_millis(20));
             assert_eq!(b.get("a"), None, "junk {junk:?}");
         }
+    }
+
+    #[test]
+    fn an_unreadable_file_is_kept_as_bad_before_the_first_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, [0xff, 0xfe, 0x00]).unwrap();
+        let b = FileBackend::open(&file, Duration::from_millis(20));
+        assert!(!b.is_read_only());
+        b.set("a", "1");
+        b.flush();
+        assert_eq!(
+            std::fs::read(dir.path().join("settings.json.bad")).unwrap(),
+            vec![0xff, 0xfe, 0x00]
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"a":"1"}"#);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_or_moved_is_never_overwritten() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, r#"{"a":"keep"}"#).unwrap();
+        // Held with no sharing at all: reading fails, and so does the rename.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        let b = FileBackend::open(&file, Duration::from_millis(20));
+        assert!(b.is_read_only());
+        b.set("a", "lost");
+        b.flush();
+        drop(held);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"a":"keep"}"#);
     }
 
     #[test]

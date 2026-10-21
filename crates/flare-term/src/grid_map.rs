@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::{Cell as TCell, Flags};
 use alacritty_terminal::term::{Term, TermMode, point_to_viewport};
 use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor};
 use flare_render::color::Color as FColor;
-use flare_render::grid::{Cell as FCell, CellFlags, Cursor as FCursor, Grid};
+use flare_render::grid::{Cell as FCell, CellFlags, Cursor as FCursor, Grid, MAX_MARKS};
 
 /// The viewport as a `flare_render` grid of the same size, with the cursor placed in it.
 pub fn snapshot_grid<T: EventListener>(term: &Term<T>) -> Grid {
@@ -43,11 +43,13 @@ pub fn snapshot_grid_into<T: EventListener>(term: &Term<T>, out: &mut Grid) {
             col: p.column.0,
             row: p.line,
             visible: shown,
+            hollow: false,
         },
         _ => FCursor {
             col: point.column.0,
             row: 0,
             visible: false,
+            hollow: false,
         },
     };
 }
@@ -69,7 +71,9 @@ fn map_cell(src: &TCell) -> FCell {
     }
     FCell {
         ch,
-        combining: src.zerowidth().map(|m| m.to_vec().into_boxed_slice()),
+        combining: src
+            .zerowidth()
+            .map(|m| m[..m.len().min(MAX_MARKS)].to_vec().into_boxed_slice()),
         fg,
         bg,
         flags,
@@ -166,7 +170,8 @@ mod tests {
             flare_render::grid::Cursor {
                 col: 2,
                 row: 0,
-                visible: true
+                visible: true,
+                hollow: false,
             }
         );
     }
@@ -263,6 +268,20 @@ mod tests {
     }
 
     #[test]
+    fn a_flood_of_combining_marks_is_capped_per_cell() {
+        let mut bytes = b"e".to_vec();
+        for _ in 0..3000 {
+            bytes.extend_from_slice("\u{301}".as_bytes());
+        }
+        let t = term(4, 1, &bytes);
+        let g = snapshot_grid(&t);
+        assert_eq!(
+            g.cell(0, 0).combining.as_ref().map(|m| m.len()),
+            Some(flare_render::grid::MAX_MARKS)
+        );
+    }
+
+    #[test]
     fn hidden_cell_is_blank() {
         let t = term(4, 1, b"\x1b[8mX");
         let g = snapshot_grid(&t);
@@ -294,7 +313,8 @@ mod tests {
             flare_render::grid::Cursor {
                 col: 1,
                 row: 1,
-                visible: true
+                visible: true,
+                hollow: false,
             }
         );
     }

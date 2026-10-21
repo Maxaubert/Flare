@@ -1,0 +1,41 @@
+{
+  "surface": "dictation",
+  "pct": 100,
+  "renderer": "gpu",
+  "pictures": [
+    {
+      "name": "pill-listening",
+      "taken": true
+    },
+    {
+      "name": "pill-live-text",
+      "taken": true,
+      "live": true
+    },
+    {
+      "name": "pill-transcribing",
+      "taken": true
+    },
+    {
+      "widget_probe": {
+        "exists": false,
+        "visible": false,
+        "focusable": false,
+        "topmost": false,
+        "phase": 0,
+        "title": "",
+        "text": "",
+        "rows": [],
+        "headers": [],
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        },
+        "parked": false,
+        "height": 0
+      }
+    }
+  ]
+}

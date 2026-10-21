@@ -137,3 +137,7 @@ variable directly (`no_source_file_reads_an_e2e_variable_directly`).
    in the harness and its probe test is extended; only a real difference from Prism Terminal becomes a
    recorded row in `docs/parity.md` ("Deliberate differences") and the assertion is rewritten with the reason.
 4. A scenario that fails once in two runs is a flaky test: fix the race, never retry around it.
+
+## The visual tour (audit 2026-10-20)
+
+`visualTour` is an opt-in scenario (`OPT_IN`; a plain run never picks it, a filter that names it does) that captures Flare's start-up, session resume, sidebar slide and a general pass at 100, 150 and 225 percent on both renderers into `docs/screenshots/visual/`, with per-frame numbers from the `frames.series` and `sidebar.anim` probes. `tools/pt-shot/pt-visual.mjs` captures Prism Terminal from a copy of its folder, `tools/visual/summarize.py` makes the sheets and tables. How to run it and what it found: `docs/screenshots/visual/README.md`.

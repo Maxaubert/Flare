@@ -186,12 +186,17 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
         let args = scene_args(name, &parse_args(&argv, None).expect("the arguments parse"));
+        if is_dictation_page_scene(name) {
+            // The page scenes stage the download runs, which a page test clears: one at a time.
+            crate::dictation_ctl::fixture::hold_page_state();
+        }
         let (saved, prep) = setup(name);
         let scene = Scene::build_with(&args, saved, prep, false, false).expect("the scene builds");
         if is_dictation_page_scene(name) {
             // The GPU card needs NVIDIA: the scene says so, as `run_scene` does.
             // SAFETY: one fixed value, set before the answer is read; no test reads this variable another way.
             unsafe { std::env::set_var(flare_win::names::SEAM_NVIDIA, "1") };
+            flare_win::seam::set_open(true);
             scene.stage_settings(&args).expect("the page stages");
         } else {
             scene.stage(name).expect("the scene stages");

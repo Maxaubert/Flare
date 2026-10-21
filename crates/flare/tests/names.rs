@@ -655,6 +655,8 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_IMPORT_APPDATA",
     // A test-harness switch (tools/e2e/tests/update_apply.rs, side_by_side.rs), not an app seam.
     "FLARE_E2E_INSTALL",
+    // Audit A24 (L53): harness-only, the explicit local opt-in for the install scenarios (CI sets GITHUB_ACTIONS).
+    "FLARE_E2E_INSTALL_LOCAL",
     // M3, unchanged: the folder picker answers from this path with no dialog (window.rs reads it as a
     // concatenated name; tools/e2e newTabFolder and spawn set it).
     "FLARE_E2E_PICK",
@@ -715,4 +717,54 @@ fn the_e2e_name_reader_finds_a_seam_and_skips_the_prefix() {
         vec!["FLARE_E2E_VERB_ROOT"]
     );
     assert!(e2e_names(r#"const P: &str = "FLARE_E2E_";"#).is_empty());
+}
+
+/// Audit 2026-10-20 (L13, L25, L31, L40, L44, L52): a seam name (`SEAM_*`, the plugin folder) is read only
+/// through `flare_win::seam` or `e2e::global().env`, both closed without --e2e. A direct `std::env::var`
+/// of one is how three copies slipped past the `"FLARE_E2E_` literal scan (the names are concatenated).
+#[test]
+fn no_seam_name_is_read_from_plain_env() {
+    let mut bad = Vec::new();
+    for f in crate_src_rs_files() {
+        let r = rel(&f);
+        if r == "crates/flare-win/src/seam.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).expect("a source file can be read");
+        // Only the code before the test MODULE counts (a `#[cfg(test)]` statement can sit in a function).
+        let end = text
+            .match_indices("#[cfg(test)]")
+            .find(|(i, m)| text[i + m.len()..].trim_start().starts_with("mod "))
+            .map_or(text.len(), |(i, _)| i);
+        let code = &text[..end];
+        for (at, _) in code.match_indices("env::var") {
+            let call: String = code[at..].chars().take(160).collect();
+            let call = call.split(';').next().unwrap_or("");
+            if call.contains("SEAM_") || call.contains("PLUGIN_DIR") || call.contains("FLARE_E2E") {
+                bad.push(format!("{r}: {}", call.lines().next().unwrap_or("").trim()));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "seams read from plain env (use flare_win::seam):\n{}",
+        bad.join("\n")
+    );
+}
+
+/// L42: the dictation row-look probe note is bound only under --e2e.
+#[test]
+fn the_row_look_probe_is_bound_only_under_e2e() {
+    let text = std::fs::read_to_string(repo_root().join("crates/flare/src/appctl.rs"))
+        .expect("appctl.rs can be read");
+    let at = text.find("on_row_look(").expect("the binding exists");
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .nth(400)
+        .map_or(0, |(i, _)| i);
+    assert!(
+        text[start..at].contains("e2e::global().on()"),
+        "on_row_look is bound without an --e2e check"
+    );
 }
