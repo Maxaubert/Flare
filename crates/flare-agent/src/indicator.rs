@@ -276,7 +276,7 @@ impl Indicator {
         for id in left {
             self.held.remove(&id);
             if focused {
-                self.release(&id);
+                self.release(&id, "tab looked at");
             }
         }
         self.reconcile(now);
@@ -286,7 +286,7 @@ impl Indicator {
     pub fn tab_clicked(&mut self, now: u64) {
         let ids: Vec<String> = self.held.drain().collect();
         for id in ids {
-            self.release(&id);
+            self.release(&id, "tab clicked");
         }
         self.reconcile(now);
     }
@@ -294,6 +294,7 @@ impl Indicator {
     /// PT `forget`: every mark, record, timer and the activity of the tab.
     pub fn forget(&mut self, tab: &str) {
         self.why(tab, "closed");
+        self.held.remove(tab);
         self.agent_ids.remove(tab);
         self.working.remove(tab);
         self.done.remove(tab);
@@ -389,8 +390,8 @@ impl Indicator {
         }
     }
 
-    fn release(&mut self, tab: &str) {
-        self.why(tab, "tab clicked");
+    fn release(&mut self, tab: &str, why: &str) {
+        self.why(tab, why);
         self.done.remove(tab);
         self.failed.remove(tab);
     }
@@ -1245,8 +1246,8 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_move_is_no_longer_a_look() {
-        // The 2026-10-14 pointer look is gone (owner, 2026-10-21): nothing takes the mark down.
+    fn a_held_mark_survives_time_passing() {
+        // The 2026-10-14 pointer look is gone (owner, 2026-10-21): time alone takes nothing down.
         let mut h = finished_away();
         h.tick(10_000);
         assert!(has(h.ind.done_ids(), "t1"));
@@ -1397,6 +1398,7 @@ mod tests {
         assert!(!has(h.ind.failed_ids(), "t1"));
         assert!(!h.ind.is_hooked("t1"));
         assert!(!h.ind.is_polled("t1"));
+        assert!(!h.ind.held.contains("t1"));
         assert_eq!(h.ind.next_due(), None);
         // Only the forgotten tab's activity goes.
         assert_eq!(h.ind.activity.output_clocks(), 1);
