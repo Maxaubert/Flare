@@ -14,6 +14,7 @@ members = [
     "crates/flare-diag",
     "crates/flare-tabs",
     "crates/flare-help",
+    "crates/flare-surfaces",
     "crates/flare-e2e-proto",
     "tools/e2e",
     "tools/material-spike",
@@ -41,6 +42,8 @@ cosmic-text = { version = "=0.19.0", default-features = false, features = ["std"
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
 unicode-width = "=0.2.2"
 png = "=0.18.1"
+# The panel image viewer decodes png, jpeg, gif, bmp, webp and ico on a worker (Surfaces stage 1).
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico"] }
 pollster = "=1.0.1"
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 log = "=0.4.34"
