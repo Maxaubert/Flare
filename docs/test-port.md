@@ -522,7 +522,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `tabWidth` | 6 | `scenarios/strip.rs`, `tab_width` | 5 | 1 | ok |
 | `tabLooks` | 18 | `scenarios/strip.rs`, `tab_looks` | 17 | 1 | ok |
 | `tabSwitch` | 9 | `scenarios/strip.rs`, `tab_switch` | 15 | 1 | ok |
-| `indicatorStyles` | 8 | `scenarios/indicators.rs`, `indicator_styles` | 16 | 0 | ok |
+| `indicatorStyles` | 8 | `scenarios/indicators.rs`, `indicator_styles` | 17 | 0 | ok |
 | `verticalTabs` | 82 | `scenarios/vertical.rs`, `vertical_tabs` | 74 | 8 | ok |
 | `windowColoursSave` | 9 | `scenarios/settings_b.rs`, `window_colours_save` | 10 | 0 | ok |
 | `tooltips` | 11 | `scenarios/strip.rs`, `tooltips` | 18 | 1 | ok |

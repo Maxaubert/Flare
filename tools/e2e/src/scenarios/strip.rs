@@ -11,7 +11,7 @@ use flare_e2e_proto::{Button, PointerAction, Request};
 use serde_json::{json, Value};
 
 use super::driver;
-use crate::ctx::{App, Ctx, Launch};
+use crate::ctx::{shot_file, App, Ctx, Launch};
 use crate::pixels::{bbox_where, Rgb};
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
@@ -226,6 +226,40 @@ pub(super) fn read_png(path: &Path) -> Option<Snap> {
 pub(super) fn snap(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Snap> {
     let path = ctx.shot(app, name)?;
     read_png(&path)
+}
+
+/// The breath at or above which a picture shows a breathing mark (the question dot or line) at full
+/// ink. The mark fades to nothing and back every two seconds, so a picture caught mid-fade shows the
+/// fade, not the mark: a ring once read 0.28 of its ink (indicatorStyles, 2026-10-21).
+pub(super) const FULL_BREATH: f32 = 0.85;
+
+/// The breath the last snapshot's picture shows, as the app read it straight after the picture.
+pub(super) fn picture_breathe(app: &mut App) -> Option<f32> {
+    let series = app.session.probe_str("frames.series").ok()?;
+    series.get("snap_breathe")?.as_f64().map(|b| b as f32)
+}
+
+/// A snapshot whose picture shows the breathing marks at full breath (a still window always does).
+/// The breath comes round once every two seconds, so the wait is for that moment, never a second
+/// try at a check; `None` when no such picture came.
+pub(super) fn snap_full_breath(ctx: &mut Ctx, app: &mut App, name: &str) -> Option<Snap> {
+    let (shots, scenario) = (ctx.shots.clone(), ctx.name);
+    let mut got = None;
+    ctx.until(
+        &format!("a picture at full breath ({name})"),
+        6000,
+        &mut || {
+            let Some(path) = shot_file(&shots, scenario, name, |p| app.session.snapshot(p)) else {
+                return false;
+            };
+            if !picture_breathe(app).is_some_and(|b| b >= FULL_BREATH) {
+                return false;
+            }
+            got = read_png(&path);
+            got.is_some()
+        },
+    );
+    got
 }
 
 /// The sum of the channel differences of two colours.
@@ -545,7 +579,8 @@ pub fn tab_looks(ctx: &mut Ctx) -> Result<(), String> {
 
     let k = scale(&mut app);
     let tabs = tabs_of(&mut app);
-    let snapshot = snap(ctx, &mut app, "tabs-looks");
+    // The question tab's dot breathes: the ring check below is made on a picture at full breath.
+    let snapshot = snap_full_breath(ctx, &mut app, "tabs-looks");
 
     // PT: run.mjs:1860. A faint line at every tab's right, the last one too: one device pixel at
     // the right edge differs from the tab's own ground a few pixels in.

@@ -384,6 +384,10 @@ pub struct FrameState {
     /// The sidebar's slot and panel x read right after the last snapshot's picture was taken, so a
     /// label made from it names the frame the picture shows (not the frame before or after).
     snap_slide: Option<(f32, f32)>,
+    /// The breathing marks' opacity read right after the last snapshot's picture (1.0 when the window
+    /// is still): a question dot or line in the picture is drawn at this strength, so a scenario can
+    /// tell a faded breath from a missing mark.
+    snap_breathe: Option<f32>,
     marks: (Option<f64>, Option<f64>),
     env: Option<Rc<dyn FrameEnv>>,
 }
@@ -403,6 +407,7 @@ impl FrameState {
             seq: 0,
             snap: None,
             snap_slide: None,
+            snap_breathe: None,
             marks: (None, None),
             env: None,
         }
@@ -417,6 +422,19 @@ impl FrameState {
     pub fn snap_slide_json(&self) -> serde_json::Value {
         match self.snap_slide {
             Some((slot, left)) => serde_json::json!([slot, left]),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// Keeps the breath the last snapshot's picture shows.
+    pub fn set_snap_breathe(&mut self, breathe: Option<f32>) {
+        self.snap_breathe = breathe;
+    }
+
+    /// The last picture's breath (0 to 1), or null when it had none.
+    pub fn snap_breathe_json(&self) -> serde_json::Value {
+        match self.snap_breathe {
+            Some(b) => serde_json::json!(b),
             None => serde_json::Value::Null,
         }
     }
@@ -636,6 +654,12 @@ fn print_window_snapshot(hwnd: isize) -> Result<Snap, String> {
             rgba,
         })
     }
+}
+
+/// The strength a breathing mark is drawn at: the clock's breath, or full when the window is still
+/// (tabmark.slint draws a still question at opacity 1 whatever `breathe` last held).
+fn shown_breathe(still: bool, breathe: f32) -> f32 {
+    if still { 1.0 } else { breathe }
 }
 
 /// Slint's own snapshot of the window.
@@ -1400,10 +1424,17 @@ impl GlueCtx {
         };
         // Read now, on the UI thread, straight after the picture: the slide the picture shows (audit V14).
         let slide = self.slide();
+        // And the breath it shows: a question mark breathes from full to nothing and back, so a picture
+        // of it is only judged against the strength it was drawn at (the indicatorStyles flake, 2026-10-21).
+        let breathe = {
+            let g = app.global::<crate::MarkMotion>();
+            shown_breathe(g.get_still(), g.get_breathe())
+        };
         FRAMES.with(|f| {
             if let Ok(mut st) = f.try_borrow_mut() {
                 st.snap = Some(snap);
                 st.set_snap_slide(slide);
+                st.set_snap_breathe(Some(breathe));
             }
         });
         reply
@@ -1573,13 +1604,22 @@ pub fn on_redraw() {
 /// `frames.series`: every presented frame since the last `Frames` reset (or since the start), as
 /// `[age_ms, gap_ms, render_ms, slot, panel_left]` rows, and the process age now.
 pub fn frame_series() -> serde_json::Value {
-    let (frames, snap_slide) = FRAMES.with(|f| match f.try_borrow() {
-        Ok(st) => (st.rec.series_json(), st.snap_slide_json()),
-        Err(_) => (serde_json::json!([]), serde_json::Value::Null),
+    let (frames, snap_slide, snap_breathe) = FRAMES.with(|f| match f.try_borrow() {
+        Ok(st) => (
+            st.rec.series_json(),
+            st.snap_slide_json(),
+            st.snap_breathe_json(),
+        ),
+        Err(_) => (
+            serde_json::json!([]),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
     });
     serde_json::json!({
         "frames": frames,
         "snap_slide": snap_slide,
+        "snap_breathe": snap_breathe,
         "now_age_ms": crate::startup_trace::since_process_start().as_secs_f64() * 1000.0,
     })
 }
@@ -2585,6 +2625,19 @@ mod frame_tests {
         assert_eq!(st.snap_slide_json(), serde_json::json!([66.0, 12.0]));
         st.set_snap_slide(None);
         assert!(st.snap_slide_json().is_null(), "a picture with no slide");
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_breath_its_picture_shows() {
+        let mut st = FrameState::new();
+        assert!(st.snap_breathe_json().is_null(), "no picture taken yet");
+        st.set_snap_breathe(Some(shown_breathe(false, 0.25)));
+        assert_eq!(st.snap_breathe_json(), serde_json::json!(0.25));
+        // A still window draws the breathing marks at full strength, whatever the clock last said.
+        st.set_snap_breathe(Some(shown_breathe(true, 0.25)));
+        assert_eq!(st.snap_breathe_json(), serde_json::json!(1.0));
+        st.set_snap_breathe(None);
+        assert!(st.snap_breathe_json().is_null(), "a picture with no window");
     }
 
     #[test]
