@@ -291,18 +291,19 @@ fn the_statusline_pill_paints_the_same_on_both_painters() {
             [cpu.data[i], cpu.data[i + 1], cpu.data[i + 2]]
         };
         let bar_left = m.padding + 2 * m.cell_w;
-        let y = m.padding + m.cell_h / 2;
-        for dx in [
-            bar_left - 1,
-            bar_left,
-            bar_left + m.cell_w - 1,
-            bar_left + m.cell_w,
-        ] {
-            let p = at(dx, y);
-            assert!(
-                p[2] > 240 && p[0] < 80,
-                "seam at x {dx} scale {scale}: {p:?}"
-            );
+        for y in m.padding..m.padding + m.cell_h {
+            for dx in [
+                bar_left - 1,
+                bar_left,
+                bar_left + m.cell_w - 1,
+                bar_left + m.cell_w,
+            ] {
+                let p = at(dx, y);
+                assert!(
+                    p[2] > 240 && p[0] < 80,
+                    "seam at x {dx} y {y} scale {scale}: {p:?}"
+                );
+            }
         }
     }
 }

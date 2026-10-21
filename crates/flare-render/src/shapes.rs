@@ -174,11 +174,11 @@ mod tests {
             let left = bm('\u{E0B6}', w, h, s);
             for y in 0..h {
                 assert!(
-                    px(&right, 0, y) >= 200,
+                    px(&right, 0, y) >= 250,
                     "right cap column 0 row {y} at {w}x{h}"
                 );
                 assert!(
-                    px(&left, w - 1, y) >= 200,
+                    px(&left, w - 1, y) >= 250,
                     "left cap column {} row {y} at {w}x{h}",
                     w - 1
                 );

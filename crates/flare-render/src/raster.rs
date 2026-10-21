@@ -279,8 +279,10 @@ impl Rasterizer {
         if key.text.chars().all(|c| c == ' ') {
             return None;
         }
+        // The first character decides; a trailing variation selector or combining mark is ignored.
         let mut chars = key.text.chars();
-        if let (Some(ch), None) = (chars.next(), chars.next())
+        if let Some(ch) = chars.next()
+            && chars.all(is_mark)
             && shapes::has_shape(ch)
         {
             // Drawn here, cell-exact, never from a font (owner bug 2026-10-21).
@@ -380,6 +382,11 @@ impl Rasterizer {
     }
 }
 
+/// A variation selector, joiner or combining mark: it adds nothing a cell-exact shape could draw.
+fn is_mark(c: char) -> bool {
+    matches!(c as u32, 0x0300..=0x036F | 0x200D | 0xFE00..=0xFE0F | 0x20D0..=0x20FF)
+}
+
 /// The private-use areas: U+E000 to U+F8FF and the two supplementary planes.
 fn is_private_use(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
@@ -432,13 +439,25 @@ impl GlyphSource for Rasterizer {
         let wanted = families
             .iter()
             .find(|f| !files_for_family(&installed, f).is_empty());
-        if wanted.is_some_and(|f| !has_family(&self.fs, f)) {
-            // The stack's first installed family is not loaded: swap the database for the new stack.
+        let _ = wanted;
+        let missing = families
+            .iter()
+            .any(|f| !files_for_family(&installed, f).is_empty() && !has_family(&self.fs, f));
+        if missing {
+            // An installed family of the stack is not loaded (a Nerd Font the old stack lacked):
+            // swap the database for the new stack.
             self.rebuild_for(families);
         }
-        self.stack = families.iter().map(|f| (*f).to_string()).collect();
+        let stack: Vec<String> = families.iter().map(|f| (*f).to_string()).collect();
+        let stack_changed = stack != self.stack;
+        self.stack = stack;
         let family = pick_family(&self.fs, families);
         if family == self.family && (base_px - self.base_px).abs() < f32::EPSILON {
+            if stack_changed || missing {
+                // Same first face, other private-use sources: what was cached may now differ.
+                self.cache.clear();
+                self.generation += 1;
+            }
             return;
         }
         self.units = measure(&mut self.fs, &family, base_px).unwrap_or(FALLBACK_UNITS);
@@ -1087,6 +1106,27 @@ mod tests {
         } else {
             eprintln!("skipped: JetBrainsMono NF is not installed");
         }
+    }
+
+    #[test]
+    fn a_shape_with_a_trailing_variation_selector_is_still_the_shape() {
+        let mut r = Rasterizer::new(&["Cascadia Mono"], 1.0);
+        let plain = r.glyph(&key("\u{E0B4}")).cloned().unwrap();
+        let sel = r.glyph(&key("\u{E0B4}\u{FE0F}")).cloned().unwrap();
+        assert_eq!(plain.data, sel.data);
+    }
+
+    #[test]
+    fn switching_the_stack_loads_its_nerd_font() {
+        let nf = ["JetBrainsMono NF", "Cascadia Mono"];
+        if files_for_family(&installed_faces(), "JetBrainsMono NF").is_empty() {
+            eprintln!("skipped: JetBrainsMono NF is not installed");
+            return;
+        }
+        let mut r = Rasterizer::new(&["Consolas", "Cascadia Mono"], 1.0);
+        r.set_font(&nf, 14.0);
+        assert!(r.has_family_loaded("JetBrainsMono NF"));
+        assert!(glyph_settled(&mut r, &key("\u{E0C0}")).is_some());
     }
 
     #[test]
