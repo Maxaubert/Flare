@@ -25,8 +25,8 @@ use std::time::Instant;
 
 use flare_ctl::{CtlError, code};
 use flare_surfaces::web::{
-    self, Act, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label, normalize_url, phys_rect,
-    step, web_show,
+    self, Act, CAPTURE_TIMEOUT_MS, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label,
+    normalize_url, phys_rect, step, url_matches, web_show,
 };
 use flare_tabs::keymap::{ChordId, KeyContext, chord_of};
 use flare_term::keys::KeyEvent;
@@ -40,6 +40,9 @@ use crate::panel_ctl::PanelCtl;
 
 /// Where a person gets the WebView2 Runtime when it is missing (Microsoft's evergreen bootstrapper page).
 pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+
+/// The timer that ends a capture the page never answers (`timer_registry` name).
+const CAPTURE_TIMER: &str = "web.capture";
 
 /// Makes the browser (the first time a web panel needs it).
 pub type WebFactory = Box<dyn FnMut(Sink) -> Box<dyn WebBackend>>;
@@ -95,11 +98,21 @@ pub enum WebOut {
     PageFocus(bool),
     /// The tab's browser is gone for good (the panel should say so).
     Changed,
+    /// A page started a download: nothing is saved until the person has answered.
+    Download {
+        tab: String,
+        id: u64,
+        file: String,
+        host: String,
+    },
 }
 
 struct Pending {
     reply: Sender<Result<Value, CtlError>>,
     deadline: Instant,
+    /// The address the call sent the page to ("" for back, forward and reload): the first load that
+    /// counts as its own is the one for this address.
+    url: String,
     /// The navigation this call waits for: the browser's number for the latest one that began after
     /// the call was made (a redirect rebinds it). A load that finishes before any has begun, or one
     /// that is not this one, is not the answer.
@@ -148,6 +161,13 @@ pub struct WebCtl {
     still: Option<Image>,
     /// The capture the still answers.
     still_token: u64,
+    /// The capture that was ended without a picture (the timeout, or a page that could not take one):
+    /// a picture that still arrives for it, while the window is hidden for the same overlay, is drawn.
+    ended_capture: Option<u64>,
+    /// Flare's window, for handing the Windows keyboard focus back (set by every sync).
+    hwnd: Option<isize>,
+    /// The window is ending: the browser is closed and never made again.
+    closed: bool,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -199,6 +219,36 @@ pub fn app_takes(k: &KeyPress, ctx: &KeyContext) -> bool {
     }
 }
 
+/// What the window does when it loses the keyboard while a web panel may hold it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusLoss {
+    /// The window is not the one in use: dictation, the walk, tips and menus let go now.
+    Now,
+    /// The window is still the foreground window: that is the keyboard moving into the page, or a
+    /// switch to another app that Windows has not finished. Ask again one turn later.
+    Check,
+    /// The page has the keyboard: the window is still the one in use.
+    Skip,
+}
+
+/// Decides on where the keyboard went, not on which window is in front at the instant of the
+/// kill-focus (at that instant a real switch to another app can still look like the window staying).
+pub fn focus_loss(
+    has_backend: bool,
+    page_has_focus: bool,
+    window_is_foreground: bool,
+) -> FocusLoss {
+    if !has_backend {
+        FocusLoss::Now
+    } else if page_has_focus {
+        FocusLoss::Skip
+    } else if window_is_foreground {
+        FocusLoss::Check
+    } else {
+        FocusLoss::Now
+    }
+}
+
 fn runtime_missing_note() -> String {
     format!(
         "Flare shows web pages with the Microsoft Edge WebView2 Runtime, and this PC does not have it. Install it from {RUNTIME_URL}, then open the page again."
@@ -226,6 +276,9 @@ impl WebCtl {
             script_seq: 0,
             still: None,
             still_token: 0,
+            ended_capture: None,
+            hwnd: None,
+            closed: false,
         }
     }
 
@@ -247,6 +300,10 @@ impl WebCtl {
                 return false;
             }
             if k.vk == 0x1B && !k.ctrl && !k.shift && !k.alt {
+                // A held Escape is one press: its autorepeats are neither the second Escape nor a reset.
+                if k.repeat {
+                    return false;
+                }
                 let now = u64::try_from(keys.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
                 return keys.esc.borrow_mut().escape(now);
             }
@@ -257,6 +314,9 @@ impl WebCtl {
 
     /// The browser, made now if it is not (None: this build cannot make one).
     fn backend(&mut self) -> Option<&mut Box<dyn WebBackend>> {
+        if self.closed {
+            return None;
+        }
         if self.backend.is_none() {
             let sink = self.sink();
             let filter = self.key_filter();
@@ -314,6 +374,46 @@ impl WebCtl {
         }
     }
 
+    /// The window is ending (rule 28): every call still waiting is answered, every view is closed and
+    /// the browser's environment is let go now, while the window and the COM apartment are still up,
+    /// so no browser callback lands during the teardown. Nothing opens again afterwards.
+    pub fn close_all(&mut self) {
+        self.closed = true;
+        crate::timer_registry::clear(CAPTURE_TIMER);
+        for (_, t) in self.tabs.drain() {
+            if let Some(p) = t.pending {
+                let _ = p
+                    .reply
+                    .send(Err(CtlError::new(code::UNAVAILABLE, "Flare is closing")));
+            }
+        }
+        if let Some(mut b) = self.backend.take() {
+            b.close_all();
+        }
+        self.shown_tab = None;
+        self.phase = Phase::Hidden;
+        self.still = None;
+        self.bounds = None;
+        self.has_focus = false;
+    }
+
+    /// The person's answer to a download question.
+    pub fn answer_download(&mut self, id: u64, save: bool) {
+        if let Some(b) = self.backend.as_mut() {
+            b.answer_download(id, save);
+        }
+    }
+
+    /// The tab's page cannot be shown: its window is taken off the screen (a page that crashed would
+    /// draw its own sad face over the note) and the keyboard goes back to Flare.
+    fn fail_view(&mut self, tab: &str) {
+        if self.has_focus && self.shown_tab.as_deref() == Some(tab) {
+            let hwnd = self.hwnd;
+            self.release_focus(hwnd);
+        }
+        self.hide(tab);
+    }
+
     // ---- the window's properties ---------------------------------------------------------------
 
     /// Follows the window: opens, moves, shows, hides and closes the tab's browser, and pushes what
@@ -326,6 +426,7 @@ impl WebCtl {
         key_ctx: KeyContext,
     ) {
         self.keys.ctx.set(key_ctx);
+        self.hwnd = crate::window::hwnd_of(app);
         // A tab whose web panel is closed (or gone) has no browser.
         let stale: Vec<String> = self
             .tabs
@@ -334,10 +435,6 @@ impl WebCtl {
             .cloned()
             .collect();
         for t in stale {
-            // The page that had the keyboard goes away: the window takes it back.
-            if self.has_focus && self.shown_tab.as_deref() == Some(t.as_str()) {
-                self.release_focus(crate::window::hwnd_of(app));
-            }
             self.close_tab(&t);
         }
         let front_web = front.filter(|t| panels.web_target(t).is_some());
@@ -368,15 +465,22 @@ impl WebCtl {
         let want_tab = front_web.filter(|t| self.tabs.contains_key(*t));
         if self.shown_tab.as_deref() != want_tab {
             if let Some(old) = self.shown_tab.take() {
+                // The page that had the keyboard goes out of sight: the window takes it back.
+                if self.has_focus {
+                    self.release_focus(self.hwnd);
+                }
                 self.hide(&old);
             }
             self.phase = Phase::Hidden;
             self.drop_still(app);
             self.shown_tab = want_tab.map(str::to_string);
         }
+        // A page that failed has its window off the screen: the note is what shows.
         let want = match &self.shown_tab {
-            Some(_) => web_show(true, shown, overlay),
-            None => WebShow::Hidden,
+            Some(t) if !self.tabs.get(t).is_some_and(|w| w.failed.is_some()) => {
+                web_show(true, shown, overlay)
+            }
+            _ => WebShow::Hidden,
         };
         if let Some(tab) = self.shown_tab.clone() {
             // The window follows the slot: only a change is sent.
@@ -399,6 +503,9 @@ impl WebCtl {
     }
 
     fn open_tab(&mut self, tab: &str, url: &str, rect: PhysRect, visible: bool) {
+        if self.closed {
+            return;
+        }
         self.tabs.insert(
             tab.to_string(),
             TabWeb {
@@ -429,6 +536,16 @@ impl WebCtl {
                 }
             }
             Act::Capture(token) => {
+                // A page that is busy or hung never answers: the timeout stands in for the answer (a
+                // still of nothing), so its window cannot stay on top of the overlay.
+                let (post, name) = (std::sync::Arc::clone(&self.post), tab.to_string());
+                crate::timer_registry::set(CAPTURE_TIMER, CAPTURE_TIMEOUT_MS, false, move || {
+                    post(UiMsg::Web(WebMsgBox(WebMsg::Event(WebEvent::Still {
+                        tab: name.clone(),
+                        token,
+                        png: None,
+                    }))));
+                });
                 if let Some(b) = self.backend() {
                     b.capture_still(tab, token);
                 }
@@ -448,6 +565,7 @@ impl WebCtl {
             app.set_panel_web_still(Image::default());
         }
         app.set_panel_web_has_still(false);
+        self.ended_capture = None;
     }
 
     /// Pushes what the web panel shows. Only the front tab's web panel owns the window's `panel-*`
@@ -497,6 +615,14 @@ impl WebCtl {
 
     /// Frees the tab's browser.
     pub fn close_tab(&mut self, tab: &str) {
+        // The page that has the keyboard is closed under it: Windows would leave the focus nowhere
+        // (every key then goes to the active window as a system key and the terminal types nothing).
+        // The window takes it back first, and the window comes off the screen before it is closed.
+        if self.shown_tab.as_deref() == Some(tab) && self.has_focus {
+            let hwnd = self.hwnd;
+            self.release_focus(hwnd);
+            self.hide(tab);
+        }
         if let Some(t) = self.tabs.remove(tab) {
             if let Some(p) = t.pending {
                 let _ = p.reply.send(Err(CtlError::new(
@@ -512,6 +638,7 @@ impl WebCtl {
             self.shown_tab = None;
             self.phase = Phase::Hidden;
             self.still = None;
+            crate::timer_registry::clear(CAPTURE_TIMER);
         }
         if self.tabs.is_empty() {
             // No web panel is open: the browser goes (it is made again by the next one).
@@ -571,6 +698,7 @@ impl WebCtl {
         tab: &str,
         reply: Sender<Result<Value, CtlError>>,
         deadline: Instant,
+        url: &str,
     ) {
         let Some(t) = self.tabs.get_mut(tab) else {
             let _ = reply.send(Err(CtlError::new(
@@ -582,6 +710,7 @@ impl WebCtl {
         let pending = Pending {
             reply,
             deadline,
+            url: url.to_string(),
             nav: None,
         };
         if let Some(old) = t.pending.replace(pending) {
@@ -718,6 +847,7 @@ impl WebCtl {
                 why,
                 missing_runtime,
             } => {
+                self.fail_view(&tab);
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why.clone(), missing_runtime));
                     if let Some(p) = t.pending.take() {
@@ -739,10 +869,14 @@ impl WebCtl {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.loading = true;
                     t.notice.clear();
-                    t.url = url;
-                    if let Some(p) = t.pending.as_mut() {
+                    // The call's own navigation is the first for the address it sent the page to (an
+                    // earlier one still on its way is not it); a redirect after that rebinds it.
+                    if let Some(p) = t.pending.as_mut()
+                        && (p.nav.is_some() || p.url.is_empty() || url_matches(&p.url, &url, false))
+                    {
                         p.nav = Some(nav);
                     }
+                    t.url = url;
                 }
             }
             WebEvent::Loaded {
@@ -798,6 +932,55 @@ impl WebCtl {
                     out.push(WebOut::Address { tab, url });
                 }
             }
+            WebEvent::SameDocument { tab, url } => {
+                if let Some(t) = self.tabs.get_mut(&tab)
+                    && !url.is_empty()
+                {
+                    t.url.clone_from(&url);
+                    // No navigation is raised for it: a call that sent the page to exactly this address
+                    // (a `#fragment` of the page it is on) is answered here.
+                    let wanted = t.pending.as_ref().is_some_and(|p| {
+                        p.nav.is_none() && !p.url.is_empty() && url_matches(&p.url, &url, true)
+                    });
+                    if wanted {
+                        let p = t.pending.take().expect("checked just above");
+                        let settled = Settled {
+                            url: url.clone(),
+                            title: t.title.clone(),
+                            loaded: true,
+                            status: String::new(),
+                        };
+                        t.last = Some(settled.clone());
+                        t.loading = false;
+                        if Instant::now() <= p.deadline {
+                            out.push(WebOut::Settle {
+                                reply: p.reply,
+                                tab: tab.clone(),
+                                result: Ok(settled),
+                            });
+                        }
+                    }
+                    out.push(WebOut::Address { tab, url });
+                }
+            }
+            WebEvent::Download {
+                tab,
+                id,
+                file,
+                host,
+            } => {
+                // A download of a page that is not here any more is not asked about.
+                if self.tabs.contains_key(&tab) {
+                    out.push(WebOut::Download {
+                        tab,
+                        id,
+                        file,
+                        host,
+                    });
+                } else if let Some(b) = self.backend.as_mut() {
+                    b.answer_download(id, false);
+                }
+            }
             WebEvent::Title { tab, title } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.title.clone_from(&title);
@@ -836,14 +1019,25 @@ impl WebCtl {
                 if self.shown_tab.as_deref() == Some(tab.as_str())
                     && let Some((phase, acts)) = web::captured(self.phase, token)
                 {
+                    crate::timer_registry::clear(CAPTURE_TIMER);
                     self.phase = phase;
                     self.still_token = token;
                     for a in acts {
                         self.act(app, &tab, a);
                     }
-                    if let Some(bytes) = png {
-                        self.decode_still(tab, token, bytes);
+                    match png {
+                        Some(bytes) => self.decode_still(tab, token, bytes),
+                        None => self.ended_capture = Some(token),
                     }
+                } else if self.shown_tab.as_deref() == Some(tab.as_str())
+                    && self.phase == Phase::Still
+                    && self.ended_capture == Some(token)
+                    && let Some(bytes) = png
+                {
+                    // Slow, not lost: the picture of the capture the timeout ended, for the overlay still open.
+                    self.ended_capture = None;
+                    self.still_token = token;
+                    self.decode_still(tab, token, bytes);
                 }
             }
             WebEvent::Key { tab: _, key } => out.push(WebOut::Key(key)),
@@ -852,6 +1046,7 @@ impl WebCtl {
                 out.push(WebOut::PageFocus(has));
             }
             WebEvent::Gone { tab, why } => {
+                self.fail_view(&tab);
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why, false));
                     t.loading = false;
@@ -947,6 +1142,7 @@ mod tests {
             shift,
             alt,
             down: true,
+            repeat: false,
         }
     }
 
@@ -1063,6 +1259,34 @@ mod tests {
             ..press(0x50, true, true, false)
         };
         assert!(!filter(&up));
+    }
+
+    #[test]
+    fn a_held_escape_is_one_press_and_its_repeats_count_for_nothing() {
+        let c = WebCtl::new(std::sync::Arc::new(|_| {}));
+        let filter = c.key_filter();
+        let esc = press(0x1B, false, false, false);
+        let held = KeyPress {
+            repeat: true,
+            ..esc
+        };
+        assert!(!filter(&esc), "the first Escape is the page's");
+        assert!(!filter(&held), "an autorepeat is not the second Escape");
+        assert!(!filter(&held));
+        assert!(filter(&esc), "a fresh press soon after is the second");
+    }
+
+    #[test]
+    fn the_blur_decision_follows_where_the_keyboard_went() {
+        // No browser: the old rule, a blur is a blur.
+        assert_eq!(focus_loss(false, false, true), FocusLoss::Now);
+        // The page has the keyboard: the window is still in use.
+        assert_eq!(focus_loss(true, true, true), FocusLoss::Skip);
+        assert_eq!(focus_loss(true, true, false), FocusLoss::Skip);
+        // Still the foreground window, page not yet known to have it: ask again one turn later.
+        assert_eq!(focus_loss(true, false, true), FocusLoss::Check);
+        // Another window is in front already.
+        assert_eq!(focus_loss(true, false, false), FocusLoss::Now);
     }
 
     #[test]

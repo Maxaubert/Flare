@@ -41,6 +41,60 @@ impl AppCtl {
         self.web.controllers()
     }
 
+    /// The download question of the first waiting download is on the dialog (unless the close question
+    /// has it: that one is answered first and this is asked after).
+    pub(super) fn show_download_ask(&mut self) {
+        if self.ask.is_some() {
+            return;
+        }
+        let Some(app) = self.app() else { return };
+        match self.downloads.current() {
+            Some(a) => {
+                let v = crate::download_ask::download_view(a, &crate::chrome_apply::text_ink());
+                let body = slint::StyledText::from_markdown(&v.body)
+                    .unwrap_or_else(|_| slint::StyledText::from_plain_text(&v.body));
+                self.clear_tip();
+                self.close_menu_quietly();
+                app.set_dialog_title(v.title.into());
+                app.set_dialog_body(body);
+                app.set_dialog_primary(v.primary.into());
+                app.set_dialog_danger(false);
+                app.set_dialog_open(true);
+            }
+            None => app.set_dialog_open(false),
+        }
+        self.refresh();
+    }
+
+    /// The person answered the download question.
+    pub(super) fn answer_download(&mut self, save: bool) {
+        let Some(a) = self.downloads.answered() else {
+            return;
+        };
+        self.web.answer_download(a.id, save);
+        if self.downloads.current().is_some() {
+            self.show_download_ask();
+        } else {
+            if let Some(app) = self.app() {
+                app.set_dialog_open(false);
+            }
+            self.refresh();
+            self.focus_terminal();
+        }
+    }
+
+    /// A download whose page is gone is not asked about (the browser cancelled it when it closed).
+    pub(super) fn prune_downloads(&mut self) {
+        if self.downloads.is_empty() {
+            return;
+        }
+        let head = self.downloads.current().map(|a| a.id);
+        self.downloads.retain(|a| self.web.has_tab(&a.tab));
+        if self.downloads.current().map(|a| a.id) != head && self.ask.is_none() {
+            self.show_download_ask();
+        }
+    }
+
     /// The page moved or resized in the window, or an overlay opened or closed: the browser window
     /// follows (the same sync a refresh runs).
     pub(super) fn web_moved(&mut self) {
@@ -48,6 +102,7 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.prune_downloads();
     }
 
     /// The button of the missing-runtime note: Microsoft's page, in the browser the user has.
@@ -120,6 +175,22 @@ impl AppCtl {
                     }
                 }
                 WebOut::Changed => self.refresh(),
+                WebOut::Download {
+                    tab,
+                    id,
+                    file,
+                    host,
+                } => {
+                    let ask = crate::download_ask::DownloadAsk {
+                        id,
+                        tab,
+                        file,
+                        host,
+                    };
+                    if self.downloads.push(ask) {
+                        self.show_download_ask();
+                    }
+                }
             }
         }
     }
@@ -149,6 +220,16 @@ impl AppCtl {
         reply: Reply,
         deadline: Instant,
     ) {
+        // The address the call sends the page to (none for back, forward and reload): the load that
+        // answers it is the one for this address.
+        let wanted = match &op {
+            crate::ctl_app::CtlOp::BrowserOpen { url, .. } => url.clone(),
+            crate::ctl_app::CtlOp::BrowserNavigate {
+                to: NavTo::Url(url),
+                ..
+            } => url.clone(),
+            _ => String::new(),
+        };
         let r = match op {
             crate::ctl_app::CtlOp::BrowserOpen { tab, url } => self.browser_open(&tab, &url),
             crate::ctl_app::CtlOp::BrowserNavigate { tab, to } => self.browser_navigate(&tab, to),
@@ -158,7 +239,7 @@ impl AppCtl {
             Err(e) => {
                 let _ = reply.send(Err(e));
             }
-            Ok((tab, true)) => self.web.wait_for_load(&tab, reply, deadline),
+            Ok((tab, true)) => self.web.wait_for_load(&tab, reply, deadline, &wanted),
             Ok((tab, false)) => {
                 let s = self.web.snapshot(&tab);
                 let s = Settled {

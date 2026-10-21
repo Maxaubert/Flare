@@ -1,4 +1,4 @@
-//! Scan: a blocking call in `src` (outside test code) must say why it is allowed (rule 34). The web host runs on the UI thread; its one slow question, the runtime check, runs on a worker.
+//! Scan: a blocking call in `src` (outside test code) must say why it is allowed (rule 34). The web host runs on the UI thread; its slow question, the runtime check, runs on a worker. The two calls that cannot leave the UI thread (WebView2 objects are thread-affine to its STA) are listed below and marked, so a new one cannot slip in unseen.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,10 @@ const BLOCKING: &[&str] = &[
     ".join()",
     ".wait_timeout(",
     ".wait_while(",
+    // The browser's own calls: registry reads, a library load, the data folder and the browser launch
+    // happen inside them, on the UI thread's apartment.
+    "CreateCoreWebView2EnvironmentWithOptions(",
+    "CreateCoreWebView2Controller(",
 ];
 
 const MARK: &str = "// sync-ok:";

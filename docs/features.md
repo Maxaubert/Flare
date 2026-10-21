@@ -891,6 +891,10 @@ one controller per tab with an open web panel, parented to Flare's window.
   `a_web_panel_makes_its_controller_at_the_slot_and_frees_it_when_closed`, `closing_a_tab_frees_its_page`,
   `the_toggle_chord_brings_the_page_back_at_its_last_address` (`appctl/tests/web_tests.rs`) and the e2e `webPanel` (it watches
   the controller count, the browser object and the browser process).
+- **Quitting closes the browser first (rule 28).** `finish()` closes every web view, answers every waiting `browser.*` call
+  `unavailable` and drops the environment before the window hides; nothing opens again afterwards. Held by
+  `quitting_closes_every_web_view_before_the_window_goes` (`web_tests.rs`) and the e2e `webPanel`, which watches the browser's
+  process end when the window quits.
 - **The page sits exactly on the slot.** The controller's rectangle is the box Slint lays out inside the panel body less the slot's
   hairline, in physical pixels, after every layout change, splitter step, scale change and monitor move; at 100 and 225
   percent the controller's own bounds, the child window of Flare's window, Slint's box and `flare_surfaces::web::web_rect` agree.
@@ -906,7 +910,9 @@ one controller per tab with an open web panel, parented to Flare's window.
   `the_still_is_drawn_in_the_page_box_and_only_while_it_is_set`, the phase tests of `web.rs`
   (`an_overlay_takes_a_still_before_it_hides_the_window`, `a_late_still_is_dropped`, `leaving_the_tab_hides_from_any_phase`),
   the existing `overlay-open` term scan, and the e2e `webPanel` (a terminal menu hides the window and the still is 401 by 540 px
-  at 100 percent and 900 by 1215 at 225).
+  at 100 percent and 900 by 1215 at 225). A page that is busy or hung and never answers the capture is hidden by a 250 ms
+  timer with no picture, so it can never stay over a menu or dialog (`a_page_that_never_answers_a_capture_is_hidden_by_the_timeout`,
+  `a_capture_that_never_answers_is_ended_by_its_timeout` in `web.rs`).
 - **The browser bar.** Back, forward, reload (stop while loading), an address field (Enter opens it; text with no scheme becomes
   https, `localhost` becomes http; `file:`, `javascript:`, `data:` and logins are refused with a line in the header; Escape
   restores the page's address and gives the keys back) and the page title as the header title. Held by
@@ -919,27 +925,45 @@ one controller per tab with an open web panel, parented to Flare's window.
 - **Keys.** The page has its keys; the app's chords (the table less Ctrl+F and the agent guard) are taken from it by
   `AcceleratorKeyPressed`; a second Escape within 600 ms gives the keys back; Ctrl+Shift+O moves them both ways; a press on the
   window takes them back. Held by `the_app_takes_its_chords_from_the_page`, `the_page_keeps_every_other_key`,
-  `the_hook_takes_only_the_second_escape_and_resets_on_another_key`, `virtual_keys_become_the_keys_the_chord_table_knows`
+  `the_hook_takes_only_the_second_escape_and_resets_on_another_key`, `a_held_escape_is_one_press_and_its_repeats_count_for_nothing`,
+  `virtual_keys_become_the_keys_the_chord_table_knows`, `the_blur_decision_follows_where_the_keyboard_went`
   (`web_ctl.rs`), `a_chord_the_page_hands_back_is_the_apps`, `the_second_escape_gives_the_keys_back_to_the_terminal`,
   `the_focus_chord_hands_the_keys_to_the_page_and_back`, `a_press_on_the_window_takes_the_keys_back_from_the_page` (`web_tests.rs`).
-  By hand: real keys in a real page (below).
+  Closing a tab, a panel or a failed page that has the keys hands them back to Flare first and takes the window off the screen
+  before closing it (`closing_the_tab_whose_page_has_the_keys_hands_them_back_first`). Losing the keyboard to another app
+  while the window is still foreground is judged one message later, not at the instant of the kill-focus. By hand: real keys
+  in a real page and a real switch to another app (below).
 - **What a page may not do.** Permissions are denied (the e2e's geolocation request is answered with the denied code), new
-  windows go to the same panel (`target=_blank` navigates the panel; `window.open` never makes a window), only http, https and
-  about:blank open whoever asks, the profile is the run's own folder and never Edge's (`the_profile_lives_under_the_named_profile_or_local_appdata`,
-  `the_profile_is_never_an_edge_folder`), downloads use WebView2's own prompt (S6). Held by the e2e `webPanel` for the page
-  behaviours and the unit tests above for the rest.
+  windows go to the same panel (`target=_blank` and `window.open` navigate the panel; the e2e counts top-level windows of both
+  processes before and after), only http, https and about:blank open whoever asks, the profile is the run's own folder and never
+  Edge's (`the_profile_lives_under_the_named_profile_or_local_appdata`, `the_profile_is_never_an_edge_folder`). Held by the e2e
+  `webPanel` for the page behaviours and the unit tests above for the rest.
+- **A download is asked about (S6).** WebView2 saves straight into Downloads, so Flare holds every download (`DownloadStarting`
+  deferral) behind its own question: "Save this file?", the file name and the host, Save or Cancel. A no, a closed panel, a
+  closing window or no answer saves nothing; a second download waits behind the first. Held by
+  `a_download_is_asked_about_and_saved_only_on_a_yes`, `a_no_cancels_the_download_and_a_second_one_waits_its_turn`,
+  `a_download_of_a_page_that_is_closed_is_not_asked_about` (`web_tests.rs`), `the_question_names_the_file_and_where_it_comes_from`,
+  `a_name_cannot_inject_markup_or_run_on`, `a_second_download_waits_behind_the_first` (`download_ask.rs`) and the e2e `webPanel`
+  (an `<a download>` asks, nothing reaches Downloads while it is open, and a no saves nothing).
+- **A failed page.** Only a lost renderer or a lost browser process ends a page (the GPU, a utility process or a frame restarting
+  is only logged): the window comes off the screen, the note shows, and after a lost browser the environment is dropped so the next
+  open starts fresh. Held by `only_the_fatal_process_failures_end_a_panel` (`web.rs`), `a_lost_renderer_takes_the_window_off_and_says_so`
+  and `a_lost_browser_marks_the_page_and_closing_the_panel_lets_the_next_start_fresh` (`web_tests.rs`).
 - **The channel and the tool.** `browser.open`, `browser.navigate` and `panel.open` (web) answer when the page has loaded, bound to
-  the browser's own navigation id; MCP `open_page`. Held by `browser_open_vets_the_address_before_the_ui_hears_of_it`,
+  the browser's own navigation id (the first navigation for the requested address, and a `#fragment` change of the same page is
+  answered too); MCP `open_page`. Held by `browser_open_vets_the_address_before_the_ui_hears_of_it`,
   `browser_navigate_takes_a_url_or_an_action`, `panel_open_web_opens_a_page_and_anything_else_is_refused`,
   `what_this_build_can_do_is_listed_and_the_grants_still_apply` (`ctl_app.rs`), `browser_open_answers_when_the_page_has_loaded_and_not_before`,
   `a_load_that_finishes_before_the_calls_own_navigation_is_not_its_answer`, `a_redirect_rebinds_the_wait_to_the_last_navigation`,
   `a_refused_navigation_answers_a_waiting_call`, `a_second_call_replaces_the_first_and_the_first_is_told`,
   `an_answer_after_the_callers_deadline_is_not_sent`, `navigate_sends_the_page_on_and_back_needs_history`,
-  `a_tab_behind_answers_at_once_with_what_is_stored`, `the_panel_reports_the_url_and_no_path` (`web_tests.rs`),
+  `a_tab_behind_answers_at_once_with_what_is_stored`, `the_panel_reports_the_url_and_no_path`,
+  `a_navigate_to_a_fragment_of_the_same_page_answers`, `a_stale_load_in_the_queue_does_not_become_the_calls_navigation`
+  (`web_tests.rs`), `an_address_matches_itself_in_the_forms_a_browser_reports` (`web.rs`),
   `open_page_routes_to_browser_open_and_reports_what_loaded` and `open_page_needs_a_url_and_a_refusal_reaches_the_model` (`flare-mcp`),
   and the e2e `webPanel`, which does it through a real pipe.
-- **Video.** A local clip plays in the panel at the clip's own rate: the e2e `webVideo` reads 1.00 times real time and 30.6
-  frames a second from the page's clock and frame counter in the parked window. YouTube and the like need no code of ours and are
+- **Video.** A local clip plays in the panel at the clip's own rate, as a VP8 webm and as an H.264 mp4: the e2e `webVideo` reads
+  the clock and frame counter of the page in the parked window (about 1.00 times real time and 30 frames a second). YouTube and the like need no code of ours and are
   by hand (below).
 - **No runtime.** `GetAvailableCoreWebView2BrowserVersionString` is asked at every open; when it fails the panel shows why with
   Microsoft's download address and a button that opens it, the channel answers `unavailable` with the address, nothing else is
@@ -949,7 +973,7 @@ one controller per tab with an open web panel, parented to Flare's window.
 - **Stored.** A web panel is stored with its current address and comes back with its tab; a stored address that is not exactly its
   own normal form is dropped. Held by `a_stored_web_address_comes_back_and_a_bad_stored_address_is_dropped` and
   `set_target_follows_a_page_without_reopening_it`.
-- **End to end (the release exe, its own profile, offscreen):** `webPanel` (90 checks, at 100 and 225 percent, including a change of display scale with the page open), `webVideo` (7) and
+- **End to end (the release exe, its own profile, offscreen):** `webPanel` (108 checks, at 100 and 225 percent, including a change of display scale with the page open), `webVideo` (13, a webm and an mp4) and
   `webNoRuntime` (7).
 - **Not built in this stage:** the agent's hands on the page (look, click, type, press, scroll, wait, eval; the ribbon) are
   stage 4; mini-apps and diagrams stage 5; "open this localhost address" offered from the terminal stage 7. By hand, not

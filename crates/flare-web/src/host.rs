@@ -13,23 +13,26 @@
 //! The profile is the folder the caller gives, never the user's own Edge profile (S4). Permissions
 //! (camera, microphone, location, notifications and the rest) are denied. A page cannot open a
 //! window of its own: `window.open` and `target=_blank` go to the same panel. A navigation to
-//! anything but http, https and about:blank is cancelled. Downloads are left to WebView2's own
-//! prompt and its default folder (S6).
+//! anything but http, https and about:blank is cancelled. A download is held back until the window
+//! has asked the person (`WebEvent::Download`, `answer_download`); no answer, a no, a closed panel or
+//! a failed registration all mean no file is saved (S6). A process failure that the browser mends
+//! itself (GPU, utility, a frame) is only logged; a lost renderer ends that panel's page and a lost
+//! browser process ends every page and the environment, so the next open starts fresh.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use flare_surfaces::web::{PhysRect, navigation_allowed};
+use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler,
     ContainsFullScreenElementChangedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
-    ExecuteScriptCompletedHandler, FocusChangedEventHandler, HistoryChangedEventHandler,
-    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, FocusChangedEventHandler,
+    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     SourceChangedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
@@ -85,6 +88,8 @@ pub struct HostConfig {
 }
 
 enum Inbound {
+    /// The browser process ended: every view is dead.
+    BrowserExited,
     Env(Result<ICoreWebView2Environment, String>),
     Controller {
         tab: String,
@@ -115,6 +120,15 @@ struct View {
     visible: bool,
 }
 
+/// A download the browser started and is holding until it is told yes or no.
+struct Download {
+    tab: String,
+    args: ICoreWebView2DownloadStartingEventArgs,
+    deferral: ICoreWebView2Deferral,
+}
+
+type Downloads = Rc<RefCell<HashMap<u64, Download>>>;
+
 struct State {
     env: Env,
     views: HashMap<String, View>,
@@ -130,6 +144,8 @@ pub struct WebHost {
     state: State,
     inbox: Rc<RefCell<VecDeque<Inbound>>>,
     filter: Rc<RefCell<Option<KeyFilter>>>,
+    downloads: Downloads,
+    download_seq: Rc<Cell<u64>>,
 }
 
 fn to_rect(r: PhysRect) -> RECT {
@@ -216,6 +232,36 @@ impl WebHost {
             },
             inbox: Rc::new(RefCell::new(VecDeque::new())),
             filter: Rc::new(RefCell::new(None)),
+            downloads: Rc::new(RefCell::new(HashMap::new())),
+            download_seq: Rc::new(Cell::new(0)),
+        }
+    }
+
+    /// Ends the downloads still waiting for a yes (all of them, or the tab's): none is saved.
+    fn cancel_downloads(&self, tab: Option<&str>) {
+        let ids: Vec<u64> = self
+            .downloads
+            .borrow()
+            .iter()
+            .filter(|(_, d)| tab.is_none_or(|t| d.tab == t))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.finish_download(id, false);
+        }
+    }
+
+    fn finish_download(&self, id: u64, save: bool) {
+        let Some(d) = self.downloads.borrow_mut().remove(&id) else {
+            return;
+        };
+        // SAFETY: the event argument and its deferral are live COM objects kept since the callback;
+        // the browser saves to its proposed path in Downloads unless this is cancelled.
+        unsafe {
+            if !save {
+                let _ = d.args.SetCancel(true);
+            }
+            let _ = d.deferral.Complete();
         }
     }
 
@@ -271,6 +317,7 @@ impl WebHost {
         // live COM object the loader keeps alive until it fires.
         unsafe {
             CreateCoreWebView2EnvironmentWithOptions(
+                // sync-ok: WebView2 objects are thread-affine to the UI STA; first open only
                 PCWSTR::null(),
                 PCWSTR(folder.as_ptr()),
                 None::<&ICoreWebView2EnvironmentOptions>,
@@ -309,6 +356,7 @@ impl WebHost {
             },
         ));
         // SAFETY: `parent` is Flare's own live window on this thread; the handler is a live COM object.
+        // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per web panel
         let r = unsafe { env.CreateCoreWebView2Controller(self.parent, &handler) };
         if let Err(e) = r {
             let why = e.message();
@@ -450,14 +498,26 @@ impl WebHost {
         }
         {
             let (sink, tab) = (Arc::clone(&self.sink), name(tab));
-            let h = SourceChangedEventHandler::create(Box::new(move |w, _args| {
+            let h = SourceChangedEventHandler::create(Box::new(move |w, args| {
                 let Some(w) = w else { return Ok(()) };
-                // SAFETY: `w` is the live sender of this callback.
+                // SAFETY: `w` and `args` are the live arguments of this callback.
                 let url = get_string(|p| unsafe { w.Source(p) });
-                sink(WebEvent::Url {
-                    tab: tab.clone(),
-                    url,
-                });
+                // A change inside the same document raises no navigation: a waiting call hears of it here.
+                // SAFETY: as above, `args` is live for the whole callback.
+                let new_document = args
+                    .as_ref()
+                    .is_none_or(|a| get_bool(|b| unsafe { a.IsNewDocument(b) }));
+                if new_document {
+                    sink(WebEvent::Url {
+                        tab: tab.clone(),
+                        url,
+                    });
+                } else {
+                    sink(WebEvent::SameDocument {
+                        tab: tab.clone(),
+                        url,
+                    });
+                }
                 Ok(())
             }));
             // SAFETY: as above.
@@ -538,12 +598,27 @@ impl WebHost {
             let _ = unsafe { webview.add_PermissionRequested(&h, &mut token) };
         }
         {
-            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
-            let h = ProcessFailedEventHandler::create(Box::new(move |_w, _args| {
-                sink(WebEvent::Gone {
-                    tab: tab.clone(),
-                    why: "the page's process ended".to_string(),
-                });
+            let (sink, tab, inbox) = (Arc::clone(&self.sink), name(tab), Rc::clone(&self.inbox));
+            let h = ProcessFailedEventHandler::create(Box::new(move |_w, args| {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
+                if let Some(args) = args {
+                    // SAFETY: `args` is the live argument of this callback.
+                    let _ = unsafe { args.ProcessFailedKind(&mut kind) };
+                }
+                match failure_of_kind(kind.0) {
+                    // The browser restarts it and the page keeps working.
+                    Failure::Recovers => {
+                        log::info!("a browser process restarted (kind {})", kind.0)
+                    }
+                    Failure::Page => sink(WebEvent::Gone {
+                        tab: tab.clone(),
+                        why: "the page's process ended".to_string(),
+                    }),
+                    Failure::Browser => {
+                        inbox.borrow_mut().push_back(Inbound::BrowserExited);
+                        sink(WebEvent::Pump);
+                    }
+                }
                 Ok(())
             }));
             // SAFETY: as above.
@@ -559,6 +634,62 @@ impl WebHost {
             ));
             // SAFETY: as above.
             let _ = unsafe { webview.add_ContainsFullScreenElementChanged(&h, &mut token) };
+        }
+
+        // A download is held until the person has said yes (S6): the browser would otherwise save it
+        // into Downloads at once. A runtime too old to hold one back cannot show a web panel at all.
+        {
+            let w4 = webview.cast::<ICoreWebView2_4>().map_err(|_| {
+                "this WebView2 Runtime cannot hold a download for a question".to_string()
+            })?;
+            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let (held, seq) = (Rc::clone(&self.downloads), Rc::clone(&self.download_seq));
+            let h = DownloadStartingEventHandler::create(Box::new(move |_w, args| {
+                let Some(args) = args else { return Ok(()) };
+                // SAFETY: `args` is the live argument of this callback.
+                let deferral = unsafe { args.GetDeferral() };
+                let Ok(deferral) = deferral else {
+                    // No way to wait for the person: no file.
+                    // SAFETY: as above.
+                    let _ = unsafe { args.SetCancel(true) };
+                    return Ok(());
+                };
+                // SAFETY: as above.
+                let (path, uri) = unsafe {
+                    let uri = args
+                        .DownloadOperation()
+                        .map(|op| get_string(|p| op.Uri(p)))
+                        .unwrap_or_default();
+                    (get_string(|p| args.ResultFilePath(p)), uri)
+                };
+                let file = path
+                    .rsplit(['\\', '/'])
+                    .next()
+                    .filter(|f| !f.is_empty())
+                    .unwrap_or("a file")
+                    .to_string();
+                seq.set(seq.get() + 1);
+                let id = seq.get();
+                held.borrow_mut().insert(
+                    id,
+                    Download {
+                        tab: tab.clone(),
+                        args: args.clone(),
+                        deferral,
+                    },
+                );
+                sink(WebEvent::Download {
+                    tab: tab.clone(),
+                    id,
+                    file,
+                    host: host_label(&uri),
+                });
+                Ok(())
+            }));
+            // SAFETY: `w4` and the handler are live COM objects; `token` is a valid out value.
+            if unsafe { w4.add_DownloadStarting(&h, &mut token) }.is_err() {
+                return Err("the download question could not be registered".to_string());
+            }
         }
 
         // ---- keys and focus, on the controller ----
@@ -580,12 +711,16 @@ impl WebHost {
                 if !down {
                     return Ok(());
                 }
+                let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+                // SAFETY: as above; `status` is a valid out value.
+                let _ = unsafe { args.PhysicalKeyStatus(&mut status) };
                 let key = KeyPress {
                     vk,
                     ctrl: modifier_down(0x11),
                     shift: modifier_down(0x10),
                     alt: modifier_down(0x12),
                     down,
+                    repeat: status.WasKeyDown.as_bool(),
                 };
                 let taken = filter.borrow().as_ref().is_some_and(|f| f(&key));
                 if taken {
@@ -680,6 +815,13 @@ impl WebHost {
             )
         };
         acc.out
+    }
+}
+
+impl Drop for WebHost {
+    fn drop(&mut self) {
+        // A download still waiting for a yes is never saved by the host going away.
+        self.cancel_downloads(None);
     }
 }
 
@@ -805,6 +947,7 @@ impl WebBackend for WebHost {
     }
 
     fn close(&mut self, tab: &str) {
+        self.cancel_downloads(Some(tab));
         let Some(view) = self.state.views.remove(tab) else {
             return;
         };
@@ -816,6 +959,22 @@ impl WebBackend for WebHost {
             // No web panel is open: the browser environment goes too (a later one makes it again).
             self.state.env = Env::None;
         }
+    }
+
+    fn close_all(&mut self) {
+        self.cancel_downloads(None);
+        for (_, view) in self.state.views.drain() {
+            if let Some(l) = view.live {
+                // SAFETY: closing a controller we own; the page and its window go with it.
+                let _ = unsafe { l.controller.Close() };
+            }
+        }
+        self.inbox.borrow_mut().clear();
+        self.state.env = Env::None;
+    }
+
+    fn answer_download(&mut self, id: u64, save: bool) {
+        self.finish_download(id, save);
     }
 
     fn runtime_checked(&mut self, result: Result<String, String>) {
@@ -853,6 +1012,25 @@ impl WebBackend for WebHost {
             let next = self.inbox.borrow_mut().pop_front();
             let Some(item) = next else { break };
             match item {
+                Inbound::BrowserExited => {
+                    // Every page is gone and the environment with them: close what is left, drop the
+                    // environment (the next open makes a fresh one) and tell each panel.
+                    self.cancel_downloads(None);
+                    let tabs: Vec<String> = self.state.views.keys().cloned().collect();
+                    for (_, view) in self.state.views.drain() {
+                        if let Some(l) = view.live {
+                            // SAFETY: closing a controller we own.
+                            let _ = unsafe { l.controller.Close() };
+                        }
+                    }
+                    self.state.env = Env::None;
+                    for t in tabs {
+                        (self.sink)(WebEvent::Gone {
+                            tab: t,
+                            why: "the browser's process ended".to_string(),
+                        });
+                    }
+                }
                 Inbound::Env(Ok(env)) => {
                     if self.state.views.is_empty() {
                         // Everyone left while it was being made.

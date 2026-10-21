@@ -140,6 +140,9 @@ pub enum UiMsg {
     Ctl(CtlRequestBox),
     /// The web panel's browser told the window something, or a still was decoded (Surfaces stage 3).
     Web(WebMsgBox),
+    /// The window lost the keyboard while it was still the foreground window: asks again once the
+    /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
+    FocusLostCheck,
 }
 
 mod web_glue;
@@ -472,6 +475,8 @@ pub struct AppCtl {
     panels: PanelCtl,
     /// The web panel's browser (made by the first web panel; nothing exists while none is open).
     web: WebCtl,
+    /// The downloads of web pages waiting for a yes (S6).
+    downloads: crate::download_ask::DownloadQueue,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
     /// Where control channel events go (None: no channel, in tests and headless runs).
@@ -814,6 +819,7 @@ impl AppCtl {
             spawn_marks: HashMap::new(),
             panels,
             web,
+            downloads: crate::download_ask::DownloadQueue::default(),
             panel_focus_seen: false,
             ctl_events: None,
             ctl_info: None,
@@ -2806,6 +2812,7 @@ impl AppCtl {
         self.panels.sync(app, front.as_deref());
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.prune_downloads();
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
         if had && !app.get_panel_shown() {
@@ -3383,10 +3390,25 @@ impl AppCtl {
     /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
         // The keyboard moving into the page's child window sends this window a kill-focus too, but the
-        // window is still the one in use: nothing to let go of.
-        if self.web.has_backend() && self.window_is_foreground() {
-            return;
+        // window is still the one in use: nothing to let go of. A real switch to another app can look the
+        // same until Windows has finished it, so that case asks again one turn later.
+        match crate::web_ctl::focus_loss(
+            self.web.has_backend(),
+            self.web.has_focus(),
+            self.window_is_foreground(),
+        ) {
+            crate::web_ctl::FocusLoss::Skip => return,
+            crate::web_ctl::FocusLoss::Check => {
+                (self.deps.post)(UiMsg::FocusLostCheck);
+                return;
+            }
+            crate::web_ctl::FocusLoss::Now => {}
         }
+        self.blur();
+    }
+
+    /// The window is no longer the one in use: dictation, the walk, tips and menus let go.
+    fn blur(&mut self) {
         crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
@@ -3719,6 +3741,10 @@ impl AppCtl {
         }
         self.panels.flush();
         self.prefs.flush();
+        // The browser goes before the window does (rule 28): its views are closed and its calls answered
+        // while the window and the COM apartment are still up, so no callback lands during the teardown.
+        self.web.close_all();
+        self.downloads.drain();
         (self.deps.hide)();
         end_of_life(
             &self.deps.tabs_store,
@@ -3772,10 +3798,16 @@ impl AppCtl {
     }
 
     fn dialog_cancel(&mut self) {
+        if self.ask.is_none() && self.downloads.current().is_some() {
+            self.answer_download(false);
+            return;
+        }
         self.ask = None;
         let install = self.install_cb.take();
         self.show_ask();
         let stepped = std::mem::take(&mut self.update_stepped_aside);
+        // A download waiting behind the question is asked now.
+        self.show_download_ask();
         match install {
             // The update window comes back and lands its own focus.
             Some(cb) => cb(false),
@@ -3794,6 +3826,10 @@ impl AppCtl {
     }
 
     fn dialog_confirm(&mut self) {
+        if self.ask.is_none() && self.downloads.current().is_some() {
+            self.answer_download(true);
+            return;
+        }
         let Some(ask) = self.ask.take() else { return };
         // Confirmed: the window stays put away (the tab is closing, or the install is going ahead).
         self.update_stepped_aside = false;
@@ -3877,6 +3913,11 @@ impl AppCtl {
             UiMsg::Panel(PanelMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     self.panels.on_msg(&app, m);
+                }
+            }
+            UiMsg::FocusLostCheck => {
+                if !self.window_is_foreground() && !self.web.has_focus() {
+                    self.blur();
                 }
             }
             UiMsg::Web(WebMsgBox(m)) => {

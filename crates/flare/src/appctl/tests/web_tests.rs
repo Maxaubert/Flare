@@ -878,6 +878,7 @@ fn page_key(tab: &str, vk: u32, ctrl: bool, shift: bool) -> WebEvent {
             shift,
             alt: false,
             down: true,
+            repeat: false,
         },
     }
 }
@@ -1011,4 +1012,320 @@ fn the_panel_reports_the_url_and_no_path() {
     assert_eq!(v["panel"]["kind"], "web");
     assert_eq!(v["panel"]["url"], PAGE);
     assert!(v["panel"].get("path").is_none());
+}
+
+// ---- review fixes: the end of life, a page that hangs, focus, failures, downloads ----
+
+fn index_of(calls: &[Call], want: &Call) -> usize {
+    calls
+        .iter()
+        .position(|c| c == want)
+        .unwrap_or_else(|| panic!("{want:?} not in {calls:?}"))
+}
+
+#[test]
+fn quitting_closes_every_web_view_before_the_window_goes() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = up(&f, &slot);
+    // A call still waiting for its page is told, not left hanging.
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: a.clone(),
+            to: NavTo::Url(TWO.into()),
+        },
+        Duration::from_secs(5),
+    );
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(
+        f.ctl.borrow_mut().on_close_requested(),
+        CloseDecision::Close
+    );
+    let calls = fake(&slot).calls();
+    assert!(calls.contains(&Call::Close(a)), "{calls:?}");
+    assert!(calls.contains(&Call::CloseAll));
+    assert_eq!(f.ctl.borrow().web_controllers(), 0);
+    let err = rx.try_recv().expect("answered").unwrap_err();
+    assert_eq!(err.code, code::UNAVAILABLE);
+    // Nothing opens a view again once the window is ending.
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.ctl.borrow().web_controllers(), 0);
+    assert_eq!(opened_calls(&slot).len(), 1);
+}
+
+#[test]
+fn a_page_that_never_answers_a_capture_is_hidden_by_the_timeout() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    fake(&slot).state.borrow_mut().still_silent = true;
+    f.h.comp.set_dialog_open(true);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_visible(&slot, &id), Some(true), "still waiting");
+    assert_eq!(f.ctl.borrow().web.phase_name(), "capturing");
+    // The page stays silent past the timeout: the window comes off the screen anyway.
+    f.h.advance(flare_surfaces::web::CAPTURE_TIMEOUT_MS + 50);
+    f.pump_until("the timeout", |f| {
+        f.ctl.borrow().web.phase_name() == "still"
+    });
+    assert_eq!(last_visible(&slot, &id), Some(false));
+    assert!(!f.h.comp.get_panel_web_has_still(), "no picture was taken");
+    // The answer of a page that was only slow still fills the place, for the overlay that is still up.
+    let token = fake(&slot)
+        .calls()
+        .into_iter()
+        .find_map(|c| match c {
+            Call::Capture(_, t) => Some(t),
+            _ => None,
+        })
+        .expect("a capture was asked for");
+    fake(&slot).say(WebEvent::Still {
+        tab: id.clone(),
+        token,
+        png: Some(tiny_png()),
+    });
+    f.pump_until("the late still", |f| f.h.comp.get_panel_web_has_still());
+    assert_eq!(f.ctl.borrow().web.phase_name(), "still");
+    // Once the overlay closes, nothing late can come back.
+    f.h.comp.set_dialog_open(false);
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.h.comp.get_panel_web_has_still());
+    fake(&slot).say(WebEvent::Still {
+        tab: id,
+        token,
+        png: Some(tiny_png()),
+    });
+    f.pump();
+    assert!(!f.h.comp.get_panel_web_has_still());
+}
+
+fn tiny_png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut e = png::Encoder::new(&mut bytes, 4, 3);
+    e.set_color(png::ColorType::Rgba);
+    e.set_depth(png::BitDepth::Eight);
+    let mut w = e.write_header().unwrap();
+    w.write_image_data(&[200u8; 4 * 3 * 4]).unwrap();
+    drop(w);
+    bytes
+}
+
+#[test]
+fn closing_the_tab_whose_page_has_the_keys_hands_them_back_first() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.has_focus());
+    // Ctrl+W typed in the page closes its tab.
+    fake(&slot).say(page_key(&id, 0x57, true, false));
+    f.pump();
+    f.h.advance(0);
+    assert!(!f.ctl.borrow().web.has_focus(), "the window has the keys");
+    let calls = fake(&slot).calls();
+    let hide = index_of(&calls, &Call::Visible(id.clone(), false));
+    let close = index_of(&calls, &Call::Close(id));
+    assert!(hide < close, "the window comes off before it is closed");
+}
+
+#[test]
+fn a_lost_renderer_takes_the_window_off_and_says_so() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    f.h.advance(0);
+    assert_eq!(
+        last_visible(&slot, &id),
+        Some(false),
+        "the crash face is not left on top"
+    );
+    assert!(!f.ctl.borrow().web.has_focus());
+    assert!(f.h.comp.get_panel_note().contains("could not be shown"));
+    // An overlay closing does not bring the dead page back over the note.
+    f.h.comp.set_dialog_open(true);
+    f.h.advance(0);
+    f.h.comp.set_dialog_open(false);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_visible(&slot, &id), Some(false));
+}
+
+#[test]
+fn a_lost_browser_marks_the_page_and_closing_the_panel_lets_the_next_start_fresh() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    // The host reports a browser that died as a Gone for each tab and forgets its views.
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the browser's process ended".into(),
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.failure(&id).is_some());
+    // Closing the panel frees the tab; the last one takes the browser object with it, so the next
+    // open asks the factory again.
+    assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.ctl.borrow().web.has_backend());
+}
+
+#[test]
+fn a_navigate_to_a_fragment_of_the_same_page_answers() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let target = format!("{PAGE}#section");
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Url(target.clone()),
+        },
+        Duration::from_secs(5),
+    );
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    // The browser raises no navigation for it, only a source change inside the document.
+    fake(&slot).say(WebEvent::SameDocument {
+        tab: id,
+        url: target.clone(),
+    });
+    f.pump();
+    let v = rx.try_recv().expect("answered").unwrap();
+    assert_eq!(v["url"], target.as_str());
+    assert_eq!(v["loaded"], true);
+}
+
+#[test]
+fn a_stale_load_in_the_queue_does_not_become_the_calls_navigation() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Url(PAGE.into()),
+        },
+        Duration::from_secs(5),
+    );
+    // A Loading for an earlier navigation to another page reaches the window after the call was made.
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: TWO.into(),
+        nav: 90,
+    });
+    fake(&slot).say(WebEvent::Loaded {
+        tab: id.clone(),
+        url: TWO.into(),
+        ok: true,
+        status: "0".into(),
+        nav: 90,
+    });
+    f.pump();
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "that load is not the answer"
+    );
+    finish(&fake(&slot), &id, PAGE, true);
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap()["url"], PAGE);
+}
+
+// ---- downloads (S6) ----
+
+fn download(fake: &FakeWeb, tab: &str, id: u64, file: &str) {
+    fake.say(WebEvent::Download {
+        tab: tab.into(),
+        id,
+        file: file.into(),
+        host: "files.example".into(),
+    });
+}
+
+fn answers(slot: &Slot) -> Vec<(u64, bool)> {
+    fake(slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Download(id, ok) => Some((id, ok)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_download_is_asked_about_and_saved_only_on_a_yes() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    download(&fake(&slot), &id, 1, "report.pdf");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.h.comp.get_dialog_title().as_str(), "Save this file?");
+    assert_eq!(f.h.comp.get_dialog_primary().as_str(), "Save");
+    assert!(
+        answers(&slot).is_empty(),
+        "nothing is saved before the answer"
+    );
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(answers(&slot), vec![(1, true)]);
+    assert!(!f.h.comp.get_dialog_open());
+}
+
+#[test]
+fn a_no_cancels_the_download_and_a_second_one_waits_its_turn() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    download(&fake(&slot), &id, 1, "a.zip");
+    download(&fake(&slot), &id, 2, "b.zip");
+    f.pump();
+    assert!(answers(&slot).is_empty());
+    f.h.comp.invoke_dialog_cancel();
+    assert_eq!(answers(&slot), vec![(1, false)]);
+    assert!(f.h.comp.get_dialog_open(), "the second is asked now");
+    f.h.comp.invoke_dialog_confirm();
+    assert_eq!(answers(&slot), vec![(1, false), (2, true)]);
+    assert!(!f.h.comp.get_dialog_open());
+}
+
+#[test]
+fn a_download_of_a_page_that_is_closed_is_not_asked_about() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    download(&fake(&slot), &id, 1, "a.zip");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    assert!(
+        !f.h.comp.get_dialog_open(),
+        "the question went with the page"
+    );
 }

@@ -39,14 +39,16 @@ const INDEX: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>
 <a id="two" href="two.html">two</a>
 <a id="blank" href="three.html" target="_blank">blank</a>
 <a id="pop" href="#" onclick="var w=window.open('four.html'); document.title='pop:'+(w?'opened':'blocked'); return false;">pop</a>
+<a id="dl" href="note.txt" download="flare-e2e-download-test.txt">save</a>
 <button id="geo" onclick="navigator.geolocation.getCurrentPosition(function(){document.title='geo:ok'},function(e){document.title='geo:err'+e.code})">geo</button>
 </body></html>"##;
+const NOTE: &str = "a note the e2e offers to download\n";
 const TWO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page two</title></head><body><h1>two</h1></body></html>"#;
 const THREE: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page three</title></head><body><h1>three</h1></body></html>"#;
 const FOUR: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Page four</title></head><body><h1>four</h1></body></html>"#;
 const VIDEO: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>Video page</title></head>
-<body style="margin:0;background:#000"><video id="v" src="clip.webm" muted autoplay loop playsinline style="width:100%"></video>
-<script>var v=document.getElementById('v');setInterval(function(){var q=v.getVideoPlaybackQuality();document.title=JSON.stringify({t:v.currentTime,paused:v.paused,frames:q.totalVideoFrames,dropped:q.droppedVideoFrames,rs:v.readyState});},100);</script></body></html>"#;
+<body style="margin:0;background:#000"><video id="v" muted autoplay loop playsinline style="width:100%"></video>
+<script>var v=document.getElementById('v');v.src=new URLSearchParams(location.search).get('clip')||'clip.webm';setInterval(function(){var q=v.getVideoPlaybackQuality();document.title=JSON.stringify({t:v.currentTime,paused:v.paused,frames:q.totalVideoFrames,dropped:q.droppedVideoFrames,rs:v.readyState});},100);</script></body></html>"#;
 
 /// A folder of pages inside the world, served as `https://flare-test.local/`.
 fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
@@ -58,6 +60,7 @@ fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
         ("three.html", THREE),
         ("four.html", FOUR),
         ("video.html", VIDEO),
+        ("note.txt", NOTE),
     ] {
         fs::write(root.join(name), text).map_err(|e| format!("write {name}: {e}"))?;
     }
@@ -172,16 +175,43 @@ pub fn web_panel(ctx: &mut Ctx) -> Result<(), String> {
         if std::env::var("WEB_DPI_ONLY").is_ok_and(|o| o != label) {
             continue;
         }
-        let mut app = launch_with(ctx, &root, dpi, &[])?;
+        // The browser's popup blocker would stop a window.open that has no user gesture before Flare
+        // hears of it; the test turns it off so the handler path is the one that runs.
+        let mut app = launch_with(
+            ctx,
+            &root,
+            dpi,
+            &[(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--disable-popup-blocking",
+            )],
+        )?;
         let r = panel_on(ctx, &mut app, dpi, label);
         let left = app.close();
         ctx.ok(left, format!("{label}: the app quits by itself"));
-        r?;
+        let pid = r?;
+        // Quitting closes the web views itself (rule 28): the browser's process ends with the window.
+        ctx.ok(
+            pid != 0,
+            format!("{label}: the browser had a process id to watch"),
+        );
+        if pid != 0 {
+            let gone = ctx.until(
+                "the browser process to end with the window",
+                30_000,
+                &mut || !crate::proc::pid_alive(pid),
+            );
+            ctx.ok(
+                gone,
+                format!("{label}: and quitting the window ends the browser's process {pid}"),
+            );
+        }
     }
     Ok(())
 }
 
-fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), String> {
+/// The browser process id while the page is open (0 when it is not known).
+fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<u32, String> {
     let scale = f64::from(dpi) / 96.0;
     app.session.call(&Request::Resize {
         w: 1000.0,
@@ -442,24 +472,42 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         again.is_ok(),
         format!("{at}: to the first page again ({})", code_of(&again)),
     );
-    // window.open from a script has no user gesture behind it, so the browser's own popup blocker may
-    // stop it before Flare hears of it; what must hold either way is that no window of its own appears.
+    // window.open from a script: the run turns the browser's popup blocker off, so the browser asks
+    // Flare for the window and the handler path is the one that runs. The address must open in this
+    // panel, and no top-level window may appear in Flare's process or the browser's.
+    let browser_pid = u32::try_from(
+        state(app)["controller"]["browser_pid"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+    .unwrap_or(0);
+    ctx.ok(
+        browser_pid != 0,
+        format!("{at}: the browser has a process id"),
+    );
+    let owners = [app.child.pid(), browser_pid];
+    let windows_before = crate::proc::visible_top_windows_of(&owners);
     script(ctx, app, "document.getElementById('pop').click(); 1");
-    let popped = ctx.until("window.open to answer", 15_000, &mut || {
-        let s = state(app);
-        s["title"].as_str().is_some_and(|t| t.starts_with("pop:"))
-            || s["url"].as_str().is_some_and(|u| u.ends_with("/four.html"))
+    let popped = ctx.until("window.open to open in this panel", 15_000, &mut || {
+        state(app)["url"]
+            .as_str()
+            .is_some_and(|u| u.ends_with("/four.html"))
     });
     let s = state(app);
     ctx.ok(
-        popped
-            && s["controllers"] == json!(1)
-            && s["controller"]["children"]
-                .as_array()
-                .is_some_and(|c| c.len() == 1),
+        popped && s["controllers"] == json!(1),
         format!(
-            "{at}: window.open never makes a window of its own (one controller, one child window; the page says {})",
-            s["title"]
+            "{at}: window.open goes to this panel as the fourth page, with one controller ({})",
+            s["url"]
+        ),
+    );
+    ctx.ok(
+        s["controller"]["children"]
+            .as_array()
+            .is_some_and(|c| c.len() == 1)
+            && crate::proc::visible_top_windows_of(&owners) <= windows_before,
+        format!(
+            "{at}: and no window of its own appears (one child window; {windows_before} top-level windows before)"
         ),
     );
     // Whatever it did, the next step starts from the first page.
@@ -480,6 +528,38 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             "{at}: a location request is denied ({})",
             state(app)["title"]
         ),
+    );
+
+    // ---- a download is held until the person answers (S6) ----
+    let downloads = downloads_folder();
+    let saved_before = downloaded(&downloads);
+    script(ctx, app, "document.getElementById('dl').click(); 1");
+    let asked = ctx.until("the download question", 15_000, &mut || {
+        probe(app, "app.state", Value::Null)["dialog"]["open"] == json!(true)
+    });
+    let q = probe(app, "app.state", Value::Null)["dialog"].clone();
+    ctx.ok(
+        asked
+            && q["title"] == json!("Save this file?")
+            && q["body"].as_str().is_some_and(|b| {
+                b.contains("flare-e2e-download-test") && b.contains("flare-test.local")
+            }),
+        format!("{at}: a download asks first, naming the file and the host ({q})"),
+    );
+    // Nothing is saved while the question is up (a few seconds is longer than a small file takes).
+    quiet_downloads(ctx, &downloads, &saved_before);
+    ctx.ok(
+        downloaded(&downloads) == saved_before,
+        format!("{at}: and nothing is saved while the question is open"),
+    );
+    app.session.key("Escape")?;
+    let closed_q = ctx.until("the question to close on Escape", 6_000, &mut || {
+        probe(app, "app.state", Value::Null)["dialog"]["open"] == json!(false)
+    });
+    quiet_downloads(ctx, &downloads, &saved_before);
+    ctx.ok(
+        closed_q && downloaded(&downloads) == saved_before,
+        format!("{at}: a no cancels it and no file reaches the Downloads folder"),
     );
 
     // ---- the splitter moves the browser window with it ----
@@ -619,6 +699,7 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             .unwrap_or(0),
     )
     .unwrap_or(0);
+    ctx.ok(pid != 0, format!("{at}: the browser's process id is known"));
     let closed = c.call(Method::PanelClose, json!({}), LOAD);
     ctx.ok(
         closed.as_ref().is_ok_and(|v| v["closed"] == json!(true)),
@@ -668,11 +749,56 @@ fn panel_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         freed,
         format!("{at}: and closing it once more frees it again"),
     );
-    Ok(())
+    // One more time, and the page stays open: the window quits with it up, and the caller watches the
+    // browser's process end.
+    app.session.key("Ctrl+Shift+P")?;
+    let last = ctx.until("the page to open for the quit", 40_000, &mut || {
+        let s = state(app);
+        s["controllers"] == json!(1) && s["controller"]["browser_pid"].as_u64().unwrap_or(0) != 0
+    });
+    ctx.ok(last, format!("{at}: opened once more to quit with it up"));
+    Ok(u32::try_from(
+        state(app)["controller"]["browser_pid"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+    .unwrap_or(0))
 }
 
-/// Makes a 4 second clip with ffmpeg (the machine has it; the gate machine is this one).
-fn make_clip(path: &Path) -> Result<(), String> {
+/// The Downloads folder the browser saves to by default: the profile's own `Downloads`.
+fn downloads_folder() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("Downloads")
+}
+
+/// Waits two seconds (longer than a small file takes) or until a copy appears, whichever is first.
+fn quiet_downloads(ctx: &mut Ctx, dir: &Path, before: &[String]) {
+    let from = Instant::now();
+    ctx.until("two quiet seconds in Downloads", 6_000, &mut || {
+        downloaded(dir) != before || from.elapsed() >= Duration::from_secs(2)
+    });
+}
+
+/// The names in the folder that start with the test's file name (a saved copy, or a numbered one).
+fn downloaded(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("flare-e2e-download-test"))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// Makes a 6 second clip with ffmpeg (the machine has it; the gate machine is this one). `codec` is the
+/// ffmpeg video encoder: `libvpx` for the webm (no codec the Windows edition might lack), `libx264`
+/// for the mp4 (H.264, what most local files are).
+fn make_clip(path: &Path, codec: &str) -> Result<(), String> {
     let out = Command::new("ffmpeg")
         .args([
             "-y",
@@ -683,7 +809,7 @@ fn make_clip(path: &Path) -> Result<(), String> {
             "-i",
             "testsrc=duration=6:size=320x240:rate=30",
             "-c:v",
-            "libvpx",
+            codec,
             "-b:v",
             "300k",
             "-pix_fmt",
@@ -704,15 +830,19 @@ fn make_clip(path: &Path) -> Result<(), String> {
 
 pub fn web_video(ctx: &mut Ctx) -> Result<(), String> {
     let root = web_root(ctx)?;
-    make_clip(&root.join("clip.webm"))?;
+    make_clip(&root.join("clip.webm"), "libvpx")?;
+    make_clip(&root.join("clip.mp4"), "libx264")?;
     let mut app = launch_with(ctx, &root, 96, &[])?;
-    let r = video_on(ctx, &mut app);
+    let mut r = video_on(ctx, &mut app, "clip.webm");
+    if r.is_ok() {
+        r = video_on(ctx, &mut app, "clip.mp4");
+    }
     let left = app.close();
     ctx.ok(left, "the app quits by itself");
     r
 }
 
-fn video_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
+fn video_on(ctx: &mut Ctx, app: &mut App, clip: &str) -> Result<(), String> {
     app.session.call(&Request::Resize {
         w: 1000.0,
         h: 640.0,
@@ -722,22 +852,20 @@ fn video_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let mut c = hello(&pipe, &token).map_err(|e| format!("hello: {e}"))?;
     let r = c.call(
         Method::BrowserOpen,
-        json!({ "url": format!("{HOST}/video.html") }),
+        json!({ "url": format!("{HOST}/video.html?clip={clip}") }),
         LOAD,
     );
     ctx.ok(
         r.as_ref().is_ok_and(|v| {
             v["loaded"] == json!(true)
-                && v["url"]
-                    .as_str()
-                    .is_some_and(|u| u.ends_with("/video.html"))
+                && v["url"].as_str().is_some_and(|u| u.contains("/video.html"))
         }),
-        format!("the video page opens ({r:?})"),
+        format!("{clip}: the video page opens ({r:?})"),
     );
     let ready = script(ctx, app, "document.getElementById('v').readyState");
     ctx.ok(
         ready.is_some(),
-        format!("the page answers a script ({ready:?})"),
+        format!("{clip}: the page answers a script ({ready:?})"),
     );
     // The page publishes the clip's clock and frame counter as its title every 100 ms. The clock must
     // start and then advance at the wall clock's rate; the frame counter at the clip's 30 frames a second.
@@ -760,7 +888,7 @@ fn video_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(
         started,
         format!(
-            "the video's clock starts ({:?})",
+            "{clip}: the video's clock starts ({:?})",
             first.as_ref().map(|f| &f.1)
         ),
     );
@@ -777,14 +905,14 @@ fn video_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         });
         ctx.ok(
             advanced,
-            "the clock reaches two seconds on from where it began",
+            format!("{clip}: the clock reaches two seconds on from where it began"),
         );
         if let Some((wall, v1)) = last {
             let media = v1["t"].as_f64().unwrap_or(0.0) - v0["t"].as_f64().unwrap_or(0.0);
             let rate = media / wall;
             ctx.ok(
                 (0.85..=1.15).contains(&rate),
-                format!("the clock advances at the wall clock's rate ({media:.2} s of video in {wall:.2} s, {rate:.2}x)"),
+                format!("{clip}: the clock advances at the wall clock's rate ({media:.2} s of video in {wall:.2} s, {rate:.2}x)"),
             );
             let frames =
                 v1["frames"].as_f64().unwrap_or(0.0) - v0["frames"].as_f64().unwrap_or(0.0);
@@ -792,7 +920,7 @@ fn video_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             ctx.ok(
                 per_sec >= 24.0,
                 format!(
-                    "frames are decoded at the clip's rate ({per_sec:.1} per second; {} dropped)",
+                    "{clip}: frames are decoded at the clip's rate ({per_sec:.1} per second; {} dropped)",
                     v1["dropped"]
                 ),
             );

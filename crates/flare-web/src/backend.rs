@@ -26,6 +26,8 @@ pub struct KeyPress {
     pub alt: bool,
     /// Down (a key up is never a chord).
     pub down: bool,
+    /// An autorepeat of a key already held (it is not a new press).
+    pub repeat: bool,
 }
 
 /// Decides, at once, whether the app takes this key from the page (the chord table, the second
@@ -80,6 +82,20 @@ pub enum WebEvent {
         tab: String,
         url: String,
     },
+    /// The address changed inside the same document (a `#fragment`, `history.pushState`): the
+    /// browser raises no navigation for it.
+    SameDocument {
+        tab: String,
+        url: String,
+    },
+    /// A download is waiting for a yes: nothing is saved until `answer_download`. `file` is the name
+    /// the browser proposes, `host` where it comes from.
+    Download {
+        tab: String,
+        id: u64,
+        file: String,
+        host: String,
+    },
     Title {
         tab: String,
         title: String,
@@ -133,6 +149,8 @@ impl WebEvent {
             WebEvent::Loading { .. } => "Loading",
             WebEvent::Loaded { .. } => "Loaded",
             WebEvent::Url { .. } => "Url",
+            WebEvent::SameDocument { .. } => "SameDocument",
+            WebEvent::Download { .. } => "Download",
             WebEvent::Title { .. } => "Title",
             WebEvent::History { .. } => "History",
             WebEvent::Refused { .. } => "Refused",
@@ -180,6 +198,11 @@ pub trait WebBackend {
     fn focus(&mut self, tab: &str);
     /// Closes and frees the tab's view. The browser environment goes with the last one.
     fn close(&mut self, tab: &str);
+    /// Closes every view and lets the browser environment go, now (the window is ending). Nothing is
+    /// reported after it. Downloads still waiting for a yes are cancelled.
+    fn close_all(&mut self);
+    /// The yes or no a `WebEvent::Download` asked for. Unknown ids are ignored.
+    fn answer_download(&mut self, id: u64, save: bool);
     /// Takes in what finished in the background (answers `WebEvent::Pump`).
     fn pump(&mut self);
     /// The runtime check the first open asked for has answered (`WebEvent::Runtime`).

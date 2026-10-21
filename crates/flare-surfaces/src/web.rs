@@ -211,6 +211,35 @@ pub fn captured(phase: Phase, token: u64) -> Option<(Phase, Vec<Act>)> {
     }
 }
 
+/// How long a still may take before the window gives up on it and hides the page anyway (ms). A
+/// page that is busy or hung never answers a capture, and its window would stay on top of every
+/// menu, dialog and bar for as long as it is stuck. The answer that comes late is dropped by the
+/// token check in [`captured`].
+pub const CAPTURE_TIMEOUT_MS: u64 = 250;
+
+/// What a browser process failure means for a web panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The browser restarts it on its own and the page keeps working (the GPU, a utility process, a
+    /// frame's renderer, a plug-in, an unresponsive page the browser itself asks about).
+    Recovers,
+    /// The page's renderer is gone: this panel cannot show its page any more.
+    Page,
+    /// The browser process is gone: every panel's page is gone and the environment is dead.
+    Browser,
+}
+
+/// WebView2's `COREWEBVIEW2_PROCESS_FAILED_KIND` (the number) as the panel treats it. The numbers are
+/// the SDK's: 0 browser, 1 render, 2 render unresponsive, 3 frame render, 4 utility, 5 sandbox
+/// helper, 6 GPU, 7 and 8 plug-in, 9 unknown.
+pub fn failure_of_kind(kind: i32) -> Failure {
+    match kind {
+        0 => Failure::Browser,
+        1 => Failure::Page,
+        _ => Failure::Recovers,
+    }
+}
+
 /// The second Escape in a short time hands the keys back to the terminal; the first one is the page's
 /// (a page that uses Escape keeps it). Any other key in between starts the count again.
 #[derive(Clone, Copy, Debug, Default)]
@@ -336,6 +365,22 @@ pub fn webview_folder(
         .map(|a| PathBuf::from(a).join("Flare").join("WebView2"))
 }
 
+/// Is `got` the address `want` asked for? Both parse and compare as addresses (case of the host and a
+/// default port do not matter); the fragment counts only when `with_fragment`. A text that does not
+/// parse matches only itself.
+pub fn url_matches(want: &str, got: &str, with_fragment: bool) -> bool {
+    match (url::Url::parse(want), url::Url::parse(got)) {
+        (Ok(mut a), Ok(mut b)) => {
+            if !with_fragment {
+                a.set_fragment(None);
+                b.set_fragment(None);
+            }
+            a == b
+        }
+        _ => want == got,
+    }
+}
+
 /// Where the page lives for a title: the host of the address, else the address.
 pub fn host_label(url: &str) -> String {
     url::Url::parse(url)
@@ -348,6 +393,48 @@ pub fn host_label(url: &str) -> String {
 mod tests {
     use super::*;
     use crate::overlay::{Overlay, Overlays, PanelDraw, draw_for};
+
+    #[test]
+    fn a_capture_that_never_answers_is_ended_by_its_timeout() {
+        // The overlay opens: a capture is asked for.
+        let (phase, acts) = step(Phase::Live, WebShow::Still, 7);
+        assert_eq!(phase, Phase::Capturing(7));
+        assert_eq!(acts, vec![Act::Capture(7)]);
+        // The page is hung, so the timeout stands in for the answer: hidden, no picture.
+        let (phase, acts) = captured(phase, 7).expect("the same token");
+        assert_eq!(phase, Phase::Still);
+        assert_eq!(acts, vec![Act::Hide]);
+        // The real answer, if it ever comes, finds the window moved on.
+        assert!(captured(phase, 7).is_none());
+        const { assert!(CAPTURE_TIMEOUT_MS <= 500, "short enough to be unseen") };
+    }
+
+    #[test]
+    fn only_the_fatal_process_failures_end_a_panel() {
+        assert_eq!(failure_of_kind(0), Failure::Browser);
+        assert_eq!(failure_of_kind(1), Failure::Page);
+        for recoverable in [2, 3, 4, 5, 6, 7, 8, 9, 42] {
+            assert_eq!(failure_of_kind(recoverable), Failure::Recovers);
+        }
+    }
+
+    #[test]
+    fn an_address_matches_itself_in_the_forms_a_browser_reports() {
+        assert!(url_matches(
+            "https://Example.com/a",
+            "https://example.com/a",
+            false
+        ));
+        assert!(url_matches(
+            "https://example.com:443/",
+            "https://example.com/",
+            true
+        ));
+        assert!(url_matches("https://e.com/a", "https://e.com/a#x", false));
+        assert!(!url_matches("https://e.com/a", "https://e.com/a#x", true));
+        assert!(!url_matches("https://e.com/a", "https://e.com/b", false));
+        assert!(url_matches("about:blank", "about:blank", true));
+    }
 
     #[test]
     fn text_with_no_scheme_becomes_https() {

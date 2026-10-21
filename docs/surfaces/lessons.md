@@ -221,8 +221,11 @@ Newest last.
   `mainWindow.webContents.focus()` for the same moments, and `view.webContents.focus()` to give the page the keys.
 - **The page taking the keyboard sends the host a kill-focus.** winit reports `Focused(false)` for the parent when focus moves
   into its child, which would close menus, mark the window unfocused and (with agents) look like the user leaving. Ignore it
-  while the foreground window is still the host's, and treat the page's own got-focus and lost-focus as the host's (a lost-focus
+  while the page has the keyboard, and treat the page's own got-focus and lost-focus as the host's (a lost-focus
   with another foreground window IS the user leaving, and winit does not report it because the parent never had the focus).
+  **Do not decide on the foreground window at the instant of the kill-focus:** during a real switch to another app it can still
+  be the host's, and the blur (dictation, the Ctrl+Tab walk, tips, menus) was lost. When the window is still foreground and the
+  page does not yet claim the keys, look again one message later.
   **Electron:** the BrowserWindow's `focus` and `blur` events already include its views; nothing to do, but check that a blur is
   reported when the page held the focus.
 - **COM completions arrive inside the message loop, possibly re-entrantly.** An outgoing COM call in a single-threaded apartment
@@ -251,9 +254,11 @@ Newest last.
   rate was 30.6 frames per second. A scenario can therefore assert behaviour, geometry and clocks; it cannot see pixels of the
   page (the snapshot probe sees Slint, not the child window).
 - **A script `click()` is not a user gesture.** `target=_blank` and a link to another page worked from a scripted click;
-  `window.open` from the same click was blocked by the browser's own popup blocker before Flare heard of it. The test says what
-  must hold either way (one controller, one child window); it does not claim the popup navigated. Real input would need the
-  input events of the DevTools protocol, which stage 4 adds.
+  `window.open` from the same click was blocked by the browser's own popup blocker before Flare heard of it, so the first test of
+  it could never fail. The run now starts the app with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-popup-blocking` (an
+  environment variable of the child only), the browser asks Flare for the window, the handler navigates the panel, and the test
+  counts top-level windows of both processes. **Electron:** `app.commandLine.appendSwitch('disable-popup-blocking')` under the
+  test seam only, and the same count.
 - **A world shared by two legs restores the first leg's tabs.** The 225 percent leg started with three tabs because the 100
   percent leg had saved two, and `Ctrl+1` then jumped to a different tab. Count tabs instead of assuming, and jump to the tab by
   its place.
@@ -283,11 +288,40 @@ Newest last.
   (`docs/e2e.md` names the sleeping display) and not this change. The scenarios that touch what this stage changed pass: `panelImage`,
   `ctlChannel`, `mcpRoundTrip`, `findKey`, `systemMenu`, `closeAsk`, `helpPanel`, `resizeEdges`, `settingsLive`, `tooltips`,
   `dropAndMenu`, `tabSwitch` and `restore`.
+- **WebView2 does not ask before it saves a download.** It saves straight into Downloads. Take the deferral in
+  `DownloadStarting`, ask in the app's own dialog, and cancel on anything but a yes (a closed panel, a closing window, a failed
+  registration). The first reading of "WebView2's own prompt" was wrong and was only caught in review. **Electron:**
+  `session.on('will-download', (e, item) => ...)`; `item.pause()` (or `e.preventDefault()` and restart with `downloadURL` after the
+  answer), the SAME question dialog, then `item.setSavePath(path.join(app.getPath('downloads'), item.getFilename()))` and
+  `item.resume()`, or `item.cancel()`. A file name is page text: cut and escape it in the dialog.
+- **Close the browser before the window.** Live controller and environment objects with registered handlers outlived the window and
+  were released whenever the controller dropped, after the COM apartment's teardown (rule 28 is this class of bug). Close every view,
+  answer every pending call, drop the environment, and refuse to open again, all before the window hides. **Electron:** close
+  every `WebContentsView` in `before-quit` and answer pending IPC calls first.
+- **A capture needs a deadline.** `CapturePreview` never answers for a hung page; the page then stays over every menu. Race the
+  capture against a 250 ms timer and hide without a picture. **Electron:** the same race around `capturePage()`.
+- **Closing the focused child leaves the focus nowhere.** Destroying the window that has the keyboard makes it NULL; keys then reach
+  the active window as system keys. `SetFocus(host)` and take the child off the screen before closing it, on every path that
+  closes or hides a focused page (tab close, panel close, tab switch, a failed page).
+- **A process failure has kinds.** The GPU, a utility process and a frame's renderer are restarted by the browser; only the main
+  renderer and the browser process are the page's end. After a browser process exit the environment is dead: close the
+  controllers and drop it, or every later open fails. **Electron:** `render-process-gone` carries `reason`; `child-process-gone`
+  is for the GPU and utility processes, which Electron restarts.
+- **Autorepeat is a key down.** A double-Escape rule counted a held Escape as two. Read the key's `WasKeyDown`
+  (`PhysicalKeyStatus`); **Electron:** `input.isAutoRepeat` in `before-input-event`.
+- **A navigation call needs the address it waits for, and same-document changes raise no navigation.** Bind to the first
+  navigation for the requested address, and settle on `SourceChanged` (`IsNewDocument` false) for `#fragment` changes.
+  **Electron:** `did-navigate-in-page` for the second case; match `did-start-navigation`'s URL for the first.
+- **The environment and controller creation are not free on the UI thread** (registry, library load, data folder, browser launch).
+  They have to stay there; mark them and list them in the blocking-call scan. Cold first `browser.open` on the gate machine: 2.3 s
+  end to end (see "Stage 3 review fixes" in `decisions.md`).
 - **Hands-on list for the owner (not machine-tested here, the safe rules forbid real input, the network and the user's windows):**
   play a YouTube video in the panel (sound, the full screen button, seeking, a 1080p stream) and check it keeps its frame rate
   while the splitter is dragged; Widevine content (Netflix, Spotify web) if it matters; type in the address bar with a real
   keyboard, then Enter, then Escape twice; click into a page and press Ctrl+Shift+P, Ctrl+T, F1, Ctrl+Tab; click the terminal
   after the page and type; scripted `alert`, `prompt` and file pickers (WebView2's own dialogs, parented to the window); a
-  download (its own prompt, into Downloads); log in to a site, close the panel, reopen it, and close and reopen Flare (the cookie
+  download (Flare's "Save this file?" question, then Downloads; also close the panel and the window while it is up); kill the
+  browser's `msedgewebview2.exe` browser process from Task Manager with a page open and look for the note; switch to another app
+  with a page focused and check dictation and the Ctrl+Tab walk let go; log in to a site, close the panel, reopen it, and close and reopen Flare (the cookie
   folder is the profile's); move the window between two monitors of different scale with a page open; open a menu over a
   playing video and look for a flash at the swap; the text caret and the Windows IME in the address bar; High Contrast mode.

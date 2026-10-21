@@ -25,6 +25,10 @@ pub enum Call {
     Capture(String, u64),
     Focus(String),
     Close(String),
+    /// `close_all` (the window is ending).
+    CloseAll,
+    /// The answer to a download: its id and whether it may be saved.
+    Download(u64, bool),
     Script(String, u64, String),
 }
 
@@ -45,6 +49,8 @@ pub struct FakeState {
     pub fail: Option<(String, bool)>,
     /// When set, a still answers with this PNG (else None: it could not be taken).
     pub still: Option<Vec<u8>>,
+    /// When set, a still is never answered (a page that is hung).
+    pub still_silent: bool,
     pub filter: Option<KeyFilter>,
 }
 
@@ -137,6 +143,9 @@ impl WebBackend for FakeWeb {
         let png = {
             let mut s = self.state.borrow_mut();
             s.calls.push(Call::Capture(tab.into(), token));
+            if s.still_silent {
+                return;
+            }
             s.still.clone()
         };
         (self.sink)(WebEvent::Still {
@@ -154,6 +163,20 @@ impl WebBackend for FakeWeb {
         let mut s = self.state.borrow_mut();
         s.calls.push(Call::Close(tab.into()));
         s.views.remove(tab);
+    }
+
+    fn close_all(&mut self) {
+        let mut s = self.state.borrow_mut();
+        let tabs: Vec<String> = s.views.keys().cloned().collect();
+        for t in tabs {
+            s.calls.push(Call::Close(t));
+        }
+        s.calls.push(Call::CloseAll);
+        s.views.clear();
+    }
+
+    fn answer_download(&mut self, id: u64, save: bool) {
+        self.state.borrow_mut().calls.push(Call::Download(id, save));
     }
 
     fn pump(&mut self) {}

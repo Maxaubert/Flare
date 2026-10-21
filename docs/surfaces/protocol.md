@@ -341,7 +341,10 @@ cancelled and the header says "Not opened here".
 accepted. The app binds the call to the first navigation the browser starts after the call (a redirect
 rebinds it to the last) and answers on that navigation's completion with `loaded` true, or with `loaded`
 false and a `status` (WebView2's error status as a number) when it failed; a load that finishes before the
-call's own navigation began, or one that is not it, is not the answer. The wait is at most 30 s in Flare
+call's own navigation began, or one that is not it, is not the answer: the first navigation that counts is the one for the address
+the call sent the page to (compared as an address, so the host's case and a default port do not matter; a fragment does not), and
+only after it is bound does a redirect rebind it. A `navigate` to the current page plus a `#fragment` raises no navigation; it is
+answered (`loaded` true) when the page's address becomes exactly that. The wait is at most 30 s in Flare
 (inside the 60 s of the channel) and ends in `timeout`; a call that was answered `timeout` never changes the
 page later. A second call on the same tab while one waits replaces it: the first is answered `unavailable`
 ("another call sent the page somewhere else"). `browser.navigate` with `back` or `forward` answers

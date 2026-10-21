@@ -328,8 +328,8 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
   clipboard, sensors) is denied without asking; `window.open` and `target=_blank` go to the same panel (no second window,
   ever); `window.close()` and full screen of the whole window do nothing; the page-to-app message channel and host objects are
   off; a navigation to anything but http, https and about:blank is cancelled whoever started it (a link, a redirect, a
-  script). Downloads are left to WebView2's own prompt and its own default folder, the user's Downloads (S6): Flare adds no
-  handler and saves nothing silently. Script dialogs (`alert`) keep WebView2's own.
+  script). Downloads: see the review fixes below (S6; WebView2's own behaviour is NOT a prompt). Script dialogs (`alert`)
+  keep WebView2's own.
 - 2026-10-21, stage 3, the channel: `browser.open`, `browser.navigate` and `panel.open` (kind web) are real and listed in
   `capabilities`; the rest of `browser.*` stays `unavailable` until stage 4. They wait for the page: the call is bound to the
   first navigation the browser starts after it (rebinding on a redirect) and answered on that navigation's completion, up to
@@ -351,3 +351,63 @@ Each entry: the date, the stage, the choice, the reason. Owner decisions are mar
 - 2026-10-21, stage 3, video: nothing special is done for it. The e2e plays a 6 second clip made with `ffmpeg` and reads the
   clock and the frame counter: 1.00 times real time and 30.6 frames per second in the parked window. YouTube and other
   streaming sites need the network and are by hand (below); they need no code of ours.
+
+### Stage 3 review fixes (2026-10-21)
+
+- 2026-10-21, stage 3, downloads (S6, corrects the first reading above): WebView2 does NOT prompt by default; it saves straight
+  into the Downloads folder and shows a flyout. So Flare registers `ICoreWebView2_4::add_DownloadStarting`, takes a deferral and
+  posts `WebEvent::Download {id, file, host}`; the window asks in its own dialog (`download_ask.rs`: "Save this file?", the file
+  name and the host, Save or Cancel, the names cut at 80 characters and escaped so a file name cannot add markup). A yes leaves
+  the browser's proposed path (a unique name in Downloads) and completes the deferral; anything else cancels. Nothing is saved
+  when the question is dropped for any reason: the panel closed (the host cancels that tab's downloads, and the window forgets
+  its questions), the window ends (`close_all`, and `Drop` of the host), the deferral cannot be taken, or the runtime cannot
+  hold a download (a view that cannot register is a failed view, never a silent saver). A second download queues behind the
+  first. The close question has the dialog first; a waiting download is asked after it. Electron must ask the same thing
+  (`docs/surfaces/README.md`). The default flyout stays on for a download that was allowed (progress, open file).
+- 2026-10-21, stage 3, rule 28 for the web views: `WebCtl::close_all` runs in `finish()` before the window hides. It answers every
+  pending `browser.*` call `unavailable` ("Flare is closing"), closes each controller, drops the environment and forbids a later
+  open (a refresh after the end of life would otherwise make a view again). `WebHost` also cancels downloads when dropped.
+- 2026-10-21, stage 3, airspace has a timeout: `Act::Capture` starts the timer `web.capture` (`timer_registry`, 250 ms,
+  `CAPTURE_TIMEOUT_MS`); when it fires it posts a `Still` with no picture for the same token, which `captured` turns into
+  "hidden, no still". A page that is busy or hung can therefore stay over a menu or dialog for 250 ms at most. The real answer, if
+  it comes later, finds a different phase or token and is dropped.
+- 2026-10-21, stage 3, focus when a page is closed: the host window keeps its handle from every sync. Closing the tab, the panel,
+  or sending the page away while it has the keyboard calls `SetFocus(host)` first and takes the window off the screen before
+  `Close()`; Windows would otherwise leave the focus nowhere, the keys would arrive as system keys and the terminal would type
+  nothing until a click. The same runs for a page that failed (its window is taken off the screen, so the note is visible and the
+  crash face is not on top) and when the front tab changes while the page has the keys.
+- 2026-10-21, stage 3, process failures: `failure_of_kind` (`flare_surfaces::web`) decides by `COREWEBVIEW2_PROCESS_FAILED_KIND`.
+  Browser process exited: the host closes every controller, drops the environment (`Env::None`, so the next open starts fresh),
+  forgets the views and says `Gone` for each tab. Render process exited: `Gone` for that tab. GPU, utility, a frame's renderer,
+  the sandbox helper, plug-ins and an unresponsive renderer (WebView2 asks the person itself and the page can recover): only
+  logged. The first reading ("every kind is fatal") put the "could not be shown" note up for a GPU restart. A failed page's panel
+  stays until it is closed; closing it lets the next open make a new browser.
+- 2026-10-21, stage 3, blur while the page holds the keyboard: `focus_loss(has_backend, page_has_focus, window_is_foreground)`
+  decides. The page has the keys: skip. The window is still the foreground window but the page is not known to have the keys
+  yet: that is either the keyboard moving into the page or a switch to another app that Windows has not finished, so the
+  decision is asked again one turn later (`UiMsg::FocusLostCheck`: blur unless the window is foreground or the page has the keys
+  by then). Deciding on the foreground window at the instant of the kill-focus lost real blurs (dictation, the Ctrl+Tab walk,
+  tips and menus). By hand only, see `lessons.md`.
+- 2026-10-21, stage 3, Escape: WebView2 reports autorepeats as key downs, and the default repeat delay (about 500 ms) is shorter
+  than the 600 ms window, so one Escape held a moment counted twice. The host reads `PhysicalKeyStatus().WasKeyDown` into
+  `KeyPress.repeat`; the filter ignores a repeated Escape (it neither counts nor resets).
+- 2026-10-21, stage 3, waiting for a page: `Pending` records the address the call sent the page to. The first `Loading` that
+  counts is the one whose address matches it (`url_matches`: parsed, fragment ignored), so a `Loading` left in the queue from an
+  earlier navigation cannot become the call's. A same-document change (a `#fragment`, `history.pushState`) raises no navigation;
+  the host reports `SourceChanged` with `IsNewDocument` false as `WebEvent::SameDocument`, and a call whose address equals it
+  (fragment included) is answered then.
+- 2026-10-21, stage 3, rule 34: `CreateCoreWebView2EnvironmentWithOptions` and `CreateCoreWebView2Controller` run on the UI
+  thread and do synchronous work inside (registry reads, loading the runtime's library, making the data folder, launching the
+  browser process). They cannot move to a worker: the objects are thread-affine to the UI thread's apartment. They are marked
+  `// sync-ok:` and are in the `sync_calls` scan's list, so a third such call cannot slip in. Measured on the gate machine
+  (2026-10-21, release build, the e2e's fresh profile, process at idle priority): the first `browser.open` of a run, which is the
+  cold browser start plus the page load and the whole round trip through the channel, answers in 2.3 s (2309 ms at 100 percent,
+  2297 ms at 225); the window stays responsive meanwhile because the runtime question is on a worker and the environment and
+  controller completions come back through the inbox.
+- 2026-10-21, stage 3, video (closes the plan item "a local mp4 plays"): the first leg used a VP8 webm because it needs no
+  codec the Windows edition might lack (N editions without the Media Feature Pack have no H.264). `webVideo` now also plays an H.264
+  mp4 made with `libx264` and holds the same clock and frame-rate checks, so both are verified on the gate machine.
+- 2026-10-21, stage 3, e2e honesty: "the browser's process ends" is its own check (the pid must be known) and also runs after
+  the window quits; `window.open` is tested with the popup blocker off (the run sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+  for the app it starts, nothing else) so the handler runs, and the check counts visible top-level windows of Flare's and the
+  browser's processes before and after.

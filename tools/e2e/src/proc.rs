@@ -328,6 +328,42 @@ fn norm(s: &str) -> String {
     s.replace('/', "\\").to_lowercase()
 }
 
+struct Tops<'a> {
+    pids: &'a [u32],
+    count: usize,
+}
+
+unsafe extern "system" fn count_top(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    lparam: isize,
+) -> i32 {
+    // SAFETY: `lparam` is the address of the `Tops` that `visible_top_windows_of` keeps alive for the call.
+    let t = unsafe { &mut *(lparam as *mut Tops) };
+    let mut pid = 0u32;
+    // SAFETY: a window handle from the enumeration and a valid out pointer.
+    let visible = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid);
+        windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) != 0
+    };
+    if visible && t.pids.contains(&pid) {
+        t.count += 1;
+    }
+    1
+}
+
+/// How many visible top-level windows the processes `pids` own (a popup of a page would be one).
+pub fn visible_top_windows_of(pids: &[u32]) -> usize {
+    let mut t = Tops { pids, count: 0 };
+    // SAFETY: the callback only reads window data and writes into `t`, which outlives the call.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows(
+            Some(count_top),
+            std::ptr::addr_of_mut!(t) as isize,
+        );
+    }
+    t.count
+}
+
 /// True while a process with this id exists and has not exited.
 pub fn pid_alive(pid: u32) -> bool {
     // SAFETY: a failed open returns null.
