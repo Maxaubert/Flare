@@ -503,10 +503,18 @@ Grant: the agent's own tab only (the `convo` permission for a mod). Errors: `no_
 `convo_state_summarises_the_tabs_own_conversation` and the dispatcher tests (`ctl_app.rs`) and by the e2e
 `convoPanels`. Format notes for the port: `convo.md`.
 
-### tools.respond (stage 8, reserved)
+### tools.respond (stage 8, reserved; the contract is in `mods.md`)
 
-A mod answers a tool call the agent made through `flare-mcp`. UI-routed in v1; named now so the grant
-table is complete.
+A mod answers a tool call the agent made through `flare-mcp`. Grant: `tools` only (the agent, and a mod
+without `tools`, are refused `forbidden`). Params: `{"call_id": string, "result"?: any JSON, "error"?: string}`;
+exactly one of `result` or `error` is sent (`error` is the reason the agent sees). A present `result` key whose
+value is `null` is a SUCCESS with the value null; a `result` key that is absent with no `error` is `bad_params`.
+The page's bridge sends `{call_id, error}` when the page gave a string error, and otherwise
+`{call_id, result}` with `result` null when the page gave nothing (`mods.md`, the `respond` wire form). Result:
+`{}`. Errors: `not_found` (no open call with that `call_id`, or it was answered or timed out), `bad_params`
+(neither or both of `result` and `error`, or a `call_id` that is not a string). A mod's page calls it through
+`window.flare.respond`, never directly. The routing and the page's bridge are in `mods.md`; the library
+parts (manifest, grants, tokens, routing) are in `crates/flare-mods`. No app code answers it yet.
 
 ### shell.input, settings.set, mods.enable (never over the pipe)
 
