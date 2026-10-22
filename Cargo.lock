@@ -1790,6 +1790,7 @@ dependencies = [
  "log",
  "serde_json",
  "tempfile",
+ "unicode-width",
  "url",
 ]
 

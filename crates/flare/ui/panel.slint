@@ -152,6 +152,9 @@ component TextView inherits Rectangle {
     in property <[int]> nums;
     // The rows are wrapped to the width (no horizontal scroll), and how many lines the file has.
     in property <bool> wrapped;
+    // The columns the shown rows were wrapped to (0 while unwrapped). While a splitter drag narrows the slot the rows
+    // keep these columns, so the view stays as wide as they need (a temporary sideways scroll) instead of cutting them.
+    in property <int> wrapped-cols;
     in property <int> number-count;
     callback pressed();
 
@@ -170,6 +173,9 @@ component TextView inherits Rectangle {
     property <int> first: max(0, floor(-flick.content-y / root.row-h + 0.01));
     property <int> count: ceil(root.view-h / root.row-h) + 2;
     out property <int> first-line: root.first;
+    out property <length> content-w: flick.content-width;
+    out property <length> scroll-x: flick.content-x;
+    out property <length> scroll-y: flick.content-y;
 
     public function scroll-by(dx: length, dy: length) {
         flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x + dx));
@@ -177,6 +183,21 @@ component TextView inherits Rectangle {
     }
     public function scroll-to(top: bool) {
         flick.content-y = top ? 0px : min(0px, root.view-h - flick.content-height);
+    }
+    // Puts `row` at the top (kept inside the content), for a re-wrap that keeps the reader's line.
+    public function scroll-to-row(row: int) {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, -row * root.row-h));
+    }
+    // Wrapping flips: every row starts at the left edge again.
+    changed wrapped => {
+        flick.content-x = 0px;
+    }
+    // The rows were re-made at another width: the viewport stays inside the new content.
+    changed wrapped-cols => {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x));
+    }
+    changed line-count => {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, flick.content-y));
     }
 
     clip: true;
@@ -190,7 +211,7 @@ component TextView inherits Rectangle {
     flick := Flickable {
         width: root.width;
         height: root.view-h;
-        content-width: root.wrapped ? root.width : max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
+        content-width: root.wrapped ? max(root.width, root.gutter-w + root.wrapped-cols * root.char-w + Px.snap(16px)) : max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
         content-height: max(root.content-h, root.view-h);
         for k in root.count: Rectangle {
             property <int> n: root.first + k;
@@ -514,6 +535,11 @@ export component PanelSlot inherits Rectangle {
     out property <length> text-gutter-w: txt.gutter-w;
     out property <int> text-first-line: txt.first-line;
     out property <int> text-wrap-cols: txt.wrap-cols;
+    out property <length> text-content-w: txt.content-w;
+    out property <length> text-scroll-x: txt.scroll-x;
+    out property <length> text-scroll-y: txt.scroll-y;
+    public function text-scroll-to-row(row: int) { txt.scroll-to-row(row); }
+    public function text-scroll-by(dx: length, dy: length) { txt.scroll-by(dx, dy); }
     out property <length> wrap-button-x: wrap-btn.absolute-position.x;
     out property <length> wrap-button-y: wrap-btn.absolute-position.y;
     out property <length> wrap-button-w: wrap-btn.width;
@@ -523,6 +549,7 @@ export component PanelSlot inherits Rectangle {
     // The header's wrap button (a text file): the setting, and a press to flip it. `wrapped` says the rows are wrapped now.
     in property <bool> wrap-on;
     in property <bool> wrapped;
+    in property <int> wrapped-cols;
     in property <[int]> line-nums;
     in property <int> number-count;
     // The room the wrap button takes in the header (a text file only).
@@ -746,6 +773,7 @@ export component PanelSlot inherits Rectangle {
                 foot: root.foot;
                 nums: root.line-nums;
                 wrapped: root.wrapped;
+                wrapped-cols: root.wrapped-cols;
                 number-count: root.number-count;
                 pressed => { root.pressed(); }
             }

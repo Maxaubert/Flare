@@ -144,6 +144,39 @@ fn nothing_is_drawn_past_the_right_edge_of_the_slot_when_wrapped() {
 }
 
 #[test]
+fn a_long_cjk_line_wraps_by_display_width_and_draws_nothing_past_the_right_edge() {
+    for s in SCALES2 {
+        let h = window(s);
+        // 300 wide characters: 600 columns, which one character per column would pack into rows twice too wide.
+        let line: SharedString = "\u{65e5}\u{672c}\u{8a9e}".repeat(100).into();
+        let lines = vec![line; 4];
+        let (cols, n) = show_wrapped(&h, &lines);
+        let (rows, _) = wrap_lines(&lines, cols, &|| false);
+        assert_eq!(rows.len(), n);
+        assert!(
+            rows.iter().all(|r| r.chars().count() * 2 <= cols),
+            "scale {s}: every row is at most {cols} columns wide"
+        );
+        let f = h.render();
+        let y0 = (h.comp.get_panel_body_y() * s).round() as u32;
+        let x0 = ((h.comp.get_panel_body_x() + h.comp.get_panel_gutter_w()) * s).round() as u32;
+        let right = ((h.comp.get_panel_body_x() + h.comp.get_panel_body_w()) * s).round() as u32;
+        let ink = f.count_where(x0, y0, right, y0 + (18.0 * s) as u32, |p| {
+            p[0] > 90 && p[1] > 90 && p[2] > 90
+        });
+        assert!(ink > 20, "scale {s}: the first row is drawn ({ink})");
+        let strip = f.count_where(
+            right.saturating_sub((6.0 * s) as u32),
+            y0,
+            right.saturating_sub((4.0 * s) as u32),
+            y0 + (6.0 * 18.0 * s) as u32,
+            |p| p[0] > 120 && p[1] > 120 && p[2] > 120,
+        );
+        assert_eq!(strip, 0, "scale {s}: no wide glyph runs to the edge");
+    }
+}
+
+#[test]
 fn the_gutter_shows_a_number_on_the_first_row_of_a_line_only() {
     for s in SCALES2 {
         let h = window(s);

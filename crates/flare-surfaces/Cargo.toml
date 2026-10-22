@@ -12,6 +12,7 @@ serde_json.workspace = true
 image = { workspace = true }
 log.workspace = true
 url.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -409,3 +409,89 @@ fn the_slot_going_away_during_a_drag_lets_go_of_the_grab() {
         );
     }
 }
+
+#[test]
+fn narrowing_the_slot_mid_drag_cuts_no_wrapped_text_it_overflows_and_the_release_settles() {
+    for scale in [1.0f32, 2.25] {
+        let (f, _h, _) = live(Opts {
+            scale,
+            ..Opts::default()
+        });
+        open_panel(&f, 2);
+        let c = &f.h.comp;
+        assert!(c.get_panel_wrapped(), "scale {scale}");
+        let settled_w = c.get_panel_text_content_w();
+        assert!(
+            (settled_w - c.get_panel_body_w()).abs() <= 1.0,
+            "scale {scale}: at rest the rows fit the slot exactly ({settled_w} vs {})",
+            c.get_panel_body_w()
+        );
+        let (x, y) = start_point(&f);
+        f.h.move_to(x, y);
+        f.h.press(x, y, LEFT);
+        // Dragging right makes the slot narrower; the rows keep their columns until the release.
+        for k in 1..=6 {
+            f.h.move_to(x + 40.0 * k as f32, y);
+            f.h.advance(0);
+            f.pump();
+            let body = c.get_panel_body_w();
+            let need = c.get_panel_text_content_w();
+            assert!(
+                need >= settled_w - 8.0,
+                "scale {scale} step {k}: the view stays as wide as its rows need ({need} vs {settled_w}); the slot is {body}"
+            );
+        }
+        assert!(
+            c.get_panel_text_content_w() > c.get_panel_body_w() + 1.0,
+            "scale {scale}: narrower slot, the rows overflow sideways instead of being cut"
+        );
+        f.h.release(x + 240.0, y, LEFT);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(
+            (c.get_panel_text_content_w() - c.get_panel_body_w()).abs() <= 1.0,
+            "scale {scale}: after the release the rows fit again"
+        );
+        assert_eq!(c.get_panel_text_scroll_x(), 0.0, "scale {scale}");
+    }
+}
+
+#[test]
+fn switching_tabs_by_key_during_a_drag_lets_go_and_stores_nothing_on_the_other_tab() {
+    for scale in [1.0f32, 2.25] {
+        let (f, _h, _) = live(Opts {
+            scale,
+            ..Opts::default()
+        });
+        let a = f.ctl.borrow().front_id().unwrap();
+        open_panel(&f, 2);
+        let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        open_panel(&f, 2);
+        let c = &f.h.comp;
+        assert_eq!(c.get_panel_share(), 0.0, "scale {scale}");
+        let (x, y) = start_point(&f);
+        f.h.move_to(x, y);
+        f.h.press(x, y, LEFT);
+        f.h.move_to(x - 80.0, y);
+        f.h.advance(0);
+        assert!(c.get_panel_splitting(), "scale {scale}");
+        // Another tab that also has a panel comes to the front: the slot never goes away.
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump();
+        f.h.advance(0);
+        assert!(
+            !c.get_panel_splitting(),
+            "scale {scale}: the drag was for the other tab, so the grab is let go"
+        );
+        f.h.release(x - 80.0, y, LEFT);
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(
+            c.get_panel_share(),
+            0.0,
+            "scale {scale}: the front tab kept its own width"
+        );
+    }
+}

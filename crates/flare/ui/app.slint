@@ -326,6 +326,12 @@ export component AppWindow inherits Window {
     out property <int> panel-wrap-cols: panel-slot.text-wrap-cols;
     in property <[int]> panel-line-nums;
     in property <bool> panel-wrapped;
+    in property <int> panel-wrapped-cols;
+    out property <length> panel-text-content-w: panel-slot.text-content-w;
+    out property <length> panel-text-scroll-x: panel-slot.text-scroll-x;
+    out property <length> panel-text-scroll-y: panel-slot.text-scroll-y;
+    public function panel-scroll-to-row(row: int) { panel-slot.text-scroll-to-row(row); }
+    public function panel-scroll-by(dx: length, dy: length) { panel-slot.text-scroll-by(dx, dy); }
     in property <bool> panel-wrap-on: true;
     in property <int> panel-number-count;
     out property <length> panel-wrap-button-x: panel-slot.wrap-button-x;
@@ -900,6 +906,7 @@ export component AppWindow inherits Window {
                         foot: root.panel-foot;
                         line-nums: root.panel-line-nums;
                         wrapped: root.panel-wrapped;
+                        wrapped-cols: root.panel-wrapped-cols;
                         wrap-on: root.panel-wrap-on;
                         number-count: root.panel-number-count;
                         wrap-toggled => { root.panel-wrap-toggled(); }

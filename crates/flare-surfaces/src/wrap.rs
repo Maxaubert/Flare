@@ -6,21 +6,39 @@
 //! a line's first row only; the continuation rows carry 0.
 //!
 //! A cut falls after a space or a dash when one sits in the last quarter of the row (a sentence breaks between
-//! words), else it is a hard cut at `cols` characters (a minified line, a long path). Characters count as one
-//! column each, as the panel's widest-line measure does.
+//! words), else it is a hard cut at `cols` characters (a minified line, a long path). A wide character (CJK, emoji) counts as
+//! two columns, so a row never draws wider than the slot.
+
+use unicode_width::UnicodeWidthChar;
 
 /// The fewest columns a wrapped row has (a very narrow slot still shows something).
 pub const MIN_COLS: usize = 8;
 
-/// `line` as rows of at most `cols` characters, in order; an empty line is one empty row and a line that fits is
-/// itself. Never loses a character: the rows joined are the line.
+/// The columns a character takes on screen: East Asian wide letters and emoji take two, combining marks none, and
+/// a control character (no width of its own) one, as the panel draws it.
+fn cols_of(c: char) -> usize {
+    c.width().unwrap_or(1)
+}
+
+/// `line` as rows of at most `cols` columns, in order; an empty line is one empty row and a line that fits is
+/// itself. Never loses a character: the rows joined are the line. A row always holds at least one character.
 pub fn wrap_line(line: &str, cols: usize) -> Vec<&str> {
     let cols = cols.max(1);
     let mut rows = Vec::new();
     let mut rest = line;
     loop {
-        // Byte offset of the (cols + 1)-th character: where the row would overflow.
-        let Some((over, _)) = rest.char_indices().nth(cols) else {
+        // Byte offset of the first character that would overflow the row.
+        let mut used = 0;
+        let mut over = None;
+        for (at, c) in rest.char_indices() {
+            let w = cols_of(c);
+            if used + w > cols && at > 0 {
+                over = Some(at);
+                break;
+            }
+            used += w;
+        }
+        let Some(over) = over else {
             rows.push(rest);
             return rows;
         };
@@ -28,10 +46,15 @@ pub fn wrap_line(line: &str, cols: usize) -> Vec<&str> {
         // Prefer a break after a space or a dash in the last quarter of the row.
         let from = cols - cols / 4;
         let mut best = None;
-        for (n, (at, c)) in rest.char_indices().enumerate().take(cols) {
-            if n >= from && (c == ' ' || c == '-') {
+        let mut used = 0;
+        for (at, c) in rest.char_indices() {
+            if at >= over {
+                break;
+            }
+            if used >= from && (c == ' ' || c == '-') {
                 best = Some(at + c.len_utf8());
             }
+            used += cols_of(c);
         }
         if let Some(b) = best
             && b < over
@@ -55,6 +78,10 @@ pub fn row_count(line: &str, cols: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn width(r: &str) -> usize {
+        r.chars().map(cols_of).sum()
+    }
 
     #[test]
     fn a_line_that_fits_is_one_row_and_an_empty_one_is_one_empty_row() {
@@ -96,11 +123,25 @@ mod tests {
                 assert_eq!(rows.concat(), line, "cols {cols}");
                 assert!(
                     rows.iter()
-                        .all(|r| r.chars().count() <= cols.max(1) && !r.is_empty()),
+                        .all(|r| (width(r) <= cols.max(1) || r.chars().count() == 1)
+                            && !r.is_empty()),
                     "cols {cols}: {rows:?}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn wide_characters_count_two_columns_so_a_row_never_draws_past_the_slot() {
+        let line = "\u{65e5}\u{672c}\u{8a9e}".repeat(40);
+        let rows = wrap_line(&line, 20);
+        assert_eq!(rows.concat(), line);
+        assert!(rows.iter().all(|r| width(r) <= 20), "{rows:?}");
+        assert_eq!(rows[0].chars().count(), 10);
+        let emoji = "\u{1f600}".repeat(30);
+        assert!(wrap_line(&emoji, 9).iter().all(|r| width(r) <= 9));
+        // A column count narrower than one wide character still makes progress.
+        assert_eq!(wrap_line("\u{65e5}\u{672c}", 1), ["\u{65e5}", "\u{672c}"]);
     }
 
     #[test]

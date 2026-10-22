@@ -21,7 +21,7 @@ use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::preview::{self, Cut, Decoded, LINES_MAX, Reason, TEXT_CAP};
 use flare_surfaces::state::TabPanels;
 use flare_surfaces::store::{PanelStore, SavedTabPanel, is_blank, match_restored};
-use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+use slint::{Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::AppWindow;
 use crate::appctl::{Post, UiMsg};
@@ -775,6 +775,7 @@ impl PanelCtl {
                     return;
                 }
                 self.wrap_pending = 0;
+                let top = self.top_line(app);
                 if let Some(Shown {
                     content:
                         Content::Text {
@@ -793,6 +794,7 @@ impl PanelCtl {
                     *ready = true;
                 }
                 self.push(app);
+                self.restore_top(app, top);
                 // The width may have moved while the wrap was on its way.
                 self.settle_wrap(app);
                 return;
@@ -812,12 +814,62 @@ impl PanelCtl {
         usize::try_from(app.get_panel_wrap_cols()).unwrap_or(0)
     }
 
+    /// The line (1-based) at the top of the text view now, for a re-wrap to keep; None when no text is on show.
+    fn top_line(&self, app: &AppWindow) -> Option<usize> {
+        let Some(Shown {
+            content: Content::Text {
+                nums, ready: true, ..
+            },
+            ..
+        }) = self.shown.as_ref()
+        else {
+            return None;
+        };
+        let mut row = usize::try_from(app.get_panel_first_line()).unwrap_or(0);
+        if nums.row_count() == 0 {
+            return Some(row + 1);
+        }
+        row = row.min(nums.row_count() - 1);
+        // A continuation row carries 0: its line starts on a row above.
+        loop {
+            let n = nums.row_data(row).unwrap_or(0);
+            if n > 0 {
+                return usize::try_from(n).ok();
+            }
+            if row == 0 {
+                return Some(1);
+            }
+            row -= 1;
+        }
+    }
+
+    /// After a re-wrap: the view's top goes back to the line it showed (the first row of that line).
+    fn restore_top(&self, app: &AppWindow, line: Option<usize>) {
+        let (
+            Some(line),
+            Some(Shown {
+                content: Content::Text { nums, .. },
+                ..
+            }),
+        ) = (line, self.shown.as_ref())
+        else {
+            return;
+        };
+        let row = if nums.row_count() == 0 {
+            line.saturating_sub(1)
+        } else {
+            (0..nums.row_count())
+                .find(|&r| usize::try_from(nums.row_data(r).unwrap_or(0)).is_ok_and(|n| n == line))
+                .unwrap_or(0)
+        };
+        app.invoke_panel_scroll_to_row(i32::try_from(row).unwrap_or(0));
+    }
+
     /// The newest wrap request is a new one: every older worker stops at its next look.
     fn next_wrap_seq(&mut self) -> u64 {
         self.wrap_seq += 1;
         self.wrap_current.store(self.wrap_seq, Ordering::SeqCst);
         self.wrap_pending = 0;
-        self.wraps += 1;
         self.wrap_seq
     }
 
@@ -842,6 +894,7 @@ impl PanelCtl {
             (ModelRc::default(), no_nums(), 0, false)
         } else {
             self.next_wrap_seq();
+            self.wraps += 1;
             let (rows, nums) = wrap_lines(&t.lines, want, &|| false);
             (
                 ModelRc::from(Rc::new(VecModel::from(rows))),
@@ -872,6 +925,7 @@ impl PanelCtl {
         cols: usize,
     ) {
         let seq = self.next_wrap_seq();
+        self.wraps += 1;
         self.wrap_pending = cols;
         let current = Arc::clone(&self.wrap_current);
         let post = Arc::clone(&self.post);
@@ -924,7 +978,9 @@ impl PanelCtl {
             Lines,
             Wrap(String, u64, Arc<Vec<SharedString>>),
         }
-        if app.get_panel_splitting() {
+        // Never while the splitter is held, and never while the slot is off show (Settings, the start screen, a window
+        // too narrow): what is there stays, and the width that comes back settles it.
+        if app.get_panel_splitting() || !app.get_panel_shown() {
             return;
         }
         let want = self.want_cols(app);
@@ -961,6 +1017,7 @@ impl PanelCtl {
             Act::Nothing => {}
             Act::Lines => {
                 self.next_wrap_seq();
+                let top = self.top_line(app);
                 if let Some(Shown {
                     content:
                         Content::Text {
@@ -978,6 +1035,7 @@ impl PanelCtl {
                     *wrapped_cols = 0;
                 }
                 self.push(app);
+                self.restore_top(app, top);
             }
             Act::Wrap(tab, generation, lines) => {
                 if is_big(&lines) {
@@ -986,7 +1044,9 @@ impl PanelCtl {
                     return;
                 }
                 self.next_wrap_seq();
+                self.wraps += 1;
                 let (rows, new_nums) = wrap_lines(&lines, want, &|| false);
+                let top = self.top_line(app);
                 if let Some(Shown {
                     content:
                         Content::Text {
@@ -1003,6 +1063,7 @@ impl PanelCtl {
                     *wrapped_cols = want;
                 }
                 self.push(app);
+                self.restore_top(app, top);
             }
         }
     }
@@ -1111,6 +1172,7 @@ impl PanelCtl {
                 app.set_panel_lines(shown.clone());
                 app.set_panel_line_nums(nums.clone());
                 app.set_panel_wrapped(*wrapped_cols > 0);
+                app.set_panel_wrapped_cols(i32::try_from(*wrapped_cols).unwrap_or(0));
                 app.set_panel_number_count(i32::try_from(*count).unwrap_or(i32::MAX));
                 app.set_panel_max_cols(i32::try_from(*cols).unwrap_or(i32::MAX));
                 app.set_panel_foot(foot.as_str().into());
@@ -1236,6 +1298,7 @@ fn is_big(lines: &[SharedString]) -> bool {
 fn reset_wrap_props(app: &AppWindow) {
     app.set_panel_line_nums(no_nums());
     app.set_panel_wrapped(false);
+    app.set_panel_wrapped_cols(0);
     app.set_panel_number_count(0);
 }
 

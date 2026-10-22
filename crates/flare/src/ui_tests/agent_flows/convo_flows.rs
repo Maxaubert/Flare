@@ -764,13 +764,8 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
             .map(|r| r.0.label.clone())
             .collect()
     };
-    let named =
-        f.ctl.borrow().hub().agent_kind(&id) == Some(flare_agent::kinds::DetectedAgent::Claude);
-    let (show_c, hide_c) = if named {
-        ("Show files Claude changed", "Hide files Claude changed")
-    } else {
-        ("Show changed files", "Hide changed files")
-    };
+    // A tab whose rows show is Claude by definition (a session or the detection), so the wording never varies.
+    let (show_c, hide_c) = ("Show files Claude changed", "Hide files Claude changed");
     assert_eq!(labels(&f, &id), [show_c, "Show task list"]);
     // Their own group (a rule above the first), each with its own fitting glyph.
     let rows = f.ctl.borrow().convo_menu_rows(&id);
@@ -787,11 +782,10 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
     assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Hide task list"));
     f.pump();
     assert!(!f.h.comp.get_panel_open());
-    // Either wording of the changes row works whichever the menu showed.
     assert!(
         f.ctl
             .borrow_mut()
-            .convo_menu_picked(&id, "Show changed files")
+            .convo_menu_picked(&id, "Show files Claude changed")
     );
     f.pump();
     assert_eq!(f.h.comp.get_panel_kind(), 4);
@@ -802,7 +796,12 @@ fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude
     );
     f.pump();
     assert!(!f.h.comp.get_panel_open());
-    // The old words are gone, and no row names the agent board.
+    // The old words are gone (including the unnamed "changed files"), and no row names the agent board.
+    assert!(
+        !f.ctl
+            .borrow_mut()
+            .convo_menu_picked(&id, "Show changed files")
+    );
     assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Show changes"));
     assert!(
         !f.ctl

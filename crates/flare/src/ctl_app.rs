@@ -2273,7 +2273,7 @@ mod tests {
                 permissions: vec![Permission::Panel, Permission::View],
             },
         );
-        for kind in ["web", "changes", "tasks", "board", "mod:other"] {
+        for kind in ["web", "changes", "tasks", "mod:other"] {
             let e =
                 r.d.call(
                     &m,

@@ -194,6 +194,7 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
             TermMsg::Preview { .. } => "TermMsg::Preview",
+            TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
         })
     }
 }
@@ -513,18 +514,18 @@ pub struct AppCtl {
     downloads: crate::download_ask::DownloadQueue,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
+    /// The tab that was in front at the last panel sync: another one letting go of a splitter drag.
+    panel_front_seen: Option<String>,
     /// Where control channel events go (None: no channel, in tests and headless runs).
     ctl_events: Option<CtlEvents>,
     ctl_info: Option<CtlInfo>,
 }
 
 /// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
-/// owner needs no explanation). The agent's name is the tab's detected one; a tab whose agent is not known to be
-/// Claude says "changed files". "Hide ..." is the same words while the panel is open.
+/// owner needs no explanation). The rows show only on a tab that is Claude (a session or the detection), so
+/// they always name Claude. "Hide ..." is the same words while the panel is open.
 const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
 const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
-const CONVO_SHOW_CHANGES_ANY: &str = "Show changed files";
-const CONVO_HIDE_CHANGES_ANY: &str = "Hide changed files";
 const CONVO_SHOW_TASKS: &str = "Show task list";
 const CONVO_HIDE_TASKS: &str = "Hide task list";
 
@@ -870,6 +871,7 @@ impl AppCtl {
             web,
             downloads: crate::download_ask::DownloadQueue::default(),
             panel_focus_seen: false,
+            panel_front_seen: None,
             ctl_events: None,
             ctl_info: None,
             mods: None,
@@ -2883,6 +2885,12 @@ impl AppCtl {
     /// had them goes away.
     fn sync_panels(&mut self, app: &AppWindow) {
         let front = self.model.active_shell().map(|t| t.id.clone());
+        // Another tab came to the front (a chord) while the splitter was held: that tab's slot may be on show, so
+        // `panel-shown` never dropped, but the drag was for the old one. Let go before its panel is pushed.
+        if self.panel_front_seen != front {
+            self.panel_front_seen.clone_from(&front);
+            app.set_panel_splitting(false);
+        }
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
@@ -3035,7 +3043,6 @@ impl AppCtl {
             return Vec::new();
         }
         let open = self.panels.open_convo_kind(tab);
-        let named = self.hub.agent_kind(tab) == Some(flare_agent::kinds::DetectedAgent::Claude);
         let row = |label: &str, icon: &'static str, group: bool| {
             (
                 MenuRowData {
@@ -3053,11 +3060,11 @@ impl AppCtl {
             )
         };
         let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
-        let changes = match (changes_open, named) {
-            (false, true) => CONVO_SHOW_CHANGES,
-            (true, true) => CONVO_HIDE_CHANGES,
-            (false, false) => CONVO_SHOW_CHANGES_ANY,
-            (true, false) => CONVO_HIDE_CHANGES_ANY,
+        // The gate above proves it is Claude (a session, or the detection), so the row always names Claude.
+        let changes = if changes_open {
+            CONVO_HIDE_CHANGES
+        } else {
+            CONVO_SHOW_CHANGES
         };
         vec![
             // Their own group, after a rule: they are about the agent, not the terminal.
@@ -3078,8 +3085,8 @@ impl AppCtl {
     pub(crate) fn convo_menu_picked(&mut self, tab: &str, label: &str) -> bool {
         use flare_surfaces::PanelKind;
         let (kind, show) = match label {
-            CONVO_SHOW_CHANGES | CONVO_SHOW_CHANGES_ANY => (PanelKind::Changes, true),
-            CONVO_HIDE_CHANGES | CONVO_HIDE_CHANGES_ANY => (PanelKind::Changes, false),
+            CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
+            CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
             CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
             CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
             _ => return false,
@@ -4346,6 +4353,19 @@ impl AppCtl {
                     self.show_preview_asked(&tab, kind, &abs);
                 } else {
                     self.show_preview(&tab, kind, &abs);
+                }
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
+                // The person picked "Show in side panel" and the file is no longer showable: say so, in the panel.
+                if self.is_shell_tab(&tab)
+                    && self.panels.show_text(
+                        &tab,
+                        "This file cannot be shown here. It may have changed or been removed since the menu opened.",
+                        Some("Cannot show this file"),
+                    )
+                {
+                    self.refresh();
+                    self.panel_changed(&tab);
                 }
             }
             UiMsg::Term(TermMsgBox(m)) => {
@@ -6424,6 +6444,142 @@ two",
         f.pump();
         f.ctl.borrow_mut().refresh();
         assert_eq!(f.ctl.borrow().panels.wrap_count(), runs0 + 1);
+    }
+
+    /// A file of 300 long lines, each wrapping to several rows.
+    fn many_long_lines() -> String {
+        (0..300)
+            .map(|i| format!("line {i} {}\n", "word ".repeat(40).trim_end()))
+            .collect()
+    }
+
+    /// The number of the line at the top of the text view (the nearest numbered row at or above the first).
+    fn top_line_number(f: &Fx) -> i32 {
+        let nums = nums_in_panel(f);
+        let first = usize::try_from(f.h.comp.get_panel_first_line()).unwrap();
+        if nums.is_empty() {
+            return i32::try_from(first).unwrap() + 1;
+        }
+        (0..=first.min(nums.len() - 1))
+            .rev()
+            .map(|r| nums[r])
+            .find(|n| *n > 0)
+            .unwrap_or(1)
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_line_the_reader_was_on_at_the_top() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "many.txt", &many_long_lines());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        // Down to somewhere in the middle of the file.
+        f.h.comp.invoke_panel_scroll_by(0.0, -18.0 * 700.0);
+        f.h.advance(0);
+        let line = top_line_number(&f);
+        assert!(line > 100, "scrolled far into the file (line {line})");
+        let rows0 = rows_in_panel(&f);
+        // A much wider slot: fewer rows, other row offsets.
+        f.h.comp.invoke_panel_splitter_released(0.6);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(rows_in_panel(&f) < rows0, "the rows were made again");
+        assert_eq!(
+            top_line_number(&f),
+            line,
+            "the same line is still at the top after the re-wrap"
+        );
+        // And a narrower slot back: the same.
+        f.h.comp.invoke_panel_splitter_released(0.25);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "and back again");
+        // Toggling wrap off keeps it too (the rows are the lines: row = line - 1).
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap off");
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap on");
+        // The view never sits past the end: the last row is still reachable.
+        let _ = a;
+        assert!(
+            f.h.comp.get_panel_text_scroll_y() <= 0.0,
+            "the viewport is inside the content"
+        );
+    }
+
+    #[test]
+    fn turning_wrap_on_brings_a_sideways_scrolled_view_back_to_the_left_edge() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(!f.h.comp.get_panel_wrapped());
+        f.h.comp.invoke_panel_scroll_by(-200.0, 0.0);
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_panel_text_scroll_x() < -50.0,
+            "scrolled right ({})",
+            f.h.comp.get_panel_text_scroll_x()
+        );
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.h.comp.get_panel_text_scroll_x(),
+            0.0,
+            "wrapped rows start at the gutter's edge again"
+        );
+    }
+
+    #[test]
+    fn settings_in_front_wraps_nothing_and_the_return_wraps_once() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let rows = rows_in_panel(&f);
+        let runs = f.ctl.borrow().panels.wrap_count();
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs,
+            "no wrap while a page is in front (the slot is off show)"
+        );
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump_until("the text again", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        assert_eq!(rows_in_panel(&f), rows);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs + 1,
+            "the return wraps the file once, not an unwrap and a wrap"
+        );
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_tells_the_person_in_the_panel() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        assert!(!f.h.comp.get_panel_open());
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab: id })));
+        f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
+        assert!(f.openers.records().is_empty());
     }
 
     #[test]

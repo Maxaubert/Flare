@@ -77,6 +77,11 @@ pub enum TermMsg {
         /// which only decides what a plain click does, does not stop it.
         asked: bool,
     },
+    /// "Show in side panel" was refused when the worker looked again (the file changed, went away, or is not
+    /// one the panel may show): the app tells the person in the panel. Nothing is ever opened in Windows.
+    PreviewRefused {
+        tab: String,
+    },
 }
 
 /// Everything TermUi needs from the outside, injected.
@@ -506,7 +511,7 @@ impl TermUi {
     }
 
     /// "Show in side panel" from the path menu: the same vetting as the click, and when the path is not a picture or
-    /// a text file after all (it changed since the menu was built) nothing happens: this row never opens anything.
+    /// a text file after all (it changed since the menu was built) the panel says so: this row never opens anything.
     fn preview_path_async(&self, tab: String, base: String, text: String) {
         self.preview_or_open_async(tab, base, text, false);
     }
@@ -530,6 +535,8 @@ impl TermUi {
             }
             if open_else {
                 let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+            } else {
+                post(TermMsg::PreviewRefused { tab });
             }
         });
     }
@@ -1108,7 +1115,7 @@ impl TermUi {
                 }
             }
             // The app shows it (AppCtl::on_msg takes this before it gets here).
-            TermMsg::Preview { .. } => {}
+            TermMsg::Preview { .. } | TermMsg::PreviewRefused { .. } => {}
             TermMsg::PathAnswer(ask, hits) => {
                 let woken = self.inputs.borrow_mut().paths.answer(&ask, hits, now);
                 self.recheck = true;
@@ -2231,6 +2238,45 @@ mod tests {
         until("the preview", || !previews(&r).is_empty());
         let got = previews(&r);
         assert!(got[0].1 == "text" && got[0].2.ends_with("a.txt"), "{got:?}");
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_file_that_went_away_says_so_and_opens_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let base = dir.path().to_string_lossy().into_owned();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.ui.menu = Some(MenuStore {
+            tab: "a".into(),
+            x: 0.0,
+            y: 0.0,
+            selection: String::new(),
+            link: None,
+            path: Some(TermPathAt {
+                kind: flare_term::path_open::PathKind::File,
+                abs: format!("{base}/a.txt"),
+                text: "a.txt".into(),
+                base,
+            }),
+        });
+        let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+        let i = rows
+            .iter()
+            .position(|x| x.label == "Show in side panel")
+            .expect("the row");
+        // The menu was built with the file there; it is gone when the row is picked.
+        std::fs::remove_file(&file).unwrap();
+        r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        until("the refusal", || {
+            r.msgs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| matches!(m, TermMsg::PreviewRefused { tab } if tab == "a"))
+        });
+        assert!(previews(&r).is_empty());
         assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
     }
 
