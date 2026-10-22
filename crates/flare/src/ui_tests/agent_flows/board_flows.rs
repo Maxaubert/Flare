@@ -18,6 +18,7 @@ use flare_settings::agent_prefs::set_notify_ask_on;
 use flare_settings::term_prefs::set_dev_preview;
 use flare_surfaces::PanelKind;
 use flare_surfaces::board::BoardState;
+use flare_surfaces::devpreview::PortLook;
 use flare_surfaces::notify::Toast;
 use serde_json::json;
 
@@ -30,9 +31,9 @@ type Listening = Arc<Mutex<Vec<u16>>>;
 fn listening(f: &Fx) -> Listening {
     let l: Listening = Arc::default();
     let seen = Arc::clone(&l);
-    f.ctl
-        .borrow_mut()
-        .set_port_probe(Arc::new(move |p, _| seen.lock().unwrap().contains(&p)));
+    f.ctl.borrow_mut().set_port_probe(Arc::new(move |p, _| {
+        PortLook::from(seen.lock().unwrap().contains(&p))
+    }));
     l
 }
 
@@ -125,7 +126,7 @@ fn the_port_is_looked_up_against_the_tabs_own_shell() {
     // Only a port owned by pid 0 would "listen"; a real shell pid is handed over, so this never shows a chip.
     f.ctl.borrow_mut().set_port_probe(Arc::new(move |p, pid| {
         seen.lock().unwrap().push((p, pid));
-        false
+        PortLook::Nobody
     }));
     f.tabs(&["C:\\a"]);
     f.visit(0);
@@ -151,7 +152,9 @@ fn clicking_the_chip_opens_the_web_panel_at_that_address() {
     say_url(&f, "C:\\a", "http://127.0.0.1:3000/app?x=1");
     wait_for(&f, "the chip", |f| label(f) == "127.0.0.1:3000");
     f.h.comp.invoke_preview_chip_clicked();
-    f.pump();
+    wait_for(&f, "the panel", |f| {
+        f.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+    });
     let snap = f.ctl.borrow().panel_snap(&id).expect("a panel");
     assert_eq!(snap.kind, "web");
     assert!(snap.open);
@@ -177,7 +180,9 @@ fn a_chip_for_a_bare_host_opens_the_normal_form() {
     say_url(&f, "C:\\a", "HTTP://LocalHost:8080");
     wait_for(&f, "the chip", |f| label(f) == "localhost:8080");
     f.h.comp.invoke_preview_chip_clicked();
-    f.pump();
+    wait_for(&f, "the panel", |f| {
+        f.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+    });
     let snap = f.ctl.borrow().panel_snap(&id).expect("a panel");
     assert_eq!(snap.url.as_deref(), Some("http://localhost:8080/"));
 }
@@ -279,7 +284,9 @@ fn the_newest_address_is_the_only_chip_of_a_tab() {
 fn an_address_that_is_not_local_never_gets_a_chip() {
     let f = Fx::new();
     // Everything "listens": only the address can keep the chip away.
-    f.ctl.borrow_mut().set_port_probe(Arc::new(|_, _| true));
+    f.ctl
+        .borrow_mut()
+        .set_port_probe(Arc::new(|_, _| PortLook::InTree));
     f.tabs(&["C:\\a"]);
     f.visit(0);
     for url in [
@@ -825,4 +832,26 @@ fn panel_open_board_opens_it_on_the_agents_own_tab_and_switches_no_tab() {
     f.visit(0);
     assert_eq!(f.h.comp.get_panel_kind(), 6, "tab a's panel is the board");
     assert_eq!(f.h.comp.get_panel_board_row_count(), 1);
+}
+
+#[test]
+fn a_click_looks_again_and_opens_nothing_when_the_port_changed_hands() {
+    let f = Fx::new();
+    let state: Arc<Mutex<PortLook>> = Arc::new(Mutex::new(PortLook::InTree));
+    let seen = Arc::clone(&state);
+    f.ctl
+        .borrow_mut()
+        .set_port_probe(Arc::new(move |_, _| *seen.lock().unwrap()));
+    let id = f.tabs(&["C:\\a"]).remove(0);
+    f.visit(0);
+    say_url(&f, "C:\\a", "http://localhost:3000/");
+    wait_for(&f, "the chip", |f| label(f) == "localhost:3000");
+    // The server exits and a stranger binds the port before the next routine look.
+    *state.lock().unwrap() = PortLook::Foreign;
+    f.h.comp.invoke_preview_chip_clicked();
+    wait_for(&f, "the chip to go", |f| label(f) == "");
+    settle(&f);
+    let open = f.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open);
+    assert!(!open, "a foreign server's page never opens");
+    assert_eq!(probe(&f)["tracked"], 0, "the chip is gone, not on a grace");
 }

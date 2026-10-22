@@ -150,7 +150,13 @@ pub enum UiMsg {
     DevLook {
         tab: String,
         token: u64,
-        up: bool,
+        look: flare_surfaces::devpreview::PortLook,
+    },
+    /// The look made when the chip was clicked (the page opens only when it finds the tab's own server).
+    DevClickLook {
+        tab: String,
+        token: u64,
+        look: flare_surfaces::devpreview::PortLook,
     },
     /// The person clicked a notification about this tab.
     ToastClicked(String),
@@ -4221,7 +4227,8 @@ impl AppCtl {
                 }
             }
             UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
-            UiMsg::DevLook { tab, token, up } => self.on_dev_look(&tab, token, up),
+            UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
+            UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
             UiMsg::ToastFailed => self.on_toast_failed(),
             UiMsg::Mods(crate::mods_ctl::ModsMsgBox(m)) => self.on_mods_msg(m),
