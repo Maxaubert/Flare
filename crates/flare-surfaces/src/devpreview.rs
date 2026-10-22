@@ -10,7 +10,11 @@
 //!   dev server's log would show a client that says nothing). A port not yet listening is looked for again,
 //!   a few times over a few seconds, for a server that prints its address a moment before it listens.
 //! - A shown chip is checked every [`RECHECK_MS`]; it goes after [`MISSES_TO_GO`] failed checks in a row, so a
-//!   server restarting under a file watcher does not flicker the chip away.
+//!   server restarting under a file watcher does not flicker the chip away. Only the chip of the tab in front is
+//!   re-checked, and not while the window is minimised: a chip nobody can see costs nothing, and is looked at
+//!   once as it comes to the front.
+//! - The same address printed AGAIN (a server stopped and started on its port, without the screen being cleared)
+//!   starts a new wait for a tab that holds no live chip for it.
 
 use std::collections::HashMap;
 
@@ -63,7 +67,12 @@ pub struct DevChips {
     chips: HashMap<String, Chip>,
     /// The terminal's change counter last answered, by tab (kept after a clear, so a clear is answered once).
     seqs: HashMap<String, u64>,
+    /// The terminal's reprint counter last answered, by tab.
+    reprints: HashMap<String, u64>,
     tokens: u64,
+    /// Who may re-check a shown chip: None until the window says (every tab then), else the tab in front, and
+    /// nobody while the window is minimised.
+    focus: Option<Option<String>>,
 }
 
 impl DevChips {
@@ -82,20 +91,65 @@ impl DevChips {
             None => {
                 self.chips.remove(tab);
             }
-            Some(server) => {
-                self.tokens += 1;
-                self.chips.insert(
-                    tab.to_string(),
-                    Chip {
-                        server,
-                        token: self.tokens,
-                        began: now,
-                        next_at: Some(now),
-                        in_flight: false,
-                        phase: Phase::Waiting { step: 0 },
-                    },
-                );
+            Some(server) => self.begin(tab, server, now),
+        }
+    }
+
+    fn begin(&mut self, tab: &str, server: ChipServer, now: u64) {
+        self.tokens += 1;
+        self.chips.insert(
+            tab.to_string(),
+            Chip {
+                server,
+                token: self.tokens,
+                began: now,
+                next_at: Some(now),
+                in_flight: false,
+                phase: Phase::Waiting { step: 0 },
+            },
+        );
+    }
+
+    /// The terminal's reprint counter for `tab` and the address it holds: when the counter moved and the tab has no
+    /// chip that is shown or being waited for, the address is looked for again (the server was started again).
+    pub fn on_reprint(&mut self, tab: &str, reprint: u64, server: Option<ChipServer>, now: u64) {
+        if self.reprints.insert(tab.to_string(), reprint) == Some(reprint) {
+            return;
+        }
+        let Some(server) = server else { return };
+        let live = self
+            .chips
+            .get(tab)
+            .is_some_and(|c| !matches!(c.phase, Phase::GaveUp));
+        if !live {
+            self.begin(tab, server, now);
+        }
+    }
+
+    /// The tab in front, or None when nothing is in view (the window is minimised). A chip that comes to the front is
+    /// looked at once at `now`; the others keep their phase and are confirmed when they are seen. True when a look
+    /// became due.
+    pub fn set_focus(&mut self, front: Option<&str>, now: u64) -> bool {
+        let new = Some(front.map(str::to_string));
+        if self.focus == new {
+            return false;
+        }
+        self.focus = new;
+        let Some(front) = front else { return false };
+        match self.chips.get_mut(front) {
+            Some(c) if matches!(c.phase, Phase::Shown { .. }) && !c.in_flight => {
+                c.next_at = Some(now);
+                true
             }
+            _ => false,
+        }
+    }
+
+    /// Whether the tab's shown chip may be looked at now.
+    fn watched(&self, tab: &str) -> bool {
+        match &self.focus {
+            None => true,
+            Some(front) => front.as_deref() == Some(tab),
         }
     }
 
@@ -107,8 +161,16 @@ impl DevChips {
     /// The looks that are due now. Each is reported once until its answer comes.
     pub fn due(&mut self, now: u64) -> Vec<Check> {
         let mut out = Vec::new();
+        let focus = self.focus.clone();
         for (tab, c) in &mut self.chips {
             if c.in_flight || matches!(c.phase, Phase::GaveUp) {
+                continue;
+            }
+            let seen = match &focus {
+                None => true,
+                Some(front) => front.as_deref() == Some(tab.as_str()),
+            };
+            if matches!(c.phase, Phase::Shown { .. }) && !seen {
                 continue;
             }
             if c.next_at.is_some_and(|t| t <= now) {
@@ -173,14 +235,17 @@ impl DevChips {
     pub fn forget(&mut self, tab: &str) {
         self.chips.remove(tab);
         self.seqs.remove(tab);
+        self.reprints.remove(tab);
     }
 
     /// When to look again, or None when nothing is pending (every chip is waiting for an answer, gave up, or there is none).
     pub fn next_due(&self) -> Option<u64> {
         self.chips
-            .values()
-            .filter(|c| !c.in_flight)
-            .filter_map(|c| c.next_at)
+            .iter()
+            .filter(|(t, c)| {
+                !c.in_flight && (!matches!(c.phase, Phase::Shown { .. }) || self.watched(t))
+            })
+            .filter_map(|(_, c)| c.next_at)
             .min()
     }
 
@@ -352,6 +417,80 @@ mod tests {
         r.run(30_000);
         assert!(r.chips.shown("a").is_none());
         assert_eq!(r.chips.tracked(), 0);
+    }
+
+    #[test]
+    fn a_server_started_again_on_its_port_gets_its_chip_back() {
+        let mut r = Rig::new();
+        r.listening.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.chips.on_reprint("a", 0, Some(server(3000)), 0);
+        r.run(10_000);
+        assert!(r.chips.shown("a").is_some());
+        // Ctrl+C: the chip goes after two misses.
+        r.listening.clear();
+        r.run(RECHECK_MS * 3);
+        assert!(r.chips.shown("a").is_none());
+        // Started again: the same address is printed (same seq, reprint moved).
+        r.listening.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), r.now);
+        r.chips.on_reprint("a", 1, Some(server(3000)), r.now);
+        r.run(0);
+        assert!(r.chips.shown("a").is_some(), "back");
+    }
+
+    #[test]
+    fn a_reprint_after_the_server_crashed_before_listening_looks_again() {
+        let mut r = Rig::new();
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.chips.on_reprint("a", 0, Some(server(3000)), 0);
+        r.run(60_000);
+        assert_eq!(r.looks.len(), WAIT_STEPS_MS.len(), "gave up");
+        r.listening.push(3000);
+        r.chips.on_reprint("a", 1, Some(server(3000)), r.now);
+        r.run(0);
+        assert!(r.chips.shown("a").is_some());
+    }
+
+    #[test]
+    fn a_reprint_while_a_chip_is_live_changes_nothing() {
+        let mut r = Rig::new();
+        r.listening.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.run(0);
+        let looks = r.looks.len();
+        r.chips.on_reprint("a", 5, Some(server(3000)), 10);
+        r.chips.on_reprint("a", 6, Some(server(3000)), 20);
+        r.run(0);
+        assert_eq!(r.looks.len(), looks);
+        assert!(r.chips.shown("a").is_some());
+    }
+
+    #[test]
+    fn only_the_front_tab_is_rechecked_and_it_is_looked_at_once_when_it_comes_forward() {
+        let mut r = Rig::new();
+        r.listening.extend([3000, 4000]);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.chips.on_reading("b", 1, Some(server(4000)), 0);
+        r.run(0);
+        r.chips.set_focus(Some("a"), 0);
+        let before = r.looks.len();
+        r.run(RECHECK_MS * 4);
+        let b_looks = r.looks[before..].iter().filter(|l| l.1.tab == "b").count();
+        let a_looks = r.looks[before..].iter().filter(|l| l.1.tab == "a").count();
+        assert_eq!(b_looks, 0, "a background chip is not looked at");
+        assert!(a_looks >= 3);
+        // Minimised: nobody.
+        r.chips.set_focus(None, r.now);
+        let n = r.looks.len();
+        r.run(RECHECK_MS * 4);
+        assert_eq!(r.looks.len(), n);
+        assert_eq!(r.chips.next_due(), None, "nothing to wake for");
+        // b comes forward: one look at once.
+        assert!(r.chips.set_focus(Some("b"), r.now));
+        r.run(0);
+        assert_eq!(r.looks.len(), n + 1);
+        assert_eq!(r.looks.last().map(|l| l.1.tab.as_str()), Some("b"));
     }
 
     #[test]

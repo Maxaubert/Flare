@@ -9,7 +9,7 @@
 //!
 //! `devPreview` (100 and 225 percent): an address nothing listens on gets no chip; a listener makes the chip; it sits
 //! whole in the terminal's top right; a click opens the web panel at that address and the page the listener serves loads
-//! in it; a second server's chip goes when its listener is dropped; a cleared screen takes a chip at once; a remote
+//! in it; a second server's chip goes when its listener is dropped and comes back when a server is started again on that port; a cleared screen takes a chip at once; a remote
 //! address never gets one; the setting off keeps all of it away.
 //! `agentBoard` (100 and 225 percent): the board lists the two tabs with an agent, not the plain shell, each with its state
 //! and time; a click on a row goes to that tab; the chord and the control channel open it; closing it stops its clock.
@@ -45,7 +45,12 @@ struct Site {
 
 impl Site {
     fn start(title: &str) -> Result<Site, String> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
+        Site::start_on(title, 0)
+    }
+
+    /// Like `start`, on a given port (0 for any): a server started again where the last one was.
+    fn start_on(title: &str, port: u16) -> Result<Site, String> {
+        let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("bind: {e}"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let stop = Arc::new(AtomicBool::new(false));
@@ -285,6 +290,31 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
         gone,
         format!("{at}: the chip goes when the process that printed it is gone"),
     );
+
+    // ---- the same server started again on its port, the same address printed, the screen not cleared ----
+    let mut site2b = None;
+    for _ in 0..40 {
+        if let Ok(x) = Site::start_on("dev two again", p2) {
+            site2b = Some(x);
+            break;
+        }
+        pass(ctx, 100);
+    }
+    let site2b = site2b.ok_or("could not listen on the same port again")?;
+    prompt(app)?;
+    type_line(app, &format!("echo http://127.0.0.1:{p2}/"))?;
+    let back = ctx.until("the chip to come back", 25_000, &mut || {
+        chip_port(app) == Some(i64::from(p2))
+    });
+    ctx.ok(
+        back,
+        format!("{at}: a server started again on the same port gets its chip back"),
+    );
+    drop(site2b);
+    let gone2 = ctx.until("the chip to go again", 25_000, &mut || {
+        state(app)["chip"].is_null()
+    });
+    ctx.ok(gone2, format!("{at}: and goes again with its listener"));
 
     // ---- a cleared screen takes the chip at once ----
     let site3 = Site::start("dev three")?;

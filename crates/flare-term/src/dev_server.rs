@@ -90,6 +90,9 @@ pub struct DevState {
     pub server: Option<LocalServer>,
     /// Changes every time `server` does (set to something else, or cleared), never otherwise.
     pub seq: u64,
+    /// Moves when the held address is printed AGAIN while it is not news (a server restarted on the same port prints
+    /// its address a second time). Only the chip with no live look for that address acts on it.
+    pub reprint: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +113,9 @@ pub struct ClearWatch {
     mode: Mode,
     csi: Vec<u8>,
     clears: u64,
+    /// The alternate screen is on (DECSET 47, 1047 or 1049): a full-screen program clears its own buffer, which
+    /// is not the main screen being cleared.
+    alt: bool,
 }
 
 impl Default for ClearWatch {
@@ -124,6 +130,7 @@ impl ClearWatch {
             mode: Mode::Ground,
             csi: Vec::new(),
             clears: 0,
+            alt: false,
         }
     }
 
@@ -153,6 +160,8 @@ impl ClearWatch {
                 }
                 b']' | b'P' | b'^' | b'_' | b'X' => self.mode = Mode::Str,
                 b'c' => {
+                    // A reset leaves the alternate screen too.
+                    self.alt = false;
                     self.clears += 1;
                     self.mode = Mode::Ground;
                 }
@@ -173,8 +182,16 @@ impl ClearWatch {
                 }
                 0x40..=0x7e => {
                     self.mode = Mode::Ground;
-                    if b == b'J' && matches!(self.csi.as_slice(), b"2" | b"3") {
+                    if b == b'J' && matches!(self.csi.as_slice(), b"2" | b"3") && !self.alt {
                         self.clears += 1;
+                    }
+                    if matches!(b, b'h' | b'l')
+                        && let Some(params) = self.csi.strip_prefix(b"?")
+                        && params
+                            .split(|c| *c == b';')
+                            .any(|p| matches!(p, b"47" | b"1047" | b"1049"))
+                    {
+                        self.alt = b == b'h';
                     }
                 }
                 0x1b => self.mode = Mode::Esc,
@@ -364,6 +381,15 @@ mod tests {
         ] {
             assert_eq!(clears_heard(&[not]), 0, "{not:?}");
         }
+    }
+
+    #[test]
+    fn a_clear_on_the_alternate_screen_is_not_a_clear_of_the_main_one() {
+        assert_eq!(clears_heard(&[b"\x1b[?1049h\x1b[2J\x1b[3J\x1b[?1049l"]), 0);
+        assert_eq!(clears_heard(&[b"\x1b[?47h\x1b[2J\x1b[?47l\x1b[2J"]), 1);
+        assert_eq!(clears_heard(&[b"\x1b[?25;1049h", b"\x1b[2J"]), 0);
+        // A reset leaves it, and is itself a clear.
+        assert_eq!(clears_heard(&[b"\x1b[?1047h\x1bc\x1b[2J"]), 2);
     }
 
     #[test]

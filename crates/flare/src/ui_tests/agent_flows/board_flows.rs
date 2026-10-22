@@ -177,6 +177,50 @@ fn clearing_the_screen_takes_the_chip_at_once() {
 }
 
 #[test]
+fn a_server_started_again_on_the_same_port_gets_its_chip_back() {
+    let f = Fx::new();
+    let ports = listening(&f);
+    f.tabs(&["C:\\a"]);
+    f.visit(0);
+    ports.lock().unwrap().push(3000);
+    say_url(&f, "C:\\a", "http://localhost:3000/");
+    wait_for(&f, "the chip", |f| label(f) == "localhost:3000");
+    // Ctrl+C: the listener goes and so does the chip; the screen is not cleared.
+    ports.lock().unwrap().clear();
+    wait_for(&f, "the chip to go", |f| label(f).is_empty());
+    // Started again: the same address, printed a second time.
+    ports.lock().unwrap().push(3000);
+    f.say("C:\\a", "^C\r\nrestarting\r\n");
+    say_url(&f, "C:\\a", "http://localhost:3000/");
+    wait_for(&f, "the chip to come back", |f| {
+        label(f) == "localhost:3000"
+    });
+}
+
+#[test]
+fn another_tabs_steady_output_never_holds_back_a_chip() {
+    let f = Fx::new();
+    let ports = listening(&f);
+    f.tabs(&["C:\\a", "C:\\b"]);
+    f.visit(0);
+    ports.lock().unwrap().push(5173);
+    // The banner arrives inside the terminal's 40 ms gap after a first reading, so its reading is owed.
+    f.say("C:\\a", "starting\r\n");
+    say_url(&f, "C:\\a", "http://localhost:5173/");
+    let mut shown = false;
+    for i in 0..60 {
+        f.say("C:\\b", &format!("tick {i}\r\n"));
+        f.step(10);
+        std::thread::sleep(Duration::from_millis(5));
+        if label(&f) == "localhost:5173" {
+            shown = true;
+            break;
+        }
+    }
+    assert!(shown, "tab a's chip appeared while tab b kept printing");
+}
+
+#[test]
 fn the_newest_address_is_the_only_chip_of_a_tab() {
     let f = Fx::new();
     let ports = listening(&f);

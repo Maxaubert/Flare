@@ -1809,6 +1809,7 @@ impl AppCtl {
         let now = self.now();
         self.clock.pause.borrow_mut().set_minimized(minimised, now);
         self.update_clock();
+        self.sync_chip();
     }
 
     /// Whether a minimised window holds the marks (what `marks.state` reports as `paused`).

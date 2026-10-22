@@ -60,9 +60,9 @@ pub(super) struct Surf7 {
     pub toasts: u64,
     /// The previews switch as last seen, so a change of it is noticed once.
     pub dev_on: bool,
-    /// Tabs whose screen has output the terminal has not read yet (asked again too soon), and when to ask again.
-    pub dev_retry: std::collections::HashSet<String>,
-    pub dev_retry_at: u64,
+    /// Tabs whose screen has output the terminal has not read yet (asked again too soon), and when to ask each
+    /// again. One deadline per tab: another tab's output never pushes it back.
+    pub dev_retry: std::collections::HashMap<String, u64>,
 }
 
 impl Surf7 {
@@ -76,8 +76,7 @@ impl Surf7 {
             board_due: None,
             toasts: 0,
             dev_on: true,
-            dev_retry: std::collections::HashSet::new(),
-            dev_retry_at: 0,
+            dev_retry: std::collections::HashMap::new(),
         }
     }
 }
@@ -158,18 +157,24 @@ impl AppCtl {
         // The terminal reads its screen at most every 40 ms; output it has not read yet is asked for again.
         let now = self.now();
         if handle.dev_pending() {
-            self.s7.dev_retry.insert(tab.to_string());
-            self.s7.dev_retry_at = now + DEV_RETRY_MS;
+            // Keep an earlier deadline of this tab: its own steady output must not push it back either.
+            self.s7
+                .dev_retry
+                .entry(tab.to_string())
+                .or_insert(now + DEV_RETRY_MS);
         } else {
             self.s7.dev_retry.remove(tab);
         }
-        match self.s7.dev.seen_seq(tab) {
-            Some(seen) if seen == st.seq => return,
-            None if st.seq == 0 => return,
-            _ => {}
-        }
+        let moved = match self.s7.dev.seen_seq(tab) {
+            Some(seen) => seen != st.seq,
+            None => st.seq != 0,
+        };
         let server = st.server.as_ref().and_then(chip_server);
-        self.s7.dev.on_reading(tab, st.seq, server, now);
+        if moved {
+            self.s7.dev.on_reading(tab, st.seq, server.clone(), now);
+        }
+        // The same address printed again: acts only where no chip is live (a server started again).
+        self.s7.dev.on_reprint(tab, st.reprint, server, now);
         self.dev_pump();
         self.sync_chip();
     }
@@ -240,6 +245,17 @@ impl AppCtl {
     /// show that page already.
     pub(super) fn sync_chip(&mut self) {
         let Some(app) = self.app() else { return };
+        // Only the tab in front, and not while the window is down, has its chip looked at again.
+        let front = self.model.active_shell().map(|t| t.id.clone());
+        let in_view = if self.minimised {
+            None
+        } else {
+            front.as_deref()
+        };
+        let now = self.now();
+        if self.s7.dev.set_focus(in_view, now) {
+            self.dev_pump();
+        }
         let label = self
             .chip_for_front()
             .map_or_else(String::new, |c| chip_label(&c.url));
@@ -563,7 +579,7 @@ impl AppCtl {
             self.s7.dev.next_due(),
             self.s7.notifier.next_due(),
             self.s7.board_due,
-            (!self.s7.dev_retry.is_empty()).then_some(self.s7.dev_retry_at),
+            self.s7.dev_retry.values().copied().min(),
         ]
         .into_iter()
         .flatten()
@@ -572,11 +588,16 @@ impl AppCtl {
 
     /// The timer's turn: port looks, grace endings, the board's clocks.
     pub(super) fn surf7_tick(&mut self, now: u64) {
-        if !self.s7.dev_retry.is_empty() && now >= self.s7.dev_retry_at {
-            let tabs: Vec<String> = self.s7.dev_retry.drain().collect();
-            for tab in tabs {
-                self.dev_read(&tab);
-            }
+        let due: Vec<String> = self
+            .s7
+            .dev_retry
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(t, _)| t.clone())
+            .collect();
+        for tab in due {
+            self.s7.dev_retry.remove(&tab);
+            self.dev_read(&tab);
         }
         self.dev_pump();
         if self.s7.notifier.next_due().is_some_and(|d| d <= now) {

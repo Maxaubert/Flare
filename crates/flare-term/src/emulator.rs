@@ -137,10 +137,15 @@ pub struct Emulator {
     /// Hears the screen being cleared (Surfaces stage 7, the Preview chip).
     dev_clear: ClearWatch,
     dev_clears_applied: u64,
-    /// The newest local server address found on the live screen, and the absolute row it was on.
-    dev_found: Option<(LocalServer, usize)>,
+    /// The newest local server address found on the live screen.
+    dev_found: Option<LocalServer>,
+    /// Every local address on the live screen at the last reading, with the screen row (0 = top) its line ended on.
+    /// Screen rows, not absolute ones: those shift with every line once the scrollback is full.
+    dev_prev: Vec<(String, usize)>,
     /// Changes when `dev_found` changes to another address or is cleared, never otherwise.
     dev_seq: u64,
+    /// Moves when the held address is printed again (see `DevState::reprint`).
+    dev_reprint: u64,
     /// Output arrived since the screen was last read for an address.
     dev_dirty: bool,
     dev_scanned: Option<Instant>,
@@ -205,7 +210,9 @@ impl Emulator {
             dev_clear: ClearWatch::new(),
             dev_clears_applied: 0,
             dev_found: None,
+            dev_prev: Vec::new(),
             dev_seq: 0,
+            dev_reprint: 0,
             dev_dirty: false,
             dev_scanned: None,
             link_last: None,
@@ -219,6 +226,7 @@ impl Emulator {
     pub fn dev_state(&mut self) -> DevState {
         if self.dev_clear.clears() != self.dev_clears_applied {
             self.dev_clears_applied = self.dev_clear.clears();
+            self.dev_prev.clear();
             if self.dev_found.take().is_some() {
                 self.dev_seq += 1;
             }
@@ -231,8 +239,9 @@ impl Emulator {
             self.dev_scan();
         }
         DevState {
-            server: self.dev_found.as_ref().map(|f| f.0.clone()),
+            server: self.dev_found.clone(),
             seq: self.dev_seq,
+            reprint: self.dev_reprint,
         }
     }
 
@@ -244,7 +253,10 @@ impl Emulator {
     /// Reads the live screen for the newest local server address. The rows are the screen's own (history is never
     /// read: a cleared screen is kept there), the row the cursor is on is left out (it is what is being typed, or a
     /// suggestion painted after it) and so is the alternate screen. An address is NEWS when it differs from the one
-    /// held and is not on an older row than that one was; the same address printed again changes nothing.
+    /// held and was not on the screen at the last reading; the same address printed again is not news but moves
+    /// `reprint` (a server restarted on its port, which the chip needs to hear about once it is gone). What is compared
+    /// is the screen's own rows and the text, so a full scrollback, where every line shifts every absolute row, changes
+    /// nothing.
     fn dev_scan(&mut self) {
         self.dev_dirty = false;
         self.dev_scanned = Some(Instant::now());
@@ -258,7 +270,8 @@ impl Emulator {
         let cursor = hist + usize::try_from(cursor_row).unwrap_or(0);
         let (top, last) = (hist, hist + rows - 1);
         let buf = TermBuf::window_in(&self.term, top, last, false);
-        let mut best: Option<(usize, LocalServer)> = None;
+        let mut cur: Vec<(String, usize)> = Vec::new();
+        let mut best: Option<LocalServer> = None;
         let mut y = top;
         while y <= last {
             let ll = logical_line_in(&buf, cols, y, false);
@@ -266,21 +279,28 @@ impl Emulator {
             if !(ll.first..=ll.last).contains(&cursor)
                 && let Some(found) = local_server_in(&ll.text)
             {
-                best = Some((ll.last, found));
+                cur.push((found.url.clone(), ll.last.saturating_sub(top)));
+                best = Some(found);
             }
             y = ll.last.max(y) + 1;
         }
-        let Some((row, found)) = best else { return };
+        let prev = std::mem::replace(&mut self.dev_prev, cur);
+        let Some(found) = best else { return };
         match &self.dev_found {
-            Some((old, at)) if *old == found => {
-                // The same address, printed again below: remember where, so older rows stay older.
-                if row > *at {
-                    self.dev_found = Some((found, row));
+            Some(old) if *old == found => {
+                let count = |v: &[(String, usize)]| v.iter().filter(|e| e.0 == found.url).count();
+                let lowest = |v: &[(String, usize)]| {
+                    v.iter().filter(|e| e.0 == found.url).map(|e| e.1).max()
+                };
+                let (now_n, was_n) = (count(&self.dev_prev), count(&prev));
+                // Another print of it, or one lower than the lowest was (a scroll only moves it up).
+                if now_n > was_n || lowest(&self.dev_prev) > lowest(&prev) {
+                    self.dev_reprint += 1;
                 }
             }
-            Some((_, at)) if row < *at => {}
+            Some(_) if prev.iter().any(|e| e.0 == found.url) => {}
             _ => {
-                self.dev_found = Some((found, row));
+                self.dev_found = Some(found);
                 self.dev_seq += 1;
             }
         }
@@ -2900,6 +2920,81 @@ mod tests {
         let s = dev(&mut e);
         assert_eq!(s.server.map(|x| x.port), Some(3000));
         assert_eq!(s.seq, 3);
+    }
+
+    #[test]
+    fn the_same_address_printed_again_moves_reprint_not_seq() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"Local: http://localhost:3000/\r\n");
+        let s = dev(&mut e);
+        assert_eq!((s.seq, s.reprint), (1, 0));
+        // Nothing new on the screen: nothing moves.
+        e.feed(b"compiled\r\n");
+        let s = dev(&mut e);
+        assert_eq!((s.seq, s.reprint), (1, 0));
+        // The server stopped and started again, without a clear: the address is printed a second time.
+        e.feed(b"^C\r\nLocal: http://localhost:3000/\r\n");
+        let s = dev(&mut e);
+        assert_eq!((s.seq, s.reprint), (1, 1));
+        // And once the first has scrolled off, a third print is heard too.
+        for i in 0..20 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let _ = dev(&mut e);
+        e.feed(b"Local: http://localhost:3000/\r\n");
+        let s = dev(&mut e);
+        assert_eq!(s.seq, 1);
+        assert!(s.reprint > 1);
+    }
+
+    #[test]
+    fn a_full_scrollback_does_not_hide_a_newer_address() {
+        let mut e = Emulator::new(60, 8);
+        for i in 0..Emulator::SCROLLBACK + 50 {
+            e.feed(format!("log {i}\r\n").as_bytes());
+        }
+        e.feed(b"Local: http://localhost:3000/\r\n");
+        assert_eq!(dev(&mut e).server.map(|s| s.port), Some(3000));
+        // A few lines scroll by, then a banner whose address sits above the bottom.
+        for i in 0..3 {
+            e.feed(format!("more {i}\r\n").as_bytes());
+        }
+        e.feed(b"Local: http://localhost:3001/\r\nready\r\nwatching\r\n");
+        let s = dev(&mut e);
+        assert_eq!(s.server.map(|s| s.port), Some(3001));
+        assert_eq!(s.seq, 2);
+    }
+
+    #[test]
+    fn a_full_screen_program_clearing_its_own_screen_keeps_the_address() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"Local: http://localhost:3000/\r\n");
+        assert_eq!(dev(&mut e).seq, 1);
+        e.feed(b"\x1b[?1049h\x1b[2J\x1b[3Jhello\x1b[?1049l");
+        let s = dev(&mut e);
+        assert_eq!(s.server.map(|s| s.port), Some(3000));
+        assert_eq!(s.seq, 1);
+    }
+
+    #[test]
+    fn reading_a_huge_screen_full_of_addresses_stays_cheap() {
+        // A maximised 4K window: about 400 x 120, every line a URL-like path (rule 16's slice budget).
+        let mut e = Emulator::new(400, 120);
+        for i in 0..300 {
+            e.feed(
+                format!("GET https://example.com:8443/some/path/{i}/and/more?x=1&y=2 200 12ms\r\n")
+                    .as_bytes(),
+            );
+        }
+        e.feed(b"Local: http://localhost:3000/\r\n");
+        let t = Instant::now();
+        let s = dev(&mut e);
+        let took = t.elapsed();
+        assert_eq!(s.server.map(|s| s.port), Some(3000));
+        assert!(
+            took < std::time::Duration::from_millis(30),
+            "one reading took {took:?}"
+        );
     }
 
     #[test]
