@@ -2183,9 +2183,9 @@ mod tests {
             op: CtlOp::ShowApp {
                 tab: "t".into(),
                 spec: AppSpec {
-                    host: "a1.flare-app.local".into(),
+                    host: "flare-app-1.local".into(),
                     folder: "C:\\SECRET".into(),
-                    url: "https://a1.flare-app.local/index.html".into(),
+                    url: "https://flare-app-1.local/index.html".into(),
                     allow_network: false,
                 },
                 title: "SECRET".into(),

@@ -29,14 +29,15 @@ use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
-    CapturePreviewCompletedHandler, ContainsFullScreenElementChangedEventHandler,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
-    FocusChangedEventHandler, HistoryChangedEventHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
-    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
+    CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler,
+    ContainsFullScreenElementChangedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
+    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, FocusChangedEventHandler,
+    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    SourceChangedEventHandler, WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
+    take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -864,15 +865,42 @@ impl WebHost {
         // SAFETY: `webview` and the handler are live COM objects; `star` is NUL-terminated and
         // outlives the call; `token` is a valid out value.
         unsafe {
-            webview
-                .AddWebResourceRequestedFilter(
+            // Where the runtime has it, the filter covers requests of every source (shared and
+            // service workers too), not only the document's.
+            let wide_filter = webview.cast::<ICoreWebView2_22>().and_then(|w22| {
+                w22.AddWebResourceRequestedFilterWithRequestSourceKinds(
                     PCWSTR(star.as_ptr()),
                     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
                 )
-                .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
+            });
+            if wide_filter.is_err() {
+                webview
+                    .AddWebResourceRequestedFilter(
+                        PCWSTR(star.as_ptr()),
+                        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                    )
+                    .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
+            }
             webview
                 .add_WebResourceRequested(&h, &mut token)
                 .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
+            // No peer connections: the policy has no directive for them and their address lookups
+            // never reach the wall, so the page loses the API before its own code runs (every frame).
+            let script = wide(app::NO_WEBRTC_SCRIPT);
+            let done = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                |_err, _id| Ok(()),
+            ));
+            webview
+                .AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), &done)
+                .map_err(|e| format!("the mini-app's script wall: {}", e.message()))?;
+            // Belt and braces: an app starts with no cookie, whatever an earlier one left in the
+            // profile (each app has a site of its own, so none should be shared anyway).
+            if let Ok(w2) = webview.cast::<ICoreWebView2_2>()
+                && let Ok(jar) = w2.CookieManager()
+            {
+                let _ = jar.DeleteAllCookies();
+            }
         }
         Ok(())
     }

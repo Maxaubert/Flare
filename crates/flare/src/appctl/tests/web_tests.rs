@@ -2271,7 +2271,7 @@ fn a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore() {
         !file.exists()
             || !std::fs::read_to_string(&file) // sync-ok: test code only
                 .unwrap()
-                .contains("flare-app.local"),
+                .contains("flare-app-"),
         "no app address on disk"
     );
     // ... and one an old or edited file holds is dropped, like any address a panel cannot open.
@@ -2281,7 +2281,7 @@ fn a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore() {
     });
     let file = g.dir.path().join("panels.json");
     let raw = r#"{"version":1,"tabs":[
-        {"cwd":"C:\\a","panel":{"kind":"web","target":"https://a1.flare-app.local/index.html"}}]}"#;
+        {"cwd":"C:\\a","panel":{"kind":"web","target":"https://flare-app-1.local/index.html"}}]}"#;
     std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
     g.ctl
         .borrow_mut()

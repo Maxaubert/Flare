@@ -550,7 +550,7 @@ calculator, an explainer with a slider, a 3D viewer, a diagram of a flow), it wr
 terminal, working, instead of Claude describing it in words.
 
 - 2026-10-22, stage 5, a mini-app is a **web panel with a different view**, not a new kind of panel in the store. The panel is a
-  `PanelKind::Web` at the app's own address (`https://a<n>.flare-app.local/index.html`) and `PanelCtl` holds a side table
+  `PanelKind::Web` at the app's own address (`https://flare-app-<n>.local/index.html`) and `PanelCtl` holds a side table
   `tab -> AppSpec` (host, folder, address, network). Why: everything the web panel already does for free keeps working for it (the
   slot and splitter maths, the airspace phases and the still behind a menu, focus and the second Escape, the agent's `browser_*`
   tools, the ribbon, the process-failure handling, quit) and nothing in `panels.json` needs a new kind. What differs is what the
@@ -565,11 +565,32 @@ terminal, working, instead of Claude describing it in words.
   nothing on disk and cannot see the web panel's. A runtime too old for profiles (before 1.0.1245) fails the view ("too old to keep a
   mini-app apart"); it is **never** put on the web panel's profile instead. The e2e reads the profile's name and private flag back from
   the browser itself (`ICoreWebView2Profile`) and holds that the browser process id is the same before and after a second app.
-- 2026-10-22, stage 5, **one host per app, `a<n>.flare-app.local`** (not the single `flare-app.local` of the design). Origins are the
+- 2026-10-22, stage 5, **one host per app, `flare-app-<n>.local`** (not the single `flare-app.local` of the design). Origins are the
   browser's wall between pages: with one host two mini-apps (in two tabs, or one after the other) would share `localStorage`,
   cookies, IndexedDB and could read each other's data; with a host each they cannot (the e2e writes `localStorage` and a cookie in the
   first app and finds neither in the second). `n` counts up per run from 1; nothing about the number is secret or means anything
   to a client.
+- 2026-10-22, stage 5 review, **a site per app, not a subdomain of a shared parent.** `.local` is not on the public suffix list, so
+  `a1.flare-app.local` and `a2.flare-app.local` were ONE site (`flare-app.local`) and a page could set `domain=flare-app.local` for the
+  other app to read. The hosts are now `flare-app-<n>.local`: the site is the whole host and a cookie for `local` is refused (a
+  top-level name). Belt and braces: every new app view starts with `CookieManager().DeleteAllCookies()` on the app profile. The e2e
+  sets a parent-domain cookie in the first app and finds neither it nor anything else in the second. *Electron:* give each app its own
+  site (a custom scheme per app, or a host that is not a subdomain of a shared parent); never share a registrable domain between apps.
+- 2026-10-22, stage 5 review, **"no network" includes peer connections, and says what it cannot yet cover.** The policy has no directive
+  for WebRTC and its STUN/TURN and address lookups never reach the request wall, so an app view runs a script before every document in
+  every frame (`AddScriptToExecuteOnDocumentCreated`, `app::NO_WEBRTC_SCRIPT`) that deletes and freezes `RTCPeerConnection`,
+  `webkitRTCPeerConnection`, `RTCDataChannel` and the other RTC classes, and the page carries `x-dns-prefetch-control: off`. Known
+  limits, stated rather than hidden: the script is a wall in the page's own realm (a browser bug that hands a page a fresh realm would
+  skip it; a separate environment with `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` would be the stronger wall and is
+  not built), and `<link rel=preconnect>` is only as covered as the browser's own `connect-src` check. The second wall now uses
+  `AddWebResourceRequestedFilterWithRequestSourceKinds` (ICoreWebView2_22, all source kinds, so shared and service workers are
+  covered) where the runtime has it, and the old filter otherwise. *Electron:* `session.setPermissionRequestHandler` does not cover
+  WebRTC; set `webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` AND inject the same freeze script (`preload` or
+  `webFrame.executeJavaScript` before load) AND block requests in `session.webRequest.onBeforeRequest`.
+- 2026-10-22, stage 5 review, **the previous run's folders are renamed aside, not deleted, at start.** `app::retire_root` renames
+  `<profile>pps` to `apps.old-<pid>-<time>` (one call on the UI thread, so the channel can write a fresh root at once) and the
+  `flare-app-clean` worker deletes every `apps.old-*`; a rename that is refused falls back to emptying in place. The quit path also
+  empties the apps folder (`clean_root`, a quit exception like the store flush), so leftovers are rare.
 - 2026-10-22, stage 5, **the folder and the files.** `<profile>\apps\a<n>\index.html` (a diagram adds `mermaid.min.js`), written
   by the control channel's own call thread (never the UI thread, rule 34) before the UI is asked, and mapped with
   `SetVirtualHostNameToFolderMapping(host, folder, DENY_CORS)`. Only the page is in the folder: a `path` file's neighbours are **not**

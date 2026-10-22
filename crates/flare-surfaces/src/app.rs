@@ -3,8 +3,8 @@
 //!
 //! A mini-app is one HTML page (a chart, a calculator, an explainer, a 3D viewer) or a Mermaid diagram.
 //! Its content is written into a folder of its own under the profile (`<profile>\apps\a<n>`), served by
-//! the browser from a host name of its own (`a<n>.flare-app.local`, so two mini-apps never share an
-//! origin, storage or cookies) and shown in a browser view of its own profile (private, apart from the
+//! the browser from a host name of its own (`flare-app-<n>.local`: each app is a site of its own, so two
+//! mini-apps never share an origin, storage or cookies, not even through a `Domain=` cookie) and shown in a browser view of its own profile (private, apart from the
 //! web panel's: no cookies, no cache and no history shared).
 //!
 //! The sandbox is a Content-Security-Policy that Flare writes into the page itself as the first thing in
@@ -29,8 +29,11 @@ use crate::web::url_matches;
 pub const HTML_MAX: usize = 4 * 1024 * 1024;
 /// The most Mermaid text a diagram takes (bytes).
 pub const DIAGRAM_MAX: usize = 200 * 1024;
-/// The names every mini-app host ends with.
-pub const HOST_SUFFIX: &str = "flare-app.local";
+/// What every mini-app host starts with (then the number of the app).
+pub const HOST_PREFIX: &str = "flare-app-";
+/// What every mini-app host ends with. `local` is a top-level name, so a cookie cannot be set for it,
+/// and the site of an app is its whole host (a shared parent would be one site for all of them).
+pub const HOST_SUFFIX: &str = ".local";
 /// The page of every mini-app inside its folder.
 pub const PAGE: &str = "index.html";
 /// The Mermaid build, beside the diagram page.
@@ -55,7 +58,7 @@ pub struct AppSpec {
 
 /// The host name of the `seq`th mini-app of the run.
 pub fn app_host(seq: u64) -> String {
-    format!("a{seq}.{HOST_SUFFIX}")
+    format!("{HOST_PREFIX}{seq}{HOST_SUFFIX}")
 }
 
 /// The address of the page served on `host`.
@@ -71,11 +74,15 @@ pub fn is_app_url(url: &str) -> bool {
     u.scheme() == "https"
         && u.host_str().is_some_and(|h| {
             h.strip_suffix(HOST_SUFFIX)
-                .and_then(|p| p.strip_suffix('.'))
-                .and_then(|p| p.strip_prefix('a'))
+                .and_then(|p| p.strip_prefix(HOST_PREFIX))
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         })
 }
+
+/// Run in every frame of an app before its own code: the page loses the peer-connection API. The
+/// policy has no directive for it and its STUN/TURN and address lookups never reach the request wall,
+/// so a page with the network off could still send data out through a name lookup.
+pub const NO_WEBRTC_SCRIPT: &str = "(function(){for(var n of ['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport']){try{delete window[n];Object.defineProperty(window,n,{value:undefined,writable:false,configurable:false})}catch(e){}}})();";
 
 /// The Content-Security-Policy of a mini-app. Without the network, nothing but the app's own address,
 /// inline code and `data:`/`blob:` content loads and nothing is sent anywhere (`connect-src`). With it,
@@ -91,7 +98,7 @@ pub fn csp(allow_network: bool) -> String {
 /// The page as it is written: the policy first, so nothing the page says comes before it.
 pub fn wrap_html(html: &str, allow_network: bool) -> String {
     format!(
-        "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{}\">\n{html}",
+        "<!doctype html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{}\"><meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">\n{html}",
         csp(allow_network)
     )
 }
@@ -196,13 +203,14 @@ pub fn diagram_result(cdp: &str) -> Result<(), String> {
     }
 }
 
-/// Error text for the agent: control characters become spaces, runs of blanks collapse, empty lines go
+/// Error text for the agent: hidden characters (the shared list) go, control characters become spaces, runs of blanks collapse, empty lines go
 /// (the line breaks of the message stay) and the length is capped.
 fn clean_error(s: &str) -> String {
     let mut out = String::new();
     for line in s.lines() {
         let line: String = line
             .chars()
+            .filter(|c| !flare_ctl::text::invisible(*c))
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -274,6 +282,58 @@ pub fn remove_app(root: &Path, folder: &Path) -> bool {
     }
 }
 
+/// The start of the name an apps folder is renamed to before it is deleted.
+const OLD_PREFIX: &str = "apps.old-";
+
+/// Startup: the apps of an earlier run have no panel. The folder is renamed aside (one cheap call, so
+/// nothing waits for a recursive delete and the channel can write a fresh root at once) and every
+/// renamed folder, this one and any a crash left, is deleted on a worker. When the rename is refused
+/// the folder is emptied in place instead.
+pub fn retire_root(root: &Path) {
+    let Some(parent) = root.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    if root.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let aside = parent.join(format!("{OLD_PREFIX}{}-{stamp}", std::process::id()));
+        if let Err(e) = std::fs::rename(root, &aside) {
+            // sync-ok: startup, one call
+            log::warn!("the mini-app folder was not renamed ({e}); emptying it in place");
+            clean_root(root);
+        }
+    }
+    if let Err(e) = std::thread::Builder::new()
+        .name("flare-app-clean".into())
+        .spawn(move || {
+            sweep_old(&parent);
+        })
+    {
+        log::warn!("could not start the mini-app cleaner: {e}");
+    }
+}
+
+/// Deletes every `apps.old-*` folder inside `parent` (a worker). Returns how many went.
+pub fn sweep_old(parent: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        // sync-ok: run off the UI thread (a worker)
+        return 0;
+    };
+    let mut gone = 0;
+    for entry in rd.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(OLD_PREFIX) {
+            continue;
+        }
+        match std::fs::remove_dir_all(entry.path()) {
+            // sync-ok: run off the UI thread (a worker)
+            Ok(()) => gone += 1,
+            Err(e) => log::warn!("an old mini-app folder was left: {e}"),
+        }
+    }
+    gone
+}
+
 /// Empties the apps folder (startup: the apps of an earlier run have no panel). Returns how many
 /// folders went. A folder that cannot be removed (a browser still holds a file) is left for the next
 /// start and logged.
@@ -304,20 +364,22 @@ mod tests {
 
     #[test]
     fn hosts_are_one_per_app_and_never_the_web_panels() {
-        assert_eq!(app_host(7), "a7.flare-app.local");
+        assert_eq!(app_host(7), "flare-app-7.local");
         assert_eq!(
-            app_url("a7.flare-app.local"),
-            "https://a7.flare-app.local/index.html"
+            app_url("flare-app-7.local"),
+            "https://flare-app-7.local/index.html"
         );
-        assert!(is_app_url("https://a7.flare-app.local/index.html"));
-        assert!(is_app_url("https://A12.FLARE-APP.LOCAL/index.html"));
+        assert!(is_app_url("https://flare-app-7.local/index.html"));
+        assert!(is_app_url("https://FLARE-APP-12.LOCAL/index.html"));
         for u in [
             "https://flare-app.local/index.html",
-            "https://a.flare-app.local/index.html",
-            "https://ax.flare-app.local/",
-            "http://a7.flare-app.local/",
-            "https://a7.flare-app.local.evil.example/",
-            "https://evil-a7.flare-app.local/",
+            "https://flare-app-.local/index.html",
+            "https://flare-app-x.local/",
+            "https://a7.flare-app.local/",
+            "https://x.flare-app-7.local/",
+            "http://flare-app-7.local/",
+            "https://flare-app-7.local.evil.example/",
+            "https://evil-flare-app-7.local/",
             "https://flare-test.local/",
             "https://example.com/",
             "not a url",
@@ -360,18 +422,15 @@ mod tests {
 
     #[test]
     fn a_view_stays_on_its_own_page() {
-        let url = "https://a1.flare-app.local/index.html";
+        let url = "https://flare-app-1.local/index.html";
         assert!(nav_allowed(url, url));
-        assert!(nav_allowed(
-            "https://a1.flare-app.local/index.html#top",
-            url
-        ));
-        assert!(nav_allowed("HTTPS://A1.FLARE-APP.LOCAL/index.html", url));
+        assert!(nav_allowed("https://flare-app-1.local/index.html#top", url));
+        assert!(nav_allowed("HTTPS://FLARE-APP-1.LOCAL/index.html", url));
         for u in [
-            "https://a1.flare-app.local/other.html",
-            "https://a2.flare-app.local/index.html",
+            "https://flare-app-1.local/other.html",
+            "https://flare-app-2.local/index.html",
             "https://example.com/",
-            "http://a1.flare-app.local/index.html",
+            "http://flare-app-1.local/index.html",
             "about:blank",
             "data:text/html,hi",
             "file:///C:/x.html",
@@ -384,20 +443,20 @@ mod tests {
 
     #[test]
     fn a_request_leaves_only_as_far_as_the_network_switch_allows() {
-        let host = "a1.flare-app.local";
+        let host = "flare-app-1.local";
         for u in [
-            "https://a1.flare-app.local/index.html",
-            "https://A1.flare-app.local/mermaid.min.js",
+            "https://flare-app-1.local/index.html",
+            "https://FLARE-APP-1.local/mermaid.min.js",
             "data:text/plain;base64,AAAA",
-            "blob:https://a1.flare-app.local/6f6c",
+            "blob:https://flare-app-1.local/6f6c",
         ] {
             assert!(request_allowed(u, host, false), "{u}");
         }
         for u in [
             "https://example.com/x",
             "http://127.0.0.1:9/",
-            "http://a1.flare-app.local/",
-            "https://a2.flare-app.local/",
+            "http://flare-app-1.local/",
+            "https://flare-app-2.local/",
             "ws://example.com/",
             "ftp://example.com/",
             "file:///C:/x",
@@ -472,7 +531,7 @@ mod tests {
         let long = "x".repeat(2000);
         let cdp = serde_json::json!({"result": {"value": {
             "ok": false,
-            "error": format!("a\u{1b}[31mb\n\n  c\t{long}")
+            "error": format!("a\u{1b}[31m\u{202E}b\u{200B}\n\n  c\t{long}")
         }}})
         .to_string();
         let e = diagram_result(&cdp).unwrap_err();
@@ -489,8 +548,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = apps_root(dir.path());
         let spec = write_app(&root, 3, &[(PAGE, b"<p>hi"), ("x.js", b"1")], false).unwrap();
-        assert_eq!(spec.host, "a3.flare-app.local");
-        assert_eq!(spec.url, "https://a3.flare-app.local/index.html");
+        assert_eq!(spec.host, "flare-app-3.local");
+        assert_eq!(spec.url, "https://flare-app-3.local/index.html");
         assert_eq!(spec.folder, root.join("a3"));
         assert!(!spec.allow_network);
         assert_eq!(std::fs::read(spec.folder.join(PAGE)).unwrap(), b"<p>hi");
@@ -550,5 +609,38 @@ mod tests {
         assert!(dir.path().join("panels.json").is_file());
         // No folder yet is no error.
         assert_eq!(clean_root(&dir.path().join("none")), 0);
+    }
+
+    #[test]
+    fn retiring_the_root_renames_it_aside_and_the_sweep_deletes_every_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = apps_root(dir.path());
+        write_app(&root, 1, &[(PAGE, b"a")], false).unwrap();
+        std::fs::create_dir_all(dir.path().join("apps.old-crash-1/a9")).unwrap();
+        std::fs::write(dir.path().join("panels.json"), b"{}").unwrap();
+        retire_root(&root);
+        assert!(!root.exists(), "the folder is aside at once");
+        // The worker may still be running: the sweep is idempotent, so run it here as well.
+        sweep_old(dir.path());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec!["panels.json".to_string()]);
+        // No folder yet is no error.
+        retire_root(&dir.path().join("none"));
+    }
+
+    #[test]
+    fn the_page_loses_peer_connections_and_prefetch_before_its_own_code() {
+        for name in [
+            "RTCPeerConnection",
+            "webkitRTCPeerConnection",
+            "RTCDataChannel",
+        ] {
+            assert!(NO_WEBRTC_SCRIPT.contains(name), "{name}");
+        }
+        assert!(wrap_html("", false).contains("x-dns-prefetch-control"));
     }
 }

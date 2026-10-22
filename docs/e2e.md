@@ -226,7 +226,7 @@ cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe 
 
 - `miniApp` (92 checks) at 100 and 225 percent, then two more launches. A stale folder in `<profile>\apps` is gone at start. `view.html`
   answers once the page has loaded with `panel.kind` `app` and `panel.network` false though the agent asked; the browser reports the
-  host `a1.flare-app.local`, the profile `flare-app` and its private flag; the header is the agent's title and the bar's height is 0;
+  host `flare-app-1.local`, the profile `flare-app` and its private flag; the header is the agent's title and the bar's height is 0;
   the browser window equals the layout maths and what Slint drew. The page's script ran and its policy tag has no `https:`. A fetch, an
   image and a script from `127.0.0.1:9` are each a violation event; the page removes its policy tag and a new fetch is still a
   violation. `location.href` to outside and to a sibling file, and `window.open`, leave one view at its own address and the header says

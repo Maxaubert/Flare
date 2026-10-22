@@ -458,9 +458,9 @@ line of each item.
   *Electron:* `session.fromPartition('flare-app')` with no `persist:` prefix is in memory and separate from the web panel's
   `persist:flare-web`; create the mini-app's `WebContentsView` with `webPreferences.partition` set to it (never `defaultSession`).
 - **Origins are the isolation between apps, so each app gets its own host name.** One shared host would make two apps share
-  `localStorage`, cookies and IndexedDB inside the one private profile. `a<n>.flare-app.local` per app; the e2e writes storage and a
+  `localStorage`, cookies and IndexedDB inside the one private profile. `flare-app-<n>.local` per app; the e2e writes storage and a
   cookie in the first and finds neither in the second. *Electron:* serve each app from its own origin the same way (a custom
-  protocol handler on that session answering `https://a<n>.flare-app.local/...`, or `app-<n>://`), with the page held in memory:
+  protocol handler on that session answering `https://flare-app-<n>.local/...`, or `app-<n>://`), with the page held in memory:
   there is then no folder to write or clean at all, and the Mermaid file is answered from the app's resources instead of being copied.
 - **A meta policy written first is a real wall, and removing the tag removes nothing.** The e2e's page deletes its own
   `<meta http-equiv="Content-Security-Policy">` and fetches again: the second fetch is still a `connect-src` violation. The
@@ -516,6 +516,21 @@ line of each item.
   app's own host through either way, so it did not matter); how a very large inline page (the 4 MB cap) loads (the e2e uses a
   small one; the cap itself is checked); SVG with script inside a page (the policy is the same, a script in it is the page's own);
   print and save-as of a mini-app (the browser's own, not handled).
+
+### Stage 5 review fixes
+
+- **Check the site, not the origin, when you want two pages apart.** Browsers draw the cookie boundary at the registrable domain
+  ("site"), and a made-up `.local` name has no public suffix, so every subdomain of one parent is one site. Use a different
+  registrable name per app (`flare-app-<n>.local`), and test with a `Domain=` cookie, not a host-only one. What Electron must do:
+  one scheme or one unrelated host per app, never subdomains of one parent.
+- **A Content-Security-Policy does not stop WebRTC, and the request hook does not see it.** Remove the API before the page runs
+  (a document-created script, every frame) and set the IP handling policy; a "no network" claim needs this.
+- **A request filter that is not told the source kinds sees only the document's requests.** Use the all-sources variant where
+  the runtime has it, and test a srcdoc frame and a blob worker, not one main-frame fetch.
+- **Never write a backslash-letter into a comment through a tool that treats it as an escape.** `` became a BEL byte once; the
+  comment now says `<profile>pps` by hand. A recursive delete at start is renamed aside and swept on a worker instead.
+- **Error text quoting the agent's own source passes the shared hidden-character filter** (`flare_ctl::text::invisible`) like
+  every other outside word, line breaks kept.
 
 ### By hand, not machine-tested (Stage 5)
 

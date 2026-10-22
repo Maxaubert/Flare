@@ -320,7 +320,7 @@ link that changes the kind is refused; at most 4 MB; UTF-8 text), `title` (as `v
 How the page runs (S4 and the mini-app rules, regression rule 199):
 
 - It is written into a folder of its own (`<profile>\apps\a<n>`, one file, `index.html`; files next to a `path` file are **not**
-  served) and served by the browser from a host name of its own, `https://a<n>.flare-app.local/index.html`, so two mini-apps never
+  served) and served by the browser from a host name of its own, `https://flare-app-<n>.local/index.html`, so two mini-apps never
   share an origin, storage or cookies. The view is a WebView2 view of a **private profile** named `flare-app` (apart from the web
   panel's; nothing is kept on disk), with developer tools and the status bar off.
 - A Content-Security-Policy is the **first thing in the page** (Flare writes `<!doctype html><meta charset><meta

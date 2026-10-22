@@ -1070,8 +1070,8 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
   `the_page_cannot_rename_the_panel_or_move_its_address`, `the_address_field_and_the_channel_cannot_send_a_mini_app_anywhere`,
   `a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore` (`web_tests.rs`) and the e2e `miniApp` (the page's
   script runs, the header is the agent's title, no bar, the browser window sits exactly on the slot at 100 and 225 percent).
-- **A sandbox of its own, with no network.** The page is served from a host of its own (`a<n>.flare-app.local`, so two apps never
-  share storage), in a private browser profile of its own (`flare-app`, apart from the web panel's, nothing on disk), and the first
+- **A sandbox of its own, with no network.** The page is served from a host of its own (`flare-app-<n>.local`, a site each, so two apps never
+  share storage or a `Domain=` cookie), in a private browser profile of its own (`flare-app`, apart from the web panel's, nothing on disk), and the first
   thing in it is a Content-Security-Policy (`default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' ...`). A fetch, an
   image and a script from outside are each a policy violation (the page's own `securitypolicyviolation` events are the proof, not a
   refused connection), and a script that removes the policy tag lifts nothing. Behind the policy a second wall answers every request
@@ -1098,9 +1098,9 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
   (`path_open.rs`), `a_page_named_by_path_is_resolved_again_vetted_and_read` (`ctl_app.rs`) and the e2e `miniApp`.
 - **Folders live and die with the panel.** `<profile>\apps\a<n>\index.html`, written off the UI thread before the request; removed on
   a worker when the panel closes, another panel replaces the app, the tab closes, the request is too late or the tab is gone;
-  emptied at start; only a folder directly inside the apps root is ever removed. Held by
+  renamed aside at start and swept on a worker, emptied at quit; only a folder directly inside the apps root is ever removed. Held by
   `an_app_is_written_to_a_folder_of_its_own_and_removed_with_it`, `only_a_folder_directly_inside_the_apps_root_is_ever_removed`,
-  `startup_empties_the_apps_folder_and_leaves_the_profile_alone`, `a_file_name_with_a_separator_is_refused_and_leaves_nothing_outside`
+  `startup_empties_the_apps_folder_and_leaves_the_profile_alone`, `retiring_the_root_renames_it_aside_and_the_sweep_deletes_every_old_one`, `the_page_loses_peer_connections_and_prefetch_before_its_own_code`, `a_file_name_with_a_separator_is_refused_and_leaves_nothing_outside`
   (`app.rs`), `closing_a_mini_app_ends_it_and_removes_its_folder`, `a_second_mini_app_replaces_the_first_and_its_folder`,
   `a_mini_app_for_a_closed_tab_is_refused_and_its_folder_removed`, `a_mini_app_asked_for_too_late_is_never_shown` (`web_tests.rs`) and
   the e2e (a stale folder gone at start, one folder at a time, none after `panel.close`).

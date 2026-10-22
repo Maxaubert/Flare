@@ -1047,10 +1047,11 @@ pub fn run_window(
         let rc = AppCtl::new(&app, deps);
         // The server answers on its own threads and reaches the window through `post`. A failure
         // (the name is taken, no SID) is logged and the run goes on without the channel.
-        // Mini-apps (stage 5) live in `<profile>pps`. The folders of an earlier run have no panel and go
-        // first, before the channel can write a new one.
+        // Mini-apps (stage 5) live in `<profile>\apps`. The folders of an earlier run have no panel: the
+        // folder is renamed aside (one cheap call, so the channel can write a fresh root at once) and
+        // the renamed ones are deleted on a worker.
         let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
-        flare_surfaces::app::clean_root(&apps_root); // sync-ok: startup, before the window shows
+        flare_surfaces::app::retire_root(&apps_root); // sync-ok: startup, before the window shows
         rc.borrow_mut().set_apps_root(apps_root.clone());
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
@@ -1526,6 +1527,11 @@ pub fn run_window(
     }
     if let Some((tabs, window, prefs, panels)) = &stores {
         flush_stores(tabs, window, prefs, panels);
+    }
+    // The mini-apps' folders go with the run (one a browser still holds is renamed aside and deleted
+    // by the next start).
+    if let Some(inst) = instance.as_ref() {
+        flare_surfaces::app::clean_root(&flare_surfaces::app::apps_root(&inst.profile.dir)); // sync-ok: quit path, after the window and the channel are gone
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();

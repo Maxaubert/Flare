@@ -222,7 +222,7 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
     ctx.ok(
         s["controller"]["url"]
             .as_str()
-            .is_some_and(|u| u.starts_with("https://a1.flare-app.local/")),
+            .is_some_and(|u| u.starts_with("https://flare-app-1.local/")),
         format!(
             "{at}: it is served from a host of its own ({})",
             s["controller"]["url"]
@@ -417,6 +417,26 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
         app,
         "(function(){ localStorage.setItem('mine','1'); document.cookie='k=v'; return 'set'; })()",
     );
+    // A cookie for a parent name is refused (the app's site is its whole host, `local` is a top-level
+    // name), and the page has no peer connections (the policy cannot stop those).
+    let parent = say(
+        ctx,
+        app,
+        "(function(){ document.cookie='x=1; domain=local; path=/'; document.cookie='y=1; domain=flare-app.local; path=/'; return document.cookie; })()",
+    );
+    ctx.ok(
+        parent == "k=v",
+        format!("{at}: a cookie for a parent name is refused, only the host-only one is there ({parent:?})"),
+    );
+    let rtc = say(
+        ctx,
+        app,
+        "[typeof RTCPeerConnection, typeof webkitRTCPeerConnection, typeof RTCDataChannel].join('/')",
+    );
+    ctx.ok(
+        rtc == "undefined/undefined/undefined",
+        format!("{at}: the page has no peer connections ({rtc:?})"),
+    );
 
     // ---- a second app: another host, a folder of its own, and the first one's folder goes ----
     let v = show(
@@ -435,7 +455,7 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
     ctx.ok(
         s["controller"]["url"]
             .as_str()
-            .is_some_and(|u| u.starts_with("https://a2.flare-app.local/"))
+            .is_some_and(|u| u.starts_with("https://flare-app-2.local/"))
             && s["controllers"] == json!(1),
         format!(
             "{at}: it is another host, one view ({})",
@@ -590,6 +610,37 @@ fn wall_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(
         done && r == "answered:opaque",
         format!("{at}: with no policy a request to outside is still answered by Flare, not tried ({r:?})"),
+    );
+    // The wall covers requests that do not come from the main frame's own code: a frame with no
+    // address of its own and a worker made from a blob.
+    say(
+        ctx,
+        app,
+        r##"(function(){ window.__f='pending'; window.__w='pending'; var f=document.createElement('iframe'); f.srcdoc="<script>fetch('http://127.0.0.1:9/f',{mode:'no-cors'}).then(function(r){parent.__f='answered:'+r.type},function(e){parent.__f='refused-connection'})<\/script>"; document.body.appendChild(f); try { var w=new Worker(URL.createObjectURL(new Blob(["fetch('http://127.0.0.1:9/w',{mode:'no-cors'}).then(function(r){postMessage('answered:'+r.type)},function(e){postMessage('refused-connection')})"]))); w.onmessage=function(m){window.__w=m.data}; } catch (e) { window.__w='no-worker'; } return 'started'; })()"##,
+    );
+    let (done, r) = until_says(
+        ctx,
+        "the frame's fetch to settle",
+        15_000,
+        app,
+        "window.__f",
+        &|s| s != "pending",
+    );
+    ctx.ok(
+        done && r == "answered:opaque",
+        format!("{at}: a request from a srcdoc frame is answered by Flare too ({r:?})"),
+    );
+    let (done, r) = until_says(
+        ctx,
+        "the worker's fetch to settle",
+        15_000,
+        app,
+        "window.__w",
+        &|s| s != "pending",
+    );
+    ctx.ok(
+        done && r == "answered:opaque",
+        format!("{at}: a request from a blob worker is answered by Flare too ({r:?})"),
     );
     // The app's own file is served (the wall lets the app's host through).
     let own = say(ctx, app, "document.title.length >= 0 ? 'fine' : 'no'");

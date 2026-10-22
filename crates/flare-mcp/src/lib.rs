@@ -220,6 +220,7 @@ fn clean_block(message: &str, max: usize) -> String {
     for line in message.lines() {
         let line: String = line
             .chars()
+            .filter(|c| !flare_ctl::text::invisible(*c))
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
         let line = line.trim_end();
@@ -917,7 +918,7 @@ mod tests {
         let mut ch = Fake {
             answer: Some(Err(ChannelError::Remote {
                 code: "bad_params".into(),
-                message: "the diagram did not draw: Parse error on line 2:\ngraph TD\n--^\n\u{1b}[31mExpecting 'SEMI'".into(),
+                message: "the diagram did not draw: Parse error on line 2:\ngraph TD\n--^\n\u{1b}[31m\u{202E}Expecting\u{200B} 'SEMI'".into(),
             })),
             ..Fake::default()
         };
@@ -937,6 +938,7 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("Expecting 'SEMI'"), "{t}");
+        assert!(!t.contains('\u{202E}') && !t.contains('\u{200B}'), "{t}");
         assert!(!t.contains('\u{1b}'), "{t}");
         assert!(t.contains("call show_diagram again"), "{t}");
         // Any other refusal keeps the usual one short line.
