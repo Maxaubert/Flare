@@ -1,5 +1,5 @@
-//! Live preview, the agent board and question notifications (Surfaces stage 7): `devPreview`, `agentBoard` and
-//! `questionToast`.
+//! Live preview and question notifications (Surfaces stage 7): `devPreview` and `questionToast`. (`agentBoard` was
+//! removed 2026-10-22 with the agent board itself.)
 //!
 //! Each starts the built release exe in its own world and profile, offscreen and unfocusable like every scenario. Nothing
 //! reaches the desktop: the listeners are the scenario's own (hidden child PowerShells of the tab's shell that answer HTTP on `127.0.0.1`, since the chip only believes a listener in the tab's process tree; one thread of the harness itself serves the "not ours" case), the agents are
@@ -11,8 +11,6 @@
 //! whole in the terminal's top right; a click opens the web panel at the ORIGIN (path and query dropped) and the page the listener serves loads
 //! in it; a second server's chip goes when its listener is dropped and comes back when a server is started again on that port; a cleared screen takes a chip at once; a remote
 //! address never gets one; a port the harness (not the tab's tree) listens on gets none; the setting off keeps all of it away.
-//! `agentBoard` (100 and 225 percent): the board lists the two tabs with an agent, not the plain shell, each with its state
-//! and time; a click on a row goes to that tab; the chord and the control channel open it; closing it stops its clock.
 //! `questionToast`: a question in a tab out of sight records one notification with the tab's name; none while that tab is
 //! in front; a click goes to the tab; the setting off records none.
 
@@ -25,15 +23,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use flare_ctl::{connect, Client, ClientError, HelloParams, Method, PipeEnd};
 use flare_e2e_proto::Request;
 use serde_json::{json, Value};
 
 use super::input_b::{css, front_tab, probe, prompt, type_line};
 use super::web::script;
 use crate::ctx::{App, Ctx, Launch};
-
-const WAIT: Duration = Duration::from_secs(15);
 
 /// A local server of the scenario's own: answers every request with a small page, until it is dropped (then its port
 /// closes, as a stopped dev server's does).
@@ -453,16 +448,6 @@ fn wait_for_file(flag: &Path) -> String {
     format!("while (-not (Test-Path -LiteralPath '{flag}')) {{ Start-Sleep -Milliseconds 100 }}")
 }
 
-/// A command line that stands in for a Claude session that stays in `state` for the whole scenario. The shell never
-/// returns to its prompt, which would take the agent back.
-fn agent_in(state: &str) -> String {
-    format!(
-        "{}; {}; Start-Sleep -Seconds 900",
-        claude_title(),
-        hook(state)
-    )
-}
-
 fn ids_of(app: &mut App) -> Vec<(String, bool)> {
     probe(app, "ctl.info", Value::Null)["tabs"]
         .as_array()
@@ -494,210 +479,14 @@ fn go_to(ctx: &mut Ctx, app: &mut App, n: usize, at: &str) -> Result<String, Str
     Ok(id)
 }
 
-fn hello(pipe: &str, token: &str) -> Result<Client<PipeEnd>, ClientError> {
-    let mut c = connect(pipe, WAIT)?;
-    c.hello(
-        &HelloParams {
-            client: "flare-e2e".into(),
-            version: "1".into(),
-            token: None,
-            tab_token: Some(token.to_string()),
-        },
-        WAIT,
-    )?;
-    Ok(c)
-}
-
-fn rows_of(v: &Value) -> Vec<(String, String, String)> {
-    v["board_rows"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|r| {
-                    (
-                        r["name"].as_str().unwrap_or_default().to_string(),
-                        r["state"].as_str().unwrap_or_default().to_string(),
-                        r["status"].as_str().unwrap_or_default().to_string(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-// ---- agentBoard ------------------------------------------------------------------------------------------------
-
-pub fn agent_board(ctx: &mut Ctx) -> Result<(), String> {
-    for (dpi, label) in [(96u32, "100%"), (216, "225%")] {
-        // A world of its own for each leg: the first leg's three tabs are saved and would come back as three more.
-        let w = ctx.new_world();
-        let mut app = ctx.launch_in(
-            &w,
-            Launch {
-                renderer: Some("gpu"),
-                folders: vec![w.alpha.clone(), w.beta.clone(), w.root.clone()],
-                scale_dpi: Some(dpi),
-                ..Launch::default()
-            },
-        )?;
-        let r = board_on(ctx, &mut app, dpi, label);
-        // An agent that works makes a close ask its question; the scenario is over, so the quit is forced.
-        let _ = app.session.call(&Request::Quit { force: true });
-        let left = app.close();
-        ctx.ok(left, format!("{label}: the app quits by itself"));
-        r?;
-    }
-    Ok(())
-}
-
-fn board_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), String> {
-    size_to_1000(ctx, app, dpi, at)?;
-    let ids = ids_of(app);
-    ctx.ok(ids.len() == 3, format!("{at}: three tabs ({})", ids.len()));
-
-    // Tab 1 works, tab 2 asks, tab 3 stays a plain shell.
-    let a = go_to(ctx, app, 1, at)?;
-    prompt(app)?;
-    type_line(app, &agent_in("working"))?;
-    let b = go_to(ctx, app, 2, at)?;
-    prompt(app)?;
-    type_line(app, &agent_in("question"))?;
-    let c = go_to(ctx, app, 3, at)?;
-    prompt(app)?;
-    let s = state(app);
-    ctx.ok(
-        s["board_open"] == json!(false)
-            && s["board_timer"] == json!(false)
-            && s["board_ui_rows"] == json!(0),
-        format!("{at}: a closed board has no rows and no timer"),
-    );
-
-    // ---- the chord opens it ----
-    let seen = ctx.until("both agents to be known", 20_000, &mut || {
-        let rows = rows_of(&state(app));
-        rows.len() == 2
-    });
-    ctx.ok(
-        seen,
-        format!("{at}: two tabs have an agent, the plain shell does not"),
-    );
-    app.session.key("Ctrl+Shift+A")?;
-    let open = ctx.until("the board to open", 5_000, &mut || {
-        let s = state(app);
-        s["board_open"] == json!(true) && s["panel_kind"] == json!(6)
-    });
-    ctx.ok(
-        open,
-        format!("{at}: Ctrl+Shift+A opens the board in the front tab's panel"),
-    );
-    let s = state(app);
-    let rows = rows_of(&s);
-    ctx.ok(
-        rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>() == ["working", "question"],
-        format!("{at}: the rows are in the strip's order with their states ({rows:?})"),
-    );
-    let said = |i: usize| rows.get(i).map(|r| r.2.clone()).unwrap_or_default();
-    ctx.ok(
-        said(0).starts_with("Working for ") && said(1).starts_with("Waiting"),
-        format!("{at}: and say how long ({} / {})", said(0), said(1)),
-    );
-    ctx.ok(
-        s["board_ui_rows"] == json!(2) && s["board_timer"] == json!(true),
-        format!("{at}: the window holds the two rows and the clock runs"),
-    );
-    let p = probe(app, "panel.state", Value::Null);
-    ctx.ok(
-        p["kind"] == json!(6) && p["shown"] == json!(true) && p["title"] == json!("Agents"),
-        format!("{at}: the panel is the board, titled Agents"),
-    );
-
-    // ---- the geometry ----
-    let body = css(&probe(app, "ui.rect", json!({"name": "panel-body"}))).unwrap_or_default();
-    let r0 = css(&probe(app, "ui.rect", json!({"name": "board-row-0"}))).unwrap_or_default();
-    let r1 = css(&probe(app, "ui.rect", json!({"name": "board-row-1"}))).unwrap_or_default();
-    ctx.ok(
-        (r0.0 - body.0).abs() < 0.6
-            && (r0.1 - body.1).abs() < 0.6
-            && (r0.2 - body.2).abs() < 0.6
-            && (r1.1 - (r0.1 + r0.3)).abs() < 0.6
-            && r1.1 + r1.3 <= body.1 + body.3 + 0.6,
-        format!("{at}: the rows stack from the top of the panel body ({r0:?} {r1:?} in {body:?})"),
-    );
-
-    // ---- the clock moves ----
-    let first = rows_of(&state(app))
-        .first()
-        .map(|r| r.2.clone())
-        .unwrap_or_default();
-    let moved = ctx.until("the clock to move", 8_000, &mut || {
-        rows_of(&state(app)).first().map(|r| r.2.clone()) != Some(first.clone())
-    });
-    ctx.ok(
-        moved,
-        format!("{at}: the time on a row moves while the board is open"),
-    );
-
-    // ---- a click goes to that tab ----
-    let shot = ctx.shot(app, &format!("board-{dpi}"));
-    let _ = shot;
-    app.session
-        .click((r0.0 + r0.2 / 2.0) as f32, (r0.1 + r0.3 / 2.0) as f32)?;
-    let went = ctx.until("tab 1 to come to the front", 5_000, &mut || {
-        front_tab(app) == a
-    });
-    ctx.ok(
-        went,
-        format!("{at}: a click on the first row goes to that tab"),
-    );
-
-    // ---- tab 3's board stays where it was opened ----
-    let _ = go_to(ctx, app, 3, at)?;
-    let back = state(app)["board_open"] == json!(true);
-    ctx.ok(
-        back,
-        format!("{at}: the board is still tab 3's panel when it comes back"),
-    );
-
-    // ---- the control channel opens it too ----
-    let info = probe(app, "ctl.info", Value::Null);
-    let pipe = info["pipe"].as_str().unwrap_or_default().to_string();
-    let token_b = info["tabs"][1]["token"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let mut chan = hello(&pipe, &token_b).map_err(|e| format!("hello: {e}"))?;
-    let r = chan.call(Method::PanelOpen, json!({"kind": "board"}), WAIT);
-    ctx.ok(
-        r.as_ref().is_ok_and(|v| {
-            v["panel"]["kind"] == json!("board") && v["panel"]["title"] == json!("Agents")
-        }),
-        format!("{at}: panel.open kind board opens it for an agent's own tab ({r:?})"),
-    );
-    let r = chan.call(
-        Method::PanelOpen,
-        json!({"kind": "board", "path": "x"}),
-        WAIT,
-    );
-    ctx.ok(
-        matches!(&r, Err(ClientError::Remote(e)) if e.code == "bad_params"),
-        format!("{at}: and refuses a path that does not go with it ({r:?})"),
-    );
-    drop(chan);
-
-    // ---- closing it stops the clock ----
-    app.session.key("Ctrl+Shift+A")?;
-    let closed = ctx.until("the board to close", 5_000, &mut || {
-        let s = state(app);
-        s["board_open"] == json!(false)
-            && s["board_timer"] == json!(false)
-            && s["board_ui_rows"] == json!(0)
-    });
-    ctx.ok(
-        closed,
-        format!("{at}: closing the board drops its rows and its clock"),
-    );
-    let _ = (b, c);
-    Ok(())
+/// The first tab with an agent (in the strip's order) is in this state, by `agent.state`.
+fn first_agent_is(app: &mut App, want: &str) -> bool {
+    let v = probe(app, "agent.state", json!({}));
+    v["tabs"].as_array().is_some_and(|tabs| {
+        tabs.iter()
+            .find(|t| t["present"] == json!(true))
+            .is_some_and(|t| t["state"] == json!(want))
+    })
 }
 
 // ---- questionToast ---------------------------------------------------------------------------------------------
@@ -779,7 +568,7 @@ fn toast_on(ctx: &mut Ctx, app: &mut App, root: &Path, alpha: &Path) -> Result<(
     prompt(app)?;
     type_line(app, &asker(&go1, &go2))?;
     let working = ctx.until("the agent to be working", 20_000, &mut || {
-        rows_of(&state(app)).first().map(|r| r.1.clone()) == Some("working".into())
+        first_agent_is(app, "working")
     });
     ctx.ok(working, "the agent in tab 1 is working");
     let b = go_to(ctx, app, 2, at)?;
@@ -830,7 +619,7 @@ fn toast_on(ctx: &mut Ctx, app: &mut App, root: &Path, alpha: &Path) -> Result<(
     fs::write(&go2, "go").map_err(|e| e.to_string())?;
     pass(ctx, 900);
     let again = ctx.until("the second question", 10_000, &mut || {
-        rows_of(&state(app)).first().map(|r| r.1.clone()) == Some("question".into())
+        first_agent_is(app, "question")
     });
     ctx.ok(again, "the agent asks again, with its tab in front");
     pass(ctx, 2_000);
@@ -856,13 +645,13 @@ fn toast_off(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
     prompt(app)?;
     type_line(app, &asker(&go1, &go2))?;
     let working = ctx.until("the agent to be working", 20_000, &mut || {
-        rows_of(&state(app)).first().map(|r| r.1.clone()) == Some("working".into())
+        first_agent_is(app, "working")
     });
     ctx.ok(working, "setting off: the agent in tab 1 is working");
     let _b = go_to(ctx, app, 2, at)?;
     fs::write(&go1, "go").map_err(|e| e.to_string())?;
     let asked = ctx.until("the question", 15_000, &mut || {
-        rows_of(&state(app)).first().map(|r| r.1.clone()) == Some("question".into())
+        first_agent_is(app, "question")
     });
     ctx.ok(asked, "setting off: the agent asks");
     pass(ctx, 2_000);

@@ -611,12 +611,6 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 480,
     },
     Scenario {
-        name: "agentBoard",
-        group: "board",
-        run: board::agent_board,
-        limit_secs: 420,
-    },
-    Scenario {
         name: "questionToast",
         group: "board",
         run: board::question_toast,

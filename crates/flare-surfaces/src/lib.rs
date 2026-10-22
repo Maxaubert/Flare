@@ -13,7 +13,6 @@
 pub mod agent_job;
 pub mod agent_web;
 pub mod app;
-pub mod board;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;

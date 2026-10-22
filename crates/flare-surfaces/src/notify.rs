@@ -134,7 +134,7 @@ impl Notifier {
 }
 
 fn toast_of(a: &Asking) -> Toast {
-    let title = crate::board::one_line(&a.name, TITLE_MAX);
+    let title = one_line(&a.name, TITLE_MAX);
     let title = if title.is_empty() {
         a.agent.clone()
     } else {
@@ -143,7 +143,7 @@ fn toast_of(a: &Asking) -> Toast {
     let text = a
         .text
         .as_deref()
-        .map(|t| crate::board::one_line(t, BODY_MAX))
+        .map(|t| one_line(t, BODY_MAX))
         .filter(|t| !t.is_empty());
     let body = text.unwrap_or_else(|| format!("{} has a question for you.", a.agent));
     Toast {
@@ -153,9 +153,72 @@ fn toast_of(a: &Asking) -> Toast {
     }
 }
 
+/// Text from a screen or a hook, as one safe line: controls, line breaks and the characters that reorder or hide
+/// text become spaces, runs of spaces become one, and it is cut at `max` characters with an ellipsis.
+pub fn one_line(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut gap = true;
+    let mut n = 0;
+    for c in text.chars() {
+        let c = if c.is_control() || hidden(c) { ' ' } else { c };
+        if c.is_whitespace() {
+            if !gap {
+                out.push(' ');
+                gap = true;
+                n += 1;
+            }
+        } else {
+            out.push(c);
+            gap = false;
+            n += 1;
+        }
+        if n > max {
+            break;
+        }
+    }
+    let trimmed = out.trim_end();
+    if trimmed.chars().count() > max {
+        let cut: String = trimmed.chars().take(max.saturating_sub(1)).collect();
+        return format!("{}\u{2026}", cut.trim_end());
+    }
+    trimmed.to_string()
+}
+
+/// A character that changes how text reads without showing: a zero-width one, a bidirectional control, a tag character,
+/// a variation selector and the byte order mark.
+fn hidden(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180E
+        | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164
+        | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0xFFF9..=0xFFFB | 0xE0000..=0xE0FFF)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_from_the_screen_is_one_clean_line() {
+        assert_eq!(one_line("a\r\nb\tc   d", 50), "a b c d");
+        assert_eq!(one_line("  padded  ", 50), "padded");
+        assert_eq!(one_line("x\u{202e}evil\u{200b}y", 50), "x evil y");
+        assert_eq!(one_line("a\u{e0041}b", 50), "a b");
+        assert_eq!(one_line("a\u{1b}[31mb", 50), "a [31mb");
+        assert_eq!(one_line("", 5), "");
+        assert_eq!(one_line("   ", 5), "");
+    }
+
+    #[test]
+    fn a_long_line_is_cut_with_an_ellipsis() {
+        let long = "word ".repeat(200);
+        let cut = one_line(&long, 40);
+        assert!(cut.chars().count() <= 40, "{}", cut.chars().count());
+        assert!(cut.ends_with('\u{2026}'));
+        let exact = "a".repeat(40);
+        assert_eq!(one_line(&exact, 40), exact);
+        let over = "a".repeat(41);
+        assert_eq!(one_line(&over, 40).chars().count(), 40);
+    }
 
     fn asking(tab: &str, text: Option<&str>) -> Asking {
         Asking {

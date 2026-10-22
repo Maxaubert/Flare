@@ -496,7 +496,7 @@ pub struct AppCtl {
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
-    /// The Preview chip, the agent board and the question notifications (Surfaces stage 7).
+    /// The Preview chip and the question notifications (Surfaces stage 7).
     s7: surfaces7::Surf7,
     /// Mods (Surfaces stage 8): none until the window hands over the hub.
     mods: Option<crate::mods_ctl::ModCtl>,
@@ -1193,8 +1193,6 @@ impl AppCtl {
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
             .convo_toggle(key.as_str()));
-        bind!(app, rc, on_panel_board_pick, |c, tab: SharedString| c
-            .board_pick(tab.as_str()));
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
@@ -2457,10 +2455,9 @@ impl AppCtl {
                 _ => {}
             },
             MenuKind::Term { tab }
-                if self.convo_menu_picked(tab, &row.label)
-                    || self.board_menu_picked(tab, &row.label) =>
+                if self.convo_menu_picked(tab, &row.label) =>
             {
-                // One of the conversation or board rows: the terminal's own menu state is let go, nothing else happens.
+                // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
             }
             MenuKind::Term { .. } => {
@@ -2762,7 +2759,6 @@ impl AppCtl {
             return;
         }
         rows.extend(self.convo_menu_rows(&at.tab));
-        rows.extend(self.board_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
             .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
@@ -2885,7 +2881,6 @@ impl AppCtl {
             .as_deref()
             .and_then(|t| self.panels.open_convo_kind(t).map(|k| (t, k)));
         self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
-        self.sync_board(app);
         self.sync_chip();
         self.sync_mods();
         self.prune_downloads();
@@ -4466,10 +4461,6 @@ impl ChordTarget for Target<'_> {
 
     fn focus_panel(&mut self) {
         self.0.move_panel_focus();
-    }
-
-    fn toggle_board(&mut self) {
-        self.0.toggle_board();
     }
 }
 

@@ -496,8 +496,8 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         }
         // A row of the Changes file list (Surfaces stage 6).
         n if n.starts_with("convo-file-") => super::panel::rects(ctx, n),
-        // The Preview chip and the rows of the agent board (stage 7).
-        n if n == "preview-chip" || n.starts_with("board-row-") => super::surf7::rects(ctx, n),
+        // The Preview chip (stage 7).
+        "preview-chip" => super::surf7::rects(ctx, name),
         "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }

@@ -1,12 +1,10 @@
-//! Stage 7 through the real window controller (Surfaces): the Preview chip, the agent board and the question
+//! Stage 7 through the real window controller (Surfaces): the Preview chip and the question
 //! notifications. A tab's shell is a fake that "prints" what a dev server or an agent would; the listening table and
 //! Windows' notifications are stand-ins the tests own.
 //!
 //! Held: a local address in a tab's output offers a chip once something listens on its port, opens the web panel at that
 //! address on a click, and goes when the listener is gone or the screen was cleared; only a local address ever
-//! qualifies; one chip per tab (the newest); the chip belongs to the tab in front; the setting turns it off. The board
-//! lists the tabs with an agent, each with its state, time and question, in the strip's order, a click goes to the tab,
-//! and it costs no timer while closed. A question out of sight notifies once with the tab's name and its text; none
+//! qualifies; one chip per tab (the newest); the chip belongs to the tab in front; the setting turns it off. A question out of sight notifies once with the tab's name and its text; none
 //! while the tab is in view in a window with the keyboard; the setting turns it off; a click brings the tab up.
 
 use std::cell::{Cell, RefCell};
@@ -16,14 +14,10 @@ use std::time::{Duration, Instant};
 
 use flare_settings::agent_prefs::set_notify_ask_on;
 use flare_settings::term_prefs::set_dev_preview;
-use flare_surfaces::PanelKind;
-use flare_surfaces::board::BoardState;
 use flare_surfaces::devpreview::PortLook;
 use flare_surfaces::notify::Toast;
-use serde_json::json;
 
 use super::*;
-use crate::ctl_app::{CtlOp, CtlRequest, CtlRequestBox};
 
 type Listening = Arc<Mutex<Vec<u16>>>;
 
@@ -393,238 +387,6 @@ fn quiet_output_costs_nothing_here() {
     assert_eq!(probe(&f)["tracked"], 0);
 }
 
-// ---- the agent board ----------------------------------------------------------------------------------------
-
-fn rows(f: &Fx) -> Vec<flare_surfaces::board::BoardRow> {
-    f.ctl.borrow().board_rows()
-}
-
-fn open_board(f: &Fx) {
-    assert!(f.ctl.borrow_mut().toggle_board());
-    f.pump();
-}
-
-#[test]
-fn the_board_lists_only_tabs_with_an_agent_in_the_strips_order() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a", "C:\\b", "C:\\c"]);
-    claude(&f, "C:\\c");
-    claude(&f, "C:\\a");
-    f.visit(1);
-    open_board(&f);
-    let r = rows(&f);
-    let names: Vec<&str> = r.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["a", "c"],
-        "tab b has no agent; the strip's order, not the order they began"
-    );
-    assert_eq!(f.h.comp.get_panel_kind(), 6);
-    assert_eq!(f.h.comp.get_panel_title(), "Agents");
-    assert_eq!(f.h.comp.get_panel_sub(), "2 agents");
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 2);
-    assert!(r.iter().all(|r| r.agent == "Claude"));
-}
-
-#[test]
-fn every_state_is_worded_and_the_time_is_the_states_own() {
-    let f = Fx::new();
-    let ids = f.tabs(&["C:\\a", "C:\\b", "C:\\c", "C:\\d"]);
-    for c in ["C:\\a", "C:\\b", "C:\\c", "C:\\d"] {
-        claude(&f, c);
-    }
-    f.say("C:\\a", W);
-    f.say("C:\\b", Q);
-    f.say("C:\\c", D);
-    f.say("C:\\d", F);
-    f.pump_until("the marks", |f| {
-        let mut c = f.ctl.borrow_mut();
-        c.hub_mut().working(&ids[0])
-    });
-    f.step(65_000);
-    open_board(&f);
-    let r = rows(&f);
-    let by = |n: &str| r.iter().find(|r| r.name == n).unwrap().clone();
-    assert_eq!(by("a").state, BoardState::Working);
-    assert!(
-        by("a").status.starts_with("Working for 1m"),
-        "{}",
-        by("a").status
-    );
-    assert_eq!(by("b").state, BoardState::Question);
-    assert!(
-        by("b").status.starts_with("Waiting 1m"),
-        "{}",
-        by("b").status
-    );
-    assert_eq!(by("c").state, BoardState::Finished);
-    assert!(
-        by("c").status.starts_with("Finished 1m"),
-        "{}",
-        by("c").status
-    );
-    assert_eq!(by("d").state, BoardState::Failed);
-    assert!(
-        by("d").status.starts_with("Failed 1m"),
-        "{}",
-        by("d").status
-    );
-    assert_eq!(by("d").detail, "rate limit");
-    // The clocks move while it is open.
-    f.step(30_000);
-    f.step(1_000);
-    let a = rows(&f).into_iter().find(|r| r.name == "a").unwrap();
-    assert!(
-        a.status.starts_with("Working for 1m 3") || a.status.starts_with("Working for 1m 4"),
-        "{}",
-        a.status
-    );
-}
-
-#[test]
-fn an_agent_with_nothing_to_say_is_idle() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a"]);
-    claude(&f, "C:\\a");
-    open_board(&f);
-    let r = rows(&f);
-    assert_eq!(r.len(), 1);
-    assert_eq!(r[0].state, BoardState::Idle);
-    assert_eq!(r[0].status, "Idle");
-}
-
-#[test]
-fn a_question_row_shows_the_question_when_the_screen_has_it() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a"]);
-    f.visit(0);
-    claude(&f, "C:\\a");
-    f.say("C:\\a", Q);
-    f.say("C:\\a", &paint_owned(&screens("run2-01-question-1")));
-    f.step(150);
-    f.step(0);
-    open_board(&f);
-    let r = rows(&f);
-    assert_eq!(r[0].state, BoardState::Question);
-    assert_eq!(r[0].detail, "Pick a colour?");
-    let ui = f.h.comp.get_panel_board_rows().row_data(0).unwrap();
-    assert_eq!(ui.detail, "Pick a colour?");
-    assert_eq!(ui.state, 2);
-}
-
-#[test]
-fn a_click_on_a_row_goes_to_that_tab() {
-    let f = Fx::new();
-    let ids = f.tabs(&["C:\\a", "C:\\b"]);
-    claude(&f, "C:\\a");
-    claude(&f, "C:\\b");
-    f.visit(1);
-    open_board(&f);
-    f.h.comp.invoke_panel_board_pick(ids[0].as_str().into());
-    f.pump();
-    assert_eq!(f.front(), ids[0]);
-    // The board belongs to tab b's panel; tab a shows its own (none).
-    assert_eq!(f.h.comp.get_panel_kind(), 0);
-    // A tab that does not exist is ignored.
-    f.h.comp.invoke_panel_board_pick("t-nope".into());
-    f.pump();
-    assert_eq!(f.front(), ids[0]);
-}
-
-#[test]
-fn the_board_costs_no_timer_and_no_rows_while_closed() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a"]);
-    claude(&f, "C:\\a");
-    f.visit(0);
-    f.step(100);
-    assert_eq!(probe(&f)["board_timer"], false);
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 0);
-    open_board(&f);
-    assert_eq!(probe(&f)["board_timer"], true);
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 1);
-    // Closing it lets go of both.
-    assert!(f.ctl.borrow_mut().toggle_board());
-    f.pump();
-    assert_eq!(probe(&f)["board_timer"], false);
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 0);
-    assert_eq!(f.h.comp.get_panel_kind(), 0);
-}
-
-#[test]
-fn the_chord_opens_and_closes_the_board_and_the_shell_never_hears_it() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a"]);
-    claude(&f, "C:\\a");
-    f.visit(0);
-    let chord = KeyEvent::new("A", "KeyA").ctrl().shift();
-    assert_eq!(f.key(chord.clone()), KeyOutcome::Consumed);
-    assert_eq!(f.h.comp.get_panel_kind(), 6);
-    assert!(f.h.comp.get_panel_shown());
-    assert_eq!(f.key(chord), KeyOutcome::Consumed);
-    assert!(!f.h.comp.get_panel_shown());
-    // Plain Ctrl+A is the shell's.
-    assert_eq!(f.key(KeyEvent::new("a", "KeyA").ctrl()), KeyOutcome::Pty);
-}
-
-#[test]
-fn an_empty_board_says_so() {
-    let f = Fx::new();
-    f.tabs(&["C:\\a"]);
-    f.visit(0);
-    open_board(&f);
-    assert_eq!(
-        f.h.comp.get_panel_note(),
-        "No agent is running in your tabs."
-    );
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 0);
-}
-
-#[test]
-fn the_terminal_menu_gains_one_row_that_follows_the_board() {
-    let f = Fx::new();
-    let id = f.tabs(&["C:\\a"]).remove(0);
-    f.visit(0);
-    assert!(
-        f.ctl.borrow().board_menu_rows(&id).is_empty(),
-        "no agent anywhere: no row"
-    );
-    claude(&f, "C:\\a");
-    let row = f.ctl.borrow().board_menu_rows(&id);
-    assert_eq!(row.len(), 1);
-    assert_eq!(row[0].0.label, "Show agent board");
-    assert_eq!(row[0].0.hint, "Ctrl+Shift+A");
-    assert!(
-        f.ctl
-            .borrow_mut()
-            .board_menu_picked(&id, "Show agent board")
-    );
-    f.pump();
-    assert_eq!(f.h.comp.get_panel_kind(), 6);
-    let row = f.ctl.borrow().board_menu_rows(&id);
-    assert_eq!(row[0].0.label, "Hide agent board");
-    assert!(
-        f.ctl
-            .borrow_mut()
-            .board_menu_picked(&id, "Hide agent board")
-    );
-    f.pump();
-    assert!(!f.h.comp.get_panel_shown());
-    assert!(!f.ctl.borrow_mut().board_menu_picked(&id, "Copy"));
-}
-
-#[test]
-fn the_board_panel_is_stored_like_another_and_comes_back_with_the_tab() {
-    let f = Fx::new();
-    let id = f.tabs(&["C:\\a"]).remove(0);
-    assert!(f.ctl.borrow_mut().open_convo_panel(&id, PanelKind::Board));
-    let snap = f.ctl.borrow().panel_snap(&id).unwrap();
-    assert_eq!(snap.kind, "board");
-    assert_eq!(snap.title, "Agents");
-    assert_eq!(snap.path, None);
-    assert!(snap.open);
-}
-
 // ---- questions as notifications ---------------------------------------------------------------------------
 
 #[test]
@@ -780,58 +542,6 @@ fn a_notification_windows_would_not_take_flashes_the_taskbar_instead() {
     f.say("C:\\work", Q);
     f.step(700);
     assert_eq!(flashes.get(), 2);
-}
-
-#[test]
-fn the_hub_keeps_when_each_state_began_and_forgets_a_closed_tab() {
-    let f = Fx::new();
-    let id = f.tabs(&["C:\\a"]).remove(0);
-    claude(&f, "C:\\a");
-    f.say("C:\\a", W);
-    f.pump_until("working", |f| f.ctl.borrow_mut().hub_mut().working(&id));
-    f.step(10_000);
-    let e = f.ctl.borrow().hub().board_entry(&id).unwrap();
-    assert_eq!(e.state, BoardState::Working);
-    assert!(e.in_state_ms.unwrap() >= 10_000);
-    f.ctl.borrow_mut().close_now(&id);
-    f.pump();
-    assert!(f.ctl.borrow().hub().board_entry(&id).is_none());
-}
-
-// ---- the control channel ----
-
-#[test]
-fn panel_open_board_opens_it_on_the_agents_own_tab_and_switches_no_tab() {
-    let f = Fx::new();
-    let ids = f.tabs(&["C:\\a", "C:\\b"]);
-    claude(&f, "C:\\a");
-    f.visit(1);
-    let (tx, rx) = std::sync::mpsc::channel();
-    f.ctl
-        .borrow_mut()
-        .on_msg(UiMsg::Ctl(CtlRequestBox(CtlRequest {
-            op: CtlOp::ShowConvo {
-                tab: ids[0].clone(),
-                kind: PanelKind::Board,
-            },
-            deadline: Instant::now() + Duration::from_secs(5),
-            reply: tx,
-        })));
-    let v = rx
-        .recv_timeout(Duration::from_secs(5)) // sync-ok: test code only
-        .expect("an answer")
-        .expect("not an error");
-    assert_eq!(v["panel"], json!({"kind": "board", "title": "Agents"}));
-    f.pump();
-    assert_eq!(
-        f.front(),
-        ids[1],
-        "the agent's call never switches the person's tab"
-    );
-    assert_eq!(f.h.comp.get_panel_kind(), 0, "tab b shows no panel");
-    f.visit(0);
-    assert_eq!(f.h.comp.get_panel_kind(), 6, "tab a's panel is the board");
-    assert_eq!(f.h.comp.get_panel_board_row_count(), 1);
 }
 
 #[test]
