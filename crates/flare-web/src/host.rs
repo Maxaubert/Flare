@@ -28,13 +28,14 @@ use std::sync::Arc;
 use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CapturePreviewCompletedHandler,
-    ContainsFullScreenElementChangedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
-    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, FocusChangedEventHandler,
-    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    SourceChangedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
+    CapturePreviewCompletedHandler, ContainsFullScreenElementChangedEventHandler,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
+    FocusChangedEventHandler, HistoryChangedEventHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -1077,6 +1078,46 @@ impl WebBackend for WebHost {
 
     fn set_key_filter(&mut self, filter: KeyFilter) {
         *self.filter.borrow_mut() = Some(filter);
+    }
+
+    fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str) {
+        let name = tab.to_string();
+        let Some(l) = self.live(tab) else {
+            (self.sink)(WebEvent::Cdp {
+                tab: name,
+                id,
+                result: Err("no web view".to_string()),
+            });
+            return;
+        };
+        let (sink, held_tab) = (Arc::clone(&self.sink), name.clone());
+        let h = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |err, json| {
+            let result = match err {
+                Ok(()) => Ok(json),
+                Err(e) if json.is_empty() => Err(e.message()),
+                Err(e) => Err(format!("{} {json}", e.message())),
+            };
+            sink(WebEvent::Cdp {
+                tab: held_tab.clone(),
+                id,
+                result,
+            });
+            Ok(())
+        }));
+        let (m, p) = (wide(method), wide(params));
+        // SAFETY: `webview` and the handler are live COM objects; both strings are NUL-terminated and
+        // outlive the call.
+        let r = unsafe {
+            l.webview
+                .CallDevToolsProtocolMethod(PCWSTR(m.as_ptr()), PCWSTR(p.as_ptr()), &h)
+        };
+        if let Err(e) = r {
+            (self.sink)(WebEvent::Cdp {
+                tab: name,
+                id,
+                result: Err(e.message()),
+            });
+        }
     }
 
     fn run_script(&mut self, tab: &str, id: u64, js: &str) {

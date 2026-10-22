@@ -68,6 +68,11 @@ fn web_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "input_focused": a.get_panel_web_input_focused(),
         "h": a.get_panel_bar_h(),
     });
+    v["ribbon"] = json!({
+        "shown": a.get_panel_web_ribbon_shown(),
+        "text": a.get_panel_web_ribbon().to_string(),
+        "w": a.get_panel_web_ribbon_w(),
+    });
     v["still"] = json!({
         "shown": a.get_panel_web_has_still(),
         "w": a.get_panel_web_still().size().width,

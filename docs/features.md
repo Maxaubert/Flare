@@ -978,3 +978,67 @@ one controller per tab with an open web panel, parented to Flare's window.
 - **Not built in this stage:** the agent's hands on the page (look, click, type, press, scroll, wait, eval; the ribbon) are
   stage 4; mini-apps and diagrams stage 5; "open this localhost address" offered from the terminal stage 7. By hand, not
   machine-tested: the list at the end of `docs/surfaces/lessons.md` (Stage 3).
+
+## Surfaces: Claude can see and use the browser panel (stage 4), 2026-10-22
+
+Issue #22. The owner's wish: Claude looks around and clicks around in Flare's own browser instead of opening Chrome, like the iOS
+simulator MCP on a Mac and Playwright MCP's snapshot of refs. Choices: `docs/surfaces/decisions.md` (Stage 4); the notes for the
+port: `docs/surfaces/lessons.md` (Stage 4); the contract: `docs/surfaces/protocol.md` (`browser.*`, the `interrupted` error, the
+MCP tools and how a look is written for the model).
+
+- **Look.** `browser.look` / `browser_look` answers with a PNG of the visible area (at the display's own resolution, scaled to at
+  most 1600 wide, the real scale reported) and a numbered list of the page: every control and the text worth reading, each with a
+  ref (`e12`), role, name, value, state and its place in CSS pixels. Refs last until the next look or page load. Held by the unit
+  tests of `flare_surfaces::agent_web` / `agent_job` (the tree trim on synthetic recorded-shape JSON, the cap, hostile trees, the
+  rectangles, the screenshot scale at 100 and 225 percent, the PNG header) and the e2e `agentBrowser` (a real PNG of the parked
+  window that decodes and has colours, the viewport equal to the browser window, the refs).
+- **Click, type, press, scroll, wait, navigate.** By ref or by point (CSS pixels, so any display scale), double and right clicks,
+  typing into a field, named keys with modifiers, the wheel over an element or the page, waits for text, a selector or a pause (at
+  most 30 s), and navigation (`open_page` / `browser_navigate` open the panel when none is open). Held by `a_click_by_ref_scrolls_finds_the_middle_and_presses`,
+  `typing_into_a_ref_focuses_it_then_inserts_the_text`, `a_key_press_sends_down_then_up_in_order`,
+  `scrolling_a_ref_wheels_over_it`, `a_wait_for_text_polls_until_it_is_there` (`agent_job.rs`), the parameter
+  tests in `ctl_app.rs` (`click_takes_a_ref_or_a_point_and_nothing_else`, `type_press_and_scroll_check_their_params`,
+  `a_wait_is_one_thing_for_at_most_thirty_seconds`) and the e2e (the button changes the page's text by ref and by point at 100 and
+  225 percent, the double click presses twice, Enter submits a form, Control+a then typing replaces, the list scrolls, a wait for
+  text that shows after 700 ms, a selector, a timeout with `met` false, a link click that navigates).
+- **A wait cannot run the agent's code.** The only script a wait sends is a fixed template around one JSON string literal. Held by
+  `the_wait_checker_is_a_fixed_template_around_one_string_literal`, `a_wait_asks_the_page_with_the_fixed_checker_only`
+  (through the controller) and the e2e (a wait text with quotes and code leaves `window.hacked` unset).
+- **Stale refs do nothing.** A ref after a page load, a takeover, a new look that dropped it, or for an element that is gone is
+  `not_found` ("look again") and nothing reaches the page. Held by `a_ref_is_forgotten_when_the_page_loads_something_new`,
+  `a_stale_ref_is_not_found_and_nothing_is_sent`, `an_element_that_vanished_is_not_found` and the e2e.
+- **The ribbon.** "Claude is using this page" (the tab's detected agent, else "An agent") over the head of the panel while a call
+  runs and for 1.5 s after; the page does not move or resize for it. Held by
+  `the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
+  `the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `the_ribbon_names_who_is_using_the_page` and the e2e (up
+  during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged).
+- **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
+  `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
+  `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
+  `a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e (a stand-in for the person's input ends a 30 s wait `interrupted`,
+  the ribbon goes, the refs are forgotten; pressing Ctrl+Shift+P as the agent closes nothing). The real mouse path is by hand.
+- **Scripts are off.** `browser.eval` / `browser_eval` need the new setting "Let agents run scripts in pages" (Settings > Terminal
+  > Links, default OFF); the grant follows it at every request. Held by `the_agent_grant_follows_the_users_switch_for_scripts`,
+  `scripts_for_agents_are_off_until_a_stored_one`, `the_scripts_row_is_a_switch_that_is_off_until_turned_on` and the e2e (refused
+  `forbidden` and, through MCP, with the setting's name; a second launch with the switch seeded returns values, awaits promises
+  and reports an exception as `bad_params`).
+- **Page text is data.** A page cannot end the page-content block, pose as another element or hide words from the model with
+  control, direction-override or zero-width characters. Held by `hostile_page_text_cannot_end_the_block_pose_as_an_element_or_hide`,
+  `clean_page_keeps_words_and_drops_tricks` (`flare-mcp`), `page_text_is_cleaned_before_it_goes_anywhere` (`agent_web.rs`) and the
+  e2e `mcpBrowser` (the page carries a fake end marker and an element name with a line break and a forged `[e99]` line).
+- **Parked and unfocused.** The agent drives a page the person is not looking at: the e2e window is parked off the screen and never
+  foregrounded and a look there returns the real picture (`agentBrowser` decodes it at 100 and 225 percent). A tab that is behind
+  keeps its page hidden; a look of it gives the list and no picture (a hidden page paints nothing), answered at once
+  (`a_look_of_a_tab_that_is_behind_has_the_list_but_no_picture`, and the e2e).
+- **Nothing costs anything while unused.** No browser, no DevTools call, no timer until a call is made; the 100 ms timer runs only
+  while a call or the ribbon's hold lasts. Held by `nothing_exists_before_a_web_panel_opens` and the timer names in
+  `timer_registry`.
+- **MCP.** `flare-mcp` lists 13 tools (the five that show things and `browser_look`, `browser_click`, `browser_type`,
+  `browser_press`, `browser_scroll`, `browser_wait`, `browser_navigate`, `browser_eval`), each described for an agent. Held by
+  `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas`, `the_tools_are_listed_with_descriptions_written_for_an_agent`
+  (`browser.rs`) and the e2e `mcpBrowser` (initialize, tools/list, a look whose result has an image content item that is a PNG and
+  the list as text, then click, type, press, scroll, wait, navigate and eval through stdio).
+- **End to end (the release exe, its own profile, offscreen):** `agentBrowser` (129 checks, at 100 and 225 percent, then a launch
+  with scripts on) and `mcpBrowser` (24 checks, `flare-mcp.exe` over stdio). See `docs/e2e.md`.
+- **By hand, not machine-tested:** a real mouse click in the page while a call runs (the polling of the real buttons), a real key,
+  the ribbon's look at the 18 themes, a monitor change during a look. The list is at the end of `docs/surfaces/lessons.md` (Stage 4).

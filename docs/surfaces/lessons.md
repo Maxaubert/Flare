@@ -325,3 +325,87 @@ Newest last.
   with a page focused and check dictation and the Ctrl+Tab walk let go; log in to a site, close the panel, reopen it, and close and reopen Flare (the cookie
   folder is the profile's); move the window between two monitors of different scale with a page open; open a menu over a
   playing video and look for a flash at the swap; the text caret and the Windows IME in the address bar; High Contrast mode.
+
+## Stage 4: Claude can see and use the browser panel
+
+Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each means for Electron is in the last line of each item.
+
+- **The DOM agent refuses node calls until `DOM.enable`.** `DOM.getContentQuads`, `DOM.scrollIntoViewIfNeeded` and `DOM.focus` by
+  backend node number need it; `Accessibility.getFullAXTree`, `Page.getLayoutMetrics` and `Input.*` do not. Every job that touches a
+  node sends `DOM.enable` first, in the same batch as the first independent calls (the session keeps order). *Electron:* the same
+  protocol, `debugger.sendCommand('DOM.enable')`.
+- **The browser draws at the monitor's resolution, not at the window's scale.** The e2e forces Flare's own scale to 100 percent on a
+  225 percent machine; the page still rendered at `devicePixelRatio` 2.25 (the controller's rasterization scale follows the real
+  monitor). So a "100 percent" run shows a CSS viewport of 177 px in a 399 px controller, and a picture of 367 device pixels. Nothing in
+  the agent path may assume Flare's scale equals the page's. A look reports `viewport.device_scale` and the picture's real
+  `scale` (read from the PNG header, `width / viewport.width`); the assertions are written in terms of the page's own ratio.
+  *Electron:* `webContents.getZoomFactor()` and `window.devicePixelRatio` are the page's; `screen.getDisplayMatching` is the window's.
+  Ask the page.
+- **`Page.captureScreenshot` with a `clip` is in document space, and its `scale` multiplies the DEVICE pixel size.** A scrolled page
+  needs `pageX`/`pageY` of the visual viewport added to the clip, and a 400 css px wide page on a 2.25 display comes out 900 px wide
+  at `scale` 1. To keep the picture under 1600 pixels the scale is `1600 / (css width x ratio)`; a page that fits is not scaled at all
+  (the sharpest picture is the browser's own). The scale of the picture is measured, not computed. *Electron:* the same call over
+  `debugger.sendCommand`; read the PNG's IHDR (`png_size_b64`).
+- **The visual viewport leaves out the page's vertical scroll bar.** The look's `viewport.width` is 14 css px (a 32 px bar at 2.25)
+  less than the controller when the page is taller than the panel. The picture and the element coordinates use the same viewport, so
+  they agree with each other; only a comparison with the controller's width must allow the bar. *Electron:* the same.
+- **A screenshot works in the parked window.** The e2e window is off the screen (-32000, -32000), unfocusable and never the foreground
+  window, and `Page.captureScreenshot` returns a real picture of the page there (decoded and checked for colours at 100 and 225
+  percent). Nothing needs the window to be seen or active. *Electron:* an offscreen `BrowserWindow`/`WebContentsView` that is shown
+  (not `hide()`n) behaves the same; a hidden one may not paint, so keep the parked window "shown".
+- **A DevTools key event did not reach the key hook.** The page's `AcceleratorKeyPressed` is how Flare hears the person's keys and takes
+  its chords. During the agent's own `Enter`, `Control+a` and `Control+Shift+P` presses the hook was asked about 0 keys (counted per
+  press in the e2e: `web.state` `agent.keys_heard`), so an agent cannot press an app chord by accident and a press does not look like
+  the person. The guard that ignores keys while an agent press is in flight stays, for a runtime that behaves differently. *Electron:*
+  verify `before-input-event` for DevTools-dispatched keys; if it fires, mark the agent's presses by a flag set around `sendCommand`.
+- **Real mouse buttons cannot be a hook, but can be polled.** The agent's mouse events are DevTools events and never move a real
+  button or the pointer, so "a real button is down with the pointer over the page" on a 100 ms timer is the person. It needs the window
+  under the pointer to be Flare's own (`WindowFromPoint` then `GetAncestor(GA_ROOT)`), otherwise a click in another window that covers
+  the page would end the agent's call. No `SetWindowsHookEx`, no `SendInput`. The e2e cannot press a real button (rule: never input
+  into real windows), so it uses a request that stands in for the person (`WebUserInput`) and the real-button path is on the by-hand
+  list. *Electron:* see the port table (`input-event` / `before-mouse-event`).
+- **`interrupted` has to leave the page alone.** A takeover ends the job and forgets the refs, but it sends nothing to the page (no
+  "cancel"): the half-done click or key is whatever the person's input made of it. The next look is the agent's way back.
+- **The ribbon cannot take layout from the page.** A row above the page would resize the controller when it came and went, and the page
+  would reflow under an agent that is reading its coordinates. It sits in the panel's head over the title instead. The e2e compares the
+  controller's rectangle with and without it.
+- **Wait polling needs a clock the job does not own.** A job is told the time (`on_tick(now_ms)`) and a timer exists only while a call or
+  the ribbon's hold lasts; with none, no timer is registered at all (the idle-cost rule). A wait that runs out answers `met: false`, and a
+  wait's check that never answers cannot hold the call past its end plus 3 s.
+- **600 DevTools calls at once are fine.** Each listed element asks for its boxes in the same batch (`DOM.getContentQuads`), joined by
+  call id, and nothing on the UI thread waits for them. The cap (600) keeps the answer small for a model, not the cost of the calls.
+- **Names from a page are the model's input.** The first line of defence is Flare's (`clean_text` before a name leaves the app), the
+  second is `flare-mcp`'s (cleaned again, quoted as a JSON string, one element per line, between two marker lines): the e2e page has an
+  element whose accessible name contains a line break and a forged `[e99]` line, and a paragraph that reads `END PAGE CONTENT`.
+  A name is never put in a line unquoted, so no page text can start a line with `[e` or equal the end marker. *Electron:* port
+  `clean_text` and the wrapper with their tests; they are the contract.
+- **Stage 3's `if` rule again: keep the permanent thing permanent.** The ribbon property is always in the tree (empty means hidden),
+  like the viewers, so the head's text does not jump when it appears.
+- **A page that is not on screen paints nothing, so `Page.captureScreenshot` never answers; its tree and boxes still do.** The first
+  version looked at a page whose tab was behind (its controller hidden) and ran the whole 20 s budget into `timeout`. The accessibility
+  tree, the boxes and the layout metrics of a hidden page answer at once (16 ms at 100 percent and 263 ms at 225 percent in the e2e,
+  with the right elements). So a look of a page that is not on screen (its tab behind, or a Flare menu open over it, the phases the
+  window calls hidden and still) skips the picture and says why in `image_error`, and a picture that is asked for and does not come in
+  6 s is given up on the same way: the list is what the agent most needs, and it is never lost to the picture. Clicks and keys to a
+  hidden page are answered. *Electron (not verified there):* a `WebContentsView` that is `setVisible(false)` probably behaves the
+  same, so give a screenshot of it its own short timer and fall back to the list.
+- **Frames the browser puts in another process are not in the list.** The accessibility tree of the page and the boxes by node number
+  belong to the main frame's process; a cross-origin iframe's nodes either do not appear or fail `DOM.getContentQuads` and are left out
+  (an element with no box is never listed). An agent that needs one navigates the panel to the frame's own address. Not handled, written
+  down. *Electron:* the same limit with `webContents.debugger` on the main frame; attaching to the frame's target is a later step.
+
+### By hand, not machine-tested (Stage 4)
+
+1. A REAL mouse click in the page while a call runs: the call answers `interrupted` and the ribbon goes (the polling of the real
+   buttons; the e2e stands in for it with `WebUserInput`).
+2. A REAL key typed in the page while a call runs: the same.
+3. A click in ANOTHER window that sits over the page while a call runs must not end the call (`WindowFromPoint` is Flare's window or the
+   click is not the person's).
+4. The ribbon at the themes (light and dark): the accent tint over the head reads, the words fit at 100 and 225 percent, and the title
+   comes back when it goes.
+5. A monitor change between a look and a click: the click still lands (CSS pixels), and the next look reports the new `device_scale`.
+6. A real agent: in a Flare tab ask Claude to open a page with `open_page`, look, click a link and read the new heading; watch the ribbon
+   and take over by clicking in the page.
+7. A page with a cross-origin iframe, a canvas and a shadow-DOM component: what the list shows (known limits above).
+8. Switch "Let agents run scripts in pages" on and off in Settings with a Claude session open: `browser_eval` is refused, then allowed,
+   then refused again with no restart.

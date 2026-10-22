@@ -418,3 +418,41 @@ that fails in every tab and the status hooks of the same plugin are never affect
 manifest. Native: `flare-agent` `plugin.rs` (`render_manifest`, `install_plugin_with`). Held by
 `declares_the_flare_mcp_server_by_a_written_in_absolute_path_and_never_by_expansion` and
 `install_writes_the_mcp_server_only_when_the_program_exists`. Source: the stage 2 review (2026-10-21).
+193. **The agent's hands on a page never wait on the UI thread, and every call is answered exactly once.** A look, click, type, press,
+scroll, wait or eval is a job (`flare_surfaces::agent_job`) that the window drives from the browser's completion messages; the
+browser's completion handlers only post (rule 34). One call runs on a page at a time (a second is `unavailable` and the first is
+untouched); a call is answered when it is done, when the person takes over (`interrupted`), at its own deadline (`timeout`), when the
+panel or tab closes, the page's process ends or the window quits (`unavailable`), and a late answer for a finished job is ignored.
+Held by `a_second_call_while_one_runs_is_refused_and_the_first_is_not_disturbed`, `closing_the_panel_answers_the_call_that_was_running`,
+`a_page_whose_process_ends_answers_the_call_too`, `a_call_the_page_never_answers_times_out`, `answers_for_other_calls_are_ignored`
+(`agent_job.rs`), `quitting_closes_every_web_view_before_the_window_goes` (`web_tests.rs`), the scan in `flare-web/tests/sync_calls.rs`
+and the e2e `agentBrowser`.
+194. **The agent never runs its own script in a page unless the user switched it on, and a wait is never a script runner.**
+`browser.eval` needs "Let agents run scripts in pages" (off by default, read at every request); a text or selector wait sends ONE fixed
+checker whose only variable part is a JSON string literal. Held by `the_agent_grant_follows_the_users_switch_for_scripts`,
+`scripts_for_agents_are_off_until_a_stored_one`, `the_wait_checker_is_a_fixed_template_around_one_string_literal`,
+`a_wait_asks_the_page_with_the_fixed_checker_only`, `a_look_goes_through_devtools_and_answers_with_the_picture_and_the_elements` (only
+protocol methods and the fixed pixel-ratio question are sent) and the e2e `agentBrowser` (eval is `forbidden` with the switch off, works
+with it on, a hostile wait text leaves the page unchanged) and `mcpBrowser` (the refusal names the setting).
+195. **Page text is data, never instructions.** What a page says reaches the agent only after Flare removed control, direction-override
+and zero-width characters, collapsed white space and capped every field, and `flare-mcp` does the same again, writes each name as a
+quoted string, one element per line, between `BEGIN PAGE CONTENT` and `END PAGE CONTENT` marker lines that no page text can forge. Held
+by `page_text_is_cleaned_before_it_goes_anywhere`, `a_long_name_is_cut_to_the_cap`, `a_hostile_tree_cannot_loop_or_blow_up`
+(`agent_web.rs`), `hostile_page_text_cannot_end_the_block_pose_as_an_element_or_hide`, `a_huge_list_is_cut_and_says_so`,
+`a_bad_or_missing_picture_is_left_out_without_losing_the_list` (`flare-mcp` `browser.rs`) and the e2e `mcpBrowser`.
+196. **The person keeps control of the page.** A key of theirs in the page, or a mouse button pressed over it, ends the agent's running
+call with `interrupted`, takes the ribbon down and forgets the refs; the agent's own key presses are neither the person's nor the app's
+chords (an agent pressing Ctrl+Shift+P closes nothing); a click in another window that covers the page is not a takeover. No keyboard
+or mouse hook is installed and nothing is sent to a real window. Held by
+`the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
+`a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
+`a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e `agentBrowser`. The real-button polling is on the by-hand list.
+197. **The ribbon never changes the page.** "Claude is using this page" sits over the head of the panel; the browser window's rectangle is
+the same with and without it, so an agent reading coordinates never sees the page reflow for the ribbon. It is up while a call runs on
+the page in front and for 1.5 s after, and the 100 ms timer that serves it exists only then. Held by
+`the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `nothing_exists_before_a_web_panel_opens` and the e2e
+`agentBrowser` (the rectangle is compared).
+198. **Refs are only as old as the page they were made on.** A ref after a page load, a takeover, or for an element that is gone answers
+`not_found` and sends nothing to the page; positions are resolved when the action runs. Held by
+`a_ref_is_forgotten_when_the_page_loads_something_new`, `a_stale_ref_is_not_found_and_nothing_is_sent`,
+`an_element_that_vanished_is_not_found` and the e2e `agentBrowser`.

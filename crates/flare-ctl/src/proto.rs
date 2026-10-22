@@ -47,6 +47,9 @@ pub mod code {
     pub const RATE_LIMITED: &str = "rate_limited";
     /// The server failed while handling the request.
     pub const INTERNAL: &str = "internal";
+    /// The user took over the page (a click or a key of their own in it) while the call ran. The
+    /// page was left as it is; look again before going on.
+    pub const INTERRUPTED: &str = "interrupted";
 
     /// Errors after which the server closes the connection.
     pub fn closes_client(code: &str) -> bool {

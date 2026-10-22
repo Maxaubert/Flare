@@ -1266,6 +1266,16 @@ impl GlueCtx {
             .ok_or_else(|| "the front tab has no web page".to_string())
     }
 
+    /// `WebUserInput`: the person took over the front web page.
+    fn web_user_input(&self) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.web_user_input();
+        Ok(())
+    }
+
     fn dispatch(&self, events: Vec<WindowEvent>) -> Result<(), String> {
         let app = self.app.upgrade().ok_or("the window is gone")?;
         for e in events {
@@ -1857,6 +1867,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::DictRoute { text, front } => crate::dictation_ctl::e2e_route(&text, front),
         Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
         Request::WebScript { js } => ctx.web_script(&js),
+        Request::WebUserInput => ctx.web_user_input(),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,

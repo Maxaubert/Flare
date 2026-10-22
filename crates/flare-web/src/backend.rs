@@ -136,6 +136,12 @@ pub enum WebEvent {
         id: u64,
         result: Result<String, String>,
     },
+    /// A DevTools Protocol call answered: the result's JSON, or why not. `id` is the caller's.
+    Cdp {
+        tab: String,
+        id: u64,
+        result: Result<String, String>,
+    },
 }
 
 impl WebEvent {
@@ -159,6 +165,7 @@ impl WebEvent {
             WebEvent::Focus { .. } => "Focus",
             WebEvent::Gone { .. } => "Gone",
             WebEvent::Script { .. } => "Script",
+            WebEvent::Cdp { .. } => "Cdp",
         }
     }
 }
@@ -211,6 +218,11 @@ pub trait WebBackend {
     fn controllers(&self) -> usize;
     /// Where the hook asks whether the app takes a key.
     fn set_key_filter(&mut self, filter: KeyFilter);
+    /// Calls a DevTools Protocol method of the tab's page (no debugging port is opened: the call goes
+    /// through the controller). `params` is a JSON object; the answer is a `WebEvent::Cdp` with the
+    /// caller's `id`, posted from the browser's completion and never waited for (rule 34). A tab with
+    /// no view answers at once with an error.
+    fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str);
     /// The e2e only: runs a script in the page; answered by `WebEvent::Script`.
     fn run_script(&mut self, tab: &str, id: u64, js: &str);
     /// The e2e only: the controller's own numbers.

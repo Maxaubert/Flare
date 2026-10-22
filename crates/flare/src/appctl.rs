@@ -2980,7 +2980,9 @@ impl AppCtl {
                 self.after_ctl_show(&tab)
             }
             // Answered by the browser's message, never here (see `ctl_browser`).
-            CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. } => Err(CtlError::new(
+            CtlOp::BrowserOpen { .. }
+            | CtlOp::BrowserNavigate { .. }
+            | CtlOp::BrowserAgent { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
             )),
@@ -3940,6 +3942,10 @@ impl AppCtl {
                         // These wait for the page to load: the browser's message answers them.
                         op @ (CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. }) => {
                             self.ctl_browser(op, req.reply, req.deadline);
+                        }
+                        // The agent uses the page: the browser's messages answer these too.
+                        op @ CtlOp::BrowserAgent { .. } => {
+                            self.ctl_browser_agent(op, req.reply);
                         }
                         op => {
                             let answer = self.ctl_op(op);

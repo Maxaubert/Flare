@@ -1054,6 +1054,10 @@ pub fn run_window(
                 Arc::clone(&post),
                 Arc::new(move |token: &str| tabs.tab_for_ctl_token(token)),
                 crate::app_facts::home().to_string(),
+                {
+                    let prefs = prefs.clone();
+                    Arc::new(move || flare_settings::term_prefs::agent_eval(&prefs))
+                },
             ) {
                 Ok(server) => {
                     rc.borrow_mut().set_ctl(

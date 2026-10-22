@@ -9,6 +9,7 @@ use crate::kv::{PrefStore, Subscription, bool_pref_get, bool_pref_set};
 const SHELL_KEY: &str = "flare.term.shell";
 const AGENT_KEYS: &str = "flare.window.agentKeys";
 const OPEN_PREVIEWS: &str = "flare.window.openPreviews";
+const AGENT_EVAL: &str = "flare.web.agentEval";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -33,6 +34,16 @@ pub fn set_open_previews(s: &PrefStore, on: bool) {
     bool_pref_set(s, OPEN_PREVIEWS, on);
 }
 
+/// Let agents run scripts in pages (Surfaces stage 4): `browser.eval` for the agent. Default OFF; only a
+/// stored "1" is on (S4). Read from the control channel's threads at every request.
+pub fn agent_eval(s: &PrefStore) -> bool {
+    bool_pref_get(s, AGENT_EVAL, false)
+}
+
+pub fn set_agent_eval(s: &PrefStore, on: bool) {
+    bool_pref_set(s, AGENT_EVAL, on);
+}
+
 /// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
 pub fn save_shell_id(s: &PrefStore, id: &str) {
     if id.is_empty() {
@@ -52,6 +63,21 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn scripts_for_agents_are_off_until_a_stored_one() {
+        let s = PrefStore::memory();
+        assert!(!agent_eval(&s));
+        set_agent_eval(&s, true);
+        assert!(agent_eval(&s));
+        assert_eq!(s.get("flare.web.agentEval").as_deref(), Some("1"));
+        set_agent_eval(&s, false);
+        assert!(!agent_eval(&s));
+        s.set("flare.web.agentEval", "junk");
+        assert!(!agent_eval(&s), "an unknown value reads as the default");
+        s.set("flare.web.agentEval", "true");
+        assert!(!agent_eval(&s));
+    }
 
     #[test]
     fn previews_are_on_until_a_stored_zero() {
