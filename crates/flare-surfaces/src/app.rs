@@ -91,8 +91,55 @@ pub fn csp(allow_network: bool) -> String {
     let net = if allow_network { " https:" } else { "" };
     format!(
         "default-src 'self' 'unsafe-inline' data: blob:{net}; connect-src 'self' data: blob:{net}; \
+         frame-src 'none'; child-src 'none'; worker-src 'self' blob:; \
          object-src 'none'; base-uri 'none'; form-action 'none'"
     )
+}
+
+/// The WebRTC address policy of every mini-app browser: no UDP that does not go through a proxy, so a
+/// peer connection can send no STUN packet and gather no address on its own. Measured on WebView2 155
+/// (the e2e `miniApp` "webrtc" checks): `--webrtc-ip-handling-policy` is the switch this runtime honours;
+/// Chromium's `--force-webrtc-ip-handling-policy` alone did NOT change anything (STUN still left and
+/// host candidates were gathered), so both are passed, the first for the runtime and the second for a
+/// runtime that reads only the Chromium name.
+pub const WEBRTC_POLICY_FLAG: &str = concat!(
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp ",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+);
+/// Sends every network request of a sealed mini-app browser to a proxy that is not there (port 9, the
+/// discard port; nothing listens) and takes loopback out of the built-in bypass, so the browser has no
+/// way out of its own even if the page and the request wall both missed something. The app's own
+/// pages are served from a folder by a host mapping, which does not use the network.
+pub const DEAD_PROXY_FLAGS: &str =
+    "--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>";
+/// The earliest browser an app environment asks for (the options object would otherwise demand the
+/// version of the SDK Flare was built against and refuse an older, working runtime).
+pub const APP_MIN_BROWSER: &str = "110.0.0.0";
+
+/// The extra browser arguments of a mini-app environment. Always the WebRTC policy; the dead proxy
+/// only when the app has no network (an app that was granted `https:` needs the real route).
+pub fn browser_arguments(allow_network: bool) -> String {
+    if allow_network {
+        WEBRTC_POLICY_FLAG.to_string()
+    } else {
+        format!("{WEBRTC_POLICY_FLAG} {DEAD_PROXY_FLAGS}")
+    }
+}
+
+/// The user data folder of a mini-app environment, beside the web panel's (`data_dir`): one for apps
+/// with no network and one for apps with it (two environments cannot share a folder when their
+/// browser arguments differ).
+pub fn env_folder(data_dir: &Path, allow_network: bool) -> PathBuf {
+    let name = data_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "WebView2".to_string());
+    let tail = if allow_network {
+        "app-net"
+    } else {
+        "app-sealed"
+    };
+    data_dir.with_file_name(format!("{name}-{tail}"))
 }
 
 /// The page as it is written: the policy first, so nothing the page says comes before it.
@@ -642,5 +689,39 @@ mod tests {
             assert!(NO_WEBRTC_SCRIPT.contains(name), "{name}");
         }
         assert!(wrap_html("", false).contains("x-dns-prefetch-control"));
+    }
+
+    #[test]
+    fn the_policy_has_no_child_frames_and_only_own_or_blob_workers() {
+        for net in [false, true] {
+            let c = csp(net);
+            assert!(c.contains("frame-src 'none'"), "{c}");
+            assert!(c.contains("child-src 'none'"), "{c}");
+            assert!(c.contains("worker-src 'self' blob:;"), "{c}");
+        }
+    }
+
+    #[test]
+    fn a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy()
+    {
+        let sealed = browser_arguments(false);
+        assert!(sealed.starts_with("--webrtc-ip-handling-policy=disable_non_proxied_udp "));
+        assert!(sealed.contains("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+        assert!(sealed.contains("--proxy-server=http://127.0.0.1:9"));
+        assert!(sealed.contains("--proxy-bypass-list=<-loopback>"));
+        let net = browser_arguments(true);
+        assert!(net.contains("--webrtc-ip-handling-policy=disable_non_proxied_udp"));
+        assert!(!net.contains("proxy"));
+    }
+
+    #[test]
+    fn the_two_app_environments_have_folders_of_their_own_beside_the_panels() {
+        let d = Path::new("C:/p/WebView2");
+        let (a, b) = (env_folder(d, false), env_folder(d, true));
+        assert_ne!(a, b);
+        assert_ne!(a, d);
+        assert_eq!(a.parent(), d.parent());
+        assert_eq!(b.parent(), d.parent());
+        assert!(a.ends_with("WebView2-app-sealed") && b.ends_with("WebView2-app-net"));
     }
 }

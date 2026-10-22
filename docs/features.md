@@ -1127,7 +1127,18 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
   `show_html_tells_the_agent_what_the_page_can_and_cannot_do`, `show_html_routes_html_or_a_path_and_never_both`,
   `show_diagram_routes_to_view_diagram` and the e2e `mcpDiagram` and `mcpRoundTrip` (the tool list).
 - **Nothing costs anything while unused.** No folder, no browser view and no profile until the first mini-app; the profile is
-  created with its first view and keeps nothing on disk.
+  created with its first view and keeps nothing on disk. The mini-apps' own browser (apart from the web panel's, one kind for apps
+  with no network and one for apps with it) is made with the first app of its kind and closed with the last; while one is open it is
+  a second set of browser processes, with the memory and the extra start-up time that means.
+- **No peer connections, three ways.** The page loses `RTCPeerConnection` and the other RTC classes before its own code in every
+  frame (the script is awaited before the page loads; a failure fails the view), the mini-apps' browser is started with the WebRTC
+  policy `disable_non_proxied_udp` (and, with no network, a proxy that is not there), and the page policy shuts child frames
+  (`frame-src 'none'; child-src 'none'; worker-src 'self' blob:`). `show_html` tells the agent exactly what is and is not blocked.
+  Held by the e2e `miniApp` "webrtc" checks (script and policy both off by seams: a loopback UDP socket as STUN server hears nothing
+  from the window or from a srcdoc or about:blank frame, for an app with no network and for one with it, and does hear the web panel
+  as the control; a WebSocket to a loopback listener is stopped for a sealed app and reaches it for a networked one), the frame
+  probe in `app_on` (no usable `RTCPeerConnection` in a srcdoc or about:blank frame, at once and later) and the unit tests named in
+  rule 199. Decision: `docs/surfaces/decisions.md` (stage 5 second review).
 - **End to end (the release exe, its own profile, offscreen):** `miniApp` (92 checks, at 100 and 225 percent, then a launch with the
   policy off by the seam and one with the network switch on), `diagram` (18) and `mcpDiagram` (10). The existing `webPanel`,
   `webVideo`, `webNoRuntime`, `agentBrowser`, `mcpBrowser`, `ctlChannel` and `mcpRoundTrip` still pass. See `docs/e2e.md`.

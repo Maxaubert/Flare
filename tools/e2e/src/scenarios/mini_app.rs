@@ -46,6 +46,98 @@ document.getElementById('b').onclick = function () { document.getElementById('ou
 </script></body></html>"##;
 
 /// A file page for `path`.
+/// Makes a srcdoc frame and an about:blank frame and records what `RTCPeerConnection` is in each, at once
+/// and a moment later. A frame the policy blocks reports no window or a window without the API.
+const FRAME_PROBE: &str = r##"(function(){
+  window.__fr = {};
+  ['srcdoc', 'blank'].forEach(function (k) {
+    var f = document.createElement('iframe');
+    if (k === 'srcdoc') { f.srcdoc = '<p>x</p>'; }
+    document.body.appendChild(f);
+    var w = null;
+    try { w = f.contentWindow; } catch (e) { window.__fr[k] = 'threw'; }
+    if (!(k in window.__fr)) { window.__fr[k] = w ? typeof w.RTCPeerConnection : 'no-window'; }
+    setTimeout(function () {
+      var w2 = null;
+      try { w2 = f.contentWindow; } catch (e) {}
+      window.__fr[k + '-late'] = w2 ? typeof w2.RTCPeerConnection : 'no-window';
+    }, 600);
+  });
+  setTimeout(function () { window.__fr.late = true; }, 1000);
+  return 'started';
+})()"##;
+
+/// Starts a peer connection (in `MODE`: this window, or a srcdoc or about:blank frame's) with a STUN
+/// server at 127.0.0.1:PORT and records the candidates it gathers; `window.__ice.done` is true when
+/// the gathering ended or 8 seconds went by.
+const ICE_PROBE: &str = r##"(function(){
+  var R = window;
+  if ('MODE' !== 'top') {
+    var f = document.createElement('iframe');
+    if ('MODE' === 'srcdoc') { f.srcdoc = '<p>x</p>'; }
+    document.body.appendChild(f);
+    R = f.contentWindow;
+  }
+  window.__ice = { done: false, cands: [], api: R ? typeof R.RTCPeerConnection : 'no-window', err: '' };
+  if (!R || typeof R.RTCPeerConnection !== 'function') { window.__ice.done = true; return 'none'; }
+  try {
+    var pc = new R.RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:PORT' }] });
+    pc.createDataChannel('x');
+    pc.onicecandidate = function (e) { if (e.candidate) { window.__ice.cands.push(e.candidate.candidate); } else { window.__ice.done = true; } };
+    pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function (e) { window.__ice.err = String(e); window.__ice.done = true; });
+    setTimeout(function () { window.__ice.done = true; }, 8000);
+  } catch (e) { window.__ice.err = 'threw ' + e; window.__ice.done = true; }
+  return 'started';
+})()"##;
+
+/// A UDP socket on loopback that counts what is sent to it: the STUN server a peer connection would
+/// have asked. Nothing leaves the PC.
+struct Spy {
+    sock: std::net::UdpSocket,
+    port: u16,
+    seen: usize,
+}
+
+impl Spy {
+    fn new() -> Result<Self, String> {
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("spy: {e}"))?;
+        sock.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let port = sock.local_addr().map_err(|e| e.to_string())?.port();
+        Ok(Self {
+            sock,
+            port,
+            seen: 0,
+        })
+    }
+
+    /// Packets that arrived since the last call.
+    fn fresh(&mut self) -> usize {
+        let mut buf = [0u8; 2048];
+        let mut n = 0;
+        while self.sock.recv_from(&mut buf).is_ok() {
+            n += 1;
+        }
+        self.seen += n;
+        n
+    }
+}
+
+/// Runs the ICE probe in `mode` (top, srcdoc, blank) and gives the page's record as JSON text.
+fn gather(ctx: &mut Ctx, app: &mut App, spy: &Spy, mode: &str) -> (bool, String) {
+    let js = ICE_PROBE
+        .replace("MODE", mode)
+        .replace("PORT", &spy.port.to_string());
+    say(ctx, app, &js);
+    until_says(
+        ctx,
+        "the peer connection to finish gathering",
+        25_000,
+        app,
+        "JSON.stringify(window.__ice)",
+        &|s| s.contains("\"done\":true"),
+    )
+}
+
 const FILE_PAGE: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>From a file</title></head>
 <body><p id="p">from a file</p><script>document.getElementById('p').textContent = 'file script ran';</script></body></html>"##;
 
@@ -174,6 +266,20 @@ pub fn mini_app(ctx: &mut Ctx) -> Result<(), String> {
     let r = network_on(ctx, &mut app);
     let left = app.close();
     ctx.ok(left, "network on, policy kept: the app quits by itself");
+    r?;
+    // The browser's own walls, alone: the script and the policy are both switched off by seams.
+    let mut app = launch_with(
+        ctx,
+        &root,
+        96,
+        &[
+            ("FLARE_E2E_APP_NO_POLICY", "1"),
+            ("FLARE_E2E_APP_NO_WEBRTC_SCRIPT", "1"),
+        ],
+    )?;
+    let r = webrtc_walls(ctx, &mut app, &root);
+    let left = app.close();
+    ctx.ok(left, "webrtc walls: the app quits by itself");
     r
 }
 
@@ -437,6 +543,32 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
         rtc == "undefined/undefined/undefined",
         format!("{at}: the page has no peer connections ({rtc:?})"),
     );
+    // No child frames at all under the policy; if one is made anyway (about:blank and srcdoc are local
+    // documents), it must not hand out a usable peer connection. Read at once (the new frame's first
+    // document) and again after the frame has settled.
+    ctx.ok(
+        meta.contains("frame-src 'none'")
+            && meta.contains("child-src 'none'")
+            && meta.contains("worker-src 'self' blob:"),
+        format!("{at}: the policy shuts child frames and limits workers ({meta})"),
+    );
+    say(ctx, app, FRAME_PROBE);
+    let (done, frames) = until_says(
+        ctx,
+        "the frame probe to settle",
+        15_000,
+        app,
+        "window.__fr ? JSON.stringify(window.__fr) : 'pending'",
+        &|s| s.contains("\"late\":true"),
+    );
+    let usable = |k: &str| {
+        frames.contains(&format!("\"{k}\":\"function"))
+            || frames.contains(&format!("\"{k}-late\":\"function"))
+    };
+    ctx.ok(
+        done && !usable("srcdoc") && !usable("blank"),
+        format!("{at}: a srcdoc or about:blank frame has no usable peer connection ({frames})"),
+    );
 
     // ---- a second app: another host, a folder of its own, and the first one's folder goes ----
     let v = show(
@@ -647,6 +779,99 @@ fn wall_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(
         own == "fine",
         format!("{at}: the page itself loaded ({own:?})"),
+    );
+    Ok(())
+}
+
+/// With the page's script and policy both off, the browser itself must still give a peer connection
+/// nothing: its WebRTC policy forbids UDP that is not proxied and a sealed app's proxy is not there.
+/// The STUN server is a UDP socket of this process on loopback, so "gathers nothing" is shown by that
+/// socket hearing nothing, in the window and in about:blank and srcdoc frames, for an app with no
+/// network and for one with it. A web panel (which has no such arguments) is the control: the same
+/// probe there must reach the socket, or the test proves nothing.
+fn webrtc_walls(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
+    let at = "webrtc";
+    app.session.call(&Request::Resize {
+        w: 1000.0,
+        h: 640.0,
+    })?;
+    prompt(app)?;
+    let (pipe, _, token) = channel_of(app)?;
+    let mut c = hello(&pipe, &token).map_err(|e| format!("hello: {e}"))?;
+    let mut spy = Spy::new()?;
+    for (label, network) in [("no network", false), ("network on", true)] {
+        let v = show(
+            ctx,
+            &mut c,
+            at,
+            json!({"html": "<p id=ice>ice</p>", "allow_network": network}),
+        )
+        .map_err(|e| format!("view.html: {e}"))?;
+        ctx.ok(
+            v["panel"]["network"] == json!(network),
+            format!("{at}: {label}: the app has the network it was given ({v})"),
+        );
+        settle(ctx, app, "the ice page to settle");
+        let shown = say(ctx, app, "document.getElementById('ice').textContent");
+        ctx.ok(
+            shown == "ice",
+            format!("{at}: {label}: the app still renders in its own browser ({shown:?})"),
+        );
+        // A WebSocket never reaches the request wall: with no network the dead proxy must stop it, with
+        // the network on it reaches the listener (the control).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let lport = listener.local_addr().map_err(|e| e.to_string())?.port();
+        say(
+            ctx,
+            app,
+            &format!("(function(){{ window.__ws='pending'; try {{ var w=new WebSocket('ws://127.0.0.1:{lport}/'); w.onerror=function(){{window.__ws='error'}}; w.onclose=function(){{ if(window.__ws==='pending') window.__ws='closed'; }}; w.onopen=function(){{window.__ws='open'}}; }} catch(e) {{ window.__ws='threw'; }} return 'started'; }})()"),
+        );
+        let connected = ctx.poll(3_000, &mut || listener.accept().is_ok());
+        let ws = say(ctx, app, "window.__ws");
+        ctx.ok(
+            connected == network,
+            format!(
+                "{at}: {label}: a WebSocket to loopback {} ({ws:?})",
+                if network {
+                    "reaches a listener (the control)"
+                } else {
+                    "is stopped by the browser's dead proxy"
+                }
+            ),
+        );
+        let _ = spy.fresh();
+        for mode in ["top", "srcdoc", "blank"] {
+            let (done, rec) = gather(ctx, app, &spy, mode);
+            let heard = spy.fresh();
+            let bad = ["srflx", "relay", "prflx", "typ host"]
+                .iter()
+                .any(|t| rec.contains(t));
+            ctx.ok(
+                done && heard == 0 && !bad,
+                format!("{at}: {label}, {mode}: no STUN packet leaves and no candidate is gathered ({heard} heard, {rec})"),
+            );
+        }
+    }
+    // The control: the web panel's browser has no such arguments, so the same probe reaches the socket.
+    fs::write(
+        root.join("ice.html"),
+        "<!doctype html><title>ice</title><p>ice</p>",
+    )
+    .map_err(|e| e.to_string())?;
+    let r = c.call(
+        Method::BrowserOpen,
+        json!({"url": format!("{}/ice.html", super::web::HOST)}),
+        LOAD,
+    );
+    ctx.ok(r.is_ok(), format!("{at}: the control page opens ({r:?})"));
+    settle(ctx, app, "the control page to settle");
+    let _ = spy.fresh();
+    let (done, rec) = gather(ctx, app, &spy, "top");
+    let heard = spy.fresh();
+    ctx.ok(
+        done && heard > 0,
+        format!("{at}: control: the same probe in the web panel does reach the socket, so silence above means something ({heard} heard, {rec})"),
     );
     Ok(())
 }

@@ -1828,6 +1828,8 @@ pub fn production_factory(
             sink,
             runtime,
             virtual_hosts,
+            // The e2e's seam: a mini-app without the peer-connection script, to test the walls under it.
+            without_webrtc_script: crate::ship_ctl::e2e_var("APP_NO_WEBRTC_SCRIPT").is_some(),
         }))
     })
 }

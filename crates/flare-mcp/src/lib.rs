@@ -165,7 +165,7 @@ fn show_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "show_html",
-            description: "Show a small web page you write (a chart, a calculator, a table you can sort, an explainer, a 3D viewer, a form) in an interactive panel beside this terminal tab in Flare, so the user can use it instead of reading a wall of text. Give the whole page as `html` (one self-contained page: put your CSS and JavaScript inline; at most 4 MB) or the path of an .html file as `path` (only that one file is shown, files next to it are not served). The page runs in a sandbox of its own with NO network access: it cannot fetch anything, load a script, font or image from the web, or send data anywhere, so include everything it needs (inline SVG or canvas for charts, data: images, libraries pasted inline). Set allow_network only for a page that must load https content, and know that it works only if the user switched on \"Let mini apps use the network\" in Flare's settings (the reply says what you got). The page cannot open windows or follow links, and it cannot read or change anything on the PC. Replaces what the panel showed. Returns once the page has loaded; use browser_look to see it and browser_click / browser_type to use it yourself.",
+            description: "Show a small web page you write (a chart, a calculator, a table you can sort, an explainer, a 3D viewer, a form) in an interactive panel beside this terminal tab in Flare, so the user can use it instead of reading a wall of text. Give the whole page as `html` (one self-contained page: put your CSS and JavaScript inline; at most 4 MB) or the path of an .html file as `path` (only that one file is shown, files next to it are not served). The page runs in a sandbox of its own with NO network access, so include everything it needs (inline SVG or canvas for charts, data: images, libraries pasted inline). Blocked with no network: fetch, XMLHttpRequest, WebSocket, EventSource and beacons; scripts, styles, fonts, images and media from anywhere but the page itself or data:/blob: content; child frames (iframes) and plug-ins; form posts; opening windows and following links away from the page; and WebRTC (peer connections are removed from the page and the page's browser has no UDP and no route out, so STUN, TURN and address lookups go nowhere). Web workers work only from the page's own code or a blob:. Camera, microphone, location and notifications are refused. NOT blocked: the page's own JavaScript, CSS, canvas, SVG and data: images, and its own localStorage, cookies and IndexedDB (private to this page, gone when the panel closes). It cannot read or change anything on the PC. Set allow_network only for a page that must load https content: it works only if the user switched on \"Let mini apps use the network\" in Flare's settings (the reply says what you got), and then the page can load from and send to any https address (WebRTC stays restricted, plain http stays blocked), so put nothing private in it. This is a browser-level sandbox, not a virtual machine. Replaces what the panel showed. Returns once the page has loaded; use browser_look to see it and browser_click / browser_type to use it yourself.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -791,6 +791,9 @@ mod tests {
         let d = list.iter().find(|t| t.name == "show_html").unwrap();
         for word in [
             "NO network",
+            "WebRTC",
+            "child frames",
+            "NOT blocked",
             "4 MB",
             "inline",
             "allow_network",

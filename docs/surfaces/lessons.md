@@ -523,8 +523,17 @@ line of each item.
   ("site"), and a made-up `.local` name has no public suffix, so every subdomain of one parent is one site. Use a different
   registrable name per app (`flare-app-<n>.local`), and test with a `Domain=` cookie, not a host-only one. What Electron must do:
   one scheme or one unrelated host per app, never subdomains of one parent.
-- **A Content-Security-Policy does not stop WebRTC, and the request hook does not see it.** Remove the API before the page runs
-  (a document-created script, every frame) and set the IP handling policy; a "no network" claim needs this.
+- **A Content-Security-Policy does not stop WebRTC, and the request hook does not see it.** Three walls, because each alone leaks:
+  remove the API before the page runs (a document-created script in every frame, and AWAIT its completion before the first
+  navigation, failing the view on an error); give mini-apps a browser environment of their own started with the IP handling policy
+  and, with no network, a dead proxy; and shut child frames in the policy. **A browser switch is not a wall until a socket says so.**
+  `--force-webrtc-ip-handling-policy` is documented for Chromium and did nothing in WebView2 155; `--webrtc-ip-handling-policy` worked.
+  The test that settled it: a UDP socket on loopback as the STUN server, counting packets from a page with the script off, plus the
+  same probe in an ordinary panel as the control (it must hear packets, or silence proves nothing). *Electron:* check the policy with the
+  same kind of socket, not by reading the setting back.
+- **Two environments cannot share a user data folder if their arguments differ, and an environment is a whole browser.** One folder per
+  kind (`WebView2-app-sealed`, `WebView2-app-net`), made lazily, closed with the last view of that kind. A swap to the same kind must
+  keep the browser (the e2e compares the process id); a swap to another kind drops the idle one.
 - **A request filter that is not told the source kinds sees only the document's requests.** Use the all-sources variant where
   the runtime has it, and test a srcdoc frame and a blob worker, not one main-frame fetch.
 - **Never write a backslash-letter into a comment through a tool that treats it as an escape.** `` became a BEL byte once; the

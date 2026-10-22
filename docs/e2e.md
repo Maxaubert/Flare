@@ -224,7 +224,7 @@ at `http://127.0.0.1:9/` (the discard port), and the proof that the policy and n
 cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release\flare.exe miniApp diagram
 ```
 
-- `miniApp` (92 checks) at 100 and 225 percent, then two more launches. A stale folder in `<profile>\apps` is gone at start. `view.html`
+- `miniApp` (119 checks) at 100 and 225 percent, then two more launches. A stale folder in `<profile>\apps` is gone at start. `view.html`
   answers once the page has loaded with `panel.kind` `app` and `panel.network` false though the agent asked; the browser reports the
   host `flare-app-1.local`, the profile `flare-app` and its private flag; the header is the agent's title and the bar's height is 0;
   the browser window equals the layout maths and what Slint drew. The page's script ran and its policy tag has no `https:`. A fetch, an
@@ -238,6 +238,13 @@ cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe 
   `no-cors` fetch to `127.0.0.1:9` resolves as an opaque response, which only Flare's own refusal can produce (a real attempt to a closed
   port rejects). A launch with `flare.web.appNetwork` seeded in the profile holds the network switch: the policy allows `https:`, never
   `http:`, and a page that does not ask has no network.
+  A launch with `FLARE_E2E_APP_NO_POLICY` and `FLARE_E2E_APP_NO_WEBRTC_SCRIPT` (both read only under `--e2e`: no page policy and no
+  peer-connection script) holds the browser's own walls ("webrtc" checks). For an app with no network and then one with it: the app
+  still renders in its own browser; a WebSocket to a loopback listener is stopped by the dead proxy for the first and reaches the
+  listener for the second (the control); a peer connection with a STUN server on a loopback UDP socket of the e2e gathers no candidate
+  and sends no packet from the window, a srcdoc frame and an about:blank frame. The web panel is the control: the same probe there
+  does reach the socket. `app_on` also checks that the page policy shuts child frames and that a srcdoc and an about:blank frame have
+  no usable `RTCPeerConnection`, at once and 600 ms later.
 - `diagram` (18): `view.diagram` answers once the diagram has drawn; the page has one `svg` with the flowchart's four nodes and their
   labels; a sequence diagram draws with its actors; with no title the header says Diagram; a diagram that does not parse is `bad_params`
   with Mermaid's text and the page shows the same text in red; over 200 KB, no text, empty and a number are `bad_params`.

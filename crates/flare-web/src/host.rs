@@ -8,7 +8,12 @@
 //! callback that fires while a call into the browser is still on the stack cannot re-enter it.
 //!
 //! No browser exists until the first web panel opens, and the environment goes with the last
-//! controller (rule 34 and the anti-goal "panels cost nothing while closed").
+//! controller (rule 34 and the anti-goal "panels cost nothing while closed"). A mini-app never shares
+//! a browser with the web panel: it runs in an environment of its own, started with the WebRTC policy
+//! and, when it has no network, a proxy that is not there (`EnvKind`, rule 199). There is one such
+//! environment per kind, made when the first view of the kind opens and closed with the last. A
+//! mini-app's view does not navigate until the script that removes the peer-connection API is
+//! confirmed installed.
 //!
 //! The profile is the folder the caller gives, never the user's own Edge profile (S4). Permissions
 //! (camera, microphone, location, notifications and the rest) are denied. A page cannot open a
@@ -20,7 +25,7 @@
 //! browser process ends every page and the environment, so the next open starts fresh.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -31,13 +36,13 @@ use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CallDevToolsProtocolMethodCompletedHandler, CapturePreviewCompletedHandler,
-    ContainsFullScreenElementChangedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
-    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, FocusChangedEventHandler,
-    HistoryChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    SourceChangedEventHandler, WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
-    take_pwstr,
+    ContainsFullScreenElementChangedEventHandler, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
+    FocusChangedEventHandler, HistoryChangedEventHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
+    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -88,12 +93,46 @@ pub struct HostConfig {
     /// Host name to folder mappings added to every view before it navigates (the e2e's local pages;
     /// empty in a real run).
     pub virtual_hosts: Vec<(String, PathBuf)>,
+    /// The e2e's seam only: do not add the peer-connection script to a mini-app, so the browser-level
+    /// walls (the WebRTC policy and the dead proxy) can be tested on their own.
+    pub without_webrtc_script: bool,
+}
+
+/// Which browser a view runs in. A mini-app never shares a browser with the web panel, and an app with
+/// the network and one without are two browsers (they differ in the arguments they are started with).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum EnvKind {
+    /// The web panel's.
+    Web,
+    /// Mini-apps with no network: the WebRTC policy and a proxy that is not there.
+    AppSealed,
+    /// Mini-apps that were granted `https:`: the WebRTC policy only.
+    AppNet,
+}
+
+impl EnvKind {
+    fn of(app: Option<&AppSpec>) -> Self {
+        match app {
+            None => Self::Web,
+            Some(a) if a.allow_network => Self::AppNet,
+            Some(_) => Self::AppSealed,
+        }
+    }
 }
 
 enum Inbound {
     /// The browser process ended: every view is dead.
-    BrowserExited,
-    Env(Result<ICoreWebView2Environment, String>),
+    BrowserExited(EnvKind),
+    Env {
+        kind: EnvKind,
+        result: Result<ICoreWebView2Environment, String>,
+    },
+    /// The mini-app's script wall was (or was not) installed in its view: only now may it navigate.
+    Script {
+        tab: String,
+        serial: u64,
+        result: Result<(), String>,
+    },
     Controller {
         tab: String,
         serial: u64,
@@ -102,7 +141,6 @@ enum Inbound {
 }
 
 enum Env {
-    None,
     /// The runtime question is with a worker.
     Checking,
     Creating,
@@ -116,6 +154,8 @@ struct Live {
 
 struct View {
     serial: u64,
+    /// A mini-app's controller that exists but may not navigate yet: its script wall is not confirmed.
+    pending: Option<Live>,
     /// A mini-app's view (its own private profile, its folder on its own host, a wall round it).
     app: Option<AppSpec>,
     creating: bool,
@@ -123,6 +163,20 @@ struct View {
     url: String,
     bounds: PhysRect,
     visible: bool,
+}
+
+impl View {
+    fn kind(&self) -> EnvKind {
+        EnvKind::of(self.app.as_ref())
+    }
+
+    /// Closes every controller of the view (live or waiting for its script wall).
+    fn shut(self) {
+        for l in [self.live, self.pending].into_iter().flatten() {
+            // SAFETY: closing a controller we own; the page and its window go with it.
+            let _ = unsafe { l.controller.Close() };
+        }
+    }
 }
 
 /// A download the browser started and is holding until it is told yes or no.
@@ -135,7 +189,8 @@ struct Download {
 type Downloads = Rc<RefCell<HashMap<u64, Download>>>;
 
 struct State {
-    env: Env,
+    /// The browsers that exist or are being made, by kind (absent: none).
+    envs: HashMap<EnvKind, Env>,
     views: HashMap<String, View>,
     serial: u64,
 }
@@ -146,6 +201,7 @@ pub struct WebHost {
     sink: Sink,
     runtime: RuntimeCheck,
     virtual_hosts: Vec<(String, PathBuf)>,
+    without_webrtc_script: bool,
     state: State,
     inbox: Rc<RefCell<VecDeque<Inbound>>>,
     filter: Rc<RefCell<Option<KeyFilter>>>,
@@ -255,8 +311,9 @@ impl WebHost {
             sink: cfg.sink,
             runtime: cfg.runtime,
             virtual_hosts: cfg.virtual_hosts,
+            without_webrtc_script: cfg.without_webrtc_script,
             state: State {
-                env: Env::None,
+                envs: HashMap::new(),
                 views: HashMap::new(),
                 serial: 0,
             },
@@ -306,17 +363,22 @@ impl WebHost {
         });
     }
 
-    /// Starts the environment (the first time) and, once it exists, the tab's controller.
+    /// Starts the tab's browser (the first time) and, once it exists, the tab's controller.
     fn ensure(&mut self, tab: &str) {
-        match &self.state.env {
-            Env::None => {
+        let Some(kind) = self.state.views.get(tab).map(View::kind) else {
+            return;
+        };
+        match self.state.envs.get(&kind) {
+            None => {
                 let (check, sink) = (Arc::clone(&self.runtime), Arc::clone(&self.sink));
                 let job = move || sink(WebEvent::Runtime(check()));
                 match std::thread::Builder::new()
                     .name("flare-web-runtime".into())
                     .spawn(job)
                 {
-                    Ok(_) => self.state.env = Env::Checking,
+                    Ok(_) => {
+                        self.state.envs.insert(kind, Env::Checking);
+                    }
                     Err(e) => self.fail(
                         tab,
                         &format!("the runtime check could not start: {e}"),
@@ -324,12 +386,14 @@ impl WebHost {
                     ),
                 }
             }
-            Env::Checking | Env::Creating => {}
-            Env::Ready(_) => self.start_controller(tab),
+            Some(Env::Checking | Env::Creating) => {}
+            Some(Env::Ready(_)) => self.start_controller(tab),
         }
     }
 
-    fn start_env(&self) -> Result<(), String> {
+    /// Makes a browser of `kind`. The web panel's has no extra arguments. A mini-app's has the WebRTC
+    /// policy, and (with no network) a proxy that is not there, in a user data folder of its own.
+    fn start_env(&self, kind: EnvKind) -> Result<(), String> {
         let inbox = Rc::clone(&self.inbox);
         let sink = Arc::clone(&self.sink);
         let handler =
@@ -338,30 +402,65 @@ impl WebHost {
                     Ok(()) => env.ok_or_else(|| "the browser gave no environment".to_string()),
                     Err(e) => Err(e.message()),
                 };
-                inbox.borrow_mut().push_back(Inbound::Env(result));
+                inbox.borrow_mut().push_back(Inbound::Env { kind, result });
                 sink(WebEvent::Pump);
                 Ok(())
             }));
-        let folder = wide(&self.data_dir.to_string_lossy());
-        // SAFETY: `folder` is a NUL-terminated UTF-16 string that outlives the call; the handler is a
-        // live COM object the loader keeps alive until it fires.
+        let dir = match kind {
+            EnvKind::Web => self.data_dir.clone(),
+            EnvKind::AppSealed => app::env_folder(&self.data_dir, false),
+            EnvKind::AppNet => app::env_folder(&self.data_dir, true),
+        };
+        let folder = wide(&dir.to_string_lossy());
+        let options: Option<ICoreWebView2EnvironmentOptions> = match kind {
+            EnvKind::Web => None,
+            EnvKind::AppSealed | EnvKind::AppNet => {
+                let o = CoreWebView2EnvironmentOptions::default();
+                // SAFETY: the options object is ours alone and not yet shared with the loader.
+                unsafe {
+                    o.set_additional_browser_arguments(app::browser_arguments(
+                        kind == EnvKind::AppNet,
+                    ));
+                    o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
+                }
+                Some(o.into())
+            }
+        };
+        // SAFETY: `folder` is a NUL-terminated UTF-16 string that outlives the call; the options and
+        // the handler are live COM objects the loader keeps alive until it fires.
         unsafe {
             CreateCoreWebView2EnvironmentWithOptions(
                 // sync-ok: WebView2 objects are thread-affine to the UI STA; first open only
                 PCWSTR::null(),
                 PCWSTR(folder.as_ptr()),
-                None::<&ICoreWebView2EnvironmentOptions>,
+                options.as_ref(),
                 &handler,
             )
         }
         .map_err(|e| e.message())
     }
 
+    /// The tabs whose view runs in the browser of `kind`.
+    fn tabs_of(&self, kind: EnvKind) -> Vec<String> {
+        self.state
+            .views
+            .iter()
+            .filter(|(_, v)| v.kind() == kind)
+            .map(|(t, _)| t.clone())
+            .collect()
+    }
+
+    /// Drops the browsers no view uses any more (their processes end with them).
+    fn drop_idle_envs(&mut self) {
+        let used: HashSet<EnvKind> = self.state.views.values().map(View::kind).collect();
+        self.state.envs.retain(|k, _| used.contains(k));
+    }
+
     fn start_controller(&mut self, tab: &str) {
-        let Env::Ready(env) = &self.state.env else {
+        let Some(view) = self.state.views.get_mut(tab) else {
             return;
         };
-        let Some(view) = self.state.views.get_mut(tab) else {
+        let Some(Env::Ready(env)) = self.state.envs.get(&view.kind()) else {
             return;
         };
         if view.creating || view.live.is_some() {
@@ -415,27 +514,26 @@ impl WebHost {
             return;
         }
         let app = self.state.views.get(tab).and_then(|v| v.app.clone());
-        match self.configure(tab, &controller, app.as_ref()) {
+        match self.configure(tab, serial, &controller, app.as_ref()) {
             Ok(webview) => {
                 let Some(view) = self.state.views.get_mut(tab) else {
                     return;
                 };
-                view.creating = false;
-                let url = wide(&view.url);
-                // SAFETY: `controller` and `webview` are live COM objects owned here; `url` is
-                // NUL-terminated and outlives the call.
-                unsafe {
-                    let _ = controller.SetBounds(to_rect(view.bounds));
-                    let _ = controller.SetIsVisible(view.visible);
-                    let _ = webview.Navigate(PCWSTR(url.as_ptr()));
-                }
-                view.live = Some(Live {
+                let live = Live {
                     controller,
                     webview,
-                });
-                (self.sink)(WebEvent::Ready {
-                    tab: tab.to_string(),
-                });
+                };
+                if app.is_some() {
+                    // A mini-app does not navigate until its script wall is confirmed
+                    // (`Inbound::Script`): the page is never loaded without it.
+                    view.pending = Some(live);
+                } else {
+                    view.creating = false;
+                    Self::go_live(view, live);
+                    (self.sink)(WebEvent::Ready {
+                        tab: tab.to_string(),
+                    });
+                }
             }
             Err(why) => {
                 // SAFETY: closing a controller we own.
@@ -445,11 +543,58 @@ impl WebHost {
         }
     }
 
+    /// Puts the view where it was asked to be and sends it to its address.
+    fn go_live(view: &mut View, live: Live) {
+        let url = wide(&view.url);
+        // SAFETY: `live` holds live COM objects owned here; `url` is NUL-terminated and outlives the call.
+        unsafe {
+            let _ = live.controller.SetBounds(to_rect(view.bounds));
+            let _ = live.controller.SetIsVisible(view.visible);
+            let _ = live.webview.Navigate(PCWSTR(url.as_ptr()));
+        }
+        view.live = Some(live);
+    }
+
+    /// The script wall of a mini-app's view came back: on success the view goes live and navigates, on
+    /// an error it fails (there is no fallback to a page without the wall).
+    fn script_armed(&mut self, tab: &str, serial: u64, result: Result<(), String>) {
+        let current = self
+            .state
+            .views
+            .get(tab)
+            .is_some_and(|v| v.serial == serial && v.pending.is_some());
+        if !current {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                let Some(view) = self.state.views.get_mut(tab) else {
+                    return;
+                };
+                let Some(live) = view.pending.take() else {
+                    return;
+                };
+                view.creating = false;
+                Self::go_live(view, live);
+                (self.sink)(WebEvent::Ready {
+                    tab: tab.to_string(),
+                });
+            }
+            Err(why) => {
+                if let Some(v) = self.state.views.remove(tab) {
+                    v.shut();
+                }
+                self.fail(tab, &format!("the mini-app's script wall: {why}"), false);
+            }
+        }
+    }
+
     /// Settings and every handler of one view. The handlers hold the sink and the tab's name and
     /// nothing of the host.
     fn configure(
         &self,
         tab: &str,
+        serial: u64,
         controller: &ICoreWebView2Controller,
         app: Option<&AppSpec>,
     ) -> Result<ICoreWebView2, String> {
@@ -471,7 +616,7 @@ impl WebHost {
             }
         }
         if let Some(a) = app {
-            self.configure_app(&webview, a)?;
+            self.configure_app(&webview, a, tab, serial)?;
         }
         for (host, folder) in &self.virtual_hosts {
             if let Ok(w3) = webview.cast::<ICoreWebView2_3>() {
@@ -656,6 +801,7 @@ impl WebHost {
         }
         {
             let (sink, tab, inbox) = (Arc::clone(&self.sink), name(tab), Rc::clone(&self.inbox));
+            let env_kind = EnvKind::of(app);
             let h = ProcessFailedEventHandler::create(Box::new(move |_w, args| {
                 let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
                 if let Some(args) = args {
@@ -672,7 +818,9 @@ impl WebHost {
                         why: "the page's process ended".to_string(),
                     }),
                     Failure::Browser => {
-                        inbox.borrow_mut().push_back(Inbound::BrowserExited);
+                        inbox
+                            .borrow_mut()
+                            .push_back(Inbound::BrowserExited(env_kind));
                         sink(WebEvent::Pump);
                     }
                 }
@@ -816,7 +964,13 @@ impl WebHost {
 
     /// What makes a view a mini-app's: its folder served on its own host name, and every request that
     /// is not the app's own refused (the second wall, behind the page's policy).
-    fn configure_app(&self, webview: &ICoreWebView2, app: &AppSpec) -> Result<(), String> {
+    fn configure_app(
+        &self,
+        webview: &ICoreWebView2,
+        app: &AppSpec,
+        tab: &str,
+        serial: u64,
+    ) -> Result<(), String> {
         let w3 = webview
             .cast::<ICoreWebView2_3>()
             .map_err(|_| "this WebView2 Runtime cannot serve a mini-app".to_string())?;
@@ -885,15 +1039,38 @@ impl WebHost {
             webview
                 .add_WebResourceRequested(&h, &mut token)
                 .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
-            // No peer connections: the policy has no directive for them and their address lookups
-            // never reach the wall, so the page loses the API before its own code runs (every frame).
-            let script = wide(app::NO_WEBRTC_SCRIPT);
-            let done = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-                |_err, _id| Ok(()),
-            ));
-            webview
-                .AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), &done)
-                .map_err(|e| format!("the mini-app's script wall: {}", e.message()))?;
+            // No peer connections. The policy has no directive for them and their address lookups never
+            // reach the wall, so the page loses the API before its own code runs. This is the first
+            // of three walls (the others are the browser's own: the WebRTC policy and, with no
+            // network, a proxy that is not there). Its completion is awaited: the view navigates only
+            // when `Inbound::Script` says it is installed, and fails if it is not.
+            if self.without_webrtc_script {
+                // The e2e's seam: the browser-level walls are tested alone.
+                self.inbox.borrow_mut().push_back(Inbound::Script {
+                    tab: tab.to_string(),
+                    serial,
+                    result: Ok(()),
+                });
+                (self.sink)(WebEvent::Pump);
+            } else {
+                let script = wide(app::NO_WEBRTC_SCRIPT);
+                let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
+                let tab_name = tab.to_string();
+                let done = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                    move |err, _id| {
+                        inbox.borrow_mut().push_back(Inbound::Script {
+                            tab: tab_name.clone(),
+                            serial,
+                            result: err.map_err(|e| e.message()),
+                        });
+                        sink(WebEvent::Pump);
+                        Ok(())
+                    },
+                ));
+                webview
+                    .AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), &done)
+                    .map_err(|e| format!("the mini-app's script wall: {}", e.message()))?;
+            }
             // Belt and braces: an app starts with no cookie, whatever an earlier one left in the
             // profile (each app has a site of its own, so none should be shared anyway).
             if let Ok(w2) = webview.cast::<ICoreWebView2_2>()
@@ -977,12 +1154,8 @@ impl WebHost {
     /// Closes the tab's view and frees its controller; the browser environment stays.
     fn close_view(&mut self, tab: &str) {
         self.cancel_downloads(Some(tab));
-        let Some(view) = self.state.views.remove(tab) else {
-            return;
-        };
-        if let Some(l) = view.live {
-            // SAFETY: closing a controller we own; the page and its window go with it.
-            let _ = unsafe { l.controller.Close() };
+        if let Some(view) = self.state.views.remove(tab) {
+            view.shut();
         }
     }
 
@@ -997,12 +1170,10 @@ impl WebHost {
         bounds: PhysRect,
         visible: bool,
     ) {
-        if self
-            .state
-            .views
-            .get(tab)
-            .is_some_and(|v| v.app.as_ref().map(|a| &a.host) != app.as_ref().map(|a| &a.host))
-        {
+        if self.state.views.get(tab).is_some_and(|v| {
+            v.kind() != EnvKind::of(app.as_ref())
+                || v.app.as_ref().map(|a| &a.host) != app.as_ref().map(|a| &a.host)
+        }) {
             // Swapped in the same browser: the environment stays, so a mini-app updated again and
             // again does not restart it.
             self.close_view(tab);
@@ -1024,6 +1195,7 @@ impl WebHost {
             tab.to_string(),
             View {
                 serial,
+                pending: None,
                 app,
                 creating: false,
                 live: None,
@@ -1032,6 +1204,8 @@ impl WebHost {
                 visible,
             },
         );
+        // A browser the swapped-out view alone used goes now (a different kind of view was put in).
+        self.drop_idle_envs();
         self.ensure(tab);
     }
 }
@@ -1140,22 +1314,17 @@ impl WebBackend for WebHost {
 
     fn close(&mut self, tab: &str) {
         self.close_view(tab);
-        if self.state.views.is_empty() {
-            // No web panel is open: the browser environment goes too (a later one makes it again).
-            self.state.env = Env::None;
-        }
+        // A browser no view uses is closed with its last view (a later open makes it again).
+        self.drop_idle_envs();
     }
 
     fn close_all(&mut self) {
         self.cancel_downloads(None);
         for (_, view) in self.state.views.drain() {
-            if let Some(l) = view.live {
-                // SAFETY: closing a controller we own; the page and its window go with it.
-                let _ = unsafe { l.controller.Close() };
-            }
+            view.shut();
         }
         self.inbox.borrow_mut().clear();
-        self.state.env = Env::None;
+        self.state.envs.clear();
     }
 
     fn answer_download(&mut self, id: u64, save: bool) {
@@ -1163,28 +1332,37 @@ impl WebBackend for WebHost {
     }
 
     fn runtime_checked(&mut self, result: Result<String, String>) {
-        if !matches!(self.state.env, Env::Checking) {
-            return;
-        }
-        let tabs: Vec<String> = self.state.views.keys().cloned().collect();
-        self.state.env = Env::None;
-        if tabs.is_empty() {
-            // Everyone left while the question was out.
-            return;
-        }
-        match result {
-            Err(why) => {
-                for t in tabs {
-                    self.fail(&t, &why, true);
-                }
+        // The answer is not tied to a kind: it settles every browser that is waiting for it.
+        let waiting: Vec<EnvKind> = self
+            .state
+            .envs
+            .iter()
+            .filter(|(_, e)| matches!(e, Env::Checking))
+            .map(|(k, _)| *k)
+            .collect();
+        for kind in waiting {
+            self.state.envs.remove(&kind);
+            let tabs = self.tabs_of(kind);
+            if tabs.is_empty() {
+                // Everyone left while the question was out.
+                continue;
             }
-            Ok(version) => {
-                log::info!("WebView2 runtime {version}");
-                match self.start_env() {
-                    Ok(()) => self.state.env = Env::Creating,
-                    Err(why) => {
-                        for t in tabs {
-                            self.fail(&t, &why, false);
+            match &result {
+                Err(why) => {
+                    for t in tabs {
+                        self.fail(&t, why, true);
+                    }
+                }
+                Ok(version) => {
+                    log::info!("WebView2 runtime {version}");
+                    match self.start_env(kind) {
+                        Ok(()) => {
+                            self.state.envs.insert(kind, Env::Creating);
+                        }
+                        Err(why) => {
+                            for t in tabs {
+                                self.fail(&t, &why, false);
+                            }
                         }
                     }
                 }
@@ -1197,18 +1375,17 @@ impl WebBackend for WebHost {
             let next = self.inbox.borrow_mut().pop_front();
             let Some(item) = next else { break };
             match item {
-                Inbound::BrowserExited => {
-                    // Every page is gone and the environment with them: close what is left, drop the
-                    // environment (the next open makes a fresh one) and tell each panel.
-                    self.cancel_downloads(None);
-                    let tabs: Vec<String> = self.state.views.keys().cloned().collect();
-                    for (_, view) in self.state.views.drain() {
-                        if let Some(l) = view.live {
-                            // SAFETY: closing a controller we own.
-                            let _ = unsafe { l.controller.Close() };
+                Inbound::BrowserExited(kind) => {
+                    // Every page of that browser is gone and the environment with them: close what is
+                    // left of it, drop it (the next open makes a fresh one) and tell each panel.
+                    let tabs = self.tabs_of(kind);
+                    for t in &tabs {
+                        self.cancel_downloads(Some(t));
+                        if let Some(view) = self.state.views.remove(t) {
+                            view.shut();
                         }
                     }
-                    self.state.env = Env::None;
+                    self.state.envs.remove(&kind);
                     for t in tabs {
                         (self.sink)(WebEvent::Gone {
                             tab: t,
@@ -1216,25 +1393,35 @@ impl WebBackend for WebHost {
                         });
                     }
                 }
-                Inbound::Env(Ok(env)) => {
-                    if self.state.views.is_empty() {
+                Inbound::Env {
+                    kind,
+                    result: Ok(env),
+                } => {
+                    let tabs = self.tabs_of(kind);
+                    if tabs.is_empty() {
                         // Everyone left while it was being made.
-                        self.state.env = Env::None;
+                        self.state.envs.remove(&kind);
                         continue;
                     }
-                    self.state.env = Env::Ready(env);
-                    let tabs: Vec<String> = self.state.views.keys().cloned().collect();
+                    self.state.envs.insert(kind, Env::Ready(env));
                     for t in tabs {
                         self.start_controller(&t);
                     }
                 }
-                Inbound::Env(Err(why)) => {
-                    self.state.env = Env::None;
-                    let tabs: Vec<String> = self.state.views.keys().cloned().collect();
-                    for t in tabs {
+                Inbound::Env {
+                    kind,
+                    result: Err(why),
+                } => {
+                    self.state.envs.remove(&kind);
+                    for t in self.tabs_of(kind) {
                         self.fail(&t, &why, false);
                     }
                 }
+                Inbound::Script {
+                    tab,
+                    serial,
+                    result,
+                } => self.script_armed(&tab, serial, result),
                 Inbound::Controller {
                     tab,
                     serial,

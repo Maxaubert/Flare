@@ -579,14 +579,33 @@ terminal, working, instead of Claude describing it in words.
 - 2026-10-22, stage 5 review, **"no network" includes peer connections, and says what it cannot yet cover.** The policy has no directive
   for WebRTC and its STUN/TURN and address lookups never reach the request wall, so an app view runs a script before every document in
   every frame (`AddScriptToExecuteOnDocumentCreated`, `app::NO_WEBRTC_SCRIPT`) that deletes and freezes `RTCPeerConnection`,
-  `webkitRTCPeerConnection`, `RTCDataChannel` and the other RTC classes, and the page carries `x-dns-prefetch-control: off`. Known
-  limits, stated rather than hidden: the script is a wall in the page's own realm (a browser bug that hands a page a fresh realm would
-  skip it; a separate environment with `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` would be the stronger wall and is
-  not built), and `<link rel=preconnect>` is only as covered as the browser's own `connect-src` check. The second wall now uses
-  `AddWebResourceRequestedFilterWithRequestSourceKinds` (ICoreWebView2_22, all source kinds, so shared and service workers are
-  covered) where the runtime has it, and the old filter otherwise. *Electron:* `session.setPermissionRequestHandler` does not cover
-  WebRTC; set `webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` AND inject the same freeze script (`preload` or
-  `webFrame.executeJavaScript` before load) AND block requests in `session.webRequest.onBeforeRequest`.
+  `webkitRTCPeerConnection`, `RTCDataChannel` and the other RTC classes, and the page carries `x-dns-prefetch-control: off`. The
+  second wall now uses `AddWebResourceRequestedFilterWithRequestSourceKinds` (ICoreWebView2_22, all source kinds, so shared and service
+  workers are covered) where the runtime has it, and the old filter otherwise. This was the first of three walls: see the next entry.
+- 2026-10-22, stage 5 second review, **WebRTC is walled three ways, and the script is no longer the only one.** Two reviews found the
+  script alone incomplete: its add was not awaited (a page could load before it was installed, and an error was ignored), and a fresh
+  realm (an about:blank or srcdoc frame) might have run before it. Now: (1) **the browser itself.** A mini-app never shares a WebView2
+  environment with the web panel. `flare-web` keeps one environment per kind (`EnvKind`): `AppSealed` (apps with no network) and
+  `AppNet` (apps that were granted `https:`), each made lazily when the first app of that kind opens, in a user data folder of its own
+  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`) and closed with the last view that uses it (an
+  idle kind is dropped when a view of another kind replaces it). Both start with `--webrtc-ip-handling-policy=disable_non_proxied_udp`
+  (plus Chromium's `--force-...` spelling); `AppSealed` also with `--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>`, a
+  proxy that is not there with loopback taken out of the built-in bypass, so a WebSocket or any request the page makes without Flare's
+  wall seeing it goes nowhere. The mapped folder host does not use the network, so the app still loads. (2) **the script is awaited**:
+  the controller is held in `View::pending` and the view navigates only when the add's completion says it is installed; an error fails
+  the view with the reason, with no fallback to an unprotected page. (3) **the policy**: `frame-src 'none'; child-src 'none';
+  worker-src 'self' blob:` so the page has no child frames in practice (about:blank and srcdoc are local documents and may still be
+  created; the e2e proves the script ran in them: `RTCPeerConnection` is `undefined` in the frame at once and later). *Measured, not
+  assumed:* on WebView2 155 Chromium's `--force-webrtc-ip-handling-policy` alone changed nothing (STUN still reached a UDP socket and
+  host candidates were gathered); Edge's `--webrtc-ip-handling-policy` is the switch that works, found by trying (`miniApp` "webrtc"
+  checks run the page with the script and policy both off by seams and count the packets a loopback UDP "STUN server" hears: 0 for
+  both kinds of app and 6 in the web panel as the control). **Cost:** while a mini-app is open there is a second browser (its own set of
+  processes and memory, and extra time before the first page) beside the web panel's; a network app and a sealed app are two browsers,
+  and replacing one by the other restarts the browser (replacing by the same kind does not). **Not covered:** an app granted the network
+  can reach any https address (that is what it was granted), and DNS lookups of a networked app go out; a bug in the browser could still
+  break any wall. *Electron:* `webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` per partition PLUS
+  `session.setProxy({proxyRules: 'http://127.0.0.1:9'})` on a partition of its own, and test that the policy took effect with a UDP
+  socket, not by reading the setting back.
 - 2026-10-22, stage 5 review, **the previous run's folders are renamed aside, not deleted, at start.** `app::retire_root` renames
   `<profile>pps` to `apps.old-<pid>-<time>` (one call on the UI thread, so the channel can write a fresh root at once) and the
   `flare-app-clean` worker deletes every `apps.old-*`; a rename that is refused falls back to emptying in place. The quit path also
