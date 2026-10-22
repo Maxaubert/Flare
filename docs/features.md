@@ -586,24 +586,27 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   exactly over it (`AppMarkColor` in `mark.slint`, the artwork's two paths and their 135 degree gradients, 84 px),
   never in the accent. Held by `ui_tests::start::the_mark_is_the_two_toned_flame_at_84_px` (orange and gold
   pixels, the ink size, the gold inside the orange, at 100 and 225 percent) and
-  `the_color_mark_is_the_artworks_two_paths_and_gradients` (the paths and stops equal the SVG's), the e2e
+  `the_color_mark_is_the_artworks_two_paths_and_gradients` (the paths, stops and direction are the SVG's), the e2e
   `lifecycle` (`start.state` reports the two tones).
 - **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
   the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
   `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing
-  separator dropped), so it never groups under the installed Flare's Start menu shortcut and its old icon. The
+  separator dropped, a `\?\` prefix dropped, a relative path read against the cwd), so it never groups under the installed Flare's Start menu shortcut and its old icon. The
   default profile keeps `com.flare.terminal`, which the installer stamps on its shortcut. `flare.exe
   --print-aumid [--user-data-dir=<path>]` prints the identity and exits, so an install script can stamp it on
-  the shortcut of a second copy. Toasts must use the same value (`ship_ctl::effective_aumid`). Held by
+  the shortcut of a second copy (the last `--user-data-dir=` wins; a space form or an empty one exits 2). The install script must stamp exactly the value printed for the path the shortcut launches with. Toasts must use the same value (`ship_ctl::effective_aumid`). Held by
   `flare_win::names::tests::aumid_is_the_plain_one_for_the_default_profile_and_per_profile_otherwise` and
   `ship_ctl::tests::profile_arg_reads_the_equals_form_only`.
 - **Vertical tabs at start.** 2026-10-22 (owner: "there was a startup bug where it was on vertical tabs but it
-  was showing the horizontal style, clicking horizontal then vertical in settings fixed it"): a profile that
-  stores vertical opens with the tabs down the side on the first frame. Not reproduced on this code or on the
-  surfaces stack (a stored vertical profile, with and without a saved tab, GPU and software, 100 and 225 percent
-  at start: the first refresh reads the store and the sidebar is drawn); the cause is still open. Guarded by
-  `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e `verticalStart`
-  (a stored vertical profile with a saved tab, GPU renderer, 225 percent, sidebar and no strip).
+  was showing the horizontal style, clicking horizontal then vertical in settings fixed it"): cause OPEN, owner
+  decision pending. A likely cause: `side-mode` in `app.slint` is `layout-vertical && has-tabs`, so a vertical
+  profile with ZERO tabs draws the top bar on the start screen; Settings is itself a tab, so opening it sets
+  `has-tabs` and the sidebar appears. Today that is by design (no look change without the owner's yes: should a
+  vertical profile with no tabs show an empty sidebar with its + button?). A profile with saved tabs was checked
+  (with and without a saved tab, GPU and software, 100 and 225 percent) and starts vertical. Held, for those
+  cases only, by `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e
+  `verticalStart`; `appctl::tests::a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar`
+  pins the zero-tab inputs as they are.
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).

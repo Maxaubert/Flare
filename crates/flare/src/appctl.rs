@@ -4304,6 +4304,25 @@ mod tests {
     }
 
     #[test]
+    fn a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar() {
+        // `side-mode` in app.slint is `layout-vertical && has-tabs`, so the zero-tab start screen
+        // shows the top bar by design until the owner decides otherwise (features.md, "Vertical
+        // tabs at start"). This pins both inputs: the layout is vertical, there are no tabs.
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Vertical),
+        );
+        f.start_restore_and_wait();
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(f.h.comp.get_layout_vertical());
+        assert!(!f.h.comp.get_has_tabs(), "a start screen has no tabs");
+    }
+
+    #[test]
     fn the_key_context_reads_the_prefs() {
         let f = fx();
         let c = f.ctl.borrow().key_context();

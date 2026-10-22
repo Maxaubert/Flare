@@ -81,7 +81,19 @@ pub fn aumid_for_profile(user_data_dir: Option<&std::path::Path>) -> String {
     let Some(dir) = user_data_dir else {
         return AUMID.to_string();
     };
-    let text = dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    // A `\\?\` prefix is dropped and a relative path is read against the cwd, so the spellings of
+    // one folder give one identity (no canonicalize: the folder may not exist yet).
+    let lossy = dir.to_string_lossy();
+    let raw = lossy.strip_prefix(r"\\?\").unwrap_or(&lossy).to_string();
+    let abs = if std::path::Path::new(&raw).is_absolute() || raw.starts_with(['/', '\\']) {
+        raw
+    } else {
+        match std::env::current_dir() {
+            Ok(c) => format!("{}\\{raw}", c.to_string_lossy().trim_start_matches(r"\\?\")),
+            Err(_) => raw,
+        }
+    };
+    let text = abs.to_lowercase().replace('/', "\\");
     let text = text.trim_end_matches('\\');
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {

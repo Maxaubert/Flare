@@ -47,6 +47,11 @@ pub fn bootstrap() {
     // install script can stamp it on a shortcut; before anything else starts.
     if std::env::args().any(|a| a == "--print-aumid") {
         crate::attach_parent_console();
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(bad) = malformed_profile_arg(&argv) {
+            eprintln!("--print-aumid: `{bad}` is not --user-data-dir=<path>");
+            std::process::exit(2);
+        }
         println!("{}", effective_aumid());
         std::process::exit(0);
     }
@@ -99,12 +104,24 @@ pub fn uninstall_hook(reg: &dyn Registry, root: &str) {
     remove_verb(reg, root);
 }
 
-/// The `--user-data-dir=<path>` of a command line (the equals form, as `config` reads it).
+/// The `--user-data-dir=<path>` of a command line (the equals form, as `config` reads it: the LAST
+/// one wins).
 pub fn profile_arg(argv: &[String]) -> Option<PathBuf> {
     argv.iter()
+        .rev()
         .find_map(|a| a.strip_prefix("--user-data-dir="))
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
+}
+
+/// A `--user-data-dir` argument that is not a non-empty equals form (`config` rejects it, and
+/// `--print-aumid` must not quietly print the plain identity for it).
+pub fn malformed_profile_arg(argv: &[String]) -> Option<&str> {
+    argv.iter().map(String::as_str).find(|a| {
+        a.starts_with("--user-data-dir")
+            && a.strip_prefix("--user-data-dir=")
+                .is_none_or(|p| p.is_empty())
+    })
 }
 
 /// The taskbar identity of this run: the plain one for the default profile, a per-profile one for a
@@ -663,6 +680,27 @@ mod tests {
         let body = ship.split("pub fn bootstrap()").nth(1).unwrap();
         assert!(body.split("\n}\n").next().unwrap().contains("set_aumid();"));
         assert!(src("main.rs").contains("ship_ctl::bootstrap();"));
+    }
+
+    #[test]
+    fn profile_arg_takes_the_last_and_flags_a_malformed_one() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            profile_arg(&a(&["--user-data-dir=C:\\one", "--user-data-dir=C:\\two"])),
+            Some(PathBuf::from("C:\\two"))
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir", "C:\\p"])),
+            Some("--user-data-dir")
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir="])),
+            Some("--user-data-dir=")
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir=C:\\p", "--e2e"])),
+            None
+        );
     }
 
     #[test]
