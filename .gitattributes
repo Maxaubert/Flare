@@ -6,3 +6,5 @@ docs/theme-sample.txt -text
 
 # Shell scripts run under bash on the runner: a CR breaks them (audit 2026-10-20, H4).
 *.sh text eol=lf
+
+assets/mermaid/mermaid.min.js -text

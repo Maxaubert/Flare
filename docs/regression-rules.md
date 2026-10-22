@@ -469,3 +469,35 @@ base), so the page's title does not show through it. Held by
 `a_ref_is_forgotten_when_the_page_loads_something_new`, `a_stale_ref_is_not_found_and_nothing_is_sent`,
 `an_element_that_vanished_is_not_found`, `a_look_that_finishes_after_a_navigation_does_not_put_back_the_old_refs` (a look keeps its
 names only when the page is still the document it read) and the e2e `agentBrowser`.
+199. **A page the agent wrote runs in a sandbox that cannot reach out, and the page cannot lift it.** A mini-app (`show_html`) is served
+from a host of its own (`flare-app-<n>.local`: its own SITE, so its storage and cookies are not another app's, not even through a `Domain=` cookie), in a private browser profile of
+its own (never the web panel's, never Edge's), and the first element of the page is a Content-Security-Policy that Flare wrote
+(`default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'`,
+no `'unsafe-eval'`; `https:` is added only when the agent asked AND the user's setting "Let mini apps use the network" is on, plain `http:`
+never). A script that removes the tag removes nothing, a second wall answers every request that is not the app's own with a refusal (every request source, workers too), and the page loses the peer-connection API three ways: a script before its own code in every frame whose completion is AWAITED before the view navigates (an error fails the view, no unprotected fallback), a browser environment of the mini-apps' own (never the web panel's; one for apps with no network, one for apps with it, each started with the WebRTC policy `disable_non_proxied_udp`, the sealed one also with a proxy that is not there) and a policy that shuts child frames (`frame-src 'none'; child-src 'none'; worker-src 'self' blob:`). The browser walls are tested alone, by seams that switch the policy and the script off, with a UDP socket as the STUN server (0 packets for an app, more than 0 for the web panel as the control) and a WebSocket to a loopback listener (stopped for a sealed app); held also by `a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy`, `the_policy_has_no_child_frames_and_only_own_or_blob_workers`, `the_two_app_environments_have_folders_of_their_own_beside_the_panels`.
+The view cannot navigate away, a link or `window.open` opens nothing, developer tools are off. Native: `flare_surfaces::app` (`csp`,
+`wrap_html`, `nav_allowed`, `request_allowed`) and the host's `configure_app`. Held by `the_policy_has_no_network_unless_asked`,
+`the_policy_comes_before_anything_the_page_says`, `a_view_stays_on_its_own_page`, `a_request_leaves_only_as_far_as_the_network_switch_allows`,
+`the_network_needs_the_agent_to_ask_and_the_users_switch_to_be_on` and the e2e `miniApp` (violation events for a fetch, an image and a
+script from outside; the tag removed and a fetch still blocked; the second wall alone answering with the policy off by the `--e2e` seam;
+a navigation, a sibling page and `window.open` going nowhere; the profile's name and private flag read back; the next app finding no
+storage or cookie). Source: the Surfaces design, "Security rules" (S4) and the stage 5 review.
+200. **A mini-app's files are the app's own and go with it.** One folder per app directly under `<profile>\apps`, holding only the page
+(and a diagram's Mermaid file): files next to a `path` page are never served. The folder is written off the UI thread before the UI is
+asked, then belongs to the UI thread, which removes it on a worker when the panel closes, another panel replaces the app, the tab closes,
+the request arrives too late or the tab is gone; the whole folder is emptied at start; and only a folder directly inside the apps root is
+ever deleted, whatever it is handed. A page named by `path` is resolved again by the backend (rule 187) and must be `html` or `htm` as
+typed and as the file system names it; a click on a path never opens a page. Native: `app::write_app`, `remove_app`, `clean_root`;
+`flare_term::path_open::resolve_html_file`. Held by `only_a_folder_directly_inside_the_apps_root_is_ever_removed`,
+`startup_empties_the_apps_folder_and_leaves_the_profile_alone`, `retiring_the_root_renames_it_aside_and_the_sweep_deletes_every_old_one`, `the_page_loses_peer_connections_and_prefetch_before_its_own_code`, `a_page_for_a_mini_app_is_html_or_htm_and_nothing_else`,
+`a_page_named_by_path_is_resolved_again_vetted_and_read`, `closing_a_mini_app_ends_it_and_removes_its_folder`,
+`a_mini_app_for_a_closed_tab_is_refused_and_its_folder_removed`, `a_mini_app_asked_for_too_late_is_never_shown` and the e2e `miniApp`.
+201. **A diagram is drawn by the bundled build and its error is the agent's to read.** Mermaid is the file in `assets/mermaid/` (hash held
+by `the_bundled_mermaid_is_the_pinned_build`), compiled into the exe, never fetched; `securityLevel` is `strict`; the text reaches the page
+as a JSON string in an inert script element with `<` escaped (`the_diagram_text_cannot_end_its_element`), never as markup; a diagram has no
+network whatever the setting says. The call is answered only when the page says whether it drew, and a failure is `bad_params` with
+Mermaid's own text cleaned and capped at 800 characters (`a_drawn_diagram_is_ok_and_an_error_carries_mermaids_words`,
+`a_diagram_is_answered_by_the_pages_word_and_a_drawing_that_failed_says_why`, the e2e `diagram` and `mcpDiagram`). Replacing one page by
+another keeps the browser environment (`a_page_replaces_a_mini_app_and_a_mini_app_replaces_a_page`, the e2e checks the browser process id).
+
+199 (addendum, 2026-10-22). The sealed app's browser also resolves no name (`--host-resolver-rules="MAP * ~NOTFOUND"`), a WebView2 environment variable that would replace its arguments is removed and a policy value that does so refuses the app, an external protocol launch is cancelled and frames navigate only to blank, srcdoc or the app's page. Held by `an_overriding_policy_refuses_the_app_and_none_lets_it_start`, `a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy` and the e2e `miniApp` (unregistered-protocol navigation from page and frame, a listener on port 9 hears nothing).

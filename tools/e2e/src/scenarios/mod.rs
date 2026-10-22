@@ -21,6 +21,7 @@ pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
 mod marks_px;
+pub mod mini_app;
 pub mod panel;
 pub mod settings_a;
 pub mod settings_b;
@@ -576,6 +577,24 @@ pub const ALL: &[Scenario] = &[
         group: "convo",
         run: convo::convo_panels,
         limit_secs: 300,
+    },
+    Scenario {
+        name: "miniApp",
+        group: "web",
+        run: mini_app::mini_app,
+        limit_secs: 480,
+    },
+    Scenario {
+        name: "diagram",
+        group: "web",
+        run: mini_app::diagram,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "mcpDiagram",
+        group: "web",
+        run: mini_app::mcp_diagram,
+        limit_secs: 240,
     },
 ];
 

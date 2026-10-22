@@ -399,6 +399,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
         "`ureq` 3.4.2",
         "`zip` 9.0.0",
         "whisper.cpp",
+        "Mermaid 11.17.2",
     ] {
         assert!(readme.contains(line), "README.md lacks {line}");
     }
@@ -408,6 +409,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
         "ureq 3.4.2",
         "zip 9.0.0",
         "whisper.cpp engine b5130",
+        "Mermaid 11.17.2",
     ] {
         assert!(
             notices.contains(entry),

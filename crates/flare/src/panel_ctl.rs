@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use flare_surfaces::PanelKind;
+use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::preview::{self, Cut, Decoded, LINES_MAX, Reason, TEXT_CAP};
 use flare_surfaces::state::TabPanels;
 use flare_surfaces::store::{PanelStore, SavedTabPanel, is_blank, match_restored};
@@ -144,8 +145,11 @@ pub struct PanelSnap {
     pub title: String,
     /// The file shown; None for text that was handed over and for a web page.
     pub path: Option<String>,
-    /// The address of a web panel's page.
+    /// The address of a web panel's page (none for a mini-app: its address is Flare's own).
     pub url: Option<String>,
+    /// For a mini-app: whether its page may load from the web (the agent asked and the user's switch
+    /// was on). None for every other panel.
+    pub network: Option<bool>,
     pub open: bool,
     /// The slot's share of the page the user dragged it to, if they did.
     pub width: Option<f32>,
@@ -153,6 +157,11 @@ pub struct PanelSnap {
 
 pub struct PanelCtl {
     panels: TabPanels,
+    /// The mini-app each tab shows, if any (stage 5). Its panel is a web panel at the app's address;
+    /// it lives for the session only (never stored, never restored) and its folder goes with it.
+    apps: HashMap<String, AppSpec>,
+    /// Where the apps' folders are (`<profile>\apps`); a folder is removed only from here.
+    apps_root: Option<std::path::PathBuf>,
     /// A title a caller gave (the header shows it instead of the file's name), by tab.
     titles: HashMap<String, String>,
     /// Text handed over for a tab's panel, by tab.
@@ -238,6 +247,8 @@ impl PanelCtl {
     pub fn new(post: Post) -> Self {
         Self {
             panels: TabPanels::default(),
+            apps: HashMap::new(),
+            apps_root: None,
             titles: HashMap::new(),
             inline: HashMap::new(),
             inline_seq: 0,
@@ -270,6 +281,7 @@ impl PanelCtl {
             // A restored target is checked as a click's is: the file is anyone's to edit.
             if let Some(p) = panel
                 && (!p.kind.is_built() || target_ok(&p.kind, &p.target))
+                && !app::is_app_url(&p.target)
             {
                 self.panels.restore(id, p);
             }
@@ -283,6 +295,8 @@ impl PanelCtl {
         if kind.is_built() && !target_ok(&kind, target) {
             return false;
         }
+        // Whatever the tab shows now replaces a mini-app it had.
+        self.drop_app(tab);
         // The file may have changed since it was read, or failed and now exist: a click on what
         // is on show reads it again.
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
@@ -296,7 +310,70 @@ impl PanelCtl {
     }
 
     pub fn close(&mut self, tab: &str) -> bool {
+        // A mini-app has nothing to come back to: closing it is the end of it (and of its folder).
+        if self.apps.contains_key(tab) {
+            let was_open = self.panels.open_on(tab).is_some();
+            self.drop_app(tab);
+            self.panels.forget(tab);
+            self.titles.remove(tab);
+            return was_open;
+        }
         self.panels.close(tab)
+    }
+
+    /// Where the apps' folders are (startup).
+    pub fn set_apps_root(&mut self, root: std::path::PathBuf) {
+        self.apps_root = Some(root);
+    }
+
+    /// Ends the tab's mini-app, if it has one: its folder is removed on a worker (rule 34).
+    fn drop_app(&mut self, tab: &str) {
+        if let Some(spec) = self.apps.remove(tab) {
+            self.remove_folder(spec);
+        }
+    }
+
+    /// Removes an app's folder on a worker thread; only a folder directly inside the apps root goes.
+    pub fn remove_folder(&self, spec: AppSpec) {
+        let Some(root) = self.apps_root.clone() else {
+            return;
+        };
+        let job = move || {
+            app::remove_app(&root, &spec.folder);
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-app-clean".into())
+            .spawn(job)
+        {
+            log::warn!("could not start the mini-app cleaner: {e}");
+        }
+    }
+
+    /// Shows a mini-app on the tab: a web panel at the app's address under the caller's title. A mini-app
+    /// the tab had goes first. False for an address the panel cannot hold.
+    pub fn show_app(&mut self, tab: &str, spec: AppSpec, title: &str) -> bool {
+        self.drop_app(tab);
+        self.titles.remove(tab);
+        self.inline.remove(tab);
+        if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
+            self.reload = true;
+        }
+        if !self.panels.show(tab, PanelKind::Web, &spec.url) {
+            self.remove_folder(spec);
+            return false;
+        }
+        self.titles.insert(tab.to_string(), title.to_string());
+        self.apps.insert(tab.to_string(), spec);
+        true
+    }
+
+    /// The mini-app the tab shows (open or not).
+    pub fn app_spec(&self, tab: &str) -> Option<&AppSpec> {
+        self.apps.get(tab)
+    }
+
+    pub fn is_app(&self, tab: &str) -> bool {
+        self.apps.contains_key(tab)
     }
 
     pub fn reopen(&mut self, tab: &str) -> bool {
@@ -345,6 +422,10 @@ impl PanelCtl {
     /// restart and the toggle chord bring back). Only an address a panel may open is kept, in its
     /// normal form.
     pub fn set_web_url(&mut self, tab: &str, url: &str) -> bool {
+        // A mini-app stays at its own address (the browser cancels every other navigation).
+        if self.apps.contains_key(tab) {
+            return false;
+        }
         let Ok(url) = flare_surfaces::web::normalize_url(url) else {
             return false;
         };
@@ -357,6 +438,10 @@ impl PanelCtl {
     /// The page of the tab's web panel has a title: the channel names the panel by it (an empty one
     /// goes back to the host's name).
     pub fn set_web_title(&mut self, tab: &str, title: &str) -> bool {
+        // The title the agent gave a mini-app is the panel's name, whatever the page calls itself.
+        if self.apps.contains_key(tab) {
+            return false;
+        }
         if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Web) {
             return false;
         }
@@ -377,6 +462,7 @@ impl PanelCtl {
     }
 
     pub fn forget(&mut self, tab: &str) {
+        self.drop_app(tab);
         self.panels.forget(tab);
         self.titles.remove(tab);
         self.inline.remove(tab);
@@ -409,6 +495,7 @@ impl PanelCtl {
     pub fn show_text(&mut self, tab: &str, text: &str, title: Option<&str>) -> bool {
         self.inline_seq += 1;
         let target = format!("{INLINE}{}", self.inline_seq);
+        self.drop_app(tab);
         if !self.panels.show(tab, PanelKind::Text, &target) {
             return false;
         }
@@ -428,10 +515,16 @@ impl PanelCtl {
     pub fn snap(&self, tab: &str) -> Option<PanelSnap> {
         let p = self.panels.get(tab)?;
         let inline = p.target.starts_with(INLINE);
-        let web = p.kind == PanelKind::Web;
+        let app = self.apps.get(tab);
+        let web = p.kind == PanelKind::Web && app.is_none();
         let convo = p.kind.is_convo();
         Some(PanelSnap {
-            kind: p.kind.name(),
+            kind: if app.is_some() {
+                "app".to_string()
+            } else {
+                p.kind.name()
+            },
+            network: app.map(|a| a.allow_network),
             title: self.titles.get(tab).cloned().unwrap_or_else(|| {
                 if web {
                     flare_surfaces::web::host_label(&p.target)
@@ -441,7 +534,7 @@ impl PanelCtl {
                     file_name(&p.target).to_string()
                 }
             }),
-            path: (!inline && !web && !convo).then(|| p.target.clone()),
+            path: (!inline && !web && !convo && app.is_none()).then(|| p.target.clone()),
             url: web.then(|| p.target.clone()),
             open: p.open,
             width: p.width,
@@ -466,11 +559,11 @@ impl PanelCtl {
             .iter()
             .map(|(id, cwd)| SavedTabPanel {
                 cwd: cwd.clone(),
-                // Text that was handed over lives in memory for this run only.
+                // Text that was handed over, and a mini-app, live in memory for this run only.
                 panel: self
                     .panels
                     .get(id)
-                    .filter(|p| !p.target.starts_with(INLINE))
+                    .filter(|p| !p.target.starts_with(INLINE) && !self.apps.contains_key(id))
                     .cloned(),
             })
             .collect();

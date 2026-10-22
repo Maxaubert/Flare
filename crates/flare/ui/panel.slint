@@ -457,6 +457,8 @@ export component PanelSlot inherits Rectangle {
     callback convo-toggle(string);
     // A web page (kind 3): the bar, and the still drawn while an overlay hides the browser window.
     in property <string> web-url;
+    // A mini-app: no bar (the address is Flare's own and the page cannot navigate).
+    in property <bool> web-app;
     in property <bool> web-loading;
     in property <bool> web-can-back;
     in property <bool> web-can-forward;
@@ -469,7 +471,7 @@ export component PanelSlot inherits Rectangle {
     out property <bool> ribbon-shown: root.open && root.kind == 3 && root.web-ribbon != "";
     out property <length> ribbon-w: ribbon.width;
     // The bar is part of the head of a web panel (the page starts under it).
-    out property <length> bar-h: root.kind == 3 ? Px.snap(32px) : 0px;
+    out property <length> bar-h: (root.kind == 3 && !root.web-app) ? Px.snap(32px) : 0px;
     out property <length> web-x: web-box.absolute-position.x;
     out property <length> web-y: web-box.absolute-position.y;
     out property <length> web-w: web-box.width;
@@ -659,7 +661,7 @@ export component PanelSlot inherits Rectangle {
             y: root.header-h;
             width: parent.width;
             height: root.bar-h;
-            visible: root.kind == 3;
+            visible: root.kind == 3 && !root.web-app;
             url: root.web-url;
             loading: root.web-loading;
             can-back: root.web-can-back;

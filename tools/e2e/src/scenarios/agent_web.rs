@@ -893,7 +893,7 @@ fn eval_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
 // ---- mcpBrowser ----
 
-struct Server {
+pub(super) struct Server {
     child: Child,
     stdin: ChildStdin,
     lines: mpsc::Receiver<String>,
@@ -907,7 +907,13 @@ impl Drop for Server {
 }
 
 impl Server {
-    fn start(exe: &Path, pipe: &str, pid: u32, token: &str, cwd: &Path) -> Result<Server, String> {
+    pub(super) fn start(
+        exe: &Path,
+        pipe: &str,
+        pid: u32,
+        token: &str,
+        cwd: &Path,
+    ) -> Result<Server, String> {
         let mut child = Command::new(exe)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -938,7 +944,7 @@ impl Server {
     }
 
     /// Sends one request and waits for its reply.
-    fn ask(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
+    pub(super) fn ask(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         writeln!(self.stdin, "{msg}").map_err(|e| format!("write: {e}"))?;
         let line = self
@@ -948,12 +954,12 @@ impl Server {
         serde_json::from_str(&line).map_err(|e| format!("not JSON: {e}: {line}"))
     }
 
-    fn tool(&mut self, id: u64, name: &str, args: Value) -> Result<Value, String> {
+    pub(super) fn tool(&mut self, id: u64, name: &str, args: Value) -> Result<Value, String> {
         self.ask(id, "tools/call", json!({"name": name, "arguments": args}))
     }
 }
 
-fn text_of(reply: &Value) -> String {
+pub(super) fn text_of(reply: &Value) -> String {
     reply["result"]["content"]
         .as_array()
         .map(|a| {
@@ -966,7 +972,7 @@ fn text_of(reply: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn is_error(reply: &Value) -> bool {
+pub(super) fn is_error(reply: &Value) -> bool {
     reply["result"]["isError"] == json!(true)
 }
 

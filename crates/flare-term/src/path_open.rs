@@ -52,10 +52,10 @@ const OPENABLE: &[&str] = &[
     "scss", "sql", "slint", "vue", "svelte",
 ];
 
-/// True when a click may open a file of this name. Unknown and runnable types answer false, and so
-/// does every name Windows would read differently from what is shown (a trailing dot or space on
-/// any segment, a `:` stream).
-pub fn may_open(file: &str) -> bool {
+/// The extension (lower case) of a file name Windows would read the way it is shown, or None for a
+/// name it would read differently (a trailing dot or space on any segment, a `:` stream) or one with
+/// no extension.
+fn plain_extension(file: &str) -> Option<String> {
     let body = file.strip_prefix(r"\\?\").unwrap_or(file);
     let rest = if has_drive_root(body) {
         &body[2..]
@@ -63,19 +63,30 @@ pub fn may_open(file: &str) -> bool {
         body
     };
     if rest.contains(':') {
-        return false;
+        return None;
     }
     if rest
         .split(is_sep)
         .any(|seg| seg.ends_with('.') || seg.ends_with(' '))
     {
-        return false;
+        return None;
     }
     let name = rest.rsplit(is_sep).next().unwrap_or(rest);
-    match name.rfind('.') {
-        Some(i) => OPENABLE.contains(&name[i + 1..].to_lowercase().as_str()),
-        None => false,
-    }
+    name.rfind('.').map(|i| name[i + 1..].to_lowercase())
+}
+
+/// True when a click may open a file of this name. Unknown and runnable types answer false, and so
+/// does every name Windows would read differently from what is shown (a trailing dot or space on
+/// any segment, a `:` stream).
+pub fn may_open(file: &str) -> bool {
+    plain_extension(file).is_some_and(|e| OPENABLE.contains(&e.as_str()))
+}
+
+/// True for a page a mini-app may be made from (`view.html` with a path): `html` or `htm`, under the
+/// same name rules as [`may_open`]. It is not on the click allowlist: a click never opens a page, only
+/// the agent's `show_html` shows one, inside the mini-app sandbox.
+pub fn may_show_as_app(file: &str) -> bool {
+    plain_extension(file).is_some_and(|e| e == "html" || e == "htm")
 }
 
 /// The path as the file system names it (links and 8.3 names resolved), or None when it cannot be.
@@ -341,6 +352,21 @@ pub fn resolve_openable_file(cwd: &str, text: &str, home: &str) -> Option<(Strin
     may_open(&real).then_some((hit.abs, real))
 }
 
+/// A page for a mini-app (`view.html` with a path): resolved again in the backend like
+/// [`resolve_openable_file`] (rule 13), with the same checks on the name as typed and as the file
+/// system names it (rule 14), but the extension must be `html` or `htm` ([`may_show_as_app`]).
+pub fn resolve_html_file(cwd: &str, text: &str, home: &str) -> Option<(String, String)> {
+    let gate = StatGate::unmetered(Arc::new(FsStat));
+    let hit = path_kinds(cwd, &[text.to_string()], &gate, home)
+        .into_iter()
+        .next()??;
+    if hit.kind != PathKind::File || !may_show_as_app(&hit.abs) {
+        return None;
+    }
+    let real = canonical(&hit.abs)?;
+    may_show_as_app(&real).then_some((hit.abs, real))
+}
+
 pub trait PathOpeners {
     /// The app Windows gives it.
     fn open_path(&self, abs: &str);
@@ -444,6 +470,48 @@ mod tests {
         assert!(resolve_openable_file(&root, r"\\server\share\a.png", "").is_none());
         assert!(resolve_openable_file(&root, "a\0b.png", "").is_none());
         assert!(resolve_openable_file("", "a.png", "").is_none());
+    }
+
+    #[test]
+    fn a_page_for_a_mini_app_is_html_or_htm_and_nothing_else() {
+        for f in ["a.html", "C:\\x\\B.HTM", "C:\\x\\y\\page.Html"] {
+            assert!(may_show_as_app(f), "{f}");
+            // A click still never opens one.
+            assert!(!may_open(f), "{f}");
+        }
+        for f in [
+            "a.js",
+            "a.exe",
+            "a.svg",
+            "a.xhtml",
+            "a.html.exe",
+            "a.html.",
+            "a.html ",
+            "a.html:stream",
+            "C:\\x.\\a.html",
+            "README",
+            "html",
+        ] {
+            assert!(!may_show_as_app(f), "{f}");
+        }
+    }
+
+    #[test]
+    fn a_page_resolves_in_the_backend_and_a_script_a_folder_or_a_share_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.html"), b"<p>x").unwrap();
+        std::fs::write(dir.path().join("b.js"), b"x").unwrap();
+        std::fs::create_dir(dir.path().join("d.html")).unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let got = resolve_html_file(&root, "a.html", "").unwrap();
+        assert!(got.0.ends_with("a.html") && got.1.ends_with("a.html"));
+        assert!(resolve_html_file(&root, "b.js", "").is_none());
+        assert!(resolve_html_file(&root, "d.html", "").is_none(), "a folder");
+        assert!(resolve_html_file(&root, "missing.html", "").is_none());
+        assert!(resolve_html_file(&root, r"\\server\share\a.html", "").is_none());
+        assert!(resolve_html_file("", "a.html", "").is_none());
+        // A page is not an openable file for a click.
+        assert!(resolve_openable_file(&root, "a.html", "").is_none());
     }
 
     #[test]

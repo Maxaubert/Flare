@@ -541,6 +541,160 @@ The Opus review found five medium and a set of low defects; what was decided:
   (a look of 600 elements was 600 syncs). **Accepted, not changed:** the accessibility tree is parsed on the UI thread (a worker
   would need the whole machine to cross a thread); it is one parse per look, and the cap (600) bounds the walk after it. Measured
   on the e2e page it is not visible in the stall report; a very large page should be timed by hand.
+
+
+## Stage 5: mini-apps and diagrams (`surfaces-5-apps`, issues #23 and #24)
+
+The owner's wish: when Claude has something to show that is not a picture or a text (a chart of the numbers it just worked out, a
+calculator, an explainer with a slider, a 3D viewer, a diagram of a flow), it writes a small page and Flare shows it beside the
+terminal, working, instead of Claude describing it in words.
+
+- 2026-10-22, stage 5, a mini-app is a **web panel with a different view**, not a new kind of panel in the store. The panel is a
+  `PanelKind::Web` at the app's own address (`https://flare-app-<n>.local/index.html`) and `PanelCtl` holds a side table
+  `tab -> AppSpec` (host, folder, address, network). Why: everything the web panel already does for free keeps working for it (the
+  slot and splitter maths, the airspace phases and the still behind a menu, focus and the second Escape, the agent's `browser_*`
+  tools, the ribbon, the process-failure handling, quit) and nothing in `panels.json` needs a new kind. What differs is what the
+  tables say: `kind` on the channel is `"app"`, the address bar is not drawn (`panel-web-app`), the title is the agent's, the
+  address cannot move, the panel is not stored. A stored web address that is an app address is dropped on restore like any address
+  a panel cannot open.
+- 2026-10-22, stage 5, **its own profile, in the same browser.** The app's view is made with `CreateCoreWebView2ControllerWithOptions`
+  on a controller options object whose profile name is `flare-app` and `IsInPrivateModeEnabled` is true: a WebView2 *profile* inside
+  the one environment the web panel already starts. Why not a second environment: a second user data folder starts a second set of
+  browser processes (a second 300 MB), and tearing the environment down when the last view closes (stage 3) would restart the whole
+  browser every time an agent updated its chart. A private profile has its own cookies, storage, cache and permissions, keeps
+  nothing on disk and cannot see the web panel's. A runtime too old for profiles (before 1.0.1245) fails the view ("too old to keep a
+  mini-app apart"); it is **never** put on the web panel's profile instead. The e2e reads the profile's name and private flag back from
+  the browser itself (`ICoreWebView2Profile`) and holds that the browser process id is the same before and after a second app.
+- 2026-10-22, stage 5, **one host per app, `flare-app-<n>.local`** (not the single `flare-app.local` of the design). Origins are the
+  browser's wall between pages: with one host two mini-apps (in two tabs, or one after the other) would share `localStorage`,
+  cookies, IndexedDB and could read each other's data; with a host each they cannot (the e2e writes `localStorage` and a cookie in the
+  first app and finds neither in the second). `n` counts up per run from 1; nothing about the number is secret or means anything
+  to a client.
+- 2026-10-22, stage 5 review, **a site per app, not a subdomain of a shared parent.** `.local` is not on the public suffix list, so
+  `a1.flare-app.local` and `a2.flare-app.local` were ONE site (`flare-app.local`) and a page could set `domain=flare-app.local` for the
+  other app to read. The hosts are now `flare-app-<n>.local`: the site is the whole host and a cookie for `local` is refused (a
+  top-level name). Belt and braces: every new app view starts with `CookieManager().DeleteAllCookies()` on the app profile. The e2e
+  sets a parent-domain cookie in the first app and finds neither it nor anything else in the second. *Electron:* give each app its own
+  site (a custom scheme per app, or a host that is not a subdomain of a shared parent); never share a registrable domain between apps.
+- 2026-10-22, stage 5 review, **"no network" includes peer connections, and says what it cannot yet cover.** The policy has no directive
+  for WebRTC and its STUN/TURN and address lookups never reach the request wall, so an app view runs a script before every document in
+  every frame (`AddScriptToExecuteOnDocumentCreated`, `app::NO_WEBRTC_SCRIPT`) that deletes and freezes `RTCPeerConnection`,
+  `webkitRTCPeerConnection`, `RTCDataChannel` and the other RTC classes, and the page carries `x-dns-prefetch-control: off`. The
+  second wall now uses `AddWebResourceRequestedFilterWithRequestSourceKinds` (ICoreWebView2_22, all source kinds, so shared and service
+  workers are covered) where the runtime has it, and the old filter otherwise. This was the first of three walls: see the next entry.
+- 2026-10-22, stage 5 second review, **WebRTC is walled three ways, and the script is no longer the only one.** Two reviews found the
+  script alone incomplete: its add was not awaited (a page could load before it was installed, and an error was ignored), and a fresh
+  realm (an about:blank or srcdoc frame) might have run before it. Now: (1) **the browser itself.** A mini-app never shares a WebView2
+  environment with the web panel. `flare-web` keeps one environment per kind (`EnvKind`): `AppSealed` (apps with no network) and
+  `AppNet` (apps that were granted `https:`), each made lazily when the first app of that kind opens, in a user data folder of its own
+  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`) and closed with the last view that uses it (an
+  idle kind is dropped when a view of another kind replaces it). Both start with `--webrtc-ip-handling-policy=disable_non_proxied_udp`
+  (plus Chromium's `--force-...` spelling); `AppSealed` also with `--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>`, a
+  proxy that is not there with loopback taken out of the built-in bypass, so a WebSocket or any request the page makes without Flare's
+  wall seeing it goes nowhere. The mapped folder host does not use the network, so the app still loads. (2) **the script is awaited**:
+  the controller is held in `View::pending` and the view navigates only when the add's completion says it is installed; an error fails
+  the view with the reason, with no fallback to an unprotected page. (3) **the policy**: `frame-src 'none'; child-src 'none';
+  worker-src 'self' blob:` so the page has no child frames in practice (about:blank and srcdoc are local documents and may still be
+  created; the e2e proves the script ran in them: `RTCPeerConnection` is `undefined` in the frame at once and later). *Measured, not
+  assumed:* on WebView2 155 Chromium's `--force-webrtc-ip-handling-policy` alone changed nothing (STUN still reached a UDP socket and
+  host candidates were gathered); Edge's `--webrtc-ip-handling-policy` is the switch that works, found by trying (`miniApp` "webrtc"
+  checks run the page with the script and policy both off by seams and count the packets a loopback UDP "STUN server" hears: 0 for
+  both kinds of app and 6 in the web panel as the control). **Cost:** while a mini-app is open there is a second browser (its own set of
+  processes and memory, and extra time before the first page) beside the web panel's; a network app and a sealed app are two browsers,
+  and replacing one by the other restarts the browser (replacing by the same kind does not). **Not covered:** an app granted the network
+  can reach any https address (that is what it was granted), and DNS lookups of a networked app go out; a bug in the browser could still
+  break any wall. *Electron:* `webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')` per partition PLUS
+  `session.setProxy({proxyRules: 'http://127.0.0.1:9'})` on a partition of its own, and test that the policy took effect with a UDP
+  socket, not by reading the setting back.
+- 2026-10-22, stage 5 review, **the previous run's folders are renamed aside, not deleted, at start.** `app::retire_root` renames
+  `<profile>pps` to `apps.old-<pid>-<time>` (one call on the UI thread, so the channel can write a fresh root at once) and the
+  `flare-app-clean` worker deletes every `apps.old-*`; a rename that is refused falls back to emptying in place. The quit path also
+  empties the apps folder (`clean_root`, a quit exception like the store flush), so leftovers are rare.
+- 2026-10-22, stage 5, **the folder and the files.** `<profile>\apps\a<n>\index.html` (a diagram adds `mermaid.min.js`), written
+  by the control channel's own call thread (never the UI thread, rule 34) before the UI is asked, and mapped with
+  `SetVirtualHostNameToFolderMapping(host, folder, DENY_CORS)`. Only the page is in the folder: a `path` file's neighbours are **not**
+  served (a page that wants an image inlines it as a `data:` URL), so naming a file never exposes its folder. The UI thread owns the
+  folder from the moment it is asked: it removes it on a worker when the panel closes, when another panel replaces the app, when
+  the tab closes, when the request was too late or the tab is gone, and the apps folder is emptied at start (a crash or a quit
+  leaves folders, never a panel). Removal goes through `app::remove_app`, which deletes only a folder directly inside the apps
+  root, whatever it is handed (`only_a_folder_directly_inside_the_apps_root_is_ever_removed`).
+- 2026-10-22, stage 5, **CSP: a meta tag Flare writes as the first thing in the page, not a response header.** The header route
+  would need the browser to let the app add a response header to the files of a virtual-host mapping, which the mapping API does not
+  offer (serving the files from Flare's own `WebResourceRequested` handler would be a second file server, with the traversal
+  rules that come with one, for the same wall). A `<meta http-equiv="Content-Security-Policy">` that comes before everything the agent wrote
+  is enforced for the whole document, and **removing it later removes nothing**: the policy is fixed when the parser meets it (the
+  e2e removes the tag from the page and a fetch is still blocked), and a second policy a page adds can only narrow the first.
+  The agent's html is appended after Flare's `<!doctype html><meta charset><meta http-equiv=CSP ...>` line, so a page that starts
+  with its own doctype or `<html>` merges into it. Limits of the meta form, accepted: it cannot carry `frame-ancestors`, `sandbox` or
+  `report-uri` (none is needed: the view is not framed and nothing reads reports). The policy:
+  `default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'`
+  (`connect-src` is the spec's `'self'` plus `data:` and `blob:`, which never leave the PC). `'unsafe-inline'` because a chart page is
+  one file with its script and style inline; **no `'unsafe-eval'`** (Mermaid does not need it either: the e2e draws with this policy).
+  With the network (below) `https:` is added to `default-src` and `connect-src`, never plain `http:`.
+- 2026-10-22, stage 5, **a second wall behind the policy.** The view registers `WebResourceRequested` for every request and answers
+  with a 403 "Blocked by Flare" any request whose address is not the app's own host, `data:`, `blob:` or (network on) `https:`
+  (`app::request_allowed`, unit-tested; the browser cannot be asked to raise the event for what the policy already blocked, so this
+  catches what the policy misses, such as a feature a future browser adds). It is tested by a seam that exists only under `--e2e`
+  (`FLARE_E2E_APP_NO_POLICY`): pages are written without the policy and a `no-cors` fetch to `http://127.0.0.1:9/` resolves as an
+  opaque response, which only Flare's own refusal can produce (a real attempt to a closed port rejects).
+- 2026-10-22, stage 5, **the network is two keys.** The agent asks (`allow_network` true) **and** the user's setting "Let mini apps
+  use the network" (`flare.web.appNetwork`, Settings > Terminal > Links, off by default, read from the channel's threads at every
+  request, like "Let agents run scripts in pages") is on; both, or none. The answer says what the page really got
+  (`panel.network`), and `flare-mcp` tells the agent when it asked and did not get it, naming the setting, so it does not conclude
+  that its page is broken. A diagram never has the network. The label has no hyphen ("mini apps") because the settings copy rules
+  allow only commas and full stops in a label.
+- 2026-10-22, stage 5, **the view cannot go anywhere.** A navigation of the view to anything but its own address is cancelled
+  (`app::nav_allowed`: the same address, a `#fragment` aside) and the header says "Not opened here: ..." like the web panel does for
+  an address it may not open; `window.open` and `target=_blank` open **nothing** (not even in the browser panel: a mini-app is the
+  agent's page and the browser panel is the person's to point somewhere, so a page cannot steer the person's browser by a link); the
+  address bar is not drawn and `browser.navigate` with a `url` answers `unavailable`. Developer tools and the status bar are off.
+  Permissions are denied and downloads asked about, as in the web panel.
+- 2026-10-22, stage 5, **replacing is in place.** A second `show_html` (the agent updating its chart), a `show_diagram`, a `view.*` or
+  an `open_page` on a tab that shows a mini-app swaps the page in the same browser: the host closes the old *view* and keeps the
+  *environment* (`close_view` versus `close`), `WebCtl::replace_tab` forgets the old page's state and answers every call that waited
+  on it, and the old folder goes. The first version closed the last view with the environment and restarted the browser at every
+  update (found by a unit test that lost its fake browser); the e2e now holds that the browser process id does not change.
+- 2026-10-22, stage 5, **`view.html` with `path`.** Resolved again by the backend like every `view.*` path (S2), but with its own
+  gate: `flare_term::path_open::resolve_html_file` / `may_show_as_app` accept only `html` and `htm`, under the same name hygiene as the
+  click allowlist (no trailing dot or space on any part, no `:` stream, as typed and as the file system names it), a folder, a share
+  or a link that changes kind is the same `not_found`. `html` is deliberately **not** added to the click allowlist (`OPENABLE`): a
+  click on a path still never opens a page; only the agent's `show_html` shows one, inside the sandbox. The file is read on the
+  channel's call thread, at most 4 MB, UTF-8 or `bad_params`. Without the folder to write to (a run where the channel could not be
+  set up) the methods answer `unavailable` and are not listed in `capabilities`.
+- 2026-10-22, stage 5, caps: html 4 MB (the same cap as text, so it fits the 16 MB line with its escaping), Mermaid text 200 KB,
+  Mermaid's error text 800 characters. The call waits as long as a browser call (30 s of ours inside 60 s of the channel's), because
+  it is answered when the page has loaded.
+- 2026-10-22, stage 5, **Mermaid is bundled, version 11.17.2, compiled into the exe.** Official `dist/mermaid.min.js` from the npm
+  package (published 2026-08-25, eight weeks before; 12.x exists, 12.2.0 of 2026-10-13, and moving to it is the README's update recipe, but
+  the last release of the 11 line is the one with the longest record, and a major version is the owner's call), kept byte for byte in `assets/mermaid/` with its licence and a README (hash,
+  source, how to update), `include_bytes!`d (3.5 MB of `flare.exe`, mapped from disk, read only when a diagram is drawn). Beside the
+  exe was considered: it would need a place in the installer, the portable zip and `verify-pack`, and a missing file would be a
+  diagram that never draws; compiled in, the e2e and the shipped app run the same bytes and a test holds the hash. Each diagram's
+  folder gets a copy (`script-src 'self'` allows only the app's own host). `securityLevel: 'strict'`; the theme follows the system's
+  light or dark setting (the page is a web page), `startOnLoad` is off.
+- 2026-10-22, stage 5, **a diagram that does not parse is the call's error.** The page defines `window.__flareDiagram`, a promise
+  that settles to `{ok: true}` or `{ok: false, error}` after `mermaid.parse` and `mermaid.render`. When the page has loaded
+  Flare asks it with `Runtime.evaluate` (`awaitPromise`, `returnByValue`) and answers the call with the result: the drawing, or
+  `bad_params` "the diagram did not draw: <Mermaid's error text>", cleaned (control characters out, empty lines dropped, 800
+  characters). The panel shows the same text in red. Alternatives dropped: setting `document.title` to a marker (a page title is not
+  a channel), or reading the DOM for an svg (cannot tell a half-drawn diagram from an error). Mermaid's own words are the point of the
+  error, so `flare-mcp` keeps up to 900 characters and a few lines of them (every other refusal stays one short line).
+- 2026-10-22, stage 5, the **browser tools work on a mini-app**, because it is a web panel of the tab: `browser_look` shows the
+  agent its own chart (picture and elements), `browser_click`/`browser_type` use it, and the ribbon and takeover work as on any page.
+  Only `browser_navigate` with an address is refused, and `open_page` replaces the app.
+- 2026-10-22, stage 5, the panel is **session-only**: not in `panels.json`, not restored, nothing to bring back with the toggle chord
+  (closing it ends it). A diagram or chart worth keeping is the agent's to write to a file.
+- 2026-10-22, stage 5, new setting row: "Let mini apps use the network" / "Pages Claude writes may load from the web." (key
+  `flare.web.appNetwork`, a switch in Settings > Terminal > Links after "Let agents run scripts in pages").
+
+- **Sealed mini-apps also close three browser-level gaps (stage 5 review, 2026-10-22).** (1) The environment variables
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, `WEBVIEW2_USER_DATA_FOLDER` and `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` are removed from the process
+  before an app browser starts, and a Windows policy value under `Software\Policies\Microsoft\Edge\WebView2\{AdditionalBrowserArguments,
+  UserDataFolder,BrowserExecutableFolder}` (HKCU or HKLM) makes Flare REFUSE the app with a reason (fail closed: those replace Flare's
+  arguments, so the browser would start without the WebRTC policy and dead proxy). (2) An external protocol launch
+  (`LaunchingExternalUriScheme`) is cancelled and a frame may only navigate to about:blank, about:srcdoc or the app's page. (3) The dead
+  proxy on port 9 is not the only wall: `--host-resolver-rules="MAP * ~NOTFOUND"` stops any name lookup even if a local program listens on port 9.
+  The cookie sweep per app is gone (hosts are unique per run, and it logged another app's tab out of the shared profile).
 ## Stage 6 library: the conversation reader (`flare-convo`, issues #25, #26, #27), 2026-10-21
 
 The pure-Rust part only: no panel, no channel method, no change to `crates/flare`. The format it relies on is in `convo.md`.
