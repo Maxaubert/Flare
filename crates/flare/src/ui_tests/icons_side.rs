@@ -69,6 +69,7 @@ fn row(label: &str) -> MenuRow {
         trailing_filled: false,
         trailing_tip: "".into(),
         keep_open: false,
+        group: false,
         flyout: false,
         flyout_pick: false,
         parent: -1,

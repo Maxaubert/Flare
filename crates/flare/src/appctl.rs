@@ -515,11 +515,15 @@ pub struct AppCtl {
     ctl_info: Option<CtlInfo>,
 }
 
-/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6).
-const CONVO_SHOW_CHANGES: &str = "Show changes";
-const CONVO_HIDE_CHANGES: &str = "Hide changes";
-const CONVO_SHOW_TASKS: &str = "Show tasks";
-const CONVO_HIDE_TASKS: &str = "Hide tasks";
+/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
+/// owner needs no explanation). The agent's name is the tab's detected one; a tab whose agent is not known to be
+/// Claude says "changed files". "Hide ..." is the same words while the panel is open.
+const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
+const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
+const CONVO_SHOW_CHANGES_ANY: &str = "Show changed files";
+const CONVO_HIDE_CHANGES_ANY: &str = "Hide changed files";
+const CONVO_SHOW_TASKS: &str = "Show task list";
+const CONVO_HIDE_TASKS: &str = "Hide task list";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -664,6 +668,7 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_filled: r.trailing_filled,
         trailing_tip: r.trailing_tip.as_str().into(),
         keep_open: false,
+        group: r.group,
         flyout: false,
         flyout_pick: false,
         parent: -1,
@@ -2454,9 +2459,7 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
-            MenuKind::Term { tab }
-                if self.convo_menu_picked(tab, &row.label) =>
-            {
+            MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
                 // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
             }
@@ -3023,7 +3026,8 @@ impl AppCtl {
             return Vec::new();
         }
         let open = self.panels.open_convo_kind(tab);
-        let row = |label: &str, icon: &'static str| {
+        let named = self.hub.agent_kind(tab) == Some(flare_agent::kinds::DetectedAgent::Claude);
+        let row = |label: &str, icon: &'static str, group: bool| {
             (
                 MenuRowData {
                     label: label.to_string(),
@@ -3034,26 +3038,29 @@ impl AppCtl {
                     trailing_icon: None,
                     trailing_filled: false,
                     trailing_tip: String::new(),
+                    group,
                 },
                 String::new(),
             )
         };
+        let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
+        let changes = match (changes_open, named) {
+            (false, true) => CONVO_SHOW_CHANGES,
+            (true, true) => CONVO_HIDE_CHANGES,
+            (false, false) => CONVO_SHOW_CHANGES_ANY,
+            (true, false) => CONVO_HIDE_CHANGES_ANY,
+        };
         vec![
-            row(
-                if open == Some(flare_surfaces::PanelKind::Changes) {
-                    CONVO_HIDE_CHANGES
-                } else {
-                    CONVO_SHOW_CHANGES
-                },
-                crate::menus_ui::GLYPH_OPEN,
-            ),
+            // Their own group, after a rule: they are about the agent, not the terminal.
+            row(changes, crate::menus_ui::GLYPH_CHANGES, true),
             row(
                 if open == Some(flare_surfaces::PanelKind::Tasks) {
                     CONVO_HIDE_TASKS
                 } else {
                     CONVO_SHOW_TASKS
                 },
-                crate::menus_ui::GLYPH_FIND,
+                crate::menus_ui::GLYPH_TASKS,
+                false,
             ),
         ]
     }
@@ -3062,8 +3069,8 @@ impl AppCtl {
     pub(crate) fn convo_menu_picked(&mut self, tab: &str, label: &str) -> bool {
         use flare_surfaces::PanelKind;
         let (kind, show) = match label {
-            CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
-            CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
+            CONVO_SHOW_CHANGES | CONVO_SHOW_CHANGES_ANY => (PanelKind::Changes, true),
+            CONVO_HIDE_CHANGES | CONVO_HIDE_CHANGES_ANY => (PanelKind::Changes, false),
             CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
             CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
             _ => return false,
@@ -3095,6 +3102,20 @@ impl AppCtl {
             .iter()
             .any(|t| t.id == tab);
         if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
+            return;
+        }
+        self.show_preview_asked(tab, kind, abs);
+    }
+
+    /// The person asked for it (the menu's "Show in side panel"): the same panel, whatever "Open previews in Flare"
+    /// says about plain clicks.
+    pub(crate) fn show_preview_asked(
+        &mut self,
+        tab: &str,
+        kind: flare_surfaces::PanelKind,
+        abs: &str,
+    ) {
+        if !self.is_shell_tab(tab) {
             return;
         }
         if self.panels.show(tab, kind, abs) {
@@ -4280,8 +4301,17 @@ impl AppCtl {
                     }
                 }
             }
-            UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
-                self.show_preview(&tab, kind, &abs);
+            UiMsg::Term(TermMsgBox(TermMsg::Preview {
+                tab,
+                kind,
+                abs,
+                asked,
+            })) => {
+                if asked {
+                    self.show_preview_asked(&tab, kind, &abs);
+                } else {
+                    self.show_preview(&tab, kind, &abs);
+                }
             }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
@@ -5731,6 +5761,105 @@ mod tests {
         f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
         f.ptr(0, 0, cell_css(1, row, false));
         f.ptr(1, 0, cell_css(1, row, false));
+    }
+
+    /// Like [`click_word`] with the right button: opens the terminal's menu on the word.
+    fn right_click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(0, 2, cell_css(1, row, false));
+        f.ptr(1, 2, cell_css(1, row, false));
+    }
+
+    fn menu_labels(f: &Fx) -> Vec<String> {
+        use slint::Model;
+        f.h.comp
+            .get_menu_rows()
+            .iter()
+            .map(|r| r.label.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(
+            f.dir.path().join("a.txt"),
+            "one
+two",
+        )
+        .unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        assert!(f.h.comp.get_menu_open());
+        let labels = menu_labels(&f);
+        assert_eq!(
+            labels[..3],
+            ["Open", "Show in side panel", "Show in Explorer"],
+            "{labels:?}"
+        );
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .unwrap();
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "a.txt");
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+        assert!(
+            !f.h.comp.get_panel_has_focus(),
+            "the keys stay in the terminal"
+        );
+    }
+
+    #[test]
+    fn show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "one").unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        let labels = menu_labels(&f);
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("an explicit ask is offered whatever the click setting says");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        write_png(&f.dir.path().join("p.png"), 20, 10);
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "p.png", 0);
+        let i = menu_labels(&f)
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("a picture offers it");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
+        // A script and a folder do not.
+        right_click_word(&f, &h, &dir, "run.bat", 1);
+        assert!(f.h.comp.get_menu_open());
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
+        f.h.comp.invoke_menu_dismissed();
+        right_click_word(&f, &h, &dir, "sub/", 2);
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
     }
 
     fn write_png(path: &Path, w: u32, h: u32) {

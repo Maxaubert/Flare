@@ -276,6 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_agent_board_panel_is_dropped_on_load() {
+        // The agent board was removed (owner, 2026-10-22). A panels.json an older build wrote still has it:
+        // it reads as an unknown kind and that one panel is dropped (rule 40), the tab and its neighbour stay.
+        let raw = r#"{"version":1,"tabs":[
+            {"cwd":"C:\\a","panel":{"kind":"board","target":"board","open":true}},
+            {"cwd":"C:\\b","panel":{"kind":"tasks","target":"tasks"}}]}"#;
+        let got = parse_panels(raw);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].panel, None, "the board panel is gone");
+        assert_eq!(
+            got[1].panel.as_ref().map(|p| p.kind.clone()),
+            Some(PanelKind::Tasks)
+        );
+        // And it is never written back.
+        assert!(!panels_json(&got).contains("board"));
+    }
+
+    #[test]
     fn a_panel_without_a_usable_target_is_dropped() {
         for target in [r#""""#, "5", "null", r#""a\u0000b""#] {
             let raw = format!(

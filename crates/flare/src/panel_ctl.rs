@@ -648,9 +648,7 @@ impl PanelCtl {
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
-                .filter(|p| {
-                    p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo()
-                })
+                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo())
                 .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
         let Some((tab, kind, target)) = want else {

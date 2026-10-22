@@ -747,7 +747,7 @@ fn a_click_on_the_path_in_a_diff_shows_the_file_and_a_program_shows_nothing() {
 // ---- the menu ----
 
 #[test]
-fn the_terminal_menu_offers_the_two_panels_only_on_a_claude_tab() {
+fn the_terminal_menu_offers_the_changed_files_and_the_task_list_only_on_a_claude_tab() {
     let f = Fx::new();
     let _claude = Claude::new(&f);
     let plain = f.tabs(&["C:\\plain"]).remove(0);
@@ -764,15 +764,50 @@ fn the_terminal_menu_offers_the_two_panels_only_on_a_claude_tab() {
             .map(|r| r.0.label.clone())
             .collect()
     };
-    assert_eq!(labels(&f, &id), ["Show changes", "Show tasks"]);
+    let named =
+        f.ctl.borrow().hub().agent_kind(&id) == Some(flare_agent::kinds::DetectedAgent::Claude);
+    let (show_c, hide_c) = if named {
+        ("Show files Claude changed", "Hide files Claude changed")
+    } else {
+        ("Show changed files", "Hide changed files")
+    };
+    assert_eq!(labels(&f, &id), [show_c, "Show task list"]);
+    // Their own group (a rule above the first), each with its own fitting glyph.
+    let rows = f.ctl.borrow().convo_menu_rows(&id);
+    assert!(rows[0].0.group && !rows[1].0.group);
+    assert_eq!(rows[0].0.icon, crate::menus_ui::GLYPH_CHANGES);
+    assert_eq!(rows[1].0.icon, crate::menus_ui::GLYPH_TASKS);
     open(&f, &id, PanelKind::Changes);
-    assert_eq!(labels(&f, &id), ["Hide changes", "Show tasks"]);
+    assert_eq!(labels(&f, &id), [hide_c, "Show task list"]);
     // Picking a row does what it says.
-    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Show tasks"));
+    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Show task list"));
     f.pump();
     assert_eq!(f.h.comp.get_panel_kind(), 5);
-    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Hide tasks"));
+    assert_eq!(labels(&f, &id), [show_c, "Hide task list"]);
+    assert!(f.ctl.borrow_mut().convo_menu_picked(&id, "Hide task list"));
     f.pump();
     assert!(!f.h.comp.get_panel_open());
+    // Either wording of the changes row works whichever the menu showed.
+    assert!(
+        f.ctl
+            .borrow_mut()
+            .convo_menu_picked(&id, "Show changed files")
+    );
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_kind(), 4);
+    assert!(
+        f.ctl
+            .borrow_mut()
+            .convo_menu_picked(&id, "Hide files Claude changed")
+    );
+    f.pump();
+    assert!(!f.h.comp.get_panel_open());
+    // The old words are gone, and no row names the agent board.
+    assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Show changes"));
+    assert!(
+        !f.ctl
+            .borrow_mut()
+            .convo_menu_picked(&id, "Show agent board")
+    );
     assert!(!f.ctl.borrow_mut().convo_menu_picked(&id, "Paste"));
 }

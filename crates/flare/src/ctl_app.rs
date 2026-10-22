@@ -2018,11 +2018,7 @@ mod tests {
             code::BAD_PARAMS
         );
         assert_eq!(
-            code_of(r.d.call(
-                &agent_in_tab(),
-                Method::PanelOpen,
-                json!({"kind": "board"})
-            )),
+            code_of(r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": "board"}))),
             code::BAD_PARAMS,
             "the agent board was removed (2026-10-22): its kind is unknown"
         );

@@ -413,7 +413,7 @@ impl AppCtl {
 
     // ---- the timer ------------------------------------------------------------------------------------------------
 
-    /// When stage 7 next wants the timer: the next port look, the end of a question's grace, 
+    /// When stage 7 next wants the timer: the next port look, the end of a question's grace,
     pub(crate) fn surf7_next_due(&self) -> Option<u64> {
         [
             self.s7.dev.next_due(),
