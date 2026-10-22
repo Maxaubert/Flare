@@ -849,7 +849,7 @@ fn a_click_looks_again_and_opens_nothing_when_the_port_changed_hands() {
     // The server exits and a stranger binds the port before the next routine look.
     *state.lock().unwrap() = PortLook::Foreign;
     f.h.comp.invoke_preview_chip_clicked();
-    wait_for(&f, "the chip to go", |f| label(f) == "");
+    wait_for(&f, "the chip to go", |f| label(f).is_empty());
     settle(&f);
     let open = f.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open);
     assert!(!open, "a foreign server's page never opens");
