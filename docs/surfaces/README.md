@@ -53,3 +53,8 @@ Stage 1 detail: `decisions.md` (Stage 1 and its review fixes) and `lessons.md` (
 Stage 2 detail: `decisions.md` (Stage 2), `lessons.md` (Stage 2) and `protocol.md` (the final contract of the channel and the tools).
 Stage 3 detail: `decisions.md` (Stage 3), `lessons.md` (Stage 3) and `protocol.md` (`browser.open`, `browser.navigate`, `panel.open`, the address rules and the wait).
 Stage 4 detail: `decisions.md` (Stage 4), `lessons.md` (Stage 4) and `protocol.md` (`browser.look` and the other agent calls, refs, the `interrupted` error, the MCP browser tools and how a look is written for the model).
+| A transcript the agent writes to `~/.claude/projects/<slug>/<id>.jsonl`, tailed by a Rust worker | The same file, read by a main-process worker (`fs.open`, a 4 MB cap per read, `\n` splits, a partial line carried); the fold is pure JSON and ports line for line; the replacement test is `ino` plus `dev`, not `birthtime` (see `convo.md` and `lessons.md`, stage 6) |
+
+Stage 1 detail: `decisions.md` (Stage 1 and its review fixes) and `lessons.md` (Stage 1).
+Stage 2 detail: `decisions.md` (Stage 2), `lessons.md` (Stage 2) and `protocol.md` (the final contract of the channel and the tools).
+Stage 6 library detail: `convo.md` (the transcript format as Flare reads it, with what is guessed), `decisions.md` and `lessons.md` (Stage 6 library).
