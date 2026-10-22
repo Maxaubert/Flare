@@ -27,7 +27,7 @@ const PICTURE_W: u32 = 1600;
 const PICTURE_H: u32 = 800;
 const NOTE: &str = "first line\nsecond line\nthird line\n";
 
-fn write_picture(path: &Path) -> Result<(), String> {
+pub(super) fn write_picture(path: &Path) -> Result<(), String> {
     let file = fs::File::create(path).map_err(|e| format!("make the picture: {e}"))?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), PICTURE_W, PICTURE_H);
     enc.set_color(png::ColorType::Rgba);
@@ -40,7 +40,7 @@ fn write_picture(path: &Path) -> Result<(), String> {
 }
 
 /// The `panel.state` answer.
-fn state(app: &mut App) -> Value {
+pub(super) fn state(app: &mut App) -> Value {
     probe(app, "panel.state", Value::Null)
 }
 
@@ -49,7 +49,7 @@ fn num(v: &Value) -> f64 {
 }
 
 /// A `ui.rect` in device pixels: x, y, w, h.
-fn dev_rect(app: &mut App, name: &str) -> Option<(i64, i64, i64, i64)> {
+pub(super) fn dev_rect(app: &mut App, name: &str) -> Option<(i64, i64, i64, i64)> {
     let v = probe(app, "ui.rect", json!({ "name": name }));
     Some((
         v["dx"].as_i64()?,

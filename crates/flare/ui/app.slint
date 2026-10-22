@@ -334,6 +334,12 @@ export component AppWindow inherits Window {
     callback panel-wrap-toggled();
     callback panel-wrap-cols-changed();
     changed panel-wrap-cols => { root.panel-wrap-cols-changed(); }
+    // The slot went away while the splitter was held (a tab switched by key, the window too small, a page in front): the
+    // hidden touch area never hears the release, so the grab is let go here or the next time the slot shows it would
+    // still be drawn at the stale dragged width.
+    changed panel-shown => {
+        if (!root.panel-shown) { root.panel-splitting = false; }
+    }
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }

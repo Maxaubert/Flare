@@ -25,6 +25,7 @@ mod marks_px;
 pub mod mini_app;
 pub mod mods;
 pub mod panel;
+pub mod panel_split;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -531,6 +532,12 @@ pub const ALL: &[Scenario] = &[
         group: "panel",
         run: panel::panel_image,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "panelSplitter",
+        group: "panel",
+        run: panel_split::panel_splitter,
+        limit_secs: 420,
     },
     Scenario {
         name: "ctlChannel",

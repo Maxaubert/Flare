@@ -398,6 +398,9 @@ pub struct AppCtl {
     bounds: NormalBounds,
     maximised: bool,
     grid_dims: (usize, usize),
+    /// How many times the window told the controller the grid area changed (the e2e holds that a splitter drag
+    /// makes none and its release one).
+    grid_fits: u64,
     scale: f64,
     timer: slint::Timer,
     timer_on: bool,
@@ -792,6 +795,7 @@ impl AppCtl {
             bounds: NormalBounds::new(),
             maximised: false,
             grid_dims: (80, 24),
+            grid_fits: 0,
             scale: 1.0,
             timer: slint::Timer::default(),
             timer_on: false,
@@ -3386,6 +3390,11 @@ impl AppCtl {
         true
     }
 
+    /// How many grid fits the window reported (the e2e probe reads it).
+    pub(crate) fn grid_fit_count(&self) -> u64 {
+        self.grid_fits
+    }
+
     /// How many wraps the panel made (the e2e probe and the tests read it).
     pub(crate) fn panel_wrap_count(&self) -> u64 {
         self.panels.wrap_count()
@@ -3894,6 +3903,7 @@ impl AppCtl {
     /// The grid area changed (Task 30b's `grid-resized`, after the grid host resized): tabs born
     /// from now on start at this size and the front tab follows.
     pub fn on_grid_dims(&mut self, cols: usize, rows: usize) {
+        self.grid_fits += 1;
         self.grid_dims = (cols, rows);
         let front = self.front_id();
         self.deps.host.set_dims(cols, rows, front.as_deref());
@@ -4557,6 +4567,7 @@ impl AppCtl {
 #[cfg(test)]
 mod tests {
     mod mods_tests;
+    mod splitter_tests;
     mod web_tests;
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};

@@ -127,6 +127,11 @@ impl<C: ComponentHandle> Harness<C> {
         });
     }
 
+    /// The pointer leaves the window (winit's `CursorLeft`).
+    pub fn leave(&self) {
+        self.win.dispatch_event(WindowEvent::PointerExited);
+    }
+
     pub fn press(&self, x: f32, y: f32, b: PointerEventButton) {
         self.win.dispatch_event(WindowEvent::PointerPressed {
             position: Self::at(x, y),
