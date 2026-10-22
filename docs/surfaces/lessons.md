@@ -639,3 +639,4 @@ Holes hit, what fixed them, and what Prism Terminal's Electron build must do. Th
 - A real Vite, Next.js, webpack-dev-server, Rails and `python -m http.server` printing their banners (the e2e uses `echo` and a listener of its own). Python prints `0.0.0.0`, which gets no chip by decision.
 - The chip over real content in all 18 themes (it uses the tab strip's fill, the accent outline and the text colour) and at 150 percent.
 - A dev server on IPv6 only in a real shell (the unit test binds `[::1]` when the machine allows it).
+- 2026-10-22, stage 7: a chip that trusts "something listens on that port" is trusting the whole machine. The TCP listener table names the owning pid, and the tab's shell pid plus a Toolhelp32 parent walk names the tree it may believe. The Electron app never had a chip like this, so there is no Electron note; the rule is Flare's own.

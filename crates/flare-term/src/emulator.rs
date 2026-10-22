@@ -2863,7 +2863,7 @@ mod tests {
         e.feed(b"\r\n");
         assert_eq!(
             dev_url(&mut e),
-            Some("http://localhost:6303/three".into()),
+            Some("http://localhost:6303/".into()),
             "entered"
         );
     }
@@ -3001,10 +3001,7 @@ mod tests {
     fn a_long_address_wrapped_over_rows_is_read_whole() {
         let mut e = Emulator::new(20, 6);
         e.feed(b"http://localhost:5173/some/long/path?with=query\r\n");
-        assert_eq!(
-            dev_url(&mut e),
-            Some("http://localhost:5173/some/long/path?with=query".into())
-        );
+        assert_eq!(dev_url(&mut e), Some("http://localhost:5173/".into()));
     }
 
     #[test]

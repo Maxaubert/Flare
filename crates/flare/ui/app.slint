@@ -278,6 +278,8 @@ export component AppWindow inherits Window {
     callback panel-convo-toggle(string);
     // The Preview chip (stage 7): "localhost:5173" while the front tab has a local dev server to offer, else empty.
     in property <string> preview-chip-label;
+    // The full origin the chip opens, as its tooltip.
+    in property <string> preview-chip-tip;
     out property <length> preview-chip-x: preview-chip.absolute-position.x;
     out property <length> preview-chip-y: preview-chip.absolute-position.y;
     out property <length> preview-chip-w: preview-chip.width;
@@ -859,6 +861,8 @@ export component AppWindow inherits Window {
                             y: Px.snap(8px);
                             visible: root.preview-chip-label != "";
                             label: root.preview-chip-label;
+                            tip-text: root.preview-chip-tip;
+                            tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                             clicked => { root.preview-chip-clicked(); }
                         }
                     }
