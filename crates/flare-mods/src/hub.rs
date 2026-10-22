@@ -14,7 +14,7 @@
 //! Tokens are secrets: nothing here returns one except [`Hub::grant_of_token`]'s grant and
 //! [`Hub::grant_of_mod`]'s grant, and no `Debug` or `Snapshot` carries one.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -69,6 +69,9 @@ pub struct ModEntry {
     pub panel_title: Option<String>,
     pub tool_count: usize,
     pub enabled: bool,
+    /// The mod was on and its manifest now asks for permissions the user never approved, so it was turned off.
+    /// Switching it on again approves the new list.
+    pub needs_approval: bool,
 }
 
 /// What the hub knows now.
@@ -104,6 +107,12 @@ struct Inner {
     found: Vec<Found>,
     errors: Vec<FolderError>,
     on: BTreeSet<String>,
+    /// What the user approved for each mod that is on (kept with the switch in `mods.json`).
+    approved: BTreeMap<String, Vec<Permission>>,
+    /// Mods turned off by a scan because their manifest asks for more than was approved.
+    needs: BTreeSet<String>,
+    /// Mods whose approved set was cut down by the last reconcile; the scan writes them.
+    shrunk: Vec<String>,
     tokens: Tokens,
     table: ToolTable,
     collisions: Vec<Collision>,
@@ -166,12 +175,20 @@ impl Hub {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store
                 .as_ref()
-                .map(|s| (s.enabled_ids(), s.is_read_only()))
+                .map(|s| {
+                    let ids: Vec<(String, Vec<Permission>)> = s
+                        .enabled_ids()
+                        .into_iter()
+                        .filter_map(|id| s.approved(&id).map(|a| (id, a)))
+                        .collect();
+                    (ids, s.is_read_only())
+                })
                 .unwrap_or_default()
         };
         let mut g = self.lock();
         if first_load {
-            g.on = store_ids.into_iter().collect();
+            g.on = store_ids.iter().map(|(id, _)| id.clone()).collect();
+            g.approved = store_ids.into_iter().collect();
         }
         g.read_only = read_only;
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
@@ -180,6 +197,12 @@ impl Hub {
         g.scanned = true;
         let revoked = Self::reconcile(&mut g);
         let after_tools: Vec<Route> = g.table.tools().cloned().collect();
+        let shrunk = std::mem::take(&mut g.shrunk);
+        drop(g);
+        // A mod that now asks for less keeps the smaller set on disk too (this runs on the scan worker).
+        for id in shrunk {
+            let _ = self.persist(&id);
+        }
         Change {
             tools_changed: before_tools != after_tools,
             revoked,
@@ -190,6 +213,39 @@ impl Hub {
     /// whose token was killed.
     fn reconcile(g: &mut Inner) -> Vec<String> {
         let mut revoked = Vec::new();
+        // The consent check: a mod stays on only while its manifest asks for nothing beyond what the user
+        // approved when they switched it on. Asking for more turns it off (its token dies below); less keeps it
+        // on with the smaller set. A mod on with no approved set at all is off (fail closed).
+        let ids: Vec<String> = g.on.iter().cloned().collect();
+        for id in ids {
+            let Some(f) = g.found.iter().find(|f| f.manifest.id == id) else {
+                continue;
+            };
+            let asked = f.manifest.permissions.clone();
+            match g.approved.get(&id).cloned() {
+                Some(ok) if asked.iter().all(|p| ok.contains(p)) => {
+                    if ok.iter().any(|p| !asked.contains(p)) {
+                        g.approved.insert(id.clone(), asked);
+                        g.shrunk.push(id);
+                    }
+                }
+                other => {
+                    g.on.remove(&id);
+                    if other.is_some() {
+                        g.needs.insert(id);
+                    }
+                }
+            }
+        }
+        let gone: Vec<String> = g
+            .needs
+            .iter()
+            .filter(|id| !g.found.iter().any(|f| &f.manifest.id == *id))
+            .cloned()
+            .collect();
+        for id in gone {
+            g.needs.remove(&id);
+        }
         let live: Vec<(String, Vec<Permission>)> = g
             .found
             .iter()
@@ -251,9 +307,19 @@ impl Hub {
             return Err(format!("there is no valid mod \"{id}\" to turn on"));
         }
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
+        g.needs.remove(id);
         if on {
+            // Switching on is the approval: the manifest's list as it stands now.
+            let asked = g
+                .found
+                .iter()
+                .find(|f| f.manifest.id == id)
+                .map(|f| f.manifest.permissions.clone())
+                .unwrap_or_default();
+            g.approved.insert(id.to_string(), asked);
             g.on.insert(id.to_string());
         } else {
+            g.approved.remove(id);
             g.on.remove(id);
         }
         let revoked = Self::reconcile(&mut g);
@@ -269,9 +335,15 @@ impl Hub {
     /// state, never a stale one. An error is a sentence for Settings; the switch keeps its effect for this session.
     pub fn persist(&self, id: &str) -> Result<(), String> {
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let on = self.lock().on.contains(id);
+        let (on, approved) = {
+            let g = self.lock();
+            (
+                g.on.contains(id),
+                g.approved.get(id).cloned().unwrap_or_default(),
+            )
+        };
         let store = store.get_or_insert_with(|| EnabledStore::load(self.cfg.state_file.clone())); // sync-ok: runs on a worker
-        store.set(id, on)
+        store.set(id, on, &approved)
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -293,6 +365,7 @@ impl Hub {
                 panel_title: f.manifest.panel.as_ref().map(|p| p.title.clone()),
                 tool_count: f.manifest.tools.len(),
                 enabled: g.on.contains(&f.manifest.id),
+                needs_approval: g.needs.contains(&f.manifest.id),
             })
             .collect();
         let mut notes = Vec::new();
@@ -672,11 +745,11 @@ mod tests {
         w.hub.persist("notes").unwrap();
         w.hub.persist("notes").unwrap();
         let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
-        assert!(text.contains("\"notes\":false"), "{text}");
+        assert!(text.contains("\"notes\":{\"on\":false}"), "{text}");
         w.hub.set_enabled("notes", true).unwrap();
         w.hub.persist("notes").unwrap();
         let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
-        assert!(text.contains("\"notes\":true"), "{text}");
+        assert!(text.contains("\"notes\":{\"on\":true"), "{text}");
     }
 
     #[test]
@@ -706,23 +779,133 @@ mod tests {
         assert_eq!(s.errors[0].folder, "notes");
     }
 
+    fn rewrite(w: &World, perms: &str) {
+        let t = if perms.contains("tools") {
+            format!("[{}]", tool("append_note"))
+        } else {
+            "[]".to_string()
+        };
+        std::fs::write(
+            w.root.join("notes").join("mod.json"),
+            mod_json("notes", perms, &t),
+        )
+        .unwrap(); // sync-ok: test code only
+    }
+
     #[test]
-    fn a_mod_whose_permissions_changed_gets_a_new_token() {
+    fn a_mod_that_asks_for_more_is_turned_off_and_its_token_dies() {
         let w = notes_world();
         w.hub.scan();
         w.hub.set_enabled("notes", true).unwrap();
-        let t = format!("[{}]", tool("append_note"));
-        std::fs::write(
-            w.root.join("notes").join("mod.json"),
-            mod_json("notes", r#"["panel","tools","view"]"#, &t),
-        )
-        .unwrap(); // sync-ok: test code only
+        w.hub.persist("notes").unwrap();
+        let old = w.hub.lock().tokens.token_of("notes").unwrap().to_string();
+        rewrite(&w, r#"["panel","tools","browser"]"#);
         let c = w.hub.scan();
         assert_eq!(c.revoked, vec!["notes".to_string()]);
+        assert!(c.tools_changed);
+        assert!(!w.hub.is_enabled("notes"));
+        assert!(w.hub.grant_of_mod("notes").is_none());
+        assert!(
+            w.hub.grant_of_token(&old).is_none(),
+            "live connections are refused"
+        );
+        assert!(w.hub.tools().is_empty());
+        let s = w.hub.snapshot();
+        assert!(!s.mods[0].enabled);
+        assert!(s.mods[0].needs_approval);
+        // A restart keeps it off: the file still holds the old approval.
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(!again.is_enabled("notes"));
+        assert!(again.snapshot().mods[0].needs_approval);
+    }
+
+    #[test]
+    fn switching_it_on_again_approves_the_new_list() {
+        let w = notes_world();
+        w.hub.scan();
+        w.hub.set_enabled("notes", true).unwrap();
+        w.hub.persist("notes").unwrap();
+        rewrite(&w, r#"["panel","tools","view"]"#);
+        w.hub.scan();
+        assert!(!w.hub.is_enabled("notes"));
+        w.hub.set_enabled("notes", true).unwrap();
+        w.hub.persist("notes").unwrap();
+        assert!(!w.hub.snapshot().mods[0].needs_approval);
         match w.hub.grant_of_mod("notes").unwrap() {
             Grant::Mod { permissions, .. } => assert!(permissions.contains(&Permission::View)),
             other => panic!("{other:?}"),
         }
+        w.hub.scan();
+        assert!(
+            w.hub.is_enabled("notes"),
+            "the new list is the approved one"
+        );
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(again.is_enabled("notes"));
+    }
+
+    #[test]
+    fn a_mod_that_asks_for_less_stays_on_with_the_smaller_set() {
+        let w = notes_world();
+        w.hub.scan();
+        w.hub.set_enabled("notes", true).unwrap();
+        w.hub.persist("notes").unwrap();
+        rewrite(&w, r#"["panel"]"#);
+        let c = w.hub.scan();
+        assert!(w.hub.is_enabled("notes"));
+        assert_eq!(
+            c.revoked,
+            vec!["notes".to_string()],
+            "a new token with the smaller set"
+        );
+        match w.hub.grant_of_mod("notes").unwrap() {
+            Grant::Mod { permissions, .. } => assert_eq!(permissions, vec![Permission::Panel]),
+            other => panic!("{other:?}"),
+        }
+        assert!(!w.hub.snapshot().mods[0].needs_approval);
+        // The smaller set is what is approved now: asking for the old one again needs the user.
+        rewrite(&w, r#"["panel","tools"]"#);
+        w.hub.scan();
+        assert!(!w.hub.is_enabled("notes"));
+        assert!(w.hub.snapshot().mods[0].needs_approval);
+    }
+
+    #[test]
+    fn tools_added_in_a_new_version_keep_the_mod_on() {
+        let w = notes_world();
+        w.hub.scan();
+        w.hub.set_enabled("notes", true).unwrap();
+        let t = format!("[{},{}]", tool("append_note"), tool("read_note"));
+        std::fs::write(
+            w.root.join("notes").join("mod.json"),
+            mod_json("notes", r#"["panel","tools"]"#, &t),
+        )
+        .unwrap(); // sync-ok: test code only
+        let c = w.hub.scan();
+        assert!(c.tools_changed);
+        assert!(c.revoked.is_empty());
+        assert!(w.hub.is_enabled("notes"));
+        assert_eq!(w.hub.tools().len(), 2);
+    }
+
+    #[test]
+    fn an_old_format_store_fails_closed() {
+        let w = notes_world();
+        std::fs::write(
+            &w.hub.config().state_file,
+            r#"{"version":1,"mods":{"notes":true}}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        w.hub.scan();
+        assert!(!w.hub.is_enabled("notes"));
+        assert!(w.hub.grant_of_mod("notes").is_none());
+        assert!(w.hub.tools().is_empty());
+        assert!(
+            !w.hub.snapshot().mods[0].needs_approval,
+            "nothing to re-approve: it is just off"
+        );
     }
 
     #[test]

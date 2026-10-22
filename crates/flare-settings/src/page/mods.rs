@@ -17,6 +17,8 @@ pub struct ModInfo {
     pub description: String,
     pub permissions: Vec<String>,
     pub enabled: bool,
+    /// The mod was on and now asks for permissions the person never allowed, so it was turned off.
+    pub needs_approval: bool,
     /// The mod has a panel (the Show panel button is offered while it is on).
     pub has_panel: bool,
 }
@@ -52,6 +54,9 @@ pub const SWITCH_PREFIX: &str = "mod:";
 pub const PERMS_PREFIX: &str = "modperm:";
 /// The words under the folder row while no path is known.
 pub const FOLDER_UNKNOWN: &str = "Where mods are kept.";
+/// The words under a mod's switch when it asks for permissions that were never allowed.
+pub const NEEDS_APPROVAL: &str =
+    "Asks for new permissions, so it was turned off. Switch it on to allow what is listed below.";
 /// The row shown while the first scan has not finished.
 pub const LOOKING: &str = "Looking for mods...";
 /// The row shown when the folder holds no mod.
@@ -173,6 +178,10 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             format!("{} {}", m.name, m.version),
             m.description.clone(),
         );
+        if m.needs_approval {
+            switch.sub = NEEDS_APPROVAL.to_string();
+            switch.warn = true;
+        }
         switch.tap = true;
         switch.control = Control::Switch { on: m.enabled };
         let mut perms = plain(perms_id, "key", "Allowed to".to_string(), words);
@@ -253,8 +262,22 @@ mod tests {
                 "Answer the agent's tool calls".into(),
             ],
             enabled,
+            needs_approval: false,
             has_panel: true,
         }
+    }
+
+    #[test]
+    fn a_mod_that_asks_for_new_permissions_says_so_under_its_off_switch() {
+        let mut m = notes(false);
+        m.needs_approval = true;
+        with_env_mods(info(vec![m]), |env| {
+            let page = build(env);
+            let sw = row_of(&page, "mod:notes").unwrap();
+            assert_eq!(sw.sub, NEEDS_APPROVAL);
+            assert!(sw.warn);
+            assert_eq!(sw.control, Control::Switch { on: false });
+        });
     }
 
     fn info(mods: Vec<ModInfo>) -> ModsInfo {

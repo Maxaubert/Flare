@@ -407,6 +407,7 @@ impl AppCtl {
             "scans": m.scans,
             "mods": s.mods.iter().map(|e| json!({
                 "id": e.id, "enabled": e.enabled, "tools": e.tool_count,
+                "needs_approval": e.needs_approval,
                 "panel": e.panel_title,
             })).collect::<Vec<_>>(),
             "errors": s.errors.iter().map(|e| json!({"folder": e.folder, "reason": e.reason})).collect::<Vec<_>>(),

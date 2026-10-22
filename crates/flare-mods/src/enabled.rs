@@ -1,17 +1,22 @@
 //! `mods.json`: which mods the user turned on. Only the switch is stored; tokens never are.
 //!
-//! Shape: `{"version":1,"mods":{"notes":true,"other":false}}`. It is written the way the other stores are
+//! Shape: `{"version":1,"mods":{"notes":{"on":true,"permissions":["panel","tools"]},"other":{"on":false}}}`.
+//! The `permissions` are the set the user APPROVED when they switched the mod on; a mod whose manifest later
+//! asks for more is turned off by the hub until it is switched on again. An entry that is on but has no
+//! approved set (the old `"notes":true` form, or a hand-edited one) reads as NOT enabled: it fails closed,
+//! because nobody can say what was approved. A plain `false` is an off entry. It is written the way the other stores are
 //! (temp file and rename, rule 36), and read defensively (rules 40 and 41). Three outcomes, see [`Parsed`]:
 //! a DAMAGED file (not JSON, not an object, no `version`, no `mods` object) is no entries and is moved to
 //! `mods.json.bad`, so the user's switches are never silently overwritten by a fresh file; a file whose
 //! `version` is present and is not exactly 1 (a newer Flare, or `"2"`, or `2.0`) is no entries AND left
 //! alone (the store is read-only for the session). An entry whose id is not a legal mod id or whose value
-//! is not a boolean is dropped and never written back. A mod with no entry is disabled.
+//! is not a boolean or an entry object is dropped and never written back. A mod with no entry is disabled.
 //!
 //! The save is synchronous. It is called on a worker (the Settings click hands the change to one), never
 //! on the UI thread (rule 34).
 
 use crate::manifest::valid_id;
+use flare_ctl::Permission;
 use flare_settings::atomic::{Opened, open_text, write_atomic};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -20,11 +25,19 @@ use std::path::{Path, PathBuf};
 /// The file's format version.
 pub const VERSION: u64 = 1;
 
+/// One mod's saved switch: on or off, and, when it is on, the permissions the user approved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Entry {
+    pub on: bool,
+    /// Present for an entry written when the mod was switched on; `None` for an old or hand-made one.
+    pub approved: Option<Vec<Permission>>,
+}
+
 /// The enabled switches, kept in memory and saved on every change.
 #[derive(Debug)]
 pub struct EnabledStore {
     file: PathBuf,
-    mods: BTreeMap<String, bool>,
+    mods: BTreeMap<String, Entry>,
     /// The file is a version this build does not read, or could not be read nor set aside.
     read_only: bool,
 }
@@ -69,17 +82,28 @@ impl EnabledStore {
         }
     }
 
-    /// Whether the mod is switched on. A mod with no entry is off.
+    /// Whether the mod is switched on: an entry that is on AND holds an approved set. A mod with no entry, or
+    /// an on entry without an approved set, is off.
     pub fn is_enabled(&self, id: &str) -> bool {
-        self.mods.get(id).copied().unwrap_or(false)
+        self.mods
+            .get(id)
+            .is_some_and(|e| e.on && e.approved.is_some())
     }
 
-    /// The ids switched on, sorted.
+    /// The permissions the user approved for a mod that is on.
+    pub fn approved(&self, id: &str) -> Option<Vec<Permission>> {
+        self.mods
+            .get(id)
+            .filter(|e| e.on)
+            .and_then(|e| e.approved.clone())
+    }
+
+    /// The ids switched on (with an approved set), sorted.
     pub fn enabled_ids(&self) -> Vec<String> {
         self.mods
-            .iter()
-            .filter(|(_, on)| **on)
-            .map(|(id, _)| id.clone())
+            .keys()
+            .filter(|id| self.is_enabled(id))
+            .cloned()
             .collect()
     }
 
@@ -89,7 +113,8 @@ impl EnabledStore {
 
     /// Switches a mod on or off and saves. A refused id, a read-only store or a failed write changes
     /// nothing: the in-memory state goes back to what it was, and the error says why.
-    pub fn set(&mut self, id: &str, enabled: bool) -> Result<(), String> {
+    /// Switching on takes the permissions the user is approving; off drops them.
+    pub fn set(&mut self, id: &str, enabled: bool, approved: &[Permission]) -> Result<(), String> {
         if !valid_id(id) {
             return Err(format!("\"{id}\" is not a mod id"));
         }
@@ -98,7 +123,11 @@ impl EnabledStore {
                 "mods.json is a version this Flare does not read; the switch is not saved".into(),
             );
         }
-        let before = self.mods.insert(id.to_string(), enabled);
+        let entry = Entry {
+            on: enabled,
+            approved: enabled.then(|| approved.to_vec()),
+        };
+        let before = self.mods.insert(id.to_string(), entry);
         if let Err(e) = write_atomic(&self.file, &self.to_json()) {
             // sync-ok: called on a worker
             match before {
@@ -119,7 +148,16 @@ impl EnabledStore {
         let mods: Map<String, Value> = self
             .mods
             .iter()
-            .map(|(id, on)| (id.clone(), json!(on)))
+            .map(|(id, e)| {
+                let v = match &e.approved {
+                    Some(p) if e.on => json!({
+                        "on": true,
+                        "permissions": p.iter().map(|p| p.name()).collect::<Vec<_>>(),
+                    }),
+                    _ => json!({ "on": false }),
+                };
+                (id.clone(), v)
+            })
             .collect();
         json!({ "version": VERSION, "mods": mods }).to_string()
     }
@@ -133,7 +171,7 @@ impl EnabledStore {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Parsed {
     /// Version 1: the valid entries (anything else in it is dropped).
-    Entries(BTreeMap<String, bool>),
+    Entries(BTreeMap<String, Entry>),
     /// A `version` that is present and is not exactly 1: a newer Flare's file, or one written as `"2"`.
     /// Read as empty and left alone.
     Newer,
@@ -159,10 +197,30 @@ pub fn parse(raw: &str) -> Parsed {
     };
     Parsed::Entries(
         mods.iter()
-            .filter_map(|(id, on)| Some((id.clone(), on.as_bool()?)))
+            .filter_map(|(id, v)| Some((id.clone(), entry_of(v)?)))
             .filter(|(id, _)| valid_id(id))
             .collect(),
     )
+}
+
+/// One entry's value: a bare boolean is the old form (`true` has no approved set, so it reads as not enabled);
+/// an object has `on` (a boolean) and, for an on entry, `permissions` (names; any unknown name makes the set
+/// unreadable, so the entry fails closed). Anything else is dropped.
+fn entry_of(v: &Value) -> Option<Entry> {
+    if let Some(on) = v.as_bool() {
+        return Some(Entry { on, approved: None });
+    }
+    let o = v.as_object()?;
+    let on = o.get("on")?.as_bool()?;
+    let approved = o
+        .get("permissions")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .map(|n| n.as_str().and_then(Permission::parse))
+                .collect::<Option<Vec<_>>>()
+        });
+    Some(Entry { on, approved })
 }
 
 /// Moves a damaged file to `<file>.bad`, replacing an older `.bad`. False when the move fails, and then the
@@ -177,15 +235,17 @@ fn set_aside(file: &Path) -> bool {
 mod tests {
     use super::*;
 
+    const P: &[Permission] = &[Permission::Panel, Permission::Tools];
+
     #[test]
     fn a_store_round_trips_through_its_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mods.json");
         let mut s = EnabledStore::load(&file);
         assert!(!s.is_enabled("notes"));
-        s.set("notes", true).unwrap();
-        s.set("other-mod", true).unwrap();
-        s.set("other-mod", false).unwrap();
+        s.set("notes", true, P).unwrap();
+        s.set("other-mod", true, P).unwrap();
+        s.set("other-mod", false, P).unwrap();
         let again = EnabledStore::load(&file);
         assert!(again.is_enabled("notes"));
         assert!(!again.is_enabled("other-mod"));
@@ -197,10 +257,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mods.json");
         let mut s = EnabledStore::load(&file);
-        s.set("notes", true).unwrap();
+        s.set("notes", true, P).unwrap();
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(), // sync-ok: test code only
-            r#"{"version":1,"mods":{"notes":true}}"#
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel","tools"]}}}"#
         );
     }
 
@@ -209,8 +269,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mods.json");
         let mut s = EnabledStore::load(&file);
-        assert!(s.set("../evil", true).is_err());
-        assert!(s.set("Notes", true).is_err());
+        assert!(s.set("../evil", true, P).is_err());
+        assert!(s.set("Notes", true, P).is_err());
         assert!(!file.exists());
     }
 
@@ -223,15 +283,17 @@ mod tests {
         assert!(s.enabled_ids().is_empty());
         assert!(!s.is_read_only());
         assert!(dir.path().join("mods.json.bad").exists());
-        s.set("notes", true).unwrap();
+        s.set("notes", true, P).unwrap();
         assert!(EnabledStore::load(&file).is_enabled("notes"));
     }
 
     #[test]
     fn unknown_entries_are_dropped_on_read() {
         let raw = r#"{"version":1,"mods":{
-            "notes": true,
+            "notes": {"on": true, "permissions": ["panel"]},
             "off-one": false,
+            "old-form": true,
+            "bad-perm": {"on": true, "permissions": ["panel", "root"]},
             "Bad": true,
             "../up": true,
             "string-value": "yes",
@@ -241,9 +303,14 @@ mod tests {
         let Parsed::Entries(got) = parse(raw) else {
             panic!("version 1 with a mods object is entries");
         };
-        assert_eq!(got.get("notes"), Some(&true));
-        assert_eq!(got.get("off-one"), Some(&false));
-        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got.get("notes").unwrap().approved,
+            Some(vec![Permission::Panel])
+        );
+        assert!(!got.get("off-one").unwrap().on);
+        assert_eq!(got.get("old-form").unwrap().approved, None);
+        assert_eq!(got.get("bad-perm").unwrap().approved, None);
+        assert_eq!(got.len(), 4);
     }
 
     #[test]
@@ -283,7 +350,7 @@ mod tests {
         let mut s = EnabledStore::load(&file);
         assert!(!s.is_enabled("notes"));
         assert!(s.is_read_only());
-        assert!(s.set("notes", true).is_err());
+        assert!(s.set("notes", true, P).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), future); // sync-ok: test code only
     }
 
@@ -295,7 +362,7 @@ mod tests {
         std::fs::write(&file, odd).unwrap(); // sync-ok: test code only
         let mut s = EnabledStore::load(&file);
         assert!(s.is_read_only());
-        assert!(s.set("other", true).is_err());
+        assert!(s.set("other", true, P).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), odd); // sync-ok: test code only
         assert!(
             !dir.path().join("mods.json.bad").exists(),
@@ -319,10 +386,10 @@ mod tests {
             "not json at all"
         );
         assert!(!file.exists());
-        s.set("notes", true).unwrap();
+        s.set("notes", true, P).unwrap();
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(), // sync-ok: test code only
-            r#"{"version":1,"mods":{"notes":true}}"#
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel","tools"]}}}"#
         );
     }
 
@@ -332,7 +399,28 @@ mod tests {
         // A folder that does not exist makes the temp-file write fail; the file is in no folder.
         let file = dir.path().join("gone").join("mods.json");
         let mut s = EnabledStore::load(&file);
-        assert!(s.set("notes", true).is_err());
+        assert!(s.set("notes", true, P).is_err());
         assert!(!s.is_enabled("notes"));
+    }
+
+    #[test]
+    fn an_on_entry_without_an_approved_set_reads_as_not_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mods.json");
+        // The old format, a hand-made object, and a set with an unknown name: none can say what was approved.
+        let raw = r#"{"version":1,"mods":{
+            "old-form": true,
+            "no-set": {"on": true},
+            "bad-name": {"on": true, "permissions": ["panel", "root"]},
+            "good": {"on": true, "permissions": ["panel"]}
+        }}"#;
+        std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+        let s = EnabledStore::load(&file);
+        assert_eq!(s.enabled_ids(), ["good"]);
+        assert!(!s.is_enabled("old-form"));
+        assert!(!s.is_enabled("no-set"));
+        assert!(!s.is_enabled("bad-name"));
+        assert_eq!(s.approved("good"), Some(vec![Permission::Panel]));
+        assert_eq!(s.approved("old-form"), None);
     }
 }

@@ -71,6 +71,7 @@ fn notes(enabled: bool) -> ModInfo {
             "Answer the agent's tool calls".into(),
         ],
         enabled,
+        needs_approval: false,
         has_panel: true,
     }
 }

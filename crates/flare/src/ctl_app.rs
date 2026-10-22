@@ -38,6 +38,15 @@ pub const BROWSER_WAIT: Duration = Duration::from_secs(30);
 /// the channel's `MOD_CALL_TIMEOUT` so the page's wait ends first.
 const MOD_UI_WAIT: Duration = Duration::from_secs(8);
 const MOD_REPLY_MARGIN: Duration = Duration::from_secs(2);
+/// How long the hub may still wait for a mod's page after `elapsed` of the call is spent: the rest of the
+/// channel's `MOD_CALL_TIMEOUT` minus the margin, and never more than the hub's own `CALL_TIMEOUT`. A silent page
+/// therefore ends the call with Flare's answer before the channel gives up on its own.
+fn mod_wait_left(elapsed: Duration) -> Duration {
+    (flare_ctl::method::MOD_CALL_TIMEOUT - MOD_REPLY_MARGIN)
+        .saturating_sub(elapsed)
+        .min(flare_mods::hub::CALL_TIMEOUT)
+}
+
 /// How often a waiting call looks at the stop flag.
 const STOP_SLICE: Duration = Duration::from_millis(50);
 /// The longest title a caller may give a panel (the header shows one line).
@@ -323,9 +332,7 @@ impl AppDispatcher {
             hub.cancel(&call.id);
             return Err(e);
         }
-        let left = (flare_ctl::method::MOD_CALL_TIMEOUT - MOD_REPLY_MARGIN)
-            .saturating_sub(started.elapsed())
-            .min(flare_mods::hub::CALL_TIMEOUT);
+        let left = mod_wait_left(started.elapsed());
         let stopping = Arc::clone(&self.stopping);
         // sync-ok: a worker thread of the control channel waits for the mod's page, never the UI thread
         let result = hub.wait(call, left, &|| stopping.load(Ordering::SeqCst))?;
@@ -1408,6 +1415,22 @@ mod tests {
                     .expect_err("refused");
             assert_eq!(e.code, code::BAD_PARAMS, "{p}");
         }
+    }
+
+    #[test]
+    fn mods_call_ends_before_the_channels_own_timeout_whatever_the_window_took() {
+        use flare_ctl::method::MOD_CALL_TIMEOUT;
+        for ms in (0..=MOD_UI_WAIT.as_millis() as u64).step_by(250) {
+            let spent = Duration::from_millis(ms);
+            let left = mod_wait_left(spent);
+            assert!(left <= flare_mods::hub::CALL_TIMEOUT, "{ms}");
+            assert!(
+                spent + left <= MOD_CALL_TIMEOUT - MOD_REPLY_MARGIN,
+                "{ms}: the call would outlive the channel's wait"
+            );
+        }
+        // Even a call that somehow spent the whole channel wait has nothing left, never a wrapped value.
+        assert_eq!(mod_wait_left(MOD_CALL_TIMEOUT), Duration::ZERO);
     }
 
     #[test]

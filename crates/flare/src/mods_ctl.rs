@@ -447,6 +447,7 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
                 version: m.version,
                 description: m.description,
                 enabled: m.enabled,
+                needs_approval: m.needs_approval,
             })
             .collect(),
         problems: s

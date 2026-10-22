@@ -698,3 +698,5 @@ Holes hit, what fixed them, and what Prism Terminal's Electron build must do. Th
 - A strict MCP client that rejects names near 64 characters (the 52-character cap is from the documented limit, not from a client).
 
 - 2026-10-22, stage 7: a chip that trusts "something listens on that port" is trusting the whole machine. The TCP listener table names the owning pid, and the tab's shell pid plus a Toolhelp32 parent walk names the tree it may believe. The Electron app never had a chip like this, so there is no Electron note; the rule is Flare's own.
+
+- 2026-10-22, stage 8 review: a consent is a fact about a moment, so store what was agreed (the permission list), not only that something was agreed (a boolean), and compare on every load. The Electron app had no mods; the rule is Flare's own.

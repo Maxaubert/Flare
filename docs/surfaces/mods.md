@@ -248,7 +248,9 @@ stops a mod from reading a page the user is logged into in another tab.
 - **Text a person reads is clean.** Names, titles and descriptions refuse control characters and the Unicode
   format characters (zero-width spaces, bidi overrides, the BOM): what Settings shows is what the agent reads.
 - **A bad mod does not stop the others.** Each folder fails alone, with its reason.
-- **Enabled state is stored atomically** (`%APPDATA%\Flare\mods.json`, `{"version":1,"mods":{"id":true}}`).
+- **Enabled state is stored atomically** (`%APPDATA%\Flare\mods.json`, `{"version":1,"mods":{"id":{"on":true,"permissions":["panel"]}}}`: the switch and the permissions the person
+  approved with it; an on entry without that list reads as off, and a scan that finds the manifest asking for more
+  turns the mod off until it is switched on again, regression rule 212).
   Unknown entries are dropped and never written back. A damaged file (not JSON, no `version`, no `mods`
   object) is moved to `mods.json.bad` and the switches start empty. A `version` that is present and is not
   exactly 1 is read as empty and left alone, and the store is read-only for the session.

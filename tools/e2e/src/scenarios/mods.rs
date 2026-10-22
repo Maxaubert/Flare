@@ -15,7 +15,9 @@
 //! address, holds a frozen `window.flare` without a token, is refused every permission the manifest did not ask
 //! for (`browser.open`, `view.text`), and is served from its own address; turning the mod off removes its tool,
 //! closes its panel and frees its browser, and a call to the tool is refused; and a restart keeps the switch,
-//! mints a new token and keeps the page's own storage (the notes it kept).
+//! mints a new token and keeps the page's own storage (the notes it kept); and a manifest edited on disk to ask
+//! for `browser` turns the mod off at the next look (tool gone, panel closed, the page says why) until the
+//! person switches it on again, which approves the new list.
 
 use std::fs;
 use std::path::Path;
@@ -160,7 +162,7 @@ pub fn mods_sample(ctx: &mut Ctx) -> Result<(), String> {
     r?;
     // A restart: the switch is kept, the token is new, the page's own storage is kept.
     let mut app = launch(ctx)?;
-    let r = second_run(ctx, &mut app, &exe);
+    let r = second_run(ctx, &mut app, &exe, &profile);
     let left = app.close();
     ctx.ok(left, "the second run quits by itself");
     r
@@ -239,7 +241,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
         "the mod is on: its tool is offered and the switch shows it",
     );
     let saved = ctx.until("mods.json", 10_000, &mut || {
-        fs::read_to_string(profile.join("mods.json")).is_ok_and(|t| t.contains("\"notes\":true"))
+        fs::read_to_string(profile.join("mods.json"))
+            .is_ok_and(|t| t.contains("\"notes\":{\"on\":true"))
     });
     ctx.ok(saved, "the switch was saved");
     let file = fs::read_to_string(profile.join("mods.json")).unwrap_or_default();
@@ -504,7 +507,8 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     });
     ctx.ok(again, "on again");
     let saved = ctx.until("mods.json to say on", 10_000, &mut || {
-        fs::read_to_string(profile.join("mods.json")).is_ok_and(|t| t.contains("\"notes\":true"))
+        fs::read_to_string(profile.join("mods.json"))
+            .is_ok_and(|t| t.contains("\"notes\":{\"on\":true"))
     });
     ctx.ok(saved, "the last switch was saved");
     // The Show panel button: the mod's panel opens in the shell tab and that tab comes to the front.
@@ -536,7 +540,7 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     Ok(())
 }
 
-fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path) -> Result<(), String> {
+fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result<(), String> {
     prompt(app)?;
     let up = ctx.until("the scan", 15_000, &mut || {
         let s = mods_state(app);
@@ -577,5 +581,62 @@ fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path) -> Result<(), String> {
         raw.as_deref() == Some("\"3:after the restart\""),
         format!("the panel shows all three lines ({raw:?})"),
     );
+
+    // ---- the manifest on disk asks for more than the person allowed ----
+    let manifest = profile.join("mods").join("notes").join("mod.json");
+    let text = fs::read_to_string(&manifest).map_err(|e| format!("read the manifest: {e}"))?;
+    let edited = text.replacen(
+        r#""permissions": ["panel", "tools"]"#,
+        r#""permissions": ["panel", "tools", "browser"]"#,
+        1,
+    );
+    ctx.ok(
+        edited != text,
+        "the sample's manifest was edited to ask for browser",
+    );
+    fs::write(&manifest, edited).map_err(|e| format!("write the manifest: {e}"))?;
+    let open = open_settings(ctx, app) && goto_page(ctx, app, "mods");
+    ctx.ok(
+        open,
+        "Settings is open on the Mods page (it looks at the folder again)",
+    );
+    let off = ctx.until("the mod to be turned off by the scan", 15_000, &mut || {
+        let s = mods_state(app);
+        s["mods"][0]["enabled"] == json!(false)
+            && s["mods"][0]["needs_approval"] == json!(true)
+            && s["tools"] == json!([])
+            && s["panels"] == json!([])
+    });
+    ctx.ok(
+        off,
+        "asking for a new permission turns the mod off: its tool is gone and its panel closed",
+    );
+    let say = row(app, "mod:notes");
+    ctx.ok(
+        say["on"] == json!(false)
+            && say["sub"]
+                .as_str()
+                .is_some_and(|t| t.contains("Asks for new permissions")),
+        format!("the Mods page says it needs to be switched on again ({say})"),
+    );
+    // Switching it on approves the new list.
+    ctx.ok(
+        click_row(app, "mod:notes"),
+        "the switch row is pressed to allow the new list",
+    );
+    let back = ctx.until("the mod to be on with the new list", 10_000, &mut || {
+        let s = mods_state(app);
+        s["mods"][0]["enabled"] == json!(true)
+            && s["mods"][0]["needs_approval"] == json!(false)
+            && s["tools"] == json!(["mod_notes_append_note"])
+    });
+    ctx.ok(
+        back,
+        "switched on again, the mod is back with the new list approved",
+    );
+    let saved = ctx.until("mods.json to hold the new list", 10_000, &mut || {
+        fs::read_to_string(profile.join("mods.json")).is_ok_and(|t| t.contains("\"browser\""))
+    });
+    ctx.ok(saved, "mods.json holds the approved list, browser included");
     Ok(())
 }

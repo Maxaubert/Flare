@@ -257,10 +257,13 @@ fn a_mod_is_off_until_turned_on_and_the_switch_mints_and_kills_its_token_and_too
     );
     // The switch is saved on a worker; the token never is.
     f.pump_until("the switch file", |_| {
-        std::fs::read_to_string(&w.state_file).is_ok_and(|t| t.contains(r#""notes":true"#)) // sync-ok: test code only, never the app
+        std::fs::read_to_string(&w.state_file).is_ok_and(|t| t.contains(r#""notes":{"on":true"#)) // sync-ok: test code only, never the app
     });
     let saved = std::fs::read_to_string(&w.state_file).unwrap(); // sync-ok: test code only, never the app
-    assert_eq!(saved, r#"{"version":1,"mods":{"notes":true}}"#);
+    assert_eq!(
+        saved,
+        r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel","tools"]}}}"#
+    );
 
     turn(&f, "notes", false);
     assert!(
@@ -270,7 +273,7 @@ fn a_mod_is_off_until_turned_on_and_the_switch_mints_and_kills_its_token_and_too
     assert!(w.hub.tools().is_empty());
     assert_eq!(w.events.lock().unwrap().len(), 2);
     f.pump_until("the switch file", |_| {
-        std::fs::read_to_string(&w.state_file).is_ok_and(|t| t.contains(r#""notes":false"#)) // sync-ok: test code only, never the app
+        std::fs::read_to_string(&w.state_file).is_ok_and(|t| t.contains(r#""notes":{"on":false}"#)) // sync-ok: test code only, never the app
     });
 }
 
@@ -413,6 +416,41 @@ fn a_page_call_is_held_to_the_mods_permissions_and_a_mod_without_browser_is_refu
         f.ctl.borrow().panels.snap(&tab).unwrap().kind,
         "mod:plain",
         "its panel was never replaced"
+    );
+}
+
+#[test]
+fn a_page_may_open_only_its_own_panel_not_another_kind() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| mod_with(r, "plain", &["panel", "tools"]));
+    turn(&f, "plain", true);
+    let tab = page_up(&f, &w, &slot, "plain");
+    let kinds = ["web", "changes", "tasks", "board", "mod:other"];
+    for (i, k) in kinds.iter().enumerate() {
+        page_says(
+            &slot,
+            &tab,
+            &json!({"t":"call","id":i + 1,"method":"panel.open","params":{"kind":k}}).to_string(),
+        );
+    }
+    f.pump_until("the refusals", |_| posts(&slot, &tab).len() >= kinds.len());
+    let answers = posts(&slot, &tab);
+    assert_eq!(answers.len(), kinds.len(), "{answers:?}");
+    for a in &answers {
+        assert_eq!(a["error"]["code"], "forbidden", "{a}");
+    }
+    assert_eq!(
+        f.ctl.borrow().panels.snap(&tab).unwrap().kind,
+        "mod:plain",
+        "its panel was never replaced"
+    );
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Navigate(..) | Call::Cdp(..))),
+        "no browser was driven"
     );
 }
 
