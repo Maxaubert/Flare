@@ -13,6 +13,11 @@
 //!   server restarting under a file watcher does not flicker the chip away. Only the chip of the tab in front is
 //!   re-checked, and not while the window is minimised: a chip nobody can see costs nothing, and is looked at
 //!   once as it comes to the front.
+//! - A look answers with three things, not two: [`PortLook::Nobody`] (nothing listens), [`PortLook::InTree`] (every listener is
+//!   in the tab's process tree) or [`PortLook::Foreign`] (a process outside the tree holds the port). A foreign holder
+//!   drops the chip AT ONCE, with no miss grace, while waiting and while shown. A chip that comes to the front is
+//!   hidden until its first look has answered, and a click is only honoured after a look of its own says
+//!   [`PortLook::InTree`] for the same chip.
 //! - The same address printed AGAIN (a server stopped and started on its port, without the screen being cleared)
 //!   starts a new wait for a tab that holds no live chip for it.
 
@@ -24,6 +29,27 @@ pub const WAIT_STEPS_MS: [u64; 6] = [0, 400, 1_200, 3_000, 7_000, 15_000];
 pub const RECHECK_MS: u64 = 2_500;
 /// Failed looks in a row after which a shown chip goes.
 pub const MISSES_TO_GO: u32 = 2;
+
+/// What a look at a port found, held against the tab's own process tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortLook {
+    /// Nobody listens (or the tables could not be read): one miss.
+    Nobody,
+    /// Every listener is in the tab's process tree.
+    InTree,
+    /// A process outside the tab's tree holds the port: the chip goes at once.
+    Foreign,
+}
+
+impl From<bool> for PortLook {
+    fn from(up: bool) -> Self {
+        if up {
+            PortLook::InTree
+        } else {
+            PortLook::Nobody
+        }
+    }
+}
 
 /// The address a chip offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +85,11 @@ struct Chip {
     next_at: Option<u64>,
     in_flight: bool,
     phase: Phase,
+    /// False from the moment the tab comes to the front until a look made after that has answered; the chip is not
+    /// offered meanwhile.
+    verified: bool,
+    /// A look was already out when the tab came to the front: its answer is older than the focus and is not enough.
+    stale_flight: bool,
 }
 
 /// Every tab's chip.
@@ -106,6 +137,8 @@ impl DevChips {
                 next_at: Some(now),
                 in_flight: false,
                 phase: Phase::Waiting { step: 0 },
+                verified: true,
+                stale_flight: false,
             },
         );
     }
@@ -137,9 +170,15 @@ impl DevChips {
         self.focus = new;
         let Some(front) = front else { return false };
         match self.chips.get_mut(front) {
-            Some(c) if matches!(c.phase, Phase::Shown { .. }) && !c.in_flight => {
-                c.next_at = Some(now);
-                true
+            Some(c) if matches!(c.phase, Phase::Shown { .. }) => {
+                c.verified = false;
+                if c.in_flight {
+                    c.stale_flight = true;
+                    false
+                } else {
+                    c.next_at = Some(now);
+                    true
+                }
             }
             _ => false,
         }
@@ -187,8 +226,8 @@ impl DevChips {
         out
     }
 
-    /// The answer of a look: was something listening on the port.
-    pub fn on_check(&mut self, tab: &str, token: u64, listening: bool, now: u64) {
+    /// The answer of a look at the port.
+    pub fn on_check(&mut self, tab: &str, token: u64, look: PortLook, now: u64) {
         let Some(c) = self.chips.get_mut(tab) else {
             return;
         };
@@ -196,9 +235,21 @@ impl DevChips {
             return;
         }
         c.in_flight = false;
+        if look == PortLook::Foreign {
+            // Not our server: gone at once, whatever the phase. A new reading or reprint starts over.
+            self.chips.remove(tab);
+            return;
+        }
+        let stale = std::mem::take(&mut c.stale_flight);
+        let listening = look == PortLook::InTree;
         match (&mut c.phase, listening) {
+            (Phase::Shown { .. }, true) if stale => {
+                // The answer predates the tab coming to the front: look once more, still unconfirmed.
+                c.next_at = Some(now);
+            }
             (Phase::Waiting { .. }, true) | (Phase::Shown { .. }, true) => {
                 c.phase = Phase::Shown { misses: 0 };
+                c.verified = true;
                 c.next_at = Some(now + RECHECK_MS);
             }
             (Phase::Waiting { step }, false) => {
@@ -227,8 +278,13 @@ impl DevChips {
     pub fn shown(&self, tab: &str) -> Option<&ChipServer> {
         self.chips
             .get(tab)
-            .filter(|c| matches!(c.phase, Phase::Shown { .. }))
+            .filter(|c| matches!(c.phase, Phase::Shown { .. }) && c.verified)
             .map(|c| &c.server)
+    }
+
+    /// The token of the tab's chip (what a look made for it hands back), if it holds one.
+    pub fn token(&self, tab: &str) -> Option<u64> {
+        self.chips.get(tab).map(|c| c.token)
     }
 
     /// The tab's shell is gone, or the tab closed.
@@ -282,6 +338,7 @@ mod tests {
         chips: DevChips,
         now: u64,
         listening: Vec<u16>,
+        foreign: Vec<u16>,
         looks: Vec<(u64, Check)>,
     }
 
@@ -291,6 +348,7 @@ mod tests {
                 chips: DevChips::new(),
                 now: 0,
                 listening: Vec::new(),
+                foreign: Vec::new(),
                 looks: Vec::new(),
             }
         }
@@ -299,9 +357,13 @@ mod tests {
             let end = self.now + ms;
             loop {
                 for c in self.chips.due(self.now) {
-                    let up = self.listening.contains(&c.port);
+                    let look = if self.foreign.contains(&c.port) {
+                        PortLook::Foreign
+                    } else {
+                        PortLook::from(self.listening.contains(&c.port))
+                    };
                     self.looks.push((self.now, c.clone()));
-                    self.chips.on_check(&c.tab, c.token, up, self.now);
+                    self.chips.on_check(&c.tab, c.token, look, self.now);
                 }
                 match self.chips.next_due() {
                     Some(t) if t <= end => self.now = t.max(self.now),
@@ -494,6 +556,66 @@ mod tests {
     }
 
     #[test]
+    fn a_foreign_holder_takes_a_shown_chip_at_once_with_no_grace() {
+        let mut r = Rig::new();
+        r.listening.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.run(0);
+        assert!(r.chips.shown("a").is_some());
+        // The server exits and a stranger binds the port.
+        r.listening.clear();
+        r.foreign.push(3000);
+        r.run(RECHECK_MS);
+        assert!(r.chips.shown("a").is_none(), "one look is enough");
+        assert_eq!(r.chips.tracked(), 0);
+    }
+
+    #[test]
+    fn a_foreign_holder_while_waiting_ends_the_wait() {
+        let mut r = Rig::new();
+        r.foreign.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.run(0);
+        assert_eq!(r.chips.tracked(), 0);
+        assert_eq!(r.looks.len(), 1);
+        assert_eq!(r.chips.next_due(), None);
+    }
+
+    #[test]
+    fn a_chip_coming_to_the_front_is_hidden_until_its_first_look_answers() {
+        let mut c = DevChips::new();
+        c.on_reading("a", 1, Some(server(3000)), 0);
+        let l = c.due(0).remove(0);
+        c.on_check("a", l.token, PortLook::InTree, 0);
+        assert!(c.shown("a").is_some());
+        c.set_focus(Some("b"), 1);
+        assert!(c.set_focus(Some("a"), 10), "a look became due");
+        assert!(c.shown("a").is_none(), "hidden until the look answers");
+        let l = c.due(10).remove(0);
+        c.on_check("a", l.token, PortLook::InTree, 11);
+        assert!(c.shown("a").is_some());
+    }
+
+    #[test]
+    fn a_look_already_out_when_the_tab_comes_forward_does_not_confirm_it() {
+        let mut c = DevChips::new();
+        c.on_reading("a", 1, Some(server(3000)), 0);
+        let l = c.due(0).remove(0);
+        c.on_check("a", l.token, PortLook::InTree, 0);
+        c.set_focus(Some("a"), 1);
+        let old = c.due(2_500).remove(0);
+        // The tab goes back and forth while that look is out.
+        c.set_focus(Some("b"), 2_501);
+        c.set_focus(Some("a"), 2_502);
+        c.on_check("a", old.token, PortLook::InTree, 2_503);
+        assert!(c.shown("a").is_none(), "the old look predates the focus");
+        let fresh = c.due(2_503).remove(0);
+        c.on_check("a", fresh.token, PortLook::InTree, 2_504);
+        assert!(c.shown("a").is_some());
+        assert_eq!(c.token("a"), Some(fresh.token));
+    }
+
+    #[test]
     fn the_same_reading_twice_is_one_chip_and_one_look() {
         let mut r = Rig::new();
         r.listening.push(3000);
@@ -509,14 +631,14 @@ mod tests {
         c.on_reading("a", 1, Some(server(3000)), 0);
         let old = c.due(0).remove(0);
         c.on_reading("a", 2, Some(server(4000)), 5);
-        c.on_check("a", old.token, true, 6);
+        c.on_check("a", old.token, PortLook::InTree, 6);
         assert!(
             c.shown("a").is_none(),
             "the old port answered for the new address"
         );
         let new = c.due(6).remove(0);
         assert_eq!(new.port, 4000);
-        c.on_check("a", new.token, true, 7);
+        c.on_check("a", new.token, PortLook::InTree, 7);
         assert!(c.shown("a").is_some());
     }
 
@@ -543,7 +665,7 @@ mod tests {
         c.on_reading("a", 1, Some(server(3000)), 0);
         let look = c.due(0).remove(0);
         c.forget("a");
-        c.on_check("a", look.token, true, 1);
+        c.on_check("a", look.token, PortLook::InTree, 1);
         assert_eq!(c.tracked(), 0);
         assert_eq!(c.next_due(), None);
     }

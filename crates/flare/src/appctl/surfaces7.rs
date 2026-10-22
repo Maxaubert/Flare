@@ -21,7 +21,7 @@ use flare_settings::agent_prefs::notify_ask_on;
 use flare_settings::term_prefs::dev_preview;
 use flare_surfaces::PanelKind;
 use flare_surfaces::board::{self, BoardInput, BoardRow, BoardState};
-use flare_surfaces::devpreview::{ChipServer, DevChips};
+use flare_surfaces::devpreview::{ChipServer, DevChips, PortLook};
 use flare_surfaces::notify::{Asking, Look, Notifier, Toast};
 use flare_term::dev_server::{self, LocalServer};
 use slint::{ModelRc, VecModel};
@@ -45,8 +45,9 @@ pub const BOARD_HIDE: &str = "Hide agent board";
 /// table of their own.
 ///
 /// Called as `(port, shell pid)`: true only when the port has a listener AND every listener on it belongs to the
-/// tab's own process tree (the shell and what it started). A port another program holds is no chip.
-pub type PortProbe = Arc<dyn Fn(u16, u32) -> bool + Send + Sync>;
+/// tab's own process tree (the shell and what it started). A port another program holds is no chip, and says so
+/// ([`PortLook::Foreign`]) so the chip goes at once.
+pub type PortProbe = Arc<dyn Fn(u16, u32) -> PortLook + Send + Sync>;
 /// Shows a notification. Production asks Windows; under `--e2e` the sink only records.
 pub type ToastSink = Rc<dyn Fn(&Toast)>;
 
@@ -72,7 +73,7 @@ impl Surf7 {
     pub fn new() -> Self {
         Self {
             dev: DevChips::new(),
-            probe: Arc::new(|_, _| false),
+            probe: Arc::new(|_, _| PortLook::Nobody),
             notifier: Notifier::new(),
             toast: None,
             board: BoardState7::default(),
@@ -243,11 +244,11 @@ impl AppCtl {
             let probe = Arc::clone(&self.s7.probe);
             let post = Arc::clone(&self.deps.post);
             let job = move || {
-                let up = probe(check.port, shell);
+                let look = probe(check.port, shell);
                 post(UiMsg::DevLook {
                     tab: check.tab,
                     token: check.token,
-                    up,
+                    look,
                 });
             };
             if let Err(e) = std::thread::Builder::new()
@@ -261,9 +262,9 @@ impl AppCtl {
     }
 
     /// A worker's answer about a port.
-    pub(super) fn on_dev_look(&mut self, tab: &str, token: u64, up: bool) {
+    pub(super) fn on_dev_look(&mut self, tab: &str, token: u64, look: PortLook) {
         let now = self.now();
-        self.s7.dev.on_check(tab, token, up, now);
+        self.s7.dev.on_check(tab, token, look, now);
         self.dev_pump();
         self.sync_chip();
     }
@@ -311,8 +312,9 @@ impl AppCtl {
         Some(chip)
     }
 
-    /// The chip was clicked: the web panel opens on the tab at that address. The address is checked once more here, as
-    /// the chip may only ever open a local one.
+    /// The chip was clicked. The address is checked once more here (the chip may only ever open a local one), and the
+    /// port is looked at AGAIN on a worker: the page opens only when that look finds every listener in the tab's own
+    /// process tree, so a port that changed hands since the last look opens nothing.
     pub(super) fn preview_chip_clicked(&mut self) {
         let Some(chip) = self.chip_for_front() else {
             return;
@@ -321,7 +323,53 @@ impl AppCtl {
         if dev_server::parse_local(&chip.url).is_none() {
             return;
         }
-        if self.browser_open(&front, &chip.url).is_ok() {
+        let Some(token) = self.s7.dev.token(&front) else {
+            return;
+        };
+        let shell = self
+            .deps
+            .host
+            .manager()
+            .live_pids()
+            .iter()
+            .find(|(t, _)| *t == front)
+            .map_or(0, |(_, p)| *p);
+        let probe = Arc::clone(&self.s7.probe);
+        let post = Arc::clone(&self.deps.post);
+        let port = chip.port;
+        let job = move || {
+            let look = probe(port, shell);
+            post(UiMsg::DevClickLook {
+                tab: front,
+                token,
+                look,
+            });
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-port-click".into())
+            .spawn(job)
+        {
+            log::warn!("could not start the port look: {e}");
+        }
+    }
+
+    /// The look made for a click came back. It also feeds the chip (a foreign holder takes it at once). The page opens
+    /// only for an in-tree answer about the SAME chip, still on the tab in front.
+    pub(super) fn on_dev_click_look(&mut self, tab: &str, token: u64, look: PortLook) {
+        self.on_dev_look(tab, token, look);
+        if look != PortLook::InTree || self.s7.dev.token(tab) != Some(token) {
+            return;
+        }
+        if self.front_id().as_deref() != Some(tab) {
+            return;
+        }
+        let Some(chip) = self.chip_for_front() else {
+            return;
+        };
+        if dev_server::parse_local(&chip.url).is_none() {
+            return;
+        }
+        if self.browser_open(tab, &chip.url).is_ok() {
             self.sync_chip();
         }
     }
@@ -672,7 +720,18 @@ impl AppCtl {
 /// recorder (nothing reaches the desktop).
 pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
     let mut c = rc.borrow_mut();
-    c.set_port_probe(Arc::new(flare_win::tcp_owner::listening_in_tree));
+    c.set_port_probe(Arc::new(|port, shell| {
+        use flare_win::tcp_owner::TreeLook;
+        if shell == 0 {
+            return PortLook::Nobody;
+        }
+        match flare_win::tcp_owner::tree_look(port, shell) {
+            TreeLook::InTree => PortLook::InTree,
+            TreeLook::Foreign => PortLook::Foreign,
+            // Unknown is never trusted, and is not proof of a stranger either: one miss.
+            TreeLook::Nobody | TreeLook::Unreadable => PortLook::Nobody,
+        }
+    }));
     if e2e {
         c.set_toast_sink(Rc::new(|t: &Toast| {
             crate::e2e_probes::surf7::record_toast(&t.tab, &t.title, &t.body);
