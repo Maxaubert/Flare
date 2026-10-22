@@ -38,12 +38,26 @@ pub enum PanelMsg {
         tab: String,
         result: Result<TextRows, Reason>,
     },
+    /// A big file wrapped to `cols` on a worker (a small one is wrapped where it arrives). `seq` says which request
+    /// it answers: only the newest is used.
+    Wrapped {
+        generation: u64,
+        tab: String,
+        seq: u64,
+        cols: usize,
+        rows: Vec<SharedString>,
+        nums: Vec<i32>,
+    },
 }
 
-/// A text file ready for the window: the rows and the numbers are made on the worker, so the UI
-/// thread only wraps them.
+/// Text under this many bytes is wrapped on the UI thread where it arrives (a few milliseconds at most); a bigger
+/// one is wrapped on a worker, and the panel says "Opening" until it answers.
+const WRAP_INLINE_MAX: usize = 1_000_000;
+
+/// A text file ready for the window: the lines are shaped on the worker, so the UI thread only wraps
+/// them in a model.
 pub struct TextRows {
-    pub rows: Vec<SharedString>,
+    pub lines: Arc<Vec<SharedString>>,
     /// The widest row, in characters.
     pub cols: usize,
     /// The file's real length.
@@ -66,7 +80,7 @@ impl TextRows {
             None => String::new(),
         };
         Self {
-            rows: doc.lines.into_iter().map(SharedString::from).collect(),
+            lines: Arc::new(doc.lines.into_iter().map(SharedString::from).collect()),
             cols,
             bytes: doc.bytes,
             foot,
@@ -94,6 +108,7 @@ impl std::fmt::Debug for PanelMsgBox {
         f.write_str(match self.0 {
             PanelMsg::Image { .. } => "PanelMsg::Image",
             PanelMsg::Text { .. } => "PanelMsg::Text",
+            PanelMsg::Wrapped { .. } => "PanelMsg::Wrapped",
         })
     }
 }
@@ -110,11 +125,20 @@ enum Content {
         scaled: bool,
     },
     Text {
-        lines: ModelRc<SharedString>,
+        /// The file's lines, one per line (kept while the panel shows, for a re-wrap).
+        lines: Arc<Vec<SharedString>>,
+        /// What the window draws: the lines, or the rows they wrap to.
+        shown: ModelRc<SharedString>,
+        /// The line number of each shown row (0: a continuation); empty while the rows are the lines.
+        nums: ModelRc<i32>,
         count: usize,
         cols: usize,
         foot: String,
         bytes: u64,
+        /// The columns the shown rows are wrapped to; 0 while they are the lines.
+        wrapped_cols: usize,
+        /// False while a big file waits for its first wrap (the panel says "Opening").
+        ready: bool,
     },
 }
 
@@ -187,6 +211,15 @@ pub struct PanelCtl {
     reload: bool,
     post: Post,
     checker: Option<Image>,
+    /// "Wrap long lines in previews" (the setting; the controller of the window keeps it current).
+    wrap: bool,
+    /// The newest wrap request, shared with the workers: one that is not it stops at its next look.
+    wrap_seq: u64,
+    wrap_current: Arc<AtomicU64>,
+    /// The columns of the wrap on its way from a worker (0: none).
+    wrap_pending: usize,
+    /// How many wraps were made (inline or on a worker): the tests hold that a drag makes none and its release one.
+    wraps: u64,
 }
 
 /// The checkerboard tile: 2 by 2 squares of 8 px, two neutral greys that read on any theme.
@@ -266,6 +299,11 @@ impl PanelCtl {
             reload: false,
             post,
             checker: None,
+            wrap: true,
+            wrap_seq: 0,
+            wrap_current: Arc::new(AtomicU64::new(0)),
+            wrap_pending: 0,
+            wraps: 0,
         }
     }
 
@@ -643,6 +681,7 @@ impl PanelCtl {
         let open = front.and_then(|t| self.panels.open_on(t).filter(|p| p.kind.is_built()));
         app.set_panel_open(open.is_some());
         app.set_panel_share(open.and_then(|p| p.width).unwrap_or(0.0));
+        app.set_panel_wrap_on(self.wrap);
         // A web panel is not read from disk: the web controller owns its content (and the window's
         // `panel-*` properties for it).
         let want = front.and_then(|t| {
@@ -665,6 +704,8 @@ impl PanelCtl {
             .as_ref()
             .is_some_and(|s| s.tab == tab && s.kind == kind && s.target == target);
         if same && !std::mem::take(&mut self.reload) {
+            // The width or the setting may have changed since the rows were made.
+            self.settle_wrap(app);
             return;
         }
         self.reload = false;
@@ -691,7 +732,7 @@ impl PanelCtl {
 
     /// A worker's answer. Dropped when it is for a file no longer on show.
     pub fn on_msg(&mut self, app: &AppWindow, msg: PanelMsg) {
-        let Some(shown) = self.shown.as_mut() else {
+        let Some(shown) = self.shown.as_ref() else {
             return;
         };
         let (generation, tab) = match &msg {
@@ -700,12 +741,15 @@ impl PanelCtl {
             }
             | PanelMsg::Text {
                 generation, tab, ..
-            } => (*generation, tab.as_str()),
+            }
+            | PanelMsg::Wrapped {
+                generation, tab, ..
+            } => (*generation, tab.clone()),
         };
         if generation != shown.generation || tab != shown.tab {
             return;
         }
-        shown.content = match msg {
+        let content = match msg {
             PanelMsg::Image { result, .. } => match result {
                 Ok(l) => Content::Image {
                     w: l.buf.width(),
@@ -717,17 +761,250 @@ impl PanelCtl {
                 Err(r) => Content::Failed(r.to_string()),
             },
             PanelMsg::Text { result, .. } => match result {
-                Ok(t) => Content::Text {
-                    count: t.rows.len(),
-                    lines: ModelRc::from(Rc::new(VecModel::from(t.rows))),
-                    cols: t.cols,
-                    foot: t.foot,
-                    bytes: t.bytes,
-                },
+                Ok(t) => self.text_content(app, &tab, generation, t),
                 Err(r) => Content::Failed(r.to_string()),
             },
+            PanelMsg::Wrapped {
+                seq,
+                cols,
+                rows,
+                nums,
+                ..
+            } => {
+                if seq != self.wrap_seq {
+                    return;
+                }
+                self.wrap_pending = 0;
+                if let Some(Shown {
+                    content:
+                        Content::Text {
+                            shown,
+                            nums: n,
+                            wrapped_cols,
+                            ready,
+                            ..
+                        },
+                    ..
+                }) = self.shown.as_mut()
+                {
+                    *shown = ModelRc::from(Rc::new(VecModel::from(rows)));
+                    *n = ModelRc::from(Rc::new(VecModel::from(nums)));
+                    *wrapped_cols = cols;
+                    *ready = true;
+                }
+                self.push(app);
+                // The width may have moved while the wrap was on its way.
+                self.settle_wrap(app);
+                return;
+            }
         };
+        if let Some(s) = self.shown.as_mut() {
+            s.content = content;
+        }
         self.push(app);
+    }
+
+    /// The columns the window's text view holds now, when previews are wrapped and the slot is on show; else 0.
+    fn want_cols(&self, app: &AppWindow) -> usize {
+        if !self.wrap || !app.get_panel_shown() {
+            return 0;
+        }
+        usize::try_from(app.get_panel_wrap_cols()).unwrap_or(0)
+    }
+
+    /// The newest wrap request is a new one: every older worker stops at its next look.
+    fn next_wrap_seq(&mut self) -> u64 {
+        self.wrap_seq += 1;
+        self.wrap_current.store(self.wrap_seq, Ordering::SeqCst);
+        self.wrap_pending = 0;
+        self.wraps += 1;
+        self.wrap_seq
+    }
+
+    /// A text file arrived: its lines, wrapped to the width now when wrapping is on (a small file here, a big one on
+    /// a worker while the panel says "Opening").
+    fn text_content(
+        &mut self,
+        app: &AppWindow,
+        tab: &str,
+        generation: u64,
+        t: TextRows,
+    ) -> Content {
+        // The gutter's width depends on the line count, so it is told before the columns are read.
+        app.set_panel_number_count(i32::try_from(t.lines.len()).unwrap_or(i32::MAX));
+        let want = self.want_cols(app);
+        let count = t.lines.len();
+        let (shown, nums, wrapped_cols, ready) = if want == 0 {
+            self.next_wrap_seq();
+            (line_model(&t.lines), no_nums(), 0, true)
+        } else if is_big(&t.lines) {
+            self.spawn_wrap(tab, generation, Arc::clone(&t.lines), want);
+            (ModelRc::default(), no_nums(), 0, false)
+        } else {
+            self.next_wrap_seq();
+            let (rows, nums) = wrap_lines(&t.lines, want, &|| false);
+            (
+                ModelRc::from(Rc::new(VecModel::from(rows))),
+                ModelRc::from(Rc::new(VecModel::from(nums))),
+                want,
+                true,
+            )
+        };
+        Content::Text {
+            lines: t.lines,
+            shown,
+            nums,
+            count,
+            cols: t.cols,
+            foot: t.foot,
+            bytes: t.bytes,
+            wrapped_cols,
+            ready,
+        }
+    }
+
+    /// Wraps the lines to `cols` on a worker; the answer is a `PanelMsg::Wrapped`.
+    fn spawn_wrap(
+        &mut self,
+        tab: &str,
+        generation: u64,
+        lines: Arc<Vec<SharedString>>,
+        cols: usize,
+    ) {
+        let seq = self.next_wrap_seq();
+        self.wrap_pending = cols;
+        let current = Arc::clone(&self.wrap_current);
+        let post = Arc::clone(&self.post);
+        let tab = tab.to_string();
+        let job = move || {
+            let stale = || current.load(Ordering::SeqCst) != seq;
+            let (rows, nums) = wrap_lines(&lines, cols, &stale);
+            if !stale() {
+                post(UiMsg::Panel(PanelMsgBox(PanelMsg::Wrapped {
+                    generation,
+                    tab,
+                    seq,
+                    cols,
+                    rows,
+                    nums,
+                })));
+            }
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-panel-wrap".into())
+            .spawn(job)
+        {
+            log::warn!("could not start the wrap: {e}");
+            self.wrap_pending = 0;
+        }
+    }
+
+    /// The newest load's number (the tests build an answer for it).
+    #[cfg(test)]
+    pub fn generation_for_test(&self) -> u64 {
+        self.generation
+    }
+
+    /// How many wraps were made so far (a request counts once, whoever does the work).
+    pub fn wrap_count(&self) -> u64 {
+        self.wraps
+    }
+
+    /// The setting "Wrap long lines in previews" as the window last had it.
+    pub fn set_wrap(&mut self, on: bool) {
+        self.wrap = on;
+    }
+
+    /// The text view's width may have settled (a splitter let go, a window resized, the setting flipped): wrap again
+    /// to the columns that fit, once, and only if they differ from the ones the rows are wrapped to. Never while the
+    /// splitter is held: a drag changes the width at every step, and the rows are made once, at the release.
+    pub fn settle_wrap(&mut self, app: &AppWindow) {
+        enum Act {
+            Nothing,
+            Lines,
+            Wrap(String, u64, Arc<Vec<SharedString>>),
+        }
+        if app.get_panel_splitting() {
+            return;
+        }
+        let want = self.want_cols(app);
+        let pending = self.wrap_pending;
+        let act = match self.shown.as_ref() {
+            // A big file's first wrap is on its way; its answer settles again.
+            Some(Shown {
+                content:
+                    Content::Text {
+                        lines,
+                        wrapped_cols,
+                        ready: true,
+                        ..
+                    },
+                tab,
+                generation,
+                ..
+            }) => {
+                if want == 0 {
+                    if *wrapped_cols == 0 && pending == 0 {
+                        Act::Nothing
+                    } else {
+                        Act::Lines
+                    }
+                } else if (want == *wrapped_cols && pending == 0) || want == pending {
+                    Act::Nothing
+                } else {
+                    Act::Wrap(tab.clone(), *generation, Arc::clone(lines))
+                }
+            }
+            _ => Act::Nothing,
+        };
+        match act {
+            Act::Nothing => {}
+            Act::Lines => {
+                self.next_wrap_seq();
+                if let Some(Shown {
+                    content:
+                        Content::Text {
+                            lines,
+                            shown,
+                            nums,
+                            wrapped_cols,
+                            ..
+                        },
+                    ..
+                }) = self.shown.as_mut()
+                {
+                    *shown = line_model(lines);
+                    *nums = no_nums();
+                    *wrapped_cols = 0;
+                }
+                self.push(app);
+            }
+            Act::Wrap(tab, generation, lines) => {
+                if is_big(&lines) {
+                    // The rows on show stay until the new ones are made.
+                    self.spawn_wrap(&tab, generation, lines, want);
+                    return;
+                }
+                self.next_wrap_seq();
+                let (rows, new_nums) = wrap_lines(&lines, want, &|| false);
+                if let Some(Shown {
+                    content:
+                        Content::Text {
+                            shown,
+                            nums,
+                            wrapped_cols,
+                            ..
+                        },
+                    ..
+                }) = self.shown.as_mut()
+                {
+                    *shown = ModelRc::from(Rc::new(VecModel::from(rows)));
+                    *nums = ModelRc::from(Rc::new(VecModel::from(new_nums)));
+                    *wrapped_cols = want;
+                }
+                self.push(app);
+            }
+        }
     }
 
     /// Pushes what is on show into the window's properties.
@@ -752,6 +1029,7 @@ impl PanelCtl {
                 app.set_panel_lines(empty_rows);
                 app.set_panel_max_cols(0);
                 app.set_panel_foot("".into());
+                reset_wrap_props(app);
             }
             Content::Failed(why) => {
                 app.set_panel_kind(0);
@@ -762,6 +1040,7 @@ impl PanelCtl {
                 app.set_panel_lines(empty_rows);
                 app.set_panel_max_cols(0);
                 app.set_panel_foot("".into());
+                reset_wrap_props(app);
             }
             Content::Image {
                 image,
@@ -782,13 +1061,29 @@ impl PanelCtl {
                 app.set_panel_lines(empty_rows);
                 app.set_panel_max_cols(0);
                 app.set_panel_foot("".into());
+                reset_wrap_props(app);
+            }
+            // A big file waiting for its first wrap: the same as reading.
+            Content::Text { ready: false, .. } => {
+                app.set_panel_kind(0);
+                app.set_panel_sub("".into());
+                app.set_panel_note("Opening\u{2026}".into());
+                app.set_panel_picture(Image::default());
+                app.set_panel_alpha(false);
+                app.set_panel_lines(empty_rows);
+                app.set_panel_max_cols(0);
+                app.set_panel_foot("".into());
+                reset_wrap_props(app);
             }
             Content::Text {
-                lines,
+                shown,
+                nums,
                 count,
                 cols,
                 foot,
                 bytes,
+                wrapped_cols,
+                ..
             } => {
                 app.set_panel_kind(2);
                 let n = if *count == 1 {
@@ -813,7 +1108,10 @@ impl PanelCtl {
                 );
                 app.set_panel_picture(Image::default());
                 app.set_panel_alpha(false);
-                app.set_panel_lines(lines.clone());
+                app.set_panel_lines(shown.clone());
+                app.set_panel_line_nums(nums.clone());
+                app.set_panel_wrapped(*wrapped_cols > 0);
+                app.set_panel_number_count(i32::try_from(*count).unwrap_or(i32::MAX));
                 app.set_panel_max_cols(i32::try_from(*cols).unwrap_or(i32::MAX));
                 app.set_panel_foot(foot.as_str().into());
             }
@@ -832,6 +1130,7 @@ impl PanelCtl {
         app.set_panel_lines(ModelRc::default());
         app.set_panel_max_cols(0);
         app.set_panel_foot("".into());
+        reset_wrap_props(app);
     }
 
     /// Reads the file on a worker thread; the answer is a `UiMsg::Panel`.
@@ -916,6 +1215,57 @@ impl PanelCtl {
             log::warn!("could not start the panel reader: {e}");
         }
     }
+}
+
+/// The lines as the window's model (the strings are shared, not copied).
+fn line_model(lines: &Arc<Vec<SharedString>>) -> ModelRc<SharedString> {
+    ModelRc::from(Rc::new(VecModel::from(lines.as_ref().clone())))
+}
+
+/// No line numbers of its own: the rows are the lines and the gutter counts them.
+fn no_nums() -> ModelRc<i32> {
+    ModelRc::from(Rc::new(VecModel::<i32>::default()))
+}
+
+/// A file too big to wrap where it arrives.
+fn is_big(lines: &[SharedString]) -> bool {
+    lines.iter().map(|l| l.len() + 1).sum::<usize>() > WRAP_INLINE_MAX
+}
+
+/// The window shows no wrapped text: its numbers and flags go back to the default.
+fn reset_wrap_props(app: &AppWindow) {
+    app.set_panel_line_nums(no_nums());
+    app.set_panel_wrapped(false);
+    app.set_panel_number_count(0);
+}
+
+/// The rows the lines wrap to at `cols`, and each row's line number (0 on a continuation). A line that fits is its
+/// own row (the string is shared, not copied). Stops early when `stale` says so; the caller then drops the result.
+pub(crate) fn wrap_lines(
+    lines: &[SharedString],
+    cols: usize,
+    stale: &dyn Fn() -> bool,
+) -> (Vec<SharedString>, Vec<i32>) {
+    let cols = cols.max(flare_surfaces::wrap::MIN_COLS);
+    let mut rows = Vec::with_capacity(lines.len());
+    let mut nums = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i % 4096 == 0 && stale() {
+            break;
+        }
+        let number = i32::try_from(i + 1).unwrap_or(i32::MAX);
+        let parts = flare_surfaces::wrap::wrap_line(line.as_str(), cols);
+        if parts.len() == 1 {
+            rows.push(line.clone());
+            nums.push(number);
+            continue;
+        }
+        for (k, part) in parts.into_iter().enumerate() {
+            rows.push(SharedString::from(part));
+            nums.push(if k == 0 { number } else { 0 });
+        }
+    }
+    (rows, nums)
 }
 
 enum Loaded {

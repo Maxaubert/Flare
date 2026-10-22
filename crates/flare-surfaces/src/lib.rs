@@ -23,6 +23,7 @@ pub mod preview;
 pub mod state;
 pub mod store;
 pub mod web;
+pub mod wrap;
 
 pub use kind::PanelKind;
 pub use state::{TabPanel, TabPanels};

@@ -1198,6 +1198,9 @@ impl AppCtl {
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
             .convo_toggle(key.as_str()));
+        bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_wrap_cols_changed, |c| c
+            .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
@@ -2876,6 +2879,8 @@ impl AppCtl {
     /// had them goes away.
     fn sync_panels(&mut self, app: &AppWindow) {
         let front = self.model.active_shell().map(|t| t.id.clone());
+        self.panels
+            .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
@@ -3379,6 +3384,26 @@ impl AppCtl {
             app.invoke_focus_panel();
         }
         true
+    }
+
+    /// How many wraps the panel made (the e2e probe and the tests read it).
+    pub(crate) fn panel_wrap_count(&self) -> u64 {
+        self.panels.wrap_count()
+    }
+
+    /// The header's wrap button: flips "Wrap long lines in previews" (the one setting the Settings page shows too).
+    fn panel_wrap_toggled(&mut self) {
+        let on = flare_settings::term_prefs::wrap_previews(&self.prefs);
+        flare_settings::term_prefs::set_wrap_previews(&self.prefs, !on);
+        self.refresh();
+    }
+
+    /// The text view holds a different number of columns now. A splitter drag changes it at every step, so nothing
+    /// happens until the release (`settle_wrap` checks); the release's refresh settles it.
+    fn panel_wrap_cols_changed(&mut self) {
+        if let Some(app) = self.app() {
+            self.panels.settle_wrap(&app);
+        }
     }
 
     /// Esc in the panel: the keys go back to the terminal.
@@ -6263,6 +6288,160 @@ two",
         assert_eq!(f.ctl.borrow().open_panels(), 1, "and the chord left it so");
     }
 
+    // ---- wrapping a text preview (2026-10-22) ----------------------------------------------------
+
+    fn long_body() -> String {
+        format!("short one\n{}\nshort two\n", "word ".repeat(100).trim_end())
+    }
+
+    fn nums_in_panel(f: &Fx) -> Vec<i32> {
+        use slint::Model;
+        f.h.comp.get_panel_line_nums().iter().collect()
+    }
+
+    #[test]
+    fn a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let wrapped = rows_in_panel(&f);
+        assert!(wrapped > 3, "the long line took several rows ({wrapped})");
+        assert!(f.h.comp.get_panel_wrapped());
+        assert!(f.h.comp.get_panel_wrap_on());
+        let nums = nums_in_panel(&f);
+        assert_eq!(nums.len(), wrapped);
+        assert_eq!(nums[0], 1);
+        assert_eq!(
+            *nums.last().unwrap(),
+            3,
+            "the last line keeps its own number"
+        );
+        assert_eq!(
+            nums.iter().filter(|n| **n > 0).count(),
+            3,
+            "three lines, three numbers"
+        );
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("3 lines"),
+            "the header counts lines, not rows"
+        );
+        // The button turns it off: the rows are the lines again, and the setting says so.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(!flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), 3);
+        assert!(!f.h.comp.get_panel_wrapped());
+        assert!(!f.h.comp.get_panel_wrap_on());
+        assert!(nums_in_panel(&f).is_empty());
+        // And on again.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), wrapped);
+        assert!(f.h.comp.get_panel_wrapped());
+    }
+
+    #[test]
+    fn with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 3, "three lines, three rows");
+        assert!(!f.h.comp.get_panel_wrapped());
+        // The Settings page writes the same key; the panel follows it.
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, true);
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(rows_in_panel(&f) > 3);
+    }
+
+    #[test]
+    fn a_splitter_drag_wraps_nothing_and_its_release_wraps_once() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let rows0 = rows_in_panel(&f);
+        let cols0 = f.h.comp.get_panel_wrap_cols();
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+        let y = f.h.comp.get_grid_top() + 200.0;
+        f.h.move_to(x, y);
+        f.h.press(x, y, slint::platform::PointerEventButton::Left);
+        // Many steps, narrower and wider: the width changes at every one, the rows do not.
+        for k in 1..=40 {
+            let dx = if k % 2 == 0 {
+                3.0 * k as f32
+            } else {
+                -2.0 * k as f32
+            };
+            f.h.move_to(x + dx, y);
+            f.h.advance(0);
+            f.pump();
+            assert_eq!(
+                f.ctl.borrow().panels.wrap_count(),
+                runs0,
+                "step {k}: a drag step wraps nothing"
+            );
+        }
+        // Settle on a clearly wider slot, then let go.
+        f.h.move_to(x - 200.0, y);
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_panel_wrap_cols() > cols0,
+            "the view holds more columns while dragged"
+        );
+        assert_eq!(
+            rows_in_panel(&f),
+            rows0,
+            "but the rows are still the old ones"
+        );
+        f.h.release(x - 200.0, y, slint::platform::PointerEventButton::Left);
+        f.pump();
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs0 + 1,
+            "the release wraps once"
+        );
+        assert!(
+            rows_in_panel(&f) < rows0,
+            "wider, fewer rows ({} against {rows0})",
+            rows_in_panel(&f)
+        );
+        // Nothing more happens by itself.
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.ctl.borrow().panels.wrap_count(), runs0 + 1);
+    }
+
+    #[test]
+    fn a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing() {
+        use crate::panel_ctl::{PanelMsg, PanelMsgBox};
+        let (f, _h, _) = live(Opts::default());
+        let body = format!("{}\n", "x".repeat(1500)).repeat(900);
+        show_text(&f, "big.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let rows = rows_in_panel(&f);
+        assert!(rows > 900, "{rows}");
+        // An answer for a wrap that is no longer the newest is dropped.
+        let id = f.ctl.borrow().front_id().unwrap();
+        let generation = f.ctl.borrow().panels.generation_for_test();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Wrapped {
+                generation,
+                tab: id,
+                seq: 0,
+                cols: 9,
+                rows: vec!["stale".into()],
+                nums: vec![1],
+            })));
+        assert_eq!(rows_in_panel(&f), rows);
+    }
+
     #[test]
     fn the_splitter_release_stores_the_share_for_that_tab_only() {
         let (f, _h, _) = live(Opts::default());
@@ -6302,7 +6481,7 @@ two",
         show_text(&f, "a.txt", "real");
         f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
         let stale = || crate::panel_ctl::TextRows {
-            rows: vec!["stale".into(), "stale".into()],
+            lines: Arc::new(vec!["stale".into(), "stale".into()]),
             cols: 5,
             bytes: 12,
             foot: String::new(),

@@ -7,7 +7,7 @@
 //! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
-//! of the 45 rows; within each section the order follows the tables.
+//! of the 46 rows; within each section the order follows the tables.
 
 /// What control a row draws. `Registry` is the Explorer verb (read back from Windows, M9);
 /// `Info` is a row that stores nothing (the version).
@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 17] = [
+pub const APP_OPTIONS: [RowDef; 18] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -582,6 +582,19 @@ pub const APP_OPTIONS: [RowDef; 17] = [
         only_nvidia: false,
     },
     RowDef {
+        id: "wrap-previews",
+        label: "Wrap long lines in previews",
+        sub: "Long lines continue on the next row.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "wrap long lines text file preview panel side horizontal scroll fit width",
+        keys: &["flare.window.wrapPreviews"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
         id: "agent-eval",
         label: "Let agents run scripts in pages",
         sub: "Agents may run code in their web panel.",
@@ -662,7 +675,7 @@ pub const APP_OPTIONS: [RowDef; 17] = [
 ];
 
 /// The 39 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 45] = [
+pub const ROW_ORDER: [&str; 46] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -677,6 +690,7 @@ pub const ROW_ORDER: [&str; 45] = [
     "agent-keys",
     "agent-guard",
     "open-previews",
+    "wrap-previews",
     "agent-eval",
     "app-network",
     "dev-preview",
@@ -770,16 +784,16 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_name_the_45_rows_in_row_order() {
+    fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 45);
+        assert_eq!(ids.len(), 46);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 45);
+        assert_eq!(distinct.len(), 46);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -900,6 +914,7 @@ mod tests {
                 "agent-keys=flare.window.agentKeys",
                 "agent-guard=flare.window.agentGuard",
                 "open-previews=flare.window.openPreviews",
+                "wrap-previews=flare.window.wrapPreviews",
                 "agent-eval=flare.web.agentEval",
                 "app-network=flare.web.appNetwork",
                 "dev-preview=flare.window.devPreview",
@@ -908,7 +923,7 @@ mod tests {
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 17);
+        assert_eq!(app.len(), 18);
     }
 
     #[test]

@@ -320,6 +320,20 @@ export component AppWindow inherits Window {
     out property <bool> panel-image-can-zoom: panel-slot.image-can-zoom;
     out property <length> panel-gutter-w: panel-slot.text-gutter-w;
     out property <int> panel-first-line: panel-slot.text-first-line;
+    // Wrapping a text preview (2026-10-22): the columns that fit (the controller wraps to them once the width settles),
+    // the rows' line numbers (0 on a continuation row), whether the rows are wrapped now, the setting, and the file's
+    // line count for the gutter's width.
+    out property <int> panel-wrap-cols: panel-slot.text-wrap-cols;
+    in property <[int]> panel-line-nums;
+    in property <bool> panel-wrapped;
+    in property <bool> panel-wrap-on: true;
+    in property <int> panel-number-count;
+    out property <length> panel-wrap-button-x: panel-slot.wrap-button-x;
+    out property <length> panel-wrap-button-y: panel-slot.wrap-button-y;
+    out property <length> panel-wrap-button-w: panel-slot.wrap-button-w;
+    callback panel-wrap-toggled();
+    callback panel-wrap-cols-changed();
+    changed panel-wrap-cols => { root.panel-wrap-cols-changed(); }
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }
@@ -878,6 +892,11 @@ export component AppWindow inherits Window {
                         lines: root.panel-lines;
                         max-cols: root.panel-max-cols;
                         foot: root.panel-foot;
+                        line-nums: root.panel-line-nums;
+                        wrapped: root.panel-wrapped;
+                        wrap-on: root.panel-wrap-on;
+                        number-count: root.panel-number-count;
+                        wrap-toggled => { root.panel-wrap-toggled(); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;

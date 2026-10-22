@@ -13,7 +13,7 @@ use crate::help_prefs::help_enabled;
 use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use crate::rows::{RowDef, row};
 use crate::term_prefs::{
-    agent_eval, agent_keys, app_network, dev_preview, open_previews, saved_shell_id,
+    agent_eval, agent_keys, app_network, dev_preview, open_previews, saved_shell_id, wrap_previews,
 };
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
@@ -152,6 +152,7 @@ fn links_section(env: &PageEnv<'_>) -> SectionModel {
         "links",
         vec![
             BlockModel::Row(switch_row(def("open-previews"), open_previews(env.prefs))),
+            BlockModel::Row(switch_row(def("wrap-previews"), wrap_previews(env.prefs))),
             BlockModel::Row(switch_row(def("agent-eval"), agent_eval(env.prefs))),
             BlockModel::Row(switch_row(def("app-network"), app_network(env.prefs))),
             BlockModel::Row(switch_row(def("dev-preview"), dev_preview(env.prefs))),
@@ -353,6 +354,7 @@ mod tests {
                 "agent-keys",
                 "agent-guard",
                 "open-previews",
+                "wrap-previews",
                 "agent-eval",
                 "app-network",
                 "dev-preview",
@@ -378,6 +380,23 @@ mod tests {
         let page = build_terminal(&env(&prefs, &look, face));
         assert_eq!(
             the_row(&page, "open-previews").control,
+            Control::Switch { on: false }
+        );
+    }
+
+    #[test]
+    fn the_wrap_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        let row = the_row(&page, "wrap-previews");
+        assert_eq!(row.control, Control::Switch { on: true });
+        assert_eq!(row.label, "Wrap long lines in previews");
+        crate::term_prefs::set_wrap_previews(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "wrap-previews").control,
             Control::Switch { on: false }
         );
     }

@@ -491,7 +491,7 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             k,
         )),
         "scrollbar" => Err("ui.rect scrollbar: the shell has no history to scroll".into()),
-        "panel" | "splitter" | "panel-body" | "panel-image" | "panel-close" => {
+        "panel" | "splitter" | "panel-body" | "panel-image" | "panel-close" | "panel-wrap" => {
             super::panel::rects(ctx, name)
         }
         // A row of the Changes file list (Surfaces stage 6).
