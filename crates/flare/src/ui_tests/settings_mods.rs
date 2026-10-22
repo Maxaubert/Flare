@@ -29,6 +29,8 @@ struct FakePort {
     info: RefCell<ModsInfo>,
     asked: Cell<u32>,
     switched: RefCell<Vec<(String, bool)>>,
+    /// The permission words each switch carried (what the row listed).
+    switched_with: RefCell<Vec<Vec<String>>>,
     shown: RefCell<Vec<String>>,
 }
 
@@ -39,7 +41,8 @@ impl ModsPort for FakePort {
     fn page_shown(&self) {
         self.asked.set(self.asked.get() + 1);
     }
-    fn set_enabled(&self, id: &str, on: bool) {
+    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>) {
+        self.switched_with.borrow_mut().push(shown);
         self.switched.borrow_mut().push((id.to_string(), on));
     }
     fn show_panel(&self, id: &str) {
@@ -257,6 +260,9 @@ fn the_switch_reaches_the_mods_port_and_the_page_draws_what_the_port_then_says()
             f.port.switched.borrow().as_slice(),
             [("notes".to_string(), true)]
         );
+        // The click carries the permission words the row listed, so only that list is approved.
+        let listed = f.port.info.borrow().mods[0].permissions.clone();
+        assert_eq!(f.port.switched_with.borrow().as_slice(), [listed]);
         // The port answers in the window; the page then draws the new state.
         *f.port.info.borrow_mut() = info(vec![notes(true)]);
         f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);

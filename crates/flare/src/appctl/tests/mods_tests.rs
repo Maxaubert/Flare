@@ -127,7 +127,14 @@ fn mods_msg(f: &Fx, m: ModsMsg) {
 }
 
 fn turn(f: &Fx, id: &str, on: bool) {
-    mods_msg(f, ModsMsg::SetEnabled { id: id.into(), on });
+    mods_msg(
+        f,
+        ModsMsg::SetEnabled {
+            id: id.into(),
+            on,
+            shown: None,
+        },
+    );
 }
 
 fn agent_in(tab: &str) -> CallContext {
@@ -202,8 +209,20 @@ fn posts(slot: &Slot, tab: &str) -> Vec<Value> {
 }
 
 fn page_says(slot: &Slot, tab: &str, text: &str) {
+    // The page speaks from the host of the view the tab was last opened on.
+    let host = open_mod_calls(slot)
+        .into_iter()
+        .rev()
+        .find(|(t, _)| t == tab)
+        .map(|(_, app)| app.host)
+        .expect("a mod page open on the tab");
+    page_says_from(slot, tab, &host, text);
+}
+
+fn page_says_from(slot: &Slot, tab: &str, host: &str, text: &str) {
     fake(slot).say(WebEvent::ModMessage {
         tab: tab.into(),
+        host: host.into(),
         json: text.into(),
     });
 }
@@ -680,9 +699,10 @@ fn a_mod_cannot_answer_a_call_that_was_routed_to_another() {
         .as_mut()
         .unwrap()
         .bind("beta-tab", "beta");
-    page_says(
+    page_says_from(
         &slot,
         "beta-tab",
+        &modview::mod_host("beta"),
         &json!({"t":"respond","call_id":id,"result":"stolen"}).to_string(),
     );
     f.pump();
@@ -690,6 +710,50 @@ fn a_mod_cannot_answer_a_call_that_was_routed_to_another() {
         rx.try_recv().is_err(),
         "the call is still waiting for alpha"
     );
+    page_says(
+        &slot,
+        &tab,
+        &json!({"t":"respond","call_id":id,"result":"mine"}).to_string(),
+    );
+    assert_eq!(answer_of(&f, &rx).unwrap(), json!({"result": "mine"}));
+}
+
+#[test]
+fn a_message_from_the_page_the_tab_left_is_not_run_with_the_mod_it_shows_now() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        mod_with(r, "alpha", &["panel", "tools"]);
+        mod_with(r, "beta", &["panel", "tools"]);
+    });
+    turn(&f, "alpha", true);
+    turn(&f, "beta", true);
+    let tab = f.ctl.borrow().front_id().unwrap();
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_beta_ping", "input": {}}),
+    );
+    f.pump_until("beta's panel", |f| {
+        f.ctl.borrow().panels.mod_of(&tab) == Some("beta")
+    });
+    finish_page(&fake(&slot), &tab, "https://flare-mod-beta.local/");
+    f.pump_until("the tool event", |_| !posts(&slot, &tab).is_empty());
+    let id = posts(&slot, &tab)[0]["callId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(id, "c1", "a call id is not a counter");
+    // A message alpha's page queued before the tab moved on to beta arrives now: it answers nothing.
+    page_says_from(
+        &slot,
+        &tab,
+        &modview::mod_host("alpha"),
+        &json!({"t":"respond","call_id":id,"result":"stolen"}).to_string(),
+    );
+    f.pump();
+    assert!(rx.try_recv().is_err(), "the call still waits for beta");
     page_says(
         &slot,
         &tab,

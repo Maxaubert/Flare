@@ -119,7 +119,6 @@ struct Inner {
     too_long: Vec<TooLong>,
     read_only: bool,
     pending: HashMap<String, Pending>,
-    seq: u64,
 }
 
 pub struct Hub {
@@ -302,9 +301,41 @@ impl Hub {
     /// Switches a mod on or off in memory, at once. On: needs a mod found by the last scan. Off: always allowed.
     /// The caller writes the file with [`Hub::persist`] on a worker.
     pub fn set_enabled(&self, id: &str, on: bool) -> Result<Change, String> {
+        self.set_enabled_shown(id, on, None)
+    }
+
+    /// As [`Hub::set_enabled`], for a switch the person clicked on a row of Settings. `shown` is the permission
+    /// words that row listed: turning a mod on approves THAT list, so when the manifest found now asks for anything
+    /// else (an edit picked up between the row being drawn and the click) nothing changes and the person is told
+    /// to look again.
+    pub fn set_enabled_shown(
+        &self,
+        id: &str,
+        on: bool,
+        shown: Option<&[String]>,
+    ) -> Result<Change, String> {
         let mut g = self.lock();
         if on && !g.found.iter().any(|f| f.manifest.id == id) {
             return Err(format!("there is no valid mod \"{id}\" to turn on"));
+        }
+        if on && let Some(shown) = shown {
+            let now: Vec<String> = g
+                .found
+                .iter()
+                .find(|f| f.manifest.id == id)
+                .map(|f| {
+                    f.manifest
+                        .permissions
+                        .iter()
+                        .map(|p| permission_words(*p).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if now != shown {
+                return Err(format!(
+                    "the mod \"{id}\" changed what it asks for while you were looking; read the list again before turning it on"
+                ));
+            }
         }
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
         g.needs.remove(id);
@@ -462,8 +493,14 @@ impl Hub {
                 format!("the mod {} has too many calls waiting", route.mod_id),
             ));
         }
-        g.seq += 1;
-        let id = format!("c{}", g.seq);
+        // A call id is 128 random bits: a page cannot guess the id of a call it was not handed.
+        let id = format!(
+            "c{}",
+            crate::tokens::new_token()
+                .map_err(|e| CtlError::new(code::INTERNAL, format!("no call id: {e}")))?
+                .get(..32)
+                .unwrap_or_default()
+        );
         let (tx, rx) = mpsc::channel();
         g.pending.insert(
             id.clone(),
@@ -888,6 +925,54 @@ mod tests {
         assert!(c.revoked.is_empty());
         assert!(w.hub.is_enabled("notes"));
         assert_eq!(w.hub.tools().len(), 2);
+    }
+
+    #[test]
+    fn a_switch_approves_the_list_the_row_showed_and_nothing_else() {
+        let w = notes_world();
+        w.hub.scan();
+        let shown: Vec<String> = w.hub.snapshot().mods[0]
+            .permissions
+            .iter()
+            .map(|p| permission_words(*p).to_string())
+            .collect();
+        // The manifest asks for something else by the time the click is handled: nothing is approved.
+        let mut stale = shown.clone();
+        stale.pop();
+        assert!(
+            w.hub
+                .set_enabled_shown("notes", true, Some(&stale))
+                .is_err()
+        );
+        assert!(!w.hub.is_enabled("notes"));
+        assert!(w.hub.grant_of_mod("notes").is_none());
+        // The list that was shown, as it still stands, is approved.
+        w.hub
+            .set_enabled_shown("notes", true, Some(&shown))
+            .unwrap();
+        assert!(w.hub.is_enabled("notes"));
+        // Turning off never needs the list.
+        w.hub.set_enabled_shown("notes", false, Some(&[])).unwrap();
+        assert!(!w.hub.is_enabled("notes"));
+    }
+
+    #[test]
+    fn call_ids_are_long_and_never_repeat() {
+        let w = notes_world();
+        w.hub.scan();
+        w.hub.set_enabled("notes", true).unwrap();
+        let a = w
+            .hub
+            .begin_call("mod_notes_append_note", json!({}))
+            .unwrap();
+        let b = w
+            .hub
+            .begin_call("mod_notes_append_note", json!({}))
+            .unwrap();
+        assert_ne!(a.id, b.id);
+        assert_ne!(a.id, "c1");
+        assert_eq!(a.id.len(), 33, "c plus 128 bits in hex");
+        assert!(a.id[1..].chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

@@ -45,7 +45,7 @@ ignored. Every refusal is one sentence that names the field; Settings > Mods sho
 
 | Name | What it allows the mod | Notes |
 |---|---|---|
-| `panel` | Show its panel in a tab, and list every tab (id and title). | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, `tasks`, `board`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
+| `panel` | Show its panel in a tab. | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, `tasks`, `board`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
 | `view` | Show content through `view.*` (image, file, text, html) in its own panel or the user's. | Same checks as the agent (rule 13, 14). `view.html` with `allow_network: true` is `forbidden` for a mod: the user's mini-app network switch is consent for the AGENT's pages, never a mod's. |
 | `browser` | Drive the mod's own browser panel through `browser.*` (open, navigate, look, click, type, press, scroll, wait). | Never the user's Edge profile (S4), and never the shared web profile of the user's tabs. Its own profile (see "Which tab a mod acts on"). **v1 limit:** a mod that holds `browser` passes the grant, and the call is then answered `unavailable` ("a mod's own browser panel is not built yet"): the panel slot of a tab holds one panel, which for a mod is its page. A mod without `browser` is refused every `browser.*` method with `forbidden`, before anything runs. |
 | `convo` | Read `convo.state` (the session's tasks and changes). | |
@@ -200,7 +200,7 @@ No mod call names a tab, so there is no tab argument to aim at another one.
 - A mod that is not shown in any tab has no bound tab: its `view.*` calls and its tool calls need one. A tool
   call opens the mod's panel in the CALLER's tab (a tab behind gets its page made hidden), so a call never fails
   because the panel was closed; it fails with `unavailable` when the page cannot be made (no WebView2 runtime).
-- `tabs.list` for a mod follows protocol.md: every tab (id and title) when the mod holds `panel`, else its own.
+- `tabs.list` for a mod gives its own tab only (id and title), as for the agent. Listing every tab would show titles (folders, commands, task names) that "Show its panel in a tab" never said (2026-10-22 review).
   Nothing in it reads page content.
 
 Why: the agent's rule is "its own tab" (decisions.md, stage 2). A mod is not the agent, but the same rule

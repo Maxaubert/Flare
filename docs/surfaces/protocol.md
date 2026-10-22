@@ -252,7 +252,7 @@ mod token, unknown tab token; closes), `already_hello`.
 
 Params: none. Result: `{"tabs": [{"id": string, "title": string, "active": bool}]}`. Ids and titles
 only: never screen content (S3). The agent grant gets **its own tab only** (an empty list when the
-connection has no tab); a mod gets every tab when it holds `panel`, else its own. `title` is the label the
+connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel` permission no longer widens it). `title` is the label the
 tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open

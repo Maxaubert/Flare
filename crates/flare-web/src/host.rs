@@ -1157,6 +1157,7 @@ impl WebHost {
                 {
                     sink(WebEvent::ModMessage {
                         tab: tab_name.clone(),
+                        host: host.clone(),
                         json: text,
                     });
                 }

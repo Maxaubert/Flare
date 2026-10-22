@@ -51,7 +51,12 @@ pub enum ModsMsg {
     /// Settings: scan again (the Mods page opened).
     Rescan,
     /// Settings: the switch of a mod.
-    SetEnabled { id: String, on: bool },
+    SetEnabled {
+        id: String,
+        on: bool,
+        /// The permission words the Settings row listed; None for a switch that did not come from a row (the tests).
+        shown: Option<Vec<String>>,
+    },
     /// Settings: show the mod's panel in the most recent shell tab.
     ShowPanel { id: String },
 }
@@ -480,10 +485,11 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
         (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::Rescan)));
     }
 
-    fn set_enabled(&self, id: &str, on: bool) {
+    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>) {
         (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::SetEnabled {
             id: id.to_string(),
             on,
+            shown: Some(shown),
         })));
     }
 

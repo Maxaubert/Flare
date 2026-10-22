@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, Permission, code};
+use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, code};
 use flare_mods::Hub;
 use flare_surfaces::PanelKind;
 use flare_surfaces::agent_job::{Op as AgentOp, Target};
@@ -944,17 +944,11 @@ impl Dispatcher for AppDispatcher {
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
         match method {
             Method::TabsList => {
-                // The agent sees its own tab only; a mod that may drive panels sees every tab's id
-                // and title (never a screen: S3).
-                let all = matches!(&ctx.grant, Grant::Mod { permissions, .. }
-                    if permissions.contains(&Permission::Panel));
-                let own = if all {
-                    None
-                } else {
-                    match &ctx.tab {
-                        Some(t) => Some(t.clone()),
-                        None => return Ok(json!({"tabs": []})),
-                    }
+                // The agent and a mod see their own tab only (id and title, never a screen: S3). Tab titles carry
+                // folders, commands and task names, which a mod's "show its panel" approval never covered.
+                let own = match &ctx.tab {
+                    Some(t) => Some(t.clone()),
+                    None => return Ok(json!({"tabs": []})),
                 };
                 self.ask(CtlOp::Tabs { own })
             }
@@ -1201,6 +1195,7 @@ impl CtlServer {
 mod tests {
     use super::*;
     use flare_ctl::Grant;
+    use flare_ctl::Permission;
     use std::sync::Mutex;
 
     /// A dispatcher whose UI thread is a closure: it answers each op at once on the call's own thread
@@ -1779,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mod_that_may_drive_panels_sees_every_tab_and_one_that_may_not_sees_its_own() {
+    fn a_mod_sees_its_own_tab_only_whatever_it_may_do() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let r = rig(
@@ -1807,8 +1802,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             *seen.lock().unwrap(),
-            [None, Some("tab-1".to_string())],
-            "panel permission sees all, view alone sees its own"
+            [Some("tab-1".to_string()), Some("tab-1".to_string())],
+            "the panel permission does not widen the list"
         );
     }
 

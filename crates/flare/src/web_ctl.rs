@@ -131,7 +131,12 @@ pub enum WebOut {
         host: String,
     },
     /// A mod's page sent a message over its bridge (stage 8).
-    ModMessage { tab: String, json: String },
+    ModMessage {
+        tab: String,
+        /// The mod whose page sent it (named by the host of the view that received it).
+        mod_id: String,
+        json: String,
+    },
     /// A mod's page began loading (`ready` false) or finished loading well (true): it can be spoken to only
     /// while it is ready.
     ModPage { tab: String, ready: bool },
@@ -1720,10 +1725,20 @@ impl WebCtl {
                     self.on_cdp(&tab, id, result);
                 }
             }
-            WebEvent::ModMessage { tab, json } => {
-                // Only a mod's page has a bridge; a message from any other view is dropped.
-                if self.is_mod_tab(&tab) {
-                    out.push(WebOut::ModMessage { tab, json });
+            WebEvent::ModMessage { tab, host, json } => {
+                // Only a mod's page has a bridge; a message from any other view is dropped, and so is one from
+                // a page the tab no longer shows (it was queued before the tab moved to another mod).
+                let live = self
+                    .tabs
+                    .get(&tab)
+                    .and_then(|t| t.app_host.as_deref())
+                    .is_some_and(|h| h == host);
+                if live && let Some(mod_id) = flare_surfaces::modview::mod_of_host(&host) {
+                    out.push(WebOut::ModMessage {
+                        tab,
+                        mod_id: mod_id.to_string(),
+                        json,
+                    });
                 }
             }
         }

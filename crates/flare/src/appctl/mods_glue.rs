@@ -112,11 +112,11 @@ impl AppCtl {
                     c.start_scan();
                 }
             }
-            ModsMsg::SetEnabled { id, on } => {
+            ModsMsg::SetEnabled { id, on, shown } => {
                 let applied = self
                     .mods
                     .as_ref()
-                    .map(|c| (c.hub().set_enabled(&id, on), c));
+                    .map(|c| (c.hub().set_enabled_shown(&id, on, shown.as_deref()), c));
                 match applied {
                     Some((Ok(change), c)) => {
                         c.persist(&id);
@@ -180,8 +180,16 @@ impl AppCtl {
     /// What the browser told the window about a mod's page.
     pub(super) fn on_mod_web(&mut self, out: WebOut) {
         match out {
-            WebOut::ModMessage { tab, json } => {
+            WebOut::ModMessage { tab, mod_id, json } => {
+                // The message counts only for the mod the tab's panel shows now: a message the page of another
+                // mod queued before the panel switched is dropped, never run with this mod's grant.
+                if self.panels.mod_of(&tab) != Some(mod_id.as_str()) {
+                    return;
+                }
                 self.bind_mod_tab(&tab);
+                if self.mods.as_ref().and_then(|m| m.mod_of(&tab)) != Some(mod_id.as_str()) {
+                    return;
+                }
                 let reply = self
                     .mods
                     .as_mut()

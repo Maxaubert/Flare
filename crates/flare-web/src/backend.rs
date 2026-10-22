@@ -147,6 +147,9 @@ pub enum WebEvent {
     /// the mod's own address only; it is untrusted until `flare_mods::bridge::parse_page_message` has read it.
     ModMessage {
         tab: String,
+        /// The host of the view that received it (the mod's own, which names the mod): a message that arrives
+        /// after the tab moved on to another mod's page is told apart by it.
+        host: String,
         json: String,
     },
 }
