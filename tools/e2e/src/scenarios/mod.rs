@@ -518,6 +518,12 @@ pub const ALL: &[Scenario] = &[
         run: settings_live::settings_live,
         limit_secs: 180,
     },
+    Scenario {
+        name: "verticalStart",
+        group: "settings_d",
+        run: settings_live::vertical_start,
+        limit_secs: 120,
+    },
 ];
 
 /// Scenarios that are NOT part of the gate: a plain run never picks them, a filter that names one does.
