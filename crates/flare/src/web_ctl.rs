@@ -34,6 +34,7 @@ use flare_ctl::{CtlError, code};
 use flare_surfaces::agent_job::{
     Fail, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
 };
+use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{
     self, Act, CAPTURE_TIMEOUT_MS, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label,
     normalize_url, phys_rect, step, url_matches, web_show,
@@ -141,6 +142,19 @@ struct Pending {
     /// the call was made (a redirect rebinds it). A load that finishes before any has begun, or one
     /// that is not this one, is not the answer.
     nav: Option<u64>,
+    /// A diagram: once the page has loaded, the page is asked whether the drawing worked, and the call
+    /// is answered with that.
+    diagram: bool,
+}
+
+/// A diagram page that has loaded: its tab, the call waiting and what the load said.
+type DiagramAsk = (String, Sender<Result<Value, CtlError>>, Settled);
+
+/// The question put to a diagram page after it loaded (`app::diagram_result` reads the answer).
+struct Probe {
+    id: u64,
+    reply: Sender<Result<Value, CtlError>>,
+    settled: Settled,
 }
 
 /// An agent call in flight on a tab's page.
@@ -267,6 +281,11 @@ struct TabWeb {
     refs: RefMap,
     /// The ribbon's words and the moment it goes, after a call that has ended.
     hold: Option<(String, u64)>,
+    /// The host of the mini-app this view shows (None for a plain web page): a view is closed and made
+    /// again when the panel's app is not the one it was made for.
+    app_host: Option<String>,
+    /// A diagram's "did it draw" question, while it is out.
+    probe: Option<Probe>,
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -539,6 +558,11 @@ impl WebCtl {
         crate::timer_registry::clear(CAPTURE_TIMER);
         crate::timer_registry::clear(AGENT_TIMER);
         for (_, t) in self.tabs.drain() {
+            if let Some(p) = t.probe {
+                let _ = p
+                    .reply
+                    .send(Err(CtlError::new(code::UNAVAILABLE, "Flare is closing")));
+            }
             if let Some(p) = t.pending {
                 let _ = p
                     .reply
@@ -602,6 +626,17 @@ impl WebCtl {
         for t in stale {
             self.close_tab(&t);
         }
+        // A tab whose panel now shows a different mini-app (or a page where an app was, or the other way
+        // round) has a view made for the wrong thing: its page is replaced in the same browser.
+        let replaced: Vec<(String, String)> = self
+            .tabs
+            .iter()
+            .filter(|(t, w)| w.app_host.as_deref() != panels.app_spec(t).map(|a| a.host.as_str()))
+            .filter_map(|(t, _)| panels.web_target(t).map(|u| (t.clone(), u)))
+            .collect();
+        for (t, url) in replaced {
+            self.replace_tab(&t, &url, panels.app_spec(&t).cloned());
+        }
         let front_web = front.filter(|t| panels.web_target(t).is_some());
         if front_web.is_some() && app.get_panel_kind() != 3 {
             // The bar is part of the head of a web panel: the page's rectangle is known only once it is.
@@ -623,7 +658,7 @@ impl WebCtl {
             && !self.tabs.contains_key(tab)
             && let Some(url) = panels.web_target(tab)
         {
-            self.open_tab(tab, &url, rect, false);
+            self.open_tab(tab, &url, rect, false, panels.app_spec(tab).cloned());
         }
 
         // Which tab's window is on the screen.
@@ -667,7 +702,14 @@ impl WebCtl {
         self.push(app, panels, front_web);
     }
 
-    fn open_tab(&mut self, tab: &str, url: &str, rect: PhysRect, visible: bool) {
+    fn open_tab(
+        &mut self,
+        tab: &str,
+        url: &str,
+        rect: PhysRect,
+        visible: bool,
+        app: Option<AppSpec>,
+    ) {
         if self.closed {
             return;
         }
@@ -675,11 +717,15 @@ impl WebCtl {
             tab.to_string(),
             TabWeb {
                 url: url.to_string(),
+                app_host: app.as_ref().map(|a| a.host.clone()),
                 ..TabWeb::default()
             },
         );
         match self.backend() {
-            Some(b) => b.open(tab, url, rect, visible),
+            Some(b) => match app {
+                Some(a) => b.open_app(tab, a, rect, visible),
+                None => b.open(tab, url, rect, visible),
+            },
             None => {
                 if let Some(t) = self.tabs.get_mut(tab) {
                     t.failed = Some(("this build has no web view".to_string(), false));
@@ -742,6 +788,7 @@ impl WebCtl {
                 app.set_panel_title("".into());
                 app.set_panel_note("".into());
             }
+            app.set_panel_web_app(false);
             app.set_panel_web_url("".into());
             app.set_panel_web_loading(false);
             app.set_panel_web_can_back(false);
@@ -759,11 +806,16 @@ impl WebCtl {
                 t.url.as_str()
             }
         });
-        let title = t
-            .map(|t| t.title.as_str())
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| host_label(url), str::to_string);
+        // A mini-app is named by the agent's title (its page's own is not the panel's name).
+        let title = if panels.is_app(tab) {
+            panels.snap(tab).map(|s| s.title).unwrap_or_default()
+        } else {
+            t.map(|t| t.title.as_str())
+                .filter(|s| !s.is_empty())
+                .map_or_else(|| host_label(url), str::to_string)
+        };
         app.set_panel_kind(3);
+        app.set_panel_web_app(panels.is_app(tab));
         app.set_panel_title(title.into());
         app.set_panel_sub(t.map_or("", |t| t.notice.as_str()).into());
         let (note, missing) = match t.and_then(|t| t.failed.as_ref()) {
@@ -780,6 +832,64 @@ impl WebCtl {
         app.set_panel_web_ribbon(self.ribbon_text(tab).into());
     }
 
+    /// Forgets what is known of the tab's page and answers every call that waited on it. True when the
+    /// tab had a page (its browser view is the caller's to close).
+    fn forget_tab(&mut self, tab: &str) -> bool {
+        let Some(t) = self.tabs.remove(tab) else {
+            return false;
+        };
+        if let Some(p) = t.probe {
+            let _ = p.reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the panel was closed before the diagram was drawn",
+            )));
+        }
+        if let Some(p) = t.pending {
+            let _ = p.reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the page was closed before it finished loading",
+            )));
+        }
+        if let Some(a) = t.agent {
+            let _ = a.reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the page was closed while the call was running",
+            )));
+        }
+        self.refresh_key_flags();
+        true
+    }
+
+    /// The tab's panel now shows something of another kind (a mini-app where a page was, another
+    /// mini-app, a page where an app was): its page is replaced in the same browser. The browser view is
+    /// not closed here (the host swaps it itself and keeps its environment, so a mini-app updated again
+    /// and again does not restart the browser), but everything known of the old page goes and the
+    /// window's phase starts again for the new one.
+    fn replace_tab(&mut self, tab: &str, url: &str, app: Option<AppSpec>) {
+        if self.shown_tab.as_deref() == Some(tab) && self.has_focus {
+            let hwnd = self.hwnd;
+            self.release_focus(hwnd);
+            self.hide(tab);
+        }
+        self.forget_tab(tab);
+        if self.shown_tab.as_deref() == Some(tab) {
+            self.shown_tab = None;
+            self.phase = Phase::Hidden;
+            self.still = None;
+            crate::timer_registry::clear(CAPTURE_TIMER);
+        }
+        let rect = self.bounds.as_ref().map_or(
+            PhysRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            |(_, r)| *r,
+        );
+        self.open_tab(tab, url, rect, false, app);
+    }
+
     /// Frees the tab's browser.
     pub fn close_tab(&mut self, tab: &str) {
         // The page that has the keyboard is closed under it: Windows would leave the focus nowhere
@@ -790,23 +900,10 @@ impl WebCtl {
             self.release_focus(hwnd);
             self.hide(tab);
         }
-        if let Some(t) = self.tabs.remove(tab) {
-            if let Some(p) = t.pending {
-                let _ = p.reply.send(Err(CtlError::new(
-                    code::UNAVAILABLE,
-                    "the page was closed before it finished loading",
-                )));
-            }
-            if let Some(a) = t.agent {
-                let _ = a.reply.send(Err(CtlError::new(
-                    code::UNAVAILABLE,
-                    "the page was closed while the call was running",
-                )));
-            }
-            self.refresh_key_flags();
-            if let Some(b) = self.backend.as_mut() {
-                b.close(tab);
-            }
+        if self.forget_tab(tab)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.close(tab);
         }
         if self.shown_tab.as_deref() == Some(tab) {
             self.shown_tab = None;
@@ -874,6 +971,19 @@ impl WebCtl {
         deadline: Instant,
         url: &str,
     ) {
+        self.wait_for_load_then(tab, reply, deadline, url, false);
+    }
+
+    /// [`WebCtl::wait_for_load`], and for a `diagram` the answer is the page's own word on whether the
+    /// drawing worked (its error text when it did not), asked once the page has loaded.
+    pub fn wait_for_load_then(
+        &mut self,
+        tab: &str,
+        reply: Sender<Result<Value, CtlError>>,
+        deadline: Instant,
+        url: &str,
+        diagram: bool,
+    ) {
         let Some(t) = self.tabs.get_mut(tab) else {
             let _ = reply.send(Err(CtlError::new(
                 code::UNAVAILABLE,
@@ -886,6 +996,7 @@ impl WebCtl {
             deadline,
             url: url.to_string(),
             nav: None,
+            diagram,
         };
         if let Some(old) = t.pending.replace(pending) {
             let _ = old.reply.send(Err(CtlError::new(
@@ -904,7 +1015,7 @@ impl WebCtl {
     /// Makes the browser of a tab that is behind, hidden, because an agent call needs its page (only the
     /// front tab gets one otherwise). It takes the place of the last page shown, and is put right when its
     /// tab comes to the front.
-    pub fn ensure_hidden(&mut self, tab: &str, url: &str) {
+    pub fn ensure_hidden(&mut self, tab: &str, url: &str, app: Option<AppSpec>) {
         if self.closed || self.tabs.contains_key(tab) {
             return;
         }
@@ -917,7 +1028,7 @@ impl WebCtl {
             },
             |(_, r)| *r,
         );
-        self.open_tab(tab, url, rect, false);
+        self.open_tab(tab, url, rect, false, app);
     }
 
     pub fn failure(&self, tab: &str) -> Option<(String, bool)> {
@@ -1290,6 +1401,8 @@ impl WebCtl {
 
     fn on_event(&mut self, app: &AppWindow, e: WebEvent) -> Vec<WebOut> {
         let mut out = Vec::new();
+        // Set when a diagram page has loaded: the question to put to it once the borrow of the tab ends.
+        let mut diagram_ask: Option<DiagramAsk> = None;
         match e {
             WebEvent::Pump => {
                 if let Some(b) = self.backend.as_mut() {
@@ -1315,6 +1428,7 @@ impl WebCtl {
             } => {
                 self.fail_view(&tab);
                 self.end_agent(&tab, "the web view could not be made");
+                self.end_probe(&tab, "the web view could not be made");
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why.clone(), missing_runtime));
                     if let Some(p) = t.pending.take() {
@@ -1335,6 +1449,13 @@ impl WebCtl {
             WebEvent::Loading { tab, url, nav } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.loading = true;
+                    // The page moved on while a diagram's question was out.
+                    if let Some(p) = t.probe.take() {
+                        let _ = p.reply.send(Err(CtlError::new(
+                            code::UNAVAILABLE,
+                            "the page changed before the diagram was drawn",
+                        )));
+                    }
                     // A new page: the names of the last look point at nothing now.
                     t.refs = RefMap::default();
                     t.doc += 1;
@@ -1379,11 +1500,25 @@ impl WebCtl {
                         let p = t.pending.take().expect("checked just above");
                         // A call whose caller has given up (past its deadline) is let go.
                         if Instant::now() <= p.deadline {
-                            out.push(WebOut::Settle {
-                                reply: p.reply,
-                                tab: tab.clone(),
-                                result: Ok(settled),
-                            });
+                            if p.diagram && ok {
+                                // Loaded is not drawn: the page is asked, and its answer is the call's.
+                                diagram_ask = Some((tab.clone(), p.reply, settled));
+                            } else if p.diagram {
+                                out.push(WebOut::Settle {
+                                    reply: p.reply,
+                                    tab: tab.clone(),
+                                    result: Err(CtlError::new(
+                                        code::UNAVAILABLE,
+                                        "the diagram page could not be loaded",
+                                    )),
+                                });
+                            } else {
+                                out.push(WebOut::Settle {
+                                    reply: p.reply,
+                                    tab: tab.clone(),
+                                    result: Ok(settled),
+                                });
+                            }
                         }
                     }
                     if ok && !t.url.is_empty() {
@@ -1524,6 +1659,7 @@ impl WebCtl {
             WebEvent::Gone { tab, why } => {
                 self.fail_view(&tab);
                 self.end_agent(&tab, "the page's process ended");
+                self.end_probe(&tab, "the page's process ended");
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why, false));
                     t.loading = false;
@@ -1533,9 +1669,84 @@ impl WebCtl {
             WebEvent::Script { id, result } => {
                 self.scripts.insert(id, result);
             }
-            WebEvent::Cdp { tab, id, result } => self.on_cdp(&tab, id, result),
+            WebEvent::Cdp { tab, id, result } => {
+                if let Some(o) = self.diagram_answer(&tab, id, &result) {
+                    out.push(o);
+                } else {
+                    self.on_cdp(&tab, id, result);
+                }
+            }
+        }
+        if let Some((tab, reply, settled)) = diagram_ask {
+            self.ask_diagram(&tab, reply, settled);
         }
         out
+    }
+
+    /// Asks a diagram page whether it drew (its `window.__flareDiagram` promise). The answer is read
+    /// by [`WebCtl::diagram_answer`].
+    fn ask_diagram(&mut self, tab: &str, reply: Sender<Result<Value, CtlError>>, settled: Settled) {
+        self.call_ids += 1;
+        let id = self.call_ids;
+        let params = serde_json::json!({
+            "expression": "window.__flareDiagram",
+            "awaitPromise": true,
+            "returnByValue": true,
+        })
+        .to_string();
+        let Some(t) = self.tabs.get_mut(tab) else {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the panel was closed before the diagram was drawn",
+            )));
+            return;
+        };
+        t.probe = Some(Probe { id, reply, settled });
+        match self.backend.as_mut() {
+            Some(b) => b.cdp(tab, id, "Runtime.evaluate", &params),
+            None => self.end_probe(tab, "the web view is gone"),
+        }
+    }
+
+    /// The page's word on a diagram: the call that waited for it is answered. None when this answer is
+    /// not the diagram question's.
+    fn diagram_answer(
+        &mut self,
+        tab: &str,
+        id: u64,
+        result: &Result<String, String>,
+    ) -> Option<WebOut> {
+        let t = self.tabs.get_mut(tab)?;
+        if t.probe.as_ref().is_none_or(|p| p.id != id) {
+            return None;
+        }
+        let p = t.probe.take()?;
+        let answer = match result {
+            Ok(json) => app::diagram_result(json),
+            Err(e) => Err(format!("the page did not answer: {e}")),
+        };
+        Some(WebOut::Settle {
+            reply: p.reply,
+            tab: tab.to_string(),
+            result: match answer {
+                Ok(()) => Ok(p.settled),
+                Err(msg) => Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    format!("the diagram did not draw: {msg}"),
+                )),
+            },
+        })
+    }
+
+    /// The tab's page is gone under a diagram's question: it is answered `unavailable`.
+    fn end_probe(&mut self, tab: &str, why: &str) {
+        if let Some(t) = self.tabs.get_mut(tab)
+            && let Some(p) = t.probe.take()
+        {
+            let _ = p
+                .reply
+                .send(Err(CtlError::new(code::UNAVAILABLE, why.to_string())));
+        }
     }
 
     /// The tab's page is gone under an agent call: it is answered `unavailable`.

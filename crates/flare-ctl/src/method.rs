@@ -19,6 +19,10 @@ pub enum Method {
     ViewImage,
     ViewFile,
     ViewText,
+    /// A mini-app: a page the agent wrote (Surfaces stage 5).
+    ViewHtml,
+    /// A Mermaid diagram (Surfaces stage 5).
+    ViewDiagram,
     BrowserOpen,
     BrowserNavigate,
     BrowserLook,
@@ -56,7 +60,7 @@ pub enum Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 22] = [
+    pub const ALL: [Method; 24] = [
         Method::Hello,
         Method::TabsList,
         Method::PanelOpen,
@@ -65,6 +69,8 @@ impl Method {
         Method::ViewImage,
         Method::ViewFile,
         Method::ViewText,
+        Method::ViewHtml,
+        Method::ViewDiagram,
         Method::BrowserOpen,
         Method::BrowserNavigate,
         Method::BrowserLook,
@@ -92,6 +98,8 @@ impl Method {
             Method::ViewImage => "view.image",
             Method::ViewFile => "view.file",
             Method::ViewText => "view.text",
+            Method::ViewHtml => "view.html",
+            Method::ViewDiagram => "view.diagram",
             Method::BrowserOpen => "browser.open",
             Method::BrowserNavigate => "browser.navigate",
             Method::BrowserLook => "browser.look",
@@ -119,7 +127,11 @@ impl Method {
             Method::Hello => Namespace::Hello,
             Method::TabsList => Namespace::Tabs,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
-            Method::ViewImage | Method::ViewFile | Method::ViewText => Namespace::View,
+            Method::ViewImage
+            | Method::ViewFile
+            | Method::ViewText
+            | Method::ViewHtml
+            | Method::ViewDiagram => Namespace::View,
             Method::BrowserOpen
             | Method::BrowserNavigate
             | Method::BrowserLook
@@ -138,7 +150,11 @@ impl Method {
     /// How long the server lets a request run before it answers `timeout`.
     pub fn timeout(self) -> Duration {
         match self.namespace() {
+            // A page or a diagram is answered when it has loaded (and drawn): as long as a browser call.
             Namespace::Browser => BROWSER_TIMEOUT,
+            Namespace::View if matches!(self, Method::ViewHtml | Method::ViewDiagram) => {
+                BROWSER_TIMEOUT
+            }
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -196,6 +212,9 @@ mod tests {
     fn browser_calls_get_the_long_timeout() {
         assert_eq!(Method::BrowserWait.timeout(), BROWSER_TIMEOUT);
         assert_eq!(Method::ViewImage.timeout(), DEFAULT_TIMEOUT);
+        // A mini-app is answered when its page has loaded, a diagram when it has drawn.
+        assert_eq!(Method::ViewHtml.timeout(), BROWSER_TIMEOUT);
+        assert_eq!(Method::ViewDiagram.timeout(), BROWSER_TIMEOUT);
         assert!(BROWSER_TIMEOUT > DEFAULT_TIMEOUT);
     }
 }

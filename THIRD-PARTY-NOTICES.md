@@ -8661,6 +8661,32 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
+Mermaid 11.17.2 (mermaid-js, released 2026-08-25): `mermaid.min.js`, the official `dist/mermaid.min.js` of the npm package `mermaid@11.17.2` (sha256 581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8), kept unchanged in `assets/mermaid/` and compiled into `flare.exe`; it draws the diagrams `show_diagram` asks for (Surfaces stage 5) and is never fetched. MIT licence, (c) Knut Sveidqvist, https://github.com/mermaid-js/mermaid. The file bundles Mermaid's own dependencies (d3, dagre-d3-es, cytoscape, DOMPurify 3.4.12 used under Apache-2.0, lodash-es, dayjs, katex, khroma, marked, roughjs, stylis and others), whose licences are MIT, ISC, BSD-3-Clause and Apache-2.0 and whose notices stay in the file's own licence comments.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 - 2022 Knut Sveidqvist
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Bundled artwork
 
 - OpenAI mark (Codex tab icon): the path data is Simple Icons 15 (CC0 1.0, https://simpleicons.org). The mark itself is OpenAI's trademark, shown only to name Codex. Copied from Prism Terminal's agentIcon.ts.

@@ -672,6 +672,8 @@ fn mcp_on(
                 "show_image",
                 "show_file",
                 "show_text",
+                "show_html",
+                "show_diagram",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -683,7 +685,7 @@ fn mcp_on(
                 "browser_navigate",
                 "browser_eval",
             ],
-        format!("tools/list names the five show tools and the eight browser tools ({names:?})"),
+        format!("tools/list names the seven show tools and the eight browser tools ({names:?})"),
     );
     ctx.ok(
         replies

@@ -164,6 +164,33 @@ fn show_tools() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "show_html",
+            description: "Show a small web page you write (a chart, a calculator, a table you can sort, an explainer, a 3D viewer, a form) in an interactive panel beside this terminal tab in Flare, so the user can use it instead of reading a wall of text. Give the whole page as `html` (one self-contained page: put your CSS and JavaScript inline; at most 4 MB) or the path of an .html file as `path` (only that one file is shown, files next to it are not served). The page runs in a sandbox of its own with NO network access: it cannot fetch anything, load a script, font or image from the web, or send data anywhere, so include everything it needs (inline SVG or canvas for charts, data: images, libraries pasted inline). Set allow_network only for a page that must load https content, and know that it works only if the user switched on \"Let mini apps use the network\" in Flare's settings (the reply says what you got). The page cannot open windows or follow links, and it cannot read or change anything on the PC. Replaces what the panel showed. Returns once the page has loaded; use browser_look to see it and browser_click / browser_type to use it yourself.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "html": {"type": "string", "description": "The page as one HTML document (at most 4 MB), with its CSS and JavaScript inline. Give this or path."},
+                    "path": {"type": "string", "description": "Path of an .html or .htm file to show (absolute, or relative to the folder you are working in). Give this or html."},
+                    "title": {"type": "string", "description": "A short title for the panel header."},
+                    "allow_network": {"type": "boolean", "description": "Let the page load https content. Off unless the user allows it in Flare's settings, whatever you ask."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
+            name: "show_diagram",
+            description: "Draw a diagram from Mermaid text (a flowchart, sequence diagram, class diagram, state machine, ER diagram, Gantt chart, mind map, git graph and the other Mermaid types) in a panel beside this terminal tab in Flare. Use it to explain a structure, a flow or a plan better than words or ASCII art can. If the Mermaid text has an error, the tool fails and returns Mermaid's own error message (the panel shows it too): fix the text and call again. Replaces what the panel showed. No network is used.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "mermaid": {"type": "string", "description": "The Mermaid diagram text, for example \"graph TD\\n  A[Start] --> B{Ok?}\" (at most 200 KB)."},
+                    "title": {"type": "string", "description": "A short title for the panel header."}
+                },
+                "required": ["mermaid"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
             name: "open_page",
             description: "Open a web page (http or https) in a browser panel beside this terminal tab in Flare, so the user can see it without leaving the terminal. Videos play in it. Use it for a local dev server (http://localhost:3000), documentation or anything the user should look at. Replaces what the panel showed. Returns once the page has loaded.",
             schema: json!({
@@ -181,6 +208,57 @@ fn show_tools() -> Vec<ToolDef> {
             schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
         },
     ]
+}
+
+/// How Flare starts the message of a diagram that did not draw.
+const DRAW_PREFIX: &str = "the diagram did not draw: ";
+
+/// A server's multi-line words made safe to show the model: control characters other than a line
+/// break go, empty lines go, the whole is capped.
+fn clean_block(message: &str, max: usize) -> String {
+    let mut out = String::new();
+    for line in message.lines() {
+        let line: String = line
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    if out.chars().count() > max {
+        out = out.chars().take(max).collect::<String>() + "...";
+    }
+    out
+}
+
+/// What `show_html` tells the agent: what is on show and what the page can do, including the network
+/// it asked for and did not get.
+fn shown_app_text(v: &Value, wants_network: bool) -> ToolResult {
+    let granted = v
+        .pointer("/panel/network")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let net = match (wants_network, granted) {
+        (_, true) => "The page may load https content.",
+        (true, false) => {
+            "You asked for network access but the user's setting \"Let mini apps use the network\" is off, so the page has none."
+        }
+        (false, false) => "The page has no network access.",
+    };
+    let loaded = if v.get("loaded").and_then(Value::as_bool) == Some(false) {
+        " It did not finish loading."
+    } else {
+        ""
+    };
+    ToolResult::text(format!(
+        "Showing the mini-app in Flare.{loaded} {net} Call browser_look to see it and browser_click or browser_type to use it."
+    ))
 }
 
 /// An absolute form of `path` (relative paths resolve against this process's folder, which is the
@@ -265,6 +343,67 @@ pub fn call_tool(
             channel
                 .call(Method::ViewText, params)
                 .map(|_| ToolResult::text("Showing the text in Flare."))
+        }
+        "show_html" => {
+            let mut params = json!({});
+            match (args.get("html"), args.get("path")) {
+                (Some(Value::String(h)), None | Some(Value::Null)) if !h.trim().is_empty() => {
+                    params["html"] = json!(h);
+                }
+                (None | Some(Value::Null), Some(Value::String(p))) if !p.trim().is_empty() => {
+                    params["path"] = json!(absolute(p));
+                }
+                _ => {
+                    return Some(ToolResult::error(
+                        "give either html (a non-empty string) or path (a non-empty string), not both and not neither.",
+                    ));
+                }
+            }
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            let wants_network = match args.get("allow_network") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(b)) => *b,
+                Some(_) => return Some(ToolResult::error("allow_network must be true or false.")),
+            };
+            if wants_network {
+                params["allow_network"] = json!(true);
+            }
+            channel
+                .call(Method::ViewHtml, params)
+                .map(|v| shown_app_text(&v, wants_network))
+        }
+        "show_diagram" => {
+            let src = match args.get("mermaid") {
+                Some(Value::String(t)) if !t.trim().is_empty() => t.clone(),
+                _ => {
+                    return Some(ToolResult::error(
+                        "mermaid is required: a non-empty string of Mermaid text.",
+                    ));
+                }
+            };
+            let mut params = json!({"mermaid": src});
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            return Some(match channel.call(Method::ViewDiagram, params) {
+                Ok(_) => ToolResult::text("Showing the diagram in Flare."),
+                // Mermaid's own words are the point of this error: kept whole (up to a few lines).
+                Err(ChannelError::Remote { code, message })
+                    if code == "bad_params" && message.starts_with(DRAW_PREFIX) =>
+                {
+                    ToolResult::error(format!(
+                        "The diagram did not draw. Mermaid said:\n{}\nFix the Mermaid text and call show_diagram again.",
+                        clean_block(&message[DRAW_PREFIX.len()..], 900)
+                    ))
+                }
+                Err(e) => map_channel_error(e),
+            });
         }
         "open_page" => {
             let url = match args.get("url") {
@@ -619,6 +758,8 @@ mod tests {
                 "show_image",
                 "show_file",
                 "show_text",
+                "show_html",
+                "show_diagram",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -637,8 +778,185 @@ mod tests {
         }
         assert_eq!(list[0]["inputSchema"]["required"], json!(["path"]));
         assert_eq!(list[2]["inputSchema"]["required"], json!(["text"]));
-        assert_eq!(list[3]["inputSchema"]["required"], json!(["url"]));
-        assert_eq!(list[4]["inputSchema"]["properties"], json!({}));
+        assert!(list[3]["inputSchema"].get("required").is_none());
+        assert_eq!(list[4]["inputSchema"]["required"], json!(["mermaid"]));
+        assert_eq!(list[5]["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(list[6]["inputSchema"]["properties"], json!({}));
+    }
+
+    #[test]
+    fn show_html_tells_the_agent_what_the_page_can_and_cannot_do() {
+        let list = tools();
+        let d = list.iter().find(|t| t.name == "show_html").unwrap();
+        for word in [
+            "NO network",
+            "4 MB",
+            "inline",
+            "allow_network",
+            "browser_look",
+        ] {
+            assert!(d.description.contains(word), "{word}");
+        }
+        let d = list.iter().find(|t| t.name == "show_diagram").unwrap();
+        assert!(d.description.contains("Mermaid"));
+        assert!(d.description.contains("error"));
+    }
+
+    #[test]
+    fn show_html_routes_html_or_a_path_and_never_both() {
+        let call = |args: Value, ch: &mut Fake| {
+            handle_message(
+                &req(
+                    1,
+                    "tools/call",
+                    json!({"name": "show_html", "arguments": args}),
+                ),
+                ch,
+            )
+            .unwrap()
+        };
+        let mut ch = Fake::default();
+        let r = call(json!({"html": "<p>hi</p>", "title": "Hi"}), &mut ch);
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewHtml);
+        assert_eq!(ch.calls[0].1, json!({"html": "<p>hi</p>", "title": "Hi"}));
+        let t = text_of(&r);
+        assert!(t.contains("no network access"), "{t}");
+
+        let mut ch = Fake::default();
+        let r = call(json!({"path": "C:\\work\\chart.html"}), &mut ch);
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].1, json!({"path": "C:\\work\\chart.html"}));
+
+        for bad in [
+            json!({}),
+            json!({"html": ""}),
+            json!({"html": "  "}),
+            json!({"html": "x", "path": "C:\\a.html"}),
+            json!({"path": ""}),
+            json!({"html": 3}),
+            json!({"html": "x", "title": 3}),
+            json!({"html": "x", "allow_network": "yes"}),
+        ] {
+            let mut ch = Fake::default();
+            let r = call(bad.clone(), &mut ch);
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+            assert!(ch.calls.is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_network_the_agent_asked_for_is_reported_as_given_or_not() {
+        let call = |answer: Value| {
+            let mut ch = Fake {
+                answer: Some(Ok(answer)),
+                ..Fake::default()
+            };
+            let r = handle_message(
+                &req(
+                    1,
+                    "tools/call",
+                    json!({"name": "show_html", "arguments": {"html": "x", "allow_network": true}}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(ch.calls[0].1["allow_network"], true);
+            text_of(&r)
+        };
+        let denied = call(json!({"panel": {"kind": "app", "network": false}, "loaded": true}));
+        assert!(denied.contains("setting"), "{denied}");
+        assert!(denied.contains("has none"), "{denied}");
+        let granted = call(json!({"panel": {"kind": "app", "network": true}, "loaded": true}));
+        assert!(granted.contains("may load https content"), "{granted}");
+        let slow = call(json!({"panel": {"network": false}, "loaded": false}));
+        assert!(slow.contains("did not finish loading"), "{slow}");
+    }
+
+    #[test]
+    fn show_diagram_routes_to_view_diagram() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_diagram", "arguments": {"mermaid": "graph TD\nA-->B", "title": "Flow"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewDiagram);
+        assert_eq!(
+            ch.calls[0].1,
+            json!({"mermaid": "graph TD\nA-->B", "title": "Flow"})
+        );
+        for bad in [
+            json!({}),
+            json!({"mermaid": ""}),
+            json!({"mermaid": 4}),
+            json!({"mermaid": "x", "title": 1}),
+        ] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    2,
+                    "tools/call",
+                    json!({"name": "show_diagram", "arguments": bad}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+            assert!(ch.calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_diagram_that_did_not_draw_returns_mermaids_own_words() {
+        let mut ch = Fake {
+            answer: Some(Err(ChannelError::Remote {
+                code: "bad_params".into(),
+                message: "the diagram did not draw: Parse error on line 2:\ngraph TD\n--^\n\u{1b}[31mExpecting 'SEMI'".into(),
+            })),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_diagram", "arguments": {"mermaid": "graph TD\nA-->"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        let t = text_of(&r);
+        assert!(
+            t.starts_with("The diagram did not draw. Mermaid said:\nParse error on line 2:"),
+            "{t}"
+        );
+        assert!(t.contains("Expecting 'SEMI'"), "{t}");
+        assert!(!t.contains('\u{1b}'), "{t}");
+        assert!(t.contains("call show_diagram again"), "{t}");
+        // Any other refusal keeps the usual one short line.
+        let mut ch = Fake {
+            answer: Some(Err(ChannelError::Remote {
+                code: "unavailable".into(),
+                message: "the web view could not be made".into(),
+            })),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "show_diagram", "arguments": {"mermaid": "graph TD\nA-->B"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert!(text_of(&r).starts_with("Flare refused:"));
     }
 
     #[test]

@@ -113,7 +113,10 @@ impl AppCtl {
     /// A button of the browser bar.
     pub(super) fn web_nav(&mut self, nav: Nav) {
         let Some(id) = self.front_id() else { return };
-        if self.panels.web_target(&id).is_some() && self.web.can_go(&id, nav) {
+        if self.panels.web_target(&id).is_some()
+            && !self.panels.is_app(&id)
+            && self.web.can_go(&id, nav)
+        {
             self.web.nav(&id, nav);
         }
     }
@@ -121,7 +124,7 @@ impl AppCtl {
     /// Enter in the address field.
     pub(super) fn web_submit(&mut self, text: &SharedString) {
         let Some(id) = self.front_id() else { return };
-        if self.panels.web_target(&id).is_none() {
+        if self.panels.web_target(&id).is_none() || self.panels.is_app(&id) {
             return;
         }
         match self.web.submit(&id, text) {
@@ -275,10 +278,70 @@ impl AppCtl {
             return;
         };
         // A tab that is behind has no browser yet; the agent's call makes one, hidden.
-        self.web.ensure_hidden(&tab, &url);
+        let app = self.panels.app_spec(&tab).cloned();
+        self.web.ensure_hidden(&tab, &url, app);
         let label = crate::web_ctl::agent_label(self.agent_named(&tab));
         self.web.start_agent(&tab, op, &label, reply);
         self.web_moved();
+    }
+
+    /// `view.html` and `view.diagram` (stage 5): the page is already written; the tab's panel shows it as
+    /// a mini-app (the folder is the panel's from here on). The answer is sent when the page has loaded,
+    /// and for a diagram when it has drawn (or said why not), by the browser's message.
+    pub(super) fn ctl_show_app(
+        &mut self,
+        op: crate::ctl_app::CtlOp,
+        reply: Reply,
+        deadline: Instant,
+    ) {
+        let crate::ctl_app::CtlOp::ShowApp {
+            tab,
+            spec,
+            title,
+            diagram,
+        } = op
+        else {
+            let _ = reply.send(Err(CtlError::new(code::INTERNAL, "not a mini-app call")));
+            return;
+        };
+        if !self.is_shell_tab(&tab) {
+            self.panels.remove_folder(spec);
+            let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
+            return;
+        }
+        let url = spec.url.clone();
+        if !self.panels.show_app(&tab, spec.clone(), &title) {
+            let _ = reply.send(Err(CtlError::new(
+                code::INTERNAL,
+                "the mini-app could not be shown",
+            )));
+            return;
+        }
+        self.refresh();
+        // A tab that is behind (or whose slot has no place yet) gets its page made hidden, so the page
+        // loads and a diagram draws whether or not anyone is looking.
+        self.web.ensure_hidden(&tab, &url, Some(spec));
+        self.panel_changed(&tab);
+        if let Some((why, missing)) = self.web.failure(&tab) {
+            let msg = if missing {
+                format!(
+                    "the WebView2 Runtime is not installed ({})",
+                    crate::web_ctl::RUNTIME_URL
+                )
+            } else {
+                format!("the web view could not be made: {why}")
+            };
+            let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, msg)));
+            return;
+        }
+        self.web
+            .wait_for_load_then(&tab, reply, deadline, &url, diagram);
+        self.web_moved();
+    }
+
+    /// The apps' folder (startup): a folder is removed from here only.
+    pub fn set_apps_root(&mut self, root: std::path::PathBuf) {
+        self.panels.set_apps_root(root);
     }
 
     /// The person took over the front page (the e2e's stand-in for their click or key).
@@ -294,7 +357,10 @@ impl AppCtl {
         if !self.is_shell_tab(tab) {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
         }
-        let had = self.web.has_tab(tab) && self.panels.web_target(tab).is_some();
+        // A tab that showed a mini-app gets a fresh view for the page (the app's view is its own kind).
+        let had = self.web.has_tab(tab)
+            && self.panels.web_target(tab).is_some()
+            && !self.panels.is_app(tab);
         if !self.panels.show(tab, PanelKind::Web, url) {
             return Err(CtlError::new(
                 code::BAD_PARAMS,
@@ -334,6 +400,12 @@ impl AppCtl {
         let up = self.web.has_tab(tab);
         match to {
             NavTo::Url(url) => {
+                if self.panels.is_app(tab) {
+                    return Err(CtlError::new(
+                        code::UNAVAILABLE,
+                        "a mini-app is one page and cannot go anywhere; open_page replaces it",
+                    ));
+                }
                 if !self.panels.set_web_url(tab, &url) {
                     return Err(CtlError::new(
                         code::BAD_PARAMS,
@@ -445,6 +517,8 @@ impl AppCtl {
                 "url": p.url,
                 "title": p.title,
                 "browser_pid": p.browser_pid,
+                "profile": p.profile,
+                "private": p.private,
                 "children": p.child_windows.iter().map(|(c, r)| json!({
                     "class": c,
                     "x": r.x, "y": r.y, "w": r.w, "h": r.h,

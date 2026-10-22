@@ -444,3 +444,89 @@ Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each 
     (the list, no picture) and the page must show when the tab is brought to the front.
 11. A very large page (thousands of nodes): time a look by hand; the tree is parsed on the UI thread, so watch for a hitch.
 12. Ctrl+wheel the panel to zoom while Claude is asked to click a link: it must land (the e2e proves it at 150 percent).
+
+## Stage 5: mini-apps and diagrams
+
+Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62, Mermaid 11.17.2). What each means for Electron is in the last
+line of each item.
+
+- **A profile is enough; a second environment is not needed, and costs a browser restart.** `CreateCoreWebView2ControllerOptions`
+  then `SetProfileName("flare-app")` and `SetIsInPrivateModeEnabled(true)` then `CreateCoreWebView2ControllerWithOptions` gives a
+  view with cookies, storage and cache of its own that keeps nothing on disk, inside the environment the web panel already runs
+  (`ICoreWebView2_13::Profile` reads the name and the private flag back; the e2e asserts both). It needs the runtime's
+  `ICoreWebView2Environment10` (1.0.1245 or later); an older runtime fails the view rather than falling back to the shared profile.
+  *Electron:* `session.fromPartition('flare-app')` with no `persist:` prefix is in memory and separate from the web panel's
+  `persist:flare-web`; create the mini-app's `WebContentsView` with `webPreferences.partition` set to it (never `defaultSession`).
+- **Origins are the isolation between apps, so each app gets its own host name.** One shared host would make two apps share
+  `localStorage`, cookies and IndexedDB inside the one private profile. `a<n>.flare-app.local` per app; the e2e writes storage and a
+  cookie in the first and finds neither in the second. *Electron:* serve each app from its own origin the same way (a custom
+  protocol handler on that session answering `https://a<n>.flare-app.local/...`, or `app-<n>://`), with the page held in memory:
+  there is then no folder to write or clean at all, and the Mermaid file is answered from the app's resources instead of being copied.
+- **A meta policy written first is a real wall, and removing the tag removes nothing.** The e2e's page deletes its own
+  `<meta http-equiv="Content-Security-Policy">` and fetches again: the second fetch is still a `connect-src` violation. The
+  document's policy is fixed when the parser meets the tag; Flare's tag is the first element, before anything the agent wrote.
+  The violation EVENT (`securitypolicyviolation` on `document`, with `effectiveDirective` and `blockedURI`) is the proof that the
+  policy, and not a closed port, stopped a request: a fetch to `http://127.0.0.1:9/` that merely failed to connect gives no event.
+  Script elements report `script-src-elem`, images `img-src`, fetch `connect-src`. *Electron:* when the page is answered by your own
+  protocol handler, send the policy as a real response header as well (`Content-Security-Policy` in the `Response` headers); keep
+  the first-element meta too, so the wall is the same wherever the page came from.
+- **Mermaid draws under `default-src 'self' 'unsafe-inline' data: blob:` with no `'unsafe-eval'`.** It is a classic script
+  (`<script src="mermaid.min.js">`, an IIFE that sets `globalThis.mermaid`), needs `style` inline (allowed), uses DOMPurify for
+  `securityLevel: 'strict'`, and renders into an `svg` string that is put in the page with `innerHTML`. Version 11.17.2 is 3.5 MB; the
+  copy into each diagram's folder is a plain file copy on the call's thread. `mermaid.parse(text)` throws a real `Parse error on line 2: ... Expecting
+  ...` with a pointer line; call it before `render`, because a `render` that fails can leave an error graphic in the page.
+  *Electron:* the same bundle, the same two calls, the same strict level, no `unsafe-eval`; answer the script from the app's
+  resources through the protocol handler.
+- **Asking the page whether it drew is one `Runtime.evaluate` with `awaitPromise`.** The page exposes `window.__flareDiagram` (a
+  promise of `{ok}` or `{ok: false, error}`); after `NavigationCompleted` Flare evaluates that name with `awaitPromise: true,
+  returnByValue: true` and the CDP answer is `{"result": {"type": "object", "value": {...}}}` (an `exceptionDetails` instead when the
+  page threw outside its own catch). `app::diagram_result` reads both, and any other shape is an error, never a quiet yes. *Electron:*
+  `webContents.debugger.sendCommand('Runtime.evaluate', ...)`, the same parameters and the same two shapes.
+- **Replace a view in place; do not close the last one.** Stage 3 frees the browser environment with the last view (the anti-goal
+  "panels cost nothing while closed"). A mini-app is typically updated again and again by an agent, so closing the old view before
+  opening the new one would have restarted the whole browser each time (a new browser process). The host now swaps the *view*
+  (`close_view`) and keeps the environment; the window forgets the old page's state (`replace_tab`) without closing the view. The
+  bug was found because a unit test's stand-in browser was remade by the factory when the last view went and lost its record.
+  *Electron:* `view.webContents.close()` and a new `WebContentsView` in the same session; never destroy the session or the
+  `BrowserWindow` for a replacement.
+- **A page must not rename the panel or move its address.** `DocumentTitleChanged` and `SourceChanged` flow into the panel's title and
+  stored address for a web page; for a mini-app both are ignored (the agent's title is the name, and the address is Flare's own and
+  never stored). A script that sets `document.title` or `history.pushState` cannot make the panel say "Your bank". *Electron:* ignore
+  `page-title-updated` and `did-navigate-in-page` for these views.
+- **The second wall is testable with a `no-cors` fetch.** With the policy switched off by the e2e seam, a request to
+  `http://127.0.0.1:9/` made with `mode: 'no-cors'` resolves as an opaque response if Flare answered it (a synthetic 403) and rejects
+  if the connection was really tried and refused. The e2e holds `answered:opaque`. *Electron:* `session.webRequest.onBeforeRequest`
+  with a filter of `<all_urls>` that cancels any URL that is not the app's own origin, `data:`, `blob:` or an allowed `https:`; a
+  cancelled request rejects in the page, so count cancels in the main process (or use `onErrorOccurred`) instead of the opaque probe.
+- **Navigation, links and new windows.** `NavigationStarting` cancels everything but the app's own address (the same address with a
+  different `#fragment` passes); `NewWindowRequested` is handled and does nothing for a mini-app (the web panel sends it to the panel).
+  A page's `location.href`, a link click, a form post (`form-action 'none'` as well) and `window.open` all went nowhere in the e2e, the
+  header said "Not opened here" and the view stayed on its address. *Electron:* `will-navigate` and `will-redirect` with the same
+  check, `setWindowOpenHandler(() => ({action: 'deny'}))`.
+- **A diagram's error is worth its length.** Mermaid's message is 3 to 6 lines with a pointer at the offending column and the list
+  of tokens it expected; the model needs all of it to fix the text. The usual 200-character cleaning of a refusal cut it mid-sentence,
+  so the diagram tool keeps up to 900 characters and the line breaks (control characters still become spaces). *Electron:* the
+  same: do not squeeze this one error into a line.
+- **`ExecuteScript` answers JSON, so a string answer is JSON inside the test's JSON.** The e2e decodes the page's answer once with a JSON
+  parse before comparing text; comparing the quoted form passed by accident for ASCII and failed for the error text with a line break.
+- **A control that is not drawn must give its space back.** `bar-h` is 0 for a mini-app (no address bar), so the page starts directly
+  under the header and the layout maths (`web_rect` with the header height only) equals the browser window's bounds at 100 and 225
+  percent; the e2e holds the three-way equality. *Electron:* the same: the placeholder rectangle has no bar row for these views.
+- **Not verified, written down:** whether `WebResourceRequested` is raised for the files a virtual-host mapping serves (the wall lets the
+  app's own host through either way, so it did not matter); how a very large inline page (the 4 MB cap) loads (the e2e uses a
+  small one; the cap itself is checked); SVG with script inside a page (the policy is the same, a script in it is the page's own);
+  print and save-as of a mini-app (the browser's own, not handled).
+
+### By hand, not machine-tested (Stage 5)
+
+1. A mini-app in a tab behind, then bringing the tab to the front: the page is there, sized to the slot, with no flash of a blank panel.
+2. An overlay (a Flare menu or dialog) over a mini-app: the still of the page stays in its place and the page comes back live.
+3. The ribbon over a mini-app while Claude uses it (`browser_look` then `browser_click`), and the real mouse taking it over.
+4. Light and dark system themes: a diagram follows the system setting, not Flare's theme; check both read on the panel's background.
+5. A real Claude session: ask for a chart as a page, then ask for a flowchart with an error in it; it should fix the Mermaid from the
+   error text alone.
+6. "Let mini apps use the network" on, a page that loads a script from a CDN over https: it loads; with the setting off it does not and
+   the agent is told why.
+7. A page that tries to read the clipboard, the camera, the location: denied (the web panel's permission handler is the same).
+8. Pressing Escape twice in a mini-app, and Ctrl+Shift+O: the keys go back to the terminal and into the page, as for a web page.
+9. A very large chart (a 4 MB page of data): load time and memory.

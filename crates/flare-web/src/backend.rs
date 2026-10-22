@@ -10,6 +10,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use flare_surfaces::app::AppSpec;
 use flare_surfaces::web::PhysRect;
 
 /// Where events go: the window's `UiMsg` queue. Called on the UI thread, from inside the message
@@ -188,6 +189,10 @@ pub struct ControllerProbe {
     pub url: String,
     pub title: String,
     pub browser_pid: u32,
+    /// The browser profile the view runs in (empty for the web panel's own default profile).
+    pub profile: String,
+    /// The profile keeps nothing on disk (a mini-app's).
+    pub private: bool,
 }
 
 /// One web view per tab with an open web panel.
@@ -195,6 +200,11 @@ pub trait WebBackend {
     /// Makes the tab's view (asynchronously, the first time also the browser environment) and
     /// opens `url` in it at `bounds`. A view the tab already has is only moved and sent to `url`.
     fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool);
+    /// Makes the tab's view for a mini-app (Surfaces stage 5): a view of the apps' own private profile,
+    /// with the app's folder served on its host name, a navigation that may not leave the app's page, no
+    /// window of its own for the page and, unless `app.allow_network`, no request that is not the app's
+    /// own. A view the tab already has (of anything else) is closed first.
+    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool);
     fn navigate(&mut self, tab: &str, url: &str);
     fn go(&mut self, tab: &str, nav: Nav);
     fn set_bounds(&mut self, tab: &str, bounds: PhysRect);
@@ -297,6 +307,46 @@ mod tests {
             ["Ready", "Ready"]
         );
         assert!(f.calls().contains(&Call::Close("a".into())));
+    }
+
+    #[test]
+    fn an_app_view_and_a_page_view_replace_each_other() {
+        use flare_surfaces::app::{AppSpec, PROFILE_NAME, app_host, app_url};
+        let (sink, _seen) = collecting();
+        let mut f = FakeWeb::new(sink);
+        let r = PhysRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        let app = |n| AppSpec {
+            host: app_host(n),
+            folder: "C:\\apps".into(),
+            url: app_url(&app_host(n)),
+            allow_network: false,
+        };
+        f.open("a", "https://a.example/", r, true);
+        assert!(!f.probe("a").unwrap().private);
+        f.open_app("a", app(1), r, true);
+        let p = f.probe("a").unwrap();
+        assert!(
+            p.private && p.profile == PROFILE_NAME,
+            "its own private profile"
+        );
+        assert_eq!(f.controllers(), 1);
+        // The same app again only moves; another app swaps the view; a page swaps it back.
+        f.open_app("a", app(1), r, true);
+        f.open_app("a", app(2), r, true);
+        f.open("a", "https://a.example/", r, true);
+        assert!(!f.probe("a").unwrap().private);
+        let closes = f
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Close(_)))
+            .count();
+        assert_eq!(closes, 3, "{:?}", f.calls());
+        assert_eq!(f.controllers(), 1);
     }
 
     #[test]

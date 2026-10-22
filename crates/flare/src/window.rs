@@ -1047,6 +1047,11 @@ pub fn run_window(
         let rc = AppCtl::new(&app, deps);
         // The server answers on its own threads and reaches the window through `post`. A failure
         // (the name is taken, no SID) is logged and the run goes on without the channel.
+        // Mini-apps (stage 5) live in `<profile>pps`. The folders of an earlier run have no panel and go
+        // first, before the channel can write a new one.
+        let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
+        flare_surfaces::app::clean_root(&apps_root); // sync-ok: startup, before the window shows
+        rc.borrow_mut().set_apps_root(apps_root.clone());
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
             match crate::ctl_app::CtlServer::start(
@@ -1057,6 +1062,23 @@ pub fn run_window(
                 {
                     let prefs = prefs.clone();
                     Arc::new(move || flare_settings::term_prefs::agent_eval(&prefs))
+                },
+                {
+                    let cfg = crate::ctl_app::AppsCfg::new(
+                        apps_root,
+                        Arc::new(flare_term::path_open::resolve_html_file),
+                        {
+                            let prefs = prefs.clone();
+                            Arc::new(move || flare_settings::term_prefs::app_network(&prefs))
+                        },
+                        crate::ctl_app::MERMAID,
+                    );
+                    // The e2e's seam (read only under --e2e): pages without their policy.
+                    if crate::ship_ctl::e2e_var("APP_NO_POLICY").is_some() {
+                        cfg.without_policy()
+                    } else {
+                        cfg
+                    }
                 },
             ) {
                 Ok(server) => {

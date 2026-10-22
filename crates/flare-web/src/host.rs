@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
@@ -35,7 +36,7 @@ use webview2_com::{
     FocusChangedEventHandler, HistoryChangedEventHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
-    WindowCloseRequestedEventHandler, take_pwstr,
+    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -114,6 +115,8 @@ struct Live {
 
 struct View {
     serial: u64,
+    /// A mini-app's view (its own private profile, its folder on its own host, a wall round it).
+    app: Option<AppSpec>,
     creating: bool,
     live: Option<Live>,
     url: String,
@@ -147,6 +150,31 @@ pub struct WebHost {
     filter: Rc<RefCell<Option<KeyFilter>>>,
     downloads: Downloads,
     download_seq: Rc<Cell<u64>>,
+}
+
+/// Makes a controller on the apps' own private profile (nothing shared with the web panel: no
+/// cookies, cache or storage, and nothing kept on disk). A runtime too old to have profiles is an error:
+/// a mini-app is never put on the web panel's profile instead.
+fn create_app_controller(
+    env: &ICoreWebView2Environment,
+    parent: HWND,
+    handler: &ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
+) -> windows::core::Result<()> {
+    let e10 = env.cast::<ICoreWebView2Environment10>().map_err(|_| {
+        windows::core::Error::new(
+            windows::Win32::Foundation::E_NOINTERFACE,
+            "this WebView2 Runtime is too old to keep a mini-app apart",
+        )
+    })?;
+    let name = wide(app::PROFILE_NAME);
+    // SAFETY: `e10`, the options and the handler are live COM objects on this thread; `name` is
+    // NUL-terminated and outlives the call.
+    unsafe {
+        let options = e10.CreateCoreWebView2ControllerOptions()?;
+        options.SetProfileName(PCWSTR(name.as_ptr()))?;
+        options.SetIsInPrivateModeEnabled(true)?;
+        e10.CreateCoreWebView2ControllerWithOptions(parent, &options, handler)
+    }
 }
 
 fn to_rect(r: PhysRect) -> RECT {
@@ -356,9 +384,16 @@ impl WebHost {
                 Ok(())
             },
         ));
+        let is_app = view.app.is_some();
         // SAFETY: `parent` is Flare's own live window on this thread; the handler is a live COM object.
         // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per web panel
-        let r = unsafe { env.CreateCoreWebView2Controller(self.parent, &handler) };
+        let r = if is_app {
+            create_app_controller(env, self.parent, &handler)
+        } else {
+            // SAFETY: as above.
+            // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per web panel
+            unsafe { env.CreateCoreWebView2Controller(self.parent, &handler) }
+        };
         if let Err(e) = r {
             let why = e.message();
             self.fail(tab, &why, false);
@@ -378,7 +413,8 @@ impl WebHost {
             let _ = unsafe { controller.Close() };
             return;
         }
-        match self.configure(tab, &controller) {
+        let app = self.state.views.get(tab).and_then(|v| v.app.clone());
+        match self.configure(tab, &controller, app.as_ref()) {
             Ok(webview) => {
                 let Some(view) = self.state.views.get_mut(tab) else {
                     return;
@@ -414,6 +450,7 @@ impl WebHost {
         &self,
         tab: &str,
         controller: &ICoreWebView2Controller,
+        app: Option<&AppSpec>,
     ) -> Result<ICoreWebView2, String> {
         // SAFETY: `controller` is a live COM object.
         let webview = unsafe { controller.CoreWebView2() }
@@ -424,7 +461,16 @@ impl WebHost {
                 // A page cannot talk to the app.
                 let _ = s.SetIsWebMessageEnabled(false);
                 let _ = s.SetAreHostObjectsAllowed(false);
+                if app.is_some() {
+                    // A mini-app is a page of the agent's: no developer tools of the person's to poke
+                    // at it with, no status bar of links (the agent's calls go through the controller).
+                    let _ = s.SetAreDevToolsEnabled(false);
+                    let _ = s.SetIsStatusBarEnabled(false);
+                }
             }
+        }
+        if let Some(a) = app {
+            self.configure_app(&webview, a)?;
         }
         for (host, folder) in &self.virtual_hosts {
             if let Ok(w3) = webview.cast::<ICoreWebView2_3>() {
@@ -445,11 +491,17 @@ impl WebHost {
         // ---- navigation ----
         {
             let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            // A mini-app's view may only show its own page; a web panel's, any http or https address.
+            let app_url = app.map(|a| a.url.clone());
             let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
                 let Some(args) = args else { return Ok(()) };
                 // SAFETY: `args` is the live event argument of this callback.
                 let uri = get_string(|p| unsafe { args.Uri(p) });
-                if navigation_allowed(&uri) {
+                let allowed = match &app_url {
+                    Some(u) => app::nav_allowed(&uri, u),
+                    None => navigation_allowed(&uri),
+                };
+                if allowed {
                     let mut nav = 0u64;
                     // SAFETY: as above.
                     let _ = unsafe { args.NavigationId(&mut nav) };
@@ -563,6 +615,7 @@ impl WebHost {
         // A page cannot open a window: the address goes to this panel (if it may open at all).
         {
             let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let is_app = app.is_some();
             let h = NewWindowRequestedEventHandler::create(Box::new(move |w, args| {
                 let (Some(w), Some(args)) = (w, args) else {
                     return Ok(());
@@ -571,7 +624,9 @@ impl WebHost {
                 unsafe {
                     let uri = get_string(|p| args.Uri(p));
                     let _ = args.SetHandled(true);
-                    if navigation_allowed(&uri) {
+                    // A mini-app's links open nowhere: it is one page, and the browser panel is the
+                    // person's to point somewhere.
+                    if !is_app && navigation_allowed(&uri) {
                         let u = wide(&uri);
                         let _ = w.Navigate(PCWSTR(u.as_ptr()));
                     } else {
@@ -758,6 +813,70 @@ impl WebHost {
         Ok(webview)
     }
 
+    /// What makes a view a mini-app's: its folder served on its own host name, and every request that
+    /// is not the app's own refused (the second wall, behind the page's policy).
+    fn configure_app(&self, webview: &ICoreWebView2, app: &AppSpec) -> Result<(), String> {
+        let w3 = webview
+            .cast::<ICoreWebView2_3>()
+            .map_err(|_| "this WebView2 Runtime cannot serve a mini-app".to_string())?;
+        let (h, f) = (wide(&app.host), wide(&app.folder.to_string_lossy()));
+        // SAFETY: both strings are NUL-terminated and outlive the call.
+        unsafe {
+            w3.SetVirtualHostNameToFolderMapping(
+                PCWSTR(h.as_ptr()),
+                PCWSTR(f.as_ptr()),
+                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
+            )
+        }
+        .map_err(|e| format!("the mini-app's folder: {}", e.message()))?;
+        let (host, allow) = (app.host.clone(), app.allow_network);
+        let h = WebResourceRequestedEventHandler::create(Box::new(move |w, args| {
+            let (Some(w), Some(args)) = (w, args) else {
+                return Ok(());
+            };
+            // SAFETY: both are the live arguments of this callback.
+            unsafe {
+                let Ok(req) = args.Request() else {
+                    return Ok(());
+                };
+                let uri = get_string(|p| req.Uri(p));
+                if app::request_allowed(&uri, &host, allow) {
+                    return Ok(());
+                }
+                // Answered here with a refusal: the request never leaves the PC.
+                let reason = wide("Blocked by Flare");
+                let headers = wide("");
+                if let Ok(env) = w.cast::<ICoreWebView2_2>().and_then(|w2| w2.Environment())
+                    && let Ok(resp) = env.CreateWebResourceResponse(
+                        None::<&IStream>,
+                        403,
+                        PCWSTR(reason.as_ptr()),
+                        PCWSTR(headers.as_ptr()),
+                    )
+                {
+                    let _ = args.SetResponse(&resp);
+                }
+            }
+            Ok(())
+        }));
+        let star = wide("*");
+        let mut token = 0i64;
+        // SAFETY: `webview` and the handler are live COM objects; `star` is NUL-terminated and
+        // outlives the call; `token` is a valid out value.
+        unsafe {
+            webview
+                .AddWebResourceRequestedFilter(
+                    PCWSTR(star.as_ptr()),
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                )
+                .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
+            webview
+                .add_WebResourceRequested(&h, &mut token)
+                .map_err(|e| format!("the mini-app's wall: {}", e.message()))?;
+        }
+        Ok(())
+    }
+
     fn live(&self, tab: &str) -> Option<&Live> {
         self.state.views.get(tab).and_then(|v| v.live.as_ref())
     }
@@ -826,8 +945,40 @@ impl Drop for WebHost {
     }
 }
 
-impl WebBackend for WebHost {
-    fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool) {
+impl WebHost {
+    /// Closes the tab's view and frees its controller; the browser environment stays.
+    fn close_view(&mut self, tab: &str) {
+        self.cancel_downloads(Some(tab));
+        let Some(view) = self.state.views.remove(tab) else {
+            return;
+        };
+        if let Some(l) = view.live {
+            // SAFETY: closing a controller we own; the page and its window go with it.
+            let _ = unsafe { l.controller.Close() };
+        }
+    }
+
+    /// Opens the tab's view for `url`, as a mini-app's when `app` is given. A view of the other kind is
+    /// closed first: a web page never gets an app's wall and an app is never left on the web panel's
+    /// profile.
+    fn open_view(
+        &mut self,
+        tab: &str,
+        url: &str,
+        app: Option<AppSpec>,
+        bounds: PhysRect,
+        visible: bool,
+    ) {
+        if self
+            .state
+            .views
+            .get(tab)
+            .is_some_and(|v| v.app.as_ref().map(|a| &a.host) != app.as_ref().map(|a| &a.host))
+        {
+            // Swapped in the same browser: the environment stays, so a mini-app updated again and
+            // again does not restart it.
+            self.close_view(tab);
+        }
         if let Some(v) = self.state.views.get_mut(tab) {
             v.url = url.to_string();
             v.bounds = bounds;
@@ -845,6 +996,7 @@ impl WebBackend for WebHost {
             tab.to_string(),
             View {
                 serial,
+                app,
                 creating: false,
                 live: None,
                 url: url.to_string(),
@@ -853,6 +1005,17 @@ impl WebBackend for WebHost {
             },
         );
         self.ensure(tab);
+    }
+}
+
+impl WebBackend for WebHost {
+    fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool) {
+        self.open_view(tab, url, None, bounds, visible);
+    }
+
+    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool) {
+        let url = app.url.clone();
+        self.open_view(tab, &url, Some(app), bounds, visible);
     }
 
     fn navigate(&mut self, tab: &str, url: &str) {
@@ -948,14 +1111,7 @@ impl WebBackend for WebHost {
     }
 
     fn close(&mut self, tab: &str) {
-        self.cancel_downloads(Some(tab));
-        let Some(view) = self.state.views.remove(tab) else {
-            return;
-        };
-        if let Some(l) = view.live {
-            // SAFETY: closing a controller we own; the page and its window go with it.
-            let _ = unsafe { l.controller.Close() };
-        }
+        self.close_view(tab);
         if self.state.views.is_empty() {
             // No web panel is open: the browser environment goes too (a later one makes it again).
             self.state.env = Env::None;
@@ -1159,13 +1315,26 @@ impl WebBackend for WebHost {
         let mut r = RECT::default();
         let mut pid = 0u32;
         // SAFETY: `controller` and `webview` are live COM objects; the out values are valid.
-        let (visible, url, title) = unsafe {
+        let (visible, url, title, profile, private) = unsafe {
             let _ = l.controller.Bounds(&mut r);
             let _ = l.webview.BrowserProcessId(&mut pid);
+            let profile = l
+                .webview
+                .cast::<ICoreWebView2_13>()
+                .and_then(|w| w.Profile())
+                .map(|p| {
+                    (
+                        get_string(|s| p.ProfileName(s)),
+                        get_bool(|b| p.IsInPrivateModeEnabled(b)),
+                    )
+                })
+                .unwrap_or_default();
             (
                 get_bool(|b| l.controller.IsVisible(b)),
                 get_string(|p| l.webview.Source(p)),
                 get_string(|p| l.webview.DocumentTitle(p)),
+                profile.0,
+                profile.1,
             )
         };
         Some(ControllerProbe {
@@ -1175,6 +1344,8 @@ impl WebBackend for WebHost {
             url,
             title,
             browser_pid: pid,
+            profile,
+            private,
         })
     }
 }

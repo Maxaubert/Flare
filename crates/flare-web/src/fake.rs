@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use flare_surfaces::app::AppSpec;
 use flare_surfaces::web::PhysRect;
 
 use crate::backend::{ControllerProbe, KeyFilter, Nav, Sink, WebBackend, WebEvent};
@@ -15,6 +16,13 @@ pub enum Call {
     Open {
         tab: String,
         url: String,
+        bounds: PhysRect,
+        visible: bool,
+    },
+    /// A mini-app view was asked for.
+    OpenApp {
+        tab: String,
+        app: AppSpec,
         bounds: PhysRect,
         visible: bool,
     },
@@ -42,6 +50,7 @@ pub type CdpResponder = Box<dyn FnMut(&str, &str) -> Result<String, String>>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct FakeView {
     pub url: String,
+    pub app: Option<AppSpec>,
     pub bounds: PhysRect,
     pub visible: bool,
 }
@@ -89,6 +98,11 @@ impl FakeWeb {
 impl WebBackend for FakeWeb {
     fn open(&mut self, tab: &str, url: &str, bounds: PhysRect, visible: bool) {
         let mut s = self.state.borrow_mut();
+        // A view of the other kind is closed first, as the real host does.
+        if s.views.get(tab).is_some_and(|v| v.app.is_some()) {
+            s.calls.push(Call::Close(tab.into()));
+            s.views.remove(tab);
+        }
         s.calls.push(Call::Open {
             tab: tab.into(),
             url: url.into(),
@@ -108,6 +122,45 @@ impl WebBackend for FakeWeb {
             tab.into(),
             FakeView {
                 url: url.into(),
+                app: None,
+                bounds,
+                visible,
+            },
+        );
+        drop(s);
+        (self.sink)(WebEvent::Ready { tab: tab.into() });
+    }
+
+    fn open_app(&mut self, tab: &str, app: AppSpec, bounds: PhysRect, visible: bool) {
+        let mut s = self.state.borrow_mut();
+        // A view of anything else (another app, a page) is closed first, as the real host does.
+        if s.views
+            .get(tab)
+            .is_some_and(|v| v.app.as_ref().map(|a| &a.host) != Some(&app.host))
+        {
+            s.calls.push(Call::Close(tab.into()));
+            s.views.remove(tab);
+        }
+        s.calls.push(Call::OpenApp {
+            tab: tab.into(),
+            app: app.clone(),
+            bounds,
+            visible,
+        });
+        if let Some((why, missing_runtime)) = s.fail.clone() {
+            drop(s);
+            (self.sink)(WebEvent::Failed {
+                tab: tab.into(),
+                why,
+                missing_runtime,
+            });
+            return;
+        }
+        s.views.insert(
+            tab.into(),
+            FakeView {
+                url: app.url.clone(),
+                app: Some(app),
                 bounds,
                 visible,
             },
@@ -239,6 +292,10 @@ impl WebBackend for FakeWeb {
             bounds: v.bounds,
             visible: v.visible,
             url: v.url.clone(),
+            profile: v.app.as_ref().map_or(String::new(), |_| {
+                flare_surfaces::app::PROFILE_NAME.to_string()
+            }),
+            private: v.app.is_some(),
             ..ControllerProbe::default()
         })
     }
