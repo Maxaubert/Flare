@@ -54,6 +54,9 @@ pub struct AppSpec {
     pub url: String,
     /// The page may load `https:` content (the agent asked and the user's switch is on).
     pub allow_network: bool,
+    /// A mod's view (stage 8): the mod, and the browser serves its files itself from `folder` on every
+    /// request instead of mapping the folder. None for a mini-app or a diagram.
+    pub module: Option<crate::modview::ModSpec>,
 }
 
 /// The host name of the `seq`th mini-app of the run.
@@ -348,6 +351,7 @@ pub fn write_app(
         host,
         folder,
         allow_network,
+        module: None,
     })
 }
 

@@ -18,6 +18,7 @@ flare-agent = { path = "../flare-agent" }
 flare-diag = { path = "../flare-diag" }
 flare-help = { path = "../flare-help" }
 flare-surfaces = { path = "../flare-surfaces" }
+flare-mods = { path = "../flare-mods" }
 flare-convo = { path = "../flare-convo" }
 flare-web = { path = "../flare-web" }
 flare-ctl = { path = "../flare-ctl" }

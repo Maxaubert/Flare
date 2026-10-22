@@ -130,6 +130,13 @@ pub enum WebOut {
         file: String,
         host: String,
     },
+    /// A mod's page sent a message over its bridge (stage 8).
+    ModMessage { tab: String, json: String },
+    /// A mod's page began loading (`ready` false) or finished loading well (true): it can be spoken to only
+    /// while it is ready.
+    ModPage { tab: String, ready: bool },
+    /// A mod's page, or the browser it ran in, is gone.
+    ModLost { tab: String },
 }
 
 struct Pending {
@@ -1399,8 +1406,45 @@ impl WebCtl {
         }
     }
 
+    /// The tab's view shows a mod's page (stage 8).
+    fn is_mod_tab(&self, tab: &str) -> bool {
+        self.tabs
+            .get(tab)
+            .and_then(|t| t.app_host.as_deref())
+            .is_some_and(|h| flare_surfaces::modview::mod_of_host(h).is_some())
+    }
+
+    /// Speaks to a mod's page: `json` is delivered to its bridge. Nothing happens for a tab with no such page.
+    pub fn post_message(&mut self, tab: &str, json: &str) {
+        if self.is_mod_tab(tab)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.post_message(tab, json);
+        }
+    }
+
+    /// The mod page's own state, told to the window after the event is handled (the tab is read before the
+    /// event can drop it).
+    fn mod_note(&self, e: &WebEvent) -> Option<WebOut> {
+        match e {
+            WebEvent::Loading { tab, .. } if self.is_mod_tab(tab) => Some(WebOut::ModPage {
+                tab: tab.clone(),
+                ready: false,
+            }),
+            WebEvent::Loaded { tab, ok, .. } if self.is_mod_tab(tab) => Some(WebOut::ModPage {
+                tab: tab.clone(),
+                ready: *ok,
+            }),
+            WebEvent::Failed { tab, .. } | WebEvent::Gone { tab, .. } if self.is_mod_tab(tab) => {
+                Some(WebOut::ModLost { tab: tab.clone() })
+            }
+            _ => None,
+        }
+    }
+
     fn on_event(&mut self, app: &AppWindow, e: WebEvent) -> Vec<WebOut> {
         let mut out = Vec::new();
+        let mod_note = self.mod_note(&e);
         // Set when a diagram page has loaded: the question to put to it once the borrow of the tab ends.
         let mut diagram_ask: Option<DiagramAsk> = None;
         match e {
@@ -1676,7 +1720,14 @@ impl WebCtl {
                     self.on_cdp(&tab, id, result);
                 }
             }
+            WebEvent::ModMessage { tab, json } => {
+                // Only a mod's page has a bridge; a message from any other view is dropped.
+                if self.is_mod_tab(&tab) {
+                    out.push(WebOut::ModMessage { tab, json });
+                }
+            }
         }
+        out.extend(mod_note);
         if let Some((tab, reply, settled)) = diagram_ask {
             self.ask_diagram(&tab, reply, settled);
         }

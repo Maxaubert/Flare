@@ -145,6 +145,11 @@ impl Tokens {
         found
     }
 
+    /// The ids that hold a live token.
+    pub fn ids(&self) -> Vec<String> {
+        self.live.iter().map(|l| l.id.clone()).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.live.len()
     }

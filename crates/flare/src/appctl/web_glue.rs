@@ -178,6 +178,11 @@ impl AppCtl {
                     }
                 }
                 WebOut::Changed => self.refresh(),
+                o @ (WebOut::ModMessage { .. }
+                | WebOut::ModPage { .. }
+                | WebOut::ModLost { .. }) => {
+                    self.on_mod_web(o);
+                }
                 WebOut::Download {
                     tab,
                     id,
@@ -268,6 +273,14 @@ impl AppCtl {
         };
         if !self.is_shell_tab(&tab) {
             let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
+            return;
+        }
+        // A mod's page is the mod's own: the browser tools do not look at it or click in it.
+        if self.panels.mod_of(&tab).is_some() {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "the panel in this tab belongs to a mod; the browser tools drive a web page (open_page opens one)",
+            )));
             return;
         }
         let Some(url) = self.panels.web_target(&tab) else {

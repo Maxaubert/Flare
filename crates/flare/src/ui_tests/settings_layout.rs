@@ -97,6 +97,7 @@ pub(super) fn build(page: &str, prefs: &PrefStore, look: &LookStore) -> PageMode
         agent_colours: ["#111111".into(), "#222222".into(), "#333333".into()],
         agent_key_labels: String::new(),
         face_of: &face,
+        mods: None,
     };
     build_page(page, &env, &crate::dictation_page::DictationPageProvider)
 }
@@ -626,11 +627,15 @@ fn the_rail_and_the_find_field_match_reference() {
                 } else {
                     r.items[i].0
                 };
+                // Flare's Mods page (Surfaces stage 8, DIFF-25 in docs/parity.md) is one item Prism Terminal
+                // does not have: the tab below it sits one item (36 + 2) lower than Prism Terminal's.
+                let below_mods = !p.end && i > 4;
+                let want = if below_mods { t.1 + 38.0 } else { t.1 };
                 assert!(
-                    within(y, t.1, 1.0),
+                    within(y, want, 1.0),
                     "{page} @{key}: tab {} y {y} vs {}",
                     p.id,
-                    t.1
+                    want
                 );
                 assert!(
                     within(r.items[i].1, t.3, 1.0),

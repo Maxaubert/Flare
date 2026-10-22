@@ -23,6 +23,7 @@ pub mod input_d;
 pub mod lifecycle;
 mod marks_px;
 pub mod mini_app;
+pub mod mods;
 pub mod panel;
 pub mod settings_a;
 pub mod settings_b;
@@ -596,6 +597,12 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: mini_app::mcp_diagram,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "modsSample",
+        group: "web",
+        run: mods::mods_sample,
+        limit_secs: 480,
     },
     Scenario {
         name: "devPreview",

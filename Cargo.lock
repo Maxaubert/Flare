@@ -1589,6 +1589,7 @@ dependencies = [
  "flare-dictation",
  "flare-e2e-proto",
  "flare-help",
+ "flare-mods",
  "flare-render",
  "flare-settings",
  "flare-shells",
@@ -1851,6 +1852,7 @@ dependencies = [
 name = "flare-web"
 version = "0.1.0"
 dependencies = [
+ "flare-mods",
  "flare-surfaces",
  "log",
  "webview2-com",

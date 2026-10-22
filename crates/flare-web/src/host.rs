@@ -28,9 +28,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use flare_mods::serve as modserve;
 use flare_surfaces::app::{self, AppSpec};
+use flare_surfaces::modview::{self, Route};
 use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
@@ -42,8 +45,8 @@ use webview2_com::{
     FocusChangedEventHandler, HistoryChangedEventHandler, LaunchingExternalUriSchemeEventHandler,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    SourceChangedEventHandler, WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
-    take_pwstr,
+    SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -189,6 +192,22 @@ struct Download {
 
 type Downloads = Rc<RefCell<HashMap<u64, Download>>>;
 
+/// A request for a file of a mod's page, held by the browser until the worker that reads the file has
+/// answered (the page's request never waits on the UI thread, rule 34).
+struct PendingServe {
+    tab: String,
+    args: ICoreWebView2WebResourceRequestedEventArgs,
+    deferral: ICoreWebView2Deferral,
+    webview: ICoreWebView2,
+}
+
+type Serving = Rc<RefCell<HashMap<u64, PendingServe>>>;
+/// What the serve workers have read, by request id, waiting for the UI thread to hand it to the browser.
+type Served = Arc<Mutex<VecDeque<(u64, Result<modserve::Served, modserve::Refused>)>>>;
+/// File reads for mod pages running at once; the next request is answered 503.
+const MAX_SERVE_WORKERS: usize = 8;
+/// A message from a mod's page larger than this is dropped here (the bridge refuses over 1 MB itself).
+const MAX_PAGE_MESSAGE: usize = 4 * 1024 * 1024;
 struct State {
     /// The browsers that exist or are being made, by kind (absent: none).
     envs: HashMap<EnvKind, Env>,
@@ -208,6 +227,10 @@ pub struct WebHost {
     filter: Rc<RefCell<Option<KeyFilter>>>,
     downloads: Downloads,
     download_seq: Rc<Cell<u64>>,
+    serving: Serving,
+    serve_seq: Rc<Cell<u64>>,
+    served: Served,
+    serve_live: Arc<AtomicUsize>,
 }
 
 /// Makes a controller on the apps' own private profile (nothing shared with the web panel: no
@@ -217,6 +240,7 @@ fn create_app_controller(
     env: &ICoreWebView2Environment,
     parent: HWND,
     handler: &ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
+    module: Option<&str>,
 ) -> windows::core::Result<()> {
     let e10 = env.cast::<ICoreWebView2Environment10>().map_err(|_| {
         windows::core::Error::new(
@@ -224,13 +248,15 @@ fn create_app_controller(
             "this WebView2 Runtime is too old to keep a mini-app apart",
         )
     })?;
-    let name = wide(app::PROFILE_NAME);
+    // A mod has a profile of its own that keeps its storage between runs (its notes); a mini-app's is private
+    // and keeps nothing. Neither is the web panel's, and neither is Edge's.
+    let name = wide(&module.map_or_else(|| app::PROFILE_NAME.to_string(), modview::profile_name));
     // SAFETY: `e10`, the options and the handler are live COM objects on this thread; `name` is
     // NUL-terminated and outlives the call.
     unsafe {
         let options = e10.CreateCoreWebView2ControllerOptions()?;
         options.SetProfileName(PCWSTR(name.as_ptr()))?;
-        options.SetIsInPrivateModeEnabled(true)?;
+        options.SetIsInPrivateModeEnabled(module.is_none())?;
         e10.CreateCoreWebView2ControllerWithOptions(parent, &options, handler)
     }
 }
@@ -322,6 +348,10 @@ impl WebHost {
             filter: Rc::new(RefCell::new(None)),
             downloads: Rc::new(RefCell::new(HashMap::new())),
             download_seq: Rc::new(Cell::new(0)),
+            serving: Rc::new(RefCell::new(HashMap::new())),
+            serve_seq: Rc::new(Cell::new(0)),
+            served: Arc::new(Mutex::new(VecDeque::new())),
+            serve_live: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -489,10 +519,15 @@ impl WebHost {
             },
         ));
         let is_app = view.app.is_some();
+        let module = view
+            .app
+            .as_ref()
+            .and_then(|a| a.module.as_ref())
+            .map(|m| m.id.clone());
         // SAFETY: `parent` is Flare's own live window on this thread; the handler is a live COM object.
         // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per web panel
         let r = if is_app {
-            create_app_controller(env, self.parent, &handler)
+            create_app_controller(env, self.parent, &handler, module.as_deref())
         } else {
             // SAFETY: as above.
             // sync-ok: WebView2 objects are thread-affine to the UI STA; one call per web panel
@@ -608,8 +643,8 @@ impl WebHost {
         // SAFETY: `webview` is live; settings are plain flags.
         unsafe {
             if let Ok(s) = webview.Settings() {
-                // A page cannot talk to the app.
-                let _ = s.SetIsWebMessageEnabled(false);
+                // A page cannot talk to the app, except a mod's page, over the bridge (`window.flare`).
+                let _ = s.SetIsWebMessageEnabled(app.is_some_and(|a| a.module.is_some()));
                 let _ = s.SetAreHostObjectsAllowed(false);
                 if app.is_some() {
                     // A mini-app is a page of the agent's: no developer tools of the person's to poke
@@ -643,13 +678,16 @@ impl WebHost {
             let (sink, tab) = (Arc::clone(&self.sink), name(tab));
             // A mini-app's view may only show its own page; a web panel's, any http or https address.
             let app_url = app.map(|a| a.url.clone());
+            // A mod's view may only go to its own host (any path of it).
+            let mod_host = app.filter(|a| a.module.is_some()).map(|a| a.host.clone());
             let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
                 let Some(args) = args else { return Ok(()) };
                 // SAFETY: `args` is the live event argument of this callback.
                 let uri = get_string(|p| unsafe { args.Uri(p) });
-                let allowed = match &app_url {
-                    Some(u) => app::nav_allowed(&uri, u),
-                    None => navigation_allowed(&uri),
+                let allowed = match (&mod_host, &app_url) {
+                    (Some(h), _) => modview::nav_allowed(&uri, h),
+                    (None, Some(u)) => app::nav_allowed(&uri, u),
+                    (None, None) => navigation_allowed(&uri),
                 };
                 if allowed {
                     let mut nav = 0u64;
@@ -967,7 +1005,10 @@ impl WebHost {
     }
 
     /// What makes a view a mini-app's: its folder served on its own host name, and every request that
-    /// is not the app's own refused (the second wall, behind the page's policy).
+    /// is not the app's own refused (the second wall, behind the page's policy). A mod's view (stage 8)
+    /// has the same walls with two differences: its files are NOT a folder mapping (each request is
+    /// checked by `flare_mods::serve` on a worker, so a junction in the folder serves nothing outside it),
+    /// and its page gets the `window.flare` bridge and a message channel to the host.
     fn configure_app(
         &self,
         webview: &ICoreWebView2,
@@ -975,20 +1016,35 @@ impl WebHost {
         tab: &str,
         serial: u64,
     ) -> Result<(), String> {
-        let w3 = webview
-            .cast::<ICoreWebView2_3>()
-            .map_err(|_| "this WebView2 Runtime cannot serve a mini-app".to_string())?;
-        let (h, f) = (wide(&app.host), wide(&app.folder.to_string_lossy()));
-        // SAFETY: both strings are NUL-terminated and outlive the call.
-        unsafe {
-            w3.SetVirtualHostNameToFolderMapping(
-                PCWSTR(h.as_ptr()),
-                PCWSTR(f.as_ptr()),
-                COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
-            )
+        let module = app.module.is_some();
+        if !module {
+            let w3 = webview
+                .cast::<ICoreWebView2_3>()
+                .map_err(|_| "this WebView2 Runtime cannot serve a mini-app".to_string())?;
+            let (h, f) = (wide(&app.host), wide(&app.folder.to_string_lossy()));
+            // SAFETY: both strings are NUL-terminated and outlive the call.
+            unsafe {
+                w3.SetVirtualHostNameToFolderMapping(
+                    PCWSTR(h.as_ptr()),
+                    PCWSTR(f.as_ptr()),
+                    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS,
+                )
+            }
+            .map_err(|e| format!("the mini-app's folder: {}", e.message()))?;
         }
-        .map_err(|e| format!("the mini-app's folder: {}", e.message()))?;
         let (host, allow) = (app.host.clone(), app.allow_network);
+        let files = app
+            .module
+            .as_ref()
+            .map(|m| (m.entry.clone(), app.folder.clone()));
+        let serve = ServeCtx {
+            serving: Rc::clone(&self.serving),
+            seq: Rc::clone(&self.serve_seq),
+            served: Arc::clone(&self.served),
+            live: Arc::clone(&self.serve_live),
+            sink: Arc::clone(&self.sink),
+            tab: tab.to_string(),
+        };
         let h = WebResourceRequestedEventHandler::create(Box::new(move |w, args| {
             let (Some(w), Some(args)) = (w, args) else {
                 return Ok(());
@@ -999,22 +1055,19 @@ impl WebHost {
                     return Ok(());
                 };
                 let uri = get_string(|p| req.Uri(p));
+                if let Some((entry, folder)) = &files {
+                    match modview::route_request(&uri, &host) {
+                        Route::Pass => {}
+                        Route::Refuse => refuse_request(&w, &args, 403),
+                        Route::Serve(path) => serve.start(&w, &args, entry, folder, path),
+                    }
+                    return Ok(());
+                }
                 if app::request_allowed(&uri, &host, allow) {
                     return Ok(());
                 }
                 // Answered here with a refusal: the request never leaves the PC.
-                let reason = wide("Blocked by Flare");
-                let headers = wide("");
-                if let Ok(env) = w.cast::<ICoreWebView2_2>().and_then(|w2| w2.Environment())
-                    && let Ok(resp) = env.CreateWebResourceResponse(
-                        None::<&IStream>,
-                        403,
-                        PCWSTR(reason.as_ptr()),
-                        PCWSTR(headers.as_ptr()),
-                    )
-                {
-                    let _ = args.SetResponse(&resp);
-                }
+                refuse_request(&w, &args, 403);
             }
             Ok(())
         }));
@@ -1046,9 +1099,18 @@ impl WebHost {
             // No peer connections. The policy has no directive for them and their address lookups never
             // reach the wall, so the page loses the API before its own code runs. This is the first
             // of three walls (the others are the browser's own: the WebRTC policy and, with no
-            // network, a proxy that is not there). Its completion is awaited: the view navigates only
-            // when `Inbound::Script` says it is installed, and fails if it is not.
-            if self.without_webrtc_script {
+            // network, a proxy that is not there). A mod's page also gets its bridge here, in the same
+            // script. The completion is awaited: the view navigates only when `Inbound::Script` says
+            // it is installed, and fails if it is not.
+            let mut text = String::new();
+            if !self.without_webrtc_script {
+                text.push_str(app::NO_WEBRTC_SCRIPT);
+            }
+            if module {
+                text.push('\n');
+                text.push_str(flare_mods::bridge::BRIDGE_JS);
+            }
+            if text.is_empty() {
                 // The e2e's seam: the browser-level walls are tested alone.
                 self.inbox.borrow_mut().push_back(Inbound::Script {
                     tab: tab.to_string(),
@@ -1057,7 +1119,7 @@ impl WebHost {
                 });
                 (self.sink)(WebEvent::Pump);
             } else {
-                let script = wide(app::NO_WEBRTC_SCRIPT);
+                let script = wide(&text);
                 let (inbox, sink) = (Rc::clone(&self.inbox), Arc::clone(&self.sink));
                 let tab_name = tab.to_string();
                 let done = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
@@ -1075,6 +1137,35 @@ impl WebHost {
                     .AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), &done)
                     .map_err(|e| format!("the mini-app's script wall: {}", e.message()))?;
             }
+        }
+        // A mod's page talks to the host over web messages, from its own address only.
+        if module {
+            let (sink, tab_name, host) =
+                (Arc::clone(&self.sink), tab.to_string(), app.host.clone());
+            let h = WebMessageReceivedEventHandler::create(Box::new(move |_w, args| {
+                let Some(args) = args else { return Ok(()) };
+                // SAFETY: `args` is the live argument of this callback.
+                let (source, text) = unsafe {
+                    (
+                        get_string(|p| args.Source(p)),
+                        get_string(|p| args.TryGetWebMessageAsString(p)),
+                    )
+                };
+                if modview::nav_allowed(&source, &host)
+                    && !text.is_empty()
+                    && text.len() <= MAX_PAGE_MESSAGE
+                {
+                    sink(WebEvent::ModMessage {
+                        tab: tab_name.clone(),
+                        json: text,
+                    });
+                }
+                Ok(())
+            }));
+            let mut t = 0i64;
+            // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+            unsafe { webview.add_WebMessageReceived(&h, &mut t) }
+                .map_err(|e| format!("the mod's message channel: {}", e.message()))?;
         }
         // No external program is launched from a mini-app (a mailto: or custom scheme would carry the
         // page's data out through another program, past the proxy), and no frame navigates anywhere
@@ -1104,15 +1195,17 @@ impl WebHost {
             unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) }
                 .map_err(|e| format!("the mini-app's launch wall: {}", e.message()))?;
             let app_url = app.url.clone();
+            let mod_host = module.then(|| app.host.clone());
             let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
                 if let Some(args) = args {
                     // SAFETY: `args` is the live argument of this callback.
                     unsafe {
                         let uri = get_string(|p| args.Uri(p));
-                        if !(uri == "about:blank"
-                            || uri == "about:srcdoc"
-                            || app::nav_allowed(&uri, &app_url))
-                        {
+                        let own = match &mod_host {
+                            Some(h) => modview::nav_allowed(&uri, h),
+                            None => app::nav_allowed(&uri, &app_url),
+                        };
+                        if !(uri == "about:blank" || uri == "about:srcdoc" || own) {
                             let _ = args.SetCancel(true);
                         }
                     }
@@ -1124,6 +1217,36 @@ impl WebHost {
                 .map_err(|e| format!("the mini-app's frame wall: {}", e.message()))?;
         }
         Ok(())
+    }
+
+    /// A serve worker has read a file (or been refused): the browser is handed the answer and released.
+    fn finish_serve(&self, id: u64, result: Result<modserve::Served, modserve::Refused>) {
+        let Some(p) = self.serving.borrow_mut().remove(&id) else {
+            return;
+        };
+        answer_request(&p.webview, &p.args, result);
+        // SAFETY: the deferral is a live COM object kept since the callback.
+        let _ = unsafe { p.deferral.Complete() };
+    }
+
+    /// Releases the page requests still waiting for a file read (all, or the tab's), each answered 503.
+    fn cancel_serves(&self, tab: Option<&str>) {
+        let ids: Vec<u64> = self
+            .serving
+            .borrow()
+            .iter()
+            .filter(|(_, p)| tab.is_none_or(|t| p.tab == t))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.finish_serve(
+                id,
+                Err(modserve::Refused {
+                    status: 503,
+                    reason: "the page was closed".into(),
+                }),
+            );
+        }
     }
 
     fn live(&self, tab: &str) -> Option<&Live> {
@@ -1187,10 +1310,164 @@ impl WebHost {
     }
 }
 
+/// What the browser's request handler of a mod view needs to hand a file read to a worker.
+struct ServeCtx {
+    serving: Serving,
+    seq: Rc<Cell<u64>>,
+    served: Served,
+    live: Arc<AtomicUsize>,
+    sink: Sink,
+    tab: String,
+}
+
+impl ServeCtx {
+    /// Holds the request and starts the worker that reads its file; the answer comes back through `served`
+    /// and `WebEvent::Pump`.
+    ///
+    /// # Safety
+    /// `w` and `args` are the live arguments of the browser's callback.
+    unsafe fn start(
+        &self,
+        w: &ICoreWebView2,
+        args: &ICoreWebView2WebResourceRequestedEventArgs,
+        entry: &str,
+        folder: &std::path::Path,
+        path: String,
+    ) {
+        // SAFETY: `args` is live per the contract above.
+        let Ok(deferral) = (unsafe { args.GetDeferral() }) else {
+            refuse_request(w, args, 500);
+            return;
+        };
+        self.seq.set(self.seq.get() + 1);
+        let id = self.seq.get();
+        self.serving.borrow_mut().insert(
+            id,
+            PendingServe {
+                tab: self.tab.clone(),
+                args: args.clone(),
+                deferral,
+                webview: w.clone(),
+            },
+        );
+        let post = |served: &Served, sink: &Sink, r| {
+            served
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back((id, r));
+            sink(WebEvent::Pump);
+        };
+        if self.live.fetch_add(1, Ordering::SeqCst) >= MAX_SERVE_WORKERS {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            post(
+                &self.served,
+                &self.sink,
+                Err(modserve::Refused {
+                    status: 503,
+                    reason: "too many file reads at once".into(),
+                }),
+            );
+            return;
+        }
+        let (served, sink, live) = (
+            Arc::clone(&self.served),
+            Arc::clone(&self.sink),
+            Arc::clone(&self.live),
+        );
+        let (entry, folder) = (entry.to_string(), folder.to_path_buf());
+        let spawned = std::thread::Builder::new()
+            .name("flare-mod-serve".into())
+            .spawn({
+                let (served, sink, live) = (served.clone(), sink.clone(), live.clone());
+                move || {
+                    let r = modserve::serve_file(&folder, &entry, &path);
+                    served
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_back((id, r));
+                    sink(WebEvent::Pump);
+                    live.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+        if spawned.is_err() {
+            live.fetch_sub(1, Ordering::SeqCst);
+            post(
+                &served,
+                &sink,
+                Err(modserve::Refused {
+                    status: 500,
+                    reason: "the file reader could not start".into(),
+                }),
+            );
+        }
+    }
+}
+
+/// Answers a page request with a status and nothing else (the request never reaches the network).
+fn refuse_request(
+    w: &ICoreWebView2,
+    args: &ICoreWebView2WebResourceRequestedEventArgs,
+    status: i32,
+) {
+    answer_request(
+        w,
+        args,
+        Err(modserve::Refused {
+            status: status as u16,
+            reason: String::new(),
+        }),
+    );
+}
+
+/// Sets the browser's answer to a request: the file with its headers, or the refusal's status.
+fn answer_request(
+    w: &ICoreWebView2,
+    args: &ICoreWebView2WebResourceRequestedEventArgs,
+    result: Result<modserve::Served, modserve::Refused>,
+) {
+    let (status, reason, headers, bytes) = match &result {
+        Ok(s) => (
+            200,
+            "OK",
+            modserve::headers_for(s.mime),
+            Some(s.bytes.as_slice()),
+        ),
+        Err(r) => (
+            i32::from(r.status),
+            match r.status {
+                403 => "Blocked by Flare",
+                404 => "Not found",
+                413 => "Too large",
+                503 => "Busy",
+                _ => "Refused",
+            },
+            modserve::refusal_headers(),
+            None,
+        ),
+    };
+    let (reason, headers) = (wide(reason), wide(&headers));
+    // SAFETY: a memory stream over the bytes (copied by the call) and live COM objects; both strings are
+    // NUL-terminated and outlive the call.
+    unsafe {
+        let stream = bytes.and_then(|b| SHCreateMemStream(Some(b)));
+        if let Ok(env) = w.cast::<ICoreWebView2_2>().and_then(|w2| w2.Environment())
+            && let Ok(resp) = env.CreateWebResourceResponse(
+                stream.as_ref(),
+                status,
+                PCWSTR(reason.as_ptr()),
+                PCWSTR(headers.as_ptr()),
+            )
+        {
+            let _ = args.SetResponse(&resp);
+        }
+    }
+}
+
 impl Drop for WebHost {
     fn drop(&mut self) {
         // A download still waiting for a yes is never saved by the host going away.
         self.cancel_downloads(None);
+        self.cancel_serves(None);
     }
 }
 
@@ -1198,6 +1475,7 @@ impl WebHost {
     /// Closes the tab's view and frees its controller; the browser environment stays.
     fn close_view(&mut self, tab: &str) {
         self.cancel_downloads(Some(tab));
+        self.cancel_serves(Some(tab));
         if let Some(view) = self.state.views.remove(tab) {
             view.shut();
         }
@@ -1364,6 +1642,7 @@ impl WebBackend for WebHost {
 
     fn close_all(&mut self) {
         self.cancel_downloads(None);
+        self.cancel_serves(None);
         for (_, view) in self.state.views.drain() {
             view.shut();
         }
@@ -1415,6 +1694,16 @@ impl WebBackend for WebHost {
     }
 
     fn pump(&mut self) {
+        // Files the serve workers have read are handed to the browser first.
+        let ready: Vec<_> = self
+            .served
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
+        for (id, r) in ready {
+            self.finish_serve(id, r);
+        }
         loop {
             let next = self.inbox.borrow_mut().pop_front();
             let Some(item) = next else { break };
@@ -1425,6 +1714,7 @@ impl WebBackend for WebHost {
                     let tabs = self.tabs_of(kind);
                     for t in &tabs {
                         self.cancel_downloads(Some(t));
+                        self.cancel_serves(Some(t));
                         if let Some(view) = self.state.views.remove(t) {
                             view.shut();
                         }
@@ -1532,6 +1822,22 @@ impl WebBackend for WebHost {
                 id,
                 result: Err(e.message()),
             });
+        }
+    }
+
+    fn post_message(&mut self, tab: &str, json: &str) {
+        let is_mod = self
+            .state
+            .views
+            .get(tab)
+            .is_some_and(|v| v.app.as_ref().is_some_and(|a| a.module.is_some()));
+        if !is_mod {
+            return;
+        }
+        if let Some(l) = self.live(tab) {
+            let j = wide(json);
+            // SAFETY: `webview` is a live COM object; `j` is NUL-terminated and outlives the call.
+            let _ = unsafe { l.webview.PostWebMessageAsJson(PCWSTR(j.as_ptr())) };
         }
     }
 

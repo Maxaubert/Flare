@@ -84,6 +84,23 @@ pub enum SettingsMsg {
     Dropper(PickResult),
     /// A setting changed: rebuild once.
     Changed,
+    /// The mods Flare knows changed (a scan, a switch): the Mods page draws them again.
+    Mods,
+}
+
+/// The Mods page's door to the mods (Surfaces stage 8). The window's controller of mods implements it; a run with
+/// no mods leaves it unset and the page is empty.
+pub trait ModsPort {
+    /// What the page shows now.
+    fn info(&self) -> flare_settings::page::mods::ModsInfo;
+    /// The page opened: look at the folder again (on a worker).
+    fn page_shown(&self);
+    /// The person turned a mod on or off.
+    fn set_enabled(&self, id: &str, on: bool);
+    /// The person asked for the mod's panel.
+    fn show_panel(&self, id: &str);
+    /// The mods folder.
+    fn dir(&self) -> PathBuf;
 }
 
 /// The picker answers on a worker, so its callback is `Send`.
@@ -178,6 +195,8 @@ pub struct SettingsCtl {
     verb_q: VerbQueue,
     /// How many full rebuilds ran (the tests count them).
     pub rebuilds: u32,
+    /// The Mods page's door to the mods (Surfaces stage 8); none until the window hands it over.
+    mods: Option<Rc<dyn ModsPort>>,
 }
 
 // ---- the pure mappers ------------------------------------------------------------------------------
@@ -642,6 +661,7 @@ impl SettingsCtl {
             mark_timer: slint::Timer::default(),
             verb_q: VerbQueue::default(),
             rebuilds: 0,
+            mods: None,
             deps,
         };
         let rc = Rc::new(RefCell::new(ctl));
@@ -871,6 +891,7 @@ impl SettingsCtl {
         if self.page == "dictation" {
             crate::dictation_ctl::page_shown();
         }
+        self.mods_page_shown();
         self.rebuild();
         self.picker_do(|p, ctx| p.recall(ctx));
     }
@@ -938,6 +959,25 @@ impl SettingsCtl {
                     self.refresh_if_visible();
                 }
             }
+            SettingsMsg::Mods => {
+                if self.page == "mods" {
+                    self.refresh_if_visible();
+                }
+            }
+        }
+    }
+
+    /// The window hands over the door to the mods (startup).
+    pub fn set_mods(&mut self, port: Rc<dyn ModsPort>) {
+        self.mods = Some(port);
+    }
+
+    /// The Mods page is in front: the folder is looked at again.
+    fn mods_page_shown(&self) {
+        if self.page == "mods"
+            && let Some(m) = &self.mods
+        {
+            m.page_shown();
         }
     }
 
@@ -1008,6 +1048,9 @@ impl SettingsCtl {
             verbose,
             dir: self.deps.diag.dir().to_string_lossy().into_owned(),
         };
+        let mods_info = (self.page == "mods")
+            .then(|| self.mods.as_ref().map(|m| m.info()))
+            .flatten();
         let env = PageEnv {
             prefs: &self.deps.prefs,
             look: &self.deps.look,
@@ -1026,6 +1069,7 @@ impl SettingsCtl {
             agent_colours: (self.deps.agent_colours)(),
             agent_key_labels: (self.deps.agent_key_labels)(),
             face_of: &*self.deps.face_of,
+            mods: mods_info.as_ref(),
         };
         build_page(self.page, &env, &*self.deps.dictation)
     }
@@ -1374,6 +1418,7 @@ impl SettingsCtl {
         } else {
             crate::dictation_ctl::page_left();
         }
+        self.mods_page_shown();
         crate::diag_ctl::crumb(
             "settings-page",
             &[("page", crate::diag_ctl::txt(self.page))],
@@ -1400,6 +1445,16 @@ impl SettingsCtl {
         if let Some(changed) = dictated {
             if changed {
                 self.refresh_if_visible();
+            }
+            return;
+        }
+        // A mod's switch is the mods controller's: it turns the mod on or off in memory at once, saves the
+        // switch on a worker and tells the page to draw again.
+        if let Event::Switch { row, on } = &ev
+            && let Some(id) = row.strip_prefix(flare_settings::page::mods::SWITCH_PREFIX)
+        {
+            if let Some(m) = &self.mods {
+                m.set_enabled(id, *on);
             }
             return;
         }
@@ -1466,6 +1521,20 @@ impl SettingsCtl {
     }
 
     fn row_button(&mut self, row: &str, button: &str) {
+        if row == flare_settings::page::mods::FOLDER_ROW && button == "open" {
+            if let Some(m) = &self.mods {
+                (self.deps.open_path)(&m.dir());
+            }
+            return;
+        }
+        if let Some(id) = row.strip_prefix(flare_settings::page::mods::PERMS_PREFIX) {
+            if button == "show"
+                && let Some(m) = &self.mods
+            {
+                m.show_panel(id);
+            }
+            return;
+        }
         if crate::dictation_ctl::owns_row(row) {
             if crate::dictation_ctl::page_button(row, button) {
                 self.refresh_if_visible();

@@ -30,6 +30,7 @@ mod settings_ink;
 mod settings_layout;
 mod settings_live;
 mod settings_look;
+mod settings_mods;
 mod settings_row;
 mod settings_select;
 mod settings_slider;

@@ -41,6 +41,8 @@ pub enum Call {
     Zoom(String, f64),
     /// A DevTools Protocol call: tab, id, method and params.
     Cdp(String, u64, String, String),
+    /// A message posted to a mod's page: tab and JSON text.
+    Post(String, String),
 }
 
 /// How a test plays the page's DevTools: method and params in, the answer out.
@@ -272,6 +274,17 @@ impl WebBackend for FakeWeb {
         }
     }
 
+    fn post_message(&mut self, tab: &str, json: &str) {
+        let mut s = self.state.borrow_mut();
+        // Only a mod's view has a bridge.
+        if s.views
+            .get(tab)
+            .is_some_and(|v| v.app.as_ref().is_some_and(|a| a.module.is_some()))
+        {
+            s.calls.push(Call::Post(tab.into(), json.into()));
+        }
+    }
+
     fn set_zoom(&mut self, tab: &str, factor: f64) {
         self.state
             .borrow_mut()
@@ -292,10 +305,12 @@ impl WebBackend for FakeWeb {
             bounds: v.bounds,
             visible: v.visible,
             url: v.url.clone(),
-            profile: v.app.as_ref().map_or(String::new(), |_| {
-                flare_surfaces::app::PROFILE_NAME.to_string()
+            profile: v.app.as_ref().map_or(String::new(), |a| match &a.module {
+                // A mod keeps its own profile, apart from the mini-apps' private one.
+                Some(m) => flare_surfaces::modview::profile_name(&m.id),
+                None => flare_surfaces::app::PROFILE_NAME.to_string(),
             }),
-            private: v.app.is_some(),
+            private: v.app.as_ref().is_some_and(|a| a.module.is_none()),
             ..ControllerProbe::default()
         })
     }

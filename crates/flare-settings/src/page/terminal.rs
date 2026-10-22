@@ -266,6 +266,7 @@ mod tests {
             agent_colours: [String::new(), String::new(), String::new()],
             agent_key_labels: "Ctrl+S, Ctrl+Tab".to_string(),
             face_of: face,
+            mods: None,
         }
     }
 

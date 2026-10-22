@@ -16,6 +16,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, Permission, code};
+use flare_mods::Hub;
 use flare_surfaces::PanelKind;
 use flare_surfaces::agent_job::{Op as AgentOp, Target};
 use flare_surfaces::agent_web::{self as agent_web, Button, WaitFor};
@@ -104,6 +105,22 @@ pub enum CtlOp {
         tab: String,
         op: AgentOp,
     },
+    /// `panel.open` with kind `mod:<id>` (stage 8): that mod's panel on the tab. The mod is on and has a panel
+    /// (checked by the call's thread); answered once the panel is shown.
+    ShowMod {
+        tab: String,
+        mod_id: String,
+    },
+    /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
+    /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
+    /// back through the hub.
+    ModTool {
+        tab: String,
+        mod_id: String,
+        call_id: String,
+        tool: String,
+        input: Value,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -143,6 +160,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
+            CtlOp::ShowMod { .. } => "CtlOp::ShowMod",
+            CtlOp::ModTool { .. } => "CtlOp::ModTool",
         })
     }
 }
@@ -214,6 +233,9 @@ pub struct AppDispatcher {
     eval: EvalSwitch,
     /// Mini-apps (stage 5); without it `view.html` and `view.diagram` answer `unavailable`.
     apps: Option<AppsCfg>,
+    /// Mods (stage 8): tokens, tools and the calls waiting on a mod's page. Without it no token resolves and
+    /// the mod methods answer `unavailable`.
+    mods: Option<Arc<Hub>>,
 }
 
 /// Is `browser.eval` switched on for the agent? Asked from any thread, at every request.
@@ -235,7 +257,123 @@ impl AppDispatcher {
             stopping,
             eval: Arc::new(|| false),
             apps: None,
+            mods: None,
         }
+    }
+
+    /// The mods hub (stage 8).
+    pub fn with_mods(mut self, hub: Arc<Hub>) -> Self {
+        self.mods = Some(hub);
+        self
+    }
+
+    fn hub(&self) -> Result<&Arc<Hub>, CtlError> {
+        self.mods.as_ref().ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "mods are not available in this run of Flare",
+            )
+        })
+    }
+
+    /// `mods.tools`: the tools the enabled mods offer the agent, by the name the agent calls them.
+    fn mods_tools(&self) -> Result<Value, CtlError> {
+        let tools: Vec<Value> = self
+            .hub()?
+            .tools()
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                })
+            })
+            .collect();
+        Ok(json!({"tools": tools}))
+    }
+
+    /// `mods.call`: routes the agent's call to its mod, has the window put it in front of the mod's page and waits
+    /// for the page's answer (at most [`flare_mods::hub::CALL_TIMEOUT`]).
+    fn mods_call(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let tab = Self::tab_of_call(ctx)?;
+        let hub = self.hub()?;
+        let name = str_param(params, "name")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "name is required"))?;
+        let input = match params.get("input") {
+            None | Some(Value::Null) => json!({}),
+            Some(v @ Value::Object(_)) => v.clone(),
+            Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "input must be an object")),
+        };
+        let call = hub.begin_call(name, input)?;
+        let op = CtlOp::ModTool {
+            tab,
+            mod_id: call.mod_id.clone(),
+            call_id: call.id.clone(),
+            tool: call.tool.clone(),
+            input: call.input.clone(),
+        };
+        if let Err(e) = self.ask_by(op, Instant::now() + BROWSER_WAIT) {
+            hub.cancel(&call.id);
+            return Err(e);
+        }
+        let stopping = Arc::clone(&self.stopping);
+        // sync-ok: a worker thread of the control channel waits for the mod's page, never the UI thread
+        let result = hub.wait(call, flare_mods::hub::CALL_TIMEOUT, &|| {
+            stopping.load(Ordering::SeqCst)
+        })?;
+        Ok(json!({"result": result}))
+    }
+
+    /// `tools.respond`: a mod answers a call (the page's `window.flare.respond`, or a helper with the mod's
+    /// token). Only the mod the call was routed to may answer it.
+    fn tools_respond(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let hub = self.hub()?;
+        let Grant::Mod { id, .. } = &ctx.grant else {
+            return Err(CtlError::new(
+                code::FORBIDDEN,
+                "only a mod answers a tool call",
+            ));
+        };
+        let call_id = str_param(params, "call_id")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "call_id is required"))?;
+        let outcome = match (params.get("result"), params.get("error")) {
+            (Some(r), None) => Ok(r.clone()),
+            (None, Some(Value::String(e))) => Err(e.clone()),
+            _ => {
+                return Err(CtlError::new(
+                    code::BAD_PARAMS,
+                    "send either result or error (a string), not both and not neither",
+                ));
+            }
+        };
+        hub.respond(id, call_id, outcome)?;
+        Ok(json!({}))
+    }
+
+    /// `panel.open` kind `mod:<id>`: the mod's panel on the caller's tab.
+    fn open_mod_panel(&self, ctx: &CallContext, mod_id: &str) -> Result<Value, CtlError> {
+        let tab = Self::tab_of_call(ctx)?;
+        let hub = self.hub()?;
+        if hub.grant_of_mod(mod_id).is_none() {
+            return Err(CtlError::new(
+                code::NOT_FOUND,
+                format!("no mod \"{mod_id}\" is turned on"),
+            ));
+        }
+        match hub.found(mod_id) {
+            Some(f) if f.manifest.panel.is_some() => {}
+            _ => {
+                return Err(CtlError::new(
+                    code::NOT_FOUND,
+                    format!("the mod \"{mod_id}\" has no panel"),
+                ));
+            }
+        }
+        self.ask(CtlOp::ShowMod {
+            tab,
+            mod_id: mod_id.to_string(),
+        })
     }
 
     /// Where mini-apps are written and the user's network switch for them (stage 5).
@@ -731,9 +869,9 @@ pub fn agent_op(method: Method, params: &Value) -> Result<(AgentOp, Duration), C
 }
 
 impl Dispatcher for AppDispatcher {
-    /// No mod has a token yet (stage 8): every mod token is unknown.
-    fn resolve_token(&self, _token: &str) -> Option<Grant> {
-        None
+    /// A mod's token (stage 8): the grant of exactly its permissions while it is on, nothing once it is off.
+    fn resolve_token(&self, token: &str) -> Option<Grant> {
+        self.mods.as_ref()?.grant_of_token(token)
     }
 
     fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
@@ -774,6 +912,10 @@ impl Dispatcher for AppDispatcher {
         // Mini-apps are listed only when this run can write them.
         if self.apps.is_some() {
             all.extend([Method::ViewHtml, Method::ViewDiagram]);
+        }
+        // Mods (stage 8) are listed only where there is a hub for them.
+        if self.mods.is_some() {
+            all.extend([Method::ModsTools, Method::ModsCall, Method::ToolsRespond]);
         }
         all
     }
@@ -830,9 +972,25 @@ impl Dispatcher for AppDispatcher {
                             Instant::now() + BROWSER_WAIT,
                         )
                     }
+                    Some(k) if k.starts_with("mod:") => {
+                        if let Some(extra) = ["url", "path", "text"]
+                            .iter()
+                            .find(|p| params.get(**p).is_some_and(|v| !v.is_null()))
+                        {
+                            return Err(CtlError::new(
+                                code::BAD_PARAMS,
+                                format!("{extra} does not go with kind {k}"),
+                            ));
+                        }
+                        let id = k.trim_start_matches("mod:");
+                        if !flare_surfaces::kind::valid_mod_id(id) {
+                            return Err(CtlError::new(code::BAD_PARAMS, "that is not a mod id"));
+                        }
+                        self.open_mod_panel(ctx, id)
+                    }
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
-                        "panel.open takes kind web, changes, tasks or board; use view.image, view.file or view.text",
+                        "panel.open takes kind web, changes, tasks, board or mod:<id>; use view.image, view.file or view.text",
                     )),
                 }
             }
@@ -887,6 +1045,9 @@ impl Dispatcher for AppDispatcher {
             Method::ConvoState => self.ask(CtlOp::ConvoState {
                 tab: Self::tab_of_call(ctx)?,
             }),
+            Method::ModsTools => self.mods_tools(),
+            Method::ModsCall => self.mods_call(ctx, &params),
+            Method::ToolsRespond => self.tools_respond(ctx, &params),
             Method::ViewHtml => self.view_html(ctx, &params),
             Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
@@ -940,6 +1101,7 @@ pub fn mcp_exe_beside(exe: &std::path::Path) -> Option<String> {
 pub struct CtlServer {
     server: Arc<std::sync::Mutex<Option<flare_ctl::Server>>>,
     stopping: Arc<AtomicBool>,
+    dispatcher: Arc<AppDispatcher>,
 }
 
 impl CtlServer {
@@ -952,20 +1114,33 @@ impl CtlServer {
         home: String,
         eval: EvalSwitch,
         apps: AppsCfg,
+        mods: Option<Arc<Hub>>,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
-        let dispatcher = Arc::new(
-            AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
-                .with_eval(eval)
-                .with_apps(apps),
-        );
+        let mut d = AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
+            .with_eval(eval)
+            .with_apps(apps);
+        if let Some(hub) = mods {
+            d = d.with_mods(hub);
+        }
+        let dispatcher = Arc::new(d);
         // sync-ok: startup, creates the pipe and its accept thread
-        let server =
-            flare_ctl::Server::start(pipe, flare_ctl::ServerConfig::default(), dispatcher)?;
+        let server = flare_ctl::Server::start(
+            pipe,
+            flare_ctl::ServerConfig::default(),
+            Arc::clone(&dispatcher) as Arc<dyn Dispatcher>,
+        )?;
         Ok(Self {
             server: Arc::new(std::sync::Mutex::new(Some(server))),
             stopping,
+            dispatcher,
         })
+    }
+
+    /// The dispatcher the pipe's calls run on, for the window's own in-process calls (a mod's page talks to
+    /// Flare through the same one, with its mod's grant).
+    pub fn dispatcher(&self) -> Arc<dyn Dispatcher> {
+        Arc::clone(&self.dispatcher) as Arc<dyn Dispatcher>
     }
 
     /// Where the app's events go: to the clients of the tab they are about. Nothing once stopped.
@@ -2285,6 +2460,7 @@ mod tests {
                     folder: "C:\\SECRET".into(),
                     url: "https://flare-app-1.local/index.html".into(),
                     allow_network: false,
+                    module: None,
                 },
                 title: "SECRET".into(),
                 diagram: false,

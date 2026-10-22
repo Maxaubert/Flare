@@ -8,6 +8,8 @@ use std::time::Duration;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Time for the `browser.*` methods (page loads, waits).
 pub const BROWSER_TIMEOUT: Duration = Duration::from_secs(60);
+/// Time for `mods.call`: the mod's page has 30 s, and a page that has to be opened first needs a few more.
+pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -42,6 +44,11 @@ pub enum Method {
     SettingsSet,
     /// Reserved, UI only: enable or disable a mod.
     ModsEnable,
+    /// The tools the enabled mods offer the agent (`flare-mcp` lists them). The agent's, not a mod's.
+    ModsTools,
+    /// The agent calls one mod tool by its agent-facing name (`mod_<id>_<tool>`) and waits for the mod's page
+    /// to answer.
+    ModsCall,
 }
 
 /// What a method belongs to, which decides which grants may call it.
@@ -54,13 +61,15 @@ pub enum Namespace {
     Browser,
     Convo,
     Tools,
+    /// The agent's view of the mods' tools (`mods.tools`, `mods.call`): the agent and the app, never a mod.
+    AgentTools,
     /// Methods only the app's own UI may call (settings, shell input, mod management).
     Ui,
 }
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 24] = [
+    pub const ALL: [Method; 26] = [
         Method::Hello,
         Method::TabsList,
         Method::PanelOpen,
@@ -85,6 +94,8 @@ impl Method {
         Method::ShellInput,
         Method::SettingsSet,
         Method::ModsEnable,
+        Method::ModsTools,
+        Method::ModsCall,
     ];
 
     /// The wire name.
@@ -114,6 +125,8 @@ impl Method {
             Method::ShellInput => "shell.input",
             Method::SettingsSet => "settings.set",
             Method::ModsEnable => "mods.enable",
+            Method::ModsTools => "mods.tools",
+            Method::ModsCall => "mods.call",
         }
     }
 
@@ -143,6 +156,7 @@ impl Method {
             | Method::BrowserEval => Namespace::Browser,
             Method::ConvoState => Namespace::Convo,
             Method::ToolsRespond => Namespace::Tools,
+            Method::ModsTools | Method::ModsCall => Namespace::AgentTools,
             Method::ShellInput | Method::SettingsSet | Method::ModsEnable => Namespace::Ui,
         }
     }
@@ -155,6 +169,9 @@ impl Method {
             Namespace::View if matches!(self, Method::ViewHtml | Method::ViewDiagram) => {
                 BROWSER_TIMEOUT
             }
+            // The mod's page has 30 s to answer (`flare_mods::hub::CALL_TIMEOUT`); the channel lets the
+            // handler run a little longer, so the answer is the app's own, with the mod's name in it.
+            Namespace::AgentTools if self == Method::ModsCall => MOD_CALL_TIMEOUT,
             _ => DEFAULT_TIMEOUT,
         }
     }
@@ -187,6 +204,7 @@ mod tests {
                 Namespace::Browser => prefix == "browser",
                 Namespace::Convo => prefix == "convo",
                 Namespace::Tools => prefix == "tools",
+                Namespace::AgentTools => prefix == "mods",
                 Namespace::Ui => matches!(prefix, "shell" | "settings" | "mods"),
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
@@ -216,5 +234,12 @@ mod tests {
         assert_eq!(Method::ViewHtml.timeout(), BROWSER_TIMEOUT);
         assert_eq!(Method::ViewDiagram.timeout(), BROWSER_TIMEOUT);
         assert!(BROWSER_TIMEOUT > DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn a_mod_tool_call_waits_for_the_mods_30_seconds_and_a_listing_does_not() {
+        assert_eq!(Method::ModsCall.timeout(), MOD_CALL_TIMEOUT);
+        assert!(MOD_CALL_TIMEOUT > Duration::from_secs(30));
+        assert_eq!(Method::ModsTools.timeout(), DEFAULT_TIMEOUT);
     }
 }

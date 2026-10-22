@@ -143,6 +143,12 @@ pub enum WebEvent {
         id: u64,
         result: Result<String, String>,
     },
+    /// A mod's page sent a message over its bridge (`window.flare`). `json` is the text the page posted, from
+    /// the mod's own address only; it is untrusted until `flare_mods::bridge::parse_page_message` has read it.
+    ModMessage {
+        tab: String,
+        json: String,
+    },
 }
 
 impl WebEvent {
@@ -167,6 +173,7 @@ impl WebEvent {
             WebEvent::Gone { .. } => "Gone",
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
+            WebEvent::ModMessage { .. } => "ModMessage",
         }
     }
 }
@@ -233,6 +240,9 @@ pub trait WebBackend {
     /// caller's `id`, posted from the browser's completion and never waited for (rule 34). A tab with
     /// no view answers at once with an error.
     fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str);
+    /// Posts a message to a mod's page (its bridge's `message` event). Does nothing for a view that is not a
+    /// mod's or has no page yet.
+    fn post_message(&mut self, tab: &str, json: &str);
     /// The e2e only: sets the browser's own zoom of the tab's page (what Ctrl+wheel in the panel does).
     fn set_zoom(&mut self, tab: &str, factor: f64);
     /// The e2e only: runs a script in the page; answered by `WebEvent::Script`.
@@ -325,6 +335,7 @@ mod tests {
             folder: "C:\\apps".into(),
             url: app_url(&app_host(n)),
             allow_network: false,
+            module: None,
         };
         f.open("a", "https://a.example/", r, true);
         assert!(!f.probe("a").unwrap().private);
@@ -347,6 +358,46 @@ mod tests {
             .count();
         assert_eq!(closes, 3, "{:?}", f.calls());
         assert_eq!(f.controllers(), 1);
+    }
+
+    #[test]
+    fn a_mods_view_has_a_profile_of_its_own_and_is_the_only_one_a_message_reaches() {
+        use flare_surfaces::modview::mod_spec;
+        let (sink, _seen) = collecting();
+        let mut f = FakeWeb::new(sink);
+        let r = PhysRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        f.open("page", "https://a.example/", r, true);
+        f.open_app(
+            "mod",
+            mod_spec(
+                "notes",
+                std::path::Path::new("C:\\mods\\notes"),
+                "index.html",
+            ),
+            r,
+            true,
+        );
+        let p = f.probe("mod").unwrap();
+        assert_eq!(p.profile, "flare-mod-notes");
+        assert!(!p.private, "a mod keeps its own storage between runs");
+        f.post_message("page", "{}");
+        f.post_message("mod", r#"{"t":"tool"}"#);
+        f.post_message("nowhere", "{}");
+        let posts: Vec<_> = f
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, Call::Post(..)))
+            .collect();
+        assert_eq!(
+            posts,
+            [Call::Post("mod".into(), r#"{"t":"tool"}"#.into())],
+            "only the mod's view gets a message"
+        );
     }
 
     #[test]

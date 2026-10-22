@@ -148,7 +148,7 @@ fn world_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
 }
 
 /// What a script says, as the text (the page's JSON string, decoded).
-fn say(ctx: &mut Ctx, app: &mut App, js: &str) -> String {
+pub(super) fn say(ctx: &mut Ctx, app: &mut App, js: &str) -> String {
     script(ctx, app, js)
         .map(|s| decoded(&s))
         .unwrap_or_default()
@@ -162,7 +162,7 @@ fn decoded(json_text: &str) -> String {
 /// Runs `js` in the page over and over until its answer satisfies `ok`: each turn starts the script and
 /// the next one reads its answer (the wait is `ctx.until`, the one wait primitive). Gives whether it
 /// held and the last answer, with the quotes of a JSON string taken off.
-fn until_says(
+pub(super) fn until_says(
     ctx: &mut Ctx,
     what: &str,
     ms: u64,

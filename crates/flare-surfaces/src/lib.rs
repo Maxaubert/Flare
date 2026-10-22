@@ -17,6 +17,7 @@ pub mod board;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;
+pub mod modview;
 pub mod notify;
 pub mod overlay;
 pub mod preview;

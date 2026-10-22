@@ -1,0 +1,575 @@
+//! Mods (Surfaces stage 8): `modsSample`.
+//!
+//! The scenario starts the built release exe in its own world and profile and copies the sample mod of
+//! `docs/surfaces/sample-mod` (and one broken folder) into the PROFILE's mods folder, so the owner's real mods
+//! are never read. It then plays the person with the pointer on Settings > Mods and the agent with the built
+//! `flare-mcp.exe`, exactly as Claude Code would run it inside the tab. Nothing is fetched from the network
+//! (the page's own `fetch` of an outside address is checked to be blocked, against nothing that listens), no
+//! real window gets input, and the window is parked off the screen like every scenario.
+//!
+//! It holds: the page lists the sample (name, version, plain-word permissions, off) and the broken folder with
+//! its reason; the switch turns the mod on (its token and its tool appear, `mods.json` holds the switch and
+//! no token); `flare-mcp`'s `tools/list` offers `mod_notes_append_note`; `tools/call` opens the mod's panel in
+//! the caller's tab, the page gets the call over its bridge and the note it was given is in the panel; the page
+//! runs in a profile of its own (`flare-mod-notes`, not private, never the web panel's), can reach no outside
+//! address, holds a frozen `window.flare` without a token, is refused every permission the manifest did not ask
+//! for (`browser.open`, `view.text`), and is served from its own address; turning the mod off removes its tool,
+//! closes its panel and frees its browser, and a call to the tool is refused; and a restart keeps the switch,
+//! mints a new token and keeps the page's own storage (the notes it kept).
+
+use std::fs;
+use std::path::Path;
+
+use serde_json::{json, Value};
+
+use super::ctl::{info, mcp, mcp_exe_of, run_mcp};
+use super::driver::{goto_page, open_settings, row, settings_front};
+use super::input_b::{probe, prompt};
+use super::mini_app::{say, until_says};
+use super::web::{script, state};
+use crate::ctx::{App, Ctx, Launch};
+
+const SAMPLE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/surfaces/sample-mod/notes"
+);
+
+/// A second page of the sample's folder: its own policy lets an image of its own folder load.
+const OTHER: &str = r#"<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; script-src 'unsafe-inline'">
+<title>Other</title></head><body><script>
+var i = new Image();
+i.onload = function () { document.title = 'img ' + i.naturalWidth; };
+i.onerror = function () { document.title = 'img error'; };
+i.src = '/logo.png';
+</script></body></html>"#;
+
+fn mods_state(app: &mut App) -> Value {
+    probe(app, "mods.state", Value::Null)
+}
+
+fn copy_sample(mods: &Path) -> Result<(), String> {
+    let to = mods.join("notes");
+    fs::create_dir_all(&to).map_err(|e| format!("make the sample folder: {e}"))?;
+    for name in ["mod.json", "index.html"] {
+        fs::copy(Path::new(SAMPLE).join(name), to.join(name))
+            .map_err(|e| format!("copy the sample {name}: {e}"))?;
+    }
+    write_logo(&to.join("logo.png"))?;
+    fs::write(to.join("other.html"), OTHER).map_err(|e| format!("write other.html: {e}"))?;
+    // A folder that is not a mod: the page names it and says why.
+    let bad = mods.join("broken-mod");
+    fs::create_dir_all(&bad).map_err(|e| format!("make the broken folder: {e}"))?;
+    fs::write(bad.join("mod.json"), "{ not json").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A 4 by 4 picture: the page loads it from its own folder.
+fn write_logo(path: &Path) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|e| format!("make the logo: {e}"))?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), 4, 4);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut w = enc.write_header().map_err(|e| e.to_string())?;
+    let px: Vec<u8> = (0..16).flat_map(|_| [30u8, 160, 90, 255]).collect();
+    w.write_image_data(&px).map_err(|e| e.to_string())
+}
+
+fn launch(ctx: &mut Ctx) -> Result<App, String> {
+    let alpha = ctx.ensure_world().alpha.clone();
+    ctx.launch(Launch {
+        renderer: Some("gpu"),
+        folders: vec![alpha],
+        ..Launch::default()
+    })
+}
+
+/// Starts a script that stores its answer in `window.__r`, then reads it once it is there.
+fn say_later(ctx: &mut Ctx, app: &mut App, start: &str) -> String {
+    let _ = say(ctx, app, &format!("window.__r = null; {start}; 'started'"));
+    until_says(
+        ctx,
+        "the page to answer",
+        15_000,
+        app,
+        "window.__r === null ? '' : String(window.__r)",
+        &|s| !s.is_empty(),
+    )
+    .1
+}
+
+/// The pointer on a Settings row: its centre.
+fn click_row(app: &mut App, id: &str) -> bool {
+    let r = row(app, id);
+    let rect = &r["rect"];
+    let (Some(x), Some(y), Some(w), Some(h)) = (
+        rect["x"].as_f64(),
+        rect["y"].as_f64(),
+        rect["w"].as_f64(),
+        rect["h"].as_f64(),
+    ) else {
+        return false;
+    };
+    // The middle of the row's text, away from the switch at its right edge: a press anywhere on a switch row flips it.
+    app.session
+        .click((x + w / 3.0) as f32, (y + h / 2.0) as f32)
+        .is_ok()
+}
+
+fn names_of(reply: &Value) -> Vec<String> {
+    reply["result"]["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|x| x["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn handshake() -> Vec<Value> {
+    vec![
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "flare-e2e", "version": "1"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    ]
+}
+
+fn append(id: u64, text: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "mod_notes_append_note", "arguments": {"text": text}}})
+}
+
+pub fn mods_sample(ctx: &mut Ctx) -> Result<(), String> {
+    let exe = mcp_exe_of(ctx);
+    if !exe.is_file() {
+        ctx.ok(
+            false,
+            format!(
+                "{} is missing; build it: cargo build --release -p flare -p flare-mcp",
+                exe.display()
+            ),
+        );
+        return Ok(());
+    }
+    let profile = ctx.ensure_world().profile.clone();
+    copy_sample(&profile.join("mods"))?;
+    let mut app = launch(ctx)?;
+    let r = first_run(ctx, &mut app, &exe, &profile);
+    let left = app.close();
+    ctx.ok(left, "the app quits by itself");
+    r?;
+    // A restart: the switch is kept, the token is new, the page's own storage is kept.
+    let mut app = launch(ctx)?;
+    let r = second_run(ctx, &mut app, &exe);
+    let left = app.close();
+    ctx.ok(left, "the second run quits by itself");
+    r
+}
+
+fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result<(), String> {
+    prompt(app)?;
+    let up = ctx.until("the first scan", 15_000, &mut || {
+        mods_state(app)["scanned"] == json!(true)
+    });
+    ctx.ok(up, "the mods folder was scanned at start");
+    let s = mods_state(app);
+    ctx.ok(
+        s["mods"].as_array().is_some_and(|m| m.len() == 1)
+            && s["mods"][0]["id"] == json!("notes")
+            && s["mods"][0]["enabled"] == json!(false)
+            && s["tools"] == json!([]),
+        format!("one mod found, off, with no tools ({s})"),
+    );
+    ctx.ok(
+        s["errors"][0]["folder"] == json!("broken-mod"),
+        format!("the broken folder is reported by name ({})", s["errors"]),
+    );
+
+    // ---- Settings > Mods lists it, off, with its words ----
+    let opened = open_settings(ctx, app) && goto_page(ctx, app, "mods");
+    ctx.ok(opened, "Settings is open on the Mods page");
+    let listed = ctx.until("the mod's rows", 10_000, &mut || {
+        row(app, "mod:notes")["rect"].is_object()
+    });
+    ctx.ok(listed, "the page lists the mod");
+    let sw = row(app, "mod:notes");
+    ctx.ok(
+        sw["label"] == json!("Notes 1.0.0") && sw["on"] == json!(false),
+        format!("its name and version, and the switch is off ({sw})"),
+    );
+    let perms = row(app, "modperm:notes");
+    ctx.ok(
+        perms["sub"] == json!("Show its panel in a tab, Answer the agent's tool calls"),
+        format!("its permissions are in plain words before it is turned on ({perms})"),
+    );
+    let bad = row(app, "modbad:0");
+    ctx.ok(
+        bad["label"] == json!("broken-mod")
+            && bad["sub"].as_str().is_some_and(|s| s.contains("mod.json")),
+        format!("the broken folder is a warning with its reason ({bad})"),
+    );
+    ctx.ok(
+        row(app, "mods-folder")["rect"].is_object(),
+        "the Open mods folder row is there",
+    );
+
+    // Off: the agent has no mod tool.
+    let inf = info(app).ok_or("ctl.info answers")?;
+    // The shell tab's secret (Settings is in front now, so no shell tab is the active one).
+    let token = inf.tabs.first().map(|t| t.2.clone()).ok_or("a shell tab")?;
+    let off = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
+    ctx.ok(
+        names_of(&off[1]).len() == 15 && !names_of(&off[1]).iter().any(|n| n.starts_with("mod_")),
+        format!(
+            "off: tools/list has only the built-in tools ({:?})",
+            names_of(&off[1])
+        ),
+    );
+
+    // ---- the person turns it on ----
+    ctx.ok(click_row(app, "mod:notes"), "the switch row is pressed");
+    let on = ctx.until("the mod to be on", 10_000, &mut || {
+        let s = mods_state(app);
+        s["mods"][0]["enabled"] == json!(true)
+            && s["tools"] == json!(["mod_notes_append_note"])
+            && row(app, "mod:notes")["on"] == json!(true)
+    });
+    ctx.ok(
+        on,
+        "the mod is on: its tool is offered and the switch shows it",
+    );
+    let saved = ctx.until("mods.json", 10_000, &mut || {
+        fs::read_to_string(profile.join("mods.json")).is_ok_and(|t| t.contains("\"notes\":true"))
+    });
+    ctx.ok(saved, "the switch was saved");
+    let file = fs::read_to_string(profile.join("mods.json")).unwrap_or_default();
+    ctx.ok(
+        !file.to_lowercase().contains("token"),
+        "mods.json holds the switch and no token",
+    );
+    let shown = row(app, "modperm:notes");
+    ctx.ok(
+        shown["buttons"][0]["id"] == json!("show") && shown["buttons"][0]["off"] == json!(false),
+        format!("its Show panel button is offered now ({shown})"),
+    );
+    // Back to the shell tab, where the agent works.
+    let _ = app.session.key("Ctrl+Tab");
+    let left = ctx.until("the shell tab in front", 8_000, &mut || {
+        !settings_front(app)
+    });
+    ctx.ok(left, "the shell tab is in front");
+
+    // ---- the agent lists and calls the tool ----
+    let list = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
+    let names = names_of(&list[1]);
+    ctx.ok(
+        names.len() == 16 && names.last().map(String::as_str) == Some("mod_notes_append_note"),
+        format!("on: tools/list ends with the mod's tool ({names:?})"),
+    );
+    let tool = list[1]["result"]["tools"][15].clone();
+    ctx.ok(
+        tool["inputSchema"]["type"] == json!("object")
+            && tool["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("Notes panel")),
+        format!("it carries the manifest's description and an object schema ({tool})"),
+    );
+    // The call opens the mod's panel in the tab and waits for the page.
+    let call = run_mcp(
+        &mcp(exe, &inf, Some(&token), None),
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            append(2, "buy milk"),
+        ],
+    )?;
+    ctx.ok(
+        call[1]["result"]["isError"] == json!(false)
+            && call[1]["result"]["content"][0]["text"] == json!("{\"count\":1}"),
+        format!("the page answered the call ({})", call[1]),
+    );
+    let s = mods_state(app);
+    ctx.ok(
+        s["panels"][0]["mod"] == json!("notes")
+            && s["bound"][0]["ready"] == json!(true)
+            && s["panel_kind"] == json!(3)
+            && s["panel_title"] == json!("Notes")
+            && s["pending"] == json!([]),
+        format!("the mod's panel is open in the tab, its page ready, no call left waiting ({s})"),
+    );
+    let note = say(ctx, app, "document.getElementById('list').textContent");
+    ctx.ok(
+        note == "buy milk",
+        format!("the panel shows the text the agent sent (\"{note}\")"),
+    );
+    let _ = run_mcp(
+        &mcp(exe, &inf, Some(&token), None),
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            append(2, "and eggs"),
+        ],
+    )?;
+    let two = say(ctx, app, "document.querySelectorAll('#list li').length + ':' + document.querySelectorAll('#list li')[1].textContent");
+    ctx.ok(
+        two == "2:and eggs",
+        format!("a second call adds a second line ({two})"),
+    );
+
+    // ---- the page: its own site, its own profile, no network, a frozen bridge without a token ----
+    let w = state(app);
+    ctx.ok(
+        w["controller"]["url"] == json!("https://flare-mod-notes.local/")
+            && w["controller"]["profile"] == json!("flare-mod-notes")
+            && w["controller"]["private"] == json!(false),
+        format!(
+            "a view of the mod's own address and own profile ({})",
+            w["controller"]
+        ),
+    );
+    let origin = say(ctx, app, "location.origin");
+    ctx.ok(
+        origin == "https://flare-mod-notes.local",
+        format!("the page's origin is the mod's own ({origin})"),
+    );
+    let keys = say(ctx, app, "Object.keys(window.flare).join(',') + '|' + Object.isFrozen(window.flare) + '|' + JSON.stringify(window.flare).length");
+    ctx.ok(
+        keys == "on,respond,call|true|2",
+        format!("window.flare has on, respond and call, is frozen and holds no data ({keys})"),
+    );
+    let bridge_off = say(
+        ctx,
+        app,
+        "try { window.flare = 1; String(typeof window.flare) } catch (e) { 'threw' }",
+    );
+    ctx.ok(
+        bridge_off == "object",
+        format!("the page cannot replace window.flare ({bridge_off})"),
+    );
+    let net = say_later(
+        ctx,
+        app,
+        "fetch('https://example.invalid/x').then(function () { window.__r = 'loaded' }, function () { window.__r = 'blocked' })",
+    );
+    ctx.ok(
+        net == "blocked",
+        format!("a request to an outside address is blocked ({net})"),
+    );
+    // Navigation inside the mod's own address is allowed and is served file by file: a second page of the
+    // folder loads an image of its own (its own policy lets `img-src 'self'` through).
+    let _ = say(ctx, app, "location.href = '/other.html'; 'going'");
+    let (moved, title) = until_says(
+        ctx,
+        "the second page of the mod to load",
+        15_000,
+        app,
+        "document.title",
+        &|t| t.starts_with("img "),
+    );
+    ctx.ok(
+        moved && title == "img 4",
+        format!("a second page of the mod's folder loaded its image from the folder ({title})"),
+    );
+    let here = state(app);
+    ctx.ok(
+        here["controller"]["url"] == json!("https://flare-mod-notes.local/other.html"),
+        format!(
+            "the view is at the mod's own address ({})",
+            here["controller"]["url"]
+        ),
+    );
+    let still_flare = say(
+        ctx,
+        app,
+        "typeof window.flare + ':' + Object.isFrozen(window.flare)",
+    );
+    ctx.ok(
+        still_flare == "object:true",
+        format!("the bridge is in the second page too ({still_flare})"),
+    );
+    let gone = say_later(
+        ctx,
+        app,
+        "var i = new Image(); i.onload = function () { window.__r = 'loaded' }; i.onerror = function () { window.__r = 'error' }; i.src = '/missing.png'",
+    );
+    ctx.ok(
+        gone == "error",
+        format!("a file that is not there is a miss ({gone})"),
+    );
+    // Back to the page the agent's calls need.
+    let _ = say(ctx, app, "location.href = '/'; 'back'");
+    let (home, _) = until_says(
+        ctx,
+        "the first page again",
+        15_000,
+        app,
+        "document.title",
+        &|t| t == "Notes",
+    );
+    ctx.ok(home, "the mod's own page again");
+    let own_fetch = say_later(
+        ctx,
+        app,
+        "fetch('/mod.json').then(function () { window.__r = 'loaded' }, function () { window.__r = 'blocked' })",
+    );
+    ctx.ok(
+        own_fetch == "blocked",
+        format!("a fetch, even of its own address, is blocked by the policy ({own_fetch})"),
+    );
+    for (method, params, want) in [
+        ("browser.open", "{url: 'https://example.com/'}", "forbidden"),
+        ("view.text", "{text: 'x'}", "forbidden"),
+        ("convo.state", "{}", "forbidden"),
+        ("settings.set", "{}", "forbidden"),
+        ("nope.nothing", "{}", "unknown_method"),
+    ] {
+        let got = say_later(
+            ctx,
+            app,
+            &format!(
+                "window.flare.call('{method}', {params}).then(function () {{ window.__r = 'ok' }}, function (e) {{ window.__r = e.code }})"
+            ),
+        );
+        ctx.ok(
+            got == want,
+            format!("{method} from the page: {got} (wanted {want})"),
+        );
+    }
+    let tabs = say_later(
+        ctx,
+        app,
+        "window.flare.call('tabs.list', {}).then(function (r) { window.__r = 'tabs:' + r.tabs.length }, function (e) { window.__r = e.code })",
+    );
+    ctx.ok(
+        tabs == "tabs:1",
+        format!("tabs.list is open to a mod with panel ({tabs})"),
+    );
+
+    // ---- the person turns it off ----
+    let again_open = open_settings(ctx, app) && goto_page(ctx, app, "mods");
+    ctx.ok(again_open, "Settings is open on the Mods page again");
+    ctx.ok(
+        click_row(app, "mod:notes"),
+        "the switch row is pressed again",
+    );
+    let gone = ctx.until("the mod to be off", 10_000, &mut || {
+        let s = mods_state(app);
+        s["mods"][0]["enabled"] == json!(false)
+            && s["tools"] == json!([])
+            && s["panels"] == json!([])
+            && s["bound"] == json!([])
+            && row(app, "mod:notes")["on"] == json!(false)
+    });
+    ctx.ok(
+        gone,
+        "off: the tool is gone, the panel is closed, the page is unbound",
+    );
+    let freed = ctx.until("the browser view to be freed", 10_000, &mut || {
+        state(app)["controllers"] == json!(0)
+    });
+    ctx.ok(freed, "the mod's browser view was freed");
+    let off_list = run_mcp(&mcp(exe, &inf, Some(&token), None), &handshake())?;
+    ctx.ok(
+        names_of(&off_list[1]).len() == 15,
+        format!(
+            "off again: tools/list is the built-in tools ({:?})",
+            names_of(&off_list[1])
+        ),
+    );
+    let refused = run_mcp(
+        &mcp(exe, &inf, Some(&token), None),
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            append(2, "too late"),
+        ],
+    )?;
+    let text = refused[1]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    ctx.ok(
+        refused[1]["result"]["isError"] == json!(true) && text.contains("no mod offers a tool"),
+        format!("a call to the tool is refused ({text})"),
+    );
+    // Turned on again for the restart check.
+    ctx.ok(
+        click_row(app, "mod:notes"),
+        "the switch row is pressed a third time",
+    );
+    let again = ctx.until("the mod to be on again", 10_000, &mut || {
+        mods_state(app)["tools"] == json!(["mod_notes_append_note"])
+    });
+    ctx.ok(again, "on again");
+    let saved = ctx.until("mods.json to say on", 10_000, &mut || {
+        fs::read_to_string(profile.join("mods.json")).is_ok_and(|t| t.contains("\"notes\":true"))
+    });
+    ctx.ok(saved, "the last switch was saved");
+    // The Show panel button: the mod's panel opens in the shell tab and that tab comes to the front.
+    let r = row(app, "modperm:notes");
+    let (x, y, w, h) = (
+        r["rect"]["x"].as_f64().unwrap_or(0.0),
+        r["rect"]["y"].as_f64().unwrap_or(0.0),
+        r["rect"]["w"].as_f64().unwrap_or(0.0),
+        r["rect"]["h"].as_f64().unwrap_or(0.0),
+    );
+    // Buttons sit 16 px in from the row's right end: a point 30 px in lands on a button wider than 14 px.
+    let _ = app
+        .session
+        .click((x + w - 30.0) as f32, (y + h / 2.0) as f32);
+    let shown = ctx.until(
+        "the mod's panel to be shown by the button",
+        15_000,
+        &mut || {
+            let s = mods_state(app);
+            s["panels"][0]["mod"] == json!("notes")
+                && !settings_front(app)
+                && s["panel_kind"] == json!(3)
+        },
+    );
+    ctx.ok(
+        shown,
+        "the Show panel button opens the mod's panel in the shell tab and brings it forward",
+    );
+    Ok(())
+}
+
+fn second_run(ctx: &mut Ctx, app: &mut App, exe: &Path) -> Result<(), String> {
+    prompt(app)?;
+    let up = ctx.until("the scan", 15_000, &mut || {
+        let s = mods_state(app);
+        s["scanned"] == json!(true) && s["tools"] == json!(["mod_notes_append_note"])
+    });
+    ctx.ok(
+        up,
+        "a restart keeps the switch: the mod is on and its tool is offered",
+    );
+    let inf = info(app).ok_or("ctl.info answers")?;
+    // The shell tab's secret (Settings is in front now, so no shell tab is the active one).
+    let token = inf
+        .tabs
+        .iter()
+        .find(|t| t.1)
+        .map(|t| t.2.clone())
+        .ok_or("a tab in front")?;
+    let call = run_mcp(
+        &mcp(exe, &inf, Some(&token), None),
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            append(2, "after the restart"),
+        ],
+    )?;
+    ctx.ok(
+        call[1]["result"]["content"][0]["text"] == json!("{\"count\":3}"),
+        format!(
+            "the page kept its own notes across the restart ({})",
+            call[1]
+        ),
+    );
+    let raw = script(
+        ctx,
+        app,
+        "document.querySelectorAll('#list li').length + ':' + document.querySelectorAll('#list li')[2].textContent",
+    );
+    ctx.ok(
+        raw.as_deref() == Some("\"3:after the restart\""),
+        format!("the panel shows all three lines ({raw:?})"),
+    );
+    Ok(())
+}
