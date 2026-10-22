@@ -7,7 +7,10 @@ import { Theme, Px } from "theme.slint";
 export component PreviewChip inherits Rectangle {
     // "localhost:5173"; the chip is hidden while this is empty.
     in property <string> label;
+    // The full origin the chip opens ("http://localhost:5173/"), shown as the tooltip.
+    in property <string> tip-text;
     callback clicked();
+    callback tip(string, length, length, length, length);
 
     height: Px.snap(26px);
     width: Px.snap(10px + 12px + 6px + words.preferred-width + 6px + host.preferred-width + 12px);
@@ -51,5 +54,14 @@ export component PreviewChip inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if (root.tip-text != "") {
+                if (self.has-hover) {
+                    root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
     }
 }

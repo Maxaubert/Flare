@@ -115,6 +115,73 @@ pub fn is_listening(port: u16) -> bool {
     !listener_pids(port).is_empty() || !listener_pids_v6(port).is_empty()
 }
 
+/// The most process rows one snapshot is read for (a machine has thousands, never millions).
+const SNAPSHOT_MAX: usize = 200_000;
+
+/// `root` and every process below it, from (pid, parent pid) rows. Each pid is visited once, so a cycle (a reused
+/// parent id) ends the walk, and the set never outgrows the rows.
+pub fn descendants(rows: &[(u32, u32)], root: u32) -> std::collections::HashSet<u32> {
+    let mut set = std::collections::HashSet::new();
+    if root == 0 {
+        return set;
+    }
+    set.insert(root);
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for (pid, parent) in rows {
+            if *pid != 0 && set.contains(parent) && set.insert(*pid) {
+                grew = true;
+            }
+        }
+    }
+    set
+}
+
+/// (pid, parent pid) of every process, from one Toolhelp snapshot (bounded). Empty when it cannot be taken.
+fn process_rows() -> Vec<(u32, u32)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: plain values in; an invalid handle is checked.
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap == INVALID_HANDLE_VALUE || snap.is_null() {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    // SAFETY: PROCESSENTRY32W is plain data; zero is valid before dwSize is set.
+    let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    // SAFETY: `snap` is a live snapshot handle and `e` has its size set.
+    let mut ok = unsafe { Process32FirstW(snap, &mut e) } != 0;
+    while ok && rows.len() < SNAPSHOT_MAX {
+        rows.push((e.th32ProcessID, e.th32ParentProcessID));
+        // SAFETY: as above.
+        ok = unsafe { Process32NextW(snap, &mut e) } != 0;
+    }
+    // SAFETY: `snap` is closed once.
+    unsafe { CloseHandle(snap) };
+    rows
+}
+
+/// True when something listens on `port` and EVERY listener on it (either address family) is `root` or one of its
+/// descendants. A port held by any other process, or by a server outside the tab's process tree (WSL's
+/// processes are not in it), reads as "no". Unreadable tables read as "no". Run it on a worker.
+pub fn listening_in_tree(port: u16, root: u32) -> bool {
+    if root == 0 {
+        return false;
+    }
+    let mut owners = listener_pids(port);
+    owners.extend(listener_pids_v6(port));
+    if owners.is_empty() {
+        return false;
+    }
+    let tree = descendants(&process_rows(), root);
+    owners.iter().all(|o| tree.contains(o))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +220,29 @@ mod tests {
             drop(l6);
             assert!(!is_listening(port6));
         }
+    }
+
+    #[test]
+    fn descendants_include_the_root_and_every_depth_and_nothing_else() {
+        let rows = [(10, 1), (11, 10), (12, 11), (13, 10), (20, 2), (21, 20)];
+        let set = descendants(&rows, 10);
+        assert_eq!(set, [10, 11, 12, 13].into_iter().collect());
+        assert!(descendants(&rows, 0).is_empty());
+        // A cycle (a reused parent id) ends.
+        let cyc = [(5, 6), (6, 5)];
+        assert_eq!(descendants(&cyc, 5), [5, 6].into_iter().collect());
+    }
+
+    #[test]
+    fn a_port_owned_by_another_process_is_not_in_the_tree() {
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        // This process owns it: it is in its own tree, not in an unrelated one.
+        assert!(listening_in_tree(port, std::process::id()));
+        assert!(!listening_in_tree(port, 4));
+        assert!(!listening_in_tree(port, 0));
+        drop(l);
+        assert!(!listening_in_tree(port, std::process::id()));
     }
 
     #[test]

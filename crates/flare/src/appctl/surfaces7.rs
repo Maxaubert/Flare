@@ -43,7 +43,10 @@ pub const BOARD_HIDE: &str = "Hide agent board";
 
 /// Looks whether anything listens on a local port. Production reads the system's listening table; the tests hand a
 /// table of their own.
-pub type PortProbe = Arc<dyn Fn(u16) -> bool + Send + Sync>;
+///
+/// Called as `(port, shell pid)`: true only when the port has a listener AND every listener on it belongs to the
+/// tab's own process tree (the shell and what it started). A port another program holds is no chip.
+pub type PortProbe = Arc<dyn Fn(u16, u32) -> bool + Send + Sync>;
 /// Shows a notification. Production asks Windows; under `--e2e` the sink only records.
 pub type ToastSink = Rc<dyn Fn(&Toast)>;
 
@@ -69,7 +72,7 @@ impl Surf7 {
     pub fn new() -> Self {
         Self {
             dev: DevChips::new(),
-            probe: Arc::new(|_| false),
+            probe: Arc::new(|_, _| false),
             notifier: Notifier::new(),
             toast: None,
             board: BoardState7::default(),
@@ -105,7 +108,8 @@ fn agent_name(k: Option<flare_agent::kinds::DetectedAgent>) -> &'static str {
     }
 }
 
-/// "localhost:5173" for the chip: the address without its scheme and path.
+/// "localhost:5173" for the chip: the origin without its scheme. The chip only ever holds an origin
+/// (`scheme://host:port/`), so this is exactly what a click opens.
 pub fn chip_label(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     rest.split(['/', '?', '#'])
@@ -116,12 +120,17 @@ pub fn chip_label(url: &str) -> String {
 
 /// A chip's address, as the web panel would take it. None for anything the panel would not.
 fn chip_server(s: &LocalServer) -> Option<ChipServer> {
-    let url = flare_surfaces::web::normalize_url(&s.url).ok()?;
-    // The same rule again on the normal form: the chip only ever offers a local address.
-    let local = dev_server::parse_local(&url)?;
+    // The chip opens the ORIGIN only: whatever path or query the program printed is dropped.
+    let local = dev_server::parse_local(&s.url)?;
+    let url = flare_surfaces::web::normalize_url(&local.url).ok()?;
+    // The same rule again on the normal form: the chip only ever offers a local origin.
+    let again = dev_server::parse_local(&url)?;
+    if again.url != local.url {
+        return None;
+    }
     Some(ChipServer {
-        url,
-        port: local.port,
+        url: again.url,
+        port: again.port,
     })
 }
 
@@ -129,6 +138,18 @@ impl AppCtl {
     /// How the window finds out whether a local port has a listener (startup; the tests hand a stand-in).
     pub fn set_port_probe(&mut self, probe: PortProbe) {
         self.s7.probe = probe;
+    }
+
+    /// The pids of the live shells (the tests read it).
+    #[cfg(test)]
+    pub(crate) fn deps_shell_pids(&self) -> Vec<u32> {
+        self.deps
+            .host
+            .manager()
+            .live_pids()
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect()
     }
 
     /// Where notifications go (startup; the tests and `--e2e` hand a recorder).
@@ -212,11 +233,17 @@ impl AppCtl {
     /// Starts the looks that are due, each on its own short-lived worker (rule 34); the answer is a `UiMsg::DevLook`.
     pub(super) fn dev_pump(&mut self) {
         let now = self.now();
+        let pids = self.deps.host.manager().live_pids();
         for check in self.s7.dev.due(now) {
+            // The tab's shell: its tree is the only place a listener is believed. No shell, no chip.
+            let shell = pids
+                .iter()
+                .find(|(t, _)| *t == check.tab)
+                .map_or(0, |(_, p)| *p);
             let probe = Arc::clone(&self.s7.probe);
             let post = Arc::clone(&self.deps.post);
             let job = move || {
-                let up = probe(check.port);
+                let up = probe(check.port, shell);
                 post(UiMsg::DevLook {
                     tab: check.tab,
                     token: check.token,
@@ -256,11 +283,17 @@ impl AppCtl {
         if self.s7.dev.set_focus(in_view, now) {
             self.dev_pump();
         }
-        let label = self
-            .chip_for_front()
+        let chip = self.chip_for_front();
+        let label = chip
+            .as_ref()
             .map_or_else(String::new, |c| chip_label(&c.url));
         if app.get_preview_chip_label().as_str() != label {
             app.set_preview_chip_label(label.into());
+        }
+        // The tooltip is the full origin a click opens.
+        let tip = chip.map_or_else(String::new, |c| c.url);
+        if app.get_preview_chip_tip().as_str() != tip {
+            app.set_preview_chip_tip(tip.into());
         }
     }
 
@@ -620,6 +653,7 @@ impl AppCtl {
         serde_json::json!({
             "chip": chip,
             "chip_label": self.app().map(|a| a.get_preview_chip_label().to_string()),
+            "chip_tip": self.app().map(|a| a.get_preview_chip_tip().to_string()),
             "tracked": self.s7.dev.tracked(),
             "tracked_urls": self.s7.dev.tracked_urls(),
             "toasts": self.s7.toasts,
@@ -638,7 +672,7 @@ impl AppCtl {
 /// recorder (nothing reaches the desktop).
 pub fn install(rc: &Rc<RefCell<AppCtl>>, post: Post, e2e: bool) {
     let mut c = rc.borrow_mut();
-    c.set_port_probe(Arc::new(flare_win::tcp_owner::is_listening));
+    c.set_port_probe(Arc::new(flare_win::tcp_owner::listening_in_tree));
     if e2e {
         c.set_toast_sink(Rc::new(|t: &Toast| {
             crate::e2e_probes::surf7::record_toast(&t.tab, &t.title, &t.body);

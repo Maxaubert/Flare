@@ -2,15 +2,15 @@
 //! `questionToast`.
 //!
 //! Each starts the built release exe in its own world and profile, offscreen and unfocusable like every scenario. Nothing
-//! reaches the desktop: the listeners are the scenario's own (a thread that answers HTTP on `127.0.0.1`), the agents are
+//! reaches the desktop: the listeners are the scenario's own (hidden child PowerShells of the tab's shell that answer HTTP on `127.0.0.1`, since the chip only believes a listener in the tab's process tree; one thread of the harness itself serves the "not ours" case), the agents are
 //! command lines in a real shell that print the title and the hook lines a Claude session sends, and the notifications go
 //! to the app's recording seam (`notify.log`), never to Windows. The person's click on a notification is the
 //! `ToastClick` request.
 //!
 //! `devPreview` (100 and 225 percent): an address nothing listens on gets no chip; a listener makes the chip; it sits
-//! whole in the terminal's top right; a click opens the web panel at that address and the page the listener serves loads
+//! whole in the terminal's top right; a click opens the web panel at the ORIGIN (path and query dropped) and the page the listener serves loads
 //! in it; a second server's chip goes when its listener is dropped and comes back when a server is started again on that port; a cleared screen takes a chip at once; a remote
-//! address never gets one; the setting off keeps all of it away.
+//! address never gets one; a port the harness (not the tab's tree) listens on gets none; the setting off keeps all of it away.
 //! `agentBoard` (100 and 225 percent): the board lists the two tabs with an agent, not the plain shell, each with its state
 //! and time; a click on a row goes to that tab; the chord and the control channel open it; closing it stops its clock.
 //! `questionToast`: a question in a tab out of sight records one notification with the tab's name; none while that tab is
@@ -97,6 +97,26 @@ impl Drop for Site {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// The command line that starts a local server INSIDE the tab's shell tree: a hidden child PowerShell (the shell's own
+/// exe) listening on `port`, held in `$var`. The chip believes a listener only in the tab's process tree, so the
+/// scenario's servers must be the shell's descendants. The script travels as `-EncodedCommand`, so no quoting is in play
+/// and no `http://` text reaches the screen.
+fn shell_server(var: &str, port: u16, title: &str) -> String {
+    let script = format!(
+        "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,{port});$l.Start();$h='<!doctype html><html><head><meta charset=utf-8><title>{title}</title></head><body><h1 id=h>{title}</h1></body></html>';$r=[Text.Encoding]::UTF8.GetBytes('HTTP/1.1 200 OK'+[char]13+[char]10+'Content-Type: text/html; charset=utf-8'+[char]13+[char]10+'Content-Length: '+$h.Length+[char]13+[char]10+'Connection: close'+[char]13+[char]10+[char]13+[char]10+$h);while($true){{$c=$l.AcceptTcpClient();$s=$c.GetStream();$b=New-Object byte[] 4096;try{{[void]$s.Read($b,0,4096);$s.Write($r,0,$r.Length)}}catch{{}};$c.Close()}}"
+    );
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!(
+        "${var}=Start-Process (Get-Process -Id $PID).Path -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-EncodedCommand','{}'",
+        super::agent_launch::base64(&utf16)
+    )
+}
+
+/// Ends a server `shell_server` started (its port stops listening).
+fn stop_shell_server(var: &str) -> String {
+    format!("Stop-Process -Id ${var}.Id -Force")
 }
 
 /// A port nothing listens on (bound and dropped a moment ago).
@@ -197,8 +217,9 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
     );
 
     // ---- a listener makes the chip ----
-    let site = Site::start("dev one")?;
-    let p1 = site.port;
+    let p1 = free_port()?;
+    prompt(app)?;
+    type_line(app, &shell_server("s1", p1, "dev one"))?;
     prompt(app)?;
     type_line(app, &format!("echo http://localhost:{p1}/hello?x=1"))?;
     let up = ctx.until("the chip", 20_000, &mut || {
@@ -211,8 +232,15 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
         format!("{at}: it reads localhost:{p1} ({})", s["chip_label"]),
     );
     ctx.ok(
-        s["chip"]["url"] == json!(format!("http://localhost:{p1}/hello?x=1")),
-        format!("{at}: and carries the whole address ({})", s["chip"]["url"]),
+        s["chip"]["url"] == json!(format!("http://localhost:{p1}/")),
+        format!(
+            "{at}: and carries only the origin, never the printed path or query ({})",
+            s["chip"]["url"]
+        ),
+    );
+    ctx.ok(
+        s["chip_tip"] == json!(format!("http://localhost:{p1}/")),
+        format!("{at}: its tooltip is the full origin ({})", s["chip_tip"]),
     );
 
     // ---- it sits whole in the terminal's top right ----
@@ -238,11 +266,11 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
             && w["kind"] == json!(3)
             && w["bar"]["url"]
                 .as_str()
-                .is_some_and(|u| u == format!("http://localhost:{p1}/hello?x=1"))
+                .is_some_and(|u| u == format!("http://localhost:{p1}/"))
     });
     ctx.ok(
         shown,
-        format!("{at}: the click opens the web panel at the printed address"),
+        format!("{at}: the click opens the web panel at the origin"),
     );
     let loaded = ctx.until("the page to load", 40_000, &mut || {
         let w = probe(app, "web.state", Value::Null);
@@ -265,10 +293,11 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
     app.session.call(&Request::Focus { on: true })?;
 
     // ---- a second server: its chip goes when its listener is dropped ----
-    let mut site2 = Site::start("dev two")?;
-    let p2 = site2.port;
+    let p2 = free_port()?;
     app.session.key("Ctrl+Shift+O")?; // the keys back to the terminal if the page had them
     pass(ctx, 200);
+    prompt(app)?;
+    type_line(app, &shell_server("s2", p2, "dev two"))?;
     prompt(app)?;
     type_line(app, &format!("echo http://127.0.0.1:{p2}/"))?;
     let up2 = ctx.until("the second chip", 20_000, &mut || {
@@ -282,7 +311,8 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
         state(app)["chip_label"] == json!(format!("127.0.0.1:{p2}")),
         format!("{at}: the chip names the newest address"),
     );
-    site2.stop();
+    prompt(app)?;
+    type_line(app, &stop_shell_server("s2"))?;
     let gone = ctx.until("the chip to go with its listener", 25_000, &mut || {
         state(app)["chip"].is_null()
     });
@@ -292,15 +322,8 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
     );
 
     // ---- the same server started again on its port, the same address printed, the screen not cleared ----
-    let mut site2b = None;
-    for _ in 0..40 {
-        if let Ok(x) = Site::start_on("dev two again", p2) {
-            site2b = Some(x);
-            break;
-        }
-        pass(ctx, 100);
-    }
-    let site2b = site2b.ok_or("could not listen on the same port again")?;
+    prompt(app)?;
+    type_line(app, &shell_server("s2b", p2, "dev two again"))?;
     prompt(app)?;
     type_line(app, &format!("echo http://127.0.0.1:{p2}/"))?;
     let back = ctx.until("the chip to come back", 25_000, &mut || {
@@ -310,15 +333,17 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
         back,
         format!("{at}: a server started again on the same port gets its chip back"),
     );
-    drop(site2b);
+    prompt(app)?;
+    type_line(app, &stop_shell_server("s2b"))?;
     let gone2 = ctx.until("the chip to go again", 25_000, &mut || {
         state(app)["chip"].is_null()
     });
     ctx.ok(gone2, format!("{at}: and goes again with its listener"));
 
     // ---- a cleared screen takes the chip at once ----
-    let site3 = Site::start("dev three")?;
-    let p3 = site3.port;
+    let p3 = free_port()?;
+    prompt(app)?;
+    type_line(app, &shell_server("s3", p3, "dev three"))?;
     prompt(app)?;
     type_line(app, &format!("echo http://localhost:{p3}/three"))?;
     let up3 = ctx.until("the third chip", 20_000, &mut || {
@@ -336,7 +361,7 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
     );
     pass(ctx, 1_500);
     ctx.ok(
-        state(app)["chip"].is_null() && site3.port == p3,
+        state(app)["chip"].is_null(),
         format!("{at}: and it does not come back by itself"),
     );
 
@@ -360,7 +385,31 @@ fn preview_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), St
             s["tracked"], tracked_before, s["tracked_urls"]
         ),
     );
-    drop(site);
+
+    // ---- a port owned by another process (this harness) gets no chip, though it listens and is printed ----
+    let foreign = Site::start("foreign")?;
+    let pf = foreign.port;
+    prompt(app)?;
+    type_line(app, "Clear-Host")?;
+    pass(ctx, 300);
+    prompt(app)?;
+    type_line(app, &format!("echo http://localhost:{pf}/steal?x=1"))?;
+    let looked = ctx.until("the foreign address to be looked at", 5_000, &mut || {
+        state(app)["tracked"] == json!(1)
+    });
+    ctx.ok(looked, format!("{at}: the foreign address is looked up"));
+    pass(ctx, 3_000);
+    ctx.ok(
+        state(app)["chip"].is_null() && state(app)["chip_label"] == json!(""),
+        format!("{at}: a listener the tab did not start (port {pf}) gets no chip"),
+    );
+    drop(foreign);
+    // The shell's servers end with the scenario.
+    prompt(app)?;
+    type_line(
+        app,
+        "foreach($v in 's1','s3'){ Stop-Process -Id (Get-Variable $v).Value.Id -Force -ErrorAction SilentlyContinue }",
+    )?;
     Ok(())
 }
 

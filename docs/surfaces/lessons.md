@@ -697,3 +697,4 @@ Holes hit, what fixed them, and what Prism Terminal's Electron build must do. Th
 - Two tabs showing the same mod at once (the second tab's panel is a separate view in the same profile; calls go to the tab of the caller).
 - A strict MCP client that rejects names near 64 characters (the 52-character cap is from the documented limit, not from a client).
 
+- 2026-10-22, stage 7: a chip that trusts "something listens on that port" is trusting the whole machine. The TCP listener table names the owning pid, and the tab's shell pid plus a Toolhelp32 parent walk names the tree it may believe. The Electron app never had a chip like this, so there is no Electron note; the rule is Flare's own.

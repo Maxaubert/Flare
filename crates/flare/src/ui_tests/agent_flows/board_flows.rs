@@ -32,7 +32,7 @@ fn listening(f: &Fx) -> Listening {
     let seen = Arc::clone(&l);
     f.ctl
         .borrow_mut()
-        .set_port_probe(Arc::new(move |p| seen.lock().unwrap().contains(&p)));
+        .set_port_probe(Arc::new(move |p, _| seen.lock().unwrap().contains(&p)));
     l
 }
 
@@ -105,6 +105,43 @@ fn a_local_address_offers_a_chip_once_its_port_listens() {
 }
 
 #[test]
+fn the_chip_shows_exactly_the_origin_and_drops_path_and_query() {
+    let f = Fx::new();
+    let ports = listening(&f);
+    f.tabs(&["C:\\a"]);
+    f.visit(0);
+    ports.lock().unwrap().push(5173);
+    say_url(&f, "C:\\a", "http://localhost:5173/admin/delete?id=1#x");
+    wait_for(&f, "the chip", |f| label(f) == "localhost:5173");
+    assert_eq!(probe(&f)["chip"]["url"], "http://localhost:5173/");
+    assert_eq!(probe(&f)["chip_tip"], "http://localhost:5173/");
+}
+
+#[test]
+fn the_port_is_looked_up_against_the_tabs_own_shell() {
+    let f = Fx::new();
+    let asked: Arc<Mutex<Vec<(u16, u32)>>> = Arc::default();
+    let seen = Arc::clone(&asked);
+    // Only a port owned by pid 0 would "listen"; a real shell pid is handed over, so this never shows a chip.
+    f.ctl.borrow_mut().set_port_probe(Arc::new(move |p, pid| {
+        seen.lock().unwrap().push((p, pid));
+        false
+    }));
+    f.tabs(&["C:\\a"]);
+    f.visit(0);
+    say_url(&f, "C:\\a", "http://localhost:5173/");
+    wait_for(&f, "a look", |_| !asked.lock().unwrap().is_empty());
+    let (port, pid) = asked.lock().unwrap()[0];
+    assert_eq!(port, 5173);
+    let shells = f.ctl.borrow().deps_shell_pids();
+    assert!(
+        shells.contains(&pid),
+        "the look names the tab's shell: {pid} in {shells:?}"
+    );
+    assert_eq!(label(&f), "", "a port nobody in the tab owns gives no chip");
+}
+
+#[test]
 fn clicking_the_chip_opens_the_web_panel_at_that_address() {
     let f = Fx::new();
     let ports = listening(&f);
@@ -118,7 +155,11 @@ fn clicking_the_chip_opens_the_web_panel_at_that_address() {
     let snap = f.ctl.borrow().panel_snap(&id).expect("a panel");
     assert_eq!(snap.kind, "web");
     assert!(snap.open);
-    assert_eq!(snap.url.as_deref(), Some("http://127.0.0.1:3000/app?x=1"));
+    assert_eq!(
+        snap.url.as_deref(),
+        Some("http://127.0.0.1:3000/"),
+        "only the origin opens, never the printed path or query"
+    );
     assert_eq!(
         label(&f),
         "",
@@ -238,7 +279,7 @@ fn the_newest_address_is_the_only_chip_of_a_tab() {
 fn an_address_that_is_not_local_never_gets_a_chip() {
     let f = Fx::new();
     // Everything "listens": only the address can keep the chip away.
-    f.ctl.borrow_mut().set_port_probe(Arc::new(|_| true));
+    f.ctl.borrow_mut().set_port_probe(Arc::new(|_, _| true));
     f.tabs(&["C:\\a"]);
     f.visit(0);
     for url in [

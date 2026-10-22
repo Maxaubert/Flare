@@ -49,7 +49,7 @@ pub fn parse_local(url: &str) -> Option<LocalServer> {
         return None;
     };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(end);
+    let (authority, _) = rest.split_at(end);
     if authority.contains('@') {
         return None;
     }
@@ -69,7 +69,7 @@ pub fn parse_local(url: &str) -> Option<LocalServer> {
     }
     let port_n: u16 = port.parse().ok().filter(|p| *p != 0)?;
     Some(LocalServer {
-        url: format!("{scheme}{host}:{port_n}{tail}"),
+        url: format!("{scheme}{host}:{port_n}/"),
         port: port_n,
     })
 }
@@ -237,24 +237,39 @@ mod tests {
         );
         assert_eq!(
             url("ready http://127.0.0.1:8080"),
-            Some("http://127.0.0.1:8080".into())
+            Some("http://127.0.0.1:8080/".into())
         );
         assert_eq!(
             url("on http://[::1]:3000/app"),
-            Some("http://[::1]:3000/app".into())
+            Some("http://[::1]:3000/".into())
         );
         assert_eq!(
             url("https://localhost:8443/x?y=1#z"),
-            Some("https://localhost:8443/x?y=1#z".into())
+            Some("https://localhost:8443/".into())
         );
     }
 
     #[test]
-    fn the_scheme_and_host_are_lower_cased_and_the_path_keeps_its_case() {
+    fn the_scheme_and_host_are_lower_cased_and_the_path_is_dropped() {
         assert_eq!(
             url("HTTP://LocalHost:3000/Admin/Index.HTML"),
-            Some("http://localhost:3000/Admin/Index.HTML".into())
+            Some("http://localhost:3000/".into())
         );
+    }
+
+    #[test]
+    fn only_the_origin_is_kept_path_query_and_fragment_are_dropped() {
+        for (said, origin) in [
+            (
+                "http://localhost:5173/admin/delete?id=1#x",
+                "http://localhost:5173/",
+            ),
+            ("http://localhost:5173?evil=1", "http://localhost:5173/"),
+            ("http://127.0.0.1:80#frag", "http://127.0.0.1:80/"),
+            ("https://[::1]:8443/a/b?c=d", "https://[::1]:8443/"),
+        ] {
+            assert_eq!(url(said).as_deref(), Some(origin), "{said}");
+        }
     }
 
     #[test]
@@ -331,11 +346,11 @@ mod tests {
         );
         assert_eq!(
             url("at http://localhost:3000, ok"),
-            Some("http://localhost:3000".into())
+            Some("http://localhost:3000/".into())
         );
         assert_eq!(
             url("\"http://localhost:3000/a\""),
-            Some("http://localhost:3000/a".into())
+            Some("http://localhost:3000/".into())
         );
     }
 
