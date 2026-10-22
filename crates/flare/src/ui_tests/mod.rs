@@ -2,6 +2,7 @@
 
 mod agent_flows;
 mod app;
+mod board;
 mod convo;
 mod dialog;
 mod dictation_page;

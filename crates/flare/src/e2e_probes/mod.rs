@@ -35,6 +35,7 @@ pub mod settings_b;
 pub mod settings_c;
 pub mod settings_d;
 pub mod strip;
+pub mod surf7;
 pub mod update;
 pub mod vertical;
 pub mod web;
@@ -117,4 +118,5 @@ pub fn register_all(r: &mut ProbeRegistry) {
     update::register(r);
     vertical::register(r);
     web::register(r);
+    surf7::register(r);
 }

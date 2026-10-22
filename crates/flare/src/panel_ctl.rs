@@ -215,18 +215,20 @@ fn file_name(path: &str) -> &str {
 fn target_ok(kind: &PanelKind, target: &str) -> bool {
     match kind {
         PanelKind::Web => flare_surfaces::web::normalize_url(target).as_deref() == Ok(target),
-        // The conversation panels read no file: their target is the kind's own name, nothing else.
-        PanelKind::Changes | PanelKind::Tasks => kind.convo_target() == Some(target),
+        // The conversation panels and the board read no file: their target is the kind's own name, nothing else.
+        PanelKind::Changes | PanelKind::Tasks | PanelKind::Board => {
+            kind.fixed_target() == Some(target)
+        }
         _ => preview::loadable(target, kind),
     }
 }
 
-/// The header of a conversation panel.
+/// The header of a panel that reads no file: the conversation's two and the agent board.
 fn convo_title(kind: &PanelKind) -> &'static str {
-    if *kind == PanelKind::Changes {
-        "Changes"
-    } else {
-        "Tasks"
+    match kind {
+        PanelKind::Changes => "Changes",
+        PanelKind::Board => "Agents",
+        _ => "Tasks",
     }
 }
 
@@ -384,12 +386,18 @@ impl PanelCtl {
         self.panels.open_on(tab).is_some()
     }
 
-    /// Opens the Changes or Tasks panel on the tab (the conversation's, stage 6). False for any other kind.
+    /// Opens the Changes, Tasks or Board panel on the tab (the conversation's, stage 6, and the agent board, stage 7).
+    /// False for any other kind.
     pub fn show_convo(&mut self, tab: &str, kind: PanelKind) -> bool {
-        match kind.convo_target() {
+        match kind.fixed_target() {
             Some(target) => self.show(tab, kind, target),
             None => false,
         }
+    }
+
+    /// The tab's OPEN panel is the agent board.
+    pub fn board_open_on(&self, tab: &str) -> bool {
+        self.panels.open_on(tab).is_some_and(|p| p.kind.is_board())
     }
 
     /// The tabs whose open panel is Changes or Tasks, with the kind: the tabs that need a transcript tracker.
@@ -517,7 +525,7 @@ impl PanelCtl {
         let inline = p.target.starts_with(INLINE);
         let app = self.apps.get(tab);
         let web = p.kind == PanelKind::Web && app.is_none();
-        let convo = p.kind.is_convo();
+        let convo = p.kind.is_convo() || p.kind.is_board();
         Some(PanelSnap {
             kind: if app.is_some() {
                 "app".to_string()
@@ -598,7 +606,12 @@ impl PanelCtl {
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
-                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo())
+                .filter(|p| {
+                    p.kind.is_built()
+                        && p.kind != PanelKind::Web
+                        && !p.kind.is_convo()
+                        && !p.kind.is_board()
+                })
                 .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
         let Some((tab, kind, target)) = want else {

@@ -24,6 +24,7 @@ use crate::cells::{
     logical_line_in,
 };
 use crate::click_caret::{ClickGate, MouseTracking, arrow_keys, caret_click_allowed, caret_delta};
+use crate::dev_server::{ClearWatch, DevState, LocalServer, SCAN_GAP_MS, local_server_in};
 use crate::find::{CountJob, Dir, FindMatch, FindOpts, Finder, StepJob, index_of, scroll_to_show};
 use crate::grid_map::{snapshot_grid, snapshot_grid_into};
 use crate::link_scan::{LinkCtx, LinkMark, LinkScanner, LinkTarget, Piece};
@@ -133,6 +134,16 @@ pub struct Emulator {
     /// The search Enter, the arrows or typing started, walked a slice at a time; None when none runs.
     search: Option<StepJob>,
     links: LinkScanner,
+    /// Hears the screen being cleared (Surfaces stage 7, the Preview chip).
+    dev_clear: ClearWatch,
+    dev_clears_applied: u64,
+    /// The newest local server address found on the live screen, and the absolute row it was on.
+    dev_found: Option<(LocalServer, usize)>,
+    /// Changes when `dev_found` changes to another address or is cleared, never otherwise.
+    dev_seq: u64,
+    /// Output arrived since the screen was last read for an address.
+    dev_dirty: bool,
+    dev_scanned: Option<Instant>,
     /// The marks of the last `link_marks` call; None before the first scan.
     link_last: Option<Vec<LinkMark>>,
     /// Bumped on every change of the selection (a copy in flight reads it). A redraw or a scroll that
@@ -191,8 +202,87 @@ impl Emulator {
             find_active: None,
             search: None,
             links: LinkScanner::new(),
+            dev_clear: ClearWatch::new(),
+            dev_clears_applied: 0,
+            dev_found: None,
+            dev_seq: 0,
+            dev_dirty: false,
+            dev_scanned: None,
             link_last: None,
             sel_gen: 0,
+        }
+    }
+
+    /// The local dev server address on the live screen (the newest), and a counter that moves only when that changes.
+    /// The screen is read here when output has arrived since the last reading and at least `SCAN_GAP_MS` have passed;
+    /// otherwise the last answer stands and [`Emulator::dev_pending`] says a reading is still owed.
+    pub fn dev_state(&mut self) -> DevState {
+        if self.dev_clear.clears() != self.dev_clears_applied {
+            self.dev_clears_applied = self.dev_clear.clears();
+            if self.dev_found.take().is_some() {
+                self.dev_seq += 1;
+            }
+        }
+        if self.dev_dirty
+            && self
+                .dev_scanned
+                .is_none_or(|t| t.elapsed().as_millis() as u64 >= SCAN_GAP_MS)
+        {
+            self.dev_scan();
+        }
+        DevState {
+            server: self.dev_found.as_ref().map(|f| f.0.clone()),
+            seq: self.dev_seq,
+        }
+    }
+
+    /// Output arrived that `dev_state` has not read yet (it was asked again too soon).
+    pub fn dev_pending(&self) -> bool {
+        self.dev_dirty
+    }
+
+    /// Reads the live screen for the newest local server address. The rows are the screen's own (history is never
+    /// read: a cleared screen is kept there), the row the cursor is on is left out (it is what is being typed, or a
+    /// suggestion painted after it) and so is the alternate screen. An address is NEWS when it differs from the one
+    /// held and is not on an older row than that one was; the same address printed again changes nothing.
+    fn dev_scan(&mut self) {
+        self.dev_dirty = false;
+        self.dev_scanned = Some(Instant::now());
+        let rows = self.view_rows();
+        let cols = self.cols();
+        if rows == 0 || cols == 0 || self.mode().alt_screen {
+            return;
+        }
+        let hist = self.history_size();
+        let (cursor_row, _) = self.cursor();
+        let cursor = hist + usize::try_from(cursor_row).unwrap_or(0);
+        let (top, last) = (hist, hist + rows - 1);
+        let buf = TermBuf::window_in(&self.term, top, last, false);
+        let mut best: Option<(usize, LocalServer)> = None;
+        let mut y = top;
+        while y <= last {
+            let ll = logical_line_in(&buf, cols, y, false);
+            // The group of rows the cursor is in is input, not output.
+            if !(ll.first..=ll.last).contains(&cursor)
+                && let Some(found) = local_server_in(&ll.text)
+            {
+                best = Some((ll.last, found));
+            }
+            y = ll.last.max(y) + 1;
+        }
+        let Some((row, found)) = best else { return };
+        match &self.dev_found {
+            Some((old, at)) if *old == found => {
+                // The same address, printed again below: remember where, so older rows stay older.
+                if row > *at {
+                    self.dev_found = Some((found, row));
+                }
+            }
+            Some((_, at)) if row < *at => {}
+            _ => {
+                self.dev_found = Some((found, row));
+                self.dev_seq += 1;
+            }
         }
     }
 
@@ -218,6 +308,8 @@ impl Emulator {
     /// Scans the chunk, then feeds `vte` in slices that end at each scanner event, acting on the
     /// event between slices. Returns the events in stream order.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<TermEvent> {
+        self.dev_clear.feed(bytes);
+        self.dev_dirty = true;
         let had_sel = self.term.selection.is_some();
         let scanned = self.scanner.scan(bytes);
         let mut out = Vec::new();
@@ -2707,6 +2799,147 @@ mod tests {
         // A new query starts from nothing.
         e.find_set("fo");
         assert_eq!(e.find_view().count, 0);
+    }
+
+    /// The reading with the gap between two readings waived (a test does not sleep).
+    fn dev(e: &mut Emulator) -> DevState {
+        e.dev_scanned = None;
+        e.dev_state()
+    }
+
+    fn dev_url(e: &mut Emulator) -> Option<String> {
+        dev(e).server.map(|s| s.url)
+    }
+
+    #[test]
+    fn the_emulator_reads_a_local_server_address_off_its_screen() {
+        let mut e = Emulator::new(60, 8);
+        e.feed(b"plain output\r\n");
+        assert_eq!(dev(&mut e).server, None);
+        assert_eq!(dev(&mut e).seq, 0);
+        // Split across two chunks, with colour inside the port.
+        e.feed(b"  Local: http://localhost:\x1b[1m51");
+        e.feed(b"73\x1b[22m/\r\n");
+        let s = dev(&mut e);
+        assert_eq!(
+            s.server.map(|x| x.url),
+            Some("http://localhost:5173/".into())
+        );
+        assert_eq!(s.seq, 1);
+        // Asking again, and more output that names nothing local, changes nothing.
+        for i in 0..5 {
+            e.feed(format!("request {i} https://example.com:8443/x\r\n").as_bytes());
+        }
+        let again = dev(&mut e);
+        assert_eq!(again.seq, 1);
+        assert!(again.server.is_some());
+    }
+
+    #[test]
+    fn the_row_the_cursor_is_on_is_input_and_never_read() {
+        let mut e = Emulator::new(80, 8);
+        e.feed(b"PS> echo http://localhost:6303/three");
+        assert_eq!(dev_url(&mut e), None, "typed, not entered");
+        e.feed(b"\r\n");
+        assert_eq!(
+            dev_url(&mut e),
+            Some("http://localhost:6303/three".into()),
+            "entered"
+        );
+    }
+
+    #[test]
+    fn a_suggestion_painted_after_the_cursor_and_typed_over_is_not_read() {
+        let mut e = Emulator::new(80, 8);
+        // The shell paints a history suggestion after what is typed and moves the cursor back over it.
+        e.feed(b"PS> echo http://\x1b[90mlocalhost:6303/three\x1b[0m\x1b[21D");
+        assert_eq!(dev_url(&mut e), None);
+        // The person types something else; the rest of the suggestion is erased; Enter.
+        e.feed(b"example.com/\x1b[K\r\n");
+        assert_eq!(dev_url(&mut e), None);
+    }
+
+    #[test]
+    fn an_address_that_scrolled_off_the_screen_is_still_the_one_held() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"Local: http://localhost:5173/\r\n");
+        assert_eq!(dev(&mut e).seq, 1);
+        for i in 0..40 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let s = dev(&mut e);
+        assert_eq!(
+            s.server.map(|x| x.port),
+            Some(5173),
+            "held after it left the screen"
+        );
+        assert_eq!(s.seq, 1);
+        // The same address printed again is not news (a request log must not reset the chip).
+        e.feed(b"GET http://localhost:5173/api 200\r\nLocal: http://localhost:5173/\r\n");
+        assert_eq!(dev(&mut e).seq, 1);
+        // Another address is.
+        e.feed(b"Local: http://localhost:5174/\r\n");
+        let s = dev(&mut e);
+        assert_eq!(s.server.map(|x| x.port), Some(5174));
+        assert_eq!(s.seq, 2);
+    }
+
+    #[test]
+    fn a_cleared_screen_forgets_the_address_though_the_history_still_holds_it() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"Local: http://localhost:5173/\r\n");
+        assert!(dev(&mut e).server.is_some());
+        e.feed(b"\x1b[2J\x1b[H");
+        let s = dev(&mut e);
+        assert_eq!(s.server, None);
+        assert_eq!(s.seq, 2);
+        // It does not come back by itself on later output, and a new one is found.
+        e.feed(b"PS> \r\nnothing\r\n");
+        assert_eq!(dev(&mut e).server, None);
+        e.feed(b"Local: http://127.0.0.1:3000/\r\n");
+        let s = dev(&mut e);
+        assert_eq!(s.server.map(|x| x.port), Some(3000));
+        assert_eq!(s.seq, 3);
+    }
+
+    #[test]
+    fn a_long_address_wrapped_over_rows_is_read_whole() {
+        let mut e = Emulator::new(20, 6);
+        e.feed(b"http://localhost:5173/some/long/path?with=query\r\n");
+        assert_eq!(
+            dev_url(&mut e),
+            Some("http://localhost:5173/some/long/path?with=query".into())
+        );
+    }
+
+    #[test]
+    fn nothing_is_read_on_the_alternate_screen_and_no_remote_address_ever() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"\x1b[?1049hhttp://localhost:5173/\r\n\r\n");
+        assert_eq!(
+            dev_url(&mut e),
+            None,
+            "a full-screen program's screen is not output"
+        );
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"see http://example.com:3000/ and http://localhost.evil.com:3000/\r\n");
+        e.feed(b"http://localhost:3000@evil.test/ https://evil.test/localhost:3000\r\n");
+        assert_eq!(dev_url(&mut e), None);
+    }
+
+    #[test]
+    fn a_reading_asked_for_too_soon_is_owed_not_lost() {
+        let mut e = Emulator::new(60, 6);
+        e.feed(b"hello\r\n");
+        let _ = e.dev_state();
+        assert!(!e.dev_pending());
+        e.feed(b"Local: http://localhost:5173/\r\n");
+        let soon = e.dev_state();
+        assert_eq!(soon.server, None, "inside the gap the last answer stands");
+        assert!(e.dev_pending(), "and a reading is still owed");
+        e.dev_scanned = None;
+        assert!(e.dev_state().server.is_some());
+        assert!(!e.dev_pending());
     }
 
     #[test]

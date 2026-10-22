@@ -350,7 +350,11 @@ mod tests {
         let r = regions().expect("regions");
         let sum = r.image.iter().map(|(_, b)| b).sum::<usize>() + r.mapped + r.private;
         let private = private_working_set().expect("private");
-        let (lo, hi) = (private * 9 / 10, private * 11 / 10);
+        // The two walks are a moment apart and allocate between them (the page list, a name map). In a test process the
+        // private set is only about 2 MB, so a tenth of it is under what that moves; the slack is a tenth of a bigger
+        // set, and at least 1 MiB.
+        let slack = (private / 10).max(1 << 20);
+        let (lo, hi) = (private.saturating_sub(slack), private + slack);
         assert!(
             (lo..=hi).contains(&sum),
             "regions {sum} vs private {private}"

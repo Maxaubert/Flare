@@ -26,6 +26,9 @@ pub const APP_SECTIONS: &[(&str, &str)] = &[
     ("opening", "Opening terminals"),
     ("keys", "Keys"),
     ("links", "Links"),
+    // Surfaces stage 7: the notification switch, last on the Agents page (Prism Terminal's sections there are
+    // marks, Claude Code and the mark colours, and each has the rows it measured).
+    ("notify", "Notifications"),
     ("about", ""),
 ];
 

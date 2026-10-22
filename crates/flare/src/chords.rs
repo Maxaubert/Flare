@@ -43,6 +43,8 @@ pub trait ChordTarget {
     /// Ctrl+Shift+O: moves the keys between the terminal and the open panel; does nothing when no
     /// panel is open. The key is the app's either way.
     fn focus_panel(&mut self);
+    /// Ctrl+Shift+A: shows or hides the agent board in the front tab's panel (Surfaces stage 7).
+    fn toggle_board(&mut self);
 }
 
 /// App.tsx `onKey`, in order: a Ctrl chord that is not Tab, Control or Shift ends a Most recent walk;
@@ -90,6 +92,7 @@ pub fn dispatch(ev: &KeyEvent, ctx: &KeyContext, t: &mut dyn ChordTarget) -> Dis
         ChordId::SystemMenu => t.open_system_menu(),
         ChordId::Panel => t.toggle_panel(),
         ChordId::PanelFocus => t.focus_panel(),
+        ChordId::Board => t.toggle_board(),
     }
     Dispatch::Taken
 }
@@ -158,6 +161,9 @@ mod tests {
         }
         fn focus_panel(&mut self) {
             self.calls.push("panel_focus".into());
+        }
+        fn toggle_board(&mut self) {
+            self.calls.push("board".into());
         }
     }
 

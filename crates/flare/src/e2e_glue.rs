@@ -1279,6 +1279,16 @@ impl GlueCtx {
         }
     }
 
+    /// `ToastClick`: the person clicked a notification about this tab.
+    fn toast_click(&self, tab: &str) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.e2e_toast_click(tab);
+        Ok(())
+    }
+
     /// `WebUserInput`: the person took over the front web page.
     fn web_user_input(&self) -> Result<(), String> {
         let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
@@ -1882,6 +1892,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::WebScript { js } => ctx.web_script(&js),
         Request::WebUserInput => ctx.web_user_input(),
         Request::WebZoom { factor } => ctx.web_zoom(factor),
+        Request::ToastClick { tab } => ctx.toast_click(&tab),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,

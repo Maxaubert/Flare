@@ -22,6 +22,8 @@ import { DictAsk } from "settings/dictation.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
+import { BoardRowUi } from "board.slint";
+import { PreviewChip } from "devchip.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
@@ -40,6 +42,7 @@ export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoTaskRow, ConvoInk } from "convo.slint";
+export { BoardRowUi, BoardMetrics } from "board.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
@@ -273,6 +276,18 @@ export component AppWindow inherits Window {
     callback panel-convo-select(string);
     callback panel-convo-open(string);
     callback panel-convo-toggle(string);
+    // The Preview chip (stage 7): "localhost:5173" while the front tab has a local dev server to offer, else empty.
+    in property <string> preview-chip-label;
+    out property <length> preview-chip-x: preview-chip.absolute-position.x;
+    out property <length> preview-chip-y: preview-chip.absolute-position.y;
+    out property <length> preview-chip-w: preview-chip.width;
+    out property <length> preview-chip-h: preview-chip.height;
+    callback preview-chip-clicked();
+    // The agent board (stage 7): kind 6 of panel-kind.
+    in property <[BoardRowUi]> panel-board-rows;
+    out property <int> panel-board-row-count: panel-slot.board-row-count;
+    out property <length> panel-board-content-h: panel-slot.board-content-h;
+    callback panel-board-pick(string);
     // The tab share of the page (0: not set, the default applies). The limits are the layout
     // maths of flare-surfaces, handed over once (`layout::MIN_SLOT` and the others).
     in property <float> panel-share: 0;
@@ -838,6 +853,14 @@ export component AppWindow inherits Window {
                             message: root.dict-message;
                             level: root.dict-level;
                         }
+                        // The "Preview" chip of a local dev server the tab started (stage 7).
+                        preview-chip := PreviewChip {
+                            x: parent.width - self.width - Px.snap(20px);
+                            y: Px.snap(8px);
+                            visible: root.preview-chip-label != "";
+                            label: root.preview-chip-label;
+                            clicked => { root.preview-chip-clicked(); }
+                        }
                     }
                     // The panel slot and its splitter (Surfaces stage 1), right of the grid. Declared before
                     // the help panel and the find bar, so those stay over it.
@@ -866,6 +889,8 @@ export component AppWindow inherits Window {
                         convo-select(p) => { root.panel-convo-select(p); }
                         convo-open(p) => { root.panel-convo-open(p); }
                         convo-toggle(k) => { root.panel-convo-toggle(k); }
+                        board-rows: root.panel-board-rows;
+                        board-pick(t) => { root.panel-board-pick(t); }
                         web-url: root.panel-web-url;
                         web-app: root.panel-web-app;
                         web-loading: root.panel-web-loading;
