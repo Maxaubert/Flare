@@ -57,6 +57,11 @@ export component Dialog inherits Rectangle {
     in property <string> cancel-label: "Cancel";
     in property <bool> danger: false;
     in property <bool> locked: false;
+    // :focus-visible as Chromium decides it: the ring shows only after the keyboard (the dialog was
+    // opened by a chord, or Tab / Enter was pressed inside it); a click leaves the focus unringed.
+    in property <bool> opened-by-key: false;
+    out property <bool> ring-shown: root.by-key;
+    property <bool> by-key;
     callback cancel();
     callback confirm();
 
@@ -90,6 +95,7 @@ export component Dialog inherits Rectangle {
     changed open => {
         if root.open {
             root.focus-idx = 1;
+            root.by-key = root.opened-by-key;
             fs.focus();
         }
     }
@@ -127,6 +133,7 @@ export component Dialog inherits Rectangle {
                 return accept;
             }
             if e.text == Key.Return {
+                root.by-key = true;
                 if root.focus-idx == 1 {
                     root.confirm();
                 } else {
@@ -135,6 +142,7 @@ export component Dialog inherits Rectangle {
                 return accept;
             }
             if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                root.by-key = true;
                 root.focus-idx = 1 - root.focus-idx;
                 return accept;
             }
@@ -182,14 +190,14 @@ export component Dialog inherits Rectangle {
                 spacing: 8px;
                 cancel-btn := DialogButton {
                     label: root.cancel-label;
-                    ringed: root.focus-idx == 0;
+                    ringed: root.by-key && root.focus-idx == 0;
                     clicked => { root.cancel(); }
                 }
                 primary-btn := DialogButton {
                     label: root.primary-label;
                     is-primary: true;
                     danger: root.danger;
-                    ringed: root.focus-idx == 1;
+                    ringed: root.by-key && root.focus-idx == 1;
                     clicked => { root.confirm(); }
                 }
             }
@@ -211,6 +219,8 @@ export component DialogPreview inherits Window {
     in-out property <string> cancel-label: "Cancel";
     in-out property <bool> danger;
     in-out property <bool> locked;
+    in-out property <bool> opened-by-key;
+    out property <bool> ring-shown: dlg.ring-shown;
     in-out property <int> cancels;
     in-out property <int> confirms;
     in-out property <int> behind-clicks;
@@ -253,6 +263,7 @@ export component DialogPreview inherits Window {
         cancel-label: root.cancel-label;
         danger: root.danger;
         locked: root.locked;
+        opened-by-key: root.opened-by-key;
         cancel => { root.cancels += 1; }
         confirm => { root.confirms += 1; }
     }

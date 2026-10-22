@@ -898,6 +898,9 @@ export component AskThree inherits Rectangle {
 
     // 0 Cancel, 1 Discard, 2 Save as Custom
     out property <int> focus-idx: 2;
+    // :focus-visible: the ring shows only after the keyboard (Tab or Enter / Space inside).
+    out property <bool> ring-shown: root.by-key;
+    property <bool> by-key;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;
@@ -921,6 +924,7 @@ export component AskThree inherits Rectangle {
     changed open => {
         if root.open {
             root.focus-idx = 2;
+            root.by-key = false;
             fs.focus();
         }
     }
@@ -950,10 +954,14 @@ export component AskThree inherits Rectangle {
                 return accept;
             }
             if e.text == Key.Return || e.text == Key.Space {
+                root.by-key = true;
                 root.answered(root.focus-idx);
                 return accept;
             }
             if !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                if e.text == Key.Tab || e.text == Key.Backtab {
+                    root.by-key = true;
+                }
                 if e.text == Key.Tab && !e.modifiers.shift {
                     root.focus-idx = mod(root.focus-idx + 1, 3);
                     return accept;
@@ -1013,14 +1021,14 @@ export component AskThree inherits Rectangle {
                 spacing: 8px;
                 cancel-btn := AskButton {
                     label: "Cancel";
-                    ringed: root.focus-idx == 0;
+                    ringed: root.by-key && root.focus-idx == 0;
                     clicked => {
                         root.answered(0);
                     }
                 }
                 discard-btn := AskButton {
                     label: "Discard";
-                    ringed: root.focus-idx == 1;
+                    ringed: root.by-key && root.focus-idx == 1;
                     clicked => {
                         root.answered(1);
                     }
@@ -1028,7 +1036,7 @@ export component AskThree inherits Rectangle {
                 save-btn := AskButton {
                     label: "Save as Custom";
                     primary: true;
-                    ringed: root.focus-idx == 2;
+                    ringed: root.by-key && root.focus-idx == 2;
                     clicked => {
                         root.answered(2);
                     }

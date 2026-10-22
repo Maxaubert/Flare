@@ -195,6 +195,51 @@ fn the_primary_wears_the_accent_or_the_danger_fill() {
     assert!(Frame::near(sample(&h), DANGER, 3), "danger fill");
 }
 
+/// PT's buttons carry `focus-visible:ring-2`: Chromium shows that ring only after the keyboard, so a
+/// dialog opened by a click rests with no ring on the confirm (owner, 2026-10-22).
+#[test]
+fn the_ring_shows_only_after_the_keyboard() {
+    let h = harness(1.0, 1000, 600);
+    let (px, py, pw) = (
+        h.comp.get_primary_x(),
+        h.comp.get_primary_y(),
+        h.comp.get_primary_w(),
+    );
+    open(&h);
+    assert!(!h.comp.get_ring_shown(), "no ring at rest after a click");
+    let edge = |h: &Harness<DialogPreview>| {
+        let f = h.render();
+        f.px(h.phys(px + pw / 2.0), h.phys(py + 1.0))
+    };
+    assert!(
+        Frame::near(edge(&h), ACCENT, 3),
+        "the confirm is solid accent to its edge"
+    );
+    h.key_text("	");
+    assert!(h.comp.get_ring_shown(), "Tab brings the ring");
+    h.key_text("	");
+    assert!(
+        !Frame::near(edge(&h), ACCENT, 3),
+        "the ring is drawn on the confirm"
+    );
+}
+
+#[test]
+fn a_dialog_opened_by_a_chord_shows_the_ring_from_the_start() {
+    let h = harness(1.0, 1000, 600);
+    h.comp.set_opened_by_key(true);
+    open(&h);
+    assert!(h.comp.get_ring_shown());
+    h.comp.set_open(false);
+    h.comp.set_opened_by_key(false);
+    h.advance(0);
+    open(&h);
+    assert!(
+        !h.comp.get_ring_shown(),
+        "the next open by a click has none"
+    );
+}
+
 #[test]
 fn the_body_names_wear_the_text_ink() {
     let h = harness(1.0, 1000, 600);

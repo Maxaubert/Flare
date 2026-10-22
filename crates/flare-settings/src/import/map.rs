@@ -39,7 +39,7 @@ use crate::recent_roots::{pinned_roots, recent_roots};
 use crate::sidebar::{SidebarMode, sidebar_width, valid_sidebar_mode, valid_sidebar_width_num};
 use crate::tab_layout::{TabLayout, tab_layout};
 use crate::tab_switch::{TabSwitch, tab_switch};
-use crate::term_prefs::{agent_keys, saved_shell_id};
+use crate::term_prefs::{agent_keys, right_click_reports, saved_shell_id};
 use crate::window_colours::{
     ACCENT, BACKGROUND, CUSTOM_COLOURS_KEY, SECONDARY, WindowColours, custom_window_colours,
     set_custom_window_colours, valid_colours, window_edges,
@@ -519,6 +519,7 @@ fn read_back(to: &str, s: &PrefStore) -> Option<String> {
         "flare.window.taskbarBadge" => on(taskbar_badge_on(s)),
         "flare.window.agentGuard" => on(agent_guard(s)),
         "flare.window.agentKeys" => on(agent_keys(s)),
+        "flare.window.rightClickReports" => on(right_click_reports(s)),
         "flare.window.sidebar" => Some(
             match valid_sidebar_mode(s.get(to).as_deref()) {
                 SidebarMode::Open => "open",
