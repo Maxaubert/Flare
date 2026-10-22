@@ -71,6 +71,26 @@ pub const E2E_REG_PREFIX: &str = r"Software\FlareE2E\";
 /// The file name of the "verb off" marker, inside the profile folder.
 pub const OFF_MARKER_FILE: &str = "shell-verb-off";
 
+/// The taskbar identity of a run (owner, 2026-10-22). The default profile keeps [`AUMID`], so the
+/// installed Flare groups with its Start-menu shortcut. A run with its own `--user-data-dir` (the
+/// owner's stable copy) gets `com.flare.terminal.p<16 hex>`: the FNV-1a 64 hash of the profile path,
+/// lowercased, with `/` read as `\` and trailing separators dropped. Stable across runs, so the
+/// shortcut of that copy can carry it; at most 36 characters, letters, digits and dots only (an
+/// AUMID may hold 128).
+pub fn aumid_for_profile(user_data_dir: Option<&std::path::Path>) -> String {
+    let Some(dir) = user_data_dir else {
+        return AUMID.to_string();
+    };
+    let text = dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    let text = text.trim_end_matches('\\');
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{AUMID}.p{h:016x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +144,24 @@ mod tests {
         assert_eq!(VERB_LABEL, "Open in Flare");
         assert_eq!(AUMID, "com.flare.terminal");
         assert_eq!(E2E_REG_PREFIX, "Software\\FlareE2E\\");
+    }
+    #[test]
+    fn aumid_is_the_plain_one_for_the_default_profile_and_per_profile_otherwise() {
+        use std::path::Path;
+        assert_eq!(aumid_for_profile(None), AUMID);
+        let a = aumid_for_profile(Some(Path::new(
+            "C:\\Users\\x\\AppData\\Local\\StableFlare\\profile",
+        )));
+        assert!(a.starts_with("com.flare.terminal.p"));
+        assert_eq!(a.len(), AUMID.len() + 2 + 16);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'));
+        // Case, slash form and a trailing separator do not change it.
+        let b = aumid_for_profile(Some(Path::new(
+            "c:/users/X/appdata/local/stableflare/profile/",
+        )));
+        assert_eq!(a, b);
+        let c = aumid_for_profile(Some(Path::new("C:\\other")));
+        assert_ne!(a, c);
+        assert!(a.len() <= 128);
     }
 }
