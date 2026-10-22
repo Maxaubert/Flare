@@ -17,7 +17,12 @@ pub mod diff;
 pub mod fold;
 pub mod path;
 pub mod tail;
+pub mod track;
+pub mod view;
 
 pub use diff::{Diff, DiffLine, Hunk, Kind};
 pub use fold::{Convo, Edit, EditOp, NamedFile, Outcome, Task, TaskStatus, Tool};
-pub use path::{find_transcript, subagent_dir, transcript_path, valid_session_id};
+pub use path::{
+    claude_dir, find_transcript, find_transcript_in, subagent_dir, subagent_dir_of,
+    transcript_path, transcript_path_in, valid_session_id,
+};

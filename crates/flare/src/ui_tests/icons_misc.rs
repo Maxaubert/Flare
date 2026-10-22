@@ -340,12 +340,107 @@ fn web_bar_glyphs_draw_at_full_size_at_every_scale() {
     }
 }
 
+// --- The conversation panels (convo.slint): the way back in a diff (10 px), a group's chevron (10 px) and the tick of
+// a done task (8 px of a 16 box, inside a 14 px dot). ---
+
+const TICK: &str = "M2 8.5l4 4 8-9";
+/// `Theme.ground`: the tick is drawn in it, on the dot's grey.
+const GROUND_INK: [f32; 3] = [23.0, 23.0, 23.0];
+
+fn convo_window(s: f32) -> Harness<AppWindow> {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h
+}
+
+fn draw_diff_back(s: f32) -> Drawn {
+    let h = convo_window(s);
+    h.comp.set_panel_kind(4);
+    h.comp.set_panel_convo_selected("a.rs".into());
+    h.advance(0);
+    let f = h.render();
+    // The bar is 30 px high; the glyph's box starts 6 px into the back button, which is 6 px in from the body.
+    let cx = h.comp.get_panel_body_x() + 6.0 + 6.0 + 5.0;
+    let cy = h.comp.get_panel_body_y() + 15.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    (
+        got,
+        expected_extent_px(CHEVRON_LEFT, 10.0, 24.0, 2.2 * 10.0 / 24.0, s),
+    )
+}
+
+fn task_row(kind: i32, state: i32) -> crate::ConvoTaskRow {
+    crate::ConvoTaskRow {
+        kind,
+        state,
+        text: "x".into(),
+        sub: "".into(),
+        active: false,
+        key: "k".into(),
+        collapsed: false,
+        count: "1 of 2 done".into(),
+    }
+}
+
+fn draw_group_chevron(s: f32, folded: bool) -> Drawn {
+    let h = convo_window(s);
+    h.comp.set_panel_kind(5);
+    let mut header = task_row(0, 0);
+    header.collapsed = folded;
+    h.comp
+        .set_panel_convo_tasks(ModelRc::new(VecModel::from(vec![header])));
+    h.advance(0);
+    let f = h.render();
+    let cx = h.comp.get_panel_body_x() + 10.0 + 5.0;
+    let cy = h.comp.get_panel_body_y() + 15.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    let path = if folded { CHEVRON_RIGHT } else { CHEVRON_DOWN };
+    (
+        got,
+        expected_extent_px(path, 10.0, 24.0, 2.2 * 10.0 / 24.0, s),
+    )
+}
+
+fn draw_tick(s: f32) -> Drawn {
+    let h = convo_window(s);
+    h.comp.set_panel_kind(5);
+    h.comp
+        .set_panel_convo_tasks(ModelRc::new(VecModel::from(vec![task_row(1, 2)])));
+    h.advance(0);
+    let f = h.render();
+    // The dot is 14 px at (16, 8) in its row; the tick is centred in it.
+    let cx = h.comp.get_panel_body_x() + 16.0 + 7.0;
+    let cy = h.comp.get_panel_body_y() + 8.0 + 7.0;
+    let r = region_around(&f, cx * s, cy * s, 4.0 * s);
+    let got = drawn(&f, r, GROUND_INK);
+    (
+        got,
+        expected_extent_px(TICK, 8.0, 16.0, 2.4 * 8.0 / 16.0, s),
+    )
+}
+
+#[test]
+fn the_conversation_glyphs_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("diff back", s, draw_diff_back(s));
+        assert_size("group chevron open", s, draw_group_chevron(s, false));
+        assert_size("group chevron folded", s, draw_group_chevron(s, true));
+        assert_size("task tick", s, draw_tick(s));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 11] = [
+const SIZED: [(&str, usize); 12] = [
+    ("convo.slint", 3),
     ("tabs.slint", 5),
     ("tabmark.slint", 7),
     ("sidebar.slint", 3),

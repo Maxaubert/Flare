@@ -9,6 +9,7 @@ mod chords;
 mod chrome_apply;
 mod clip_flow;
 mod config;
+mod convo_ctl;
 mod ctl_app;
 mod diag_ctl;
 mod dictation_ctl;

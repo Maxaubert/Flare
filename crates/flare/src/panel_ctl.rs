@@ -206,7 +206,18 @@ fn file_name(path: &str) -> &str {
 fn target_ok(kind: &PanelKind, target: &str) -> bool {
     match kind {
         PanelKind::Web => flare_surfaces::web::normalize_url(target).as_deref() == Ok(target),
+        // The conversation panels read no file: their target is the kind's own name, nothing else.
+        PanelKind::Changes | PanelKind::Tasks => kind.convo_target() == Some(target),
         _ => preview::loadable(target, kind),
+    }
+}
+
+/// The header of a conversation panel.
+fn convo_title(kind: &PanelKind) -> &'static str {
+    if *kind == PanelKind::Changes {
+        "Changes"
+    } else {
+        "Tasks"
     }
 }
 
@@ -294,6 +305,27 @@ impl PanelCtl {
 
     pub fn is_open(&self, tab: &str) -> bool {
         self.panels.open_on(tab).is_some()
+    }
+
+    /// Opens the Changes or Tasks panel on the tab (the conversation's, stage 6). False for any other kind.
+    pub fn show_convo(&mut self, tab: &str, kind: PanelKind) -> bool {
+        match kind.convo_target() {
+            Some(target) => self.show(tab, kind, target),
+            None => false,
+        }
+    }
+
+    /// The tabs whose open panel is Changes or Tasks, with the kind: the tabs that need a transcript tracker.
+    pub fn open_convo(&self) -> Vec<(String, PanelKind)> {
+        self.panels.open_convo()
+    }
+
+    /// The kind of the tab's OPEN panel when it is Changes or Tasks.
+    pub fn open_convo_kind(&self, tab: &str) -> Option<PanelKind> {
+        self.panels
+            .open_on(tab)
+            .map(|p| p.kind.clone())
+            .filter(PanelKind::is_convo)
     }
 
     /// The tab has a panel (open or closed) of a kind this build draws.
@@ -397,16 +429,19 @@ impl PanelCtl {
         let p = self.panels.get(tab)?;
         let inline = p.target.starts_with(INLINE);
         let web = p.kind == PanelKind::Web;
+        let convo = p.kind.is_convo();
         Some(PanelSnap {
             kind: p.kind.name(),
             title: self.titles.get(tab).cloned().unwrap_or_else(|| {
                 if web {
                     flare_surfaces::web::host_label(&p.target)
+                } else if convo {
+                    convo_title(&p.kind).to_string()
                 } else {
                     file_name(&p.target).to_string()
                 }
             }),
-            path: (!inline && !web).then(|| p.target.clone()),
+            path: (!inline && !web && !convo).then(|| p.target.clone()),
             url: web.then(|| p.target.clone()),
             open: p.open,
             width: p.width,
@@ -470,7 +505,7 @@ impl PanelCtl {
         let want = front.and_then(|t| {
             self.panels
                 .open_on(t)
-                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web)
+                .filter(|p| p.kind.is_built() && p.kind != PanelKind::Web && !p.kind.is_convo())
                 .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
         let Some((tab, kind, target)) = want else {

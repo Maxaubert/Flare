@@ -74,6 +74,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
+use crate::convo_ctl::{ConvoCtl, ConvoMsg, ConvoMsgBox, Want};
 use crate::ctl_app::{CtlOp, CtlRequestBox};
 use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
@@ -140,6 +141,8 @@ pub enum UiMsg {
     Ctl(CtlRequestBox),
     /// The web panel's browser told the window something, or a still was decoded (Surfaces stage 3).
     Web(WebMsgBox),
+    /// A transcript tracker's snapshot, or a path clicked in a diff (Surfaces stage 6).
+    Convo(ConvoMsgBox),
     /// The window lost the keyboard while it was still the foreground window: asks again once the
     /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
     FocusLostCheck,
@@ -473,6 +476,8 @@ pub struct AppCtl {
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
     /// The tabs' panels (Surfaces stage 1).
     panels: PanelCtl,
+    /// The conversation panels' transcript trackers (Surfaces stage 6; none run while no such panel is open).
+    convo: ConvoCtl,
     /// The web panel's browser (made by the first web panel; nothing exists while none is open).
     web: WebCtl,
     /// The downloads of web pages waiting for a yes (S6).
@@ -483,6 +488,12 @@ pub struct AppCtl {
     ctl_events: Option<CtlEvents>,
     ctl_info: Option<CtlInfo>,
 }
+
+/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6).
+const CONVO_SHOW_CHANGES: &str = "Show changes";
+const CONVO_HIDE_CHANGES: &str = "Hide changes";
+const CONVO_SHOW_TASKS: &str = "Show tasks";
+const CONVO_HIDE_TASKS: &str = "Hide tasks";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -723,6 +734,7 @@ impl AppCtl {
         let prefs_dirty = Arc::new(AtomicBool::new(false));
         let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
         let panels = PanelCtl::new(Arc::clone(&deps.post));
+        let convo = ConvoCtl::new(Arc::clone(&deps.post));
         let web = WebCtl::new(Arc::clone(&deps.post));
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
@@ -818,6 +830,7 @@ impl AppCtl {
             crumbed_front: None,
             spawn_marks: HashMap::new(),
             panels,
+            convo,
             web,
             downloads: crate::download_ask::DownloadQueue::default(),
             panel_focus_seen: false,
@@ -1146,6 +1159,12 @@ impl AppCtl {
         bind!(app, rc, on_find_close, |c| c.term_find_close());
         bind!(app, rc, on_panel_close, |c| c.close_front_panel());
         bind!(app, rc, on_panel_escape, |c| c.panel_escape());
+        bind!(app, rc, on_panel_convo_select, |c, path: SharedString| c
+            .convo_select(path.as_str()));
+        bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
+            .convo_open(path.as_str()));
+        bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
+            .convo_toggle(key.as_str()));
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
             .panel_splitter_released(share));
@@ -1245,7 +1264,7 @@ impl AppCtl {
         tab_layout(&self.prefs) == TabLayout::Vertical
     }
 
-    fn front_id(&self) -> Option<String> {
+    pub(crate) fn front_id(&self) -> Option<String> {
         self.model.state.active_id.clone()
     }
 
@@ -2149,13 +2168,14 @@ impl AppCtl {
         self.close_now(id);
     }
 
-    fn close_now(&mut self, id: &str) {
+    pub(crate) fn close_now(&mut self, id: &str) {
         self.note_close(id);
         self.deps.host.kill(id);
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
         self.panels.forget(id);
+        self.convo.forget(id);
         self.web.close_tab(id);
         self.refresh();
     }
@@ -2397,6 +2417,10 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
+            MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
+                // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
+                self.term.on_menu_pick(None, usize::MAX);
+            }
             MenuKind::Term { .. } => {
                 if row.label == "Command help" {
                     self.help_toggle();
@@ -2686,7 +2710,7 @@ impl AppCtl {
         let find_label = self.key_label_of(ChordId::Find);
         let help_label = self.key_label_of(ChordId::Help);
         let help_on = flare_settings::help_prefs::help_enabled(&self.prefs);
-        let rows: Vec<(MenuRowData, String)> = self
+        let mut rows: Vec<(MenuRowData, String)> = self
             .term
             .menu_rows(help_on, find_label, help_label)
             .iter()
@@ -2695,6 +2719,7 @@ impl AppCtl {
         if rows.is_empty() {
             return;
         }
+        rows.extend(self.convo_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
             .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
@@ -2812,6 +2837,11 @@ impl AppCtl {
         self.panels.sync(app, front.as_deref());
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_convo();
+        let kind = front
+            .as_deref()
+            .and_then(|t| self.panels.open_convo_kind(t).map(|k| (t, k)));
+        self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
         self.prune_downloads();
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
@@ -2821,9 +2851,194 @@ impl AppCtl {
         }
     }
 
+    // ---- the conversation panels (Surfaces stage 6) ------------------------------------------------
+
+    /// Brings the transcript trackers in line with the open Changes and Tasks panels: one per such tab whose Claude
+    /// session is known, none otherwise. True when one started or stopped (the window follows).
+    fn sync_convo(&mut self) -> bool {
+        let open = self.panels.open_convo();
+        if open.is_empty() && !self.convo.active() {
+            return false;
+        }
+        let shells = self.shell_tabs();
+        let wants: Vec<Want> = open
+            .iter()
+            .filter_map(|(tab, _)| {
+                let folder = shells.iter().find(|s| &s.0 == tab)?.1.clone();
+                Some(Want {
+                    tab: tab.clone(),
+                    folder,
+                    session: self.hub.claude_session(tab).map(str::to_string),
+                })
+            })
+            .collect();
+        self.convo.sync(&wants)
+    }
+
+    /// The conversation trackers, read only (the e2e probe, the tests).
+    pub(crate) fn convo(&self) -> &ConvoCtl {
+        &self.convo
+    }
+
+    /// Reads a Claude folder of the test's own instead of the profile's.
+    #[cfg(test)]
+    pub(crate) fn set_convo_claude_dir(&mut self, dir: Option<PathBuf>) {
+        self.convo.set_claude_dir(dir);
+    }
+
+    /// A tracker's snapshot, or a clicked path that may be shown.
+    fn on_convo_msg(&mut self, m: ConvoMsg) {
+        match m {
+            ConvoMsg::Snap { tab, session, snap } => {
+                if self.convo.on_snap(&tab, &session, snap) {
+                    // Only the front tab's panel is on show; a snapshot of another tab just waits for it.
+                    if self.front_id().as_deref() == Some(tab.as_str()) {
+                        self.refresh();
+                    }
+                }
+            }
+            ConvoMsg::OpenFile { tab, kind, abs } => {
+                // The person asked for this file by clicking its path: the panel shows it, whatever the setting
+                // for clicks in the terminal says. The Changes panel closes (a tab has one panel).
+                if self.is_shell_tab(&tab) && self.panels.show(&tab, kind, &abs) {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
+            }
+        }
+    }
+
+    /// A file picked in the Changes panel of the front tab (an empty path goes back to the list).
+    fn convo_select(&mut self, path: &str) {
+        let Some(id) = self.front_id() else { return };
+        let pick = (!path.is_empty()).then(|| path.to_string());
+        if self.convo.select(&id, pick) {
+            self.refresh();
+        }
+    }
+
+    /// A subagent's list folded or opened in the Tasks panel of the front tab.
+    fn convo_toggle(&mut self, key: &str) {
+        let Some(id) = self.front_id() else { return };
+        if self.convo.toggle(&id, key) {
+            self.refresh();
+        }
+    }
+
+    /// The path in a diff was clicked: a worker re-resolves it (rule 13) and, when it is a picture or a text file on
+    /// the click allowlist (rule 14), the panel shows it. Anything else does nothing; nothing is ever run.
+    fn convo_open(&mut self, path: &str) {
+        let Some(id) = self.front_id() else { return };
+        if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+            return;
+        }
+        let folder = self
+            .shell_tabs()
+            .into_iter()
+            .find(|t| t.0 == id)
+            .map(|t| t.1)
+            .unwrap_or_default();
+        let post = Arc::clone(&self.deps.post);
+        let home = self.deps.home.clone();
+        let path = path.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("flare-convo-open".into())
+            .spawn(move || {
+                if let Some((abs, real)) =
+                    flare_term::path_open::resolve_openable_file(&folder, &path, &home)
+                    && let Some(kind) = flare_surfaces::preview::classify_resolved(&abs, &real)
+                    && flare_surfaces::preview::loadable(&real, &kind)
+                {
+                    post(UiMsg::Convo(ConvoMsgBox(ConvoMsg::OpenFile {
+                        tab: id,
+                        kind,
+                        abs: real,
+                    })));
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("could not start the path check: {e}");
+        }
+    }
+
+    /// The rows the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel and one for
+    /// the Tasks panel. A tab without Claude gets none, so the plain shell's menu does not change.
+    pub(crate) fn convo_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
+        let claude = self.hub.agent_here(tab)
+            && (self.hub.claude_session(tab).is_some()
+                || self.hub.agent_kind(tab) == Some(flare_agent::kinds::DetectedAgent::Claude));
+        if !claude {
+            return Vec::new();
+        }
+        let open = self.panels.open_convo_kind(tab);
+        let row = |label: &str, icon: &'static str| {
+            (
+                MenuRowData {
+                    label: label.to_string(),
+                    hint: String::new(),
+                    icon,
+                    filled_icon: false,
+                    disabled: false,
+                    trailing_icon: None,
+                    trailing_filled: false,
+                    trailing_tip: String::new(),
+                },
+                String::new(),
+            )
+        };
+        vec![
+            row(
+                if open == Some(flare_surfaces::PanelKind::Changes) {
+                    CONVO_HIDE_CHANGES
+                } else {
+                    CONVO_SHOW_CHANGES
+                },
+                crate::menus_ui::GLYPH_OPEN,
+            ),
+            row(
+                if open == Some(flare_surfaces::PanelKind::Tasks) {
+                    CONVO_HIDE_TASKS
+                } else {
+                    CONVO_SHOW_TASKS
+                },
+                crate::menus_ui::GLYPH_FIND,
+            ),
+        ]
+    }
+
+    /// A row of the convo part of the terminal's menu was picked. False for any other row.
+    pub(crate) fn convo_menu_picked(&mut self, tab: &str, label: &str) -> bool {
+        use flare_surfaces::PanelKind;
+        let (kind, show) = match label {
+            CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
+            CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
+            CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
+            CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
+            _ => return false,
+        };
+        if show {
+            self.open_convo_panel(tab, kind);
+        } else if self.panels.close(tab) {
+            self.refresh();
+            self.panel_changed(tab);
+        }
+        true
+    }
+
+    /// Opens the Changes or Tasks panel on the tab (the menu, and `panel.open` from the agent). False when the tab
+    /// cannot hold one.
+    pub(crate) fn open_convo_panel(&mut self, tab: &str, kind: flare_surfaces::PanelKind) -> bool {
+        if !self.is_shell_tab(tab) || !self.panels.show_convo(tab, kind) {
+            return false;
+        }
+        self.refresh();
+        self.panel_changed(tab);
+        true
+    }
+
     /// A click on a path that is a picture or a text file: the backend resolved it and a worker
     /// said what it may be shown as. The panel opens on that tab; the keys stay where they are.
-    fn show_preview(&mut self, tab: &str, kind: flare_surfaces::PanelKind, abs: &str) {
+    pub(crate) fn show_preview(&mut self, tab: &str, kind: flare_surfaces::PanelKind, abs: &str) {
         let is_shell = flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
             .any(|t| t.id == tab);
@@ -2943,6 +3158,29 @@ impl AppCtl {
                     None => json!({"open": false}),
                 })
             }
+            CtlOp::ShowConvo { tab, kind } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                // A tab behind gets its panel (stored) and keeps its place: no tab is ever switched.
+                if !self.open_convo_panel(&tab, kind) {
+                    return Err(CtlError::new(
+                        code::INTERNAL,
+                        "the panel could not be opened",
+                    ));
+                }
+                let snap = self
+                    .panels
+                    .snap(&tab)
+                    .ok_or_else(|| CtlError::new(code::INTERNAL, "the panel went missing"))?;
+                Ok(json!({"panel": Self::panel_info(&snap)}))
+            }
+            CtlOp::ConvoState { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                Ok(self.convo.state_json(&tab))
+            }
             CtlOp::PanelClose { tab } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
@@ -3012,7 +3250,7 @@ impl AppCtl {
 
     /// Ctrl+Shift+P: closes the front tab's panel, or brings back what it last showed. False when
     /// there is neither, so the key is not taken.
-    fn toggle_front_panel(&mut self) -> bool {
+    pub(crate) fn toggle_front_panel(&mut self) -> bool {
         let Some(id) = self.front_id() else {
             return false;
         };
@@ -3922,6 +4160,7 @@ impl AppCtl {
                     self.blur();
                 }
             }
+            UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     // A DevTools answer or a timer turn changes the window's properties only when a
@@ -3999,6 +4238,10 @@ impl AppCtl {
             self.sync_model_agents();
             self.close_flow
                 .set_busy(holds_window_close(self.hub.working_count()));
+            changed = true;
+        }
+        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes or Tasks panel).
+        if self.sync_convo() {
             changed = true;
         }
         for ev in events {

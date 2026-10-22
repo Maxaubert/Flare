@@ -652,6 +652,15 @@ impl AgentHub {
         self.ind.agent_kind(tab).and_then(DetectedAgent::resumable)
     }
 
+    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not Codex.
+    /// Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
+    pub fn claude_session(&self, tab: &str) -> Option<&str> {
+        if self.ind.agent_kind(tab) == Some(DetectedAgent::Codex) {
+            return None;
+        }
+        self.sessions.get(tab).map(String::as_str)
+    }
+
     /// True once the process poll has answered for the tab (the first word is said once).
     pub fn polled(&self, tab: &str) -> bool {
         self.polled.contains(tab)

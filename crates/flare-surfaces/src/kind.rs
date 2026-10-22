@@ -1,5 +1,5 @@
-//! The kinds of panel. `image`, `text` and `web` are built; the rest are named now so the store can keep
-//! them and later stages only add a viewer.
+//! The kinds of panel. `image`, `text`, `web`, `changes` and `tasks` are built; the rest are named now so the store
+//! can keep them and later stages only add a viewer.
 
 /// The longest mod id (a folder name under the mods folder).
 const MOD_ID_MAX: usize = 64;
@@ -59,7 +59,29 @@ impl PanelKind {
     /// True for the kinds this build can draw. A stored panel of another kind is kept in the file
     /// but not shown until a later stage builds its viewer.
     pub fn is_built(&self) -> bool {
-        matches!(self, PanelKind::Image | PanelKind::Text | PanelKind::Web)
+        matches!(
+            self,
+            PanelKind::Image
+                | PanelKind::Text
+                | PanelKind::Web
+                | PanelKind::Changes
+                | PanelKind::Tasks
+        )
+    }
+
+    /// True for the two panels that show the agent's conversation (stage 6): they read no file, their content
+    /// comes from the transcript tracker, and their target is only the kind's own name.
+    pub fn is_convo(&self) -> bool {
+        matches!(self, PanelKind::Changes | PanelKind::Tasks)
+    }
+
+    /// The target a conversation panel stores (a target is never empty): its own name, otherwise None.
+    pub fn convo_target(&self) -> Option<&'static str> {
+        match self {
+            PanelKind::Changes => Some("changes"),
+            PanelKind::Tasks => Some("tasks"),
+            _ => None,
+        }
     }
 }
 
@@ -111,11 +133,17 @@ mod tests {
     }
 
     #[test]
-    fn image_text_and_web_are_built_and_web_and_mods_are_not_native() {
+    fn the_built_kinds_are_known_and_web_and_mods_are_not_native() {
         assert!(PanelKind::Image.is_built() && PanelKind::Text.is_built());
         assert!(PanelKind::Web.is_built());
-        assert!(!PanelKind::Board.is_built() && !PanelKind::Changes.is_built());
+        assert!(PanelKind::Changes.is_built() && PanelKind::Tasks.is_built());
+        assert!(!PanelKind::Board.is_built());
         assert!(PanelKind::Changes.is_native() && !PanelKind::Web.is_native());
+        assert!(PanelKind::Changes.is_convo() && PanelKind::Tasks.is_convo());
+        assert!(!PanelKind::Text.is_convo() && !PanelKind::Board.is_convo());
+        assert_eq!(PanelKind::Changes.convo_target(), Some("changes"));
+        assert_eq!(PanelKind::Tasks.convo_target(), Some("tasks"));
+        assert_eq!(PanelKind::Web.convo_target(), None);
         assert!(!PanelKind::Mod("x".into()).is_native());
     }
 }

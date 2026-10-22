@@ -7,6 +7,7 @@ pub mod agent_web;
 pub mod anywhere;
 pub mod chrome;
 pub mod closeask;
+pub mod convo;
 pub mod ctl;
 pub mod diag;
 pub mod dictation;
@@ -569,6 +570,12 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: agent_web::mcp_browser,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "convoPanels",
+        group: "convo",
+        run: convo::convo_panels,
+        limit_secs: 300,
     },
 ];
 

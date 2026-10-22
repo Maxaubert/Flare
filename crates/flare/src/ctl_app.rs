@@ -67,6 +67,15 @@ pub enum CtlOp {
         text: String,
         title: Option<String>,
     },
+    /// `panel.open` with kind `changes` or `tasks` (stage 6): the conversation panel on the tab.
+    ShowConvo {
+        tab: String,
+        kind: PanelKind,
+    },
+    /// `convo.state` (stage 6): a compact summary of the conversation the tab's tracker has read.
+    ConvoState {
+        tab: String,
+    },
     /// `browser.open` and `panel.open` web: the page is already vetted (`normalize_url`). Answered when
     /// the page has loaded.
     BrowserOpen {
@@ -118,6 +127,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::PanelClose { .. } => "CtlOp::PanelClose",
             CtlOp::ShowFile { .. } => "CtlOp::ShowFile",
             CtlOp::ShowText { .. } => "CtlOp::ShowText",
+            CtlOp::ShowConvo { .. } => "CtlOp::ShowConvo",
+            CtlOp::ConvoState { .. } => "CtlOp::ConvoState",
             CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
@@ -550,6 +561,7 @@ impl Dispatcher for AppDispatcher {
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
+            Method::ConvoState,
         ]
     }
 
@@ -580,6 +592,21 @@ impl Dispatcher for AppDispatcher {
                 let tab = Self::tab_of_call(ctx)?;
                 match str_param(&params, "kind")? {
                     None => Err(CtlError::new(code::BAD_PARAMS, "kind is required")),
+                    Some(k @ ("changes" | "tasks")) => {
+                        // Native panels of the conversation: no file, no address, nothing to wait for.
+                        if let Some(extra) = ["url", "path", "text"]
+                            .iter()
+                            .find(|p| params.get(**p).is_some_and(|v| !v.is_null()))
+                        {
+                            return Err(CtlError::new(
+                                code::BAD_PARAMS,
+                                format!("{extra} does not go with kind {k}"),
+                            ));
+                        }
+                        let kind = PanelKind::parse(k)
+                            .ok_or_else(|| CtlError::new(code::INTERNAL, "unknown panel kind"))?;
+                        self.ask(CtlOp::ShowConvo { tab, kind })
+                    }
                     Some("web") => {
                         let url = match str_param(&params, "url")? {
                             Some(u) => web_url(u)?,
@@ -592,7 +619,7 @@ impl Dispatcher for AppDispatcher {
                     }
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
-                        "panel.open takes kind web; use view.image, view.file or view.text",
+                        "panel.open takes kind web, changes or tasks; use view.image, view.file or view.text",
                     )),
                 }
             }
@@ -644,6 +671,9 @@ impl Dispatcher for AppDispatcher {
                 let (op, wait) = agent_op(method, &params)?;
                 self.ask_by(CtlOp::BrowserAgent { tab, op }, Instant::now() + wait)
             }
+            Method::ConvoState => self.ask(CtlOp::ConvoState {
+                tab: Self::tab_of_call(ctx)?,
+            }),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
             Method::ViewFile => self.view_file(ctx, PanelKind::Text, &params),
             Method::ViewText => {
@@ -994,7 +1024,7 @@ mod tests {
         ] {
             assert!(caps.contains(&m), "{}", m.name());
         }
-        // The agent's hands on the page (stage 4) are built; the conversation reader is not.
+        // The agent's hands on the page (stage 4) and the conversation summary (stage 6) are built.
         for m in [
             Method::BrowserLook,
             Method::BrowserClick,
@@ -1006,7 +1036,11 @@ mod tests {
         ] {
             assert!(caps.contains(&m), "{}", m.name());
         }
-        assert!(!caps.contains(&Method::ConvoState));
+        assert!(caps.contains(&Method::ConvoState));
+        assert!(
+            !caps.contains(&Method::ToolsRespond),
+            "mods come in stage 8"
+        );
     }
 
     #[test]
@@ -1492,16 +1526,68 @@ mod tests {
     }
 
     #[test]
-    fn methods_this_build_does_not_have_are_unavailable() {
+    fn convo_state_asks_for_the_callers_own_tab_only() {
+        let r = rig(|_| Ok(json!({"tracking": false})), false, FILES);
+        let v =
+            r.d.call(&agent_in_tab(), Method::ConvoState, json!({"tab": "tab-2"}))
+                .unwrap();
+        assert_eq!(v["tracking"], json!(false));
+        let ops = r.ops.lock().unwrap().clone();
+        assert_eq!(ops, ["CtlOp::ConvoState"]);
+        // A caller with no tab has nothing to ask about.
+        assert_eq!(
+            code_of(r.d.call(
+                &ctx(None, Grant::Agent { eval: false }),
+                Method::ConvoState,
+                json!({})
+            )),
+            code::NO_TAB
+        );
+    }
+
+    #[test]
+    fn panel_open_takes_the_conversation_kinds_and_nothing_more() {
         let r = rig(ok_all, false, FILES);
-        for m in [Method::ConvoState, Method::ToolsRespond] {
+        for kind in ["changes", "tasks"] {
+            let v =
+                r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": kind}))
+                    .unwrap();
+            assert!(v["panel"].is_object(), "{kind}");
+        }
+        assert_eq!(
+            r.ops.lock().unwrap().as_slice(),
+            ["CtlOp::ShowConvo", "CtlOp::ShowConvo"]
+        );
+        // A path, an address or a text does not go with them, and an unknown kind is refused.
+        for extra in ["url", "path", "text"] {
             assert_eq!(
-                code_of(r.d.call(&agent_in_tab(), m, json!({}))),
-                code::UNAVAILABLE,
-                "{}",
-                m.name()
+                code_of(r.d.call(
+                    &agent_in_tab(),
+                    Method::PanelOpen,
+                    json!({"kind": "changes", extra: "x"})
+                )),
+                code::BAD_PARAMS,
+                "{extra}"
             );
         }
+        assert_eq!(
+            code_of(r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": "board"}))),
+            code::BAD_PARAMS
+        );
+        assert_eq!(
+            r.ops.lock().unwrap().len(),
+            2,
+            "the refusals never reached the window"
+        );
+    }
+
+    #[test]
+    fn methods_this_build_does_not_have_are_unavailable() {
+        let r = rig(ok_all, false, FILES);
+        assert_eq!(
+            code_of(r.d.call(&agent_in_tab(), Method::ToolsRespond, json!({}))),
+            code::UNAVAILABLE
+        );
     }
 
     #[test]

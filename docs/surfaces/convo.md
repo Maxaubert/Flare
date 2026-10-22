@@ -23,6 +23,10 @@ session (no content copied); it found the subagent layout below. Fixtures are sy
   the folder. The check read one local session by structure only (no content was copied); the fixture
   `tests/fixtures/agent-abc.jsonl` is synthetic and follows that layout.
 
+## In Flare (stage 6)
+
+Flare tails a session only while a Changes or Tasks panel is open on its tab. The Claude folder is `CLAUDE_CONFIG_DIR` when it is an absolute path, else `<profile>\.claude` (`path::claude_dir`, `transcript_path_in`). A restart of any file re-reads every file from 0 and starts a new model. The row model the panels draw is `view.rs`; the worker is `track.rs`.
+
 ## Reading it while it grows
 
 - **Known (by design, tested).** `tail::Tail::poll` reads at most 4 MB from its byte offset. It returns only complete
