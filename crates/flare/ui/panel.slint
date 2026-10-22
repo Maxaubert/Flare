@@ -574,9 +574,15 @@ export component PanelSlot inherits Rectangle {
                 width: parent.width - close-btn.width - Px.snap(16px);
                 height: parent.height - Px.hair();
                 visible: root.kind == 3 && root.web-ribbon != "";
-                background: Theme.accent.with-alpha(0.22);
+                // Opaque, so the page's title and the note under it do not show through the tint.
+                background: Theme.tabs;
                 accessible-role: text;
                 accessible-label: root.web-ribbon;
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: Theme.accent.with-alpha(0.22);
+                }
                 Rectangle {
                     x: Px.snap(12px);
                     y: (parent.height - self.height) / 2;

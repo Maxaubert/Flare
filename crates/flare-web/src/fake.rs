@@ -30,6 +30,7 @@ pub enum Call {
     /// The answer to a download: its id and whether it may be saved.
     Download(u64, bool),
     Script(String, u64, String),
+    Zoom(String, f64),
     /// A DevTools Protocol call: tab, id, method and params.
     Cdp(String, u64, String, String),
 }
@@ -216,6 +217,13 @@ impl WebBackend for FakeWeb {
                 result,
             });
         }
+    }
+
+    fn set_zoom(&mut self, tab: &str, factor: f64) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Zoom(tab.into(), factor));
     }
 
     fn run_script(&mut self, tab: &str, id: u64, js: &str) {

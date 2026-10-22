@@ -3924,9 +3924,19 @@ impl AppCtl {
             }
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
+                    // A DevTools answer or a timer turn changes the window's properties only when a
+                    // call starts or ends or a ribbon goes (a look of a big page is hundreds of answers).
+                    let quiet = matches!(
+                        &m,
+                        crate::web_ctl::WebMsg::AgentTick
+                            | crate::web_ctl::WebMsg::Event(flare_web::WebEvent::Cdp { .. })
+                    );
+                    let before = self.web.agent_shape();
                     let outs = self.web.on_msg(&app, m);
                     self.apply_web(outs);
-                    self.web_moved();
+                    if !quiet || self.web.agent_shape() != before {
+                        self.web_moved();
+                    }
                 }
             }
             UiMsg::Ctl(CtlRequestBox(req)) => {

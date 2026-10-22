@@ -358,14 +358,21 @@ Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each 
   press in the e2e: `web.state` `agent.keys_heard`), so an agent cannot press an app chord by accident and a press does not look like
   the person. The guard that ignores keys while an agent press is in flight stays, for a runtime that behaves differently. *Electron:*
   verify `before-input-event` for DevTools-dispatched keys; if it fires, mark the agent's presses by a flag set around `sendCommand`.
-- **Real mouse buttons cannot be a hook, but can be polled.** The agent's mouse events are DevTools events and never move a real
-  button or the pointer, so "a real button is down with the pointer over the page" on a 100 ms timer is the person. It needs the window
+- **Real mouse buttons cannot be a hook, but can be polled, and a 100 ms poll misses quick clicks.** The agent's mouse events are
+  DevTools events and never move a real button or the pointer, so "a real button is down with the pointer over the page" is the
+  person. A click lasts 50 to 120 ms and the timer jitters by 15 ms, so a plain "is it down now" at 100 ms lost many clicks: it polls
+  every 16 ms and also reads the "pressed since the last call" bit of `GetAsyncKeyState` (cleared when a call starts). The page
+  taking the window's keyboard focus (`ControllerGotFocus`) while a call runs is a takeover too, whatever the poll saw; the agent's
+  DevTools events never move the window's focus (the e2e proves it by clicking and typing with that rule on). It needs the window
   under the pointer to be Flare's own (`WindowFromPoint` then `GetAncestor(GA_ROOT)`), otherwise a click in another window that covers
   the page would end the agent's call. No `SetWindowsHookEx`, no `SendInput`. The e2e cannot press a real button (rule: never input
   into real windows), so it uses a request that stands in for the person (`WebUserInput`) and the real-button path is on the by-hand
   list. *Electron:* see the port table (`input-event` / `before-mouse-event`).
-- **`interrupted` has to leave the page alone.** A takeover ends the job and forgets the refs, but it sends nothing to the page (no
-  "cancel"): the half-done click or key is whatever the person's input made of it. The next look is the agent's way back.
+- **`interrupted` has to leave the page alone, except for a button or key the agent was holding.** A takeover ends the job and
+  forgets the refs, but it sends no "cancel": the half-done click or key is whatever the person's input made of it. The one thing it
+  does send is the release of a press that was cut short (`mouseReleased`, `keyUp`, no answer awaited), because the renderer would
+  otherwise think the button is still down and turn the person's next mouse moves into a drag or a selection. *Electron:* the same,
+  in the `finally` of the job.
 - **The ribbon cannot take layout from the page.** A row above the page would resize the controller when it came and went, and the page
   would reflow under an agent that is reading its coordinates. It sits in the panel's head over the title instead. The e2e compares the
   controller's rectangle with and without it.
@@ -379,6 +386,27 @@ Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each 
   element whose accessible name contains a line break and a forged `[e99]` line, and a paragraph that reads `END PAGE CONTENT`.
   A name is never put in a line unquoted, so no page text can start a line with `[e` or equal the end marker. *Electron:* port
   `clean_text` and the wrapper with their tests; they are the contract.
+- **A browser zoom (Ctrl+wheel in the panel) does not move a click.** Verified in WebView2 155 by setting the controller's
+  `ZoomFactor` to 1.5 in the e2e: `window.devicePixelRatio` and the look's `viewport.device_scale` rise by 1.5, and a click by ref and
+  a click by point at the centre of a look (CSS pixels) both land on the button. No scaling by the zoom is needed or done. A look
+  taken the instant the zoom changes can still hold the old layout's boxes, so the step looks again before it clicks by point.
+  *Electron:* `webContents.setZoomFactor` is the same kind of zoom; re-run the step (zoom, look, click by ref and point) there before
+  assuming it.
+- **An agent in a tab that is behind needs a browser nobody sees.** Flare makes a browser only for the front tab with a shown panel, so
+  the agent's first call there used to be told "no web page is open", `open_page` succeeded without loading and the next call said the
+  same: a loop. The agent's call now makes the tab's browser hidden. *Electron:* create the `WebContentsView` for the tab's page when
+  an agent call needs it, not only when its tab is shown; keep it unattached or hidden until the tab is in front.
+- **A look that straddles a navigation must not keep the old page's names.** The tree is read, the page begins a new document, then the
+  look finishes: its refs belong to the document that is gone. A counter of documents (raised at every navigation start) recorded when
+  the call begins decides. *Electron:* the same counter on `did-start-navigation` for the main frame.
+- **Hidden characters beyond zero-width ones.** Unicode tag characters (U+E0000 to U+E007F) spell ASCII words that a person never sees
+  and a model reads ("ASCII smuggling"); variation selectors (FE00 to FE0F, E0100 to E01EF), the Mongolian vowel separator, the
+  combining grapheme joiner, the Hangul fillers and private use code points can carry text the same way. One shared list now drops
+  them (`flare_ctl::text::invisible`, with its tests); U+2028 and U+2029 count as white space. A title is cleaned and quoted in a
+  navigation answer like any other page text. *Electron:* port the list and its tests; do not write a second copy.
+- **A page's own getter can hang the pixel-ratio question.** `window.devicePixelRatio` runs in the page's main world; a page that
+  defines a getter that never returns would stall the look to its 20 s budget. `Runtime.evaluate` takes a `timeout`, so the question
+  has one (2 s) and falls back to 1.0. The wait checker runs in the main world too (accepted, `decisions.md`).
 - **Stage 3's `if` rule again: keep the permanent thing permanent.** The ribbon property is always in the tree (empty means hidden),
   like the viewers, so the head's text does not jump when it appears.
 - **A page that is not on screen paints nothing, so `Page.captureScreenshot` never answers; its tree and boxes still do.** The first
@@ -397,15 +425,22 @@ Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each 
 ### By hand, not machine-tested (Stage 4)
 
 1. A REAL mouse click in the page while a call runs: the call answers `interrupted` and the ribbon goes (the polling of the real
-   buttons; the e2e stands in for it with `WebUserInput`).
+   buttons; the e2e stands in for it with `WebUserInput`). Include a QUICK tap (a few tens of ms, a touchpad tap) and a click on a
+   page that did not have the keyboard focus: both must end the call.
 2. A REAL key typed in the page while a call runs: the same.
 3. A click in ANOTHER window that sits over the page while a call runs must not end the call (`WindowFromPoint` is Flare's window or the
    click is not the person's).
-4. The ribbon at the themes (light and dark): the accent tint over the head reads, the words fit at 100 and 225 percent, and the title
-   comes back when it goes.
+4. The ribbon at the themes (light and dark): the accent tint over the head reads, the words fit at 100 and 225 percent, the page's
+   title does NOT show through under the words (the base is opaque), and the title comes back when it goes.
 5. A monitor change between a look and a click: the click still lands (CSS pixels), and the next look reports the new `device_scale`.
 6. A real agent: in a Flare tab ask Claude to open a page with `open_page`, look, click a link and read the new heading; watch the ribbon
    and take over by clicking in the page.
 7. A page with a cross-origin iframe, a canvas and a shadow-DOM component: what the list shows (known limits above).
 8. Switch "Let agents run scripts in pages" on and off in Settings with a Claude session open: `browser_eval` is refused, then allowed,
    then refused again with no restart.
+9. A REAL takeover in the middle of an agent click: press and hold the real mouse in the page while the agent clicks; afterwards a
+   plain mouse move over the page must not select text or drag (the agent's button was let go of).
+10. An agent in a tab that is behind: ask Claude to `open_page` and `browser_look` while another tab is in front; the look must work
+    (the list, no picture) and the page must show when the tab is brought to the front.
+11. A very large page (thousands of nodes): time a look by hand; the tree is parsed on the UI thread, so watch for a hitch.
+12. Ctrl+wheel the panel to zoom while Claude is asked to click a link: it must land (the e2e proves it at 150 percent).

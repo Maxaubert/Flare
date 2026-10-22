@@ -248,6 +248,9 @@ pub struct Job {
     /// The page's address and title as the last answer found them (a look given up on the picture
     /// names the page from these).
     page: (String, String),
+    /// The releases of a press the job was cut short in (a timeout takes the stage before the window
+    /// asks); see [`Job::release_calls`].
+    release: Vec<Call>,
 }
 
 fn call(ids: &mut Ids<'_>, method: &str, params: Value) -> Call {
@@ -286,6 +289,17 @@ impl Job {
         self.refs.take()
     }
 
+    /// The calls that let go of what a job cut short had pressed: the mouse button or key whose release
+    /// was still queued. The renderer would otherwise believe it is still held (the person's next moves
+    /// would drag or select). The window sends them and waits for no answer.
+    pub fn release_calls(&mut self, ids: &mut Ids<'_>) -> Vec<Call> {
+        let mut out = std::mem::take(&mut self.release);
+        if let Some(Stage::Seq { queue, .. }) = &self.stage {
+            out.extend(releases_of(queue, ids));
+        }
+        out
+    }
+
     /// The person took over the page: the call ends.
     pub fn interrupted() -> JobError {
         JobError {
@@ -313,6 +327,7 @@ impl Job {
                     deadline_ms: now_ms + budget,
                     refs: None,
                     page: Default::default(),
+                    release: Vec::new(),
                 }),
                 Out::Calls(calls),
             )
@@ -326,7 +341,12 @@ impl Job {
                 let dpr = call(
                     ids,
                     "Runtime.evaluate",
-                    json!({"expression": "window.devicePixelRatio", "returnByValue": true}),
+                    json!({
+                        "expression": "window.devicePixelRatio",
+                        "returnByValue": true,
+                        // A page that hangs or lies in its own getter costs the ratio, not the look.
+                        "timeout": CHECK_TIMEOUT_MS,
+                    }),
                 );
                 job(
                     Stage::LookA {
@@ -443,6 +463,7 @@ impl Job {
                     deadline_ms: end + 5_000,
                     refs: None,
                     page: Default::default(),
+                    release: Vec::new(),
                 };
                 let out = j.on_tick(now_ms, ids);
                 (Some(j), out)
@@ -528,6 +549,9 @@ impl Job {
             return self.finish_if_looked();
         }
         if self.stage.is_some() && now_ms >= self.deadline_ms {
+            if let Some(Stage::Seq { queue, .. }) = &self.stage {
+                self.release = releases_of(queue, ids);
+            }
             self.stage = None;
             return Out::Done(err(
                 Fail::Timeout,
@@ -1098,6 +1122,7 @@ fn insert_text(
             deadline_ms: now_ms + ACT_BUDGET_MS,
             refs: None,
             page: Default::default(),
+            release: Vec::new(),
         }),
         Out::Calls(vec![c]),
     )
@@ -1129,6 +1154,7 @@ fn prep_a(
             deadline_ms: now_ms + ACT_BUDGET_MS,
             refs: None,
             page: Default::default(),
+            release: Vec::new(),
         }),
         Out::Calls(vec![enable, scroll]),
     )
@@ -1144,6 +1170,20 @@ fn seq_of(
     let first = call(ids, method, it.next().unwrap_or_else(|| json!({})));
     let queue = it.map(|p| (method, p)).collect();
     (queue, first)
+}
+
+/// The release events left in a queue of input (a mouse button up, a key up), as calls.
+fn releases_of(queue: &VecDeque<(&'static str, Value)>, ids: &mut Ids<'_>) -> Vec<Call> {
+    queue
+        .iter()
+        .filter(|(_, p)| {
+            matches!(
+                p.get("type").and_then(Value::as_str),
+                Some("mouseReleased" | "keyUp")
+            )
+        })
+        .map(|(m, p)| call(ids, m, p.clone()))
+        .collect()
 }
 
 /// What `browser.eval` answers: the value, cut when it is huge.
@@ -2077,5 +2117,88 @@ mod tests {
                 assert!(seen.insert(c.id));
             }
         }
+    }
+
+    fn click_job(ids: &mut u64) -> Job {
+        let (job, out) = Job::start(
+            Op::Click {
+                target: Target::Point(10.0, 20.0),
+                button: Button::Left,
+                double: false,
+            },
+            &RefMap::default(),
+            0,
+            &mut Ids(ids),
+        );
+        assert!(matches!(out, Out::Calls(_)));
+        job.unwrap()
+    }
+
+    #[test]
+    fn a_click_cut_short_lets_go_of_the_button() {
+        // The person takes over after the press went out: the release still queued is sent by the window.
+        let mut ids = 0;
+        let mut job = click_job(&mut ids);
+        let cur = ids; // the first event (a move) is the call in flight
+        let out = job.on_reply(
+            cur,
+            Ok("{}".into()),
+            Page { url: "", title: "" },
+            1,
+            &mut Ids(&mut ids),
+        );
+        let Out::Calls(c) = out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(c[0].params["type"], "mousePressed");
+        let rel = job.release_calls(&mut Ids(&mut ids));
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].method, "Input.dispatchMouseEvent");
+        assert_eq!(rel[0].params["type"], "mouseReleased");
+        assert_eq!(rel[0].params["button"], "left");
+        // A job that finished has nothing to let go of.
+        let mut done = click_job(&mut ids);
+        for _ in 0..4 {
+            let cur = ids;
+            let _ = done.on_reply(
+                cur,
+                Ok("{}".into()),
+                Page { url: "", title: "" },
+                1,
+                &mut Ids(&mut ids),
+            );
+        }
+        assert!(done.release_calls(&mut Ids(&mut ids)).is_empty());
+    }
+
+    #[test]
+    fn a_click_that_times_out_still_lets_go() {
+        let mut ids = 0;
+        let mut job = click_job(&mut ids);
+        let out = job.on_tick(ACT_BUDGET_MS, &mut Ids(&mut ids));
+        assert!(matches!(out, Out::Done(Err(_))), "{out:?}");
+        let rel = job.release_calls(&mut Ids(&mut ids));
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].params["type"], "mouseReleased");
+        assert!(job.release_calls(&mut Ids(&mut ids)).is_empty(), "once");
+    }
+
+    #[test]
+    fn the_pixel_ratio_question_has_a_time_limit_and_nothing_else_is_script() {
+        let mut ids = 0;
+        let (_, out) = Job::start(
+            Op::Look { picture: true },
+            &RefMap::default(),
+            0,
+            &mut Ids(&mut ids),
+        );
+        let Out::Calls(cs) = out else { panic!() };
+        let evals: Vec<&Call> = cs
+            .iter()
+            .filter(|c| c.method == "Runtime.evaluate")
+            .collect();
+        assert_eq!(evals.len(), 1);
+        assert_eq!(evals[0].params["expression"], "window.devicePixelRatio");
+        assert!(evals[0].params["timeout"].as_u64().is_some());
     }
 }

@@ -1011,12 +1011,16 @@ MCP tools and how a look is written for the model).
   runs and for 1.5 s after; the page does not move or resize for it. Held by
   `the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
   `the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `the_ribbon_names_who_is_using_the_page` and the e2e (up
-  during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged).
+  during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged with the ribbon up and after
+  it goes; the ribbon's background is opaque so the page's title does not show through).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
   `a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e (a stand-in for the person's input ends a 30 s wait `interrupted`,
-  the ribbon goes, the refs are forgotten; pressing Ctrl+Shift+P as the agent closes nothing). The real mouse path is by hand.
+  the ribbon goes, the refs are forgotten; pressing Ctrl+Shift+P as the agent closes nothing). The mouse is read every 16 ms and also
+  for a press that came and went between two reads; the page taking the window's focus is a takeover too; a click cut short lets go
+  of its button (`a_click_cut_short_lets_go_of_the_button`, `the_person_taking_over_a_click_lets_go_of_the_button`,
+  `the_person_focusing_the_page_while_a_call_runs_takes_over`). The real mouse path is by hand.
 - **Scripts are off.** `browser.eval` / `browser_eval` need the new setting "Let agents run scripts in pages" (Settings > Terminal
   > Links, default OFF); the grant follows it at every request. Held by `the_agent_grant_follows_the_users_switch_for_scripts`,
   `scripts_for_agents_are_off_until_a_stored_one`, `the_scripts_row_is_a_switch_that_is_off_until_turned_on` and the e2e (refused
@@ -1025,20 +1029,27 @@ MCP tools and how a look is written for the model).
 - **Page text is data.** A page cannot end the page-content block, pose as another element or hide words from the model with
   control, direction-override or zero-width characters. Held by `hostile_page_text_cannot_end_the_block_pose_as_an_element_or_hide`,
   `clean_page_keeps_words_and_drops_tricks` (`flare-mcp`), `page_text_is_cleaned_before_it_goes_anywhere` (`agent_web.rs`) and the
-  e2e `mcpBrowser` (the page carries a fake end marker and an element name with a line break and a forged `[e99]` line).
+  e2e `mcpBrowser` (the page carries a fake end marker and an element name with a line break and a forged `[e99]` line, and a
+  title with a quote, a fake end marker and hidden tag characters). One cleaning list serves both layers (`flare_ctl::text`, Unicode
+  tag characters, variation selectors and fillers included). The title and address of a navigation answer sit between the markers
+  too (`a_hostile_title_or_address_after_a_navigation_stays_inside_the_markers`).
+- **A tab that is behind.** An agent call in a tab behind makes that tab's browser hidden and answers "the page is not ready yet"
+  until it has loaded, so `open_page` followed by `browser_look` works there (list, no picture) and never loops. Held by
+  `an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page`.
+- **Browser zoom.** Clicks land under the panel's own zoom (150 percent in the e2e, by ref and by point).
 - **Parked and unfocused.** The agent drives a page the person is not looking at: the e2e window is parked off the screen and never
   foregrounded and a look there returns the real picture (`agentBrowser` decodes it at 100 and 225 percent). A tab that is behind
   keeps its page hidden; a look of it gives the list and no picture (a hidden page paints nothing), answered at once
   (`a_look_of_a_tab_that_is_behind_has_the_list_but_no_picture`, and the e2e).
-- **Nothing costs anything while unused.** No browser, no DevTools call, no timer until a call is made; the 100 ms timer runs only
-  while a call or the ribbon's hold lasts. Held by `nothing_exists_before_a_web_panel_opens` and the timer names in
+- **Nothing costs anything while unused.** No browser, no DevTools call, no timer until a call is made; the 16 ms timer runs only
+  while a call or the ribbon's hold lasts, and the window's properties are synced only when a call starts or ends or the ribbon goes. Held by `nothing_exists_before_a_web_panel_opens` and the timer names in
   `timer_registry`.
 - **MCP.** `flare-mcp` lists 13 tools (the five that show things and `browser_look`, `browser_click`, `browser_type`,
   `browser_press`, `browser_scroll`, `browser_wait`, `browser_navigate`, `browser_eval`), each described for an agent. Held by
   `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas`, `the_tools_are_listed_with_descriptions_written_for_an_agent`
   (`browser.rs`) and the e2e `mcpBrowser` (initialize, tools/list, a look whose result has an image content item that is a PNG and
   the list as text, then click, type, press, scroll, wait, navigate and eval through stdio).
-- **End to end (the release exe, its own profile, offscreen):** `agentBrowser` (129 checks, at 100 and 225 percent, then a launch
-  with scripts on) and `mcpBrowser` (24 checks, `flare-mcp.exe` over stdio). See `docs/e2e.md`.
-- **By hand, not machine-tested:** a real mouse click in the page while a call runs (the polling of the real buttons), a real key,
+- **End to end (the release exe, its own profile, offscreen):** `agentBrowser` (141 checks, at 100 and 225 percent, then a launch
+  with scripts on) and `mcpBrowser` (26 checks, `flare-mcp.exe` over stdio). See `docs/e2e.md`.
+- **By hand, not machine-tested:** a real mouse click (a quick tap too) in the page while a call runs (the polling of the real buttons), a real key,
   the ribbon's look at the 18 themes, a monitor change during a look. The list is at the end of `docs/surfaces/lessons.md` (Stage 4).

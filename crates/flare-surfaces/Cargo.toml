@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+flare-ctl = { path = "../flare-ctl" }
 flare-settings = { path = "../flare-settings" }
 serde_json.workspace = true
 image = { workspace = true }

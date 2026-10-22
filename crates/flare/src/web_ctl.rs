@@ -55,8 +55,9 @@ pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703
 const CAPTURE_TIMER: &str = "web.capture";
 /// The timer that runs while an agent call is on a page or its ribbon is still up.
 const AGENT_TIMER: &str = "web.agent";
-/// How often that timer looks (the person's mouse, a wait, a deadline, the ribbon).
-const AGENT_TICK_MS: u64 = 100;
+/// How often that timer looks (the person's mouse, a wait, a deadline, the ribbon). It runs only while
+/// a call is on a page or the ribbon is up, and is about one frame, so a quick click is seen.
+const AGENT_TICK_MS: u64 = 16;
 /// How long the ribbon stays after the agent's call ends.
 pub const RIBBON_HOLD_MS: u64 = 1_500;
 
@@ -148,6 +149,8 @@ struct AgentCall {
     reply: Sender<Result<Value, CtlError>>,
     /// Who is using the page, for the ribbon ("Claude").
     label: String,
+    /// Which document the page was showing when the call began (`TabWeb::doc`).
+    doc: u64,
 }
 
 fn ctl_error(e: JobError) -> CtlError {
@@ -183,8 +186,30 @@ pub fn point_in(r: &PhysRect, x: i32, y: i32) -> bool {
     x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
 }
 
-/// Is a real mouse button down with the pointer over `r` (client pixels of `hwnd`)? The agent's own
-/// clicks are browser events and move neither the pointer nor a button, so this is the person.
+/// Is Flare's window minimized (nothing paints).
+fn window_minimized(hwnd: isize) -> bool {
+    // SAFETY: a plain read of the state of Flare's own window.
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd as *mut _) != 0 }
+}
+
+/// Forgets the mouse presses so far: `real_button_down_over` also sees a press that came and went since
+/// the last look, and a call starting must not count one from before it.
+fn flush_button_edges() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+    for k in [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON] {
+        // SAFETY: a plain read of a key state; it also clears the "pressed since" bit.
+        unsafe {
+            GetAsyncKeyState(i32::from(k));
+        }
+    }
+}
+
+/// Is a real mouse button down, or was one pressed since the last look, with the pointer over `r`
+/// (client pixels of `hwnd`)? The agent's own clicks are browser events and move neither the pointer
+/// nor a button, so this is the person. The "pressed since" bit catches a click that began and ended
+/// between two looks.
 fn real_button_down_over(hwnd: isize, r: &PhysRect) -> bool {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
@@ -199,7 +224,7 @@ fn real_button_down_over(hwnd: isize, r: &PhysRect) -> bool {
     unsafe {
         let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .iter()
-            .any(|k| GetAsyncKeyState(i32::from(*k)) < 0);
+            .any(|k| (GetAsyncKeyState(i32::from(*k)) as u16) & 0x8001 != 0);
         if !down {
             return false;
         }
@@ -235,6 +260,9 @@ struct TabWeb {
     last: Option<Settled>,
     /// The agent call on this page, if one is running (one at a time).
     agent: Option<AgentCall>,
+    /// Raised each time the page starts a navigation: a look that began on an earlier document does not
+    /// leave its element names behind.
+    doc: u64,
     /// The element names of the agent's last look; they last until the next look or page load.
     refs: RefMap,
     /// The ribbon's words and the moment it goes, after a call that has ended.
@@ -873,6 +901,25 @@ impl WebCtl {
         self.tabs.contains_key(tab)
     }
 
+    /// Makes the browser of a tab that is behind, hidden, because an agent call needs its page (only the
+    /// front tab gets one otherwise). It takes the place of the last page shown, and is put right when its
+    /// tab comes to the front.
+    pub fn ensure_hidden(&mut self, tab: &str, url: &str) {
+        if self.closed || self.tabs.contains_key(tab) {
+            return;
+        }
+        let rect = self.bounds.as_ref().map_or(
+            PhysRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            |(_, r)| *r,
+        );
+        self.open_tab(tab, url, rect, false);
+    }
+
     pub fn failure(&self, tab: &str) -> Option<(String, bool)> {
         self.tabs.get(tab).and_then(|t| t.failed.clone())
     }
@@ -935,6 +982,15 @@ impl WebCtl {
         self.keys.agent_heard.get()
     }
 
+    /// How many agent calls run and how many ribbons are held: when this is the same before and after a
+    /// message, the window's properties need no new sync (a DevTools answer or a timer turn alone).
+    pub fn agent_shape(&self) -> (usize, usize) {
+        (
+            self.tabs.values().filter(|t| t.agent.is_some()).count(),
+            self.tabs.values().filter(|t| t.hold.is_some()).count(),
+        )
+    }
+
     fn refresh_key_flags(&self) {
         self.keys.job_active.set(self.agent_busy());
         self.keys.agent_keys.set(
@@ -969,7 +1025,8 @@ impl WebCtl {
         };
         let now = self.now_ms();
         let Some(t) = self.tabs.get_mut(tab) else {
-            say("no web page is open in this tab; open_page opens one");
+            // The tab has a web panel (the caller checked) but its page is not made: its tab is behind.
+            say("the page is not ready yet; try again in a moment");
             return;
         };
         if let Some((why, missing)) = &t.failed {
@@ -992,8 +1049,11 @@ impl WebCtl {
         // picture of it can be taken; its list can.
         let op = match op {
             AgentOp::Look { .. } => AgentOp::Look {
+                // Only a page that is painting has a picture: not one collapsed, covered by a menu or
+                // in a minimized window (each would wait out the whole picture budget).
                 picture: self.shown_tab.as_deref() == Some(tab)
-                    && !matches!(self.phase, Phase::Still | Phase::Capturing(_)),
+                    && matches!(self.phase, Phase::Live | Phase::Capturing(_))
+                    && !self.hwnd.is_some_and(window_minimized),
             },
             other => other,
         };
@@ -1009,8 +1069,10 @@ impl WebCtl {
             job,
             reply,
             label: label.to_string(),
+            doc: t.doc,
         });
         t.hold = None;
+        flush_button_edges();
         self.refresh_key_flags();
         self.ensure_agent_timer();
         self.drive(tab, out);
@@ -1041,8 +1103,20 @@ impl WebCtl {
         let Some(mut a) = t.agent.take() else {
             return;
         };
-        if let Some(refs) = a.job.take_refs() {
+        // The names of a look are kept only when the page is still the document the look read (a
+        // navigation that began meanwhile has cleared them already, and they belong to the old page).
+        if let Some(refs) = a.job.take_refs()
+            && a.doc == t.doc
+        {
             t.refs = refs;
+        }
+        // A press the call was cut short in is let go of, so the page does not think a button is held.
+        if result.is_err() {
+            for c in a.job.release_calls(&mut Ids(&mut self.call_ids)) {
+                if let Some(b) = self.backend.as_mut() {
+                    b.cdp(tab, c.id, &c.method, &c.params.to_string());
+                }
+            }
         }
         let interrupted = matches!(&result, Err(e) if e.fail == Fail::Interrupted);
         if interrupted {
@@ -1075,6 +1149,7 @@ impl WebCtl {
         if let (Some(hwnd), Some((tab, rect))) = (self.hwnd, self.bounds.clone())
             && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some())
             && self.shown_tab.as_deref() == Some(tab.as_str())
+            && self.phase == Phase::Live
             && real_button_down_over(hwnd, &rect)
         {
             self.user_input();
@@ -1124,6 +1199,13 @@ impl WebCtl {
     }
 
     // ---- the e2e's seams -------------------------------------------------------------------------------
+
+    /// Sets the browser's zoom of the tab's page (the e2e's seam).
+    pub fn set_zoom(&mut self, tab: &str, factor: f64) {
+        if let Some(b) = self.backend() {
+            b.set_zoom(tab, factor);
+        }
+    }
 
     /// Starts a script in the tab's page; the answer is read with [`WebCtl::script_result`].
     pub fn start_script(&mut self, tab: &str, js: &str) -> u64 {
@@ -1255,6 +1337,7 @@ impl WebCtl {
                     t.loading = true;
                     // A new page: the names of the last look point at nothing now.
                     t.refs = RefMap::default();
+                    t.doc += 1;
                     t.notice.clear();
                     // The call's own navigation is the first for the address it sent the page to (an
                     // earlier one still on its way is not it); a redirect after that rebinds it.
@@ -1428,9 +1511,15 @@ impl WebCtl {
                 }
             }
             WebEvent::Key { tab: _, key } => out.push(WebOut::Key(key)),
-            WebEvent::Focus { tab: _, has } => {
+            WebEvent::Focus { tab, has } => {
                 self.has_focus = has;
                 out.push(WebOut::PageFocus(has));
+                // The person's click on a page that had no focus gives it the keyboard: that is a
+                // takeover too, whatever the mouse poll saw (the agent's own events never move the
+                // window's focus).
+                if has && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some()) {
+                    self.finish_agent(&tab, Err(Job::interrupted()));
+                }
             }
             WebEvent::Gone { tab, why } => {
                 self.fail_view(&tab);

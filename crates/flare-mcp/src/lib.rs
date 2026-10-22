@@ -273,24 +273,7 @@ pub fn call_tool(
             };
             channel
                 .call(Method::BrowserOpen, json!({"url": url}))
-                .map(|v| {
-                    // The title and the address came from a web page and over a pipe: cleaned like any
-                    // other words that reach the model.
-                    let shown = clean_message(v.get("url").and_then(Value::as_str).unwrap_or(&url));
-                    let title = clean_message(v.get("title").and_then(Value::as_str).unwrap_or(""));
-                    let named = if title.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" (\"{title}\")")
-                    };
-                    if v.get("loaded").and_then(Value::as_bool) == Some(false) {
-                        ToolResult::text(format!(
-                            "Opened {shown}{named} in Flare, but the page did not finish loading."
-                        ))
-                    } else {
-                        ToolResult::text(format!("Opened {shown}{named} in Flare."))
-                    }
-                })
+                .map(|v| browser::opened_text(&v, &url, "Opened"))
         }
         "close_panel" => channel.call(Method::PanelClose, json!({})).map(|v| {
             match v.get("closed").and_then(Value::as_bool) {
@@ -734,10 +717,10 @@ app", "loaded": true}))),
         );
         assert_eq!(r["result"]["isError"], false);
         // The page's title is one clean line.
-        assert_eq!(
-            text_of(&r),
-            "Opened http://localhost:3000/ (\"My app\") in Flare."
-        );
+        let t = text_of(&r);
+        assert!(t.starts_with("Opened the page in Flare."), "{t}");
+        assert!(t.contains("Title: \"My app\"\nAddress: \"http://localhost:3000/\""));
+        assert!(t.trim_end().ends_with(browser::END));
         let mut ch = Fake {
             answer: Some(Ok(json!({"url": "https://a.example/", "loaded": false}))),
             ..Fake::default()

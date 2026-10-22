@@ -267,13 +267,15 @@ impl AppCtl {
             let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
             return;
         }
-        if self.panels.web_target(&tab).is_none() {
+        let Some(url) = self.panels.web_target(&tab) else {
             let _ = reply.send(Err(CtlError::new(
                 code::UNAVAILABLE,
                 "no web page is open in this tab; open_page (browser.open) opens one",
             )));
             return;
-        }
+        };
+        // A tab that is behind has no browser yet; the agent's call makes one, hidden.
+        self.web.ensure_hidden(&tab, &url);
         let label = crate::web_ctl::agent_label(self.agent_named(&tab));
         self.web.start_agent(&tab, op, &label, reply);
         self.web_moved();
@@ -376,6 +378,18 @@ impl AppCtl {
     }
 
     // ---- the e2e's reads ---------------------------------------------------------------------------
+
+    /// Sets the browser zoom of the front tab's page (the e2e's seam).
+    pub fn web_zoom(&mut self, factor: f64) -> bool {
+        let Some(id) = self.front_id() else {
+            return false;
+        };
+        let up = self.web.has_tab(&id);
+        if up {
+            self.web.set_zoom(&id, factor);
+        }
+        up
+    }
 
     /// Starts a script in the front tab's page (the e2e's seam; the answer comes from `web_script_result`).
     pub fn web_script(&mut self, js: &str) -> Option<u64> {

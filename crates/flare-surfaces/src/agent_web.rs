@@ -34,52 +34,15 @@ pub const SHOT_BYTES_MAX: usize = 8 * 1024 * 1024;
 
 // ---- cleaning ---------------------------------------------------------------------------------
 
-/// True for characters that print nothing yet can hide words from a person while a model reads them:
-/// zero-width and joiner characters, direction overrides and isolates, the byte-order mark.
-fn invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}'
-            | '\u{00AD}'
-    )
+/// Page text made safe to hand on: one line, no control or invisible characters (the tag characters
+/// and variation selectors among them), runs of white space collapsed, at most `max` characters (a cut
+/// ends in `...`). The one copy lives in `flare_ctl::text`, shared with the agent tools.
+pub fn clean_text(s: &str, max: usize) -> String {
+    flare_ctl::text::clean_text(s, max)
 }
 
-/// Page text made safe to hand on: one line, no control or invisible characters, runs of white space
-/// collapsed, at most `max` characters (a cut ends in `...`).
-pub fn clean_text(s: &str, max: usize) -> String {
-    let mut out = String::new();
-    let mut count = 0usize;
-    let mut pending_space = false;
-    let mut cut = false;
-    for c in s.chars() {
-        if invisible(c) {
-            continue;
-        }
-        if c.is_whitespace() || c.is_control() {
-            pending_space = !out.is_empty();
-            continue;
-        }
-        let need = usize::from(pending_space) + 1;
-        if count + need > max {
-            cut = true;
-            break;
-        }
-        if pending_space {
-            out.push(' ');
-            count += 1;
-            pending_space = false;
-        }
-        out.push(c);
-        count += 1;
-    }
-    if cut {
-        out.push_str("...");
-    }
-    out
+fn invisible(c: char) -> bool {
+    flare_ctl::text::invisible(c)
 }
 
 // ---- the snapshot -----------------------------------------------------------------------------
@@ -394,13 +357,6 @@ pub fn viewport_of(metrics: &Value) -> Option<Viewport> {
         page_x: num("pageX", "x").unwrap_or(0.0),
         page_y: num("pageY", "y").unwrap_or(0.0),
     })
-}
-
-/// A page's size in CSS pixels from what the panel measures in physical pixels: the display scale
-/// (1.0 at 100 percent, 2.25 at 225 percent) times the browser zoom.
-pub fn css_size(phys_w: f64, phys_h: f64, dpi_scale: f64, zoom: f64) -> (f64, f64) {
-    let d = (dpi_scale * zoom).max(0.01);
-    (phys_w / d, phys_h / d)
 }
 
 /// Rectangles `[x, y, w, h]` and centres of `DOM.getContentQuads`'s answer.
@@ -917,6 +873,14 @@ mod tests {
         assert_eq!(clean_text("ab cd", 4), "ab c...");
         assert_eq!(clean_text("\u{0}\u{7}\u{1b}[31mred", 100), "[31mred");
         assert_eq!(clean_text("", 5), "");
+        // Unicode tag characters and variation selectors hide words from a person and not from a model.
+        assert_eq!(
+            clean_text(
+                "ok\u{E0069}\u{E0067}\u{E006E}\u{FE0F}\u{E0100}\u{180E}\u{3164}!",
+                100
+            ),
+            "ok!"
+        );
     }
 
     #[test]
@@ -1034,19 +998,6 @@ mod tests {
         // Nothing shows.
         let q = quads(&[[10.0, 700.0, 50.0, 700.0, 50.0, 720.0, 10.0, 720.0]]);
         assert_eq!(click_point(&q, &vp), None);
-    }
-
-    #[test]
-    fn css_pixels_follow_the_display_scale_and_the_zoom() {
-        // The same 1000 x 640 css window is 1000 physical pixels at 100 percent and 2250 at 225.
-        assert_eq!(css_size(1000.0, 640.0, 1.0, 1.0), (1000.0, 640.0));
-        let (w, h) = css_size(2250.0, 1440.0, 2.25, 1.0);
-        assert!((w - 1000.0).abs() < 1e-9 && (h - 640.0).abs() < 1e-9);
-        // Browser zoom 125 percent shows fewer css pixels in the same panel.
-        let (w, _) = css_size(1000.0, 640.0, 1.0, 1.25);
-        assert!((w - 800.0).abs() < 1e-9);
-        // A degenerate scale does not divide by zero.
-        assert!(css_size(100.0, 100.0, 0.0, 0.0).0.is_finite());
     }
 
     #[test]

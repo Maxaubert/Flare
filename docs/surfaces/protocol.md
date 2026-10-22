@@ -342,7 +342,7 @@ control or heading is not repeated; the same words twice in a row are one elemen
 characters, addresses at 200, and the list at 600 (every control is kept first, then the text in order; `truncated`
 says it was cut). Elements with no box on the page are left out; `state` holds `disabled`, `checked`, `unchecked`,
 `mixed`, `selected`, `expanded`, `collapsed`, `pressed`, `focused`, `required`, `readonly`, `invalid`, `modal`.
-**Page text is untrusted:** Flare strips control, direction-override and zero-width characters and collapses white
+**Page text is untrusted:** Flare strips control, direction-override, zero-width and other invisible characters (Unicode tag characters and variation selectors included) and collapses white
 space before a name leaves the app, and `flare-mcp` does it again and quotes each name.
 
 **Refs** are the numbers a look gave (`e1`, `e2`, ...). They last until the next look, a page load (any new

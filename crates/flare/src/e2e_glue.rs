@@ -1266,6 +1266,19 @@ impl GlueCtx {
             .ok_or_else(|| "the front tab has no web page".to_string())
     }
 
+    /// `WebZoom`: the browser zoom of the front web page.
+    fn web_zoom(&self, factor: f64) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        if c.web_zoom(factor) {
+            Ok(())
+        } else {
+            Err("the front tab has no web page".to_string())
+        }
+    }
+
     /// `WebUserInput`: the person took over the front web page.
     fn web_user_input(&self) -> Result<(), String> {
         let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
@@ -1868,6 +1881,7 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
         Request::WebScript { js } => ctx.web_script(&js),
         Request::WebUserInput => ctx.web_user_input(),
+        Request::WebZoom { factor } => ctx.web_zoom(factor),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,

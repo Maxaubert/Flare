@@ -1120,6 +1120,13 @@ impl WebBackend for WebHost {
         }
     }
 
+    fn set_zoom(&mut self, tab: &str, factor: f64) {
+        if let Some(l) = self.live(tab) {
+            // SAFETY: `controller` is a live COM object.
+            let _ = unsafe { l.controller.SetZoomFactor(factor) };
+        }
+    }
+
     fn run_script(&mut self, tab: &str, id: u64, js: &str) {
         let Some(l) = self.live(tab) else {
             (self.sink)(WebEvent::Script {

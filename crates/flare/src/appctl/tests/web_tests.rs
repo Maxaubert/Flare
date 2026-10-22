@@ -1434,7 +1434,14 @@ fn a_look_goes_through_devtools_and_answers_with_the_picture_and_the_elements() 
         f.ctl.borrow().web.agent_op(&id).is_none(),
         "the call is over"
     );
-    // Nothing but protocol methods was sent to the page, never a script.
+    // The one script is the fixed pixel-ratio question, word for word.
+    for (m, p) in cdp_calls(&slot) {
+        if m == "Runtime.evaluate" {
+            let p: Value = serde_json::from_str(&p).unwrap();
+            assert_eq!(p["expression"], "window.devicePixelRatio");
+        }
+    }
+    // Nothing but protocol methods was sent to the page.
     for (m, _) in cdp_calls(&slot) {
         assert!(
             [
@@ -1675,4 +1682,159 @@ fn a_wait_asks_the_page_with_the_fixed_checker_only() {
         expr.replacen(&lit, "@", 1),
         flare_surfaces::agent_web::WAIT_TEXT_TEMPLATE
     );
+}
+
+#[test]
+fn an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = f.ctl.borrow().front_id().unwrap();
+    let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.ctl.borrow_mut().refresh();
+    // open_page in the tab behind stores the page; no browser yet.
+    let rx = ask(&f, open_op(&a, PAGE), Duration::from_secs(5));
+    assert_eq!(rx.try_recv().unwrap().unwrap()["loaded"], false);
+    assert!(slot.borrow().is_none());
+    // The agent's look makes the browser, hidden, and says the page is not ready: not "open_page".
+    let rx = look(&f, &a);
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(!e.message.contains("no web page is open"), "{}", e.message);
+    assert!(!e.message.contains("open_page"), "{}", e.message);
+    assert_eq!(f.ctl.borrow().web_controllers(), 1);
+    let o = opened_calls(&slot);
+    let Some(Call::Open { tab, visible, .. }) = o.first() else {
+        panic!("{o:?}")
+    };
+    assert_eq!((tab.as_str(), *visible), (a.as_str(), false));
+    // Once it has loaded, the look works there (the list, no picture).
+    finish(&fake(&slot), &a, PAGE, true);
+    f.pump();
+    with_shop(&slot);
+    let rx = look(&f, &a);
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["elements"].as_array().unwrap().len(), 2);
+    assert!(v.get("image").is_none());
+    // It was never made visible while behind.
+    assert_ne!(last_visible(&slot, &a), Some(true));
+}
+
+/// Answers every DevTools call sent so far that has not been answered, from the stand-in shop page.
+fn answer_all(f: &Fx, slot: &Slot, tab: &str, done: &mut std::collections::HashSet<u64>) {
+    for c in fake(slot).calls() {
+        if let Call::Cdp(_, id, m, p) = c
+            && done.insert(id)
+        {
+            fake(slot).say(WebEvent::Cdp {
+                tab: tab.into(),
+                id,
+                result: shop(&m, &p),
+            });
+        }
+    }
+    f.pump();
+}
+
+#[test]
+fn a_look_that_finishes_after_a_navigation_does_not_put_back_the_old_refs() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    // No answers on their own: the test plays the browser, one step at a time.
+    let rx = look(&f, &id);
+    f.pump();
+    let mut done = std::collections::HashSet::new();
+    // The tree and the layout come back; the boxes and the picture are asked for.
+    answer_all(&f, &slot, &id, &mut done);
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "still waiting for the boxes"
+    );
+    // The page starts a new navigation (the agent's click on a link, say).
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: TWO.into(),
+        nav: 900,
+    });
+    f.pump();
+    // The old document's boxes arrive and the look ends.
+    answer_all(&f, &slot, &id, &mut done);
+    assert!(rx.try_recv().is_ok(), "the look still answers");
+    assert_eq!(
+        f.ctl.borrow().web.agent_refs(&id),
+        0,
+        "the names of the old page are not kept"
+    );
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::NOT_FOUND);
+}
+
+#[test]
+fn quitting_answers_a_call_that_was_running() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(
+        f.ctl.borrow_mut().on_close_requested(),
+        CloseDecision::Close
+    );
+    let e = rx.try_recv().expect("answered").unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(e.message.contains("closing"));
+}
+
+#[test]
+fn the_person_taking_over_a_click_lets_go_of_the_button() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    // The browser never answers the first event: the press and the release are still queued.
+    let rx = ask(
+        &f,
+        agent_op(
+            &id,
+            AgentOp::Click {
+                target: flare_surfaces::agent_job::Target::Point(10.0, 20.0),
+                button: Button::Left,
+                double: false,
+            },
+        ),
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    let sent: Vec<String> = cdp_calls(&slot)
+        .into_iter()
+        .filter(|(m, _)| m == "Input.dispatchMouseEvent")
+        .map(|(_, p)| p)
+        .collect();
+    assert!(
+        sent.last().is_some_and(|p| p.contains("mouseReleased")),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn the_person_focusing_the_page_while_a_call_runs_takes_over() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
 }
