@@ -87,11 +87,18 @@ impl AppCtl {
                 }
                 self.settings_changed();
             }
-            ModsMsg::Reply { tab, mod_id, json } => {
+            ModsMsg::Reply {
+                tab,
+                mod_id,
+                generation,
+                json,
+            } => {
                 let live = match self.mods.as_mut() {
                     Some(c) => {
                         c.call_done(&mod_id);
+                        // Call ids restart in every document: a reply for an older one is nobody's.
                         c.mod_of(&tab) == Some(mod_id.as_str())
+                            && c.generation(&tab) == Some(generation)
                     }
                     None => false,
                 };
@@ -185,21 +192,41 @@ impl AppCtl {
             }
             WebOut::ModPage { tab, ready } => {
                 self.bind_mod_tab(&tab);
-                let queued = self
-                    .mods
-                    .as_mut()
-                    .map(|m| m.set_ready(&tab, ready))
-                    .unwrap_or_default();
+                let queued = match self.mods.as_mut() {
+                    Some(m) => {
+                        // A page that was ready began to load again: the calls already handed to the old
+                        // document are gone with it.
+                        let reload = !ready && m.is_ready(&tab);
+                        let queued = m.set_ready(&tab, ready);
+                        if reload
+                            && let Some(id) = m.mod_of(&tab).map(str::to_string)
+                            && m.tabs_of(&id).iter().all(|t| *t == tab)
+                        {
+                            m.fail_calls(&id, "the mod's page reloaded before it answered");
+                        }
+                        queued
+                    }
+                    None => Vec::new(),
+                };
                 for q in queued {
                     self.web.post_message(&tab, &q);
                 }
             }
             WebOut::ModLost { tab } => {
+                // The tab keeps showing the mod (the next call makes a new page), so the binding stays while the
+                // panel names it; the calls waiting on the dead page fail.
+                let showing = self.panels.mod_of(&tab).map(str::to_string);
                 if let Some(m) = self.mods.as_mut()
-                    && let Some(id) = m.unbind(&tab)
-                    && m.tabs_of(&id).is_empty()
+                    && let Some(id) = m.mod_of(&tab).map(str::to_string)
                 {
-                    m.fail_calls(&id, "the mod's page ended before it answered");
+                    if showing.as_deref() == Some(id.as_str()) {
+                        m.page_lost(&tab);
+                    } else {
+                        m.unbind(&tab);
+                    }
+                    if m.tabs_of(&id).iter().all(|t| *t == tab) {
+                        m.fail_calls(&id, "the mod's page ended before it answered");
+                    }
                 }
             }
             _ => {}
@@ -245,6 +272,9 @@ impl AppCtl {
         };
         let spec = modview::mod_spec(mod_id, &found.folder, &panel.entry);
         if self.panels.mod_of(tab) == Some(mod_id) {
+            if let Some(m) = self.mods.as_mut() {
+                m.bind(tab, mod_id);
+            }
             if !self.panels.is_open(tab) {
                 self.panels.reopen(tab);
                 self.refresh();
@@ -313,7 +343,12 @@ impl AppCtl {
             }
         };
         let url = spec.url.clone();
-        self.web.ensure_hidden(&tab, &url, Some(spec));
+        // A page whose process ended (or failed to load) is made again, unless the browser itself is missing.
+        if self.web.failure(&tab).is_some_and(|(_, missing)| !missing) {
+            self.web.replace_tab(&tab, &url, Some(spec));
+        } else {
+            self.web.ensure_hidden(&tab, &url, Some(spec));
+        }
         if let Some((why, missing)) = self.web.failure(&tab) {
             let msg = if missing {
                 format!(

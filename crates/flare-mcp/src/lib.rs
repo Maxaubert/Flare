@@ -485,6 +485,55 @@ fn mod_tools(channel: &mut dyn Channel) -> Vec<Value> {
         .collect()
 }
 
+/// A mod's words made safe to show the model and the agent's terminal: escape sequences (a clipboard write, a
+/// status spoof), control characters other than a line break or a tab, and invisible or direction-changing
+/// characters go.
+fn clean_result(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek().copied() {
+                // CSI: parameters, then a final byte.
+                Some('[') => {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                // OSC, DCS, APC, PM, SOS: up to BEL or ST (ESC \).
+                Some(']' | 'P' | '_' | '^' | 'X') => {
+                    chars.next();
+                    while let Some(n) = chars.next() {
+                        if n == '\u{7}' {
+                            break;
+                        }
+                        if n == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Any other two-character escape.
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if flare_ctl::text::invisible(c) || (c.is_control() && c != '\n' && c != '\t') {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Runs a mod's tool: Flare opens the mod's panel in this tab if it is not showing, hands the call to the
 /// page and waits for its answer. The mod's words are its own: a string comes back as it is, anything else as
 /// compact JSON, capped.
@@ -499,6 +548,7 @@ fn call_mod_tool(name: &str, args: &Map<String, Value>, channel: &mut dyn Channe
                 Value::String(s) => s,
                 other => other.to_string(),
             };
+            let text = clean_result(&text);
             let text = if text.chars().count() > MOD_TEXT_CAP {
                 text.chars().take(MOD_TEXT_CAP).collect::<String>() + "... (cut)"
             } else {
@@ -664,6 +714,8 @@ pub struct FlareChannel {
     server_pid: Option<u32>,
     client: Option<flare_ctl::Client<flare_ctl::PipeEnd>>,
     watching: bool,
+    /// A `mods.tools` call was answered: this Flare has a mods hub, so the watcher is worth a connection.
+    mods_hub_seen: bool,
 }
 
 impl FlareChannel {
@@ -684,6 +736,7 @@ impl FlareChannel {
             server_pid: None,
             client: None,
             watching: false,
+            mods_hub_seen: false,
         }
     }
 
@@ -749,14 +802,19 @@ const WATCH_WAIT: Duration = Duration::from_secs(30);
 /// How long the watcher waits before it connects again after Flare went away.
 const WATCH_RETRY: Duration = Duration::from_secs(3);
 
-/// Listens on a connection of its own for the mods' tools to change, until the process ends. Flare going away
-/// (a restart) only costs a reconnect.
+/// Failed connects in a row after which the watcher stops: the pipe and process id come from this server's
+/// environment, so a Flare that restarted (a new process) can never be reached again from here.
+const WATCH_GIVE_UP: u32 = 10;
+
+/// Listens on a connection of its own for the mods' tools to change, until the process ends or Flare can no
+/// longer be reached (a restart ends it: this server only knows the old Flare's process).
 fn watch_loop(
     tab_token: Option<String>,
     pipe: Option<String>,
     server_pid: Option<u32>,
     notify: Notify,
 ) {
+    let mut failures = 0u32;
     loop {
         if let Ok(mut client) = FlareChannel::open(
             tab_token.as_deref(),
@@ -764,12 +822,18 @@ fn watch_loop(
             server_pid,
             Duration::from_secs(2),
         ) {
+            failures = 0;
             loop {
                 match client.wait_event(WATCH_WAIT) {
                     Ok(Some(e)) if e.event == MODS_CHANGED_EVENT => notify(),
                     Ok(_) => {}
                     Err(_) => break,
                 }
+            }
+        } else {
+            failures += 1;
+            if failures >= WATCH_GIVE_UP {
+                return;
             }
         }
         std::thread::sleep(WATCH_RETRY);
@@ -788,8 +852,10 @@ fn client_error(e: ClientError) -> ChannelError {
 
 impl Channel for FlareChannel {
     fn watch_mod_tools(&mut self, notify: Notify) {
-        // Only where there is a Flare to listen to (a tab, a pipe, its process), and only once.
+        // Only where there is a Flare to listen to (a tab, a pipe, its process) that has a mods hub (the
+        // first mods.tools answered), and only once: a run without mods costs no second connection.
         if self.watching
+            || !self.mods_hub_seen
             || self.tab_token.is_none()
             || self.pipe.is_none()
             || self.server_pid.is_none()
@@ -808,7 +874,12 @@ impl Channel for FlareChannel {
             self.connect()?;
             let client = self.client.as_mut().expect("connected above");
             match client.call(method, params.clone(), call_wait(method)) {
-                Ok(v) => return Ok(v),
+                Ok(v) => {
+                    if method == Method::ModsTools {
+                        self.mods_hub_seen = true;
+                    }
+                    return Ok(v);
+                }
                 Err(ClientError::Remote(r)) => {
                     return Err(ChannelError::Remote {
                         code: r.code,
@@ -1528,6 +1599,11 @@ app", "loaded": true}))),
         assert!(
             !last["description"].as_str().unwrap().contains('\u{1b}'),
             "a mod's words are cleaned"
+        );
+        // A string result is cleaned too: no escape sequences, controls or direction marks.
+        assert_eq!(
+            clean_result("a\u{1b}]52;c;AAAA\u{7}b\u{1b}[31mc\u{202e}d\u{0}e\nf\tg"),
+            "abcde\nf\tg"
         );
         assert_eq!(ch.calls[0].0, Method::ModsTools);
         // A name outside the mod space (it could shadow a built-in), a name too long and a schema that is

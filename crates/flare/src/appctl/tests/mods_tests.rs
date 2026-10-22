@@ -700,6 +700,97 @@ fn closing_the_panel_the_page_dying_or_the_mod_going_off_fails_the_waiting_call(
 }
 
 #[test]
+fn after_the_page_dies_the_next_call_makes_a_fresh_page_and_is_answered() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, sample_notes);
+    turn(&f, "notes", true);
+    let tab = page_up(&f, &w, &slot, "notes");
+    fake(&slot).say(WebEvent::Gone {
+        tab: tab.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_notes_append_note", "input": {"text": "again"}}),
+    );
+    // The dead view is replaced: a new page is made and, once it loads, the call reaches it.
+    f.pump_until("a second page", |_| open_mod_calls(&slot).len() >= 2);
+    assert!(
+        posts(&slot, &tab).is_empty(),
+        "queued until the new page loads"
+    );
+    finish_page(&fake(&slot), &tab, "https://flare-mod-notes.local/");
+    f.pump_until("the tool event", |_| !posts(&slot, &tab).is_empty());
+    let id = posts(&slot, &tab)[0]["callId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    page_says(
+        &slot,
+        &tab,
+        &json!({"t":"respond","call_id":id,"result":"ok"}).to_string(),
+    );
+    assert_eq!(answer_of(&f, &rx).unwrap(), json!({"result": "ok"}));
+}
+
+#[test]
+fn a_reply_meant_for_an_older_document_is_not_given_to_a_newer_one() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| mod_with(r, "plain", &["panel", "tools"]));
+    turn(&f, "plain", true);
+    let tab = page_up(&f, &w, &slot, "plain");
+    let old = f
+        .ctl
+        .borrow()
+        .mods
+        .as_ref()
+        .unwrap()
+        .generation(&tab)
+        .unwrap();
+    // The page reloads: it is a new document.
+    finish_page(
+        &fake(&slot),
+        &tab,
+        &modview::mod_url(&modview::mod_host("plain")),
+    );
+    f.pump();
+    let new = f
+        .ctl
+        .borrow()
+        .mods
+        .as_ref()
+        .unwrap()
+        .generation(&tab)
+        .unwrap();
+    assert_ne!(old, new);
+    mods_msg(
+        &f,
+        ModsMsg::Reply {
+            tab: tab.clone(),
+            mod_id: "plain".into(),
+            generation: old,
+            json: "{\"stale\":true}".into(),
+        },
+    );
+    assert!(posts(&slot, &tab).is_empty(), "the stale reply is dropped");
+    mods_msg(
+        &f,
+        ModsMsg::Reply {
+            tab: tab.clone(),
+            mod_id: "plain".into(),
+            generation: new,
+            json: "{\"fresh\":true}".into(),
+        },
+    );
+    assert_eq!(posts(&slot, &tab).len(), 1);
+}
+
+#[test]
 fn a_call_nobody_answers_times_out_with_the_mods_name() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -828,6 +919,7 @@ fn a_reply_for_a_panel_that_has_gone_is_dropped_and_a_message_to_another_kind_of
         ModsMsg::Reply {
             tab: tab.clone(),
             mod_id: "other".into(),
+            generation: 0,
             json: "{}".into(),
         },
     );

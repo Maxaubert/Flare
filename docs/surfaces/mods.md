@@ -45,8 +45,8 @@ ignored. Every refusal is one sentence that names the field; Settings > Mods sho
 
 | Name | What it allows the mod | Notes |
 |---|---|---|
-| `panel` | Show its panel in a tab. | Required with a `panel`. |
-| `view` | Show content through `view.*` (image, file, text) in its own panel or the user's. | Same checks as the agent (rule 13, 14). |
+| `panel` | Show its panel in a tab, and list every tab (id and title). | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, `tasks`, `board`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
+| `view` | Show content through `view.*` (image, file, text, html) in its own panel or the user's. | Same checks as the agent (rule 13, 14). `view.html` with `allow_network: true` is `forbidden` for a mod: the user's mini-app network switch is consent for the AGENT's pages, never a mod's. |
 | `browser` | Drive the mod's own browser panel through `browser.*` (open, navigate, look, click, type, press, scroll, wait). | Never the user's Edge profile (S4), and never the shared web profile of the user's tabs. Its own profile (see "Which tab a mod acts on"). **v1 limit:** a mod that holds `browser` passes the grant, and the call is then answered `unavailable` ("a mod's own browser panel is not built yet"): the panel slot of a tab holds one panel, which for a mod is its page. A mod without `browser` is refused every `browser.*` method with `forbidden`, before anything runs. |
 | `convo` | Read `convo.state` (the session's tasks and changes). | |
 | `tools` | Answer tool calls through `tools.respond`. | Required with a `tools` list. |
@@ -128,7 +128,12 @@ Rules for the page:
 - A call that is not answered within 30 seconds fails for the agent with `timeout` (the mod's name and the tool
   are in the message). Answer quickly, and answer every call, even with an error. A call that arrives before the
   page has loaded waits for it; a page that never loads, a panel that is closed, a page whose process ends and a
-  mod that is turned off all fail the call at once with `unavailable`.
+  mod that is turned off all fail the call at once with `unavailable`. After a page's process ends the panel stays
+  and the next call makes a new page. A reply is given only to the document that asked: when the page reloads,
+  calls already handed to the old document fail (`unavailable`, "the mod's page reloaded") and a late reply is
+  dropped, because call ids restart in every document.
+- What a tool returns is cleaned before the agent sees it: escape sequences, control characters (except a line
+  break and a tab) and invisible or direction-changing characters are removed.
 - `window.flare` is frozen and cannot be replaced. It holds three functions and no data; the token is not in the
   page (the host keeps it and looks the mod's live grant up for every call).
 - `callId` is only good for the call it names. Answering it twice is an error.

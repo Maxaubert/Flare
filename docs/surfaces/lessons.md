@@ -679,6 +679,15 @@ Holes hit, what fixed them, and what Prism Terminal's Electron build must do. Th
 - **A leftover test helper process blocks the next build.** `fake-parakeet-cli.exe` from a dictation test run in the shared target folder was still alive (its parent gone) and cargo could not replace the file ("Access is denied"). Killed by process id; it is a stand-in the build made. A runner that leaves helpers behind is its own bug, not fixed here.
 - **E2E facts learned:** with Settings in front no shell tab is "active", so a scenario that needs the shell tab's secret takes the first shell tab; a relaunch restores the earlier tab AND opens the launch folder as a new one, so after a restart the active tab is the one to use; `Ctrl+Tab` leaves Settings.
 
+### Review fixes (Stage 8)
+
+- **A permission that opens a panel is a permission to reach the network, if the panel kinds are not narrowed.** `panel` allowed `panel.open` of any kind, including `web` (the user's shared profile and the network), and `view.html` took `allow_network` from the caller. Both are narrowed for a mod in the dispatcher (so the page and the pipe agree). **Electron:** in the single permission check, allow a mod `panel.open` only for its own `mod:<id>` and refuse `allow_network` for a mod grant; test with the user's network switch ON.
+- **A page whose process ended must be replaceable.** Keep the tab bound to the mod while its panel still names it, mark the page not ready and drop queued messages; the next call replaces the view. **Electron:** on `render-process-gone` keep the panel record, destroy the view, and create it again on the next tool call.
+- **The bridge's call ids restart in every document.** A reply for call 1 of the old page must not resolve call 1 of the new one. Give each load a generation, carry it with the worker's reply, drop a mismatch, and fail calls already handed to the old document. **Electron:** a counter bumped on `did-start-navigation` (main frame), captured when the call starts.
+- **Text from a mod is untrusted all the way to the terminal.** Strip escape sequences (CSI, OSC, DCS and the like), control characters and invisible or direction characters from a tool result, not only from names. **Electron:** the same filter in the MCP server.
+- **The event watcher costs a connection.** Start it only when the first `mods.tools` answered, and give up after ten failed connects (the environment names the old Flare process). **Electron:** nothing to port if the MCP server stays the same binary.
+- **One deadline for `mods.call`.** The wait for the UI thread (8 s) and the page's wait share the channel's 40 s minus a 2 s margin, so the answer is always Flare's own.
+
 ### By hand, not machine-tested (Stage 8)
 
 - A mod whose folder is a junction to somewhere else inside the mods folder, on the installed build (the unit tests cover the junction; the e2e does not make one).

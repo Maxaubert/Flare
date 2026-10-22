@@ -417,6 +417,12 @@ fn first_run(ctx: &mut Ctx, app: &mut App, exe: &Path, profile: &Path) -> Result
     for (method, params, want) in [
         ("browser.open", "{url: 'https://example.com/'}", "forbidden"),
         ("view.text", "{text: 'x'}", "forbidden"),
+        (
+            "panel.open",
+            "{kind: 'web', url: 'https://example.com/'}",
+            "forbidden",
+        ),
+        ("panel.open", "{kind: 'mod:other'}", "forbidden"),
         ("convo.state", "{}", "forbidden"),
         ("settings.set", "{}", "forbidden"),
         ("nope.nothing", "{}", "unknown_method"),

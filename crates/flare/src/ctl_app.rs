@@ -34,6 +34,10 @@ pub const UI_WAIT: Duration = Duration::from_secs(10);
 /// How long a browser call waits for its page to load before it answers `timeout`: under the 60 s the
 /// channel allows `browser.*`, so the answer is ours, with a reason.
 pub const BROWSER_WAIT: Duration = Duration::from_secs(30);
+/// How long `mods.call` waits for the window to hand the call to the mod's page, and the margin it keeps under
+/// the channel's `MOD_CALL_TIMEOUT` so the page's wait ends first.
+const MOD_UI_WAIT: Duration = Duration::from_secs(8);
+const MOD_REPLY_MARGIN: Duration = Duration::from_secs(2);
 /// How often a waiting call looks at the stop flag.
 const STOP_SLICE: Duration = Duration::from_millis(50);
 /// The longest title a caller may give a panel (the header shows one line).
@@ -305,6 +309,8 @@ impl AppDispatcher {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(_) => return Err(CtlError::new(code::BAD_PARAMS, "input must be an object")),
         };
+        // One deadline for the whole call, inside the channel's own (`MOD_CALL_TIMEOUT`): the answer is Flare's.
+        let started = Instant::now();
         let call = hub.begin_call(name, input)?;
         let op = CtlOp::ModTool {
             tab,
@@ -313,15 +319,16 @@ impl AppDispatcher {
             tool: call.tool.clone(),
             input: call.input.clone(),
         };
-        if let Err(e) = self.ask_by(op, Instant::now() + BROWSER_WAIT) {
+        if let Err(e) = self.ask_by(op, started + MOD_UI_WAIT) {
             hub.cancel(&call.id);
             return Err(e);
         }
+        let left = (flare_ctl::method::MOD_CALL_TIMEOUT - MOD_REPLY_MARGIN)
+            .saturating_sub(started.elapsed())
+            .min(flare_mods::hub::CALL_TIMEOUT);
         let stopping = Arc::clone(&self.stopping);
         // sync-ok: a worker thread of the control channel waits for the mod's page, never the UI thread
-        let result = hub.wait(call, flare_mods::hub::CALL_TIMEOUT, &|| {
-            stopping.load(Ordering::SeqCst)
-        })?;
+        let result = hub.wait(call, left, &|| stopping.load(Ordering::SeqCst))?;
         Ok(json!({"result": result}))
     }
 
@@ -593,6 +600,13 @@ impl AppDispatcher {
             }
             _ => return Err(bad("give either html or path, not both and not neither")),
         };
+        // The network switch is the user's consent for the AGENT's pages, never for a mod's.
+        if wants_network && matches!(ctx.grant, Grant::Mod { .. }) {
+            return Err(CtlError::new(
+                code::FORBIDDEN,
+                "a mod's page cannot reach the network (allow_network is not for mods)",
+            ));
+        }
         let allow = wants_network && (apps.network)();
         let page = if apps.policy {
             app::wrap_html(&text, allow)
@@ -945,6 +959,19 @@ impl Dispatcher for AppDispatcher {
             }),
             Method::PanelOpen => {
                 let tab = Self::tab_of_call(ctx)?;
+                // A mod opens its OWN panel and nothing else: a web panel would reach the network in the
+                // user's shared profile (S4/S5), the rest are not the mod's to drive (rule 207).
+                if let Grant::Mod { id, .. } = &ctx.grant {
+                    let own = format!("mod:{id}");
+                    if let Some(k) = str_param(&params, "kind")?
+                        && k != own
+                    {
+                        return Err(CtlError::new(
+                            code::FORBIDDEN,
+                            format!("a mod may open only its own panel ({own}), not \"{k}\""),
+                        ));
+                    }
+                }
                 match str_param(&params, "kind")? {
                     None => Err(CtlError::new(code::BAD_PARAMS, "kind is required")),
                     Some(k @ ("changes" | "tasks" | "board")) => {
@@ -2217,6 +2244,48 @@ mod tests {
         assert_ne!(first.1.host, second.1.host);
         assert_ne!(first.1.folder, second.1.folder);
         assert!(first.1.folder.is_dir() && second.1.folder.is_dir());
+    }
+
+    #[test]
+    fn a_mod_opens_only_its_own_panel_and_never_gets_a_networked_page() {
+        let dir = tempfile::tempdir().unwrap();
+        // The user's network switch is ON: it is for the agent's pages, not a mod's.
+        let r = app_rig(dir.path(), true, &[]);
+        let m = ctx(
+            Some("tab-1"),
+            Grant::Mod {
+                id: "m".into(),
+                permissions: vec![Permission::Panel, Permission::View],
+            },
+        );
+        for kind in ["web", "changes", "tasks", "board", "mod:other"] {
+            let e =
+                r.d.call(
+                    &m,
+                    Method::PanelOpen,
+                    json!({"kind": kind, "url": "https://evil.example/?d=1"}),
+                )
+                .unwrap_err();
+            assert_eq!(e.code, code::FORBIDDEN, "{kind}: {}", e.message);
+        }
+        let e =
+            r.d.call(
+                &m,
+                Method::ViewHtml,
+                json!({"html": "<img src=https://evil/>", "allow_network": true}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::FORBIDDEN, "{}", e.message);
+        assert!(r.ops.lock().unwrap().is_empty(), "the window was not asked");
+        // Its own panel is not refused by the rule (this rig has no mods hub, so it is unavailable).
+        let e =
+            r.d.call(&m, Method::PanelOpen, json!({"kind": "mod:m"}))
+                .unwrap_err();
+        assert_eq!(e.code, code::UNAVAILABLE);
+        // Without the network ask a mod's page is still allowed, and closed to the network.
+        r.d.call(&m, Method::ViewHtml, json!({"html": "<p>x"}))
+            .unwrap();
+        assert!(!last_app(&r).1.allow_network);
     }
 
     #[test]

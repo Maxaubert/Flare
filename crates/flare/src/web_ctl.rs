@@ -872,7 +872,7 @@ impl WebCtl {
     /// not closed here (the host swaps it itself and keeps its environment, so a mini-app updated again
     /// and again does not restart the browser), but everything known of the old page goes and the
     /// window's phase starts again for the new one.
-    fn replace_tab(&mut self, tab: &str, url: &str, app: Option<AppSpec>) {
+    pub fn replace_tab(&mut self, tab: &str, url: &str, app: Option<AppSpec>) {
         if self.shown_tab.as_deref() == Some(tab) && self.has_focus {
             let hwnd = self.hwnd;
             self.release_focus(hwnd);

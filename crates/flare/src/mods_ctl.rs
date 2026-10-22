@@ -43,6 +43,9 @@ pub enum ModsMsg {
     Reply {
         tab: String,
         mod_id: String,
+        /// The document the call came from (`ModCtl::generation`): a reply for an older one is dropped,
+        /// because the bridge's call ids restart in every document.
+        generation: u64,
         json: String,
     },
     /// Settings: scan again (the Mods page opened).
@@ -77,6 +80,9 @@ struct ModTab {
     ready: bool,
     /// Messages for the page that came before it was ready, in order.
     queue: Vec<String>,
+    /// Which document this is: it changes whenever the page begins to load, so a reply meant for an older
+    /// document is never given to a newer one.
+    generation: u64,
 }
 
 /// The mods controller (UI thread).
@@ -85,6 +91,8 @@ pub struct ModCtl {
     post: Post,
     dispatcher: Option<Arc<dyn Dispatcher>>,
     tabs: HashMap<String, ModTab>,
+    /// Source of `ModTab::generation`.
+    next_generation: u64,
     /// Calls a page made that a worker is still running, by mod.
     inflight: HashMap<String, usize>,
     /// A scan is on a worker; another was asked for meanwhile.
@@ -103,6 +111,7 @@ impl ModCtl {
             post,
             dispatcher: None,
             tabs: HashMap::new(),
+            next_generation: 0,
             inflight: HashMap::new(),
             scanning: Arc::new(AtomicBool::new(false)),
             rescan: false,
@@ -183,10 +192,12 @@ impl ModCtl {
     pub fn bind(&mut self, tab: &str, mod_id: &str) {
         let same = self.tabs.get(tab).is_some_and(|t| t.mod_id == mod_id);
         if !same {
+            self.next_generation += 1;
             self.tabs.insert(
                 tab.to_string(),
                 ModTab {
                     mod_id: mod_id.to_string(),
+                    generation: self.next_generation,
                     ..ModTab::default()
                 },
             );
@@ -212,15 +223,40 @@ impl ModCtl {
         self.tabs.get(tab).map(|t| t.mod_id.as_str())
     }
 
+    /// The document the tab's page is now (see `ModTab::generation`).
+    pub fn generation(&self, tab: &str) -> Option<u64> {
+        self.tabs.get(tab).map(|t| t.generation)
+    }
+
+    /// The page lost its process or failed to load: it can be spoken to no more, but the tab still shows the
+    /// mod, so the next call makes a new page. Messages waiting for it are dropped (the caller fails their
+    /// calls).
+    pub fn page_lost(&mut self, tab: &str) {
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        if let Some(t) = self.tabs.get_mut(tab) {
+            t.ready = false;
+            t.queue.clear();
+            t.generation = generation;
+        }
+    }
+
     pub fn is_ready(&self, tab: &str) -> bool {
         self.tabs.get(tab).is_some_and(|t| t.ready)
     }
 
     /// The page loaded (`true`) or began to load (`false`). Going ready gives back what was queued for it.
     pub fn set_ready(&mut self, tab: &str, ready: bool) -> Vec<String> {
+        if !ready {
+            self.next_generation += 1;
+        }
+        let generation = self.next_generation;
         match self.tabs.get_mut(tab) {
             Some(t) => {
                 t.ready = ready;
+                if !ready {
+                    t.generation = generation;
+                }
                 if ready {
                     std::mem::take(&mut t.queue)
                 } else {
@@ -353,6 +389,7 @@ impl ModCtl {
         *self.inflight.entry(mod_id.to_string()).or_insert(0) += 1;
         let (post, tab_name, mod_name) =
             (Arc::clone(&self.post), tab.to_string(), mod_id.to_string());
+        let generation = self.generation(tab).unwrap_or_default();
         let job = move || {
             let ctx = CallContext {
                 conn: 0,
@@ -368,6 +405,7 @@ impl ModCtl {
             post(UiMsg::Mods(ModsMsgBox(ModsMsg::Reply {
                 tab: tab_name,
                 mod_id: mod_name,
+                generation,
                 json,
             })));
         };
@@ -766,6 +804,7 @@ mod tests {
         let m = ModsMsgBox(ModsMsg::Reply {
             tab: "t".into(),
             mod_id: "notes".into(),
+            generation: 0,
             json: "SECRET".into(),
         });
         assert_eq!(format!("{m:?}"), "ModsMsg::Reply");

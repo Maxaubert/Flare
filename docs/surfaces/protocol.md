@@ -146,6 +146,11 @@ can wait on them inside its quit cap.
 | Queued events per connection | 256, then the oldest is dropped |
 | Stuck handlers | 32 |
 
+Each `flare-mcp` server holds two connections once the first `mods.tools` is answered (one for calls, one for
+`mods.changed` events), so about 32 agents fit in the 64 clients. A run with no mods hub opens only the first.
+The second gives up after ten failed connects in a row (a restarted Flare cannot be reached again from the old
+environment).
+
 `hello` returns the limits in force, so a client does not hard-code them.
 
 ## 4. Grants (who may call what)
