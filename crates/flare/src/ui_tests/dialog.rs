@@ -12,6 +12,7 @@ use flare_tabs::close_flow::{NAME_INK, close_question_body};
 
 /// `Theme.accent`, `Theme.danger-fill`, `Theme.text` and `Theme.dim`.
 const ACCENT: [u8; 4] = [0xfe, 0x8f, 0x34, 255];
+const ACCENT_HI: [u8; 4] = [0xf6, 0xa2, 0x5b, 255];
 const DANGER: [u8; 4] = [0xb4, 0x35, 0x3f, 255];
 const INK: [u8; 4] = [0xde, 0xda, 0xcf, 255];
 const DIM: [u8; 4] = [0x92, 0x90, 0x89, 255];
@@ -209,19 +210,28 @@ fn the_ring_shows_only_after_the_keyboard() {
     assert!(!h.comp.get_ring_shown(), "no ring at rest after a click");
     let edge = |h: &Harness<DialogPreview>| {
         let f = h.render();
-        f.px(h.phys(px + pw / 2.0), h.phys(py + 1.0))
+        f.px(h.phys(px + pw / 2.0), h.phys(py - 1.0))
     };
     assert!(
-        Frame::near(edge(&h), ACCENT, 3),
-        "the confirm is solid accent to its edge"
+        !Frame::near(edge(&h), ACCENT_HI, 3),
+        "no ring outside the confirm at rest"
     );
-    h.key_text("	");
+    h.key_text("\t");
     assert!(h.comp.get_ring_shown(), "Tab brings the ring");
-    h.key_text("	");
+    h.key_text("\t");
     assert!(
-        !Frame::near(edge(&h), ACCENT, 3),
-        "the ring is drawn on the confirm"
+        Frame::near(edge(&h), ACCENT_HI, 3),
+        "the ring is drawn outside the confirm"
     );
+}
+
+/// A PT dialog button is a native button, so Space picks the focused one, as Enter does.
+#[test]
+fn space_picks_the_focused_button_like_enter() {
+    let h = harness(1.0, 1000, 600);
+    open(&h);
+    h.key_text(" ");
+    assert_eq!(h.comp.get_confirms(), 1);
 }
 
 #[test]

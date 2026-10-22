@@ -35,11 +35,14 @@ export component DialogButton inherits Rectangle {
             color: root.is-primary ? Theme.on-accent : (ta.has-hover && root.enabled ? Theme.text : Theme.text-soft);
         }
     }
-    // The keyboard focus ring: 2 px in accent-hi, drawn over the button.
+    // The keyboard focus ring: 2 px in accent-hi, drawn outside the button
+    // (PT focus-visible:ring-2 is a box-shadow).
     Rectangle {
-        width: parent.width;
-        height: parent.height;
-        border-radius: 8px;
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: 10px;
         border-width: 2px;
         border-color: root.ringed && root.enabled ? Theme.accent-hi : transparent;
     }
@@ -132,7 +135,7 @@ export component Dialog inherits Rectangle {
                 }
                 return accept;
             }
-            if e.text == Key.Return {
+            if e.text == Key.Return || e.text == " " {
                 root.by-key = true;
                 if root.focus-idx == 1 {
                     root.confirm();

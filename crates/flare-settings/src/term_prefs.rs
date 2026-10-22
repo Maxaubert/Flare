@@ -2,7 +2,8 @@
 //! rest of the terminal settings.
 //!
 //! Keys `flare.term.shell` (the shell id; unset until chosen) and `flare.window.agentKeys` (a bool,
-//! default ON: the agent hotkeys of the chord table are the app's while it is on).
+//! default ON: the agent hotkeys of the chord table are the app's while it is on), and
+//! `flare.window.rightClickReports` (a bool, default OFF: a right press reaches a mouse-reporting program).
 
 use crate::kv::{PrefStore, Subscription, bool_pref_get, bool_pref_set};
 

@@ -7,7 +7,7 @@
 //! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
-//! of the 39 rows; within each section the order follows the tables.
+//! of the 41 rows; within each section the order follows the tables.
 
 /// What control a row draws. `Registry` is the Explorer verb (read back from Windows, M9);
 /// `Info` is a row that stores nothing (the version).
@@ -609,7 +609,7 @@ pub const APP_OPTIONS: [RowDef; 13] = [
     },
 ];
 
-/// The 39 row ids in draw order (Appendix C, the `#` column).
+/// The 41 row ids in draw order (Appendix C, the `#` column).
 pub const ROW_ORDER: [&str; 41] = [
     "tab-layout",
     "tab-switch",
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_name_the_40_rows_in_row_order() {
+    fn the_tables_name_the_41_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
         assert_eq!(ids.len(), 41);
         let mut sorted_tables = ids.clone();

@@ -519,6 +519,7 @@ fn read_back(to: &str, s: &PrefStore) -> Option<String> {
         "flare.window.taskbarBadge" => on(taskbar_badge_on(s)),
         "flare.window.agentGuard" => on(agent_guard(s)),
         "flare.window.agentKeys" => on(agent_keys(s)),
+        // Flare owns this key: PT has no such setting and nothing imports it.
         "flare.window.rightClickReports" => on(right_click_reports(s)),
         "flare.window.sidebar" => Some(
             match valid_sidebar_mode(s.get(to).as_deref()) {
