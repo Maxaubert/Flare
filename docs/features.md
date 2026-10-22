@@ -1145,3 +1145,5 @@ the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.
 - **By hand, not machine-tested:** the list at the end of `docs/surfaces/lessons.md` (Stage 5): a mini-app in a tab behind, an
   overlay over it, the light and dark system themes, a real Claude session, the network setting against a real https address, a
   4 MB page.
+
+- Mini-apps (2026-10-22): the sandbox also refuses to start when a Windows policy overrides the browser's arguments, launches no external program, and no longer wipes the shared cookie jar; the tool text says storage lasts until the last mini-app panel closes.

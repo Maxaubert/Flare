@@ -686,3 +686,12 @@ terminal, working, instead of Claude describing it in words.
   (closing it ends it). A diagram or chart worth keeping is the agent's to write to a file.
 - 2026-10-22, stage 5, new setting row: "Let mini apps use the network" / "Pages Claude writes may load from the web." (key
   `flare.web.appNetwork`, a switch in Settings > Terminal > Links after "Let agents run scripts in pages").
+
+- **Sealed mini-apps also close three browser-level gaps (stage 5 review, 2026-10-22).** (1) The environment variables
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, `WEBVIEW2_USER_DATA_FOLDER` and `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` are removed from the process
+  before an app browser starts, and a Windows policy value under `Software\Policies\Microsoft\Edge\WebView2\{AdditionalBrowserArguments,
+  UserDataFolder,BrowserExecutableFolder}` (HKCU or HKLM) makes Flare REFUSE the app with a reason (fail closed: those replace Flare's
+  arguments, so the browser would start without the WebRTC policy and dead proxy). (2) An external protocol launch
+  (`LaunchingExternalUriScheme`) is cancelled and a frame may only navigate to about:blank, about:srcdoc or the app's page. (3) The dead
+  proxy on port 9 is not the only wall: `--host-resolver-rules="MAP * ~NOTFOUND"` stops any name lookup even if a local program listens on port 9.
+  The cookie sweep per app is gone (hosts are unique per run, and it logged another app's tab out of the shared profile).

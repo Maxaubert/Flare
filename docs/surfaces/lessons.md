@@ -554,3 +554,7 @@ line of each item.
 7. A page that tries to read the clipboard, the camera, the location: denied (the web panel's permission handler is the same).
 8. Pressing Escape twice in a mini-app, and Ctrl+Shift+O: the keys go back to the terminal and into the page, as for a web page.
 9. A very large chart (a 4 MB page of data): load time and memory.
+
+- **Electron note, 2026-10-22: WebView2 browser arguments are not the last word.** The environment variable and the policy key of the same name
+  REPLACE the options value (from the WebView2 documentation, not re-measured here), so a sandbox that rests on arguments must remove the
+  variable and refuse on the policy. Port 9 is not privileged on Windows: never rest a wall on "nothing listens there".

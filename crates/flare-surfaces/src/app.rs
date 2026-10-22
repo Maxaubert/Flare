@@ -110,8 +110,43 @@ pub const WEBRTC_POLICY_FLAG: &str = concat!(
 /// discard port; nothing listens) and takes loopback out of the built-in bypass, so the browser has no
 /// way out of its own even if the page and the request wall both missed something. The app's own
 /// pages are served from a folder by a host mapping, which does not use the network.
-pub const DEAD_PROXY_FLAGS: &str =
-    "--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>";
+///
+/// Port 9 needs no privilege on Windows, so a local program could listen there and act as a proxy;
+/// the second wall does not depend on the port staying free: the browser's own resolver maps every
+/// name to "not found", so no lookup of its own can succeed (the app's page is a host mapping and
+/// never uses the resolver).
+pub const DEAD_PROXY_FLAGS: &str = concat!(
+    "--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback> ",
+    "--host-resolver-rules=\"MAP * ~NOTFOUND\""
+);
+/// Environment variables that REPLACE what Flare passes to the browser (the arguments, the profile
+/// folder, the runtime folder). They are removed from the process before a mini-app browser starts.
+pub const OVERRIDE_ENV_VARS: [&str; 3] = [
+    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+    "WEBVIEW2_USER_DATA_FOLDER",
+    "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
+];
+/// Policy keys (under `Software\Policies\Microsoft\Edge\WebView2`, in HKCU and HKLM) that replace the
+/// same things. Any value in one of them and a sealed browser is refused, not started without its walls.
+pub const OVERRIDE_POLICY_KEYS: [&str; 3] = [
+    "AdditionalBrowserArguments",
+    "UserDataFolder",
+    "BrowserExecutableFolder",
+];
+
+/// The refusal for a mini-app when a policy overrides the browser's arguments, or `None` when `found`
+/// (the policy keys that hold a value) is empty.
+pub fn override_refusal(found: &[String]) -> Option<String> {
+    if found.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "a Windows policy sets the WebView2 {} for every app, which would switch off the \
+             mini-app's sandbox, so Flare will not start one",
+            found.join(", ")
+        ))
+    }
+}
 /// The earliest browser an app environment asks for (the options object would otherwise demand the
 /// version of the SDK Flare was built against and refuse an older, working runtime).
 pub const APP_MIN_BROWSER: &str = "110.0.0.0";
@@ -709,9 +744,19 @@ mod tests {
         assert!(sealed.contains("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
         assert!(sealed.contains("--proxy-server=http://127.0.0.1:9"));
         assert!(sealed.contains("--proxy-bypass-list=<-loopback>"));
+        assert!(sealed.contains("--host-resolver-rules=\"MAP * ~NOTFOUND\""));
         let net = browser_arguments(true);
         assert!(net.contains("--webrtc-ip-handling-policy=disable_non_proxied_udp"));
         assert!(!net.contains("proxy"));
+    }
+
+    #[test]
+    fn an_overriding_policy_refuses_the_app_and_none_lets_it_start() {
+        assert!(override_refusal(&[]).is_none());
+        let r = override_refusal(&["AdditionalBrowserArguments".to_string()]).unwrap();
+        assert!(r.contains("AdditionalBrowserArguments"));
+        assert!(OVERRIDE_ENV_VARS.contains(&"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"));
+        assert!(OVERRIDE_POLICY_KEYS.contains(&"AdditionalBrowserArguments"));
     }
 
     #[test]

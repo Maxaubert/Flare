@@ -39,10 +39,11 @@ use webview2_com::{
     ContainsFullScreenElementChangedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
-    FocusChangedEventHandler, HistoryChangedEventHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
-    WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    FocusChangedEventHandler, HistoryChangedEventHandler, LaunchingExternalUriSchemeEventHandler,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    SourceChangedEventHandler, WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
+    take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -394,6 +395,9 @@ impl WebHost {
     /// Makes a browser of `kind`. The web panel's has no extra arguments. A mini-app's has the WebRTC
     /// policy, and (with no network) a proxy that is not there, in a user data folder of its own.
     fn start_env(&self, kind: EnvKind) -> Result<(), String> {
+        if kind != EnvKind::Web {
+            seal_against_overrides()?;
+        }
         let inbox = Rc::clone(&self.inbox);
         let sink = Arc::clone(&self.sink);
         let handler =
@@ -1071,13 +1075,53 @@ impl WebHost {
                     .AddScriptToExecuteOnDocumentCreated(PCWSTR(script.as_ptr()), &done)
                     .map_err(|e| format!("the mini-app's script wall: {}", e.message()))?;
             }
-            // Belt and braces: an app starts with no cookie, whatever an earlier one left in the
-            // profile (each app has a site of its own, so none should be shared anyway).
-            if let Ok(w2) = webview.cast::<ICoreWebView2_2>()
-                && let Ok(jar) = w2.CookieManager()
-            {
-                let _ = jar.DeleteAllCookies();
-            }
+        }
+        // No external program is launched from a mini-app (a mailto: or custom scheme would carry the
+        // page's data out through another program, past the proxy), and no frame navigates anywhere
+        // but a blank or srcdoc frame or the app's own page. (No cookie sweep: each app has a site
+        // of its own, and wiping the shared profile's jar would log another app's tab out.)
+        {
+            let w18 = webview
+                .cast::<ICoreWebView2_18>()
+                .map_err(|_| "this WebView2 Runtime cannot seal a mini-app".to_string())?;
+            let (sink, tab_name) = (Arc::clone(&self.sink), tab.to_string());
+            let h = LaunchingExternalUriSchemeEventHandler::create(Box::new(move |_w, args| {
+                if let Some(args) = args {
+                    // SAFETY: `args` is the live argument of this callback.
+                    unsafe {
+                        let uri = get_string(|p| args.Uri(p));
+                        let _ = args.SetCancel(true);
+                        sink(WebEvent::Refused {
+                            tab: tab_name.clone(),
+                            url: uri,
+                        });
+                    }
+                }
+                Ok(())
+            }));
+            let mut t = 0i64;
+            // SAFETY: the view and the handler are live COM objects; `t` is a valid out value.
+            unsafe { w18.add_LaunchingExternalUriScheme(&h, &mut t) }
+                .map_err(|e| format!("the mini-app's launch wall: {}", e.message()))?;
+            let app_url = app.url.clone();
+            let h = NavigationStartingEventHandler::create(Box::new(move |_w, args| {
+                if let Some(args) = args {
+                    // SAFETY: `args` is the live argument of this callback.
+                    unsafe {
+                        let uri = get_string(|p| args.Uri(p));
+                        if !(uri == "about:blank"
+                            || uri == "about:srcdoc"
+                            || app::nav_allowed(&uri, &app_url))
+                        {
+                            let _ = args.SetCancel(true);
+                        }
+                    }
+                }
+                Ok(())
+            }));
+            // SAFETY: as above.
+            unsafe { webview.add_FrameNavigationStarting(&h, &mut t) }
+                .map_err(|e| format!("the mini-app's frame wall: {}", e.message()))?;
         }
         Ok(())
     }
@@ -1563,4 +1607,59 @@ impl WebBackend for WebHost {
             private,
         })
     }
+}
+
+/// Before a mini-app's browser starts: takes out of this process the variables that would replace the
+/// arguments, profile and runtime Flare passes (removed on the UI thread just before the loader reads
+/// them), and refuses the app when a Windows policy holds such a value (it cannot be removed, and a
+/// browser without its walls must not start).
+fn seal_against_overrides() -> Result<(), String> {
+    for name in app::OVERRIDE_ENV_VARS {
+        // SAFETY: called on the UI thread; the loader reads these only when it creates the
+        // environment right after, on this same thread.
+        unsafe { std::env::remove_var(name) };
+    }
+    let found: Vec<String> = app::OVERRIDE_POLICY_KEYS
+        .iter()
+        .filter(|k| policy_key_has_values(k))
+        .map(|k| k.to_string())
+        .collect();
+    app::override_refusal(&found).map_or(Ok(()), Err)
+}
+
+/// Does `Software\Policies\Microsoft\Edge\WebView2\<key>` hold a value in HKCU or HKLM?
+fn policy_key_has_values(key: &str) -> bool {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExW,
+        RegQueryInfoKeyW,
+    };
+    let path = wide(&format!(r"Software\Policies\Microsoft\Edge\WebView2\{key}"));
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .any(|root| {
+            let mut h: HKEY = std::ptr::null_mut();
+            // SAFETY: `path` is NUL-terminated; `h` is a valid out value, closed below once opened.
+            unsafe {
+                if RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ, &mut h) != 0 {
+                    return false;
+                }
+                let mut values = 0u32;
+                let rc = RegQueryInfoKeyW(
+                    h,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut values,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                RegCloseKey(h);
+                rc != 0 || values > 0
+            }
+        })
 }

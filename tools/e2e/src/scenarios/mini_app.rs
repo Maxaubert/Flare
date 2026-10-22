@@ -483,6 +483,42 @@ fn app_on(ctx: &mut Ctx, app: &mut App, at: &str, profile: &Path) -> Result<(), 
         format!("{at}: it is still the same document ({out:?})"),
     );
 
+    // ---- an external protocol launches nothing, from the page or from a frame in it ----
+    say(
+        ctx,
+        app,
+        "(function(){ location.href = 'flare-e2e-probe:a?body=secret'; return 'go'; })()",
+    );
+    say(
+        ctx,
+        app,
+        r##"(function(){ var f=document.createElement('iframe'); f.srcdoc="<a id=l href='flare-e2e-probe:b?body=secret'>x</a><script>location.href='flare-e2e-probe:b?body=secret'<\/script>"; document.body.appendChild(f); return 'go'; })()"##,
+    );
+    let moved = ctx.poll(3_000, &mut || {
+        let s = state(app);
+        s["controller"]["url"] != app_url || s["controllers"] != json!(1)
+    });
+    let out = say(ctx, app, "document.getElementById('out').textContent");
+    ctx.ok(
+        !moved && out == "script ran",
+        format!("{at}: an unregistered protocol (nothing can launch) from the page and from a frame goes nowhere ({out:?})"),
+    );
+
+    // ---- the dead proxy's port is not what the wall rests on: a listener there hears nothing ----
+    if let Ok(l) = std::net::TcpListener::bind("127.0.0.1:9") {
+        let _ = l.set_nonblocking(true);
+        say(
+            ctx,
+            app,
+            "(function(){ fetch('http://example.invalid/x',{mode:'no-cors'}).catch(function(){}); var i=new Image(); i.src='http://example.invalid/p.png'; return 'go'; })()",
+        );
+        let heard = ctx.poll(4_000, &mut || l.accept().is_ok());
+        ctx.ok(
+            !heard,
+            format!("{at}: a program listening on the proxy's port is never reached"),
+        );
+    }
+
     // ---- the agent's browser tools work on the page ----
     let look = c
         .call(Method::BrowserLook, json!({}), LOAD)
