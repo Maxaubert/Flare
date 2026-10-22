@@ -11,6 +11,9 @@ use crate::fold::{Convo, Edit, EditOp, Outcome, Task, TaskStatus};
 
 /// The most diff rows one file shows. A file edited a thousand times keeps its first rows and says so.
 pub const MAX_ROWS: usize = 5000;
+/// The most characters one diff row keeps. A longer line (a minified file) is cut and ends in an ellipsis, so the window
+/// never shapes a 64 KB line (rule 34).
+pub const LINE_CHARS: usize = 400;
 /// The most task rows (headers included) the panel lists.
 pub const MAX_TASK_ROWS: usize = 500;
 
@@ -106,11 +109,21 @@ pub struct DiffRow {
 }
 
 fn row(kind: RowKind, old_no: usize, new_no: usize, text: impl Into<String>) -> DiffRow {
+    let mut text: String = text.into();
+    if let Some((cut, _)) = text.char_indices().nth(LINE_CHARS) {
+        // Keep LINE_CHARS - 1 characters and the marker, so the row is LINE_CHARS long.
+        let keep = text
+            .char_indices()
+            .nth(LINE_CHARS - 1)
+            .map_or(cut, |(i, _)| i);
+        text.truncate(keep);
+        text.push('…');
+    }
     DiffRow {
         kind,
         old_no: u32::try_from(old_no).unwrap_or(u32::MAX),
         new_no: u32::try_from(new_no).unwrap_or(u32::MAX),
-        text: text.into(),
+        text,
     }
 }
 
@@ -490,6 +503,23 @@ mod tests {
             d.rows.iter().filter(|r| r.kind == RowKind::Added).count(),
             2
         );
+    }
+
+    #[test]
+    fn a_very_long_line_is_cut_to_the_row_width_with_an_ellipsis() {
+        let minified = "x".repeat(60 * 1024);
+        let c = convo(&[assistant(
+            json!([{"type": "tool_use", "id": "w", "name": "Write",
+            "input": {"file_path": r"C:\p\min.js", "content": minified}}]),
+        )]);
+        let d = file_diff(&c, r"C:\p\min.js");
+        assert!(
+            d.rows.iter().all(|r| r.text.chars().count() <= LINE_CHARS),
+            "no row passes the width"
+        );
+        let added = d.rows.iter().find(|r| r.kind == RowKind::Added).unwrap();
+        assert_eq!(added.text.chars().count(), LINE_CHARS);
+        assert!(added.text.ends_with('…'));
     }
 
     #[test]

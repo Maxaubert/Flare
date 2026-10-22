@@ -2897,10 +2897,19 @@ impl AppCtl {
                     }
                 }
             }
-            ConvoMsg::OpenFile { tab, kind, abs } => {
+            ConvoMsg::OpenFile {
+                tab,
+                kind,
+                abs,
+                picked,
+            } => {
                 // The person asked for this file by clicking its path: the panel shows it, whatever the setting
-                // for clicks in the terminal says. The Changes panel closes (a tab has one panel).
-                if self.is_shell_tab(&tab) && self.panels.show(&tab, kind, &abs) {
+                // for clicks in the terminal says. The Changes panel closes (a tab has one panel). An answer that
+                // arrives after the person moved on (another panel, another pick) is dropped.
+                let still = self.panels.open_convo_kind(&tab)
+                    == Some(flare_surfaces::PanelKind::Changes)
+                    && self.convo.selected(&tab) == picked;
+                if still && self.is_shell_tab(&tab) && self.panels.show(&tab, kind, &abs) {
                     self.refresh();
                     self.panel_changed(&tab);
                 }
@@ -2941,6 +2950,7 @@ impl AppCtl {
         let post = Arc::clone(&self.deps.post);
         let home = self.deps.home.clone();
         let path = path.to_string();
+        let picked = self.convo.selected(&id);
         let spawned = std::thread::Builder::new()
             .name("flare-convo-open".into())
             .spawn(move || {
@@ -2953,6 +2963,7 @@ impl AppCtl {
                         tab: id,
                         kind,
                         abs: real,
+                        picked,
                     })));
                 }
             });

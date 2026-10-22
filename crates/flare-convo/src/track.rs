@@ -23,6 +23,9 @@ use crate::view::{self, FileDiff, FileSummary, Summary, TaskGroup};
 pub const WAKE: Duration = Duration::from_millis(100);
 /// How often a transcript that is not there yet is looked for in the other project folders.
 const SEARCH_EVERY: Duration = Duration::from_secs(2);
+/// The search backs off (doubling) up to this while the transcript stays missing, so a fresh session that has not
+/// written its file yet does not make the worker read every project folder every 2 s for as long as the panel is open.
+const SEARCH_MAX: Duration = Duration::from_secs(30);
 
 /// Where to read: the expected transcript, and where to look for it if it is not there.
 #[derive(Debug, Clone)]
@@ -146,6 +149,7 @@ impl Worker {
         let mut convo = Convo::new();
         let mut found = false;
         let mut last_search = Instant::now();
+        let mut search_every = SEARCH_EVERY;
         let mut checked_found = Instant::now() - SEARCH_EVERY;
         let mut cache: Option<DiffCache> = None;
         let mut seq = 0u64;
@@ -158,8 +162,9 @@ impl Worker {
                 found = path.is_file(); // sync-ok: runs on the tracker worker
                 if found {
                     dirty = true;
-                } else if last_search.elapsed() >= SEARCH_EVERY {
+                } else if last_search.elapsed() >= search_every {
                     last_search = Instant::now();
+                    search_every = (search_every * 2).min(SEARCH_MAX);
                     if let Some(other) = find_transcript_in(&src.claude_dir, &src.session)
                         && other != path
                     {

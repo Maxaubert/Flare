@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use flare_convo::track::{Snapshot, Source, Tracker};
-use flare_convo::view::{DiffRow, FileSummary, MAX_TASK_ROWS, RowKind, TaskGroup};
+use flare_convo::view::{DiffRow, FileSummary, LINE_CHARS, MAX_TASK_ROWS, RowKind, TaskGroup};
 use flare_surfaces::PanelKind;
 use serde_json::{Value, json};
 use slint::{ModelRc, SharedString, VecModel};
@@ -28,7 +28,7 @@ pub const KIND_CHANGES: i32 = 4;
 pub const KIND_TASKS: i32 = 5;
 
 /// The most characters of a diff line the viewport is made wide for.
-const COLS_MAX: usize = 400;
+const COLS_MAX: usize = LINE_CHARS;
 /// The most changed files `convo.state` lists.
 const STATE_FILES: usize = 20;
 
@@ -45,6 +45,9 @@ pub enum ConvoMsg {
         tab: String,
         kind: PanelKind,
         abs: String,
+        /// The file the diff showed when the person clicked; an answer for another pick (or a panel since changed) is
+        /// stale and dropped.
+        picked: Option<String>,
     },
 }
 
@@ -73,6 +76,10 @@ struct Tracked {
     session: String,
     tracker: Tracker,
     snap: Option<Arc<Snapshot>>,
+    /// Count up when that piece of the snapshot changed, so the window rebuilds only the model that is out of date.
+    files_v: u64,
+    diff_v: u64,
+    tasks_v: u64,
 }
 
 /// What the person did in a tab's panel; it lasts as long as the tracker.
@@ -93,6 +100,9 @@ struct Pushed {
     seq: u64,
     session: Option<String>,
     version: u64,
+    files_v: u64,
+    diff_v: u64,
+    tasks_v: u64,
 }
 
 pub struct ConvoCtl {
@@ -192,6 +202,9 @@ impl ConvoCtl {
                     session: session.to_string(),
                     tracker,
                     snap: None,
+                    files_v: 0,
+                    diff_v: 0,
+                    tasks_v: 0,
                 },
             );
             changed = true;
@@ -221,6 +234,17 @@ impl ConvoCtl {
     #[cfg(test)]
     pub fn session_of(&self, tab: &str) -> Option<&str> {
         self.tracked.get(tab).map(|t| t.session.as_str())
+    }
+
+    /// The file picked in the tab's Changes panel.
+    pub fn selected(&self, tab: &str) -> Option<String> {
+        self.views.get(tab).and_then(|v| v.selected.clone())
+    }
+
+    /// A tracker's exit flag (a test waits for it to see the worker really stop).
+    #[cfg(test)]
+    pub fn exit_flag(&self, tab: &str) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        self.tracked.get(tab).map(|t| t.tracker.exit_flag())
     }
 
     /// Whether any tracker runs.
@@ -256,8 +280,29 @@ impl ConvoCtl {
                 ..(*snap).clone()
             });
         }
+        // Which models the window has to rebuild: only the ones whose piece changed (rule 34).
+        match &t.snap {
+            Some(o) => {
+                t.files_v += u64::from(o.files != snap.files);
+                t.diff_v += u64::from(o.diff != snap.diff);
+                t.tasks_v += u64::from(o.groups != snap.groups);
+            }
+            None => {
+                t.files_v += 1;
+                t.diff_v += 1;
+                t.tasks_v += 1;
+            }
+        }
         t.snap = Some(snap);
         true
+    }
+
+    /// The models the window holds, as (files, rows, tasks) rebuild counts (a test reads them).
+    #[cfg(test)]
+    pub fn piece_versions(&self, tab: &str) -> Option<(u64, u64, u64)> {
+        self.tracked
+            .get(tab)
+            .map(|t| (t.files_v, t.diff_v, t.tasks_v))
     }
 
     /// Shows one file's diff (None: the list).
@@ -350,10 +395,32 @@ impl ConvoCtl {
             seq: t.and_then(|t| t.snap.as_ref()).map_or(0, |s| s.seq),
             session: t.map(|t| t.session.clone()),
             version: view.map_or(0, |v| v.version),
+            files_v: t.map_or(0, |t| t.files_v),
+            diff_v: t.map_or(0, |t| t.diff_v),
+            tasks_v: t.map_or(0, |t| t.tasks_v),
         };
         if self.pushed.as_ref() == Some(&key) && app.get_panel_kind() == code {
             return;
         }
+        // A model is written again only when its piece changed (or the tab, kind, session or the person's pick did).
+        let (all, files_new, diff_new, tasks_new) = match &self.pushed {
+            Some(p)
+                if self.populated
+                    && p.tab == key.tab
+                    && p.kind == key.kind
+                    && p.session == key.session
+                    && app.get_panel_kind() == code =>
+            {
+                let moved = p.version != key.version;
+                (
+                    false,
+                    p.files_v != key.files_v,
+                    moved || p.diff_v != key.diff_v,
+                    moved || p.tasks_v != key.tasks_v,
+                )
+            }
+            _ => (true, true, true, true),
+        };
         let snap = t.and_then(|t| t.snap.as_ref());
         let sel = view.and_then(|v| v.selected.clone());
         let none = TabView::default();
@@ -366,18 +433,24 @@ impl ConvoCtl {
         app.set_panel_lines(ModelRc::default());
         app.set_panel_max_cols(0);
         app.set_panel_foot("".into());
-        let (files, rows, cols, tasks, note, sub);
+        let (note, sub);
         match kind {
             PanelKind::Changes => {
                 let list: &[FileSummary] = snap.map_or(&[], |s| s.files.as_slice());
-                files = file_rows(list);
-                let (r, c) = match (&sel, snap.and_then(|s| s.diff.as_ref())) {
-                    (Some(sel), Some((p, d))) if same_path(p, sel) => diff_rows(&d.rows),
-                    _ => (Vec::new(), 0),
-                };
-                rows = r;
-                cols = c;
-                tasks = Vec::new();
+                if files_new {
+                    app.set_panel_convo_files(model(file_rows(list)));
+                }
+                if diff_new {
+                    let (r, c) = match (&sel, snap.and_then(|s| s.diff.as_ref())) {
+                        (Some(sel), Some((p, d))) if same_path(p, sel) => diff_rows(&d.rows),
+                        _ => (Vec::new(), 0),
+                    };
+                    app.set_panel_convo_rows(model(r));
+                    app.set_panel_convo_max_cols(i32::try_from(c).unwrap_or(i32::MAX));
+                }
+                if all {
+                    app.set_panel_convo_tasks(ModelRc::default());
+                }
                 sub = match list.len() {
                     0 => String::new(),
                     1 => "1 file".to_string(),
@@ -391,11 +464,15 @@ impl ConvoCtl {
                 app.set_panel_title("Changes".into());
             }
             _ => {
-                files = Vec::new();
-                rows = Vec::new();
-                cols = 0;
+                if all {
+                    app.set_panel_convo_files(ModelRc::default());
+                    app.set_panel_convo_rows(ModelRc::default());
+                    app.set_panel_convo_max_cols(0);
+                }
                 let groups: &[TaskGroup] = snap.map_or(&[], |s| s.groups.as_slice());
-                tasks = task_rows(groups, &view.collapsed);
+                if tasks_new {
+                    app.set_panel_convo_tasks(model(task_rows(groups, &view.collapsed)));
+                }
                 sub = snap
                     .and_then(|s| s.groups.first().filter(|g| g.key.is_empty()))
                     .map(|g| format!("{} of {} done", g.done, g.tasks.len()))
@@ -410,11 +487,7 @@ impl ConvoCtl {
         }
         app.set_panel_sub(sub.into());
         app.set_panel_note(note.into());
-        app.set_panel_convo_files(model(files));
-        app.set_panel_convo_rows(model(rows));
-        app.set_panel_convo_max_cols(i32::try_from(cols).unwrap_or(i32::MAX));
         app.set_panel_convo_selected(sel.unwrap_or_default().into());
-        app.set_panel_convo_tasks(model(tasks));
         self.populated = true;
         self.pushed = Some(key);
     }
@@ -707,6 +780,35 @@ mod tests {
         assert_eq!(out[3].old_no.as_str(), "");
         assert_eq!(out[3].new_no.as_str(), "5");
         assert_eq!(cols, 7);
+    }
+
+    #[test]
+    fn a_capped_diff_gives_five_thousand_rows_no_wider_than_the_viewport() {
+        let wide = "w".repeat(30 * 1024);
+        let lines: String = (0..3000).map(|i| format!("line {i}\n")).collect();
+        let big = format!("{wide}\n{lines}");
+        let mut c = Convo::new();
+        for i in 0..4 {
+            c.fold_line(
+                &json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                    "id": format!("e{i}"), "name": "Edit",
+                    "input": {"file_path": r"C:\p\big.txt", "old_string": "", "new_string": big}}]}})
+                .to_string(),
+            );
+        }
+        let d = view::file_diff(&c, r"C:\p\big.txt");
+        assert!(d.truncated);
+        let (rows, cols) = diff_rows(&d.rows);
+        assert_eq!(
+            rows.len(),
+            view::MAX_ROWS + 1,
+            "the cap and the closing note"
+        );
+        assert_eq!(cols, COLS_MAX);
+        assert!(
+            rows.iter().all(|r| r.text.chars().count() <= COLS_MAX),
+            "no row hands the window more than a viewport of text"
+        );
     }
 
     #[test]

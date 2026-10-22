@@ -202,8 +202,10 @@ fn a_click_on_a_file_picks_it_and_the_bar_goes_back_or_opens_the_path() {
 
 // ---- the diff ----
 
+/// The view's own windowing, with a model far longer than the controller ever hands it (it caps a file's diff at
+/// `view::MAX_ROWS`; see `convo_ctl`'s `a_capped_diff_...` test for that side).
 #[test]
-fn a_diff_of_a_hundred_thousand_rows_builds_only_the_rows_in_view_and_scrolls() {
+fn the_diff_view_windows_a_model_of_a_hundred_thousand_rows_and_scrolls() {
     for s in SCALES2 {
         let h = window(s);
         h.activate();
@@ -343,6 +345,25 @@ fn a_task_wears_its_state_and_only_the_one_in_progress_has_the_accent() {
         assert!(
             some >= none + min,
             "scale {s}: the dot of the task in progress is the accent ({none} then {some})"
+        );
+    }
+}
+
+#[test]
+fn wrapped_task_rows_sit_on_whole_device_pixels_at_fractional_scales() {
+    for s in [1.0f32, 1.25, 1.75, 2.25] {
+        let h = window(s);
+        let long = "A task whose words are long enough to wrap onto a second and a third line in a narrow panel body";
+        let mut rows = vec![task(1, 1, long, true)];
+        for i in 0..5 {
+            rows.push(task(1, 0, &format!("{long} {i}"), false));
+        }
+        rows.push(task(0, 0, "Subagent abc", false));
+        open_tasks(&h, rows);
+        let total = h.comp.get_panel_convo_task_content_h() * s;
+        assert!(
+            (total - total.round()).abs() < 0.01,
+            "scale {s}: the list is {total} device pixels tall, not a whole number"
         );
     }
 }

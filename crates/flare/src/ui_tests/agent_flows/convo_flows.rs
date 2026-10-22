@@ -394,9 +394,98 @@ fn closing_the_tab_stops_its_tracker() {
     open(&f, &id, PanelKind::Tasks);
     f.pump_until("the task", |f| tasks(f).len() == 1);
     assert_eq!(trackers(&f), 1);
+    let exited = f.ctl.borrow().convo().exit_flag(&id).expect("a tracker");
+    assert!(!exited.load(std::sync::atomic::Ordering::SeqCst));
     f.ctl.borrow_mut().close_now(&id);
     f.pump();
     assert_eq!(trackers(&f), 0);
+    // The map is empty, and the worker thread really returned.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !exited.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code only
+    }
+    assert!(
+        exited.load(std::sync::atomic::Ordering::SeqCst),
+        "the worker of a closed tab stops"
+    );
+}
+
+#[test]
+fn an_edit_of_another_file_leaves_the_selected_diff_rows_alone() {
+    let f = Fx::new();
+    let claude = Claude::new(&f);
+    let id = claude_tab(&f, SESSION_A);
+    claude.append(
+        TAB,
+        SESSION_A,
+        &[edit_line("e1", "C:\\a\\x.rs", "one", "two")],
+    );
+    open(&f, &id, PanelKind::Changes);
+    f.pump_until("the file", |f| files(f).len() == 1);
+    f.h.comp.invoke_panel_convo_select("C:\\a\\x.rs".into());
+    f.pump_until("the diff", |f| diff_text(f).iter().any(|t| t == "two"));
+    // Mark the model the window holds: a rebuild would replace it, and the mark with it.
+    let rows = f.h.comp.get_panel_convo_rows();
+    let mark = rows
+        .as_any()
+        .downcast_ref::<slint::VecModel<crate::ConvoDiffRow>>()
+        .expect("the controller's own model");
+    let before = mark.row_count();
+    mark.push(crate::ConvoDiffRow {
+        kind: 1,
+        old_no: "".into(),
+        new_no: "".into(),
+        text: "mark".into(),
+    });
+    let (_, diff_v, tasks_v) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
+    claude.append(
+        TAB,
+        SESSION_A,
+        &[
+            edit_line("e2", "C:\\a\\y.rs", "p", "q"),
+            todo_line(&[("Read", "pending")]),
+        ],
+    );
+    f.pump_until("the second file", |f| files(f).len() == 2);
+    let (_, diff_after, tasks_after) = f.ctl.borrow().convo().piece_versions(&id).unwrap();
+    assert_eq!(diff_v, diff_after, "the picked file's diff did not change");
+    assert!(tasks_after > tasks_v, "the task list did");
+    assert_eq!(
+        f.h.comp.get_panel_convo_rows().row_count(),
+        before + 1,
+        "the rows model is the same instance, not a rebuilt one"
+    );
+    assert!(diff_text(&f).iter().any(|t| t == "mark"));
+}
+
+#[test]
+fn a_path_answer_that_arrives_after_the_panel_changed_is_dropped() {
+    let f = Fx::new();
+    let claude = Claude::new(&f);
+    let id = claude_tab(&f, SESSION_A);
+    let work = f._dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap(); // sync-ok: test code only
+    let real: PathBuf = work.join("notes.txt");
+    std::fs::write(&real, "kept").unwrap(); // sync-ok: test code only
+    let real_s = real.to_string_lossy().into_owned();
+    claude.append(TAB, SESSION_A, &[edit_line("e1", &real_s, "a", "b")]);
+    open(&f, &id, PanelKind::Changes);
+    f.pump_until("the file", |f| files(f).len() == 1);
+    f.h.comp.invoke_panel_convo_select(real_s.as_str().into());
+    f.pump();
+    // The click starts the check on a worker; the person switches to Tasks before the answer is read.
+    f.h.comp.invoke_panel_convo_open(real_s.as_str().into());
+    assert!(f.ctl.borrow_mut().open_convo_panel(&id, PanelKind::Tasks));
+    for _ in 0..15 {
+        f.pump();
+        std::thread::sleep(std::time::Duration::from_millis(20)); // sync-ok: test code only
+    }
+    assert_eq!(
+        f.h.comp.get_panel_kind(),
+        5,
+        "the late answer changed nothing"
+    );
+    assert_eq!(trackers(&f), 1);
 }
 
 #[test]
