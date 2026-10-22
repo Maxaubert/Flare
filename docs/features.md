@@ -580,7 +580,30 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   icon, rendered as it is with no badge and no outline (O17, 2026-10-17). `tools/make-icon.py` builds the
   frames; `tools/test_make_icon.py` checks them. 2026-10-21: the owner's final icon replaced the first
   artwork: an orange and a gold flame on a dark rounded square (the three SVGs in `assets/icon/`). The
-  in-app mark keeps the flame's outline, tinted by the theme.
+  title bar's and the About card's mark keep the flame's outline, tinted by the theme. 2026-10-22 (owner: "the
+  flame icon on this screen should be the one from the icon which has that two toned design with orange and
+  yellow"): the start screen draws the flame in the icon's own two tones, the orange flame with the golden one
+  exactly over it (`AppMarkColor` in `mark.slint`, the artwork's two paths and their 135 degree gradients, 84 px),
+  never in the accent. Held by `ui_tests::start::the_mark_is_the_two_toned_flame_at_84_px` (orange and gold
+  pixels, the ink size, the gold inside the orange, at 100 and 225 percent) and
+  `the_color_mark_is_the_artworks_two_paths_and_gradients` (the paths and stops equal the SVG's), the e2e
+  `lifecycle` (`start.state` reports the two tones).
+- **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
+  the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
+  `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing
+  separator dropped), so it never groups under the installed Flare's Start menu shortcut and its old icon. The
+  default profile keeps `com.flare.terminal`, which the installer stamps on its shortcut. `flare.exe
+  --print-aumid [--user-data-dir=<path>]` prints the identity and exits, so an install script can stamp it on
+  the shortcut of a second copy. Toasts must use the same value (`ship_ctl::effective_aumid`). Held by
+  `flare_win::names::tests::aumid_is_the_plain_one_for_the_default_profile_and_per_profile_otherwise` and
+  `ship_ctl::tests::profile_arg_reads_the_equals_form_only`.
+- **Vertical tabs at start.** 2026-10-22 (owner: "there was a startup bug where it was on vertical tabs but it
+  was showing the horizontal style, clicking horizontal then vertical in settings fixed it"): a profile that
+  stores vertical opens with the tabs down the side on the first frame. Not reproduced on this code or on the
+  surfaces stack (a stored vertical profile, with and without a saved tab, GPU and software, 100 and 225 percent
+  at start: the first refresh reads the store and the sidebar is drawn); the cause is still open. Guarded by
+  `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e `verticalStart`
+  (a stored vertical profile with a saved tab, GPU renderer, 225 percent, sidebar and no strip).
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).

@@ -543,10 +543,10 @@ pub fn settings_look(ctx: &mut Ctx) -> Result<(), String> {
         return Ok(());
     }
 
-    // The accent, from the start screen's mark (the same accent the window draws in).
+    // The accent, from the start screen's state (the same accent the window draws in).
     let accent = rgb_of_hex(str_of(
         &probe(&mut app, "start.state", Value::Null),
-        "mark_colour",
+        "accent",
     ));
     let k = scale_of(&mut app);
     for tab in PAGES {
