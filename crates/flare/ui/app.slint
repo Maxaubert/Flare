@@ -470,6 +470,7 @@ export component AppWindow inherits Window {
     init => { Px.scale = root.scale; }
     changed scale => {
         Px.scale = root.scale;
+        SettingsBridge.scale-changed();
         root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale);
     }
     changed grid-phys-width => { root.grid-resized(root.grid-phys-width, root.grid-phys-height, root.scale); }

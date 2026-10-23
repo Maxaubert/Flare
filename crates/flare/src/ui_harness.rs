@@ -72,6 +72,21 @@ pub struct Harness<C: ComponentHandle> {
 }
 
 impl<C: ComponentHandle> Harness<C> {
+    /// A move to a monitor with another scale: the logical size stays, the physical size follows
+    /// (what Windows does with WM_DPICHANGED's suggested rectangle).
+    #[allow(dead_code)] // the settings tests use it
+    pub fn rescale(&mut self, scale: f32) {
+        self.win.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        self.scale = scale;
+        self.win.set_size(PhysicalSize::new(
+            self.phys(self.css.0 as f32),
+            self.phys(self.css.1 as f32),
+        ));
+        slint::platform::update_timers_and_animations();
+    }
+
     pub fn new(scale: f32, css_w: u32, css_h: u32, make: impl FnOnce() -> C) -> Self {
         ensure_platform();
         let win = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);

@@ -809,6 +809,7 @@ impl SettingsCtl {
             .dict_ask_answered(n));
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
+        on!(app, rc, on_scale_changed, |c| c.scale_changed());
         on!(app, rc, on_escape_unhandled, |c| {
             c.escape();
         });
@@ -1354,6 +1355,22 @@ impl SettingsCtl {
     }
 
     // ---- events ---------------------------------------------------------------------------------------
+
+    /// The window's scale moved while the logical size stayed: every row, hairline and card edge was
+    /// snapped for the old scale, so the page is laid out again at the new one (rule 81).
+    fn scale_changed(&mut self) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let now = Self::scale_of(&app);
+        let stale = self
+            .built
+            .as_ref()
+            .is_some_and(|b| (b.scale - now).abs() > f64::EPSILON);
+        if stale && self.visible {
+            self.rebuild();
+        }
+    }
 
     fn frame_resized(&mut self, w: f64, h: f64) {
         if w <= 0.0 || h <= 0.0 {
@@ -2867,6 +2884,18 @@ mod tests {
         b.invoke_picker_escape();
         assert!(!b.get_picker_open());
         assert_eq!(ACCENT.get(&f.prefs), None, "back to following the theme");
+    }
+
+    #[test]
+    fn a_scale_change_at_the_same_logical_size_lays_the_page_out_again() {
+        let mut f = fx();
+        assert_eq!(f.ctl.borrow().built.as_ref().map(|b| b.scale), Some(1.0));
+        let before = f.ctl.borrow().rebuilds;
+        // A move to a 150% monitor: the logical size stays, only the scale moves.
+        f.h.rescale(1.5);
+        f.h.advance(0);
+        assert!(f.ctl.borrow().rebuilds > before, "the page was not rebuilt");
+        assert_eq!(f.ctl.borrow().built.as_ref().map(|b| b.scale), Some(1.5));
     }
 
     #[test]

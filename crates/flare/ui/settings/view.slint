@@ -138,6 +138,9 @@ export global SettingsBridge {
     callback ask-answered(int);
     callback dict-ask-answered(int);
     callback frame-resized(length, length);
+    // The window's scale changed (a move to a monitor with another DPI keeps the logical size, so
+    // frame-resized never fires): the Rust-snapped layout is laid out again.
+    callback scale-changed();
     callback escape-unhandled();
     callback tip(string, length, length, length, length);
     // A Dictation model row says what it drew (its mark, name and buttons); the e2e reads it.
