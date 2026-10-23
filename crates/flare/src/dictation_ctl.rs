@@ -186,6 +186,11 @@ pub enum DictMsg {
     Pick(String),
     /// The widget dismissed (Task 26).
     Dismiss,
+    /// Words kept on the clipboard: whether the copy took (a failure puts `fallback` back on the widget).
+    Copied {
+        ok: bool,
+        fallback: Option<OverlayState>,
+    },
     /// A call a link thread wants run on the UI thread.
     Call(Box<dyn FnOnce(&mut Dict) + Send>),
 }
@@ -312,6 +317,11 @@ pub trait DictHost {
     fn view_changed(&self) {}
     /// The widget's face (Task 26 draws it); `None` hides it.
     fn widget(&self, _face: Option<&OverlayState>) {}
+    /// Puts words on the clipboard, on a worker; `done(true)` only when it took the exact text. The default
+    /// refuses.
+    fn copy_text(&self, _text: String, done: Box<dyn FnOnce(bool) + Send>) {
+        done(false);
+    }
 }
 
 /// What dictation owns that touches the OS. Created only while dictation is on. UI thread only (a real one
@@ -950,6 +960,7 @@ impl Dict {
             DictMsg::Paste { session, text } => self.paste(&session, &text),
             DictMsg::Pick(id) => self.svc_on(SvcEvent::Pick(id)),
             DictMsg::Dismiss => self.svc_on(SvcEvent::Dismiss),
+            DictMsg::Copied { ok, fallback } => self.on_copied(ok, fallback),
             DictMsg::Call(f) => f(self),
         }
     }
@@ -1429,6 +1440,13 @@ impl Dict {
                         .is_some_and(|p| p.link_paste(pid, &text));
                     self.svc_on(SvcEvent::Pasted(ok));
                 }
+                SvcEffect::CopyText { text, fallback } => {
+                    let post = Arc::clone(&self.post);
+                    self.host.copy_text(
+                        text,
+                        Box::new(move |ok| post(DictMsg::Copied { ok, fallback })),
+                    );
+                }
                 SvcEffect::AskTabs => self.ask_tabs(),
                 SvcEffect::SendLocal { id, text } => self.send_local(id, text),
                 SvcEffect::SendRemote { pid, id, text } => self.send_remote(pid, &id, &text),
@@ -1497,6 +1515,23 @@ impl Dict {
         if spawned.is_err() {
             log::debug!("dictation: no thread for the hook's lines");
         }
+    }
+
+    /// A copy of unsent words answered. A failed one puts the plain note back, but only over the note that
+    /// said "copied": a newer face is never replaced.
+    fn on_copied(&mut self, ok: bool, fallback: Option<OverlayState>) {
+        let Some(face) = fallback else { return };
+        let showing = matches!(&self.widget,
+            Some(OverlayState::Note { message, .. }) if message.ends_with(", copied"));
+        if ok || !showing {
+            return;
+        }
+        self.run_svc(vec![
+            SvcEffect::Widget(face),
+            SvcEffect::WidgetHide {
+                after_ms: flare_dictation::service::NOTE_HIDE_MS,
+            },
+        ]);
     }
 
     fn ask_tabs(&mut self) {
@@ -2688,6 +2723,19 @@ impl DictHost for AppHost {
         }
     }
 
+    fn copy_text(&self, text: String, done: Box<dyn FnOnce(bool) + Send>) {
+        let port = self
+            .ctl
+            .upgrade()
+            .and_then(|rc| rc.try_borrow().ok().map(|c| c.dictation_clip()));
+        match port {
+            Some(port) => {
+                crate::clip_flow::copy_async(port, text, flare_win::clipboard_port::COPY_MAX, done)
+            }
+            None => done(false),
+        }
+    }
+
     fn widget(&self, face: Option<&OverlayState>) {
         let app = self.app.clone();
         crate::dictation_widget::set(
@@ -3090,6 +3138,9 @@ mod tests {
         alt_swallows: Cell<u32>,
         crumbs: RefCell<Vec<String>>,
         tabs: RefCell<Vec<SendTab>>,
+        copies: RefCell<Vec<String>>,
+        copy_ok: Cell<bool>,
+        faces: RefCell<Option<OverlayState>>,
     }
 
     impl FakeHost {
@@ -3104,6 +3155,9 @@ mod tests {
                 alt_swallows: Cell::new(0),
                 crumbs: RefCell::default(),
                 tabs: RefCell::default(),
+                copies: RefCell::default(),
+                copy_ok: Cell::new(true),
+                faces: RefCell::default(),
             })
         }
     }
@@ -3142,6 +3196,13 @@ mod tests {
         fn crumb(&self, name: &str, fields: &[(&str, Value)]) {
             self.crumbs.borrow_mut().push(format!("{name} {fields:?}"));
             let _ = &self.log;
+        }
+        fn copy_text(&self, text: String, done: Box<dyn FnOnce(bool) + Send>) {
+            self.copies.borrow_mut().push(text);
+            done(self.copy_ok.get());
+        }
+        fn widget(&self, face: Option<&OverlayState>) {
+            *self.faces.borrow_mut() = face.cloned();
         }
     }
 
@@ -3725,6 +3786,57 @@ mod tests {
         let n = r.calls().len();
         r.d.stop();
         assert_eq!(r.calls().len(), n);
+    }
+
+    /// Dictation on with the outside binding, and words heard with no Claude session to take them.
+    fn heard_with_no_session(r: &mut Rig) {
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        assert!(r.d.e2e_route("what I said".into(), None));
+        r.pump();
+    }
+
+    fn note_now(r: &Rig) -> Option<String> {
+        match &*r.host.faces.borrow() {
+            Some(OverlayState::Note { message, .. }) => Some(message.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn words_with_no_session_are_copied_and_the_note_says_so() {
+        let mut r = Rig::on_with_model(true);
+        heard_with_no_session(&mut r);
+        assert_eq!(*r.host.copies.borrow(), ["what I said"]);
+        assert_eq!(note_now(&r).as_deref(), Some("No Claude session, copied"));
+    }
+
+    #[test]
+    fn a_failed_copy_puts_the_old_note_back() {
+        let mut r = Rig::on_with_model(true);
+        r.host.copy_ok.set(false);
+        heard_with_no_session(&mut r);
+        assert_eq!(*r.host.copies.borrow(), ["what I said"]);
+        assert_eq!(
+            note_now(&r).as_deref(),
+            Some("No Claude session to send to")
+        );
+    }
+
+    #[test]
+    fn a_failed_copy_never_replaces_a_newer_face() {
+        let mut r = Rig::on_with_model(true);
+        r.host.copy_ok.set(false);
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        r.d.on_copied(
+            false,
+            Some(OverlayState::Note {
+                message: "old".into(),
+                tone: flare_dictation::service::Tone::Warn,
+            }),
+        );
+        assert_eq!(note_now(&r), None);
     }
 
     #[test]

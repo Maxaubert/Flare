@@ -1807,6 +1807,11 @@ impl AppCtl {
         self.deps.host.handle(&t.id).map(|_| t.id.clone())
     }
 
+    /// The clipboard dictation keeps unsent words on.
+    pub(crate) fn dictation_clip(&self) -> Arc<dyn ClipboardPort> {
+        Arc::clone(&self.deps.term.clip_port)
+    }
+
     /// The tabs as the dictation send rules see them: the hub's, each named by its folder.
     pub(crate) fn dictation_tabs(&self) -> Vec<flare_dictation::route::SendTab> {
         self.hub.send_tabs()

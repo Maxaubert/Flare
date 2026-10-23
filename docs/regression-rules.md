@@ -337,3 +337,21 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
+186. **Dictated words that cannot be sent are kept, never dropped** (owner, 2026-10-23: the owner dictated 1m42s from
+outside Flare, no Claude tab was open, the note said "No Claude session to send to" and the words were gone). Every
+finished transcript that ends unsent is copied to the clipboard and the widget note says so: no Claude session, Esc or
+the 30 s timeout on the picker, a refused or failed checked send, a copy of the app that has closed. A picker that is
+dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
+off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
+nothing. A copy that fails keeps the old note. Native: `SvcEffect::CopyText` in `service.rs` (the clipboard write runs
+on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing_with_no_claude_session_says_so`,
+`esc_keeps_it_unsent`, `thirty_seconds_without_a_pick_says_not_sent`, `a_click_picks_a_row_and_a_refusal_says_why`,
+`a_tab_of_another_copy_with_no_service_is_not_sent`, `a_remote_send_that_is_refused_keeps_the_words`,
+`a_dropped_paste_round_trip_asks_for_the_tabs_and_keeps_the_words_when_none_can_take_them`,
+`dismissing_the_picker_keeps_the_words_without_a_note`,
+`a_new_recording_keeps_the_words_an_earlier_one_was_still_waiting_on`,
+`a_newer_text_never_loses_the_words_of_one_still_waiting`, `switching_off_with_words_waiting_keeps_them`,
+`a_note_with_the_copy_stays_under_the_cap`, `cancelled_heard_nothing_and_a_successful_send_or_paste_copy_nothing`
+(`service.rs`), `words_with_no_session_are_copied_and_the_note_says_so`, `a_failed_copy_puts_the_old_note_back` and
+`a_failed_copy_never_replaces_a_newer_face` (`dictation_ctl.rs`). Quitting the app while words wait is not covered: the
+process is ending.

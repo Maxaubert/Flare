@@ -52,6 +52,8 @@ pub const WIDGET_WIDTH: u32 = 480;
 /// What a heard text may be, and a message.
 pub const TEXT_MAX: usize = 8000;
 pub const MESSAGE_MAX: usize = 200;
+/// What a note adds when the words were copied.
+const COPIED: &str = ", copied";
 
 /// The line a disabled row carries (N19).
 pub const NO_PICK_REASON: &str = "Waiting on a question: answer it there first";
@@ -224,6 +226,13 @@ pub enum SvcEffect {
         id: String,
         text: String,
     },
+    /// Words that could not be sent are kept: copy them to the clipboard (on a worker). When the copy fails the
+    /// app shows `fallback` (the note without "copied") in place of the note already on screen; `None`: no note
+    /// was shown for it.
+    CopyText {
+        text: String,
+        fallback: Option<OverlayState>,
+    },
     /// The role changed (or was told again on an apply).
     Role(Role),
     /// Start the link service on the pipe; closes any client first.
@@ -262,6 +271,8 @@ pub struct Service {
     asking: Option<String>,
     /// Heard text waiting for another copy to say it pasted it.
     pending_paste: Option<String>,
+    /// Heard text out with a checked send (local or remote) that has not answered yet.
+    sending: Option<String>,
     role: Role,
     svc: bool,
     client: bool,
@@ -319,6 +330,7 @@ impl Service {
             picking: None,
             asking: None,
             pending_paste: None,
+            sending: None,
             role: Role::None,
             svc: false,
             client: false,
@@ -379,8 +391,9 @@ impl Service {
             }
             SvcEvent::Timer(TimerId::Pick) => {
                 if self.picking.is_some() {
+                    let text = self.picking.as_ref().map(|p| p.text.clone());
                     self.end_pick(&mut fx);
-                    self.note(&mut fx, "Not sent", Tone::Quiet);
+                    self.unsent(&mut fx, text, "Not sent", Tone::Quiet);
                 }
             }
             SvcEvent::Live(v) => self.on_live(&mut fx, v),
@@ -396,19 +409,22 @@ impl Service {
             }
             SvcEvent::Pick(id) => self.choose(&mut fx, &id),
             SvcEvent::Dismiss => {
+                let text = self.picking.as_ref().map(|p| p.text.clone());
                 self.end_pick(&mut fx);
                 fx.push(SvcEffect::WidgetHide { after_ms: 0 });
+                self.keep(&mut fx, text, None);
             }
             SvcEvent::Tabs(all) => self.on_tabs(&mut fx, all),
             SvcEvent::Sent(d) => {
                 self.outside = false;
+                let text = self.sending.take();
                 match d {
                     SendDecision::Ok(t) => {
                         fx.push(SvcEffect::Widget(OverlayState::Sent { to: t.label }));
                         fx.push(SvcEffect::WidgetHide { after_ms: SHOW_MS });
                     }
                     SendDecision::No(why) => {
-                        self.note(&mut fx, format!("Not sent: {why}"), Tone::Warn)
+                        self.unsent(&mut fx, text, &format!("Not sent: {why}"), Tone::Warn)
                     }
                 }
             }
@@ -503,11 +519,27 @@ impl Service {
         fx.push(SvcEffect::Role(self.role));
         let Some(keys) = keys else {
             // Off means off: an answer still out (the tab list, a paste) acts on nothing.
-            self.asking = None;
-            self.pending_paste = None;
+            // The words heard are kept on the clipboard, with no note: the user turned it off.
+            let picked = self.picking.take().map(|p| p.text);
+            let (asking, pending) = (self.asking.take(), self.pending_paste.take());
+            let older: Vec<String> = [picked.clone(), asking, pending]
+                .into_iter()
+                .flatten()
+                .collect();
+            self.keep(
+                fx,
+                (!older.is_empty()).then(|| {
+                    older.join(
+                        "
+
+",
+                    )
+                }),
+                None,
+            );
             self.rec_front = None;
             // Off sends pick off, then unhooks and lets the lock go (N15).
-            if self.picking.take().is_some() {
+            if picked.is_some() {
                 fx.push(SvcEffect::ClearTimer(TimerId::Pick));
                 fx.push(SvcEffect::WidgetHide { after_ms: 0 });
             }
@@ -564,10 +596,22 @@ impl Service {
         fx.push(SvcEffect::Crumb(json!({ "key": action_name(a) })));
         let out = match a {
             KeyAction::Start => {
+                // A new recording replaces whatever an earlier text was waiting on; those words are kept.
+                let picked = self.picking.as_ref().map(|p| p.text.clone());
                 self.end_pick(fx);
-                // A list still being gathered for an earlier text is stale now.
-                self.asking = None;
-                self.pending_paste = None;
+                let (asking, pending) = (self.asking.take(), self.pending_paste.take());
+                let older: Vec<String> = [picked, asking, pending].into_iter().flatten().collect();
+                self.keep(
+                    fx,
+                    (!older.is_empty()).then(|| {
+                        older.join(
+                            "
+
+",
+                        )
+                    }),
+                    None,
+                );
                 self.outside = true;
                 self.rec_front = self.last_front;
                 fx.push(SvcEffect::Widget(OverlayState::Listening {
@@ -588,8 +632,9 @@ impl Service {
         if self.picking.is_some() {
             match &h {
                 HookEvent::Esc => {
+                    let text = self.picking.as_ref().map(|p| p.text.clone());
                     self.end_pick(fx);
-                    self.note(fx, "Not sent", Tone::Quiet);
+                    self.unsent(fx, text, "Not sent", Tone::Quiet);
                     return;
                 }
                 HookEvent::Digit(n) => {
@@ -658,6 +703,52 @@ impl Service {
         });
     }
 
+    /// Words that ended unsent: say why and that they were copied, and copy them. A copy that fails puts the
+    /// plain note back (the app does that).
+    fn unsent(&mut self, fx: &mut Vec<SvcEffect>, text: Option<String>, why: &str, tone: Tone) {
+        self.unsent_as(fx, text, why, why, tone)
+    }
+
+    /// `unsent`, where the note without the copy (`plain`, also the one a failed copy falls back to) says more
+    /// than the note with it (`short` + ", copied").
+    fn unsent_as(
+        &mut self,
+        fx: &mut Vec<SvcEffect>,
+        text: Option<String>,
+        short: &str,
+        plain: &str,
+        tone: Tone,
+    ) {
+        let Some(text) = text else {
+            return self.note(fx, plain.to_string(), tone);
+        };
+        let plain = cap(plain.to_string(), MESSAGE_MAX);
+        let copied = format!(
+            "{}{COPIED}",
+            cap(short.to_string(), MESSAGE_MAX - COPIED.len())
+        );
+        self.note(fx, copied, tone);
+        fx.push(SvcEffect::CopyText {
+            text,
+            fallback: Some(OverlayState::Note {
+                message: plain,
+                tone,
+            }),
+        });
+    }
+
+    /// Copies words that would otherwise be lost, with the note the caller already showed (or none).
+    fn keep(
+        &mut self,
+        fx: &mut Vec<SvcEffect>,
+        text: Option<String>,
+        fallback: Option<OverlayState>,
+    ) {
+        if let Some(text) = text {
+            fx.push(SvcEffect::CopyText { text, fallback });
+        }
+    }
+
     fn on_live(&mut self, fx: &mut Vec<SvcEffect>, v: LiveView) {
         if !self.outside {
             return;
@@ -696,7 +787,8 @@ impl Service {
         }
         // Another linked copy's window was in front: that copy pastes.
         if let (Some(pid), true) = (front, self.svc) {
-            self.pending_paste = Some(text.clone());
+            let older = self.pending_paste.replace(text.clone());
+            self.keep(fx, older, None);
             fx.push(SvcEffect::PasteCopy { pid, text });
             return;
         }
@@ -704,7 +796,9 @@ impl Service {
     }
 
     fn ask(&mut self, fx: &mut Vec<SvcEffect>, text: String) {
-        self.asking = Some(text);
+        // A newer dictation never loses the words of one still waiting.
+        let older = self.asking.replace(text);
+        self.keep(fx, older, None);
         fx.push(SvcEffect::AskTabs);
     }
 
@@ -716,10 +810,18 @@ impl Service {
             Route::Lead(t) => self.send_to(fx, t.id, t.label, text),
             Route::Pick(list) => {
                 if list.is_empty() {
-                    return self.note(fx, "No Claude session to send to", Tone::Warn);
+                    return self.unsent_as(
+                        fx,
+                        Some(text),
+                        "No Claude session",
+                        "No Claude session to send to",
+                        Tone::Warn,
+                    );
                 }
                 let rows = pick_rows(&list);
+                let older = self.picking.as_ref().map(|p| p.text.clone());
                 self.end_pick(fx);
+                self.keep(fx, older, None);
                 self.picking = Some(Picking {
                     text: text.clone(),
                     rows: rows.clone(),
@@ -755,13 +857,24 @@ impl Service {
         fx.push(SvcEffect::Widget(OverlayState::Sending { to: label }));
         match remote_of(&id) {
             // Another copy's tab: that copy types it, through its own checks.
-            Some((pid, rest)) if self.svc => fx.push(SvcEffect::SendRemote {
-                pid,
-                id: rest,
-                text,
-            }),
-            Some(_) => self.note(fx, "Not sent: that copy of the app has closed", Tone::Warn),
-            None => fx.push(SvcEffect::SendLocal { id, text }),
+            Some((pid, rest)) if self.svc => {
+                self.sending = Some(text.clone());
+                fx.push(SvcEffect::SendRemote {
+                    pid,
+                    id: rest,
+                    text,
+                })
+            }
+            Some(_) => self.unsent(
+                fx,
+                Some(text),
+                "Not sent: that copy of the app has closed",
+                Tone::Warn,
+            ),
+            None => {
+                self.sending = Some(text.clone());
+                fx.push(SvcEffect::SendLocal { id, text })
+            }
         }
     }
 
@@ -779,6 +892,7 @@ impl Service {
         self.picking = None;
         self.asking = None;
         self.pending_paste = None;
+        self.sending = None;
         self.outside = false;
         self.clear_tick(fx);
         fx.push(SvcEffect::ClearTimer(TimerId::Pick));
@@ -934,6 +1048,34 @@ mod tests {
         s.on(key(true, front), 10.0);
         s.on(key(false, None), 11.0);
         s.on(SvcEvent::Routed(RouteResult::Text(text.into())), 20.0)
+    }
+
+    /// The effect that keeps `text`, with the plain note a failed copy falls back to.
+    fn copy(text: &str, fallback: OverlayState) -> SvcEffect {
+        SvcEffect::CopyText {
+            text: text.into(),
+            fallback: Some(fallback),
+        }
+    }
+
+    fn silent(text: &str) -> SvcEffect {
+        SvcEffect::CopyText {
+            text: text.into(),
+            fallback: None,
+        }
+    }
+
+    fn plain(message: &str, tone: Tone) -> OverlayState {
+        OverlayState::Note {
+            message: message.into(),
+            tone,
+        }
+    }
+
+    fn copies(fx: &[SvcEffect]) -> Vec<&SvcEffect> {
+        fx.iter()
+            .filter(|e| matches!(e, SvcEffect::CopyText { .. }))
+            .collect()
     }
 
     fn rows_of(fx: &[SvcEffect]) -> Vec<OverlayRow> {
@@ -1326,7 +1468,11 @@ mod tests {
         });
         let fx = s.on(SvcEvent::Tabs(vec![shell]), 21.0);
         assert!(fx.iter().any(|e| matches!(e,
-            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Warn }) if message == "No Claude session to send to")));
+            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Warn }) if message == "No Claude session, copied")));
+        assert!(has(
+            &fx,
+            &copy("hi", plain("No Claude session to send to", Tone::Warn))
+        ));
         assert!(!s.picking());
     }
 
@@ -1455,7 +1601,17 @@ mod tests {
         );
         assert!(fx.iter().any(|e| matches!(e,
             SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Warn })
-                if message == "Not sent: Wind changed while it was checked: send again")));
+                if message == "Not sent: Wind changed while it was checked: send again, copied")));
+        assert!(has(
+            &fx,
+            &copy(
+                "send this",
+                plain(
+                    "Not sent: Wind changed while it was checked: send again",
+                    Tone::Warn
+                )
+            )
+        ));
     }
 
     #[test]
@@ -1483,7 +1639,14 @@ mod tests {
         assert!(!fx.iter().any(|e| matches!(e, SvcEffect::SendRemote { .. })));
         assert!(fx.iter().any(|e| matches!(e,
             SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Warn })
-                if message == "Not sent: that copy of the app has closed")));
+                if message == "Not sent: that copy of the app has closed, copied")));
+        assert!(has(
+            &fx,
+            &copy(
+                "send this",
+                plain("Not sent: that copy of the app has closed", Tone::Warn)
+            )
+        ));
     }
 
     #[test]
@@ -1517,7 +1680,8 @@ mod tests {
         let fx = s.on(SvcEvent::Hook(HookEvent::Esc), 30.0);
         assert!(has(&fx, &SvcEffect::HookPick(false)));
         assert!(fx.iter().any(|e| matches!(e,
-            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Quiet }) if message == "Not sent")));
+            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Quiet }) if message == "Not sent, copied")));
+        assert!(has(&fx, &copy("send this", plain("Not sent", Tone::Quiet))));
         assert!(!s.picking());
     }
 
@@ -1527,7 +1691,8 @@ mod tests {
         open_picker(&mut s, vec![tab(|_| {})]);
         let fx = s.on(SvcEvent::Timer(TimerId::Pick), 30_021.0);
         assert!(fx.iter().any(|e| matches!(e,
-            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Quiet }) if message == "Not sent")));
+            SvcEffect::Widget(OverlayState::Note { message, tone: Tone::Quiet }) if message == "Not sent, copied")));
+        assert!(has(&fx, &copy("send this", plain("Not sent", Tone::Quiet))));
         assert!(has(&fx, &SvcEffect::HookPick(false)));
         assert!(!s.picking());
         // A timer that fires after a pick says nothing.
@@ -1573,6 +1738,140 @@ mod tests {
             SvcEffect::SendLocal { .. } | SvcEffect::SendRemote { .. }
         )));
         assert!(!s.picking());
+    }
+
+    #[test]
+    fn a_remote_send_that_is_refused_keeps_the_words() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|t| t.id = "9:q1".into())]);
+        s.on(SvcEvent::Pick("9:q1".into()), 30.0);
+        let fx = s.on(
+            SvcEvent::Sent(SendDecision::No("that copy of the app has closed".into())),
+            31.0,
+        );
+        assert!(has(
+            &fx,
+            &copy(
+                "send this",
+                plain("Not sent: that copy of the app has closed", Tone::Warn)
+            )
+        ));
+    }
+
+    #[test]
+    fn a_dropped_paste_round_trip_asks_for_the_tabs_and_keeps_the_words_when_none_can_take_them() {
+        let mut s = serving();
+        let fx = hear(&mut s, Some(77), "hi");
+        assert!(copies(&fx).is_empty());
+        let fx = s.on(SvcEvent::Pasted(false), 21.0);
+        assert!(has(&fx, &SvcEffect::AskTabs));
+        assert!(copies(&fx).is_empty());
+        let fx = s.on(SvcEvent::Tabs(vec![]), 22.0);
+        assert!(has(
+            &fx,
+            &copy("hi", plain("No Claude session to send to", Tone::Warn))
+        ));
+    }
+
+    #[test]
+    fn dismissing_the_picker_keeps_the_words_without_a_note() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Dismiss, 30.0);
+        assert!(has(&fx, &silent("send this")));
+        // Nothing open: nothing to keep.
+        assert!(copies(&s.on(SvcEvent::Dismiss, 31.0)).is_empty());
+    }
+
+    #[test]
+    fn a_new_recording_keeps_the_words_an_earlier_one_was_still_waiting_on() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(key(true, None), 40.0);
+        assert!(has(&fx, &silent("send this")));
+        s.on(key(false, None), 41.0);
+        hear(&mut s, None, "one");
+        let fx = s.on(key(true, None), 50.0);
+        assert!(has(&fx, &silent("one")));
+    }
+
+    #[test]
+    fn a_newer_text_never_loses_the_words_of_one_still_waiting() {
+        let mut s = serving();
+        hear(&mut s, None, "first");
+        let fx = s.on(SvcEvent::Routed(RouteResult::Text("second".into())), 22.0);
+        assert!(has(&fx, &silent("first")));
+        // A list that opens over an open list keeps the older one too.
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        s.on(SvcEvent::Routed(RouteResult::Text("second".into())), 22.0);
+        let fx = s.on(SvcEvent::Tabs(vec![tab(|_| {})]), 23.0);
+        assert!(has(&fx, &silent("send this")));
+    }
+
+    #[test]
+    fn switching_off_with_words_waiting_keeps_them() {
+        let mut s = serving();
+        hear(&mut s, None, "hi");
+        let fx = s.on(SvcEvent::Config(off_cfg()), 21.0);
+        assert!(has(&fx, &silent("hi")));
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Config(off_cfg()), 30.0);
+        assert!(has(&fx, &silent("send this")));
+        // Off with nothing waiting copies nothing.
+        let mut s = serving();
+        assert!(copies(&s.on(SvcEvent::Config(off_cfg()), 5.0)).is_empty());
+    }
+
+    #[test]
+    fn a_note_with_the_copy_stays_under_the_cap() {
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        s.on(SvcEvent::Pick("p1".into()), 30.0);
+        let why = "x".repeat(300);
+        let fx = s.on(SvcEvent::Sent(SendDecision::No(why)), 31.0);
+        let msg = fx
+            .iter()
+            .find_map(|e| match e {
+                SvcEffect::Widget(OverlayState::Note { message, .. }) => Some(message.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(msg.chars().count(), MESSAGE_MAX);
+        assert!(msg.ends_with(", copied"));
+    }
+
+    #[test]
+    fn cancelled_heard_nothing_and_a_successful_send_or_paste_copy_nothing() {
+        for m in [
+            "Cancelled",
+            "Heard nothing",
+            "Choose a speech model in Settings",
+        ] {
+            let mut s = serving();
+            let fx = s.on(SvcEvent::Routed(RouteResult::Message(m.into())), 1.0);
+            assert!(copies(&fx).is_empty(), "{m}");
+        }
+        // This copy in front: pasted.
+        let mut s = serving();
+        assert!(copies(&hear(&mut s, Some(1), "hi")).is_empty());
+        // Another copy pasted it.
+        let mut s = serving();
+        hear(&mut s, Some(77), "hi");
+        assert!(copies(&s.on(SvcEvent::Pasted(true), 21.0)).is_empty());
+        // A picked tab took it.
+        let mut s = serving();
+        open_picker(&mut s, vec![tab(|_| {})]);
+        let fx = s.on(SvcEvent::Pick("p1".into()), 30.0);
+        assert!(copies(&fx).is_empty());
+        let fx = s.on(SvcEvent::Sent(SendDecision::Ok(tab(|_| {}))), 31.0);
+        assert!(copies(&fx).is_empty());
+        // A stop while still listening is not a finished transcript.
+        let mut s = serving();
+        s.on(key(true, None), 10.0);
+        assert!(copies(&s.on(key(false, None), 11.0)).is_empty());
+        assert!(copies(&s.on(SvcEvent::Stop, 40.0)).is_empty());
     }
 
     fn off_cfg() -> AnywhereConfig {
