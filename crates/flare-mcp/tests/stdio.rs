@@ -79,7 +79,7 @@ fn outside_flare_every_tool_says_so_and_the_handshake_still_works() {
     );
     assert_eq!(replies.len(), 3, "the notification gets no reply");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(replies[1]["result"]["tools"].as_array().unwrap().len(), 13);
     assert_eq!(replies[2]["result"]["isError"], true);
     let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Flare is not running this session"), "{text}");

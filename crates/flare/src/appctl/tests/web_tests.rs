@@ -1329,3 +1329,512 @@ fn a_download_of_a_page_that_is_closed_is_not_asked_about() {
         "the question went with the page"
     );
 }
+
+// ---- the agent uses the page (stage 4) ----
+
+use flare_surfaces::agent_job::Op as AgentOp;
+use flare_surfaces::agent_web::{Button, WaitFor};
+use serde_json::json;
+
+fn agent_op(tab: &str, op: AgentOp) -> CtlOp {
+    CtlOp::BrowserAgent {
+        tab: tab.into(),
+        op,
+    }
+}
+
+fn cdp_calls(slot: &Slot) -> Vec<(String, String)> {
+    fake(slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Cdp(_, _, m, p) => Some((m, p)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A page with a button and a field, answering the DevTools calls a look makes.
+fn shop(method: &str, params: &str) -> Result<String, String> {
+    let p: Value = serde_json::from_str(params).unwrap_or(Value::Null);
+    let quad = |x: f64, y: f64, w: f64, h: f64| {
+        json!({"quads": [[x, y, x + w, y, x + w, y + h, x, y + h]]}).to_string()
+    };
+    match method {
+        "Page.getLayoutMetrics" => Ok(json!({"cssVisualViewport": {"pageX": 0, "pageY": 0, "clientWidth": 600, "clientHeight": 400}}).to_string()),
+        "Accessibility.getFullAXTree" => Ok(json!({"nodes": [
+            {"nodeId": "1", "role": {"value": "RootWebArea"}, "childIds": ["2", "3"], "backendDOMNodeId": 1},
+            {"nodeId": "2", "role": {"value": "button"}, "name": {"value": "Buy"}, "backendDOMNodeId": 11},
+            {"nodeId": "3", "role": {"value": "textbox"}, "name": {"value": "Quantity"}, "backendDOMNodeId": 12}
+        ]}).to_string()),
+        "Page.captureScreenshot" => Ok(json!({"data": "iVBORw0KGgoAAAANSUhEUgAAAyAAAAH0CAYAAADL1t+KAAAAAXNSR0IArs4c6QAAAA"}).to_string()),
+        "DOM.getContentQuads" => match p["backendNodeId"].as_i64() {
+            Some(11) => Ok(quad(100.0, 100.0, 80.0, 20.0)),
+            Some(12) => Ok(quad(100.0, 150.0, 200.0, 20.0)),
+            _ => Err("no box".into()),
+        },
+        _ => Ok("{}".into()),
+    }
+}
+
+fn with_shop(slot: &Slot) {
+    fake(slot).state.borrow_mut().cdp = Some(Box::new(shop));
+}
+
+fn look(f: &Fx, tab: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
+    ask(
+        f,
+        agent_op(tab, AgentOp::Look { picture: true }),
+        Duration::from_secs(5),
+    )
+}
+
+fn click_ref(f: &Fx, tab: &str, r: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
+    ask(
+        f,
+        agent_op(
+            tab,
+            AgentOp::Click {
+                target: flare_surfaces::agent_job::Target::Ref(r.into()),
+                button: Button::Left,
+                double: false,
+            },
+        ),
+        Duration::from_secs(5),
+    )
+}
+
+#[test]
+fn a_look_goes_through_devtools_and_answers_with_the_picture_and_the_elements() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    let v = rx.try_recv().expect("answered").expect("ok");
+    assert_eq!(v["url"], PAGE);
+    assert_eq!(v["title"], "Flare test page");
+    assert_eq!(v["image"]["mime"], "image/png");
+    assert_eq!(v["image"]["width"], 800);
+    assert_eq!(
+        v["image"]["scale"],
+        json!(1.333),
+        "800 picture px for 600 css px"
+    );
+    let names: Vec<&str> = v["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Buy", "Quantity"]);
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 2);
+    assert!(
+        f.ctl.borrow().web.agent_op(&id).is_none(),
+        "the call is over"
+    );
+    // The one script is the fixed pixel-ratio question, word for word.
+    for (m, p) in cdp_calls(&slot) {
+        if m == "Runtime.evaluate" {
+            let p: Value = serde_json::from_str(&p).unwrap();
+            assert_eq!(p["expression"], "window.devicePixelRatio");
+        }
+    }
+    // Nothing but protocol methods was sent to the page.
+    for (m, _) in cdp_calls(&slot) {
+        assert!(
+            [
+                "DOM.enable",
+                "Page.getLayoutMetrics",
+                "Accessibility.getFullAXTree",
+                "Page.captureScreenshot",
+                "DOM.getContentQuads",
+                "Runtime.evaluate"
+            ]
+            .contains(&m.as_str()),
+            "{m}"
+        );
+    }
+}
+
+#[test]
+fn a_look_of_a_tab_that_is_behind_has_the_list_but_no_picture() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    with_shop(&slot);
+    // In front, the page is pictured.
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(rx.try_recv().unwrap().unwrap()["image"].is_object());
+    // A second tab takes the front: the page is hidden and paints nothing.
+    assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(last_visible(&slot, &id), Some(false));
+    let rx = look(&f, &id);
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert!(v.get("image").is_none());
+    assert!(v["image_error"].as_str().unwrap().contains("not on screen"));
+    assert_eq!(v["elements"].as_array().unwrap().len(), 2);
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .filter(|(m, _)| m == "Page.captureScreenshot")
+            .count()
+            == 1,
+        "no picture was asked of the hidden page"
+    );
+}
+
+#[test]
+fn a_click_by_ref_uses_the_numbers_of_the_last_look() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["clicked"], json!({"x": 140.0, "y": 110.0}));
+    let presses: Vec<String> = cdp_calls(&slot)
+        .into_iter()
+        .filter(|(m, _)| m == "Input.dispatchMouseEvent")
+        .map(|(_, p)| p)
+        .collect();
+    assert_eq!(presses.len(), 3);
+    assert!(presses[1].contains("mousePressed") && presses[1].contains("\"x\":140.0"));
+}
+
+#[test]
+fn a_ref_is_forgotten_when_the_page_loads_something_new() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 2);
+    finish(&fake(&slot), &id, TWO, true);
+    f.pump();
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 0);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::NOT_FOUND);
+    assert!(e.message.contains("look again"));
+    assert!(
+        cdp_calls(&slot)
+            .iter()
+            .all(|(m, _)| m != "Input.dispatchMouseEvent"),
+        "nothing was clicked"
+    );
+}
+
+#[test]
+fn the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    // The page does not answer: the call is still running.
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(f.ctl.borrow().web.agent_op(&id), Some("look"));
+    assert_eq!(
+        f.h.comp.get_panel_web_ribbon().as_str(),
+        "An agent is using this page"
+    );
+    assert!(f.h.comp.get_panel_web_ribbon_shown());
+    // The person clicks or types in the page.
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::INTERRUPTED);
+    assert!(e.message.contains("took over"));
+    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+    assert!(f.ctl.borrow().web.agent_op(&id).is_none());
+    assert_eq!(f.ctl.borrow().web.agent_refs(&id), 0);
+}
+
+#[test]
+fn the_ribbon_holds_after_a_call_that_finished_until_the_person_acts() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    f.h.advance(0);
+    assert_eq!(
+        f.h.comp.get_panel_web_ribbon().as_str(),
+        "An agent is using this page",
+        "still up right after the call"
+    );
+    // The person's own input takes it down at once.
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+}
+
+#[test]
+fn a_second_call_while_one_runs_is_refused_and_the_first_is_not_disturbed() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let first = look(&f, &id);
+    f.pump();
+    let second = look(&f, &id);
+    f.pump();
+    let e = second.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(e.message.contains("still running"));
+    assert!(matches!(first.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(f.ctl.borrow().web.agent_op(&id), Some("look"));
+}
+
+#[test]
+fn a_call_with_no_web_panel_says_how_to_open_one() {
+    let (f, _h, _) = live(Opts::default());
+    let _slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let rx = look(&f, &id);
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(e.message.contains("open_page"));
+    let rx = look(&f, "no-such-tab");
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::NO_TAB);
+}
+
+#[test]
+fn closing_the_panel_answers_the_call_that_was_running() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    f.h.comp.invoke_panel_close();
+    f.h.advance(0);
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(e.message.contains("closed"));
+    assert_eq!(f.h.comp.get_panel_web_ribbon().as_str(), "");
+}
+
+#[test]
+fn a_page_whose_process_ends_answers_the_call_too() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+}
+
+#[test]
+fn a_wait_asks_the_page_with_the_fixed_checker_only() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).state.borrow_mut().cdp = Some(Box::new(|m, _| {
+        assert_eq!(m, "Runtime.evaluate");
+        Ok(json!({"result": {"type": "boolean", "value": true}}).to_string())
+    }));
+    let hostile = "\");alert(1);//";
+    let rx = ask(
+        &f,
+        agent_op(
+            &id,
+            AgentOp::Wait {
+                what: WaitFor::Text(hostile.into()),
+                timeout_ms: 1_000,
+            },
+        ),
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap(), json!({"met": true}));
+    let calls = cdp_calls(&slot);
+    assert_eq!(calls.len(), 1);
+    let p: Value = serde_json::from_str(&calls[0].1).unwrap();
+    let expr = p["expression"].as_str().unwrap();
+    let lit = serde_json::to_string(hostile).unwrap();
+    assert_eq!(
+        expr.replacen(&lit, "@", 1),
+        flare_surfaces::agent_web::WAIT_TEXT_TEMPLATE
+    );
+}
+
+#[test]
+fn an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = f.ctl.borrow().front_id().unwrap();
+    let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.ctl.borrow_mut().refresh();
+    // open_page in the tab behind stores the page; no browser yet.
+    let rx = ask(&f, open_op(&a, PAGE), Duration::from_secs(5));
+    assert_eq!(rx.try_recv().unwrap().unwrap()["loaded"], false);
+    assert!(slot.borrow().is_none());
+    // The agent's look makes the browser, hidden, and says the page is not ready: not "open_page".
+    let rx = look(&f, &a);
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(!e.message.contains("no web page is open"), "{}", e.message);
+    assert!(!e.message.contains("open_page"), "{}", e.message);
+    assert_eq!(f.ctl.borrow().web_controllers(), 1);
+    let o = opened_calls(&slot);
+    let Some(Call::Open { tab, visible, .. }) = o.first() else {
+        panic!("{o:?}")
+    };
+    assert_eq!((tab.as_str(), *visible), (a.as_str(), false));
+    // Once it has loaded, the look works there (the list, no picture).
+    finish(&fake(&slot), &a, PAGE, true);
+    f.pump();
+    with_shop(&slot);
+    let rx = look(&f, &a);
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["elements"].as_array().unwrap().len(), 2);
+    assert!(v.get("image").is_none());
+    // It was never made visible while behind.
+    assert_ne!(last_visible(&slot, &a), Some(true));
+}
+
+/// Answers every DevTools call sent so far that has not been answered, from the stand-in shop page.
+fn answer_all(f: &Fx, slot: &Slot, tab: &str, done: &mut std::collections::HashSet<u64>) {
+    for c in fake(slot).calls() {
+        if let Call::Cdp(_, id, m, p) = c
+            && done.insert(id)
+        {
+            fake(slot).say(WebEvent::Cdp {
+                tab: tab.into(),
+                id,
+                result: shop(&m, &p),
+            });
+        }
+    }
+    f.pump();
+}
+
+#[test]
+fn a_look_that_finishes_after_a_navigation_does_not_put_back_the_old_refs() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    // No answers on their own: the test plays the browser, one step at a time.
+    let rx = look(&f, &id);
+    f.pump();
+    let mut done = std::collections::HashSet::new();
+    // The tree and the layout come back; the boxes and the picture are asked for.
+    answer_all(&f, &slot, &id, &mut done);
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "still waiting for the boxes"
+    );
+    // The page starts a new navigation (the agent's click on a link, say).
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: TWO.into(),
+        nav: 900,
+    });
+    f.pump();
+    // The old document's boxes arrive and the look ends.
+    answer_all(&f, &slot, &id, &mut done);
+    assert!(rx.try_recv().is_ok(), "the look still answers");
+    assert_eq!(
+        f.ctl.borrow().web.agent_refs(&id),
+        0,
+        "the names of the old page are not kept"
+    );
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::NOT_FOUND);
+}
+
+#[test]
+fn quitting_answers_a_call_that_was_running() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(
+        f.ctl.borrow_mut().on_close_requested(),
+        CloseDecision::Close
+    );
+    let e = rx.try_recv().expect("answered").unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+    assert!(e.message.contains("closing"));
+}
+
+#[test]
+fn the_person_taking_over_a_click_lets_go_of_the_button() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    // The browser never answers the first event: the press and the release are still queued.
+    let rx = ask(
+        &f,
+        agent_op(
+            &id,
+            AgentOp::Click {
+                target: flare_surfaces::agent_job::Target::Point(10.0, 20.0),
+                button: Button::Left,
+                double: false,
+            },
+        ),
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    let sent: Vec<String> = cdp_calls(&slot)
+        .into_iter()
+        .filter(|(m, _)| m == "Input.dispatchMouseEvent")
+        .map(|(_, p)| p)
+        .collect();
+    assert!(
+        sent.last().is_some_and(|p| p.contains("mouseReleased")),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn the_person_focusing_the_page_while_a_call_runs_takes_over() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let rx = look(&f, &id);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+}

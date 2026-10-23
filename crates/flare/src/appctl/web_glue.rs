@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use super::{AppCtl, SharedString};
 use crate::ctl_app::NavTo;
-use crate::web_ctl::{Settled, WebFactory, WebOut, key_event_of};
+use crate::web_ctl::{Settled, WebFactory, WebMsg, WebOut, key_event_of};
 
 type Reply = Sender<Result<Value, CtlError>>;
 
@@ -252,6 +252,43 @@ impl AppCtl {
         }
     }
 
+    /// `browser.look` and the calls that use the page (stage 4). The agent's own tab only (the dispatcher
+    /// names it from the token); the answer is sent by the browser's messages, or by the person taking
+    /// over. The ribbon goes up with the call.
+    pub(super) fn ctl_browser_agent(&mut self, op: crate::ctl_app::CtlOp, reply: Reply) {
+        let crate::ctl_app::CtlOp::BrowserAgent { tab, op } = op else {
+            let _ = reply.send(Err(CtlError::new(
+                code::INTERNAL,
+                "not an agent browser call",
+            )));
+            return;
+        };
+        if !self.is_shell_tab(&tab) {
+            let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
+            return;
+        }
+        let Some(url) = self.panels.web_target(&tab) else {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAVAILABLE,
+                "no web page is open in this tab; open_page (browser.open) opens one",
+            )));
+            return;
+        };
+        // A tab that is behind has no browser yet; the agent's call makes one, hidden.
+        self.web.ensure_hidden(&tab, &url);
+        let label = crate::web_ctl::agent_label(self.agent_named(&tab));
+        self.web.start_agent(&tab, op, &label, reply);
+        self.web_moved();
+    }
+
+    /// The person took over the front page (the e2e's stand-in for their click or key).
+    pub fn web_user_input(&mut self) {
+        let Some(app) = self.app() else { return };
+        let outs = self.web.on_msg(&app, WebMsg::UserInput);
+        self.apply_web(outs);
+        self.web_moved();
+    }
+
     /// Shows the page in the tab's panel. The bool: a browser is up for the tab, so the call waits.
     fn browser_open(&mut self, tab: &str, url: &str) -> Result<(String, bool), CtlError> {
         if !self.is_shell_tab(tab) {
@@ -342,6 +379,18 @@ impl AppCtl {
 
     // ---- the e2e's reads ---------------------------------------------------------------------------
 
+    /// Sets the browser zoom of the front tab's page (the e2e's seam).
+    pub fn web_zoom(&mut self, factor: f64) -> bool {
+        let Some(id) = self.front_id() else {
+            return false;
+        };
+        let up = self.web.has_tab(&id);
+        if up {
+            self.web.set_zoom(&id, factor);
+        }
+        up
+    }
+
     /// Starts a script in the front tab's page (the e2e's seam; the answer comes from `web_script_result`).
     pub fn web_script(&mut self, js: &str) -> Option<u64> {
         let id = self.front_id()?;
@@ -383,6 +432,12 @@ impl AppCtl {
             "shown_tab": self.web.shown_tab(),
             "has_still": self.web.has_still(),
             "page_focus": self.web.has_focus(),
+            "agent": front.as_deref().map(|t| json!({
+                "op": self.web.agent_op(t),
+                "refs": self.web.agent_refs(t),
+                "ribbon": self.web.ribbon_text(t),
+                "keys_heard": self.web.agent_keys_heard(),
+            })),
             "url": tab.and_then(|t| self.web.tab_url(t)),
             "controller": probe.map(|p| json!({
                 "bounds": {"x": p.bounds.x, "y": p.bounds.y, "w": p.bounds.w, "h": p.bounds.h},

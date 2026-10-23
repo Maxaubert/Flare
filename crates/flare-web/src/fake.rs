@@ -30,7 +30,13 @@ pub enum Call {
     /// The answer to a download: its id and whether it may be saved.
     Download(u64, bool),
     Script(String, u64, String),
+    Zoom(String, f64),
+    /// A DevTools Protocol call: tab, id, method and params.
+    Cdp(String, u64, String, String),
 }
+
+/// How a test plays the page's DevTools: method and params in, the answer out.
+pub type CdpResponder = Box<dyn FnMut(&str, &str) -> Result<String, String>>;
 
 /// A view as the fake holds it.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +58,8 @@ pub struct FakeState {
     /// When set, a still is never answered (a page that is hung).
     pub still_silent: bool,
     pub filter: Option<KeyFilter>,
+    /// Answers a DevTools call at once with this (else the call stays unanswered, like a hung page).
+    pub cdp: Option<CdpResponder>,
 }
 
 #[derive(Clone)]
@@ -189,6 +197,33 @@ impl WebBackend for FakeWeb {
 
     fn set_key_filter(&mut self, filter: KeyFilter) {
         self.state.borrow_mut().filter = Some(filter);
+    }
+
+    fn cdp(&mut self, tab: &str, id: u64, method: &str, params: &str) {
+        let answer = {
+            let mut s = self.state.borrow_mut();
+            s.calls
+                .push(Call::Cdp(tab.into(), id, method.into(), params.into()));
+            if !s.views.contains_key(tab) {
+                Some(Err("no web view".to_string()))
+            } else {
+                s.cdp.as_mut().map(|f| f(method, params))
+            }
+        };
+        if let Some(result) = answer {
+            (self.sink)(WebEvent::Cdp {
+                tab: tab.into(),
+                id,
+                result,
+            });
+        }
+    }
+
+    fn set_zoom(&mut self, tab: &str, factor: f64) {
+        self.state
+            .borrow_mut()
+            .calls
+            .push(Call::Zoom(tab.into(), factor));
     }
 
     fn run_script(&mut self, tab: &str, id: u64, js: &str) {

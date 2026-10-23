@@ -173,6 +173,13 @@ pub enum Request {
     WebScript {
         js: String,
     },
+    /// Surfaces stage 4: stands in for the person's own click or key in the front web page (the e2e never
+    /// sends input to a real window); an agent call running there ends `interrupted`.
+    WebUserInput,
+    /// Surfaces stage 4: sets the browser's own zoom of the front web page (as Ctrl+wheel in the panel does).
+    WebZoom {
+        factor: f64,
+    },
 }
 
 /// The routed result of one dictation (M8): the heard text, or a message for the user.

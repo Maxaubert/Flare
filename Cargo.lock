@@ -1757,6 +1757,7 @@ dependencies = [
 name = "flare-surfaces"
 version = "0.1.0"
 dependencies = [
+ "flare-ctl",
  "flare-settings",
  "image",
  "log",

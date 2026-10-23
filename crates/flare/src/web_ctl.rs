@@ -16,6 +16,13 @@
 //! wants it. The app's chords (the same table the terminal uses, less Find and the agent guard,
 //! which a page has its own meaning for) are the app's; a second Escape inside 600 ms gives the keys
 //! back to the terminal; everything else is the page's.
+//!
+//! The agent (stage 4): a call to look at the page or use it is a [`Job`] (`flare_surfaces::agent_job`),
+//! a state machine that says which DevTools Protocol calls to make. The browser answers each as a
+//! `WebEvent::Cdp` through the window's queue and the job goes on from there; nothing waits. While a
+//! job runs, and for a moment after, the panel's head wears a ribbon. The person's own key or click in
+//! the page ends the job (`interrupted`): the keys are heard in the key hook, a click by looking at the
+//! real mouse buttons on a timer (no hook is installed).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,6 +31,9 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use flare_ctl::{CtlError, code};
+use flare_surfaces::agent_job::{
+    Fail, Ids, Job, JobError, Op as AgentOp, Out as JobOut, Page, RefMap,
+};
 use flare_surfaces::web::{
     self, Act, CAPTURE_TIMEOUT_MS, EscTwice, Phase, PhysRect, UrlError, WebShow, host_label,
     normalize_url, phys_rect, step, url_matches, web_show,
@@ -43,6 +53,13 @@ pub const RUNTIME_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 /// The timer that ends a capture the page never answers (`timer_registry` name).
 const CAPTURE_TIMER: &str = "web.capture";
+/// The timer that runs while an agent call is on a page or its ribbon is still up.
+const AGENT_TIMER: &str = "web.agent";
+/// How often that timer looks (the person's mouse, a wait, a deadline, the ribbon). It runs only while
+/// a call is on a page or the ribbon is up, and is about one frame, so a quick click is seen.
+const AGENT_TICK_MS: u64 = 16;
+/// How long the ribbon stays after the agent's call ends.
+pub const RIBBON_HOLD_MS: u64 = 1_500;
 
 /// Makes the browser (the first time a web panel needs it).
 pub type WebFactory = Box<dyn FnMut(Sink) -> Box<dyn WebBackend>>;
@@ -56,6 +73,11 @@ pub enum WebMsg {
         token: u64,
         image: Option<SharedPixelBuffer<Rgba8Pixel>>,
     },
+    /// The person pressed a key in the page (or, for the e2e, stands in for a click): an agent call on
+    /// the page in front ends.
+    UserInput,
+    /// The agent timer: waits, deadlines, the person's mouse and the ribbon.
+    AgentTick,
 }
 
 /// A `WebMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never an
@@ -67,6 +89,8 @@ impl std::fmt::Debug for WebMsgBox {
         match &self.0 {
             WebMsg::Event(e) => write!(f, "WebMsg::{}", e.kind()),
             WebMsg::Decoded { .. } => f.write_str("WebMsg::Decoded"),
+            WebMsg::UserInput => f.write_str("WebMsg::UserInput"),
+            WebMsg::AgentTick => f.write_str("WebMsg::AgentTick"),
         }
     }
 }
@@ -119,6 +143,106 @@ struct Pending {
     nav: Option<u64>,
 }
 
+/// An agent call in flight on a tab's page.
+struct AgentCall {
+    job: Job,
+    reply: Sender<Result<Value, CtlError>>,
+    /// Who is using the page, for the ribbon ("Claude").
+    label: String,
+    /// Which document the page was showing when the call began (`TabWeb::doc`).
+    doc: u64,
+}
+
+fn ctl_error(e: JobError) -> CtlError {
+    let c = match e.fail {
+        Fail::BadParams => code::BAD_PARAMS,
+        Fail::NotFound => code::NOT_FOUND,
+        Fail::Unavailable => code::UNAVAILABLE,
+        Fail::Timeout => code::TIMEOUT,
+        Fail::Interrupted => code::INTERRUPTED,
+        Fail::Internal => code::INTERNAL,
+    };
+    CtlError::new(c, e.message)
+}
+
+/// Who is using the page, for the ribbon: the tab's agent by name, else the plain word.
+pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
+    use flare_agent::kinds::DetectedAgent as D;
+    match k {
+        D::Claude => "Claude",
+        D::Codex => "Codex",
+        D::Other => "An agent",
+    }
+    .to_string()
+}
+
+/// The words of the ribbon.
+pub fn ribbon_words(label: &str) -> String {
+    format!("{label} is using this page")
+}
+
+/// Is a point inside a rectangle (client pixels).
+pub fn point_in(r: &PhysRect, x: i32, y: i32) -> bool {
+    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// Is Flare's window minimized (nothing paints).
+fn window_minimized(hwnd: isize) -> bool {
+    // SAFETY: a plain read of the state of Flare's own window.
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd as *mut _) != 0 }
+}
+
+/// Forgets the mouse presses so far: `real_button_down_over` also sees a press that came and went since
+/// the last look, and a call starting must not count one from before it.
+fn flush_button_edges() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+    for k in [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON] {
+        // SAFETY: a plain read of a key state; it also clears the "pressed since" bit.
+        unsafe {
+            GetAsyncKeyState(i32::from(k));
+        }
+    }
+}
+
+/// Is a real mouse button down, or was one pressed since the last look, with the pointer over `r`
+/// (client pixels of `hwnd`)? The agent's own clicks are browser events and move neither the pointer
+/// nor a button, so this is the person. The "pressed since" bit catches a click that began and ended
+/// between two looks.
+fn real_button_down_over(hwnd: isize, r: &PhysRect) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetCursorPos, WindowFromPoint,
+    };
+    // SAFETY: plain reads of the pointer, the button state and the window under the pointer; `p` is a
+    // valid out value and `hwnd` is Flare's own window.
+    unsafe {
+        let down = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+            .iter()
+            .any(|k| (GetAsyncKeyState(i32::from(*k)) as u16) & 0x8001 != 0);
+        if !down {
+            return false;
+        }
+        let mut p = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut p) == 0 {
+            return false;
+        }
+        // The pointer must be over Flare's own window, not another window that covers the page.
+        if GetAncestor(WindowFromPoint(p), GA_ROOT) != hwnd as *mut _ {
+            return false;
+        }
+        if ScreenToClient(hwnd as *mut _, &mut p) == 0 {
+            return false;
+        }
+        point_in(r, p.x, p.y)
+    }
+}
+
 #[derive(Default)]
 struct TabWeb {
     url: String,
@@ -134,6 +258,15 @@ struct TabWeb {
     pending: Option<Pending>,
     /// The last finished navigation, for a call that arrives after it.
     last: Option<Settled>,
+    /// The agent call on this page, if one is running (one at a time).
+    agent: Option<AgentCall>,
+    /// Raised each time the page starts a navigation: a look that began on an earlier document does not
+    /// leave its element names behind.
+    doc: u64,
+    /// The element names of the agent's last look; they last until the next look or page load.
+    refs: RefMap,
+    /// The ribbon's words and the moment it goes, after a call that has ended.
+    hold: Option<(String, u64)>,
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -141,6 +274,14 @@ struct KeyState {
     ctx: Cell<KeyContext>,
     esc: RefCell<EscTwice>,
     clock: Instant,
+    /// An agent call is running on a page: a key the person presses ends it.
+    job_active: Cell<bool>,
+    /// The agent's key press is in flight: the browser may report its events to the key hook, and they
+    /// are neither the person's nor the app's chords.
+    agent_keys: Cell<bool>,
+    /// How many times the key hook was asked about a key while the agent's own press was in flight (it
+    /// says whether the browser reports DevTools key events to the hook; the e2e reads it).
+    agent_heard: Cell<u32>,
 }
 
 pub struct WebCtl {
@@ -157,6 +298,8 @@ pub struct WebCtl {
     has_focus: bool,
     scripts: HashMap<u64, Result<String, String>>,
     script_seq: u64,
+    /// The last id given to a DevTools call (unique across the window).
+    call_ids: u64,
     /// The still of the shown tab while an overlay hides its window.
     still: Option<Image>,
     /// The capture the still answers.
@@ -270,10 +413,14 @@ impl WebCtl {
                 ctx: Cell::new(KeyContext::default()),
                 esc: RefCell::new(EscTwice::default()),
                 clock: Instant::now(),
+                job_active: Cell::new(false),
+                agent_keys: Cell::new(false),
+                agent_heard: Cell::new(0),
             }),
             has_focus: false,
             scripts: HashMap::new(),
             script_seq: 0,
+            call_ids: 0,
             still: None,
             still_token: 0,
             ended_capture: None,
@@ -295,9 +442,19 @@ impl WebCtl {
 
     fn key_filter(&self) -> KeyFilter {
         let keys = Rc::clone(&self.keys);
+        let post = std::sync::Arc::clone(&self.post);
         Rc::new(move |k: &KeyPress| {
             if !k.down {
                 return false;
+            }
+            // The agent's own key press is the page's whole business.
+            if keys.agent_keys.get() {
+                keys.agent_heard.set(keys.agent_heard.get() + 1);
+                return false;
+            }
+            // A key of the person's own, while an agent call runs on the page: they have taken over.
+            if keys.job_active.get() {
+                post(UiMsg::Web(WebMsgBox(WebMsg::UserInput)));
             }
             if k.vk == 0x1B && !k.ctrl && !k.shift && !k.alt {
                 // A held Escape is one press: its autorepeats are neither the second Escape nor a reset.
@@ -380,13 +537,21 @@ impl WebCtl {
     pub fn close_all(&mut self) {
         self.closed = true;
         crate::timer_registry::clear(CAPTURE_TIMER);
+        crate::timer_registry::clear(AGENT_TIMER);
         for (_, t) in self.tabs.drain() {
             if let Some(p) = t.pending {
                 let _ = p
                     .reply
                     .send(Err(CtlError::new(code::UNAVAILABLE, "Flare is closing")));
             }
+            if let Some(a) = t.agent {
+                let _ = a
+                    .reply
+                    .send(Err(CtlError::new(code::UNAVAILABLE, "Flare is closing")));
+            }
         }
+        self.keys.job_active.set(false);
+        self.keys.agent_keys.set(false);
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
@@ -582,6 +747,7 @@ impl WebCtl {
             app.set_panel_web_can_back(false);
             app.set_panel_web_can_forward(false);
             app.set_panel_web_missing_runtime(false);
+            app.set_panel_web_ribbon("".into());
             return;
         };
         let target = panels.web_target(tab).unwrap_or_default();
@@ -611,6 +777,7 @@ impl WebCtl {
         app.set_panel_web_loading(t.is_some_and(|t| t.loading));
         app.set_panel_web_can_back(t.is_some_and(|t| t.can_back));
         app.set_panel_web_can_forward(t.is_some_and(|t| t.can_forward));
+        app.set_panel_web_ribbon(self.ribbon_text(tab).into());
     }
 
     /// Frees the tab's browser.
@@ -630,6 +797,13 @@ impl WebCtl {
                     "the page was closed before it finished loading",
                 )));
             }
+            if let Some(a) = t.agent {
+                let _ = a.reply.send(Err(CtlError::new(
+                    code::UNAVAILABLE,
+                    "the page was closed while the call was running",
+                )));
+            }
+            self.refresh_key_flags();
             if let Some(b) = self.backend.as_mut() {
                 b.close(tab);
             }
@@ -727,6 +901,25 @@ impl WebCtl {
         self.tabs.contains_key(tab)
     }
 
+    /// Makes the browser of a tab that is behind, hidden, because an agent call needs its page (only the
+    /// front tab gets one otherwise). It takes the place of the last page shown, and is put right when its
+    /// tab comes to the front.
+    pub fn ensure_hidden(&mut self, tab: &str, url: &str) {
+        if self.closed || self.tabs.contains_key(tab) {
+            return;
+        }
+        let rect = self.bounds.as_ref().map_or(
+            PhysRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            |(_, r)| *r,
+        );
+        self.open_tab(tab, url, rect, false);
+    }
+
     pub fn failure(&self, tab: &str) -> Option<(String, bool)> {
         self.tabs.get(tab).and_then(|t| t.failed.clone())
     }
@@ -749,7 +942,270 @@ impl WebCtl {
         )
     }
 
+    // ---- the agent (stage 4) ---------------------------------------------------------------------------
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.keys.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// The ribbon's words for the tab's page: while an agent call runs on it and for a moment after.
+    pub fn ribbon_text(&self, tab: &str) -> String {
+        let Some(t) = self.tabs.get(tab) else {
+            return String::new();
+        };
+        if let Some(a) = &t.agent {
+            return ribbon_words(&a.label);
+        }
+        match &t.hold {
+            Some((label, until)) if self.now_ms() < *until => ribbon_words(label),
+            _ => String::new(),
+        }
+    }
+
+    /// True while an agent call runs on any page.
+    pub fn agent_busy(&self) -> bool {
+        self.tabs.values().any(|t| t.agent.is_some())
+    }
+
+    /// The operation of the agent call on the tab's page, if one runs (for the e2e).
+    pub fn agent_op(&self, tab: &str) -> Option<&'static str> {
+        self.tabs.get(tab)?.agent.as_ref().map(|a| a.job.op())
+    }
+
+    /// How many element names the agent's last look left on the tab's page (for the e2e).
+    pub fn agent_refs(&self, tab: &str) -> usize {
+        self.tabs.get(tab).map_or(0, |t| t.refs.len())
+    }
+
+    /// How many keys the hook heard while the agent's own press was in flight (for the e2e).
+    pub fn agent_keys_heard(&self) -> u32 {
+        self.keys.agent_heard.get()
+    }
+
+    /// How many agent calls run and how many ribbons are held: when this is the same before and after a
+    /// message, the window's properties need no new sync (a DevTools answer or a timer turn alone).
+    pub fn agent_shape(&self) -> (usize, usize) {
+        (
+            self.tabs.values().filter(|t| t.agent.is_some()).count(),
+            self.tabs.values().filter(|t| t.hold.is_some()).count(),
+        )
+    }
+
+    fn refresh_key_flags(&self) {
+        self.keys.job_active.set(self.agent_busy());
+        self.keys.agent_keys.set(
+            self.tabs
+                .values()
+                .any(|t| t.agent.as_ref().is_some_and(|a| a.job.op() == "press")),
+        );
+    }
+
+    fn ensure_agent_timer(&self) {
+        if crate::timer_registry::running(AGENT_TIMER) {
+            return;
+        }
+        let post = std::sync::Arc::clone(&self.post);
+        crate::timer_registry::set(AGENT_TIMER, AGENT_TICK_MS, true, move || {
+            post(UiMsg::Web(WebMsgBox(WebMsg::AgentTick)));
+        });
+    }
+
+    /// An agent call on the tab's page (`browser.look`, `click`, ...). The answer goes to `reply` when the
+    /// work is done, the person takes over, the deadline passes or the page goes. `label` names the agent
+    /// for the ribbon.
+    pub fn start_agent(
+        &mut self,
+        tab: &str,
+        op: AgentOp,
+        label: &str,
+        reply: Sender<Result<Value, CtlError>>,
+    ) {
+        let say = |m: &str| {
+            let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, m.to_string())));
+        };
+        let now = self.now_ms();
+        let Some(t) = self.tabs.get_mut(tab) else {
+            // The tab has a web panel (the caller checked) but its page is not made: its tab is behind.
+            say("the page is not ready yet; try again in a moment");
+            return;
+        };
+        if let Some((why, missing)) = &t.failed {
+            say(&if *missing {
+                format!("the WebView2 Runtime is not installed ({RUNTIME_URL})")
+            } else {
+                format!("the web view could not be made: {why}")
+            });
+            return;
+        }
+        if !t.ready {
+            say("the page is not ready yet; try again in a moment");
+            return;
+        }
+        if t.agent.is_some() {
+            say("another browser call is still running on this page; wait for it");
+            return;
+        }
+        // A page that is not on screen (its tab is behind, a Flare menu covers it) paints nothing, so no
+        // picture of it can be taken; its list can.
+        let op = match op {
+            AgentOp::Look { .. } => AgentOp::Look {
+                // Only a page that is painting has a picture: not one collapsed, covered by a menu or
+                // in a minimized window (each would wait out the whole picture budget).
+                picture: self.shown_tab.as_deref() == Some(tab)
+                    && matches!(self.phase, Phase::Live | Phase::Capturing(_))
+                    && !self.hwnd.is_some_and(window_minimized),
+            },
+            other => other,
+        };
+        let (job, out) = Job::start(op, &t.refs, now, &mut Ids(&mut self.call_ids));
+        let Some(job) = job else {
+            // Refused before it began (a bad ref, a bad point): nothing was sent to the page.
+            if let JobOut::Done(r) = out {
+                let _ = reply.send(r.map_err(ctl_error));
+            }
+            return;
+        };
+        t.agent = Some(AgentCall {
+            job,
+            reply,
+            label: label.to_string(),
+            doc: t.doc,
+        });
+        t.hold = None;
+        flush_button_edges();
+        self.refresh_key_flags();
+        self.ensure_agent_timer();
+        self.drive(tab, out);
+    }
+
+    /// Carries out what a job asked.
+    fn drive(&mut self, tab: &str, out: JobOut) {
+        match out {
+            JobOut::Idle => {}
+            JobOut::Calls(calls) => {
+                for c in calls {
+                    let params = c.params.to_string();
+                    if let Some(b) = self.backend.as_mut() {
+                        b.cdp(tab, c.id, &c.method, &params);
+                    }
+                }
+            }
+            JobOut::Done(r) => self.finish_agent(tab, r),
+        }
+    }
+
+    /// The call is over: its answer is sent, a look's element names are kept, the ribbon holds a moment.
+    fn finish_agent(&mut self, tab: &str, result: Result<Value, JobError>) {
+        let now = self.now_ms();
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return;
+        };
+        let Some(mut a) = t.agent.take() else {
+            return;
+        };
+        // The names of a look are kept only when the page is still the document the look read (a
+        // navigation that began meanwhile has cleared them already, and they belong to the old page).
+        if let Some(refs) = a.job.take_refs()
+            && a.doc == t.doc
+        {
+            t.refs = refs;
+        }
+        // A press the call was cut short in is let go of, so the page does not think a button is held.
+        if result.is_err() {
+            for c in a.job.release_calls(&mut Ids(&mut self.call_ids)) {
+                if let Some(b) = self.backend.as_mut() {
+                    b.cdp(tab, c.id, &c.method, &c.params.to_string());
+                }
+            }
+        }
+        let interrupted = matches!(&result, Err(e) if e.fail == Fail::Interrupted);
+        if interrupted {
+            // The page is the person's now: what the agent last saw may no longer be there.
+            t.refs = RefMap::default();
+            t.hold = None;
+        } else {
+            t.hold = Some((a.label.clone(), now + RIBBON_HOLD_MS));
+        }
+        let _ = a.reply.send(result.map_err(ctl_error));
+        self.refresh_key_flags();
+    }
+
+    /// The person pressed a key or a button in the page in front: an agent call there ends, `interrupted`.
+    pub fn user_input(&mut self) {
+        let Some(tab) = self.shown_tab.clone() else {
+            return;
+        };
+        if self.tabs.get(&tab).is_some_and(|t| t.agent.is_some()) {
+            self.finish_agent(&tab, Err(Job::interrupted()));
+        } else if let Some(t) = self.tabs.get_mut(&tab) {
+            t.hold = None;
+        }
+    }
+
+    /// One turn of the agent timer. False when nothing is left for it to watch.
+    fn agent_tick(&mut self) -> bool {
+        let now = self.now_ms();
+        // The person's mouse: a button down over the page in front while the agent is working there.
+        if let (Some(hwnd), Some((tab, rect))) = (self.hwnd, self.bounds.clone())
+            && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some())
+            && self.shown_tab.as_deref() == Some(tab.as_str())
+            && self.phase == Phase::Live
+            && real_button_down_over(hwnd, &rect)
+        {
+            self.user_input();
+        }
+        let busy: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, t)| t.agent.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for tab in busy {
+            let out = self.tabs.get_mut(&tab).and_then(|t| {
+                t.agent
+                    .as_mut()
+                    .map(|a| a.job.on_tick(now, &mut Ids(&mut self.call_ids)))
+            });
+            if let Some(out) = out {
+                self.drive(&tab, out);
+            }
+        }
+        for t in self.tabs.values_mut() {
+            if t.hold.as_ref().is_some_and(|(_, until)| now >= *until) {
+                t.hold = None;
+            }
+        }
+        self.agent_busy() || self.tabs.values().any(|t| t.hold.is_some())
+    }
+
+    /// A DevTools call answered.
+    fn on_cdp(&mut self, tab: &str, id: u64, result: Result<String, String>) {
+        let now = self.now_ms();
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return;
+        };
+        let (url, title) = (t.url.clone(), t.title.clone());
+        let Some(a) = t.agent.as_mut() else {
+            return;
+        };
+        let page = Page {
+            url: &url,
+            title: &title,
+        };
+        let out = a
+            .job
+            .on_reply(id, result, page, now, &mut Ids(&mut self.call_ids));
+        self.drive(tab, out);
+    }
+
     // ---- the e2e's seams -------------------------------------------------------------------------------
+
+    /// Sets the browser's zoom of the tab's page (the e2e's seam).
+    pub fn set_zoom(&mut self, tab: &str, factor: f64) {
+        if let Some(b) = self.backend() {
+            b.set_zoom(tab, factor);
+        }
+    }
 
     /// Starts a script in the tab's page; the answer is read with [`WebCtl::script_result`].
     pub fn start_script(&mut self, tab: &str, js: &str) -> u64 {
@@ -819,6 +1275,16 @@ impl WebCtl {
                 }
                 vec![]
             }
+            WebMsg::UserInput => {
+                self.user_input();
+                vec![]
+            }
+            WebMsg::AgentTick => {
+                if !self.agent_tick() {
+                    crate::timer_registry::clear(AGENT_TIMER);
+                }
+                vec![]
+            }
         }
     }
 
@@ -848,6 +1314,7 @@ impl WebCtl {
                 missing_runtime,
             } => {
                 self.fail_view(&tab);
+                self.end_agent(&tab, "the web view could not be made");
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why.clone(), missing_runtime));
                     if let Some(p) = t.pending.take() {
@@ -868,6 +1335,9 @@ impl WebCtl {
             WebEvent::Loading { tab, url, nav } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.loading = true;
+                    // A new page: the names of the last look point at nothing now.
+                    t.refs = RefMap::default();
+                    t.doc += 1;
                     t.notice.clear();
                     // The call's own navigation is the first for the address it sent the page to (an
                     // earlier one still on its way is not it); a redirect after that rebinds it.
@@ -1041,12 +1511,19 @@ impl WebCtl {
                 }
             }
             WebEvent::Key { tab: _, key } => out.push(WebOut::Key(key)),
-            WebEvent::Focus { tab: _, has } => {
+            WebEvent::Focus { tab, has } => {
                 self.has_focus = has;
                 out.push(WebOut::PageFocus(has));
+                // The person's click on a page that had no focus gives it the keyboard: that is a
+                // takeover too, whatever the mouse poll saw (the agent's own events never move the
+                // window's focus).
+                if has && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some()) {
+                    self.finish_agent(&tab, Err(Job::interrupted()));
+                }
             }
             WebEvent::Gone { tab, why } => {
                 self.fail_view(&tab);
+                self.end_agent(&tab, "the page's process ended");
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.failed = Some((why, false));
                     t.loading = false;
@@ -1056,8 +1533,21 @@ impl WebCtl {
             WebEvent::Script { id, result } => {
                 self.scripts.insert(id, result);
             }
+            WebEvent::Cdp { tab, id, result } => self.on_cdp(&tab, id, result),
         }
         out
+    }
+
+    /// The tab's page is gone under an agent call: it is answered `unavailable`.
+    fn end_agent(&mut self, tab: &str, why: &str) {
+        if let Some(t) = self.tabs.get_mut(tab)
+            && let Some(a) = t.agent.take()
+        {
+            let _ = a
+                .reply
+                .send(Err(CtlError::new(code::UNAVAILABLE, why.to_string())));
+        }
+        self.refresh_key_flags();
     }
 
     /// Decodes a still on a worker thread; the answer is a `WebMsg::Decoded`.
@@ -1289,6 +1779,90 @@ mod tests {
         assert_eq!(focus_loss(true, false, false), FocusLoss::Now);
     }
 
+    fn post_log() -> (
+        crate::appctl::Post,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let keep = log.clone();
+        let post: crate::appctl::Post = std::sync::Arc::new(move |m| {
+            keep.lock().unwrap().push(format!("{m:?}"));
+        });
+        (post, log)
+    }
+
+    #[test]
+    fn a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works() {
+        let (post, log) = post_log();
+        let c = WebCtl::new(post);
+        let filter = c.key_filter();
+        let a = press(0x41, false, false, false);
+        assert!(!filter(&a));
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "no agent call: nothing to end"
+        );
+        c.keys.job_active.set(true);
+        assert!(!filter(&a), "the key is still the page's");
+        assert_eq!(log.lock().unwrap().as_slice(), ["Web(WebMsg::UserInput)"]);
+        // A key up is not a press.
+        let up = KeyPress { down: false, ..a };
+        assert!(!filter(&up));
+        assert_eq!(log.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_agents_own_key_press_is_neither_the_persons_nor_a_chord() {
+        let (post, log) = post_log();
+        let c = WebCtl::new(post);
+        let filter = c.key_filter();
+        c.keys.job_active.set(true);
+        c.keys.agent_keys.set(true);
+        // Ctrl+Shift+P would be the app's chord; the agent's press of it is the page's.
+        assert!(!filter(&press(0x50, true, true, false)));
+        assert!(!filter(&press(0x1B, false, false, false)));
+        assert!(!filter(&press(0x1B, false, false, false)));
+        assert!(log.lock().unwrap().is_empty());
+        c.keys.agent_keys.set(false);
+        assert!(
+            filter(&press(0x50, true, true, false)),
+            "and the chord is the app's again"
+        );
+    }
+
+    #[test]
+    fn a_point_is_inside_a_rectangle_by_its_near_edges() {
+        let r = PhysRect {
+            x: 10,
+            y: 20,
+            w: 100,
+            h: 50,
+        };
+        assert!(point_in(&r, 10, 20));
+        assert!(point_in(&r, 109, 69));
+        assert!(!point_in(&r, 110, 69));
+        assert!(!point_in(&r, 109, 70));
+        assert!(!point_in(&r, 9, 20));
+        assert!(!point_in(&PhysRect::default(), 0, 0));
+    }
+
+    #[test]
+    fn the_ribbon_names_who_is_using_the_page() {
+        use flare_agent::kinds::DetectedAgent as D;
+        assert_eq!(
+            ribbon_words(&agent_label(D::Claude)),
+            "Claude is using this page"
+        );
+        assert_eq!(
+            ribbon_words(&agent_label(D::Codex)),
+            "Codex is using this page"
+        );
+        assert_eq!(
+            ribbon_words(&agent_label(D::Other)),
+            "An agent is using this page"
+        );
+    }
+
     #[test]
     fn a_message_prints_its_kind_and_never_its_data() {
         let m = WebMsgBox(WebMsg::Event(WebEvent::Loaded {
@@ -1301,6 +1875,14 @@ mod tests {
         let text = format!("{m:?}");
         assert_eq!(text, "WebMsg::Loaded");
         assert!(!text.contains("secret"));
+        assert_eq!(
+            format!("{:?}", WebMsgBox(WebMsg::UserInput)),
+            "WebMsg::UserInput"
+        );
+        assert_eq!(
+            format!("{:?}", WebMsgBox(WebMsg::AgentTick)),
+            "WebMsg::AgentTick"
+        );
         assert_eq!(
             format!(
                 "{:?}",

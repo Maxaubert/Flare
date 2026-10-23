@@ -30,8 +30,8 @@ use super::input_b::{front_tab, probe, prompt};
 use crate::ctx::{App, Ctx, Launch};
 
 /// A page may take a while the first time the browser starts.
-const LOAD: Duration = Duration::from_secs(45);
-const HOST: &str = "https://flare-test.local";
+pub(super) const LOAD: Duration = Duration::from_secs(45);
+pub(super) const HOST: &str = "https://flare-test.local";
 
 const INDEX: &str = r##"<!doctype html><html><head><meta charset="utf-8"><title>Flare test page</title></head>
 <body style="margin:0;background:#2a6;color:#fff;font:20px sans-serif">
@@ -67,7 +67,7 @@ fn web_root(ctx: &mut Ctx) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn launch_with(
+pub(super) fn launch_with(
     ctx: &mut Ctx,
     root: &Path,
     dpi: u32,
@@ -89,7 +89,7 @@ fn launch_with(
 }
 
 /// The pipe and the front tab's secret.
-fn channel_of(app: &mut App) -> Result<(String, String, String), String> {
+pub(super) fn channel_of(app: &mut App) -> Result<(String, String, String), String> {
     let v = probe(app, "ctl.info", Value::Null);
     let pipe = v["pipe"]
         .as_str()
@@ -107,7 +107,7 @@ fn channel_of(app: &mut App) -> Result<(String, String, String), String> {
     ))
 }
 
-fn hello(pipe: &str, tab_token: &str) -> Result<Client<PipeEnd>, ClientError> {
+pub(super) fn hello(pipe: &str, tab_token: &str) -> Result<Client<PipeEnd>, ClientError> {
     let mut c = connect(pipe, Duration::from_secs(10))?;
     c.hello(
         &HelloParams {
@@ -121,7 +121,7 @@ fn hello(pipe: &str, tab_token: &str) -> Result<Client<PipeEnd>, ClientError> {
     Ok(c)
 }
 
-fn code_of(r: &Result<Value, ClientError>) -> String {
+pub(super) fn code_of(r: &Result<Value, ClientError>) -> String {
     match r {
         Err(ClientError::Remote(e)) => e.code.clone(),
         Err(e) => format!("other: {e}"),
@@ -129,11 +129,11 @@ fn code_of(r: &Result<Value, ClientError>) -> String {
     }
 }
 
-fn state(app: &mut App) -> Value {
+pub(super) fn state(app: &mut App) -> Value {
     probe(app, "web.state", Value::Null)
 }
 
-fn int(v: &Value) -> i64 {
+pub(super) fn int(v: &Value) -> i64 {
     v.as_i64().unwrap_or(i64::MIN)
 }
 
@@ -144,7 +144,7 @@ fn same_rect(a: &Value, b: &Value, slack: i64) -> bool {
 }
 
 /// Runs a script in the front tab's page and gives its JSON answer.
-fn script(ctx: &mut Ctx, app: &mut App, js: &str) -> Option<String> {
+pub(super) fn script(ctx: &mut Ctx, app: &mut App, js: &str) -> Option<String> {
     app.session
         .call(&Request::WebScript { js: js.to_string() })
         .ok()?;

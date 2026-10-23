@@ -2991,7 +2991,9 @@ impl AppCtl {
                 self.after_ctl_show(&tab)
             }
             // Answered by the browser's message, never here (see `ctl_browser`).
-            CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. } => Err(CtlError::new(
+            CtlOp::BrowserOpen { .. }
+            | CtlOp::BrowserNavigate { .. }
+            | CtlOp::BrowserAgent { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
             )),
@@ -3932,9 +3934,19 @@ impl AppCtl {
             }
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
+                    // A DevTools answer or a timer turn changes the window's properties only when a
+                    // call starts or ends or a ribbon goes (a look of a big page is hundreds of answers).
+                    let quiet = matches!(
+                        &m,
+                        crate::web_ctl::WebMsg::AgentTick
+                            | crate::web_ctl::WebMsg::Event(flare_web::WebEvent::Cdp { .. })
+                    );
+                    let before = self.web.agent_shape();
                     let outs = self.web.on_msg(&app, m);
                     self.apply_web(outs);
-                    self.web_moved();
+                    if !quiet || self.web.agent_shape() != before {
+                        self.web_moved();
+                    }
                 }
             }
             UiMsg::Ctl(CtlRequestBox(req)) => {
@@ -3950,6 +3962,10 @@ impl AppCtl {
                         // These wait for the page to load: the browser's message answers them.
                         op @ (CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. }) => {
                             self.ctl_browser(op, req.reply, req.deadline);
+                        }
+                        // The agent uses the page: the browser's messages answer these too.
+                        op @ CtlOp::BrowserAgent { .. } => {
+                            self.ctl_browser_agent(op, req.reply);
                         }
                         op => {
                             let answer = self.ctl_op(op);

@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, Permission, code};
 use flare_surfaces::PanelKind;
+use flare_surfaces::agent_job::{Op as AgentOp, Target};
+use flare_surfaces::agent_web::{self as agent_web, Button, WaitFor};
 use flare_surfaces::preview;
 use serde_json::{Value, json};
 
@@ -76,6 +78,13 @@ pub enum CtlOp {
         tab: String,
         to: NavTo,
     },
+    /// `browser.look`, `click`, `type`, `press`, `scroll`, `wait` and `eval` (stage 4): the agent uses
+    /// the tab's web panel. Answered by the browser's message when the work is done, or when the
+    /// person takes over the page.
+    BrowserAgent {
+        tab: String,
+        op: AgentOp,
+    },
 }
 
 /// Where `browser.navigate` sends the page.
@@ -111,6 +120,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::ShowText { .. } => "CtlOp::ShowText",
             CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
+            CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
         })
     }
 }
@@ -135,7 +145,12 @@ pub struct AppDispatcher {
     home: String,
     /// Set first thing at quit: every waiting call answers `unavailable` within one slice.
     stopping: Arc<AtomicBool>,
+    /// The user's "Let agents run scripts in pages" switch, read at every request (off by default).
+    eval: EvalSwitch,
 }
+
+/// Is `browser.eval` switched on for the agent? Asked from any thread, at every request.
+pub type EvalSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
 
 impl AppDispatcher {
     pub fn new(
@@ -151,7 +166,14 @@ impl AppDispatcher {
             resolve,
             home,
             stopping,
+            eval: Arc::new(|| false),
         }
+    }
+
+    /// The user's switch for `browser.eval` (S4); without one it is off.
+    pub fn with_eval(mut self, eval: EvalSwitch) -> Self {
+        self.eval = eval;
+        self
     }
 
     /// Posts `op` to the UI thread and waits for its answer, at most [`UI_WAIT`].
@@ -314,6 +336,181 @@ fn title_param(params: &Value) -> Result<Option<String>, CtlError> {
         .filter(|t| !t.is_empty()))
 }
 
+fn num_param(params: &Value, key: &str) -> Result<Option<f64>, CtlError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(v) if v.is_finite() => Ok(Some(v)),
+            _ => Err(CtlError::new(
+                code::BAD_PARAMS,
+                format!("{key} must be a number"),
+            )),
+        },
+        Some(_) => Err(CtlError::new(
+            code::BAD_PARAMS,
+            format!("{key} must be a number"),
+        )),
+    }
+}
+
+fn bool_param(params: &Value, key: &str) -> Result<Option<bool>, CtlError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(CtlError::new(
+            code::BAD_PARAMS,
+            format!("{key} must be true or false"),
+        )),
+    }
+}
+
+/// The `ref` param: the short name a look gave an element (`e12`).
+fn ref_param(params: &Value) -> Result<Option<String>, CtlError> {
+    match str_param(params, "ref")? {
+        None => Ok(None),
+        Some(r)
+            if !r.is_empty() && r.len() <= 12 && r.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
+            Ok(Some(r.to_string()))
+        }
+        Some(_) => Err(CtlError::new(
+            code::BAD_PARAMS,
+            "ref is an element name from the last look, such as e12",
+        )),
+    }
+}
+
+/// The stage 4 methods as agent jobs, and how long the call may wait for the browser's answer.
+pub fn agent_op(method: Method, params: &Value) -> Result<(AgentOp, Duration), CtlError> {
+    let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+    let op = match method {
+        Method::BrowserLook => AgentOp::Look { picture: true },
+        Method::BrowserClick => {
+            let target = match (
+                ref_param(params)?,
+                num_param(params, "x")?,
+                num_param(params, "y")?,
+            ) {
+                (Some(r), None, None) => Target::Ref(r),
+                (None, Some(x), Some(y)) => Target::Point(x, y),
+                _ => {
+                    return Err(bad(
+                        "give either ref, or both x and y, not both and not neither",
+                    ));
+                }
+            };
+            let button = match str_param(params, "button")? {
+                None => Button::Left,
+                Some(b) => {
+                    Button::parse(b).ok_or_else(|| bad("button is left, right or middle"))?
+                }
+            };
+            AgentOp::Click {
+                target,
+                button,
+                double: bool_param(params, "double")?.unwrap_or(false),
+            }
+        }
+        Method::BrowserType => {
+            let text = str_param(params, "text")?.ok_or_else(|| bad("text is required"))?;
+            if text.chars().count() > agent_web::TYPE_MAX {
+                return Err(bad(&format!(
+                    "text is over {} characters",
+                    agent_web::TYPE_MAX
+                )));
+            }
+            AgentOp::Type {
+                text: text.to_string(),
+                target: ref_param(params)?,
+            }
+        }
+        Method::BrowserPress => {
+            let key = str_param(params, "key")?.ok_or_else(|| bad("key is required"))?;
+            let mut spec = String::new();
+            match params.get("modifiers") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(list)) => {
+                    for m in list.iter().take(8) {
+                        let m = m
+                            .as_str()
+                            .ok_or_else(|| bad("modifiers is a list of names"))?;
+                        spec.push_str(m);
+                        spec.push('+');
+                    }
+                }
+                Some(_) => return Err(bad("modifiers is a list of names")),
+            }
+            spec.push_str(key);
+            let key = agent_web::parse_key(&spec).map_err(|e| bad(&e))?;
+            AgentOp::Press { key }
+        }
+        Method::BrowserScroll => {
+            let dx = num_param(params, "dx")?.unwrap_or(0.0);
+            let dy = num_param(params, "dy")?.unwrap_or(0.0);
+            if dx == 0.0 && dy == 0.0 {
+                return Err(bad("give dx or dy (page pixels; dy positive scrolls down)"));
+            }
+            if dx.abs() > 100_000.0 || dy.abs() > 100_000.0 {
+                return Err(bad("dx and dy are at most 100000"));
+            }
+            AgentOp::Scroll {
+                dx,
+                dy,
+                target: ref_param(params)?,
+            }
+        }
+        Method::BrowserWait => {
+            let text = str_param(params, "text")?;
+            let selector = str_param(params, "selector")?;
+            let ms = num_param(params, "ms")?;
+            let what = match (text, selector, ms) {
+                (Some(t), None, None) => {
+                    if t.is_empty() || t.chars().count() > agent_web::WAIT_TEXT_MAX {
+                        return Err(bad("text is 1 to 500 characters"));
+                    }
+                    WaitFor::Text(t.to_string())
+                }
+                (None, Some(s), None) => {
+                    if s.is_empty() || s.chars().count() > agent_web::WAIT_TEXT_MAX {
+                        return Err(bad("selector is 1 to 500 characters"));
+                    }
+                    WaitFor::Selector(s.to_string())
+                }
+                (None, None, Some(ms)) => {
+                    if ms < 0.0 {
+                        return Err(bad("ms is zero or more"));
+                    }
+                    WaitFor::Ms((ms as u64).min(agent_web::WAIT_MAX_MS))
+                }
+                _ => return Err(bad("give exactly one of text, selector or ms")),
+            };
+            let given = match num_param(params, "timeout_ms")? {
+                Some(t) if t < 0.0 => return Err(bad("timeout_ms is zero or more")),
+                Some(t) => Some(t as u64),
+                None => None,
+            };
+            let timeout_ms = match &what {
+                WaitFor::Ms(ms) => *ms,
+                _ => agent_web::wait_timeout(given),
+            };
+            let wait = Duration::from_millis(timeout_ms) + Duration::from_secs(10);
+            return Ok((AgentOp::Wait { what, timeout_ms }, wait));
+        }
+        Method::BrowserEval => {
+            let e =
+                str_param(params, "expression")?.ok_or_else(|| bad("expression is required"))?;
+            if e.trim().is_empty() || e.chars().count() > agent_web::EVAL_MAX {
+                return Err(bad("expression is 1 to 20000 characters"));
+            }
+            AgentOp::Eval {
+                expression: e.to_string(),
+            }
+        }
+        _ => return Err(CtlError::new(code::INTERNAL, "not an agent browser method")),
+    };
+    Ok((op, BROWSER_WAIT))
+}
+
 impl Dispatcher for AppDispatcher {
     /// No mod has a token yet (stage 8): every mod token is unknown.
     fn resolve_token(&self, _token: &str) -> Option<Grant> {
@@ -322,6 +519,14 @@ impl Dispatcher for AppDispatcher {
 
     fn resolve_tab_token(&self, tab_token: &str) -> Option<String> {
         (self.tab_of)(tab_token)
+    }
+
+    /// The agent may run scripts in the page only while the user's switch is on (S4); asked at every
+    /// request, so the switch is live.
+    fn agent_grant(&self) -> Grant {
+        Grant::Agent {
+            eval: (self.eval)(),
+        }
     }
 
     /// What this build does. `panel.open` answers (`unavailable`, no web panel yet) but is not listed:
@@ -335,6 +540,13 @@ impl Dispatcher for AppDispatcher {
             Method::PanelOpen,
             Method::BrowserOpen,
             Method::BrowserNavigate,
+            Method::BrowserLook,
+            Method::BrowserClick,
+            Method::BrowserType,
+            Method::BrowserPress,
+            Method::BrowserScroll,
+            Method::BrowserWait,
+            Method::BrowserEval,
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
@@ -421,6 +633,17 @@ impl Dispatcher for AppDispatcher {
                     Instant::now() + BROWSER_WAIT,
                 )
             }
+            Method::BrowserLook
+            | Method::BrowserClick
+            | Method::BrowserType
+            | Method::BrowserPress
+            | Method::BrowserScroll
+            | Method::BrowserWait
+            | Method::BrowserEval => {
+                let tab = Self::tab_of_call(ctx)?;
+                let (op, wait) = agent_op(method, &params)?;
+                self.ask_by(CtlOp::BrowserAgent { tab, op }, Instant::now() + wait)
+            }
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
             Method::ViewFile => self.view_file(ctx, PanelKind::Text, &params),
             Method::ViewText => {
@@ -477,15 +700,18 @@ pub struct CtlServer {
 impl CtlServer {
     /// Starts the server on `pipe` (its own threads; the UI thread only makes the pipe). A failure
     /// (the name is taken, no SID) is the caller's to log: Flare runs without the channel.
-    pub fn start(pipe: &str, post: Post, tab_of: TabOf, home: String) -> std::io::Result<Self> {
+    pub fn start(
+        pipe: &str,
+        post: Post,
+        tab_of: TabOf,
+        home: String,
+        eval: EvalSwitch,
+    ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
-        let dispatcher = Arc::new(AppDispatcher::new(
-            post,
-            tab_of,
-            real_resolve(),
-            home,
-            Arc::clone(&stopping),
-        ));
+        let dispatcher = Arc::new(
+            AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
+                .with_eval(eval),
+        );
         // sync-ok: startup, creates the pipe and its accept thread
         let server =
             flare_ctl::Server::start(pipe, flare_ctl::ServerConfig::default(), dispatcher)?;
@@ -768,14 +994,256 @@ mod tests {
         ] {
             assert!(caps.contains(&m), "{}", m.name());
         }
-        // The agent's hands on the page are stage 4.
+        // The agent's hands on the page (stage 4) are built; the conversation reader is not.
         for m in [
             Method::BrowserLook,
             Method::BrowserClick,
+            Method::BrowserType,
+            Method::BrowserPress,
+            Method::BrowserScroll,
+            Method::BrowserWait,
             Method::BrowserEval,
-            Method::ConvoState,
         ] {
-            assert!(!caps.contains(&m), "{}", m.name());
+            assert!(caps.contains(&m), "{}", m.name());
+        }
+        assert!(!caps.contains(&Method::ConvoState));
+    }
+
+    #[test]
+    fn the_agent_grant_follows_the_users_switch_for_scripts() {
+        let on = Arc::new(AtomicBool::new(false));
+        let flag = on.clone();
+        let r = rig(ok_all, false, FILES);
+        let d = r.d.with_eval(Arc::new(move || flag.load(Ordering::SeqCst)));
+        assert_eq!(d.agent_grant(), Grant::Agent { eval: false });
+        assert!(!d.agent_grant().may_call(Method::BrowserEval));
+        on.store(true, Ordering::SeqCst);
+        assert_eq!(d.agent_grant(), Grant::Agent { eval: true });
+        assert!(d.agent_grant().may_call(Method::BrowserEval));
+        // Whatever the switch says, the agent never types into a shell or changes a setting (S3).
+        for m in [Method::ShellInput, Method::SettingsSet, Method::ModsEnable] {
+            assert!(!d.agent_grant().may_call(m));
+        }
+        // And the rest of the browser is the agent's with the switch off too.
+        on.store(false, Ordering::SeqCst);
+        for m in [
+            Method::BrowserLook,
+            Method::BrowserClick,
+            Method::BrowserType,
+            Method::BrowserPress,
+            Method::BrowserScroll,
+            Method::BrowserWait,
+        ] {
+            assert!(d.agent_grant().may_call(m), "{}", m.name());
+        }
+    }
+
+    #[test]
+    fn an_agent_call_is_posted_for_the_callers_own_tab_only() {
+        let r = rig(ok_all, false, FILES);
+        let c = agent_in_tab();
+        for (m, p) in [
+            (Method::BrowserLook, json!({})),
+            (Method::BrowserClick, json!({"ref": "e1"})),
+            (Method::BrowserType, json!({"text": "hi", "ref": "e2"})),
+            (Method::BrowserPress, json!({"key": "Enter"})),
+            (Method::BrowserScroll, json!({"dy": 100})),
+            (Method::BrowserWait, json!({"text": "Done"})),
+            (Method::BrowserEval, json!({"expression": "1"})),
+        ] {
+            // A `tab` in the params is never read: the tab is the connection's.
+            let mut p = p;
+            p["tab"] = json!("tab-9");
+            assert!(r.d.call(&c, m, p).is_ok(), "{}", m.name());
+        }
+        let seen = r.ops.lock().unwrap().clone();
+        assert_eq!(seen.len(), 7);
+        assert!(seen.iter().all(|s| s == "CtlOp::BrowserAgent"));
+        // No tab, no call, and the UI is not asked.
+        let none = ctx(None, Grant::agent());
+        for m in [
+            Method::BrowserLook,
+            Method::BrowserClick,
+            Method::BrowserWait,
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&none, m, json!({"ref": "e1", "text": "x"}))),
+                code::NO_TAB
+            );
+        }
+        assert_eq!(r.ops.lock().unwrap().len(), 7);
+    }
+
+    fn parsed(m: Method, p: Value) -> Result<(AgentOp, Duration), CtlError> {
+        agent_op(m, &p)
+    }
+
+    #[test]
+    fn click_takes_a_ref_or_a_point_and_nothing_else() {
+        let ok = parsed(Method::BrowserClick, json!({"ref": "e12"}))
+            .unwrap()
+            .0;
+        assert_eq!(
+            ok,
+            AgentOp::Click {
+                target: Target::Ref("e12".into()),
+                button: Button::Left,
+                double: false
+            }
+        );
+        let ok = parsed(
+            Method::BrowserClick,
+            json!({"x": 10, "y": 20.5, "button": "right", "double": true}),
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            ok,
+            AgentOp::Click {
+                target: Target::Point(10.0, 20.5),
+                button: Button::Right,
+                double: true
+            }
+        );
+        for bad in [
+            json!({}),
+            json!({"x": 1}),
+            json!({"ref": "e1", "x": 1, "y": 2}),
+            json!({"ref": "e 1"}),
+            json!({"ref": ""}),
+            json!({"ref": "e1", "button": "back"}),
+            json!({"ref": "e1", "double": "yes"}),
+            json!({"x": "1", "y": 2}),
+            json!({"ref": 7}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserClick, bad.clone()).unwrap_err().code,
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn type_press_and_scroll_check_their_params() {
+        assert!(parsed(Method::BrowserType, json!({"text": "hello"})).is_ok());
+        assert!(parsed(Method::BrowserType, json!({"text": ""})).is_ok());
+        for bad in [
+            json!({}),
+            json!({"text": 5}),
+            json!({"text": "x", "ref": "!"}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserType, bad).unwrap_err().code,
+                code::BAD_PARAMS
+            );
+        }
+        let long = "x".repeat(agent_web::TYPE_MAX + 1);
+        assert!(parsed(Method::BrowserType, json!({ "text": long })).is_err());
+
+        let k = parsed(
+            Method::BrowserPress,
+            json!({"key": "a", "modifiers": ["Control", "Shift"]}),
+        )
+        .unwrap()
+        .0;
+        let AgentOp::Press { key } = k else {
+            panic!("{k:?}")
+        };
+        assert_eq!((key.key.as_str(), key.modifiers), ("A", 10));
+        assert!(parsed(Method::BrowserPress, json!({"key": "Enter"})).is_ok());
+        for bad in [
+            json!({}),
+            json!({"key": "Banana"}),
+            json!({"key": "a", "modifiers": "Control"}),
+            json!({"key": "a", "modifiers": ["Hyper"]}),
+            json!({"key": "a", "modifiers": [3]}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserPress, bad).unwrap_err().code,
+                code::BAD_PARAMS
+            );
+        }
+
+        assert!(parsed(Method::BrowserScroll, json!({"dy": 300})).is_ok());
+        assert!(parsed(Method::BrowserScroll, json!({"dx": -5, "ref": "e3"})).is_ok());
+        for bad in [
+            json!({}),
+            json!({"dx": 0, "dy": 0}),
+            json!({"dy": 1e9}),
+            json!({"dy": "5"}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserScroll, bad).unwrap_err().code,
+                code::BAD_PARAMS
+            );
+        }
+    }
+
+    #[test]
+    fn a_wait_is_one_thing_for_at_most_thirty_seconds() {
+        let (op, wait) = parsed(Method::BrowserWait, json!({"text": "Done"})).unwrap();
+        assert_eq!(
+            op,
+            AgentOp::Wait {
+                what: WaitFor::Text("Done".into()),
+                timeout_ms: agent_web::WAIT_DEFAULT_MS
+            }
+        );
+        assert!(wait > Duration::from_millis(agent_web::WAIT_DEFAULT_MS));
+        assert!(wait < Duration::from_secs(60), "inside the channel's 60 s");
+        let (op, _) = parsed(
+            Method::BrowserWait,
+            json!({"selector": "#go", "timeout_ms": 999_999}),
+        )
+        .unwrap();
+        assert_eq!(
+            op,
+            AgentOp::Wait {
+                what: WaitFor::Selector("#go".into()),
+                timeout_ms: agent_web::WAIT_MAX_MS
+            }
+        );
+        let (op, wait) = parsed(Method::BrowserWait, json!({"ms": 120_000})).unwrap();
+        assert_eq!(
+            op,
+            AgentOp::Wait {
+                what: WaitFor::Ms(agent_web::WAIT_MAX_MS),
+                timeout_ms: agent_web::WAIT_MAX_MS
+            }
+        );
+        assert!(wait < Duration::from_secs(60));
+        for bad in [
+            json!({}),
+            json!({"text": "a", "ms": 5}),
+            json!({"text": "a", "selector": "b"}),
+            json!({"text": ""}),
+            json!({"selector": ""}),
+            json!({"ms": -1}),
+            json!({"text": "a", "timeout_ms": -5}),
+            json!({"text": "x".repeat(501)}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserWait, bad.clone()).unwrap_err().code,
+                code::BAD_PARAMS,
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn eval_needs_an_expression() {
+        assert!(parsed(Method::BrowserEval, json!({"expression": "document.title"})).is_ok());
+        for bad in [
+            json!({}),
+            json!({"expression": "  "}),
+            json!({"expression": 5}),
+            json!({"expression": "x".repeat(agent_web::EVAL_MAX + 1)}),
+        ] {
+            assert_eq!(
+                parsed(Method::BrowserEval, bad).unwrap_err().code,
+                code::BAD_PARAMS
+            );
         }
     }
 
@@ -792,6 +1260,9 @@ mod tests {
             (Method::BrowserOpen, json!({"url": "https://a.example/"})),
             (Method::BrowserNavigate, json!({"action": "reload"})),
             (Method::PanelOpen, json!({"kind": "web"})),
+            (Method::BrowserLook, json!({})),
+            (Method::BrowserClick, json!({"ref": "e1"})),
+            (Method::BrowserEval, json!({"expression": "1"})),
         ] {
             assert_eq!(code_of(r.d.call(&c, m, p)), code::NO_TAB, "{}", m.name());
         }
@@ -1023,16 +1494,7 @@ mod tests {
     #[test]
     fn methods_this_build_does_not_have_are_unavailable() {
         let r = rig(ok_all, false, FILES);
-        for m in [
-            Method::BrowserLook,
-            Method::BrowserClick,
-            Method::BrowserType,
-            Method::BrowserPress,
-            Method::BrowserScroll,
-            Method::BrowserWait,
-            Method::ConvoState,
-            Method::ToolsRespond,
-        ] {
+        for m in [Method::ConvoState, Method::ToolsRespond] {
             assert_eq!(
                 code_of(r.d.call(&agent_in_tab(), m, json!({}))),
                 code::UNAVAILABLE,

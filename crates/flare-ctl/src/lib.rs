@@ -8,6 +8,7 @@
 //! - `session`: one connection's server side, over any wire; the [`session::Dispatcher`] the app
 //!   implements.
 //! - `client`: the client library, over any wire.
+//! - `text`: words from outside made safe for a model (one copy for both sides).
 //! - `pipe` (Windows): the named pipe, its owner-only descriptor, the accept loop, `connect`.
 //!
 //! The contract is `docs/surfaces/protocol.md`; this crate must stay app-neutral so the same rules
@@ -20,6 +21,7 @@ pub mod method;
 pub mod pipe;
 pub mod proto;
 pub mod session;
+pub mod text;
 mod winid;
 
 pub use client::{Client, ClientError, HelloInfo, HelloParams};

@@ -3,6 +3,7 @@
 pub mod agent_hooks;
 pub mod agent_launch;
 pub mod agent_misc;
+pub mod agent_web;
 pub mod anywhere;
 pub mod chrome;
 pub mod closeask;
@@ -562,6 +563,18 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: web::web_no_runtime,
         limit_secs: 120,
+    },
+    Scenario {
+        name: "agentBrowser",
+        group: "web",
+        run: agent_web::agent_browser,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "mcpBrowser",
+        group: "web",
+        run: agent_web::mcp_browser,
+        limit_secs: 240,
     },
 ];
 
