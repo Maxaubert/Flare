@@ -289,6 +289,9 @@ const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
 /// The slide's fallback step when no frame comes.
+/// How long the page's width must hold still before the text view is wrapped to it (a window edge being dragged).
+const WRAP_SETTLE_MS: u64 = 120;
+
 const SLIDE_STEP_MS: u64 = 16;
 /// The mark clock's frame (about 60 per second); it runs only while a mark moves.
 const MARK_FRAME_MS: u64 = 16;
@@ -3429,9 +3432,23 @@ impl AppCtl {
     /// The text view holds a different number of columns now. A splitter drag changes it at every step, so nothing
     /// happens until the release (`settle_wrap` checks); the release's refresh settles it.
     fn panel_wrap_cols_changed(&mut self) {
-        if let Some(app) = self.app() {
-            self.panels.settle_wrap(&app);
+        let Some(app) = self.app() else { return };
+        // The sidebar's slide changes the page's width at every frame: the slide's end refresh wraps once (rule 217).
+        if app.get_sidebar_sliding() {
+            return;
         }
+        // A window edge dragged changes it at every step too: the text is wrapped once the width has been still a
+        // moment. (A release of the splitter, a toggle and the like refresh, and settle at once.)
+        let weak = self.me.clone();
+        crate::timer_registry::set("panel.wrap-settle", WRAP_SETTLE_MS, false, move || {
+            if let Some(rc) = weak.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+                && let Some(app) = c.app()
+                && !app.get_sidebar_sliding()
+            {
+                c.panels.settle_wrap(&app);
+            }
+        });
     }
 
     /// Esc in the panel: the keys go back to the terminal.
@@ -6439,6 +6456,37 @@ two",
         f.pump();
         f.ctl.borrow_mut().refresh();
         assert!(rows_in_panel(&f) > 3);
+    }
+
+    #[test]
+    fn the_sidebar_sliding_wraps_the_text_once_not_at_every_frame() {
+        let (f, _h, _) = live(Opts::default());
+        set_tab_layout(&f.prefs, TabLayout::Vertical);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(300);
+        f.pump();
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        let cols0 = f.h.comp.get_panel_wrap_cols();
+        f.ctl.borrow_mut().toggle_sidebar();
+        let mut widths = std::collections::BTreeSet::new();
+        for _ in 0..80 {
+            f.clock.set(f.clock.get() + 16);
+            f.h.advance(16);
+            f.pump();
+            widths.insert(f.h.comp.get_panel_wrap_cols());
+        }
+        f.h.advance(400);
+        f.pump();
+        assert_ne!(
+            f.h.comp.get_panel_wrap_cols(),
+            cols0,
+            "the slide changed the page's width"
+        );
+        assert!(widths.len() > 2, "the width went through steps: {widths:?}");
+        let runs = f.ctl.borrow().panels.wrap_count() - runs0;
+        assert_eq!(runs, 1, "wrapped {runs} times for one slide");
     }
 
     #[test]
