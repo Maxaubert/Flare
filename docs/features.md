@@ -306,6 +306,24 @@ are added as milestones land.
   Claude gets "Show files Claude changed" and "Show task list" in a group of their own at the bottom. It is
   bound to the tab it opened on. Held by `the_menu_fits_what_was_clicked_and_copies_exactly` and the
   flare `term_menu.rs` tests.
+- **A right click outside an open menu opens the next menu (owner, 2026-10-23).** "Right click should open the
+  right click menu each time, now it alternates, one click opens it the next closes it, other apps open it again
+  when you click right click with one menu open already." The cause: the menu's full-window scrim swallowed every
+  press, so the surface under the pointer never saw the right click. Now, with a menu (or the +N list) open, a
+  right click released outside it closes it AND the same right click goes on to whatever is under the pointer
+  (a tab, the + button, the terminal, a link), in one click. The scrim reports the point (`outside-right` in
+  `ui/menus.slint`); `AppCtl::outside_right_click` closes the menu and, from a zero timer, hands the click to the
+  window through Slint's own event path (`Window::dispatch_event`: move, press, release of the right button; no
+  OS input), so every surface decides as it does for a real click: the terminal's mouse reporting still reports
+  it and the menu still opens (rule: a report never marks the tab as typed). A left press outside only closes.
+  A right click inside the panel is unchanged, except on the menu's own anchor (a 5 px square at the point it
+  hangs from, which the window edge can leave inside the panel): that is the same click again and reopens the
+  menu. Held by `a_right_click_outside_reports_its_point_and_a_left_press_only_closes`,
+  `the_overflow_list_hands_on_a_right_click_outside_too`, `a_right_click_outside_an_open_menu_opens_the_menu_of_the_tab_under_it`,
+  `a_right_click_outside_an_open_menu_reopens_it_for_what_is_under_the_pointer`,
+  `a_right_click_on_the_same_spot_reopens_it_every_time` and `an_outside_right_click_goes_where_a_normal_one_would`
+  (100 and 225 percent), and e2e `selectionEdit` ("a right click outside an open menu opens the menu of the link
+  under it"). The Settings dropdown (a different popup, no right-click menus under it) is unchanged.
 - **Mouse reporting.** A program that owns the mouse gets press, release, motion and wheel as bytes;
   a right click still opens the menu, and a report never marks the tab as typed. Shift gives the
   selection back. Held by `a_mouse_program_gets_reports_and_shift_selects` and `write_report_is_not_typing`.

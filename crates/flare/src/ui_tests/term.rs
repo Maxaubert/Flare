@@ -1403,6 +1403,138 @@ mod flow {
         assert!(!w.h.comp.get_menu_open());
     }
 
+    /// Owner, 2026-10-23: "right click should open the right click menu each time, now it alternates
+    /// one click opens it the next closes it". With a menu open, a right click outside it closes it
+    /// AND opens the menu of whatever is under the pointer, in one click; a left press only closes.
+    #[test]
+    fn a_right_click_outside_an_open_menu_reopens_it_for_what_is_under_the_pointer() {
+        for scale in [1.0_f32, 2.25] {
+            let w = Wx::new(scale);
+            w.feed("plain text here\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\nsee https://example.com/x end");
+            w.settle();
+            w.right_click(3, 0);
+            assert_eq!(
+                w.menu_labels(),
+                ["Paste", "Find in scrollback"],
+                "scale {scale}"
+            );
+            // Right click on the link: the same click closes the plain menu and opens the link's.
+            let link = w.cell_at(8, 8, 0.25);
+            w.h.right_click(link.0, link.1);
+            w.pump();
+            assert!(w.h.comp.get_menu_open(), "scale {scale}");
+            assert_eq!(
+                w.menu_labels()[0],
+                "Copy link",
+                "scale {scale}: the link's rows"
+            );
+            assert!(
+                (w.h.comp.get_menu_x() - link.0).abs() < 1.0
+                    && (w.h.comp.get_menu_y() - link.1).abs() < 1.0,
+                "scale {scale}: hung at the new point"
+            );
+            // And back on plain text: the plain rows again (each click opens, none toggles shut).
+            let plain = w.cell_at(14, 0, 0.25);
+            w.h.right_click(plain.0, plain.1);
+            w.pump();
+            assert!(w.h.comp.get_menu_open(), "scale {scale}");
+            assert_eq!(
+                w.menu_labels(),
+                ["Paste", "Find in scrollback"],
+                "scale {scale}"
+            );
+            // A left press outside only closes: nothing opens, nothing is picked.
+            let away = w.cell_at(20, 5, 0.25);
+            w.h.click(away.0, away.1);
+            w.pump();
+            assert!(
+                !w.h.comp.get_menu_open(),
+                "scale {scale}: a left press only closes"
+            );
+            // Right clicks keep working one after the other with no menu in between.
+            for _ in 0..3 {
+                w.h.right_click(plain.0, plain.1);
+                w.pump();
+                assert!(w.h.comp.get_menu_open(), "scale {scale}");
+            }
+        }
+    }
+
+    /// The same right click at the same place reopens the menu every time: in the open, where the panel
+    /// hangs from the spot, and at the bottom edge, where the panel is pushed up over the spot.
+    /// A link written under the spot while the menu stands proves it is rebuilt, not left as it was.
+    #[test]
+    fn a_right_click_on_the_same_spot_reopens_it_every_time() {
+        for scale in [1.0_f32, 2.25] {
+            let w = Wx::new(scale);
+            w.feed("plain text here");
+            w.settle();
+            for (col, row, put) in [
+                (3, 0, "\x1b[1;1Hhttps://example.com/x"),
+                (3, 36, "\x1b[37;1Hhttps://example.com/x"),
+            ] {
+                let spot = w.cell_at(col, row, 0.25);
+                w.h.right_click(spot.0, spot.1);
+                w.pump();
+                assert!(w.h.comp.get_menu_open(), "scale {scale}");
+                assert_eq!(w.menu_labels()[0], "Paste", "scale {scale}: plain first");
+                let first = (w.h.comp.get_menu_x(), w.h.comp.get_menu_y());
+                w.feed(put);
+                w.settle();
+                w.h.right_click(spot.0, spot.1);
+                w.pump();
+                assert!(
+                    w.h.comp.get_menu_open(),
+                    "scale {scale}: never toggled shut"
+                );
+                assert_eq!(
+                    w.menu_labels()[0],
+                    "Copy link",
+                    "scale {scale} col {col}: rebuilt for what is under the spot now"
+                );
+                assert_eq!(first, (w.h.comp.get_menu_x(), w.h.comp.get_menu_y()));
+                w.escape();
+            }
+        }
+    }
+
+    /// A right click inside the open menu keeps its old meaning (nothing happens, the menu stays), and
+    /// a program that owns the mouse still gets the outside right click it would get without a menu.
+    #[test]
+    fn an_outside_right_click_goes_where_a_normal_one_would() {
+        let w = Wx::new(1.0);
+        w.feed("hello world");
+        w.settle();
+        w.right_click(2, 0);
+        assert!(w.h.comp.get_menu_open());
+        let inside = (w.h.comp.get_menu_x() + 40.0, w.h.comp.get_menu_y() + 14.0);
+        w.h.right_click(inside.0, inside.1);
+        w.pump();
+        assert!(w.h.comp.get_menu_open(), "inside the menu: unchanged");
+        // The program turns the mouse on; an outside right click closes the menu and is reported.
+        w.feed(MOUSE_ON);
+        let at = w.cell_center_css(10, 6);
+        w.h.right_click(at.0, at.1);
+        w.pump();
+        // A right click over a mouse program is reported and still offers the menu; the outside one does
+        // exactly that, once, and the old menu is gone.
+        assert!(w.h.comp.get_menu_open(), "the new menu");
+        assert!(
+            (w.h.comp.get_menu_x() - at.0).abs() < 1.0,
+            "hung at the new point"
+        );
+        w.wait_written(b"\x1b[<2;11;7M\x1b[<2;11;7m");
+        // Once: more turns of the loop bring no second report.
+        for _ in 0..5 {
+            w.pump();
+        }
+        assert_eq!(
+            w.fake.written(),
+            b"\x1b[<2;11;7M\x1b[<2;11;7m",
+            "reported once"
+        );
+    }
+
     /// PT scenario selectionEdit.
     #[test]
     fn ctrl_c_over_a_selection_is_not_the_interrupt_and_without_one_it_is() {

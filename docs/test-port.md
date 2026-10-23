@@ -514,7 +514,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `caretHold` | 6 | `scenarios/input_a.rs`, `caret_hold` | 7 | 0 | ok |
 | `mouseReport` | 6 | `scenarios/input_a.rs`, `mouse_report` | 6 | 0 | ok |
 | `clickCaret` | 3 | `scenarios/input_a.rs`, `click_caret` | 4 | 1 | ok |
-| `selectionEdit` | 18 | `scenarios/input_b.rs`, `selection_edit` | 18 | 0 | ok |
+| `selectionEdit` | 18 | `scenarios/input_b.rs`, `selection_edit` | 19 | 0 | ok |
 | `findKey` | 5 | `scenarios/input_a.rs`, `find_key` | 6 | 0 | ok |
 | `scrollbar` | 5 | `scenarios/input_a.rs`, `scrollbar` | 6 | 0 | ok |
 | `paste` | 4 | `scenarios/input_a.rs`, `paste` | 5 | 0 | ok |

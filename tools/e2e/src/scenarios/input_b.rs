@@ -563,6 +563,48 @@ fn selection_edit_on(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         !plain.is_empty() && !plain.iter().any(|l| l.starts_with("Copy")),
         format!("right-click on plain text offers no Copy ({plain:?})"),
     );
+    // Owner, 2026-10-23: with that menu still open, one right click elsewhere closes it AND opens the
+    // menu of what is under the pointer (it once only closed it, so every second click did nothing).
+    // The menu hangs down and right from the click, so the target has to be outside its box: the link
+    // when it is, else the plain text, which is then asked from the link's own menu.
+    let link_at = cell_point(app, "example.com", 2, 0.2);
+    let plain_at = cell_point(app, "abef", 1, 0.2);
+    let inside = |app: &mut App, p: (f32, f32)| {
+        css(&probe(app, "ui.rect", json!({ "name": "menu" }))).is_some_and(|(x, y, w, h)| {
+            let (px, py) = (f64::from(p.0), f64::from(p.1));
+            px >= x && px <= x + w && py >= y && py <= y + h
+        })
+    };
+    let reopened = match (link_at, plain_at) {
+        (Some(l), _) if !inside(app, l) => {
+            app.session.right_click(l.0, l.1)?;
+            ctx.until("the link's menu from one right click", 4_000, &mut || {
+                menu_labels(app).iter().any(|r| r == "Copy link")
+            })
+        }
+        (Some(l), Some(pl)) => {
+            app.session.key("Escape")?;
+            app.session.right_click(l.0, l.1)?;
+            ctx.until("the link's menu", 4_000, &mut || {
+                menu_labels(app).iter().any(|r| r == "Copy link")
+            }) && !inside(app, pl)
+                && {
+                    app.session.right_click(pl.0, pl.1)?;
+                    ctx.until("the plain menu from one right click", 4_000, &mut || {
+                        let rows = menu_labels(app);
+                        rows.iter().any(|r| r == "Paste") && !rows.iter().any(|r| r == "Copy link")
+                    })
+                }
+        }
+        _ => false,
+    };
+    ctx.ok(
+        reopened,
+        format!(
+            "a right click outside an open menu opens the menu of what is under it ({:?})",
+            menu_labels(app)
+        ),
+    );
     app.session.key("Escape")?;
 
     // TEXT MARKED: right-click offers Copy, which copies exactly the selection.
