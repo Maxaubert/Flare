@@ -896,7 +896,7 @@ impl SettingsCtl {
         crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
         self.find.set_query("");
-        self.watch = None;
+        self.finish_watch();
         self.flash = None;
         self.wall_expanded = false;
         self.wall_anim = None;
@@ -1398,7 +1398,7 @@ impl SettingsCtl {
             "settings-page",
             &[("page", crate::diag_ctl::txt(self.page))],
         );
-        self.watch = None;
+        self.finish_watch();
         if let Some(app) = self.weak.upgrade() {
             app.global::<SettingsBridge>().set_scroll_y(0.0);
         }
@@ -1927,6 +1927,11 @@ impl SettingsCtl {
     /// One look for the chosen row. The row may be drawn late (the shell list), so it is polled.
     fn poll_watch(&mut self) {
         let now = (self.deps.clock)();
+        if self.built.is_none() || self.watch.is_none() {
+            // Nothing left to look for: the repeating timer must not outlive its watch.
+            self.poll_timer.stop();
+            return;
+        }
         let Some(built) = self.built.as_ref() else {
             return;
         };
@@ -2818,6 +2823,33 @@ mod tests {
     }
 
     #[test]
+    fn leaving_the_page_stops_the_poll_of_a_late_row() {
+        let f = fx();
+        f.page("terminal");
+        f.b().invoke_find_edited("shell".into());
+        let idx = (0..f.b().get_hits().row_count())
+            .find(|i| f.b().get_hits().row_data(*i).unwrap().id == "term-shell")
+            .expect("the shell row is found");
+        f.b().invoke_hit_chosen(idx as i32);
+        assert!(f.ctl.borrow().watch.is_some(), "still looking");
+        assert!(f.ctl.borrow().poll_timer.running(), "the poll runs");
+        // The user goes to another page before the row is drawn.
+        f.page("appearance");
+        assert!(f.ctl.borrow().watch.is_none());
+        assert!(
+            !f.ctl.borrow().poll_timer.running(),
+            "the poll timer outlived its watch"
+        );
+        // Closing the Settings tab stops a watch the same way.
+        f.page("terminal");
+        f.ctl.borrow_mut().watch = Some(FlashWatch::new(1_000, "no-such-row", None));
+        f.ctl.borrow_mut().poll_watch();
+        assert!(f.ctl.borrow().poll_timer.running());
+        f.ctl.borrow_mut().on_settings_tab(false);
+        assert!(!f.ctl.borrow().poll_timer.running());
+    }
+
+    #[test]
     fn typing_in_a_code_field_is_not_clobbered_by_a_rebuild() {
         let f = fx();
         f.b()
@@ -2898,7 +2930,10 @@ mod tests {
         f.ctl.borrow_mut().well_edited("selection", "#ffffffff");
         f.ctl.borrow_mut().well_committed("selection");
         let sel = draft().selection.expect("a stored selection");
-        assert!(sel.to_lowercase().ends_with("fe"), "selection alpha above the cap: {sel}");
+        assert!(
+            sel.to_lowercase().ends_with("fe"),
+            "selection alpha above the cap: {sel}"
+        );
     }
 
     #[test]

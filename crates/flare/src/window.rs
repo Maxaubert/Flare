@@ -561,10 +561,20 @@ fn settings_deps(
                 // Under --e2e nothing opens; the attempt is recorded in the log instead.
                 log::info!("e2e: open {text} (nothing opened)");
                 crate::openers::record_window_open(p);
-            } else if let Err(e) = std::process::Command::new("explorer.exe").arg(p).spawn()
-            // sync-ok: spawn returns at once
-            {
-                log::warn!("open {text} failed: {e}");
+            } else {
+                // Explorer by its absolute path (never the bare name, which a copy beside the exe
+                // would answer), started on a worker so the window never waits on it.
+                let path = text.into_owned();
+                let spawned = std::thread::Builder::new()
+                    .name("flare-open-path".into())
+                    .spawn(move || {
+                        if let Err(e) = flare_win::openers::explorer_open_path(&path) {
+                            log::warn!("open failed: {e}");
+                        }
+                    });
+                if let Err(e) = spawned {
+                    log::warn!("open did not start: {e}");
+                }
             }
         }),
         clipboard: Rc::new(|_: &str| {}),
