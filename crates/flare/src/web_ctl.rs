@@ -933,6 +933,21 @@ impl WebCtl {
 
     // ---- what the user and the channel ask ---------------------------------------------------------
 
+    /// A page whose renderer died (not one that could never start) is let go, so the next sync makes it
+    /// again at the panel's address. True when there was one: the caller refreshes. Without this the dead
+    /// page stayed, hidden behind its note, still driven by Reload and the address bar.
+    pub fn recover(&mut self, tab: &str) -> bool {
+        let lost = self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.failed.as_ref())
+            .is_some_and(|(_, missing)| !missing);
+        if lost {
+            self.close_tab(tab);
+        }
+        lost
+    }
+
     /// The address field was submitted. The error is the words to show.
     pub fn submit(&mut self, tab: &str, text: &str) -> Result<String, UrlError> {
         let url = normalize_url(text)?;
@@ -1592,9 +1607,10 @@ impl WebCtl {
                 {
                     t.url.clone_from(&url);
                     // No navigation is raised for it: a call that sent the page to exactly this address
-                    // (a `#fragment` of the page it is on) is answered here.
+                    // (a `#fragment` of the page it is on) is answered here, and so is a back, forward or reload
+                    // (no address) that stepped through the history inside one document.
                     let wanted = t.pending.as_ref().is_some_and(|p| {
-                        p.nav.is_none() && !p.url.is_empty() && url_matches(&p.url, &url, true)
+                        p.nav.is_none() && (p.url.is_empty() || url_matches(&p.url, &url, true))
                     });
                     if wanted {
                         let p = t.pending.take().expect("checked just above");

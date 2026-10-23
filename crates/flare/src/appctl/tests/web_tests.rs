@@ -884,6 +884,28 @@ fn page_key(tab: &str, vk: u32, ctrl: bool, shift: bool) -> WebEvent {
 }
 
 #[test]
+fn a_chord_that_opens_a_field_of_the_window_takes_the_keyboard_from_the_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.has_focus());
+    // Ctrl+Shift+F from inside the page: the find bar opens, and what is typed next is the bar's.
+    fake(&slot).say(page_key(&id, 0x46, true, true));
+    f.pump();
+    f.h.advance(0);
+    assert!(
+        !f.ctl.borrow().web.has_focus(),
+        "the page kept the keyboard through a chord of the window's"
+    );
+}
+
+#[test]
 fn a_chord_the_page_hands_back_is_the_apps() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -1194,6 +1216,60 @@ fn a_lost_browser_marks_the_page_and_closing_the_panel_lets_the_next_start_fresh
 }
 
 #[test]
+fn a_page_whose_renderer_died_starts_again_for_the_next_open() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.failure(&id).is_some());
+    // The agent opens a page again: it is made anew (not driven hidden behind the note), and answers.
+    let rx = ask(&f, open_op(&id, TWO), Duration::from_secs(5));
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)), "waits");
+    f.h.advance(0);
+    f.pump();
+    // (The browser object went with its last view, so the slot holds a new one that was asked to open.)
+    let made = opened_calls(&slot);
+    assert!(
+        matches!(made.as_slice(), [Call::Open { url, .. }] if url == TWO),
+        "a new view was made for the address: {made:?}"
+    );
+    assert!(f.ctl.borrow().web.failure(&id).is_none());
+    finish(&fake(&slot), &id, TWO, true);
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok());
+    // And a step through the history of a dead page says so instead of driving it.
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    let before = fake(&slot).calls().len();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id,
+            to: NavTo::Reload,
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_err());
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .skip(before)
+            .any(|c| matches!(c, Call::Go(..))),
+        "nothing navigated the dead page"
+    );
+}
+
+#[test]
 fn a_navigate_to_a_fragment_of_the_same_page_answers() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -1216,6 +1292,37 @@ fn a_navigate_to_a_fragment_of_the_same_page_answers() {
     f.pump();
     let v = rx.try_recv().expect("answered").unwrap();
     assert_eq!(v["url"], target.as_str());
+    assert_eq!(v["loaded"], true);
+}
+
+#[test]
+fn back_over_a_same_document_history_entry_answers_at_once() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: false,
+    });
+    f.pump();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Back,
+        },
+        Duration::from_secs(5),
+    );
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    // A step inside one document (pushState, a #fragment) raises no navigation, only this.
+    fake(&slot).say(WebEvent::SameDocument {
+        tab: id,
+        url: format!("{PAGE}#before"),
+    });
+    f.pump();
+    let v = rx.try_recv().expect("answered, not left to time out").unwrap();
+    assert_eq!(v["url"], format!("{PAGE}#before").as_str());
     assert_eq!(v["loaded"], true);
 }
 
