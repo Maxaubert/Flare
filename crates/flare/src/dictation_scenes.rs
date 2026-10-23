@@ -79,7 +79,7 @@ fn widget_state(name: &str) -> Option<OverlayState> {
         },
         "dictation-widget-sent" => OverlayState::Sent { to: "Flare".into() },
         "dictation-widget-warning" => OverlayState::Note {
-            message: "No Claude session to send to".into(),
+            message: "No Claude session, copied".into(),
             tone: Tone::Warn,
         },
         _ => return None,

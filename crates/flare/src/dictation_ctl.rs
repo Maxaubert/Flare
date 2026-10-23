@@ -53,7 +53,7 @@ use flare_dictation::prefs::{self, DictPrefs, read as read_prefs};
 use flare_dictation::route::{RemoteCopy, SendDecision, SendTab, merge_tabs};
 use flare_dictation::service::{
     AnywhereConfig, ClientHost, LivePhase, LiveView, OverlayState, Service, ServiceOpts, SvcEffect,
-    SvcEvent, TimerId, dictation_answers,
+    SvcEvent, TimerId, Tone, dictation_answers,
 };
 use flare_dictation::store::{Store, default_root};
 use flare_e2e_proto::RouteResult as WireRouteResult;
@@ -174,8 +174,8 @@ pub enum DictMsg {
     Media { seq: u64, token: Token },
     /// Every linked copy's tabs, answering the service's question.
     Tabs(RemoteTabs),
-    /// A checked send finished.
-    Sent(SendDecision),
+    /// A checked send finished, with the words it carried (so a refusal can keep them whatever else is in flight).
+    Sent(SendDecision, String),
     /// The link client connected to a service (or lost it).
     LinkState(bool),
     /// Words to paste into the front tab (another copy routed them back).
@@ -186,6 +186,13 @@ pub enum DictMsg {
     Pick(String),
     /// The widget dismissed (Task 26).
     Dismiss,
+    /// Words kept on the clipboard: whether the copy took. A failure puts `fallback` back on the widget while
+    /// `shown` is still on it; with no `fallback` it says the words could not be copied.
+    Copied {
+        ok: bool,
+        shown: Option<OverlayState>,
+        fallback: Option<OverlayState>,
+    },
     /// A call a link thread wants run on the UI thread.
     Call(Box<dyn FnOnce(&mut Dict) + Send>),
 }
@@ -312,6 +319,11 @@ pub trait DictHost {
     fn view_changed(&self) {}
     /// The widget's face (Task 26 draws it); `None` hides it.
     fn widget(&self, _face: Option<&OverlayState>) {}
+    /// Puts words on the clipboard, on a worker; `done(true)` only when it took the exact text. The default
+    /// refuses.
+    fn copy_text(&self, _text: String, done: Box<dyn FnOnce(bool) + Send>) {
+        done(false);
+    }
 }
 
 /// What dictation owns that touches the OS. Created only while dictation is on. UI thread only (a real one
@@ -411,6 +423,8 @@ struct Bridge {
 }
 
 /// How long a link thread waits for the UI thread before it gives up and answers nothing.
+/// What a failed copy of kept words says when nothing else is on screen.
+const COPY_FAILED: &str = "Words could not be copied";
 const UI_CALL_MS: u64 = 3000;
 /// How often a waiting link thread looks at its gate.
 const UI_SLICE_MS: u64 = 20;
@@ -939,17 +953,29 @@ impl Dict {
                 let all = self.merged_tabs(&remote);
                 self.svc_on(SvcEvent::Tabs(all));
             }
-            DictMsg::Sent(d) => self.svc_on(SvcEvent::Sent(d)),
+            DictMsg::Sent(d, text) => {
+                if self.svc.is_some() {
+                    self.svc_on(SvcEvent::Sent(d, text));
+                } else if matches!(d, SendDecision::No(_)) {
+                    // Dictation was switched off while the send was out: the words are still kept.
+                    self.keep_words(text);
+                }
+            }
             DictMsg::LinkState(on) => self.svc_on(SvcEvent::LinkState(on)),
             DictMsg::PasteFront(text) => {
-                let fx = self.ctl_on(Event::Front(self.host.front_session()));
-                self.run(fx);
-                let fx = self.ctl_on(Event::PasteFront(text));
-                self.run(fx);
+                // Another copy routed these words here. With no shell in front they would be lost: keep them.
+                if !self.paste_front(&text) {
+                    self.keep_words(text);
+                }
             }
             DictMsg::Paste { session, text } => self.paste(&session, &text),
             DictMsg::Pick(id) => self.svc_on(SvcEvent::Pick(id)),
             DictMsg::Dismiss => self.svc_on(SvcEvent::Dismiss),
+            DictMsg::Copied {
+                ok,
+                shown,
+                fallback,
+            } => self.on_copied(ok, shown, fallback),
             DictMsg::Call(f) => f(self),
         }
     }
@@ -982,6 +1008,7 @@ impl Dict {
                 Effect::Transcribe { id, req } => self.transcribe(id, req),
                 Effect::Paste { session, text } => self.paste(&session, &text),
                 Effect::Route(r) => self.svc_on(SvcEvent::Routed(r)),
+                Effect::Keep(text) => self.keep_words(text),
                 Effect::Cue(c) => {
                     if let Some(p) = self.parts.as_mut() {
                         p.cue(c);
@@ -1246,6 +1273,8 @@ impl Dict {
         match self.host.paste(session, &clean) {
             PasteOutcome::Done => {}
             PasteOutcome::Gone => {
+                // The tab closed under the paste: the words are kept, not dropped.
+                self.keep_words(clean);
                 let fx = self.ctl_on(Event::TabGone(session.to_string()));
                 self.run(fx);
             }
@@ -1417,10 +1446,9 @@ impl Dict {
                     self.host.widget(None);
                 }
                 SvcEffect::PastePage(text) => {
-                    let fx = self.ctl_on(Event::Front(self.host.front_session()));
-                    self.run(fx);
-                    let fx = self.ctl_on(Event::PasteFront(text));
-                    self.run(fx);
+                    // The answer says whether a shell was in front: with none the service goes on to the list.
+                    let ok = self.paste_front(&text);
+                    self.svc_on(SvcEvent::Pasted(ok));
                 }
                 SvcEffect::PasteCopy { pid, text } => {
                     let ok = self
@@ -1429,6 +1457,11 @@ impl Dict {
                         .is_some_and(|p| p.link_paste(pid, &text));
                     self.svc_on(SvcEvent::Pasted(ok));
                 }
+                SvcEffect::CopyText {
+                    text,
+                    shown,
+                    fallback,
+                } => self.copy_words(text, shown, fallback),
                 SvcEffect::AskTabs => self.ask_tabs(),
                 SvcEffect::SendLocal { id, text } => self.send_local(id, text),
                 SvcEffect::SendRemote { pid, id, text } => self.send_remote(pid, &id, &text),
@@ -1499,6 +1532,73 @@ impl Dict {
         }
     }
 
+    /// Pastes `text` into the front tab; false when no shell is in front (nothing was pasted).
+    fn paste_front(&mut self, text: &str) -> bool {
+        let front = self.host.front_session();
+        let has_shell = front.is_some();
+        let fx = self.ctl_on(Event::Front(front));
+        self.run(fx);
+        let fx = self.ctl_on(Event::PasteFront(text.to_string()));
+        self.run(fx);
+        has_shell
+    }
+
+    /// Keeps words on the clipboard with no note of its own (a failed copy still says so, see `on_copied`).
+    fn keep_words(&mut self, text: String) {
+        self.copy_words(text, None, None);
+    }
+
+    fn copy_words(
+        &mut self,
+        text: String,
+        shown: Option<OverlayState>,
+        fallback: Option<OverlayState>,
+    ) {
+        let post = Arc::clone(&self.post);
+        self.host.copy_text(
+            text,
+            Box::new(move |ok| {
+                post(DictMsg::Copied {
+                    ok,
+                    shown,
+                    fallback,
+                })
+            }),
+        );
+    }
+
+    /// A copy of unsent words answered. A failed one puts the plain note back, but only while the note that
+    /// said "copied" is still the face on screen (compared exactly): a newer face is never replaced. A failed
+    /// copy with no note of its own says so when nothing else is showing.
+    fn on_copied(&mut self, ok: bool, shown: Option<OverlayState>, fallback: Option<OverlayState>) {
+        if ok {
+            return;
+        }
+        let face = match fallback {
+            Some(face) => {
+                if shown.is_none() || self.widget != shown {
+                    return;
+                }
+                face
+            }
+            None => {
+                if self.widget.is_some() || self.svc.is_none() {
+                    return;
+                }
+                OverlayState::Note {
+                    message: COPY_FAILED.into(),
+                    tone: Tone::Warn,
+                }
+            }
+        };
+        self.run_svc(vec![
+            SvcEffect::Widget(face),
+            SvcEffect::WidgetHide {
+                after_ms: flare_dictation::service::NOTE_HIDE_MS,
+            },
+        ]);
+    }
+
     fn ask_tabs(&mut self) {
         let serving = self.parts.as_ref().is_some_and(|p| p.link_serving());
         if !serving {
@@ -1527,6 +1627,7 @@ impl Dict {
     /// Types into one of this copy's tabs through the checked send, on a worker (it asks Windows, and waits
     /// 300 ms before the Enter).
     fn send_local(&mut self, id: String, text: String) {
+        let kept = text.clone();
         let handlers = dictation_answers(Arc::new(Bridge::new(
             Arc::clone(&self.post),
             Arc::clone(&self.probe),
@@ -1537,21 +1638,27 @@ impl Dict {
             .name("flare-dictation-send".into())
             .spawn(move || {
                 let d = handlers.send(&id, &text);
-                post(DictMsg::Sent(d));
+                post(DictMsg::Sent(d, text));
             });
         if spawned.is_err() {
-            self.svc_on(SvcEvent::Sent(SendDecision::No(
-                "the send could not start".into(),
-            )));
+            self.svc_on(SvcEvent::Sent(
+                SendDecision::No("the send could not start".into()),
+                kept,
+            ));
         }
     }
 
     fn send_remote(&mut self, pid: u32, id: &str, text: &str) {
         let Some(p) = self.parts.as_mut() else {
-            return;
+            // No machinery to send with: the words are kept, not left on "Sending".
+            return self.svc_on(SvcEvent::Sent(
+                SendDecision::No("the send could not start".into()),
+                text.to_string(),
+            ));
         };
         let rx = p.link_send(pid, id, text, Duration::from_millis(link::SEND_MS));
         let post = Arc::clone(&self.post);
+        let words = text.to_string();
         let spawned = std::thread::Builder::new()
             .name("flare-dictation-send-remote".into())
             .spawn(move || {
@@ -1559,12 +1666,13 @@ impl Dict {
                 let got = rx.recv(); // sync-ok: a worker waits for the other copy's answer (the link's own limit applies)
                 let d = got
                     .unwrap_or_else(|_| SendDecision::No("that copy of the app has closed".into()));
-                post(DictMsg::Sent(d));
+                post(DictMsg::Sent(d, words));
             });
         if spawned.is_err() {
-            self.svc_on(SvcEvent::Sent(SendDecision::No(
-                "the send could not start".into(),
-            )));
+            self.svc_on(SvcEvent::Sent(
+                SendDecision::No("the send could not start".into()),
+                text.to_string(),
+            ));
         }
     }
 
@@ -2592,6 +2700,7 @@ struct AppHost {
     app: slint::Weak<AppWindow>,
     t0: Instant,
     guarded: Cell<bool>,
+    clip: RefCell<Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>>>,
 }
 
 impl AppHost {
@@ -2601,6 +2710,7 @@ impl AppHost {
             app,
             t0: Instant::now(),
             guarded: Cell::new(false),
+            clip: RefCell::new(None),
         }
     }
 }
@@ -2685,6 +2795,24 @@ impl DictHost for AppHost {
     fn view_changed(&self) {
         if let Some(app) = self.app.upgrade() {
             push_pill(&app, &view());
+        }
+    }
+
+    fn copy_text(&self, text: String, done: Box<dyn FnOnce(bool) + Send>) {
+        // The port is taken from the app once and kept, so a busy borrow of the app never loses a copy.
+        let fresh = self
+            .ctl
+            .upgrade()
+            .and_then(|rc| rc.try_borrow().ok().map(|c| c.dictation_clip()));
+        if let Some(p) = &fresh {
+            *self.clip.borrow_mut() = Some(Arc::clone(p));
+        }
+        let port = fresh.or_else(|| self.clip.borrow().clone());
+        match port {
+            Some(port) => {
+                crate::clip_flow::copy_async(port, text, flare_win::clipboard_port::COPY_MAX, done)
+            }
+            None => done(false),
         }
     }
 
@@ -3090,6 +3218,9 @@ mod tests {
         alt_swallows: Cell<u32>,
         crumbs: RefCell<Vec<String>>,
         tabs: RefCell<Vec<SendTab>>,
+        copies: RefCell<Vec<String>>,
+        copy_ok: Cell<bool>,
+        faces: RefCell<Option<OverlayState>>,
     }
 
     impl FakeHost {
@@ -3104,6 +3235,9 @@ mod tests {
                 alt_swallows: Cell::new(0),
                 crumbs: RefCell::default(),
                 tabs: RefCell::default(),
+                copies: RefCell::default(),
+                copy_ok: Cell::new(true),
+                faces: RefCell::default(),
             })
         }
     }
@@ -3142,6 +3276,13 @@ mod tests {
         fn crumb(&self, name: &str, fields: &[(&str, Value)]) {
             self.crumbs.borrow_mut().push(format!("{name} {fields:?}"));
             let _ = &self.log;
+        }
+        fn copy_text(&self, text: String, done: Box<dyn FnOnce(bool) + Send>) {
+            self.copies.borrow_mut().push(text);
+            done(self.copy_ok.get());
+        }
+        fn widget(&self, face: Option<&OverlayState>) {
+            *self.faces.borrow_mut() = face.cloned();
         }
     }
 
@@ -3610,7 +3751,11 @@ mod tests {
         r.d.on_tab_gone("t1");
         r.pump();
         assert!(r.host.pastes.borrow().is_empty());
-        assert_eq!(r.d.view.message.as_deref(), Some("That tab has closed"));
+        assert_eq!(
+            r.d.view.message.as_deref(),
+            Some("That tab has closed, copied")
+        );
+        assert_eq!(r.host.copies.borrow().len(), 1, "the words are kept");
     }
 
     #[test]
@@ -3630,12 +3775,21 @@ mod tests {
         r.host.paste_outcome.set(Some(PasteOutcome::Gone));
         r.d.paste("t9", "x ");
         assert_eq!(r.host.pastes.borrow().len(), 1);
+        assert_eq!(
+            *r.host.copies.borrow(),
+            ["x "],
+            "a paste into a gone tab keeps the words"
+        );
         r.host.paste_outcome.set(Some(PasteOutcome::Busy));
         r.d.paste("t1", "again ");
-        assert!(matches!(
-            r.inbox.lock().unwrap().pop_front(),
-            Some(DictMsg::Paste { .. })
-        ));
+        // (The copy of the gone tab's words answered first.)
+        assert!(
+            r.inbox
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| matches!(m, DictMsg::Paste { .. }))
+        );
     }
 
     /// How many times the engine was stopped.
@@ -3725,6 +3879,165 @@ mod tests {
         let n = r.calls().len();
         r.d.stop();
         assert_eq!(r.calls().len(), n);
+    }
+
+    /// Dictation on with the outside binding, and words heard with no Claude session to take them.
+    fn heard_with_no_session(r: &mut Rig) {
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        assert!(r.d.e2e_route("what I said".into(), None));
+        r.pump();
+    }
+
+    fn note_now(r: &Rig) -> Option<String> {
+        match &*r.host.faces.borrow() {
+            Some(OverlayState::Note { message, .. }) => Some(message.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn words_with_no_session_are_copied_and_the_note_says_so() {
+        let mut r = Rig::on_with_model(true);
+        heard_with_no_session(&mut r);
+        assert_eq!(*r.host.copies.borrow(), ["what I said"]);
+        assert_eq!(note_now(&r).as_deref(), Some("No Claude session, copied"));
+    }
+
+    #[test]
+    fn a_failed_copy_puts_the_old_note_back() {
+        let mut r = Rig::on_with_model(true);
+        r.host.copy_ok.set(false);
+        heard_with_no_session(&mut r);
+        assert_eq!(*r.host.copies.borrow(), ["what I said"]);
+        assert_eq!(
+            note_now(&r).as_deref(),
+            Some("No Claude session to send to")
+        );
+    }
+
+    fn note_of(message: &str) -> OverlayState {
+        OverlayState::Note {
+            message: message.into(),
+            tone: Tone::Warn,
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_never_replaces_a_newer_face() {
+        let mut r = Rig::on_with_model(true);
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        // Nothing on screen: the old note stays gone.
+        r.d.on_copied(
+            false,
+            Some(note_of("Not sent, copied")),
+            Some(note_of("Not sent")),
+        );
+        assert_eq!(note_now(&r), None);
+        // A newer ", copied" note of another event is not replaced by the earlier fallback.
+        r.d.widget = Some(note_of("No Claude session, copied"));
+        r.d.on_copied(
+            false,
+            Some(note_of("Not sent, copied")),
+            Some(note_of("Not sent")),
+        );
+        assert_eq!(note_now(&r), None, "the host was not told");
+        assert_eq!(r.d.widget, Some(note_of("No Claude session, copied")));
+        // The same note still showing: the plain one goes back.
+        r.d.on_copied(
+            false,
+            Some(note_of("No Claude session, copied")),
+            Some(note_of("No Claude session to send to")),
+        );
+        assert_eq!(
+            note_now(&r).as_deref(),
+            Some("No Claude session to send to")
+        );
+    }
+
+    #[test]
+    fn a_failed_silent_copy_says_so_only_when_nothing_else_is_showing() {
+        let mut r = Rig::on_with_model(true);
+        r.host.copy_ok.set(false);
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        r.d.keep_words("lost?".into());
+        r.pump();
+        assert_eq!(note_now(&r).as_deref(), Some(COPY_FAILED));
+        // A face on screen is left alone.
+        r.d.widget = Some(note_of("Typed into the tab in front"));
+        *r.host.faces.borrow_mut() = None;
+        r.d.keep_words("lost?".into());
+        r.pump();
+        assert_eq!(note_now(&r), None);
+    }
+
+    #[test]
+    fn a_route_to_this_copy_with_no_shell_in_front_keeps_the_words_and_never_claims_a_paste() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        *r.host.front.borrow_mut() = None;
+        assert!(r.d.e2e_route("no shell here".into(), Some(4242)));
+        r.pump();
+        assert!(r.host.pastes.borrow().is_empty());
+        assert_eq!(*r.host.copies.borrow(), ["no shell here"]);
+        assert_eq!(note_now(&r).as_deref(), Some("No Claude session, copied"));
+    }
+
+    #[test]
+    fn a_route_to_this_copy_with_a_shell_in_front_pastes_and_says_so() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        assert!(r.d.e2e_route("typed words".into(), Some(4242)));
+        r.pump();
+        assert_eq!(r.host.pastes.borrow().len(), 1);
+        assert!(r.host.copies.borrow().is_empty());
+        assert_eq!(note_now(&r).as_deref(), Some("Typed into the tab in front"));
+    }
+
+    #[test]
+    fn words_routed_here_by_another_copy_with_no_shell_in_front_are_kept() {
+        let mut r = Rig::on_with_model(true);
+        *r.host.front.borrow_mut() = None;
+        r.d.on_msg(DictMsg::PasteFront("from afar".into()));
+        r.pump();
+        assert_eq!(*r.host.copies.borrow(), ["from afar"]);
+    }
+
+    #[test]
+    fn a_refused_send_keeps_its_own_words_and_one_that_lands_after_switch_off_too() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        r.d.on_msg(DictMsg::Sent(SendDecision::No("busy".into()), "one".into()));
+        assert_eq!(*r.host.copies.borrow(), ["one"]);
+        assert_eq!(note_now(&r).as_deref(), Some("Not sent: busy, copied"));
+        // Switched off while a send was out: the machinery is gone when the refusal arrives.
+        r.set("flare.dictation.enabled", "0");
+        r.d.apply_prefs();
+        assert!(r.d.svc.is_none());
+        r.d.on_msg(DictMsg::Sent(SendDecision::No("busy".into()), "two".into()));
+        assert_eq!(*r.host.copies.borrow(), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_remote_send_with_no_machinery_answers_no_and_keeps_the_words() {
+        let mut r = Rig::on_with_model(true);
+        r.set("flare.dictation.anywhere", "1");
+        r.d.apply_prefs();
+        r.d.on_msg(DictMsg::Hook(HookEvent::Ready));
+        r.d.parts = None;
+        r.d.send_remote(9, "q1", "remote words");
+        assert_eq!(*r.host.copies.borrow(), ["remote words"]);
+        assert_eq!(
+            note_now(&r).as_deref(),
+            Some("Not sent: the send could not start, copied")
+        );
     }
 
     #[test]

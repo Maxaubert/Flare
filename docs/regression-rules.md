@@ -529,3 +529,37 @@ another keeps the browser environment (`a_page_replaces_a_mini_app_and_a_mini_ap
 217. **A text preview wraps live while its width moves, the final wrap is exact, a stale wrap is dropped, and a drag is never stalled.** Every change of the view's columns (a splitter step, a window-edge step) wraps to the columns now and keeps the line at the top; under 200 KB of shaped text where the step lands (a refresh while the width moves is live too, `wrap_moving`; no worker answer wraps during a sidebar slide), a bigger file on a worker with one wrap in flight whose answer wraps again to the newest width; `settle_wrap` is the exact final wrap; a sidebar slide wraps once at its end; the terminal grid still fits once at the release (rule 24). A worker's answer for a wrap that is no longer the newest changes nothing. Held by `a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more`, `a_live_drag_keeps_the_line_at_the_top_in_place`, `a_big_file_drag_never_stalls_the_ui_and_ends_exact`, `a_small_file_wrap_per_step_is_cheap`, `a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker`, `a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing`, `a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on`, `with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too`, the e2e `panelSplitter`.
 218. **The splitter holds its invariants under any hand.** Whatever the steps (quick, slow, shaky, past either limit and back, at 100 or 225 percent, over a picture or text): the drawn slot and the splitter stay inside the limits and on the slot's edge, the slot follows the pointer to the device pixel and never against it, the grid keeps its width and is not fitted while the button is down and is fitted exactly once on the release (rule 24), the settled slot is the dragged one, the grid ends where the slot starts, the panel's content is on every frame, and what shows beside a narrower slot is the terminal's ground. Held by `appctl::tests::splitter_tests` and the e2e `panelSplitter`.
 219. **A splitter drag outlives the pointer leaving the window, and ends on the left button going up or the slot going away.** The window's hook holds back winit's `CursorLeft` while a drag runs (the OS keeps the pointer captured, so moves and the release still arrive from outside the window; the held leave is owed after the release), another button's release does not end it, and the left button up ends it wherever the pointer is (`AppWindow.end-splitter`). A cancelled grab, a tab switch or the slot going away still lets go and keeps the share dragged so far. The hook's CursorLeft hold, its CursorEntered clear and its swallowing of other buttons mid-drag are checked by hand (they live in the winit hook, which no harness drives). Held by `another_button_going_up_mid_drag_does_not_end_it_and_the_left_up_does`, `leaving_the_window_during_a_drag_lets_go_of_the_splitter` (a cancelled grab) and the e2e `panelSplitter`.
+## Dictation: words that cannot be sent
+
+224. **Dictated words that cannot be sent are kept, never dropped** (owner, 2026-10-23: the owner dictated 1m42s from
+outside Flare, no Claude tab was open, the note said "No Claude session to send to" and the words were gone). Every
+finished transcript that ends unsent is copied to the clipboard and the widget note says so: no Claude session, Esc or
+the 30 s timeout on the picker, a refused or failed checked send, a copy of the app that has closed. A picker that is
+dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
+off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
+nothing. A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
+fails says "Words could not be copied" when nothing else is on screen. A paste into this copy's front tab with no shell
+in front (Settings, an empty window) goes on to the list and copies, never claiming "Typed into the tab in front"
+(`SvcEffect::PastePage` is answered with `Pasted`); words another copy routes here with no shell in front are copied by
+that copy (the link has no reply for a paste, so the service copy still says typed: a follow-up). An in-window
+recording whose tab closed copies the words (`Effect::Keep`, "That tab has closed, copied"), as does a paste that finds
+the tab gone. A send carries its words with its answer (`SvcEvent::Sent(decision, text)`), so two sends in flight never
+swap words; a send that cannot start answers No with its words; a refusal that lands after dictation was switched off
+still copies. The new-recording and switch-off paths overwrite the clipboard on purpose (owner to confirm). Native: `SvcEffect::CopyText` in `service.rs` (the clipboard write runs
+on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing_with_no_claude_session_says_so`,
+`esc_keeps_it_unsent`, `thirty_seconds_without_a_pick_says_not_sent`, `a_click_picks_a_row_and_a_refusal_says_why`,
+`a_tab_of_another_copy_with_no_service_is_not_sent`, `a_remote_send_that_is_refused_keeps_the_words`,
+`a_dropped_paste_round_trip_asks_for_the_tabs_and_keeps_the_words_when_none_can_take_them`,
+`dismissing_the_picker_keeps_the_words_without_a_note`,
+`a_new_recording_keeps_the_words_an_earlier_one_was_still_waiting_on`,
+`a_newer_text_never_loses_the_words_of_one_still_waiting`, `switching_off_with_words_waiting_keeps_them`,
+`a_note_with_the_copy_stays_under_the_cap`, `cancelled_heard_nothing_and_a_successful_send_or_paste_copy_nothing`
+(`service.rs`), `words_with_no_session_are_copied_and_the_note_says_so`, `a_failed_copy_puts_the_old_note_back` and
+`a_failed_copy_never_replaces_a_newer_face`, `a_failed_silent_copy_says_so_only_when_nothing_else_is_showing`,
+`a_route_to_this_copy_with_no_shell_in_front_keeps_the_words_and_never_claims_a_paste`,
+`words_routed_here_by_another_copy_with_no_shell_in_front_are_kept`,
+`a_refused_send_keeps_its_own_words_and_one_that_lands_after_switch_off_too` and
+`a_remote_send_with_no_machinery_answers_no_and_keeps_the_words` (`dictation_ctl.rs`), plus
+`a_paste_with_no_shell_in_front_goes_on_to_the_list_and_never_claims_it_typed` and
+`two_sends_in_flight_each_copy_their_own_words` (`service.rs`). Quitting the app while words wait is not covered: the
+process is ending.

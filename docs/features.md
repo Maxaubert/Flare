@@ -734,6 +734,11 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
 - **The pill and the tab mark in the window; the widget outside.** Outside, the widget shows what you say and lets you
   pick a Claude session by a click or a number from 1 to 9; Esc keeps it unsent. The checked send types into that tab
   and presses Enter once (N22 to N24). Inside the window dictation pastes at the cursor and never presses Enter.
+- **Words that cannot be sent are kept** (owner, 2026-10-23, "Yes, build it"). A finished transcript that ends unsent
+  (no Claude session, Esc or the 30 s timeout on the picker, a refused send, a copy of the app that has closed) is
+  copied to the clipboard and the note says so: "No Claude session, copied", "Not sent, copied", "Not sent: <why>,
+  copied". A failed copy keeps the old note. "Cancelled", "Heard nothing", pastes and successful sends copy nothing.
+  Rule 186 lists every path and the tests (`SvcEffect::CopyText`).
 - **One dictation for every Flare copy.** Copies talk over a local pipe that proves a shared key both ways. The pipe,
   lock and key are Flare's own; Prism and Prism Terminal are not on them (DIFF-20).
 - **The engine.** The bundled whisper.cpp engine (pinned, Authenticode-checked runtime DLLs, MIT notice), and Parakeet
