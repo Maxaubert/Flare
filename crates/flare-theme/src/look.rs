@@ -5,6 +5,7 @@
 
 use crate::chrome::{chrome_tokens, ChromeTokens};
 use crate::edges::WindowEdges;
+use crate::find_ink::{find_ink, FindInk};
 use crate::links::link_colour;
 use crate::marks::Mode;
 use crate::resolve::{on_ground, preset_accent, resolve_theme, CustomPalette, TermTheme};
@@ -38,6 +39,8 @@ pub struct AppliedLook {
     pub term: TermTheme,
     /// `link_colour(term.background, term.foreground)`.
     pub link_colour: String,
+    /// The find highlights, held to the theme's foreground (`find_ink`).
+    pub find: FindInk,
     pub chrome: ChromeTokens,
     /// The chrome's `--p-bg-solid`.
     pub solid_ground: String,
@@ -90,6 +93,14 @@ pub fn apply_look(i: &LookInput) -> AppliedLook {
     AppliedLook {
         theme_id: id.to_string(),
         link_colour: link_colour(&term.background, &term.foreground),
+        find: find_ink(
+            &term.background,
+            &term.foreground,
+            chrome
+                .vars
+                .get("--p-accent-solid")
+                .map_or("#5b5bd6", String::as_str),
+        ),
         light: chrome.mode == Mode::Light,
         term,
         chrome,

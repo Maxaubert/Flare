@@ -897,22 +897,46 @@ impl Emulator {
     /// Selects one match: a Simple selection over its cells. The end is the last cell's
     /// boundary plus one, so a match ending at a row's last cell stays on that row.
     fn select_match(&mut self, m: FindMatch) {
-        let cols = self.cols();
-        if cols == 0 {
+        let Some((start, end)) = self.match_bounds(m) else {
             return;
-        }
-        let last = m.row * cols + m.col + m.size.max(1) - 1;
+        };
         self.sel_apply(SelOut::Set(SelSpec {
             block: false,
             start: Anchor {
-                row: m.row,
-                b: m.col,
+                row: start.0,
+                b: start.1,
             },
             end: Anchor {
-                row: last / cols,
-                b: last % cols + 1,
+                row: end.0,
+                b: end.1,
             },
         }));
+    }
+
+    /// The (row, boundary) start and end `select_match` selects for a match.
+    fn match_bounds(&self, m: FindMatch) -> Option<((usize, usize), (usize, usize))> {
+        let cols = self.cols();
+        if cols == 0 {
+            return None;
+        }
+        let last = m.row * cols + m.col + m.size.max(1) - 1;
+        Some(((m.row, m.col), (last / cols, last % cols + 1)))
+    }
+
+    /// The find bar closed: the highlights go, and so does the selection when it is the one the active
+    /// match put there (a Ctrl+C with it would copy the match instead of interrupting the program, and
+    /// Backspace could delete it). A selection the owner made themselves stays.
+    pub fn find_close(&mut self) {
+        let found = self
+            .find_active
+            .and_then(|m| self.match_bounds(m))
+            .zip(self.sel_bounds());
+        if let Some(((start, end), (s, e, block))) = found {
+            if !block && s == start && e == end {
+                self.sel_clear();
+            }
+        }
+        self.find_clear();
     }
 
     /// The match a search starts from: the active one, else a zero-size match at the selection's
@@ -2731,6 +2755,39 @@ mod tests {
         e.find_clear();
         assert_eq!(e.find_spans(), (Vec::new(), Vec::new()));
         assert!(e.has_selection());
+    }
+
+    #[test]
+    fn closing_find_drops_the_selection_the_match_made_so_ctrl_c_is_the_programs() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        assert!(e.has_selection(), "the active match is selected");
+        e.find_close();
+        assert!(
+            !e.has_selection(),
+            "closing the bar must not leave the match selected"
+        );
+        assert_eq!(e.find_spans(), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn closing_find_keeps_a_selection_the_owner_made() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        // The owner then selects "bar" themselves.
+        e.sel_apply(SelOut::Set(SelSpec {
+            block: false,
+            start: Anchor { row: 0, b: 4 },
+            end: Anchor { row: 0, b: 7 },
+        }));
+        e.find_close();
+        assert!(e.has_selection(), "the owner's own selection stays");
     }
 
     #[test]

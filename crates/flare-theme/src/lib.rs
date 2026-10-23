@@ -6,6 +6,7 @@ pub mod chrome;
 pub mod colour;
 pub mod colour_contrast;
 pub mod edges;
+pub mod find_ink;
 pub mod fonts;
 pub mod fonts_data;
 pub mod ground;

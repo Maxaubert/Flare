@@ -478,10 +478,14 @@ impl Indicator {
             self.failed.remove(tab);
         }
         if present {
-            // An agent's birth state is idle: its startup paint is not the agent answering.
-            self.output_runs.remove(tab);
-            self.activity.mark_born(tab, now);
-            self.working.remove(tab);
+            // An agent's birth state is idle: its startup paint is not the agent answering. Only the FIRST
+            // present answer of a tab scored from its output says so: a hook or a title that already set
+            // Working said more, and the poll lands seconds into a turn.
+            if !was && !self.titled.contains(tab) && !self.hooked.contains_key(tab) {
+                self.output_runs.remove(tab);
+                self.activity.mark_born(tab, now);
+                self.working.remove(tab);
+            }
             self.agent_ids.insert(tab.to_string());
         } else {
             self.agent_ids.remove(tab);
@@ -1069,6 +1073,27 @@ mod tests {
         assert!(!has(h.ind.failed_ids(), "t1"));
         assert_eq!(h.ind.failed_kind("t1"), None);
         assert!(!h.ind.is_hooked("t1"));
+    }
+
+    #[test]
+    fn a_poll_landing_mid_turn_keeps_the_working_a_hook_set_and_raises_no_finished() {
+        let mut h = H::new();
+        h.hook(0, "t1", HookState::Working);
+        assert!(has(h.ind.working_ids(), "t1"));
+        // The first present answer comes seconds into the turn.
+        h.poll(3000, "t1", true, Some(DetectedAgent::Claude));
+        assert!(has(h.ind.working_ids(), "t1"), "the hook's Working stays");
+        assert!(h.ind.done_ids().is_empty(), "and nothing finished");
+    }
+
+    #[test]
+    fn a_poll_landing_mid_turn_keeps_the_working_a_title_set() {
+        let mut h = H::new();
+        h.title(0, "t1", "◐ Claude Code");
+        let was_working = has(h.ind.working_ids(), "t1");
+        h.poll(3000, "t1", true, Some(DetectedAgent::Claude));
+        assert_eq!(has(h.ind.working_ids(), "t1"), was_working);
+        assert!(h.ind.done_ids().is_empty());
     }
 
     #[test]

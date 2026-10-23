@@ -150,6 +150,21 @@ thread_local! {
     static WORN_LINK: Cell<Option<flare_render::color::Rgba>> = const { Cell::new(None) };
 }
 
+thread_local! {
+    /// The find highlight colours the worn theme chose (`AppliedLook::find`), set by the look apply.
+    static WORN_FIND: Cell<Option<[flare_render::color::Rgba; 4]>> = const { Cell::new(None) };
+}
+
+/// Records the theme's find colours (match, its line, the active match, its line); junk is ignored.
+pub fn set_worn_find(find: &flare_theme::find_ink::FindInk) {
+    use flare_render::color::Rgba;
+    let all =
+        [&find.bg, &find.border, &find.active_bg, &find.active_border].map(|h| Rgba::from_hex(h));
+    if let [Some(a), Some(b), Some(c), Some(d)] = all {
+        WORN_FIND.with(|w| w.set(Some([a, b, c, d].map(|x| Rgba::rgb(x.r, x.g, x.b)))));
+    }
+}
+
 /// Records the theme's link colour for the decoration (a hex the theme computed; junk is ignored).
 pub fn set_worn_link(hex: &str) {
     if let Some(c) = flare_render::color::Rgba::from_hex(hex) {
@@ -159,9 +174,18 @@ pub fn set_worn_link(hex: &str) {
 
 /// The default ink with the worn theme's link colour, or `None` before any theme was worn.
 fn worn_ink() -> Option<DecorInk> {
-    WORN_LINK.with(Cell::get).map(|link| DecorInk {
-        link: flare_render::color::Rgba::rgb(link.r, link.g, link.b),
-        ..DecorInk::pt_default()
+    WORN_LINK.with(Cell::get).map(|link| {
+        let mut ink = DecorInk {
+            link: flare_render::color::Rgba::rgb(link.r, link.g, link.b),
+            ..DecorInk::pt_default()
+        };
+        if let Some([bg, border, active_bg, active_border]) = WORN_FIND.with(Cell::get) {
+            ink.find_bg = bg;
+            ink.find_border = border;
+            ink.active_bg = active_bg;
+            ink.active_border = active_border;
+        }
+        ink
     })
 }
 
@@ -953,10 +977,11 @@ impl TermUi {
             .with_emu(|em| em.find_start(&q, find::Dir::Prev, false));
     }
 
-    /// Closing clears the highlights and keeps the selection.
+    /// Closing clears the highlights and the selection the active match made (a selection the owner
+    /// made stays), so the next Ctrl+C interrupts the program instead of copying the match.
     pub fn find_close(&mut self) {
         if let Some(h) = self.find.handle.take() {
-            h.with_emu(|em| em.find_clear());
+            h.with_emu(|em| em.find_close());
         }
         let was = self.find.open;
         self.find.open = false;
@@ -1318,6 +1343,19 @@ mod tests {
         let ink = worn_ink().expect("worn");
         assert_eq!(ink.link, flare_render::color::Rgba::rgb(0x1a, 0x4f, 0x9c));
         assert_eq!(ink.selection, DecorInk::pt_default().selection);
+    }
+
+    /// Review #52: the find fills come from the worn theme, not from PT's fixed dark grey.
+    #[test]
+    fn the_worn_theme_find_colours_reach_the_ink() {
+        set_worn_link("#1a4f9c");
+        let find = flare_theme::find_ink::find_ink("#fafafa", "#383a42", "#4078f2");
+        set_worn_find(&find);
+        let ink = worn_ink().expect("worn");
+        let hex = |c: flare_render::color::Rgba| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+        assert_eq!(hex(ink.find_bg), find.bg);
+        assert_eq!(hex(ink.active_bg), find.active_bg);
+        assert_ne!(ink.find_bg, DecorInk::pt_default().find_bg);
     }
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
@@ -2461,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_find_clears_highlights_and_keeps_the_selection() {
+    fn closing_find_clears_highlights_and_the_selection_the_match_made() {
         let mut r = Rig::new(1.0);
         r.feed("foo x foo");
         r.with_tab(|ui, t| ui.toggle_find(t));
@@ -2472,7 +2510,10 @@ mod tests {
         r.ui.find_close();
         let d = r.frame();
         assert!(d.find.is_empty() && d.find_active.is_empty());
-        assert!(r.has_sel(), "the selection stays");
+        assert!(
+            !r.has_sel(),
+            "the match's selection goes with the find bar, so Ctrl+C reaches the program"
+        );
         assert!(!r.ui.find_state().open);
     }
 
