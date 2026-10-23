@@ -95,6 +95,20 @@ impl<C: ComponentHandle> Harness<C> {
         h
     }
 
+    /// The display scaling changes under the window (it moved to another monitor, or the user
+    /// changed it): the same css size, a new count of device pixels.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+        self.win.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        self.win.set_size(PhysicalSize::new(
+            self.phys(self.css.0 as f32),
+            self.phys(self.css.1 as f32),
+        ));
+        slint::platform::update_timers_and_animations();
+    }
+
     pub fn scale(&self) -> f32 {
         self.scale
     }
@@ -111,6 +125,11 @@ impl<C: ComponentHandle> Harness<C> {
         self.win.dispatch_event(WindowEvent::PointerMoved {
             position: Self::at(x, y),
         });
+    }
+
+    /// The pointer leaves the window (winit's `CursorLeft`).
+    pub fn leave(&self) {
+        self.win.dispatch_event(WindowEvent::PointerExited);
     }
 
     pub fn press(&self, x: f32, y: f32, b: PointerEventButton) {

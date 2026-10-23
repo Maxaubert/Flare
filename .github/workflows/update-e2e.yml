@@ -48,6 +48,9 @@ jobs:
       - name: Build with live-updates, into its own target folder
         run: cargo build --release -p flare --features live-updates --target-dir target-update
 
+      - name: Build the MCP server beside it (pack.ps1 copies it from beside flare.exe)
+        run: cargo build --release -p flare-mcp --target-dir target-update
+
       - name: Build the Parakeet host beside it (pack.ps1 copies it from beside flare.exe)
         run: cargo build --release -p flare-dictation --bin flare-parakeet-host --target-dir target-update
 

@@ -1,0 +1,845 @@
+// The panel slot (Surfaces stage 1): a header (title, close) and one native viewer, an image or a
+// read-only text file. The slot is placed by app.slint (right of the grid, after a splitter); this
+// file draws what is inside it. While the panel is closed nothing is drawn, no timer or animation
+// exists, and the controller keeps the picture and the rows empty.
+//
+// Whole device pixels everywhere (`Px.snap`), as the rest of the chrome. Nothing here moves on its own.
+
+import { Theme, Px, SettingsFixed } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+import { ChangesView, TasksView, ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
+
+// The header's close button: 20 px, the glyph 10 px, as the tab strip's close.
+component PanelClose inherits Rectangle {
+    in property <string> label: "Close panel";
+    callback clicked();
+    width: Px.snap(20px);
+    height: Px.snap(20px);
+    border-radius: Theme.radius-button;
+    background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    Path {
+        x: (parent.width - 10px) / 2 - self.stroke-width / 2;
+        y: (parent.height - 10px) / 2 - self.stroke-width / 2;
+        width: 10px + self.stroke-width;
+        height: 10px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: Glyphs.close;
+        fill: transparent;
+        stroke: ta.has-hover ? Theme.text : Theme.icon;
+        stroke-width: 2.2 * 10px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// A thin scroll thumb on the right edge, drawn like the terminal's: it only shows what the
+// view is, and takes no pointer.
+component PanelThumb inherits Rectangle {
+    in property <length> view-h;
+    in property <length> content-h;
+    in property <length> scrolled;   // the viewport's offset, negative or zero
+    visible: root.content-h > root.view-h + 1px;
+    width: Px.snap(6px);
+    height: root.view-h;
+    thumb := Rectangle {
+        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
+        property <length> travel: root.view-h - self.len;
+        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
+        x: 0px;
+        y: Px.snap(self.at * self.travel);
+        width: parent.width;
+        height: Px.snap(self.len);
+        border-radius: self.width / 2;
+        background: Theme.text.with-alpha(0.4);
+    }
+}
+
+// An image: fitted to the slot (never enlarged), or at one image pixel to one device pixel with
+// scrollbars of its own after a click. A picture with transparency sits on a checkerboard.
+component ImageView inherits Rectangle {
+    in property <image> picture;
+    in property <image> checker;
+    in property <bool> has-alpha;
+    in-out property <bool> actual;
+    callback pressed();
+
+    // The picture's own size in device pixels, as logical lengths.
+    out property <length> nat-w: root.picture.width * 1phx;
+    out property <length> nat-h: root.picture.height * 1phx;
+    // The share of its own size the picture is drawn at when it is fitted.
+    out property <float> fit: (root.nat-w <= 0px || root.nat-h <= 0px) ? 1.0 : min(1.0, min(root.width / root.nat-w, root.height / root.nat-h));
+    out property <bool> can-zoom: root.fit < 0.9999;
+    out property <bool> zoomed: root.actual && root.can-zoom;
+    // What is drawn now.
+    out property <length> shown-w: root.zoomed ? root.nat-w : Px.snap(root.nat-w * root.fit);
+    out property <length> shown-h: root.zoomed ? root.nat-h : Px.snap(root.nat-h * root.fit);
+    out property <length> image-x: img-box.absolute-position.x;
+    out property <length> image-y: img-box.absolute-position.y;
+
+    public function scroll-by(dx: length, dy: length) {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x + dx));
+        flick.content-y = min(0px, max(root.height - flick.content-height, flick.content-y + dy));
+    }
+    public function toggle() {
+        if (root.can-zoom) {
+            root.actual = !root.actual;
+        }
+    }
+    changed zoomed => {
+        // Zooming in starts on the middle of the picture.
+        flick.content-x = root.zoomed ? min(0px, (root.width - flick.content-width) / 2) : 0px;
+        flick.content-y = root.zoomed ? min(0px, (root.height - flick.content-height) / 2) : 0px;
+    }
+
+    clip: true;
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        interactive: root.zoomed;
+        content-width: max(root.shown-w, root.width);
+        content-height: max(root.shown-h, root.height);
+        img-box := Rectangle {
+            x: Px.snap((flick.content-width - self.width) / 2);
+            y: Px.snap((flick.content-height - self.height) / 2);
+            width: root.shown-w;
+            height: root.shown-h;
+            if root.has-alpha: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.checker;
+                horizontal-tiling: repeat;
+                vertical-tiling: repeat;
+            }
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.picture;
+                image-fit: fill;
+            }
+            TouchArea {
+                mouse-cursor: root.can-zoom ? MouseCursor.pointer : MouseCursor.default;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.pressed();
+                    }
+                }
+                clicked => { root.toggle(); }
+            }
+        }
+    }
+    PanelThumb {
+        x: root.width - self.width;
+        y: 0px;
+        view-h: root.height;
+        content-h: flick.content-height;
+        scrolled: flick.content-y;
+    }
+}
+
+// A text file: monospace, read-only, a line-number gutter, only the rows in view are drawn.
+component TextView inherits Rectangle {
+    in property <[string]> lines;
+    in property <int> max-cols;
+    in property <string> foot;   // "" or a note under the text (the file was cut)
+    // Wrapped rows: the line number of each row (0 on a continuation row); empty when the rows are the lines.
+    in property <[int]> nums;
+    // The rows are wrapped to the width (no horizontal scroll), and how many lines the file has.
+    in property <bool> wrapped;
+    // The columns the shown rows were wrapped to (0 while unwrapped). While a splitter drag narrows the slot the rows
+    // keep these columns, so the view stays as wide as they need (a temporary sideways scroll) instead of cutting them.
+    in property <int> wrapped-cols;
+    in property <int> number-count;
+    callback pressed();
+
+    out property <length> row-h: Px.snap(18px);
+    out property <length> foot-h: root.foot == "" ? 0px : Px.snap(22px);
+    out property <length> view-h: root.height - root.foot-h;
+    out property <int> line-count: root.lines.length;
+    out property <length> content-h: root.line-count * root.row-h;
+    out property <length> char-w: probe.preferred-width;
+    property <int> numbered: root.number-count > 0 ? root.number-count : root.line-count;
+    property <int> digits: root.numbered >= 100000 ? 6 : (root.numbered >= 10000 ? 5 : (root.numbered >= 1000 ? 4 : 3));
+    out property <length> gutter-w: Px.snap(root.digits * root.char-w + 20px);
+    // The columns that fit beside the gutter, for the controller to wrap to. The thumb's strip and a little air are
+    // kept clear so a full row never runs under the scrollbar.
+    out property <int> wrap-cols: root.char-w <= 0px ? 0 : max(8, floor((root.width - root.gutter-w - Px.snap(16px)) / root.char-w));
+    property <int> first: max(0, floor(-flick.content-y / root.row-h + 0.01));
+    property <int> count: ceil(root.view-h / root.row-h) + 2;
+    out property <int> first-line: root.first;
+    out property <length> content-w: flick.content-width;
+    out property <length> scroll-x: flick.content-x;
+    out property <length> scroll-y: flick.content-y;
+
+    public function scroll-by(dx: length, dy: length) {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x + dx));
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, flick.content-y + dy));
+    }
+    public function scroll-to(top: bool) {
+        flick.content-y = top ? 0px : min(0px, root.view-h - flick.content-height);
+    }
+    // Puts `row` at the top (kept inside the content), for a re-wrap that keeps the reader's line.
+    public function scroll-to-row(row: int) {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, -row * root.row-h));
+    }
+    // Wrapping flips: every row starts at the left edge again.
+    changed wrapped => {
+        flick.content-x = 0px;
+    }
+    // The rows were re-made at another width: the viewport stays inside the new content.
+    changed wrapped-cols => {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x));
+    }
+    changed line-count => {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, flick.content-y));
+    }
+
+    clip: true;
+    // Measures one character; never drawn.
+    probe := Text {
+        visible: false;
+        text: "M";
+        font-family: SettingsFixed.font-mono;
+        font-size: 12px;
+    }
+    flick := Flickable {
+        width: root.width;
+        height: root.view-h;
+        content-width: root.wrapped ? max(root.width, root.gutter-w + root.wrapped-cols * root.char-w + Px.snap(16px)) : max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
+        content-height: max(root.content-h, root.view-h);
+        for k in root.count: Rectangle {
+            property <int> n: root.first + k;
+            y: self.n * root.row-h;
+            height: root.row-h;
+            width: flick.content-width;
+            visible: self.n < root.line-count;
+            Text {
+                x: 0px;
+                width: root.gutter-w - 10px;
+                height: parent.height;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                text: root.nums.length == 0 ? "" + (parent.n + 1) : (parent.n < root.nums.length && root.nums[parent.n] > 0 ? "" + root.nums[parent.n] : "");
+                font-family: SettingsFixed.font-mono;
+                font-size: 12px;
+                color: Theme.dim2;
+            }
+            Text {
+                x: root.gutter-w;
+                height: parent.height;
+                vertical-alignment: center;
+                text: root.lines[parent.n];
+                wrap: no-wrap;
+                font-family: SettingsFixed.font-mono;
+                font-size: 12px;
+                color: Theme.text;
+            }
+        }
+        TouchArea {
+            width: flick.content-width;
+            height: flick.content-height;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.pressed();
+                }
+            }
+        }
+    }
+    PanelThumb {
+        x: root.width - self.width;
+        y: 0px;
+        view-h: root.view-h;
+        content-h: flick.content-height;
+        scrolled: flick.content-y;
+    }
+    if root.foot != "": Rectangle {
+        y: root.view-h;
+        width: root.width;
+        height: root.foot-h;
+        background: Theme.side-flat;
+        Rectangle {
+            width: parent.width;
+            height: Px.hair();
+            background: Theme.divider;
+        }
+        Text {
+            x: Px.snap(10px);
+            width: parent.width - Px.snap(20px);
+            height: parent.height;
+            vertical-alignment: center;
+            text: root.foot;
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: Theme.dim;
+            overflow: elide;
+        }
+    }
+}
+
+
+// One of the browser bar's buttons: a 24 px square with a 12 px glyph, dimmed when it cannot act.
+component WebButton inherits Rectangle {
+    in property <string> path;
+    in property <string> label;
+    in property <bool> live: true;
+    // A toggle that is on (the header's wrap button): a resting fill and the full ink.
+    in property <bool> on: false;
+    callback activated();
+    width: Px.snap(24px);
+    height: Px.snap(24px);
+    border-radius: Theme.radius-button;
+    background: root.live && ta.has-hover ? (root.on ? Theme.hover-hi : Theme.hover) : (root.on ? Theme.hover : transparent);
+    opacity: root.live ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if (root.live) { root.activated(); } }
+    Path {
+        x: (parent.width - 12px) / 2 - self.stroke-width / 2;
+        y: (parent.height - 12px) / 2 - self.stroke-width / 2;
+        width: 12px + self.stroke-width;
+        height: 12px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.path;
+        fill: transparent;
+        stroke: root.live && (ta.has-hover || root.on) ? Theme.text : Theme.icon;
+        stroke-width: 2.2 * 12px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    ta := TouchArea {
+        enabled: root.live;
+        clicked => { root.activated(); }
+    }
+}
+
+// The browser bar of a web panel: back, forward, reload (stop while a page loads) and the address.
+// Enter opens what is typed, Escape puts the address of the page back and hands the keys to the terminal.
+component WebBar inherits Rectangle {
+    in property <string> url;
+    in property <bool> loading;
+    in property <bool> can-back;
+    in property <bool> can-forward;
+    in-out property <string> draft;
+    out property <bool> input-has-focus: input.has-focus;
+    out property <length> field-x: field.absolute-position.x;
+    out property <length> field-y: field.absolute-position.y;
+    out property <length> field-w: field.width;
+    out property <length> field-h: field.height;
+    callback back();
+    callback forward();
+    callback reload();
+    callback stop();
+    callback submit(string);
+    callback escape();
+    public function focus-address() { input.focus(); input.select-all(); }
+
+    // The field shows the address of the page unless it is being typed in.
+    changed url => {
+        if (!input.has-focus) {
+            root.draft = root.url;
+        }
+    }
+    init => { root.draft = root.url; }
+
+    background: Theme.tabs;
+    WebButton {
+        x: Px.snap(8px);
+        y: (parent.height - self.height) / 2;
+        path: Glyphs.chevron-left;
+        label: "Back";
+        live: root.can-back;
+        activated => { root.back(); }
+    }
+    WebButton {
+        x: Px.snap(8px + 24px + 2px);
+        y: (parent.height - self.height) / 2;
+        path: Glyphs.chevron-right;
+        label: "Forward";
+        live: root.can-forward;
+        activated => { root.forward(); }
+    }
+    WebButton {
+        x: Px.snap(8px + 2 * (24px + 2px));
+        y: (parent.height - self.height) / 2;
+        path: root.loading ? Glyphs.close : Glyphs.reload;
+        label: root.loading ? "Stop loading" : "Reload";
+        activated => { if (root.loading) { root.stop(); } else { root.reload(); } }
+    }
+    field := Rectangle {
+        x: Px.snap(8px + 3 * (24px + 2px) + 4px);
+        y: (parent.height - self.height) / 2;
+        width: parent.width - self.x - Px.snap(8px);
+        height: Px.snap(24px);
+        background: Theme.ground;
+        border-radius: Theme.radius-sm;
+        border-width: Px.hair();
+        border-color: input.has-focus ? Theme.dim : Theme.divider;
+        clip: true;
+        FocusScope {
+            x: Px.snap(8px);
+            width: parent.width - Px.snap(16px);
+            height: parent.height;
+            capture-key-pressed(event) => {
+                if (event.text == Key.Return) {
+                    root.submit(input.text);
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    root.draft = root.url;
+                    root.escape();
+                    return accept;
+                }
+                reject
+            }
+            input := TextInput {
+                width: parent.width;
+                height: parent.height;
+                text <=> root.draft;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: Theme.text;
+                vertical-alignment: center;
+                single-line: true;
+                accessible-role: text-input;
+                accessible-label: "Address";
+                changed has-focus => {
+                    if (self.has-focus) {
+                        self.select-all();
+                    } else {
+                        root.draft = root.url;
+                    }
+                }
+            }
+            if input.text == "" : Text {
+                width: parent.width;
+                height: parent.height;
+                text: "Type an address";
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: Theme.dim2;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - Px.hair();
+        width: parent.width;
+        height: Px.hair();
+        background: Theme.divider;
+    }
+}
+
+// What the slot shows while there is no picture or text: a note in the middle (reading, or why not).
+component PanelNote inherits Rectangle {
+    in property <string> text;
+    Text {
+        x: Px.snap(16px);
+        width: parent.width - Px.snap(32px);
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        text: root.text;
+        font-family: Theme.font-ui;
+        font-size: 12.5px;
+        color: Theme.dim;
+    }
+}
+
+export component PanelSlot inherits Rectangle {
+    // The slot is drawn only while open. Everything else is set by app.slint from the controller.
+    in property <bool> open;
+    // 0 nothing yet (a note), 1 image, 2 text, 3 a web page (the browser's own window covers the box),
+    // 4 the Changes of the conversation, 5 its Tasks (stage 6).
+    in property <int> kind;
+    in property <string> title;
+    in property <string> sub;
+    in property <string> note;
+    in property <image> picture;
+    in property <image> checker;
+    in property <bool> has-alpha;
+    in-out property <bool> actual;
+    in property <[string]> lines;
+    in property <int> max-cols;
+    in property <string> foot;
+    // The conversation (kinds 4 and 5): the changed files, the selected file's diff rows, the task rows.
+    in property <[ConvoFileRow]> convo-files;
+    in property <[ConvoDiffRow]> convo-rows;
+    in property <int> convo-max-cols;
+    in property <string> convo-selected;
+    in property <[ConvoTaskRow]> convo-tasks;
+    public function convo-reset-scroll() {
+        changes.reset-scroll();
+        tasks.reset-scroll();
+    }
+    out property <int> convo-list-built: changes.list-built;
+    out property <int> convo-list-first: changes.list-first;
+    out property <int> convo-diff-built: changes.diff-built;
+    out property <int> convo-diff-first: changes.diff-first;
+    out property <length> convo-diff-row-h: changes.diff-row-h;
+    out property <length> convo-list-row-h: changes.list-row-h;
+    out property <int> convo-task-rows: tasks.row-count;
+    out property <length> convo-task-content-h: tasks.content-h;
+    callback convo-select(string);
+    callback convo-open(string);
+    callback convo-toggle(string);
+    // A web page (kind 3): the bar, and the still drawn while an overlay hides the browser window.
+    in property <string> web-url;
+    // A mini-app: no bar (the address is Flare's own and the page cannot navigate).
+    in property <bool> web-app;
+    in property <bool> web-loading;
+    in property <bool> web-can-back;
+    in property <bool> web-can-forward;
+    in property <image> web-still;
+    in property <bool> web-has-still;
+    in property <bool> web-missing-runtime;
+    // "Claude is using this page" while an agent works in the page (empty: no ribbon). It covers the
+    // head's title, so the page below keeps its size.
+    in property <string> web-ribbon;
+    out property <bool> ribbon-shown: root.open && root.kind == 3 && root.web-ribbon != "";
+    out property <length> ribbon-w: ribbon.width;
+    // The bar is part of the head of a web panel (the page starts under it).
+    out property <length> bar-h: (root.kind == 3 && !root.web-app) ? Px.snap(32px) : 0px;
+    out property <length> web-x: web-box.absolute-position.x;
+    out property <length> web-y: web-box.absolute-position.y;
+    out property <length> web-w: web-box.width;
+    out property <length> web-h: web-box.height;
+    out property <bool> web-input-focused: root.open && web-bar.input-has-focus;
+    out property <length> web-field-x: web-bar.field-x;
+    out property <length> web-field-w: web-bar.field-w;
+    out property <string> web-draft: web-bar.draft;
+    callback web-back();
+    callback web-forward();
+    callback web-reload();
+    callback web-stop();
+    callback web-submit(string);
+    callback web-download();
+    public function focus-address() { web-bar.focus-address(); }
+
+    // The panel's own pieces in the window, for ui.rect and the tests.
+    out property <length> header-h: Px.snap(32px);
+    out property <length> body-x: body.absolute-position.x;
+    out property <length> body-y: body.absolute-position.y;
+    out property <length> body-w: body.width;
+    out property <length> body-h: body.height;
+    out property <length> image-x: img.image-x;
+    out property <length> image-y: img.image-y;
+    out property <length> image-w: img.shown-w;
+    out property <length> image-h: img.shown-h;
+    out property <bool> image-zoomed: img.zoomed;
+    out property <bool> image-can-zoom: img.can-zoom;
+    out property <length> text-gutter-w: txt.gutter-w;
+    out property <int> text-first-line: txt.first-line;
+    out property <int> text-wrap-cols: txt.wrap-cols;
+    out property <length> text-content-w: txt.content-w;
+    out property <length> text-scroll-x: txt.scroll-x;
+    out property <length> text-scroll-y: txt.scroll-y;
+    public function text-scroll-to-row(row: int) { txt.scroll-to-row(row); }
+    public function text-scroll-by(dx: length, dy: length) { txt.scroll-by(dx, dy); }
+    out property <length> wrap-button-x: wrap-btn.absolute-position.x;
+    out property <length> wrap-button-y: wrap-btn.absolute-position.y;
+    out property <length> wrap-button-w: wrap-btn.width;
+    // The slot holds the keys (the controller moves them here on a click or the focus chord).
+    out property <bool> has-focus: root.open && keys.has-focus;
+
+    // The header's wrap button (a text file): the setting, and a press to flip it. `wrapped` says the rows are wrapped now.
+    in property <bool> wrap-on;
+    in property <bool> wrapped;
+    in property <int> wrapped-cols;
+    in property <[int]> line-nums;
+    in property <int> number-count;
+    // The room the wrap button takes in the header (a text file only).
+    property <length> head-extra: root.kind == 2 ? Px.snap(28px) : 0px;
+    callback wrap-toggled();
+    callback close();
+    callback escape();
+    callback pressed();
+    public function focus-panel() { keys.focus(); }
+
+    background: transparent;
+
+    // Zero-sized: it never takes a pointer; the keys of the panel come here once it has the focus.
+    keys := FocusScope {
+        width: 0px;
+        height: 0px;
+        key-pressed(event) => {
+            if (!root.open) {
+                return reject;
+            }
+            if (event.text == Key.Escape) {
+                root.escape();
+                return accept;
+            }
+            if (root.kind == 2) {
+                if (event.text == Key.UpArrow) { txt.scroll-by(0px, txt.row-h); return accept; }
+                if (event.text == Key.DownArrow) { txt.scroll-by(0px, -txt.row-h); return accept; }
+                if (event.text == Key.PageUp) { txt.scroll-by(0px, txt.view-h - txt.row-h); return accept; }
+                if (event.text == Key.PageDown) { txt.scroll-by(0px, -(txt.view-h - txt.row-h)); return accept; }
+                if (event.text == Key.Home) { txt.scroll-to(true); return accept; }
+                if (event.text == Key.End) { txt.scroll-to(false); return accept; }
+                if (event.text == Key.LeftArrow) { txt.scroll-by(Px.snap(24px), 0px); return accept; }
+                if (event.text == Key.RightArrow) { txt.scroll-by(-Px.snap(24px), 0px); return accept; }
+            }
+            if (root.kind == 4) {
+                if (event.text == Key.UpArrow) { changes.scroll-by(0px, changes.diff-row-h); return accept; }
+                if (event.text == Key.DownArrow) { changes.scroll-by(0px, -changes.diff-row-h); return accept; }
+                if (event.text == Key.PageUp) { changes.scroll-by(0px, changes.page()); return accept; }
+                if (event.text == Key.PageDown) { changes.scroll-by(0px, -changes.page()); return accept; }
+                if (event.text == Key.Home) { changes.scroll-to(true); return accept; }
+                if (event.text == Key.End) { changes.scroll-to(false); return accept; }
+                if (event.text == Key.LeftArrow && changes.in-diff) { changes.scroll-by(Px.snap(24px), 0px); return accept; }
+                if (event.text == Key.RightArrow && changes.in-diff) { changes.scroll-by(-Px.snap(24px), 0px); return accept; }
+                if (event.text == Key.Backspace && changes.in-diff) { changes.back(); return accept; }
+            }
+            if (root.kind == 5) {
+                if (event.text == Key.UpArrow) { tasks.scroll-by(Px.snap(24px)); return accept; }
+                if (event.text == Key.DownArrow) { tasks.scroll-by(-Px.snap(24px)); return accept; }
+                if (event.text == Key.PageUp) { tasks.scroll-by(root.body-h - Px.snap(24px)); return accept; }
+                if (event.text == Key.PageDown) { tasks.scroll-by(-(root.body-h - Px.snap(24px))); return accept; }
+                if (event.text == Key.Home) { tasks.scroll-to(true); return accept; }
+                if (event.text == Key.End) { tasks.scroll-to(false); return accept; }
+            }
+            if (root.kind == 1) {
+                if (event.text == Key.UpArrow) { img.scroll-by(0px, Px.snap(24px)); return accept; }
+                if (event.text == Key.DownArrow) { img.scroll-by(0px, -Px.snap(24px)); return accept; }
+                if (event.text == Key.LeftArrow) { img.scroll-by(Px.snap(24px), 0px); return accept; }
+                if (event.text == Key.RightArrow) { img.scroll-by(-Px.snap(24px), 0px); return accept; }
+                if (event.text == " " || event.text == "\n") { img.toggle(); return accept; }
+            }
+            return reject;
+        }
+    }
+
+    // Everything below is always in the tree and drawn only while open; the controller keeps the
+    // picture and the rows empty while the slot is closed or shows the other kind.
+    Rectangle {
+        visible: root.open;
+        width: root.width;
+        height: root.height;
+        clip: true;
+        background: Theme.ground;
+        // A click anywhere in the slot, on the header or beside a picture, gives it the keys.
+        TouchArea {
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.pressed();
+                }
+            }
+        }
+        // The header.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: root.header-h;
+            background: Theme.tabs;
+            Text {
+                x: Px.snap(12px);
+                width: parent.width - Px.snap(12px) - Px.snap(8px) - close-btn.width - Px.snap(8px) - root.head-extra - (root.sub == "" ? 0px : Px.snap(sub-text.preferred-width + 10px));
+                height: parent.height;
+                vertical-alignment: center;
+                text: root.title;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            sub-text := Text {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(8px) - root.head-extra - self.preferred-width;
+                height: parent.height;
+                vertical-alignment: center;
+                visible: root.sub != "";
+                text: root.sub;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                color: Theme.dim;
+            }
+            ribbon := Rectangle {
+                x: 0px;
+                width: parent.width - close-btn.width - Px.snap(16px);
+                height: parent.height - Px.hair();
+                visible: root.kind == 3 && root.web-ribbon != "";
+                // Opaque, so the page's title and the note under it do not show through the tint.
+                background: Theme.tabs;
+                accessible-role: text;
+                accessible-label: root.web-ribbon;
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    background: Theme.accent.with-alpha(0.22);
+                }
+                Rectangle {
+                    x: Px.snap(12px);
+                    y: (parent.height - self.height) / 2;
+                    width: Px.snap(7px);
+                    height: Px.snap(7px);
+                    border-radius: Px.snap(4px);
+                    background: Theme.accent;
+                }
+                Text {
+                    x: Px.snap(26px);
+                    width: parent.width - Px.snap(26px) - Px.snap(8px);
+                    height: parent.height;
+                    vertical-alignment: center;
+                    text: root.web-ribbon;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.accent-hi;
+                    overflow: elide;
+                }
+            }
+            // The wrap button sits left of the close button, on a text file only.
+            wrap-btn := WebButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 2;
+                path: Glyphs.wrap;
+                label: root.wrap-on ? "Wrap long lines: on" : "Wrap long lines: off";
+                on: root.wrap-on;
+                activated => { root.wrap-toggled(); }
+            }
+            close-btn := PanelClose {
+                x: parent.width - self.width - Px.snap(8px);
+                y: (parent.height - self.height) / 2;
+                clicked => { root.close(); }
+            }
+            Rectangle {
+                y: parent.height - Px.hair();
+                width: parent.width;
+                height: Px.hair();
+                background: Theme.divider;
+            }
+        }
+        web-bar := WebBar {
+            x: 0px;
+            y: root.header-h;
+            width: parent.width;
+            height: root.bar-h;
+            visible: root.kind == 3 && !root.web-app;
+            url: root.web-url;
+            loading: root.web-loading;
+            can-back: root.web-can-back;
+            can-forward: root.web-can-forward;
+            back => { root.web-back(); }
+            forward => { root.web-forward(); }
+            reload => { root.web-reload(); }
+            stop => { root.web-stop(); }
+            submit(text) => { root.web-submit(text); }
+            escape => { root.escape(); }
+        }
+        body := Rectangle {
+            x: 0px;
+            y: root.header-h + root.bar-h;
+            width: parent.width;
+            height: parent.height - root.header-h - root.bar-h;
+            clip: true;
+            // Where the browser window sits: the body less half the splitter's grab zone (the zone is centred
+            // on the slot's edge, and a child window takes the mouse above anything drawn, so none of it may
+            // lie under the page). While an overlay hides the window, a still of its last frame is drawn here.
+            web-box := Rectangle {
+                x: Px.snap(4px);
+                width: parent.width - Px.snap(4px);
+                height: parent.height;
+                visible: root.kind == 3;
+                background: root.web-has-still ? Theme.ground : transparent;
+                if root.web-has-still: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.web-still;
+                    image-fit: fill;
+                }
+            }
+            img := ImageView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.kind == 1;
+                picture: root.picture;
+                checker: root.checker;
+                has-alpha: root.has-alpha;
+                actual <=> root.actual;
+                pressed => { root.pressed(); }
+            }
+            txt := TextView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.kind == 2;
+                lines: root.lines;
+                max-cols: root.max-cols;
+                foot: root.foot;
+                nums: root.line-nums;
+                wrapped: root.wrapped;
+                wrapped-cols: root.wrapped-cols;
+                number-count: root.number-count;
+                pressed => { root.pressed(); }
+            }
+            changes := ChangesView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.kind == 4;
+                files: root.convo-files;
+                rows: root.convo-rows;
+                max-cols: root.convo-max-cols;
+                selected: root.convo-selected;
+                select(p) => { root.convo-select(p); }
+                open(p) => { root.convo-open(p); }
+                pressed => { root.pressed(); }
+            }
+            tasks := TasksView {
+                width: parent.width;
+                height: parent.height;
+                visible: root.kind == 5;
+                rows: root.convo-tasks;
+                toggle(k) => { root.convo-toggle(k); }
+                pressed => { root.pressed(); }
+            }
+            if root.note != "": PanelNote {
+                width: parent.width;
+                height: parent.height;
+                text: root.note;
+            }
+            if root.web-missing-runtime && root.kind == 3: Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: parent.height / 2 + Px.snap(56px);
+                width: Px.snap(190px);
+                height: Px.snap(28px);
+                border-radius: Theme.radius-button;
+                background: dl-ta.has-hover ? Theme.hover : transparent;
+                border-width: Px.hair();
+                border-color: Theme.divider;
+                accessible-role: button;
+                accessible-label: "Open the download page";
+                accessible-action-default => { root.web-download(); }
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Open the download page";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.text;
+                }
+                dl-ta := TouchArea {
+                    clicked => { root.web-download(); }
+                }
+            }
+        }
+        // The slot's left edge: a hairline, the splitter's visible part.
+        Rectangle {
+            x: 0px;
+            width: Px.hair();
+            height: parent.height;
+            background: Theme.divider;
+        }
+    }
+}

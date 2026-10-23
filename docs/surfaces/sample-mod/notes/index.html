@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Notes</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 12px 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  ol { margin: 0; padding-left: 22px; }
+  li { margin: 3px 0; overflow-wrap: anywhere; }
+  .empty { margin: 0; opacity: 0.6; }
+</style>
+</head>
+<body>
+<h1>Notes</h1>
+<ol id="list"></ol>
+<p class="empty" id="empty">Nothing yet. Claude can add a line with append_note.</p>
+<script>
+// The sample mod. It talks to Flare only through window.flare (docs/surfaces/mods.md, "The bridge").
+// The agent's append_note call arrives as a "tool" event; the page answers it with respond().
+(function () {
+  var KEY = 'notes';
+  var notes = [];
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || '[]');
+    if (Array.isArray(saved)) notes = saved.filter(function (n) { return typeof n === 'string'; });
+  } catch (e) {
+    notes = [];
+  }
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(notes)); } catch (e) { /* not kept this session */ }
+  }
+
+  function render() {
+    var list = document.getElementById('list');
+    list.textContent = '';
+    notes.forEach(function (text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    });
+    document.getElementById('empty').hidden = notes.length > 0;
+  }
+
+  window.flare.on('tool', function (call) {
+    if (call.tool !== 'append_note') {
+      window.flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    var text = call.input && typeof call.input.text === 'string' ? call.input.text.trim() : '';
+    if (text.length < 1 || text.length > 500) {
+      window.flare.respond(call.callId, null, 'text must be 1 to 500 characters');
+      return;
+    }
+    notes.push(text);
+    save();
+    render();
+    window.flare.respond(call.callId, { count: notes.length });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

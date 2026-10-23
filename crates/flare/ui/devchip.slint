@@ -1,0 +1,67 @@
+// The "Preview" chip of a tab (Surfaces stage 7): a small pill in the top right of the terminal while a local dev server
+// the tab started is listening. A click opens it in the tab's web panel. It is drawn over the grid (the find bar, which
+// is above it, covers it while open) and takes no key: it is a pointer control, like the update chip.
+
+import { Theme, Px } from "theme.slint";
+
+export component PreviewChip inherits Rectangle {
+    // "localhost:5173"; the chip is hidden while this is empty.
+    in property <string> label;
+    // The full origin the chip opens ("http://localhost:5173/"), shown as the tooltip.
+    in property <string> tip-text;
+    callback clicked();
+    callback tip(string, length, length, length, length);
+
+    height: Px.snap(26px);
+    width: Px.snap(10px + 12px + 6px + words.preferred-width + 6px + host.preferred-width + 12px);
+    border-radius: Px.snap(13px);
+    background: ta.has-hover ? Theme.hover-hi : Theme.tabs;
+    border-width: Px.hair();
+    border-color: Theme.accent.with-alpha(0.7);
+    accessible-role: button;
+    accessible-label: "Preview " + root.label + " in a panel";
+    accessible-action-default => { root.clicked(); }
+
+    // A play triangle in the accent.
+    Path {
+        x: Px.snap(10px);
+        y: Px.snap((parent.height - 11px) / 2);
+        width: 12px;
+        height: 11px;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: "M7 4.5v15l12-7.5z";
+        fill: Theme.accent-hi;
+        stroke: transparent;
+    }
+    words := Text {
+        x: Px.snap(10px + 12px + 6px);
+        y: Px.snap((parent.height - self.preferred-height) / 2);
+        text: "Preview";
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: 600;
+        color: Theme.accent-hi;
+    }
+    host := Text {
+        x: words.x + words.preferred-width + Px.snap(6px);
+        y: Px.snap((parent.height - self.preferred-height) / 2);
+        text: root.label;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        color: Theme.text;
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if (root.tip-text != "") {
+                if (self.has-hover) {
+                    root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+}

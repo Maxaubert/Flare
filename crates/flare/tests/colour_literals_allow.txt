@@ -40,3 +40,10 @@ crates/flare/src/ui_tests/settings_layout.rs | #222222 | a fixture colour of the
 crates/flare/src/ui_tests/settings_layout.rs | #333333 | a fixture colour of the test environment (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
 crates/flare/src/ui_tests/menus.rs | #00000080 | the test checks the drop shadow colour text that menus.slint declares (a source string the scan reads, not a painted colour)
 crates/flare/src/ui_tests/settings_live.rs | #ff0000 | the accent a test types into the Accent colour row (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see)
+// 2026-10-22: the icon artwork's own two flames (assets/icon/flare-color.svg), never theme values.
+crates/flare/src/e2e_probes/chrome.rs | #ff4800 | the start screen mark's first stop in the icon artwork, reported by `start.state` so the e2e can check the mark is the icon's own two tones; never a theme value
+crates/flare/src/e2e_probes/chrome.rs | #ffc500 | the start screen mark's first stop in the icon artwork, reported by `start.state` so the e2e can check the mark is the icon's own two tones; never a theme value
+crates/flare/src/ui_tests/start.rs | #FF4800 | a stop of the icon artwork's gradients that the start screen mark test checks (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see); never a theme value
+crates/flare/src/ui_tests/start.rs | #FF4000 | a stop of the icon artwork's gradients that the start screen mark test checks (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see); never a theme value
+crates/flare/src/ui_tests/start.rs | #FFC500 | a stop of the icon artwork's gradients that the start screen mark test checks (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see); never a theme value
+crates/flare/src/ui_tests/start.rs | #FFD000 | a stop of the icon artwork's gradients that the start screen mark test checks (the module is cfg(test) from ui_tests/mod.rs, which the file scan does not see); never a theme value

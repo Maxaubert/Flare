@@ -223,7 +223,7 @@ pub fn open_settings(ctx: &mut Ctx, app: &mut App) -> bool {
 }
 
 /// Chooses a rail page by its rectangle and waits until its rows answer for it.
-fn goto_page(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
+pub fn goto_page(ctx: &mut Ctx, app: &mut App, id: &str) -> bool {
     if let Some(r) = rect_of(&probe(app, "settings.rail", json!({ "id": id }))) {
         let (x, y) = centre(r);
         let _ = app.session.click(x, y);

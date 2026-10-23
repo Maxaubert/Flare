@@ -249,7 +249,12 @@ export component ContextMenu inherits Rectangle {
         col := VerticalLayout {
             padding: Px.hair();
             for r[i] in root.rows: VerticalLayout {
-                if r.parent < 0 && i > 0: Rectangle { height: Px.hair(); background: Theme.divider; }
+                if r.parent < 0 && i > 0: Rectangle {
+                    // A group starts after a wider gap with the rule in the middle of it (whole pixels).
+                    height: r.group ? Px.snap(9px) : Px.hair();
+                    background: r.group ? transparent : Theme.divider;
+                    if r.group: Rectangle { y: Px.snap(4px); height: Px.hair(); background: Theme.divider; }
+                }
                 if r.parent < 0: MenuItem {
                     item: r;
                     index: i;

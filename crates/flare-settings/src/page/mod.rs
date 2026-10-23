@@ -7,6 +7,7 @@ pub mod agents;
 pub mod appearance;
 pub mod dictation;
 pub mod misc;
+pub mod mods;
 pub mod terminal;
 
 use crate::kv::PrefStore;
@@ -186,6 +187,8 @@ pub struct PageEnv<'a> {
     pub agent_key_labels: String,
     /// Font id to the first installed family of its stack.
     pub face_of: &'a dyn Fn(&str) -> String,
+    /// What the Mods page shows (Surfaces stage 8); `None` builds it empty.
+    pub mods: Option<&'a mods::ModsInfo>,
 }
 
 /// The Dictation page's content. The app's provider (`flare`'s `dictation_page`, M8 Task 24) fills it.
@@ -314,6 +317,7 @@ pub fn build_page(id: &str, env: &PageEnv<'_>, dictation: &dyn DictationPage) ->
         "terminal" => terminal::build_terminal(env),
         "agents" => agents::build(env),
         "dictation" => misc::build_dictation(env, dictation),
+        "mods" => mods::build(env),
         "diagnostics" => misc::build_diagnostics(env),
         "about" => misc::build_about(env),
         _ => appearance::build(env),
@@ -363,6 +367,41 @@ pub(crate) mod test_env {
             agent_colours: [String::new(), String::new(), String::new()],
             agent_key_labels: String::new(),
             face_of,
+            mods: None,
+        };
+        f(&env)
+    }
+
+    /// A page environment that holds this Mods page content.
+    pub(crate) fn with_env_mods<R>(info: mods::ModsInfo, f: impl FnOnce(&PageEnv<'_>) -> R) -> R {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        let face_of: &dyn Fn(&str) -> String = &face;
+        let env = PageEnv {
+            prefs: &prefs,
+            look: &look,
+            shells: None,
+            verb: VerbState::Busy,
+            home: String::new(),
+            version: "0.0.0".to_string(),
+            copyright: String::new(),
+            glass: GlassSupport::Ok,
+            diag: DiagInfo {
+                verbose: false,
+                dir: String::new(),
+            },
+            diag_marked: false,
+            nvidia: false,
+            dictation_wired: false,
+            theme_colours: ThemeColours {
+                accent: String::new(),
+                background: String::new(),
+                secondary: String::new(),
+            },
+            agent_colours: [String::new(), String::new(), String::new()],
+            agent_key_labels: String::new(),
+            face_of,
+            mods: Some(&info),
         };
         f(&env)
     }

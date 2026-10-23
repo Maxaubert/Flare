@@ -34,7 +34,9 @@ use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServ
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
-use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
+use slint::winit_030::winit::event::{
+    ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::{EventResult, WinitWindowAccessor};
@@ -369,6 +371,27 @@ pub enum HandlePoll {
     Wait,
     /// Looked `max` times in vain: say so and stop.
     GiveUp,
+}
+
+/// The debounced stores a run keeps: tabs, window, prefs and panels.
+type Stores = (
+    Arc<TabsStore>,
+    Arc<WindowStateStore>,
+    PrefStore,
+    Arc<flare_surfaces::store::PanelStore>,
+);
+
+/// Every debounced store written now: the logoff closure and the end of `run`.
+fn flush_stores(
+    tabs: &TabsStore,
+    window: &WindowStateStore,
+    prefs: &PrefStore,
+    panels: &flare_surfaces::store::PanelStore,
+) {
+    window.flush();
+    tabs.flush();
+    prefs.flush();
+    panels.flush();
 }
 
 /// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
@@ -812,6 +835,8 @@ pub fn run_window(
     // The clipboard the controller uses; the e2e glue writes the in-memory one under `--e2e`.
     let mut backends_clip: Option<Arc<dyn flare_win::clipboard_port::ClipboardPort>> = None;
     let mut session_end = None;
+    // The control channel's server (Surfaces stage 2); stopped right after the loop ends.
+    let mut ctl_server: Option<crate::ctl_app::CtlServer> = None;
     // The Explorer verb (reconciled on a worker after the restore) and the update engine (started
     // after the window is shown), both made with the controller (M9 Task 32).
     let mut verb_switch: Option<Arc<flare_win::verb_switch::VerbSwitch>> = None;
@@ -819,7 +844,7 @@ pub fn run_window(
         Arc<flare_update::engine::Engine>,
         Option<flare_update::types::Offer>,
     )> = None;
-    let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
+    let mut stores: Option<Stores> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
         let prefs = PrefStore::new(Arc::new(FileBackend::open(
@@ -852,13 +877,37 @@ pub fn run_window(
             Arc::new(move || post(UiMsg::HostWake))
         };
         let e2e_on = args.e2e;
-        let tab_host = TabHost::new(
+        // The control channel's name is per user and per profile; every shell is told it, with its own
+        // secret (Surfaces stage 2). A run that cannot name it (no SID) has no channel.
+        let ctl_pipe = crate::ctl_app::pipe_for(args.user_data_dir.as_deref(), &inst.profile.dir);
+        let ctl_instance = ctl_pipe
+            .clone()
+            .map(|pipe| flare_term::session::CtlInstance {
+                pipe,
+                pid: std::process::id(),
+                mcp_exe: std::env::current_exe() // sync-ok: startup, before the window shows
+                    .ok()
+                    .and_then(|exe| crate::ctl_app::mcp_exe_beside(&exe)),
+            });
+        // Shells are told about the channel only once its server is really serving (set below): a server
+        // that failed to start leaves no tab with a secret and a pipe name someone else might own.
+        let ctl_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tab_host = TabHost::with_options(
             Arc::new(PortableSpawner),
             Arc::new(RealShells),
             prefs.clone(),
             waker,
             crate::startup::production_plugin_dir(e2e_on),
+            flare_term::session::SessionOptions {
+                ctl: ctl_instance.clone(),
+                ctl_up: Some(Arc::clone(&ctl_up)),
+                // The environment as the person started Flare with: a mini-app's browser takes some WEBVIEW2_*
+                // variables out of this process for good (its walls), and a shell must still get them.
+                base_env: Some(std::env::vars().collect()),
+                ..flare_term::session::SessionOptions::default()
+            },
         );
+        let ctl_mgr = tab_host.manager();
         // The memory watch sums the shells' memory through the tab host's live pids.
         {
             let mgr = tab_host.manager();
@@ -1001,6 +1050,82 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The server answers on its own threads and reaches the window through `post`. A failure
+        // (the name is taken, no SID) is logged and the run goes on without the channel.
+        // Mini-apps (stage 5) live in `<profile>\apps`. The folders of an earlier run have no panel: the
+        // folder is renamed aside (one cheap call, so the channel can write a fresh root at once) and
+        // the renamed ones are deleted on a worker.
+        let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
+        flare_surfaces::app::retire_root(&apps_root); // sync-ok: startup, before the window shows
+        rc.borrow_mut().set_apps_root(apps_root.clone());
+        // Mods (stage 8): `<profile>\mods`, found on a worker at start and when Settings > Mods opens. Off until
+        // the person turns one on.
+        let mods_hub = Arc::new(flare_mods::Hub::new(flare_mods::hub::Config {
+            dir: inst.profile.mods_dir(),
+            state_file: inst.profile.mods_file(),
+        }));
+        let mut mods_dispatcher = None;
+        if let Some(instance) = &ctl_instance {
+            let tabs = Arc::clone(&ctl_mgr);
+            match crate::ctl_app::CtlServer::start(
+                &instance.pipe,
+                Arc::clone(&post),
+                Arc::new(move |token: &str| tabs.tab_for_ctl_token(token)),
+                crate::app_facts::home().to_string(),
+                {
+                    let prefs = prefs.clone();
+                    Arc::new(move || flare_settings::term_prefs::agent_eval(&prefs))
+                },
+                {
+                    let cfg = crate::ctl_app::AppsCfg::new(
+                        apps_root,
+                        Arc::new(flare_term::path_open::resolve_html_file),
+                        {
+                            let prefs = prefs.clone();
+                            Arc::new(move || flare_settings::term_prefs::app_network(&prefs))
+                        },
+                        crate::ctl_app::MERMAID,
+                    );
+                    // The e2e's seam (read only under --e2e): pages without their policy.
+                    if crate::ship_ctl::e2e_var("APP_NO_POLICY").is_some() {
+                        cfg.without_policy()
+                    } else {
+                        cfg
+                    }
+                },
+                Some(Arc::clone(&mods_hub)),
+            ) {
+                Ok(server) => {
+                    mods_dispatcher = Some(server.dispatcher());
+                    rc.borrow_mut().set_ctl(
+                        server.events(),
+                        crate::appctl::CtlInfo {
+                            pipe: instance.pipe.clone(),
+                            mcp_exe: instance.mcp_exe.clone(),
+                        },
+                    );
+                    ctl_server = Some(server);
+                    ctl_up.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Err(e) => log::warn!("the control channel did not start: {e}"),
+            }
+        }
+        rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
+        // The panels' file is read here, at start, before the restore gives the tabs their panels.
+        let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
+            inst.profile.panels_file(),
+            SAVE_DELAY,
+        ));
+        rc.borrow_mut().set_panel_store(Arc::clone(&panels_store));
+        // The web panel's browser is made by the first web panel, never before.
+        rc.borrow_mut()
+            .set_web_factory(crate::web_ctl::production_factory(
+                app.as_weak(),
+                args.user_data_dir.clone(),
+                inst.profile.dir.clone(),
+            ));
+        // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
+        crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
@@ -1056,6 +1181,9 @@ pub fn run_window(
                 Arc::new(flare_win::verb_switch::RegistryVerb::new(switch)),
             );
             let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
+            if let Some(port) = rc.borrow().mods_port() {
+                settings.borrow_mut().set_mods(port);
+            }
             rc.borrow_mut().set_settings(settings);
         }
         *inputs_cell.borrow_mut() = Some(rc.borrow().decor_inputs());
@@ -1069,10 +1197,9 @@ pub fn run_window(
                 let tabs = Arc::clone(&tabs_store);
                 let window = Arc::clone(&window_store);
                 let prefs = prefs.clone();
+                let panels = Arc::clone(&panels_store);
                 move || {
-                    window.flush();
-                    tabs.flush();
-                    prefs.flush();
+                    flush_stores(&tabs, &window, &prefs, &panels);
                     // The log says so last, and is on the disk before the OS ends us.
                     crate::diag_ctl::session_end();
                 }
@@ -1093,7 +1220,7 @@ pub fn run_window(
         );
         // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
         // wear the new face and size, Settings open or not.
-        stores = Some((tabs_store, window_store, prefs));
+        stores = Some((tabs_store, window_store, prefs, panels_store));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
         // tab's scrollback.
@@ -1276,7 +1403,7 @@ pub fn run_window(
     // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
     let look_prefs = stores
         .as_ref()
-        .map_or_else(PrefStore::memory, |(_, _, p)| p.clone());
+        .map_or_else(PrefStore::memory, |(_, _, p, _)| p.clone());
     let look = {
         let ctl = LookCtl::new(
             &app,
@@ -1396,7 +1523,15 @@ pub fn run_window(
         crate::startup_trace::after_first_frame("verb_reconcile", move || switch.reconcile());
     }
     let result = app.run();
-    // Dictation stops first: engine, host, hook and link are gone before the shells are killed.
+    // The control channel stops first of all: no call may reach the window once it is going (a waiting
+    // one answers `unavailable` within 50 ms; the stop is bounded by its own 2 s, inside the quit).
+    if let Some(server) = ctl_server.take() {
+        let left = server.stop();
+        if left > 0 {
+            log::warn!("control channel: {left} call(s) still running at quit");
+        }
+    }
+    // Dictation stops next: engine, host, hook and link are gone before the shells are killed.
     crate::dictation_ctl::stop_all();
     if let Some((engine, _)) = &update_engine {
         engine.stop();
@@ -1410,10 +1545,13 @@ pub fn run_window(
     {
         c.end();
     }
-    if let Some((tabs, window, prefs)) = &stores {
-        window.flush();
-        tabs.flush();
-        prefs.flush();
+    if let Some((tabs, window, prefs, panels)) = &stores {
+        flush_stores(tabs, window, prefs, panels);
+    }
+    // The mini-apps' folders go with the run (one a browser still holds is renamed aside and deleted
+    // by the next start).
+    if let Some(inst) = instance.as_ref() {
+        flare_surfaces::app::clean_root(&flare_surfaces::app::apps_root(&inst.profile.dir)); // sync-ok: quit path, after the window and the channel are gone
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();
@@ -1821,6 +1959,30 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         }),
     )));
 
+    // The pointer left the window: hover ends, and a collapsed sidebar starts watching the edge.
+    let leave_held = Rc::new(Cell::new(false));
+    let pointer_left: Rc<dyn Fn()> = {
+        let ctl = ctl.clone();
+        let weak = app.as_weak();
+        let edge = edge.clone();
+        let edge_timer = edge_timer.clone();
+        Rc::new(move || {
+            if let Some(rc) = ctl.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                c.on_cursor_left();
+            }
+            if weak.upgrade().is_some_and(|a| a.get_sidebar_collapsed()) {
+                edge.borrow_mut().set(true);
+                let edge = edge.clone();
+                edge_timer.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_millis(flare_win::edge_watch::EDGE_EVERY_MS),
+                    move || edge.borrow_mut().tick(),
+                );
+            }
+        })
+    };
     // untimed: winit events arrive per pixel, so the handler keeps its own cheap path
     app.window().on_winit_window_event(move |window, event| {
         let with_ctl = |f: &mut dyn FnMut(&mut AppCtl)| {
@@ -1859,21 +2021,20 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::CursorEntered { .. } => {
+                // The pointer is back: a leave held back during a drag is no longer owed.
+                leave_held.set(false);
                 edge_timer.stop();
                 edge.borrow_mut().set(false);
                 EventResult::Propagate
             }
             WindowEvent::CursorLeft { .. } => {
-                with_ctl(&mut |c| c.on_cursor_left());
-                if weak.upgrade().is_some_and(|a| a.get_sidebar_collapsed()) {
-                    edge.borrow_mut().set(true);
-                    let edge = edge.clone();
-                    edge_timer.start(
-                        slint::TimerMode::Repeated,
-                        Duration::from_millis(flare_win::edge_watch::EDGE_EVERY_MS),
-                        move || edge.borrow_mut().tick(),
-                    );
+                // A splitter drag keeps tracking under the OS capture, as every native one does: the
+                // pointer past the window's edge is still the drag's, and the release settles it (rule 219).
+                if weak.upgrade().is_some_and(|a| a.get_panel_splitting()) {
+                    leave_held.set(true);
+                    return EventResult::PreventDefault;
                 }
+                pointer_left();
                 EventResult::Propagate
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -1882,12 +2043,43 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 with_ctl(&mut |c| c.on_cursor(x, y));
                 EventResult::Propagate
             }
+            // Slint's TouchArea drops its grab on ANY button's release, so another button's press or
+            // release mid-drag never reaches it: the drag would freeze.
+            WindowEvent::MouseInput { button, .. }
+                if !matches!(button, MouseButton::Left)
+                    && weak.upgrade().is_some_and(|a| a.get_panel_splitting()) =>
+            {
+                EventResult::PreventDefault
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 ..
             } => {
                 reapply.borrow_mut().user_acted();
                 with_ctl(&mut |c| c.on_pointer_down());
+                EventResult::Propagate
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // The left button up ends a splitter drag wherever the pointer is, before Slint sees it:
+                // Slint drops its grab on any button's release, so this is the drag's one sure end.
+                if let Some(a) = weak.upgrade() {
+                    a.invoke_end_splitter();
+                }
+                // A leave held back during the drag is owed now, once Slint has the release.
+                if leave_held.replace(false) {
+                    let (weak, pointer_left) = (weak.clone(), pointer_left.clone());
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(a) = weak.upgrade() {
+                            a.window()
+                                .dispatch_event(slint::platform::WindowEvent::PointerExited);
+                        }
+                        pointer_left();
+                    });
+                }
                 EventResult::Propagate
             }
             WindowEvent::HoveredFile(_) => {
@@ -2002,6 +2194,28 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_end_flushes_the_panels_file_too() {
+        // Rule 36: a panel change still inside its debounce must be on the disk at logoff.
+        let dir = tempfile::tempdir().unwrap();
+        let long = Duration::from_secs(60);
+        let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
+        let window = WindowStateStore::new(dir.path().join("window.json"), long);
+        let prefs = PrefStore::memory();
+        let file = dir.path().join("panels.json");
+        let panels = Arc::new(flare_surfaces::store::PanelStore::new(&file, long));
+        panels.save(&[flare_surfaces::store::SavedTabPanel {
+            cwd: "C:/a".into(),
+            panel: flare_surfaces::state::TabPanel::new(
+                flare_surfaces::PanelKind::Text,
+                "C:/a/n.txt",
+            ),
+        }]);
+        assert!(!file.exists(), "inside the debounce nothing is written yet");
+        flush_stores(&tabs, &window, &prefs, &panels);
+        assert!(file.exists());
+    }
 
     #[test]
     fn the_e2e_window_is_parked_when_its_handle_appears_not_before() {

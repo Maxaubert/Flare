@@ -63,12 +63,12 @@ fn pick_renderers(asked: &str, both: bool) -> Vec<&'static str> {
 }
 
 /// A probe's answer, `Null` when it fails (a check on it then reads false).
-fn probe(app: &mut App, name: &str, arg: Value) -> Value {
+pub(super) fn probe(app: &mut App, name: &str, arg: Value) -> Value {
     app.session.probe(name, arg).unwrap_or(Value::Null)
 }
 
 /// The id of the tab in front ("" when the probe is not answered).
-fn front_tab(app: &mut App) -> String {
+pub(super) fn front_tab(app: &mut App) -> String {
     app.session
         .state()
         .ok()
@@ -77,14 +77,14 @@ fn front_tab(app: &mut App) -> String {
 }
 
 /// The text of the front tab's grid, one row per line.
-fn rows(app: &mut App) -> String {
+pub(super) fn rows(app: &mut App) -> String {
     let tab = front_tab(app);
     rows_text(app, &tab)
 }
 
 /// The shell shows its PowerShell prompt again (PT `prompt()`). An Err ends the scenario, as PT's
 /// timeout throw does.
-fn prompt(app: &mut App) -> Result<(), String> {
+pub(super) fn prompt(app: &mut App) -> Result<(), String> {
     let tab = front_tab(app);
     if wait_for_prompt(
         app,
@@ -99,13 +99,13 @@ fn prompt(app: &mut App) -> Result<(), String> {
 }
 
 /// Types one line into the front shell and presses Enter (PT `typeLine`, after the prompt).
-fn type_line(app: &mut App, line: &str) -> Result<(), String> {
+pub(super) fn type_line(app: &mut App, line: &str) -> Result<(), String> {
     app.session.type_text(line)?;
     app.session.key("Enter")
 }
 
 /// A `ui.rect` answer in css px: x, y, w, h.
-fn css(v: &Value) -> Option<(f64, f64, f64, f64)> {
+pub(super) fn css(v: &Value) -> Option<(f64, f64, f64, f64)> {
     Some((
         v["x"].as_f64()?,
         v["y"].as_f64()?,
@@ -136,7 +136,7 @@ fn cell_point(app: &mut App, needle: &str, offset: usize, frac: f64) -> Option<(
 }
 
 /// Moves the pointer to a css point (no press).
-fn move_to(app: &mut App, x: f32, y: f32) -> Result<(), String> {
+pub(super) fn move_to(app: &mut App, x: f32, y: f32) -> Result<(), String> {
     app.session
         .call(&Request::Pointer {
             x,
@@ -147,7 +147,12 @@ fn move_to(app: &mut App, x: f32, y: f32) -> Result<(), String> {
 }
 
 /// A hand's click on a character: the pointer comes onto it, then the press (PT `clickOn`).
-fn click_on(app: &mut App, needle: &str, offset: usize, button: Button) -> Result<(), String> {
+pub(super) fn click_on(
+    app: &mut App,
+    needle: &str,
+    offset: usize,
+    button: Button,
+) -> Result<(), String> {
     let (x, y) =
         cell_point(app, needle, offset, 0.5).ok_or_else(|| format!("{needle} is not on screen"))?;
     move_to(app, x, y)?;
@@ -192,7 +197,7 @@ fn select(ctx: &mut Ctx, app: &mut App, needle: &str, from: usize, to: usize) ->
 }
 
 /// The link marks on the viewport (`term.links`): the marks and the ink the decoration paints them.
-fn marks(app: &mut App) -> (Vec<Value>, String) {
+pub(super) fn marks(app: &mut App) -> (Vec<Value>, String) {
     let v = probe(app, "term.links", Value::Null);
     let links = v["links"].as_array().cloned().unwrap_or_default();
     (links, v["ink"].as_str().unwrap_or_default().to_string())
@@ -296,7 +301,7 @@ fn clip_text(app: &mut App) -> String {
 }
 
 /// The `open.log` calls as (kind, path): `open`, `reveal` or `folder`.
-fn opened(app: &mut App) -> Vec<(String, String)> {
+pub(super) fn opened(app: &mut App) -> Vec<(String, String)> {
     probe(app, "open.log", Value::Null)["calls"]
         .as_array()
         .map(|calls| {
@@ -337,7 +342,7 @@ fn badge_position(app: &mut App) -> (bool, String) {
 }
 
 /// True when `a` and `b` name the same Windows path (case, slashes and a trailing slash ignored).
-fn same_path(a: &str, b: &str) -> bool {
+pub(super) fn same_path(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
         s.replace('/', "\\")
             .trim_end_matches('\\')
@@ -668,7 +673,7 @@ pub fn path_links(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// The texts of the path marks on the viewport.
-fn path_texts(app: &mut App) -> Vec<String> {
+pub(super) fn path_texts(app: &mut App) -> Vec<String> {
     marks(app)
         .0
         .iter()
@@ -839,15 +844,19 @@ fn path_cut_at_the_edge(ctx: &mut Ctx, app: &mut App, pdf: &Path) -> Result<(), 
     );
     ctx.shot(app, "path-links-cut");
     click_on(app, "Flare-notes.txt", 2, Button::Left)?;
-    let opened_notes = ctx.until("the cut file opened", 4_000, &mut || {
-        opened(app)
-            .iter()
-            .any(|(k, p)| k == "open" && same_path(p, &notes_s))
+    // A text file shows in the tab's panel (Surfaces stage 1) instead of going to Windows: the
+    // whole path was resolved, so the panel names the file and holds its one line.
+    let shown = ctx.until("the cut file shown in the panel", 4_000, &mut || {
+        let s = probe(app, "panel.state", Value::Null);
+        s["kind"] == json!(2) && s["title"] == json!("Flare-notes.txt") && s["lines"] == json!(1)
     });
     ctx.ok(
-        opened_notes,
+        shown
+            && !opened(app)
+                .iter()
+                .any(|(k, p)| k == "open" && same_path(p, &notes_s)),
         format!(
-            "and a click on its second row opens the whole file ({:?})",
+            "and a click on its second row shows the whole file in the panel and hands it to nobody ({:?})",
             opened(app)
         ),
     );
@@ -1143,7 +1152,7 @@ fn osc8_on(ctx: &mut Ctx, app: &mut App, script: &Path) -> Result<(), String> {
 }
 
 /// The colour of the device pixel (x, y) of the last snapshot.
-fn device_pixel(app: &mut App, x: f64, y: f64) -> Option<Rgb> {
+pub(super) fn device_pixel(app: &mut App, x: f64, y: f64) -> Option<Rgb> {
     let (x, y) = (x.round().max(0.0) as u32, y.round().max(0.0) as u32);
     match app.session.call(&Request::Pixel { x, y }) {
         Ok(Reply::Pixel { rgba }) => Some([rgba[0], rgba[1], rgba[2]]),
@@ -1152,7 +1161,7 @@ fn device_pixel(app: &mut App, x: f64, y: f64) -> Option<Rgb> {
 }
 
 /// The sum of the channel gaps between two colours.
-fn gap(a: Rgb, b: Rgb) -> i32 {
+pub(super) fn gap(a: Rgb, b: Rgb) -> i32 {
     (0..3)
         .map(|i| (i32::from(a[i]) - i32::from(b[i])).abs())
         .sum()
