@@ -1528,7 +1528,11 @@ mod flow {
         for _ in 0..5 {
             w.pump();
         }
-        assert_eq!(w.fake.written(), b"[<2;11;7M[<2;11;7m", "reported once");
+        assert_eq!(
+            w.fake.written(),
+            b"\x1b[<2;11;7M\x1b[<2;11;7m",
+            "reported once"
+        );
     }
 
     /// PT scenario selectionEdit.
