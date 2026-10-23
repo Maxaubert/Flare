@@ -1535,7 +1535,8 @@ impl AppCtl {
         self.flash = flash;
     }
 
-    /// The window gained or lost the keyboard focus. Coming back is a look.
+    /// The window gained or lost the keyboard focus. Coming back is not a look for a mark held while
+    /// away (2026-10-21); it still takes down a background tab's mark when that tab is in front.
     pub fn on_focus(&mut self, focused: bool) {
         if focused == self.focused {
             return;
@@ -2116,6 +2117,7 @@ impl AppCtl {
             Release::Pick => {
                 if let Some(id) = pressed {
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => {
@@ -2158,6 +2160,7 @@ impl AppCtl {
             Release::Pick => {
                 if let Some(id) = pressed {
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => self.model.reorder(&id, slot),
@@ -2399,6 +2402,7 @@ impl AppCtl {
     fn overflow_picked(&mut self, id: &str) {
         self.close_overflow_quietly();
         self.model.pick(id);
+        self.tab_picked();
         self.refresh();
         self.focus_terminal();
     }
@@ -3004,15 +3008,13 @@ impl AppCtl {
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
 
-    /// A pointer moving over an unfocused window is a look (the indicator throttles it). The test
-    /// hook tells the controller this much of every pointer move, as the real window does.
-    pub fn on_pointer_look(&mut self) {
-        if !self.focused {
-            self.hub.pointer_moved();
-            if self.hub.take_changed() {
-                self.sync_model_agents();
-                self.refresh();
-            }
+    /// A tab was picked (strip, sidebar row or overflow list): the front tab is read at once, so a
+    /// Finished/Failed mark held since the window was away comes down if the pick CHANGED the tab in
+    /// front (the tab left loses it), and stays if it was the tab already in front (owner, 2026-10-23).
+    fn tab_picked(&mut self) {
+        self.sync_looking();
+        if self.hub.take_changed() {
+            self.sync_model_agents();
         }
     }
 
@@ -3021,7 +3023,6 @@ impl AppCtl {
         if self.tips.shown() {
             self.clear_tip();
         }
-        self.on_pointer_look();
         let now = self.now();
         self.sidebar.pointer(
             Some(Point {
@@ -5711,56 +5712,79 @@ mod tests {
         );
     }
 
-    #[test]
-    fn looking_and_coming_back() {
-        // A pointer moving over an unfocused window is a look.
+    /// A tab "C:\a" finished on the front with the window away.
+    fn finished_away() -> (Fx, Vec<String>) {
         let f = fx();
-        let ids = f.open_tabs(&["C:\\a"]);
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.ctl.borrow_mut().model_mut().pick(&ids[0]);
+        f.ctl.borrow_mut().refresh();
         f.ctl.borrow_mut().on_focus_lost();
         f.say("C:\\a", OSC_WORKING);
         f.say("C:\\a", OSC_DONE);
         f.pump_until("the finished mark", |f| {
             f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
         });
+        (f, ids)
+    }
+
+    #[test]
+    fn coming_back_and_pointer_moves_keep_a_held_mark() {
+        let (f, ids) = finished_away();
         f.clock.set(f.clock.get() + 2_000);
         f.ctl.borrow_mut().on_cursor(10.0, 10.0);
         f.ctl.borrow_mut().on_cursor(20.0, 20.0);
+        assert!(f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+        f.ctl.borrow_mut().on_focus(true);
         assert!(
-            !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "a pointer move is a look"
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "focus returning keeps it"
         );
-        // The look alone, without the rest of a cursor move, does the same.
-        let h = fx();
-        let ids = h.open_tabs(&["C:\\a"]);
-        h.ctl.borrow_mut().on_focus_lost();
-        h.say("C:\\a", OSC_WORKING);
-        h.say("C:\\a", OSC_DONE);
-        h.pump_until("the finished mark", |f| {
-            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
-        });
-        h.clock.set(h.clock.get() + 2_000);
-        h.ctl.borrow_mut().on_pointer_look();
-        h.ctl.borrow_mut().on_pointer_look();
-        assert!(
-            !h.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "a pointer look on an unfocused window is a look"
-        );
-        // Coming back to the window is a look.
-        let g = fx();
-        let ids = g.open_tabs(&["C:\\a"]);
-        g.ctl.borrow_mut().on_focus_lost();
-        g.say("C:\\a", OSC_WORKING);
-        g.say("C:\\a", OSC_DONE);
-        g.pump_until("the finished mark", |f| {
-            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
-        });
-        g.clock.set(g.clock.get() + 2_000);
-        assert!(
-            g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "blurred: the mark stays"
-        );
-        g.ctl.borrow_mut().on_focus(true);
-        assert!(!g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+    }
+
+    fn held(f: &Fx, id: &str) -> bool {
+        f.ctl
+            .borrow()
+            .hub
+            .indicator()
+            .done_ids()
+            .contains(&id.to_string())
+    }
+
+    #[test]
+    fn a_pick_of_another_tab_takes_a_held_mark_down_on_the_tab_left() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        assert!(held(&f, &ids[0]), "coming back keeps it");
+        f.ctl.borrow_mut().overflow_picked(&ids[1]);
+        assert!(!held(&f, &ids[0]), "no background mark lingers");
+    }
+
+    #[test]
+    fn a_pick_of_the_same_tab_keeps_a_held_mark() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().overflow_picked(&ids[0]);
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn a_switch_with_no_click_takes_a_held_mark_down() {
+        // A key or a wheel moves the front tab with no pick call: the refresh reads it.
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().pick(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(!held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn closing_another_tab_keeps_a_held_mark() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().close(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
     }
 
     // ---- command help (Task 43) ----

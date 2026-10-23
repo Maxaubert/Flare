@@ -336,7 +336,20 @@ are added as milestones land.
 - **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
   cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
   The front tab never gets a finished or failed mark while it is being looked at, but a question is
-  raised there. Held by `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
+  raised there. **A mark raised on the tab in front while the window was unfocused is held until the tab in front changes
+  (2026-10-21, narrowed 2026-10-23, owner: "it should only disappear once I click a new tab ... if I'm
+  already in the terminal and I'm on the tab that completes, it should not show the completion badge,
+  only when I have another program in focus"):** looking is the window focused AND that tab in front, and
+  while looking no Finished or Failed mark is raised. Away, the front tab finishing raises the mark and
+  holds it; coming back and the pointer moving do not clear it, the badge counts it, and it comes down
+  only when the front tab changes to a DIFFERENT tab (a click, a key, an overflow pick), work restarts,
+  the agent leaves or the tab closes. Clicking the tab already in front does nothing, and closing another
+  tab with its X keeps it. Background-tab marks are unchanged. Held by `coming_back_does_not_take_a_held_mark_down`,
+  `a_click_on_the_same_tab_keeps_a_held_mark`, `a_click_on_another_tab_releases_the_mark_on_the_tab_left`,
+  `a_keyboard_switch_releases_it_like_a_click`, `closing_another_tab_keeps_a_held_mark_but_forgetting_the_marked_one_drops_it`
+  (flare-agent), `a_pick_of_the_same_tab_keeps_a_held_mark`, `a_pick_of_another_tab_takes_a_held_mark_down_on_the_tab_left`,
+  `closing_another_tab_keeps_a_held_mark` (appctl) and e2e `agentHooks`. Also held by
+  `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
   `each_attention_mark_is_behind_its_own_switch` and `working_outranks_question_outranks_failed_outranks_done`.
 - **Keep agent sessions open (2026-10-16).** With an agent in the front tab Ctrl+D never reaches it, and
   Ctrl+C is taken unless the agent works or a selection is held. Never in a plain shell. Held by
