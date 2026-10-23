@@ -74,6 +74,8 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use crate::agent_hub::{AgentHub, HubDeps, e2e_sonara_post, sonara_post};
 use crate::chords::{self, ChordTarget, Dispatch};
+use crate::convo_ctl::{ConvoCtl, ConvoMsg, ConvoMsgBox, Want};
+use crate::ctl_app::{CtlOp, CtlRequestBox};
 use crate::font_ctl::{FontCtl, effective_px};
 use crate::help_ctl::{HelpCtl, next_open_seq};
 use crate::mark_colours::{UiMarks, current_palette, indicator_of, picks_from, ui_marks};
@@ -81,6 +83,7 @@ use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
 };
+use crate::panel_ctl::{PanelCtl, PanelMsgBox};
 use crate::settings_ctl::{SettingsCtl, SettingsMsg};
 use crate::side_slide::{SideSlide, SlideAim};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
@@ -95,6 +98,7 @@ use crate::term_ui::{
     CursorKind, GridGeom, KeyDone, PointerIn, TabInfo, TermDeps, TermMsg, TermUi,
 };
 use crate::update_ctl::{AskInstall, Spawn, UpdateCtl, UpdateDeps, UpdateMsg};
+use crate::web_ctl::{WebCtl, WebMsgBox};
 use crate::{
     AppWindow, HelpBridge, MarkMotion, MenuRow, OverflowRow, Place, SettingsBridge, StripGeom,
     TabRow,
@@ -129,6 +133,53 @@ pub enum UiMsg {
     Help,
     /// A worker's answer or a timer for the update controller (M9 Task 30).
     Update(UpdateMsg),
+    /// A worker's answer for the panel controller (Surfaces stage 1): a picture or a text file read.
+    Panel(PanelMsgBox),
+    /// A call of the control channel that needs the window or a tab's panel (Surfaces stage 2). The
+    /// worker waits on the request's reply channel, so this is answered at once, never queued behind
+    /// anything slow.
+    Ctl(CtlRequestBox),
+    /// The web panel's browser told the window something, or a still was decoded (Surfaces stage 3).
+    Web(WebMsgBox),
+    /// A transcript tracker's snapshot, or a path clicked in a diff (Surfaces stage 6).
+    Convo(ConvoMsgBox),
+    /// The window lost the keyboard while it was still the foreground window: asks again once the
+    /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
+    FocusLostCheck,
+    /// A worker looked whether anything listens on a local port a tab printed (Surfaces stage 7).
+    DevLook {
+        tab: String,
+        token: u64,
+        look: flare_surfaces::devpreview::PortLook,
+    },
+    /// The look made when the chip was clicked (the page opens only when it finds the tab's own server).
+    DevClickLook {
+        tab: String,
+        token: u64,
+        look: flare_surfaces::devpreview::PortLook,
+    },
+    /// The person clicked a notification about this tab.
+    ToastClicked(String),
+    /// Windows would not take a notification.
+    ToastFailed,
+    /// A worker's answer or a Settings action for the mods controller (Surfaces stage 8).
+    Mods(crate::mods_ctl::ModsMsgBox),
+}
+
+mod mods_glue;
+mod surfaces7;
+mod web_glue;
+
+pub use surfaces7::install as install_surfaces7;
+
+/// Publishes a control channel event: name, params, and the tab it is about (its connections only).
+pub type CtlEvents = Arc<dyn Fn(&str, serde_json::Value, Option<&str>) + Send + Sync>;
+
+/// What the control channel looks like from outside, for the e2e probe and the diagnostics.
+#[derive(Clone, Debug, Default)]
+pub struct CtlInfo {
+    pub pipe: String,
+    pub mcp_exe: Option<String>,
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -142,6 +193,8 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::Copied(_) => "TermMsg::Copied",
             TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
+            TermMsg::Preview { .. } => "TermMsg::Preview",
+            TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
         })
     }
 }
@@ -236,6 +289,9 @@ const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
 /// The slide's fallback step when no frame comes.
+/// How long the page's width must hold still before the text view is wrapped to it (a window edge being dragged).
+const WRAP_SETTLE_MS: u64 = 120;
+
 const SLIDE_STEP_MS: u64 = 16;
 /// The mark clock's frame (about 60 per second); it runs only while a mark moves.
 const MARK_FRAME_MS: u64 = 16;
@@ -315,6 +371,20 @@ fn compute_marks(prefs: &PrefStore) -> UiMarks {
 }
 
 /// The attention switches and the indicator style now.
+/// Replays a right click at `(x, y)` through Slint's own event path (move, press, release) from a zero
+/// timer, so the surface under a scrim that swallowed the press decides what it means.
+fn hand_on_right_click(weak: slint::Weak<AppWindow>, x: f32, y: f32) {
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let Some(app) = weak.upgrade() else { return };
+        let position = slint::LogicalPosition::new(x, y);
+        let win = app.window();
+        let button = slint::platform::PointerEventButton::Right;
+        win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        win.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        win.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    });
+}
+
 fn switches_of(prefs: &PrefStore) -> Switches {
     Switches {
         indicator: indicator_of(&LookStore::new(prefs.clone())),
@@ -346,6 +416,9 @@ pub struct AppCtl {
     bounds: NormalBounds,
     maximised: bool,
     grid_dims: (usize, usize),
+    /// How many times the window told the controller the grid area changed (the e2e holds that a splitter drag
+    /// makes none and its release one).
+    grid_fits: u64,
     scale: f64,
     timer: slint::Timer,
     timer_on: bool,
@@ -440,11 +513,40 @@ pub struct AppCtl {
     update_agreed: Arc<AtomicBool>,
     /// The update window was put away for a close question: it comes back when that is cancelled.
     update_stepped_aside: bool,
+    /// The next close question was opened by a chord (the ring shows from the start).
+    ask_by_key: bool,
     /// The tab in front when the last `tab-switch` crumb was said.
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
+    /// The Preview chip and the question notifications (Surfaces stage 7).
+    s7: surfaces7::Surf7,
+    /// Mods (Surfaces stage 8): none until the window hands over the hub.
+    mods: Option<crate::mods_ctl::ModCtl>,
+    /// The tabs' panels (Surfaces stage 1).
+    panels: PanelCtl,
+    /// The conversation panels' transcript trackers (Surfaces stage 6; none run while no such panel is open).
+    convo: ConvoCtl,
+    /// The web panel's browser (made by the first web panel; nothing exists while none is open).
+    web: WebCtl,
+    /// The downloads of web pages waiting for a yes (S6).
+    downloads: crate::download_ask::DownloadQueue,
+    /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
+    panel_focus_seen: bool,
+    /// The tab that was in front at the last panel sync: another one letting go of a splitter drag.
+    panel_front_seen: Option<String>,
+    /// Where control channel events go (None: no channel, in tests and headless runs).
+    ctl_events: Option<CtlEvents>,
+    ctl_info: Option<CtlInfo>,
 }
+
+/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
+/// owner needs no explanation). The rows show only on a tab that is Claude (a session or the detection), so
+/// they always name Claude. "Hide ..." is the same words while the panel is open.
+const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
+const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
+const CONVO_SHOW_TASKS: &str = "Show task list";
+const CONVO_HIDE_TASKS: &str = "Hide task list";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -589,6 +691,7 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_filled: r.trailing_filled,
         trailing_tip: r.trailing_tip.as_str().into(),
         keep_open: false,
+        group: r.group,
         flyout: false,
         flyout_pick: false,
         parent: -1,
@@ -684,6 +787,9 @@ impl AppCtl {
         };
         let prefs_dirty = Arc::new(AtomicBool::new(false));
         let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
+        let panels = PanelCtl::new(Arc::clone(&deps.post));
+        let convo = ConvoCtl::new(Arc::clone(&deps.post));
+        let web = WebCtl::new(Arc::clone(&deps.post));
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
             let clock = Rc::clone(&deps.clock);
@@ -709,6 +815,7 @@ impl AppCtl {
             bounds: NormalBounds::new(),
             maximised: false,
             grid_dims: (80, 24),
+            grid_fits: 0,
             scale: 1.0,
             timer: slint::Timer::default(),
             timer_on: false,
@@ -775,11 +882,23 @@ impl AppCtl {
             install_cb: None,
             update_agreed: Arc::new(AtomicBool::new(false)),
             update_stepped_aside: false,
+            ask_by_key: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
+            s7: surfaces7::Surf7::new(),
+            panels,
+            convo,
+            web,
+            downloads: crate::download_ask::DownloadQueue::default(),
+            panel_focus_seen: false,
+            panel_front_seen: None,
+            ctl_events: None,
+            ctl_info: None,
+            mods: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
+        Self::push_panel_limits(app);
         Self::bind_callbacks(app, &rc);
         Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
@@ -1021,6 +1140,10 @@ impl AppCtl {
         bind!(app, rc, on_menu_picked, |c, i: i32| c.menu_picked(i));
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
         bind!(app, rc, on_menu_dismissed, |c| c.close_menu());
+        bind!(app, rc, on_menu_outside_right, |c, x: f32, y: f32| c
+            .outside_right_click(x, y));
+        bind!(app, rc, on_overflow_outside_right, |c, x: f32, y: f32| c
+            .outside_right_click(x, y));
         bind!(app, rc, on_overflow_picked, |c, id: SharedString| c
             .overflow_picked(&id));
         bind!(
@@ -1097,6 +1220,35 @@ impl AppCtl {
         bind!(app, rc, on_find_next, |c| c.term_find_step(true));
         bind!(app, rc, on_find_prev, |c| c.term_find_step(false));
         bind!(app, rc, on_find_close, |c| c.term_find_close());
+        bind!(app, rc, on_panel_close, |c| c.close_front_panel());
+        bind!(app, rc, on_panel_escape, |c| c.panel_escape());
+        bind!(app, rc, on_panel_convo_select, |c, path: SharedString| c
+            .convo_select(path.as_str()));
+        bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
+            .convo_open(path.as_str()));
+        bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
+            .convo_toggle(key.as_str()));
+        bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_wrap_cols_changed, |c| c
+            .panel_wrap_cols_changed());
+        bind!(app, rc, on_preview_chip_clicked, |c| c
+            .preview_chip_clicked());
+        bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
+        bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
+            .panel_splitter_released(share));
+        bind!(app, rc, on_panel_web_back, |c| c
+            .web_nav(flare_web::Nav::Back));
+        bind!(app, rc, on_panel_web_forward, |c| c
+            .web_nav(flare_web::Nav::Forward));
+        bind!(app, rc, on_panel_web_reload, |c| c
+            .web_nav(flare_web::Nav::Reload));
+        bind!(app, rc, on_panel_web_stop, |c| c
+            .web_nav(flare_web::Nav::Stop));
+        bind!(app, rc, on_panel_web_submit, |c, text: SharedString| c
+            .web_submit(&text));
+        bind!(app, rc, on_panel_web_download, |c| c.web_download());
+        bind!(app, rc, on_panel_web_moved, |c| c.web_moved());
+        bind!(app, rc, on_overlay_changed, |c| c.web_moved());
     }
 
     /// The terminal controller over this window: its closures reach the window only through a weak
@@ -1134,6 +1286,10 @@ impl AppCtl {
             home: deps.home.clone(),
             dbl: deps.term.dbl,
             stat: Arc::clone(&deps.term.stat),
+            right_click_reports: {
+                let prefs = deps.prefs.clone();
+                Rc::new(move || flare_settings::term_prefs::right_click_reports(&prefs))
+            },
         })
     }
 
@@ -1180,7 +1336,7 @@ impl AppCtl {
         tab_layout(&self.prefs) == TabLayout::Vertical
     }
 
-    fn front_id(&self) -> Option<String> {
+    pub(crate) fn front_id(&self) -> Option<String> {
         self.model.state.active_id.clone()
     }
 
@@ -1200,8 +1356,11 @@ impl AppCtl {
         self.term.inputs()
     }
 
-    fn focus_terminal(&self) {
+    fn focus_terminal(&mut self) {
         if let Some(app) = self.app() {
+            // The page may hold the Windows keyboard focus: take it back, or the terminal types nothing.
+            let hwnd = crate::window::hwnd_of(&app);
+            self.web.release_focus(hwnd);
             app.invoke_focus_terminal();
         }
     }
@@ -1404,12 +1563,22 @@ impl AppCtl {
             self.apply_font();
         }
 
+        // The panel of the tab in front, and the previews switch the terminal reads.
+        self.sync_panels(&app);
+        self.notify_update();
+        self.term
+            .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
+
         // Rule 37: nothing is written before the restore answered.
         if let Some(s) = self.model.saved_if_restored()
             && self.last_saved.as_ref() != Some(&s)
         {
             self.deps.tabs_store.save(&s);
             self.last_saved = Some(s);
+        }
+        if self.model.restore_done() {
+            let tabs = self.shell_tabs();
+            self.panels.persist(&tabs);
         }
 
         self.push_term();
@@ -1535,7 +1704,8 @@ impl AppCtl {
         self.flash = flash;
     }
 
-    /// The window gained or lost the keyboard focus. Coming back is a look.
+    /// The window gained or lost the keyboard focus. Coming back is not a look for a mark held while
+    /// away (2026-10-21); it still takes down a background tab's mark when that tab is in front.
     pub fn on_focus(&mut self, focused: bool) {
         if focused == self.focused {
             return;
@@ -1546,6 +1716,8 @@ impl AppCtl {
             self.sync_model_agents();
             self.refresh();
         }
+        // Looking away from a question (or back at it) is the notifier's business.
+        self.notify_update();
     }
 
     /// The resume skeleton: shown while the tab in front resumes (or is a placeholder for an
@@ -1664,6 +1836,7 @@ impl AppCtl {
     /// first, so a change made by the refresh itself is heard again).
     pub fn on_prefs_changed(&mut self) {
         self.prefs_dirty.store(false, Ordering::SeqCst);
+        self.dev_settings_changed();
         self.refresh();
     }
 
@@ -1689,6 +1862,7 @@ impl AppCtl {
         let now = self.now();
         self.clock.pause.borrow_mut().set_minimized(minimised, now);
         self.update_clock();
+        self.sync_chip();
     }
 
     /// Whether a minimised window holds the marks (what `marks.state` reports as `paused`).
@@ -1876,6 +2050,7 @@ impl AppCtl {
     fn restored(&mut self, mut plan: Restored) {
         with_launch_folders(&mut plan, &self.deps.launch_folders);
         let spawns = self.model.settle(&plan);
+        self.restore_panels();
         let now = self.now();
         for s in spawns {
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
@@ -2076,13 +2251,24 @@ impl AppCtl {
         self.close_now(id);
     }
 
-    fn close_now(&mut self, id: &str) {
+    pub(crate) fn close_now(&mut self, id: &str) {
         self.note_close(id);
         self.deps.host.kill(id);
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
+        self.forget_tab_surfaces(id);
         self.refresh();
+    }
+
+    /// Everything the Surfaces keep for a tab that is gone: its panel (and mini-app), its tracker,
+    /// its dev chip, its notifier row and its browser. One list for a close and for a shell that exited.
+    fn forget_tab_surfaces(&mut self, id: &str) {
+        self.panels.forget(id);
+        self.convo.forget(id);
+        self.dev_forget(id);
+        self.s7.notifier.forget(id);
+        self.web.close_tab(id);
     }
 
     fn toggle_settings(&mut self) {
@@ -2121,6 +2307,7 @@ impl AppCtl {
             Release::Pick => {
                 if let Some(id) = pressed {
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => {
@@ -2163,6 +2350,7 @@ impl AppCtl {
             Release::Pick => {
                 if let Some(id) = pressed {
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => self.model.reorder(&id, slot),
@@ -2278,6 +2466,10 @@ impl AppCtl {
             app.set_menu_y(y);
         }
         self.push_menu();
+        if let Some(app) = self.app() {
+            // Every open, a reopen included (see ContextMenu::shown).
+            app.invoke_menu_shown();
+        }
         self.refresh();
     }
 
@@ -2304,6 +2496,26 @@ impl AppCtl {
         self.refresh();
     }
 
+    /// A right-click released outside an open menu, the +N list or a Settings dropdown: all close, and
+    /// the same right-click is handed to whatever is under the point, so one click closes this menu and
+    /// opens the next (a scrim swallows the press, so the surface beneath never saw it). The
+    /// hand-over is Slint's own event path (`Window::dispatch_event`), no OS input, so every
+    /// surface decides what a right-click means exactly as for a real one (a program that owns the
+    /// mouse still gets the report, rule 156). It runs from a zero timer: the real release is
+    /// still being delivered to the scrim, and the controller is borrowed for it.
+    fn outside_right_click(&mut self, x: f32, y: f32) {
+        self.close_menu_quietly();
+        let overflow_was_open = self.overflow.is_some();
+        self.close_overflow_quietly();
+        self.refresh();
+        // The hidden +N query field must not keep the keys; a surface that takes focus (a menu, the
+        // terminal) still takes it in the dispatched press.
+        if overflow_was_open {
+            self.focus_terminal();
+        }
+        hand_on_right_click(self.weak.clone(), x, y);
+    }
+
     fn menu_picked(&mut self, i: i32) {
         let Some(m) = self.menu.take() else { return };
         self.push_menu();
@@ -2322,6 +2534,10 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
+            MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
+                // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
+                self.term.on_menu_pick(None, usize::MAX);
+            }
             MenuKind::Term { .. } => {
                 if row.label == "Command help" {
                     self.help_toggle();
@@ -2404,6 +2620,7 @@ impl AppCtl {
     fn overflow_picked(&mut self, id: &str) {
         self.close_overflow_quietly();
         self.model.pick(id);
+        self.tab_picked();
         self.refresh();
         self.focus_terminal();
     }
@@ -2611,7 +2828,7 @@ impl AppCtl {
         let find_label = self.key_label_of(ChordId::Find);
         let help_label = self.key_label_of(ChordId::Help);
         let help_on = flare_settings::help_prefs::help_enabled(&self.prefs);
-        let rows: Vec<(MenuRowData, String)> = self
+        let mut rows: Vec<(MenuRowData, String)> = self
             .term
             .menu_rows(help_on, find_label, help_label)
             .iter()
@@ -2620,6 +2837,7 @@ impl AppCtl {
         if rows.is_empty() {
             return;
         }
+        rows.extend(self.convo_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
             .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
@@ -2690,6 +2908,650 @@ impl AppCtl {
         match done {
             KeyDone::Handled => KeyOutcome::Consumed,
             KeyDone::Send => KeyOutcome::Pty,
+        }
+    }
+
+    // ---- the panels (Surfaces stage 1) --------------------------------------------------------------
+
+    /// The shell tabs as (id, folder), in the strip's order: what the panels are stored against.
+    fn shell_tabs(&self) -> Vec<(String, String)> {
+        flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .map(|t| (t.id.clone(), t.cwd.clone()))
+            .collect()
+    }
+
+    /// The limits of the slot, from the layout maths, handed to the window once. The `.slint` file
+    /// evaluates the same formulas in logical pixels; a test pins the two to each other.
+    pub(crate) fn push_panel_limits(app: &AppWindow) {
+        use flare_surfaces::layout as l;
+        app.set_panel_min_slot(l::MIN_SLOT as f32);
+        app.set_panel_min_grid(l::MIN_GRID as f32);
+        app.set_panel_usable_min(l::USABLE_MIN as f32);
+        app.set_panel_max_share(l::MAX_SHARE as f32);
+        app.set_panel_default_share(l::DEFAULT_SHARE);
+    }
+
+    /// How many tabs have a panel open (the `panel.state` probe).
+    pub fn open_panels(&self) -> usize {
+        self.panels.open_count()
+    }
+
+    /// Hands the panels the store (startup, before the restore).
+    pub fn set_panel_store(&mut self, store: Arc<flare_surfaces::store::PanelStore>) {
+        self.panels.set_store(store);
+    }
+
+    /// The restore made the tabs: each takes the panel its folder and place name.
+    fn restore_panels(&mut self) {
+        let tabs = self.shell_tabs();
+        self.panels.restore(&tabs);
+    }
+
+    /// The window shows the front tab's panel; the keys go back to the terminal when the panel that
+    /// had them goes away.
+    fn sync_panels(&mut self, app: &AppWindow) {
+        let front = self.model.active_shell().map(|t| t.id.clone());
+        // Another tab came to the front (a chord) while the splitter was held: that tab's slot may be on show, so
+        // `panel-shown` never dropped, but the drag was for the old one. Let go before its panel is pushed.
+        if self.panel_front_seen != front {
+            self.panel_front_seen.clone_from(&front);
+            app.set_panel_splitting(false);
+            // The keys were in the old tab's panel. The new tab may show a panel too (so `panel-shown` never
+            // drops), and a panel takes no plain key: the keys are the terminal's now.
+            if app.get_panel_has_focus() {
+                self.panel_focus_seen = false;
+                app.invoke_focus_terminal();
+            }
+        }
+        self.panels
+            .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
+        self.panels.sync(app, front.as_deref());
+        let ctx = self.key_context();
+        self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_convo();
+        let kind = front
+            .as_deref()
+            .and_then(|t| self.panels.open_convo_kind(t).map(|k| (t, k)));
+        self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
+        self.sync_chip();
+        self.sync_mods();
+        self.prune_downloads();
+        let had = self.panel_focus_seen;
+        self.panel_focus_seen = app.get_panel_has_focus();
+        if had && !app.get_panel_shown() {
+            self.panel_focus_seen = false;
+            app.invoke_focus_terminal();
+        }
+    }
+
+    // ---- the conversation panels (Surfaces stage 6) ------------------------------------------------
+
+    /// Brings the transcript trackers in line with the open Changes and Tasks panels: one per such tab whose Claude
+    /// session is known, none otherwise. True when one started or stopped (the window follows).
+    fn sync_convo(&mut self) -> bool {
+        let open = self.panels.open_convo();
+        if open.is_empty() && !self.convo.active() {
+            return false;
+        }
+        let shells = self.shell_tabs();
+        let wants: Vec<Want> = open
+            .iter()
+            .filter_map(|(tab, _)| {
+                let folder = shells.iter().find(|s| &s.0 == tab)?.1.clone();
+                Some(Want {
+                    tab: tab.clone(),
+                    folder,
+                    session: self.hub.claude_session(tab).map(str::to_string),
+                })
+            })
+            .collect();
+        self.convo.sync(&wants)
+    }
+
+    /// The conversation trackers, read only (the e2e probe, the tests).
+    pub(crate) fn convo(&self) -> &ConvoCtl {
+        &self.convo
+    }
+
+    /// Reads a Claude folder of the test's own instead of the profile's.
+    #[cfg(test)]
+    pub(crate) fn set_convo_claude_dir(&mut self, dir: Option<PathBuf>) {
+        self.convo.set_claude_dir(dir);
+    }
+
+    /// A tracker's snapshot, or a clicked path that may be shown.
+    fn on_convo_msg(&mut self, m: ConvoMsg) {
+        match m {
+            ConvoMsg::Snap { tab, session, snap } => {
+                if self.convo.on_snap(&tab, &session, snap) {
+                    // Only the front tab's panel is on show; a snapshot of another tab just waits for it.
+                    if self.front_id().as_deref() == Some(tab.as_str()) {
+                        self.refresh();
+                    }
+                }
+            }
+            ConvoMsg::OpenFile {
+                tab,
+                kind,
+                abs,
+                picked,
+            } => {
+                // The person asked for this file by clicking its path: the panel shows it, whatever the setting
+                // for clicks in the terminal says. The Changes panel closes (a tab has one panel). An answer that
+                // arrives after the person moved on (another panel, another pick) is dropped.
+                let still = self.panels.open_convo_kind(&tab)
+                    == Some(flare_surfaces::PanelKind::Changes)
+                    && self.convo.selected(&tab) == picked;
+                if still && self.is_shell_tab(&tab) && self.panels.show(&tab, kind, &abs) {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
+            }
+        }
+    }
+
+    /// A file picked in the Changes panel of the front tab (an empty path goes back to the list).
+    fn convo_select(&mut self, path: &str) {
+        let Some(id) = self.front_id() else { return };
+        let pick = (!path.is_empty()).then(|| path.to_string());
+        if self.convo.select(&id, pick) {
+            self.refresh();
+        }
+    }
+
+    /// A subagent's list folded or opened in the Tasks panel of the front tab.
+    fn convo_toggle(&mut self, key: &str) {
+        let Some(id) = self.front_id() else { return };
+        if self.convo.toggle(&id, key) {
+            self.refresh();
+        }
+    }
+
+    /// The path in a diff was clicked: a worker re-resolves it (rule 13) and, when it is a picture or a text file on
+    /// the click allowlist (rule 14), the panel shows it. Anything else does nothing; nothing is ever run.
+    fn convo_open(&mut self, path: &str) {
+        let Some(id) = self.front_id() else { return };
+        if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+            return;
+        }
+        let folder = self
+            .shell_tabs()
+            .into_iter()
+            .find(|t| t.0 == id)
+            .map(|t| t.1)
+            .unwrap_or_default();
+        let post = Arc::clone(&self.deps.post);
+        let home = self.deps.home.clone();
+        let path = path.to_string();
+        let picked = self.convo.selected(&id);
+        let spawned = std::thread::Builder::new()
+            .name("flare-convo-open".into())
+            .spawn(move || {
+                if let Some((abs, real)) =
+                    flare_term::path_open::resolve_openable_file(&folder, &path, &home)
+                    && let Some(kind) = flare_surfaces::preview::classify_resolved(&abs, &real)
+                    && flare_surfaces::preview::loadable(&real, &kind)
+                {
+                    post(UiMsg::Convo(ConvoMsgBox(ConvoMsg::OpenFile {
+                        tab: id,
+                        kind,
+                        abs: real,
+                        picked,
+                    })));
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("could not start the path check: {e}");
+        }
+    }
+
+    /// The rows the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel and one for
+    /// the Tasks panel. A tab without Claude gets none, so the plain shell's menu does not change.
+    pub(crate) fn convo_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
+        let claude = self.hub.agent_here(tab)
+            && (self.hub.claude_session(tab).is_some()
+                || self.hub.agent_kind(tab) == Some(flare_agent::kinds::DetectedAgent::Claude));
+        if !claude {
+            return Vec::new();
+        }
+        let open = self.panels.open_convo_kind(tab);
+        let row = |label: &str, icon: &'static str, group: bool| {
+            (
+                MenuRowData {
+                    label: label.to_string(),
+                    hint: String::new(),
+                    icon,
+                    filled_icon: false,
+                    disabled: false,
+                    trailing_icon: None,
+                    trailing_filled: false,
+                    trailing_tip: String::new(),
+                    group,
+                },
+                String::new(),
+            )
+        };
+        let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
+        // The gate above proves it is Claude (a session, or the detection), so the row always names Claude.
+        let changes = if changes_open {
+            CONVO_HIDE_CHANGES
+        } else {
+            CONVO_SHOW_CHANGES
+        };
+        vec![
+            // Their own group, after a rule: they are about the agent, not the terminal.
+            row(changes, crate::menus_ui::GLYPH_CHANGES, true),
+            row(
+                if open == Some(flare_surfaces::PanelKind::Tasks) {
+                    CONVO_HIDE_TASKS
+                } else {
+                    CONVO_SHOW_TASKS
+                },
+                crate::menus_ui::GLYPH_TASKS,
+                false,
+            ),
+        ]
+    }
+
+    /// A row of the convo part of the terminal's menu was picked. False for any other row.
+    pub(crate) fn convo_menu_picked(&mut self, tab: &str, label: &str) -> bool {
+        use flare_surfaces::PanelKind;
+        let (kind, show) = match label {
+            CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
+            CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
+            CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
+            CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
+            _ => return false,
+        };
+        if show {
+            self.open_convo_panel(tab, kind);
+        } else if self.panels.close(tab) {
+            self.refresh();
+            self.panel_changed(tab);
+        }
+        true
+    }
+
+    /// Opens the Changes or Tasks panel on the tab (the menu, and `panel.open` from the agent). False when the tab
+    /// cannot hold one.
+    pub(crate) fn open_convo_panel(&mut self, tab: &str, kind: flare_surfaces::PanelKind) -> bool {
+        if !self.is_shell_tab(tab) || !self.panels.show_convo(tab, kind) {
+            return false;
+        }
+        self.refresh();
+        self.panel_changed(tab);
+        true
+    }
+
+    /// A click on a path that is a picture or a text file: the backend resolved it and a worker
+    /// said what it may be shown as. The panel opens on that tab; the keys stay where they are.
+    pub(crate) fn show_preview(&mut self, tab: &str, kind: flare_surfaces::PanelKind, abs: &str) {
+        let is_shell = flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .any(|t| t.id == tab);
+        if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
+            return;
+        }
+        // A window too narrow for a slot would open a panel nobody can see, and the click would look dead: the file
+        // goes the way a click goes with previews off.
+        if self.app().is_some_and(|a| !a.get_panel_fits()) {
+            let (openers, home) = (Arc::clone(&self.deps.term.openers), self.deps.home.clone());
+            let path = std::path::Path::new(abs);
+            let base = path.parent().map(|p| p.to_string_lossy().into_owned());
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            if let (Some(base), Some(name)) = (base, name) {
+                std::thread::spawn(move || {
+                    let _ = flare_term::path_open::open_term_path(
+                        &base,
+                        &name,
+                        flare_term::path_open::OpenMode::Open,
+                        &*openers,
+                        &home,
+                    );
+                });
+            }
+            return;
+        }
+        self.show_preview_asked(tab, kind, abs);
+    }
+
+    /// The person asked for it (the menu's "Show in side panel"): the same panel, whatever "Open previews in Flare"
+    /// says about plain clicks.
+    pub(crate) fn show_preview_asked(
+        &mut self,
+        tab: &str,
+        kind: flare_surfaces::PanelKind,
+        abs: &str,
+    ) {
+        if !self.is_shell_tab(tab) {
+            return;
+        }
+        if self.panels.show(tab, kind, abs) {
+            self.refresh();
+            self.panel_changed(tab);
+        }
+    }
+
+    // ---- the control channel (Surfaces stage 2) -------------------------------------------------------------------------
+
+    /// Where events go, and what the channel is called (startup).
+    pub fn set_ctl(&mut self, events: CtlEvents, info: CtlInfo) {
+        self.ctl_events = Some(events);
+        self.ctl_info = Some(info);
+    }
+
+    /// The pipe and the MCP server's path of this run, for the e2e probe.
+    pub fn ctl_info(&self) -> Option<CtlInfo> {
+        self.ctl_info.clone()
+    }
+
+    /// The channel's pipe and every shell tab's id and secret, for the `ctl.info` e2e probe (the
+    /// scenario plays the shell). Nothing else reads a tab's secret.
+    pub fn ctl_probe(&self) -> serde_json::Value {
+        let mgr = self.deps.host.manager();
+        let active = self.model.state.active_id.clone();
+        let tabs: Vec<serde_json::Value> = flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "active": active.as_deref() == Some(&t.id),
+                    "token": mgr.ctl_token(&t.id),
+                })
+            })
+            .collect();
+        let info = self.ctl_info.clone().unwrap_or_default();
+        serde_json::json!({"pipe": info.pipe, "pid": std::process::id(), "mcp_exe": info.mcp_exe, "tabs": tabs})
+    }
+
+    /// `PanelInfo` of a tab's panel, as the protocol writes it.
+    fn panel_info(snap: &crate::panel_ctl::PanelSnap) -> serde_json::Value {
+        let mut v = serde_json::json!({"kind": snap.kind, "title": snap.title});
+        if let Some(p) = &snap.path {
+            v["path"] = serde_json::json!(p);
+        }
+        if let Some(u) = &snap.url {
+            v["url"] = serde_json::json!(u);
+        }
+        if let Some(n) = snap.network {
+            v["network"] = serde_json::json!(n);
+        }
+        v
+    }
+
+    /// Tells the tab's connections its panel changed (`panel.changed`).
+    fn panel_changed(&self, tab: &str) {
+        let Some(events) = &self.ctl_events else {
+            return;
+        };
+        let mut params = serde_json::json!({"tab": tab, "open": false});
+        if let Some(snap) = self.panels.snap(tab).filter(|s| s.open) {
+            params["open"] = serde_json::json!(true);
+            params["panel"] = Self::panel_info(&snap);
+        }
+        events("panel.changed", params, Some(tab));
+    }
+
+    fn is_shell_tab(&self, tab: &str) -> bool {
+        flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .any(|t| t.id == tab)
+    }
+
+    /// One call of the control channel, on the UI thread. The tab is the caller's own (resolved from
+    /// its token by the worker); a tab that was closed since answers `no_tab`.
+    fn ctl_op(&mut self, op: CtlOp) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        use flare_ctl::{CtlError, code};
+        use serde_json::json;
+        let no_tab = || CtlError::new(code::NO_TAB, "that tab is closed");
+        match op {
+            CtlOp::Tabs { own } => {
+                let active = self.model.state.active_id.clone();
+                let tabs: Vec<serde_json::Value> = self
+                    .model
+                    .state
+                    .tabs
+                    .iter()
+                    .zip(self.model.labels())
+                    .filter(|(t, _)| {
+                        t.kind == TabKind::Shell && own.as_deref().is_none_or(|o| o == t.id)
+                    })
+                    .map(|(t, label)| {
+                        json!({"id": t.id, "title": label, "active": active.as_deref() == Some(&t.id)})
+                    })
+                    .collect();
+                Ok(json!({"tabs": tabs}))
+            }
+            CtlOp::TabCwd { tab } => {
+                let t = flare_tabs::tabs::shell_tabs(&self.model.state)
+                    .into_iter()
+                    .find(|t| t.id == tab)
+                    .ok_or_else(no_tab)?;
+                Ok(json!({"cwd": t.cwd}))
+            }
+            CtlOp::PanelState { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                Ok(match self.panels.snap(&tab).filter(|s| s.open) {
+                    Some(s) => json!({
+                        "open": true,
+                        "panel": Self::panel_info(&s),
+                        "width": s.width.unwrap_or(flare_surfaces::layout::DEFAULT_SHARE),
+                    }),
+                    None => json!({"open": false}),
+                })
+            }
+            CtlOp::ShowConvo { tab, kind } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                // A tab behind gets its panel (stored) and keeps its place: no tab is ever switched.
+                if !self.open_convo_panel(&tab, kind) {
+                    return Err(CtlError::new(
+                        code::INTERNAL,
+                        "the panel could not be opened",
+                    ));
+                }
+                let snap = self
+                    .panels
+                    .snap(&tab)
+                    .ok_or_else(|| CtlError::new(code::INTERNAL, "the panel went missing"))?;
+                Ok(json!({"panel": Self::panel_info(&snap)}))
+            }
+            CtlOp::ConvoState { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                Ok(self.convo.state_json(&tab))
+            }
+            CtlOp::PanelClose { tab } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let closed = self.panels.close(&tab);
+                if closed {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
+                Ok(json!({"closed": closed}))
+            }
+            CtlOp::ShowFile {
+                tab,
+                kind,
+                abs,
+                title,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                // An explicit ask of the agent: the "Open previews in Flare" switch is for clicks only.
+                // A tab behind gets its panel (stored) and keeps its place: no tab is ever switched.
+                if !self.panels.show_titled(&tab, kind, &abs, title.as_deref()) {
+                    return Err(CtlError::new(code::BAD_PARAMS, "that file cannot be shown"));
+                }
+                self.after_ctl_show(&tab)
+            }
+            CtlOp::ShowText { tab, text, title } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                if !self.panels.show_text(&tab, &text, title.as_deref()) {
+                    return Err(CtlError::new(code::INTERNAL, "the text could not be shown"));
+                }
+                self.after_ctl_show(&tab)
+            }
+            // Answered by the browser's message, never here (see `ctl_browser`).
+            CtlOp::BrowserOpen { .. }
+            | CtlOp::BrowserNavigate { .. }
+            | CtlOp::BrowserAgent { .. }
+            | CtlOp::ShowMod { .. }
+            | CtlOp::ModTool { .. }
+            | CtlOp::ShowApp { .. } => Err(CtlError::new(
+                code::INTERNAL,
+                "a browser call reached the wrong handler",
+            )),
+        }
+    }
+
+    /// A panel was put on a tab by the control channel: the window follows, the event goes out and the
+    /// answer says what is on show.
+    fn after_ctl_show(&mut self, tab: &str) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        self.refresh();
+        self.panel_changed(tab);
+        let snap = self.panels.snap(tab).ok_or_else(|| {
+            flare_ctl::CtlError::new(flare_ctl::code::INTERNAL, "the panel went missing")
+        })?;
+        Ok(serde_json::json!({"panel": Self::panel_info(&snap)}))
+    }
+
+    /// The panel's close button, and the toggle chord when it is open.
+    fn close_front_panel(&mut self) {
+        let Some(id) = self.front_id() else { return };
+        if self.panels.close(&id) {
+            self.refresh();
+            self.focus_terminal();
+            self.panel_changed(&id);
+        }
+    }
+
+    /// Ctrl+Shift+P: closes the front tab's panel, or brings back what it last showed. False when
+    /// there is neither, so the key is not taken.
+    pub(crate) fn toggle_front_panel(&mut self) -> bool {
+        let Some(id) = self.front_id() else {
+            return false;
+        };
+        // A kind this build cannot draw (restored from the file) is kept as stored, and the chord
+        // does not flip it: nothing would appear or go.
+        if !self.panels.has_built(&id) {
+            return false;
+        }
+        let changed = if self.panels.is_open(&id) {
+            self.panels.close(&id)
+        } else {
+            self.panels.reopen(&id)
+        };
+        if changed {
+            self.refresh();
+            if !self.panels.is_open(&id) {
+                self.focus_terminal();
+            }
+            self.panel_changed(&id);
+        }
+        changed
+    }
+
+    /// Ctrl+Shift+O: the keys move between the terminal and the panel. False when no panel shows.
+    fn move_panel_focus(&mut self) -> bool {
+        let Some(app) = self.app() else { return false };
+        if !app.get_panel_shown() {
+            return false;
+        }
+        // A web page: the keys go to the page, or back to the terminal when it has them.
+        if let Some(id) = self.front_id()
+            && self.panels.web_target(&id).is_some()
+        {
+            if self.web.has_focus() {
+                self.panel_focus_seen = false;
+                self.focus_terminal();
+            } else if self.web.focus_page(&id) {
+                self.panel_focus_seen = false;
+            }
+            return true;
+        }
+        if app.get_panel_has_focus() {
+            self.panel_focus_seen = false;
+            self.focus_terminal();
+        } else {
+            self.panel_focus_seen = true;
+            app.invoke_focus_panel();
+        }
+        true
+    }
+
+    /// How many grid fits the window reported (the e2e probe reads it).
+    pub(crate) fn grid_fit_count(&self) -> u64 {
+        self.grid_fits
+    }
+
+    /// How many wraps the panel made (the e2e probe and the tests read it).
+    pub(crate) fn panel_wrap_count(&self) -> u64 {
+        self.panels.wrap_count()
+    }
+
+    /// The header's wrap button: flips "Wrap long lines in previews" (the one setting the Settings page shows too).
+    fn panel_wrap_toggled(&mut self) {
+        let on = flare_settings::term_prefs::wrap_previews(&self.prefs);
+        flare_settings::term_prefs::set_wrap_previews(&self.prefs, !on);
+        self.panels.set_wrap_moving(false);
+        self.refresh();
+    }
+
+    /// The text view holds a different number of columns now (a splitter step, a window edge step, the setting): the
+    /// rows wrap to them at once, so the text follows the drag like any editor's (2026-10-23). The terminal grid
+    /// still fits once, at the release (rule 24); only the preview's wrap is live. A timer settles the exact final
+    /// wrap a moment after the last step.
+    fn panel_wrap_cols_changed(&mut self) {
+        let Some(app) = self.app() else { return };
+        // The sidebar's slide changes the page's width at every frame: the slide's end refresh wraps once (rule 217).
+        if app.get_sidebar_sliding() {
+            return;
+        }
+        self.panels.set_wrap_moving(true);
+        self.panels.live_wrap(&app);
+        let weak = self.me.clone();
+        crate::timer_registry::set("panel.wrap-settle", WRAP_SETTLE_MS, false, move || {
+            if let Some(rc) = weak.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                c.panels.set_wrap_moving(false);
+                if let Some(app) = c.app()
+                    && !app.get_sidebar_sliding()
+                    && !app.get_panel_splitting()
+                {
+                    c.panels.settle_wrap(&app);
+                }
+            }
+        });
+    }
+
+    /// Esc in the panel: the keys go back to the terminal.
+    fn panel_escape(&mut self) {
+        self.panel_focus_seen = false;
+        self.focus_terminal();
+    }
+
+    /// The splitter was let go: the slot's share of the page is the tab's from now on, and the grid
+    /// fits once at its new width.
+    fn panel_splitter_released(&mut self, share: f32) {
+        let Some(id) = self.front_id() else { return };
+        self.panels.set_wrap_moving(false);
+        if self.panels.set_share(&id, share) {
+            if let Some(app) = self.app() {
+                app.set_panel_share(share);
+            }
+            self.refresh();
         }
     }
 
@@ -2821,6 +3683,7 @@ impl AppCtl {
             term,
             self.hub.next_due(),
             self.skeleton_due(),
+            self.surf7_next_due(),
             reveal,
         ]
         .into_iter()
@@ -2875,6 +3738,7 @@ impl AppCtl {
         }
         self.tip_tick(now);
         self.term_tick();
+        self.surf7_tick(now);
         // The agent: its deadlines, and every resuming tab's reveal clock (a key, an exit or a
         // failed spawn reveal through the handle itself).
         self.hub.tick();
@@ -2973,9 +3837,11 @@ impl AppCtl {
                 // The Settings page has no shell, and its own fields (the find field, a colour code,
                 // the popover's Escape) are Slint's: a key that is no chord goes to Slint there.
                 if self.view.front_kind == 1
-                    || self
-                        .app()
-                        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                    || self.app().is_some_and(|a| {
+                        a.get_chrome_has_focus()
+                            || a.get_find_input_focused()
+                            || a.get_panel_has_focus()
+                    })
                 {
                     KeyOutcome::Slint
                 } else if shell_in_front {
@@ -3000,6 +3866,26 @@ impl AppCtl {
     /// The window lost the keyboard: a Most recent walk ends, tips go, a right-click menu shuts
     /// (PT ContextMenu.tsx closes on the window's blur).
     pub fn on_focus_lost(&mut self) {
+        // The keyboard moving into the page's child window sends this window a kill-focus too, but the
+        // window is still the one in use: nothing to let go of. A real switch to another app can look the
+        // same until Windows has finished it, so that case asks again one turn later.
+        match crate::web_ctl::focus_loss(
+            self.web.has_backend(),
+            self.web.has_focus(),
+            self.window_is_foreground(),
+        ) {
+            crate::web_ctl::FocusLoss::Skip => return,
+            crate::web_ctl::FocusLoss::Check => {
+                (self.deps.post)(UiMsg::FocusLostCheck);
+                return;
+            }
+            crate::web_ctl::FocusLoss::Now => {}
+        }
+        self.blur();
+    }
+
+    /// The window is no longer the one in use: dictation, the walk, tips and menus let go.
+    fn blur(&mut self) {
         crate::dictation_ctl::on_blur();
         self.model.commit_walk();
         self.clear_tip();
@@ -3009,15 +3895,13 @@ impl AppCtl {
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
 
-    /// A pointer moving over an unfocused window is a look (the indicator throttles it). The test
-    /// hook tells the controller this much of every pointer move, as the real window does.
-    pub fn on_pointer_look(&mut self) {
-        if !self.focused {
-            self.hub.pointer_moved();
-            if self.hub.take_changed() {
-                self.sync_model_agents();
-                self.refresh();
-            }
+    /// A tab was picked (strip, sidebar row or overflow list): the front tab is read at once, so a
+    /// Finished/Failed mark held since the window was away comes down if the pick CHANGED the tab in
+    /// front (the tab left loses it), and stays if it was the tab already in front (owner, 2026-10-23).
+    fn tab_picked(&mut self) {
+        self.sync_looking();
+        if self.hub.take_changed() {
+            self.sync_model_agents();
         }
     }
 
@@ -3026,7 +3910,6 @@ impl AppCtl {
         if self.tips.shown() {
             self.clear_tip();
         }
-        self.on_pointer_look();
         let now = self.now();
         self.sidebar.pointer(
             Some(Point {
@@ -3052,6 +3935,13 @@ impl AppCtl {
     pub fn on_pointer_down(&mut self) {
         // A press anywhere ends a key capture on the Dictation page (the field's own click follows it).
         crate::dictation_ctl::on_press();
+        // A press on Flare's own window (the page's window takes its own) is a press away from the page.
+        if self.web.has_focus()
+            && let Some(app) = self.app()
+        {
+            let hwnd = crate::window::hwnd_of(&app);
+            self.web.release_focus(hwnd);
+        }
         self.clear_tip();
         if self.flight.on() {
             self.flight.pointer_down();
@@ -3086,8 +3976,12 @@ impl AppCtl {
             && sidebar_mode(&self.prefs) == SidebarMode::Open
             && cursor_css.0 < side_width;
         if !(on_strip || on_side) {
-            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path).
-            if cursor_css.1 >= BAR_H {
+            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path), unless the pointer
+            // is over the side panel: a file dropped there is not meant for the shell on the left.
+            let over_panel = self.app().is_some_and(|a| {
+                a.get_panel_shown() && cursor_css.0 >= a.get_grid_left() + a.get_panel_slot_x()
+            });
+            if cursor_css.1 >= BAR_H && !over_panel {
                 let front = self.front_tab();
                 {
                     let info = front.as_ref().map(FrontTab::info);
@@ -3122,6 +4016,7 @@ impl AppCtl {
     /// The window moved, resized or changed mode: remember the normal bounds (saved on a delay).
     pub fn on_geometry(&mut self, o: Observed) {
         self.bounds.observe(&o);
+        self.web.parent_moved();
         self.maximised = o.maximised;
         self.on_minimised(o.minimised);
         if let Some(state) = self.bounds.state(o.maximised) {
@@ -3132,6 +4027,7 @@ impl AppCtl {
     /// The grid area changed (Task 30b's `grid-resized`, after the grid host resized): tabs born
     /// from now on start at this size and the front tab follows.
     pub fn on_grid_dims(&mut self, cols: usize, rows: usize) {
+        self.grid_fits += 1;
         self.grid_dims = (cols, rows);
         let front = self.front_id();
         self.deps.host.set_dims(cols, rows, front.as_deref());
@@ -3319,7 +4215,17 @@ impl AppCtl {
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
         }
+        if self.model.restore_done() {
+            let tabs = self.shell_tabs();
+            self.panels.persist(&tabs);
+        }
+        self.panels.flush();
         self.prefs.flush();
+        // The browser goes before the window does (rule 28): its views are closed and its calls answered
+        // while the window and the COM apartment are still up, so no callback lands during the teardown.
+        self.mods_shutdown();
+        self.web.close_all();
+        self.downloads.drain();
         (self.deps.hide)();
         end_of_life(
             &self.deps.tabs_store,
@@ -3363,7 +4269,9 @@ impl AppCtl {
                     app.set_dialog_title(v.title.into());
                     app.set_dialog_body(body);
                     app.set_dialog_primary(v.primary.into());
-                    app.set_dialog_danger(true);
+                    // PT's close question never uses the danger fill: the confirm is the solid accent.
+                    app.set_dialog_danger(false);
+                    app.set_dialog_by_key(std::mem::take(&mut self.ask_by_key));
                     app.set_dialog_open(true);
                 }
                 None => app.set_dialog_open(false),
@@ -3373,10 +4281,16 @@ impl AppCtl {
     }
 
     fn dialog_cancel(&mut self) {
+        if self.ask.is_none() && self.downloads.current().is_some() {
+            self.answer_download(false);
+            return;
+        }
         self.ask = None;
         let install = self.install_cb.take();
         self.show_ask();
         let stepped = std::mem::take(&mut self.update_stepped_aside);
+        // A download waiting behind the question is asked now.
+        self.show_download_ask();
         match install {
             // The update window comes back and lands its own focus.
             Some(cb) => cb(false),
@@ -3395,6 +4309,10 @@ impl AppCtl {
     }
 
     fn dialog_confirm(&mut self) {
+        if self.ask.is_none() && self.downloads.current().is_some() {
+            self.answer_download(true);
+            return;
+        }
         let Some(ask) = self.ask.take() else { return };
         // Confirmed: the window stays put away (the tab is closing, or the install is going ahead).
         self.update_stepped_aside = false;
@@ -3475,6 +4393,113 @@ impl AppCtl {
                     h.on_pref_change();
                 }
             }
+            UiMsg::Panel(PanelMsgBox(m)) => {
+                if let Some(app) = self.app() {
+                    self.panels.on_msg(&app, m);
+                }
+            }
+            UiMsg::FocusLostCheck => {
+                if !self.window_is_foreground() && !self.web.has_focus() {
+                    self.blur();
+                }
+            }
+            UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
+            UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
+            UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
+            UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
+            UiMsg::ToastFailed => self.on_toast_failed(),
+            UiMsg::Mods(crate::mods_ctl::ModsMsgBox(m)) => self.on_mods_msg(m),
+            UiMsg::Web(WebMsgBox(m)) => {
+                if let Some(app) = self.app() {
+                    // A DevTools answer or a timer turn changes the window's properties only when a
+                    // call starts or ends or a ribbon goes (a look of a big page is hundreds of answers).
+                    let quiet = matches!(
+                        &m,
+                        crate::web_ctl::WebMsg::AgentTick
+                            | crate::web_ctl::WebMsg::Event(flare_web::WebEvent::Cdp { .. })
+                    );
+                    let before = self.web.agent_shape();
+                    let outs = self.web.on_msg(&app, m);
+                    self.apply_web(outs);
+                    if !quiet || self.web.agent_shape() != before {
+                        self.web_moved();
+                    }
+                }
+            }
+            UiMsg::Ctl(CtlRequestBox(req)) => {
+                // The caller stopped waiting at its deadline and was told `timeout`: a request that
+                // arrives later changes nothing (and the late answer has no reader).
+                if std::time::Instant::now() > req.deadline {
+                    // A mini-app asked for too late is never shown: its folder goes.
+                    if let CtlOp::ShowApp { spec, .. } = req.op {
+                        self.panels.remove_folder(spec);
+                    }
+                    let _ = req.reply.send(Err(flare_ctl::CtlError::new(
+                        flare_ctl::code::TIMEOUT,
+                        "Flare's window did not answer in time",
+                    )));
+                } else {
+                    match req.op {
+                        // These wait for the page to load: the browser's message answers them.
+                        op @ (CtlOp::BrowserOpen { .. } | CtlOp::BrowserNavigate { .. }) => {
+                            self.ctl_browser(op, req.reply, req.deadline);
+                        }
+                        // The agent uses the page: the browser's messages answer these too.
+                        op @ CtlOp::BrowserAgent { .. } => {
+                            self.ctl_browser_agent(op, req.reply);
+                        }
+                        // A mini-app or a diagram: answered when the page has loaded (and drawn).
+                        op @ CtlOp::ShowApp { .. } => {
+                            self.ctl_show_app(op, req.reply, req.deadline);
+                        }
+                        // A mod's panel, or a tool call put in front of a mod's page (stage 8).
+                        op @ CtlOp::ShowMod { .. } => self.ctl_show_mod(op, req.reply),
+                        op @ CtlOp::ModTool { .. } => self.ctl_mod_tool(op, req.reply),
+                        op => {
+                            let answer = self.ctl_op(op);
+                            let _ = req.reply.send(answer);
+                        }
+                    }
+                }
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::Preview {
+                tab,
+                kind,
+                abs,
+                asked,
+            })) => {
+                if asked {
+                    self.show_preview_asked(&tab, kind, &abs);
+                } else {
+                    self.show_preview(&tab, kind, &abs);
+                }
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
+                // The person picked "Show in side panel" and the file is no longer showable: say so. A tab with no
+                // panel open gets the words as a note in one; a tab whose panel is open keeps what it shows (a mini-app
+                // or a page would be ended by a note) and says it in the panel's header or the page's bar.
+                const WHY: &str = "This file cannot be shown here. It may have changed or been removed since the menu opened.";
+                const SHORT: &str = "Cannot show that file: it changed or was removed";
+                if !self.is_shell_tab(&tab) {
+                    return;
+                }
+                if self.panels.is_open(&tab) {
+                    if let Some(app) = self.app() {
+                        if self.panels.web_target(&tab).is_some() && !self.panels.is_app(&tab) {
+                            self.web.notice(&tab, SHORT);
+                        } else {
+                            self.panels.refuse(&app, &tab, SHORT);
+                        }
+                    }
+                    self.refresh();
+                } else if self
+                    .panels
+                    .show_text(&tab, WHY, Some("Cannot show this file"))
+                {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
+            }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
                 {
@@ -3509,6 +4534,10 @@ impl AppCtl {
                 .set_busy(holds_window_close(self.hub.working_count()));
             changed = true;
         }
+        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes or Tasks panel).
+        if self.sync_convo() {
+            changed = true;
+        }
         for ev in events {
             self.shell_crumb(&ev);
             match ev {
@@ -3518,11 +4547,13 @@ impl AppCtl {
                         changed = true;
                     }
                 }
+                HostEvent::Output { id } => self.dev_read(&id),
                 HostEvent::Exited { id, .. } => {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
                     self.term.tab_closed(&id);
+                    self.forget_tab_surfaces(&id);
                     if self.model.close(&id) {
                         changed = true;
                     }
@@ -3628,7 +4659,10 @@ impl ChordTarget for Target<'_> {
 
     fn close_tab(&mut self) {
         if let Some(id) = self.0.front_id() {
+            // A chord opened it: the focus ring shows from the start, as :focus-visible does after a key.
+            self.0.ask_by_key = true;
             self.0.request_close(&id);
+            self.0.ask_by_key = false;
         }
     }
 
@@ -3638,6 +4672,14 @@ impl ChordTarget for Target<'_> {
 
     fn open_system_menu(&mut self) {
         self.0.open_system_menu();
+    }
+
+    fn toggle_panel(&mut self) {
+        self.0.toggle_front_panel();
+    }
+
+    fn focus_panel(&mut self) {
+        self.0.move_panel_focus();
     }
 }
 
@@ -3678,6 +4720,9 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod mods_tests;
+    mod splitter_tests;
+    mod web_tests;
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
     use crate::ui_harness::{Frame, Harness};
@@ -4288,6 +5333,46 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_stored_as_vertical_starts_vertical_on_the_first_frame() {
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![("C:\\a", None), ("C:\\b", None)],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Vertical),
+        );
+        assert!(f.h.comp.get_layout_vertical(), "built horizontal");
+        assert!(f.h.comp.get_has_tabs(), "the placeholders show the sidebar");
+        f.start_restore_and_wait();
+        assert!(
+            f.h.comp.get_layout_vertical(),
+            "horizontal after the restore"
+        );
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(f.h.comp.get_layout_vertical());
+    }
+
+    #[test]
+    fn a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar() {
+        // `side-mode` in app.slint is `layout-vertical && has-tabs`, so the zero-tab start screen
+        // shows the top bar by design until the owner decides otherwise (features.md, "Vertical
+        // tabs at start"). This pins both inputs: the layout is vertical, there are no tabs.
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Vertical),
+        );
+        f.start_restore_and_wait();
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(f.h.comp.get_layout_vertical());
+        assert!(!f.h.comp.get_has_tabs(), "a start screen has no tabs");
+    }
+
+    #[test]
     fn the_key_context_reads_the_prefs() {
         let f = fx();
         let c = f.ctl.borrow().key_context();
@@ -4780,6 +5865,36 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_over_the_side_panel_types_nothing_into_the_shell() {
+        let (f, _h, fake) = live(Opts::default());
+        show_text(&f, "p.txt", "hello");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        let slot_left = f.h.comp.get_grid_left() + f.h.comp.get_panel_slot_x();
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_panel.png"),
+            (slot_left + 30.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only
+        f.pump();
+        assert!(
+            fake.written().is_empty(),
+            "a path was typed into the shell: {:?}",
+            String::from_utf8_lossy(&fake.written())
+        );
+        // Over the terminal part of the window it is typed as before.
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_grid.png"),
+            (slot_left - 100.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        until_written(&fake, |w| !w.is_empty());
+    }
+
+    #[test]
     fn a_cmd_tab_with_no_requested_shell_quotes_a_drop_for_cmd() {
         let cmd = ShellDef {
             id: "cmd".to_string(),
@@ -4861,6 +5976,9 @@ mod tests {
     #[test]
     fn a_path_click_opens_through_the_openers_port() {
         let (f, h, _) = live(Opts::default());
+        // With previews off a text file goes to Windows as it always did.
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
         let file = f.dir.path().join("a.txt");
         std::fs::write(&file, "x").unwrap(); // sync-ok: test code only, never the app
         let dir = f.dir.path().to_string_lossy().into_owned();
@@ -4883,6 +6001,1795 @@ mod tests {
         }
         let want = file.to_string_lossy().into_owned();
         assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
+    }
+
+    // ---- the panels (Surfaces stage 1) --------------------------------------------------------
+
+    /// Feeds `word` on its own row, lets the path questions settle, and left-clicks it. `row` is
+    /// the row the word lands on (the rows before it were fed by earlier calls).
+    fn click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(0, 0, cell_css(1, row, false));
+        f.ptr(1, 0, cell_css(1, row, false));
+    }
+
+    /// Like [`click_word`] with the right button: opens the terminal's menu on the word.
+    fn right_click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(0, 2, cell_css(1, row, false));
+        f.ptr(1, 2, cell_css(1, row, false));
+    }
+
+    fn menu_labels(f: &Fx) -> Vec<String> {
+        use slint::Model;
+        f.h.comp
+            .get_menu_rows()
+            .iter()
+            .map(|r| r.label.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(
+            f.dir.path().join("a.txt"),
+            "one
+two",
+        )
+        .unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        assert!(f.h.comp.get_menu_open());
+        let labels = menu_labels(&f);
+        assert_eq!(
+            labels[..3],
+            ["Open", "Show in side panel", "Show in Explorer"],
+            "{labels:?}"
+        );
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .unwrap();
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "a.txt");
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+        assert!(
+            !f.h.comp.get_panel_has_focus(),
+            "the keys stay in the terminal"
+        );
+    }
+
+    #[test]
+    fn show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "one").unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        let labels = menu_labels(&f);
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("an explicit ask is offered whatever the click setting says");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        write_png(&f.dir.path().join("p.png"), 20, 10);
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "p.png", 0);
+        let i = menu_labels(&f)
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("a picture offers it");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
+        // A script and a folder do not.
+        right_click_word(&f, &h, &dir, "run.bat", 1);
+        assert!(f.h.comp.get_menu_open());
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
+        f.h.comp.invoke_menu_dismissed();
+        right_click_word(&f, &h, &dir, "sub/", 2);
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
+    }
+
+    fn write_png(path: &Path, w: u32, h: u32) {
+        let file = std::fs::File::create(path).unwrap(); // sync-ok: test code only, never the app
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        let px: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 100, 50, 255]).collect();
+        wr.write_image_data(&px).unwrap();
+    }
+
+    fn shift_ctrl(key: &str, code: &str) -> KeyEvent {
+        KeyEvent::new(key, code).ctrl().shift()
+    }
+
+    fn rows_in_panel(f: &Fx) -> usize {
+        use slint::Model;
+        f.h.comp.get_panel_lines().row_count()
+    }
+
+    #[test]
+    fn a_click_on_a_text_file_shows_it_in_the_panel_and_hands_nothing_to_windows() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "one\ntwo\nthree").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "a.txt", 0);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(f.h.comp.get_panel_open());
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "a.txt");
+        assert_eq!(f.h.comp.get_panel_sub().as_str(), "3 lines, 13 B");
+        assert_eq!(rows_in_panel(&f), 3);
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+        // The click left the keys in the terminal.
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn a_click_on_a_picture_shows_it_with_its_size() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        write_png(&f.dir.path().join("p.png"), 40, 30);
+        click_word(&f, &h, &dir, "p.png", 0);
+        f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "p.png");
+        assert_eq!(f.h.comp.get_panel_sub().as_str(), "40 x 30");
+        let size = f.h.comp.get_panel_picture().size();
+        assert_eq!((size.width, size.height), (40, 30));
+        assert!(
+            !f.h.comp.get_panel_alpha(),
+            "an opaque picture needs no board"
+        );
+        assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_picture_that_is_not_one_answers_with_a_reason_in_the_panel() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("bad.png"), b"not a picture").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "bad.png", 0);
+        f.pump_until("the reason", |f| {
+            !f.h.comp.get_panel_note().is_empty()
+                && f.h.comp.get_panel_note().as_str() != "Opening\u{2026}"
+        });
+        assert_eq!(f.h.comp.get_panel_kind(), 0);
+        assert!(
+            f.h.comp
+                .get_panel_note()
+                .contains("cannot read this picture")
+        );
+    }
+
+    #[test]
+    fn a_script_a_document_and_a_folder_never_open_a_panel() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::write(f.dir.path().join("d.pdf"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "run.bat", 0);
+        click_word(&f, &h, &dir, "d.pdf", 1);
+        click_word(&f, &h, &dir, "sub/", 2);
+        let t = Instant::now();
+        while f.openers.records().len() < 3 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        f.pump();
+        let want = |n: &str| f.dir.path().join(n).to_string_lossy().into_owned();
+        let rec = f.openers.records();
+        assert!(
+            rec.contains(&OpenedRecord::Reveal(want("run.bat"))),
+            "{rec:?}"
+        );
+        assert!(rec.contains(&OpenedRecord::Open(want("d.pdf"))), "{rec:?}");
+        assert!(
+            rec.iter().any(
+                |r| matches!(r, OpenedRecord::Folder(p) if p.trim_end_matches('\\') == want("sub"))
+            ),
+            "{rec:?}"
+        );
+        assert!(!rec.contains(&OpenedRecord::Open(want("run.bat"))));
+        assert!(
+            !f.h.comp.get_panel_open(),
+            "none of them is shown in a panel"
+        );
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn a_picture_named_like_one_that_is_a_script_is_not_shown() {
+        // A name that says png but a file that is not on the allowlist as the system names it
+        // cannot be made without a link; the extension check on the clicked name alone is the
+        // part a plain file can exercise: a .png.exe is a program, not a picture.
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("pic.png.exe"), "x").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "pic.png.exe", 0);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let want = f
+            .dir
+            .path()
+            .join("pic.png.exe")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(f.openers.records(), [OpenedRecord::Reveal(want)]);
+        assert!(!f.h.comp.get_panel_open());
+    }
+
+    #[test]
+    fn with_previews_off_a_text_file_goes_to_windows_and_turning_them_on_again_shows_it() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "x").unwrap(); // sync-ok: test code only
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        click_word(&f, &h, &dir, "a.txt", 0);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(f.openers.records().len(), 1);
+        assert!(!f.h.comp.get_panel_open());
+        f.prefs.set("flare.window.openPreviews", "1");
+        f.pump();
+        click_word(&f, &h, &dir, "a.txt", 1);
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(
+            f.openers.records().len(),
+            1,
+            "the second click opened nothing in Windows"
+        );
+    }
+
+    /// Shows a text file in the front tab's panel, as a resolved click does.
+    fn show_text(f: &Fx, name: &str, body: &str) -> String {
+        let path = f.dir.path().join(name);
+        std::fs::write(&path, body).unwrap(); // sync-ok: test code only
+        let abs = path.to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        abs
+    }
+
+    #[test]
+    fn each_tab_has_its_own_panel_and_the_front_tab_decides_what_shows() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "one.txt", "1");
+        f.pump_until("the first panel", |f| f.h.comp.get_panel_kind() == 2);
+        // A second tab has none.
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+        assert!(!f.h.comp.get_panel_open(), "the new tab has no panel");
+        assert_eq!(f.h.comp.get_panel_kind(), 0);
+        assert_eq!(
+            rows_in_panel(&f),
+            0,
+            "nothing is kept on show for a tab behind"
+        );
+        // Back to the first: its panel reads its file again.
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel back", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "one.txt");
+    }
+
+    #[test]
+    fn closing_a_tab_forgets_its_panel() {
+        let (f, _h, _) = live(Opts::default());
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        f.ctl.borrow_mut().request_close(&b);
+        f.pump();
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(rows_in_panel(&f), 0);
+    }
+
+    #[test]
+    fn the_close_button_and_the_toggle_chord_close_and_bring_the_panel_back() {
+        let (f, _h, _) = live(Opts::default());
+        // Nothing to toggle: the chord is still the app's, so the shell never hears it.
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_open());
+        show_text(&f, "a.txt", "a\nb");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(rows_in_panel(&f), 0, "a closed panel holds no rows");
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.pump_until("the panel again", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 2);
+        f.h.comp.invoke_panel_close();
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn the_focus_chord_moves_the_keys_both_ways_and_escape_gives_them_back() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        // No panel: nothing moves, and the shell does not hear it.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_has_focus());
+        show_text(&f, "a.txt", "a\nb\nc");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // A plain key now goes to Slint, not the shell.
+        assert_eq!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // The chord again: the terminal has them.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // Escape in the panel does the same.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        f.h.key_text(&String::from(char::from(slint::platform::Key::Escape)));
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_panel_they_were_in_closes() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        // Bringing the panel back does not hand it the keys again.
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_tab_changes_or_the_close_button_is_pressed() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // A tab with no panel comes to the front: the keys are the terminal's again.
+        let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_shown());
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // The same through the close button.
+        show_text(&f, "c.txt", "c");
+        f.pump_until("the panel on the new tab", |f| {
+            f.h.comp.get_panel_kind() == 2
+        });
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        f.h.comp.invoke_panel_close();
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_tab_changes_to_one_with_a_panel_too() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel on a", |f| f.h.comp.get_panel_kind() == 2);
+        let b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the panel on b", |f| f.h.comp.get_panel_kind() == 2);
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel back on a", |f| {
+            f.h.comp.get_panel_title().as_str() == "a.txt"
+        });
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // The other tab has a panel too: it is still shown, and the keys are the terminal's.
+        f.ctl.borrow_mut().model_mut().pick(&b);
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        f.pump_until("the panel on b again", |f| {
+            f.h.comp.get_panel_title().as_str() == "b.txt"
+        });
+        assert!(f.h.comp.get_panel_shown());
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+    }
+
+    #[test]
+    fn a_click_on_the_file_already_shown_reads_it_again() {
+        let (f, _h, _) = live(Opts::default());
+        let abs = show_text(&f, "a.txt", "one");
+        f.pump_until("the first read", |f| rows_in_panel(f) == 1);
+        // The agent rewrites the file; the next click shows what it says now.
+        std::fs::write(&abs, "one\ntwo\nthree").unwrap(); // sync-ok: test code only
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the second read", |f| rows_in_panel(f) == 3);
+    }
+
+    #[test]
+    fn a_file_that_was_missing_shows_when_it_exists_and_is_clicked_again() {
+        let (f, _h, _) = live(Opts::default());
+        let path = f.dir.path().join("later.txt");
+        let abs = path.to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the reason", |f| {
+            f.h.comp.get_panel_note().as_str() == "The file is gone."
+        });
+        std::fs::write(&path, "now\nhere").unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the content", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 2);
+    }
+
+    #[test]
+    fn a_restored_target_that_fails_the_clicks_checks_is_not_read() {
+        // A folder named like a text file passes the string checks; the click's checks refuse it.
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let folder = f.dir.path().join("dir.txt");
+        std::fs::create_dir(&folder).unwrap(); // sync-ok: test code only
+        let file = f.dir.path().join("panels.json");
+        let raw = format!(
+            r#"{{"version":1,"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"text","target":{}}}}}]}}"#,
+            serde_json::Value::String(folder.to_string_lossy().into_owned())
+        );
+        std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &file,
+                Duration::from_millis(30),
+            )));
+        f.start_restore_and_wait();
+        f.pump_until("the refusal", |f| {
+            f.h.comp.get_panel_open() && f.h.comp.get_panel_note().as_str().contains("not allowed")
+        });
+        assert_eq!(rows_in_panel(&f), 0);
+    }
+
+    #[test]
+    fn every_previewable_type_is_on_the_click_allowlist() {
+        // A type dropped from the allowlist would silently stop previewing.
+        for ext in flare_surfaces::preview::TEXT_EXTS
+            .iter()
+            .chain(flare_surfaces::preview::IMAGE_EXTS.iter())
+        {
+            assert!(
+                flare_term::path_open::may_open(&format!("C:\\a\\x.{ext}")),
+                "{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_chord_does_nothing_for_a_kind_this_build_cannot_draw() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"mod:notes","target":"x"}}]}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &file,
+                Duration::from_millis(30),
+            )));
+        f.start_restore_and_wait();
+        assert_eq!(f.ctl.borrow().open_panels(), 1, "it is open as stored");
+        assert!(!f.ctl.borrow_mut().toggle_front_panel());
+        assert_eq!(f.ctl.borrow().open_panels(), 1, "and the chord left it so");
+    }
+
+    // ---- wrapping a text preview (2026-10-22) ----------------------------------------------------
+
+    fn long_body() -> String {
+        format!("short one\n{}\nshort two\n", "word ".repeat(100).trim_end())
+    }
+
+    fn nums_in_panel(f: &Fx) -> Vec<i32> {
+        use slint::Model;
+        f.h.comp.get_panel_line_nums().iter().collect()
+    }
+
+    #[test]
+    fn a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let wrapped = rows_in_panel(&f);
+        assert!(wrapped > 3, "the long line took several rows ({wrapped})");
+        assert!(f.h.comp.get_panel_wrapped());
+        assert!(f.h.comp.get_panel_wrap_on());
+        let nums = nums_in_panel(&f);
+        assert_eq!(nums.len(), wrapped);
+        assert_eq!(nums[0], 1);
+        assert_eq!(
+            *nums.last().unwrap(),
+            3,
+            "the last line keeps its own number"
+        );
+        assert_eq!(
+            nums.iter().filter(|n| **n > 0).count(),
+            3,
+            "three lines, three numbers"
+        );
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("3 lines"),
+            "the header counts lines, not rows"
+        );
+        // The button turns it off: the rows are the lines again, and the setting says so.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(!flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), 3);
+        assert!(!f.h.comp.get_panel_wrapped());
+        assert!(!f.h.comp.get_panel_wrap_on());
+        assert!(nums_in_panel(&f).is_empty());
+        // And on again.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), wrapped);
+        assert!(f.h.comp.get_panel_wrapped());
+    }
+
+    #[test]
+    fn with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 3, "three lines, three rows");
+        assert!(!f.h.comp.get_panel_wrapped());
+        // The Settings page writes the same key; the panel follows it.
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, true);
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(rows_in_panel(&f) > 3);
+    }
+
+    #[test]
+    fn the_sidebar_sliding_wraps_the_text_once_not_at_every_frame() {
+        let (f, _h, _) = live(Opts::default());
+        set_tab_layout(&f.prefs, TabLayout::Vertical);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(300);
+        f.pump();
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        let cols0 = f.h.comp.get_panel_wrap_cols();
+        f.ctl.borrow_mut().toggle_sidebar();
+        let mut widths = std::collections::BTreeSet::new();
+        for _ in 0..80 {
+            f.clock.set(f.clock.get() + 16);
+            f.h.advance(16);
+            f.pump();
+            widths.insert(f.h.comp.get_panel_wrap_cols());
+        }
+        f.h.advance(400);
+        f.pump();
+        assert_ne!(
+            f.h.comp.get_panel_wrap_cols(),
+            cols0,
+            "the slide changed the page's width"
+        );
+        assert!(widths.len() > 2, "the width went through steps: {widths:?}");
+        let runs = f.ctl.borrow().panels.wrap_count() - runs0;
+        assert_eq!(runs, 1, "wrapped {runs} times for one slide");
+    }
+
+    /// Drags the splitter to `x + dx` and gives the window a frame.
+    fn drag_to(f: &Fx, x: f32, y: f32, dx: f32) {
+        f.h.move_to(x + dx, y);
+        f.h.advance(0);
+        f.pump();
+    }
+
+    #[test]
+    fn a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "many.txt", &many_long_lines());
+            f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+            let rows0 = rows_in_panel(&f);
+            let runs0 = f.ctl.borrow().panels.wrap_count();
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            assert!(f.h.comp.get_panel_splitting(), "scale {scale}");
+            // Step by step wider: the rows come down while the splitter is still held.
+            let mut counts = vec![rows0];
+            for k in 1..=12 {
+                drag_to(&f, x, y, -25.0 * k as f32);
+                assert!(f.h.comp.get_panel_splitting(), "scale {scale}: still held");
+                assert_eq!(
+                    f.h.comp.get_panel_wrapped_cols(),
+                    f.h.comp.get_panel_wrap_cols(),
+                    "scale {scale}, step {k}: the rows are wrapped to the width on show"
+                );
+                counts.push(rows_in_panel(&f));
+            }
+            let distinct: std::collections::BTreeSet<_> = counts.iter().collect();
+            assert!(
+                distinct.len() > 2
+                    && counts[1..counts.len() - 1]
+                        .iter()
+                        .any(|c| *c != counts[0] && *c != counts[counts.len() - 1]),
+                "scale {scale}: rows changed at intermediate widths, not only after the release: {counts:?}"
+            );
+            assert!(
+                counts.windows(2).all(|w| w[1] <= w[0]),
+                "scale {scale}: a wider slot never makes more rows: {counts:?}"
+            );
+            assert!(
+                f.ctl.borrow().panels.wrap_count() > runs0 + 3,
+                "scale {scale}: wraps happened mid-drag"
+            );
+            // And back, narrower: the rows go up again.
+            let wide = rows_in_panel(&f);
+            for k in (0..12).rev() {
+                drag_to(&f, x, y, -25.0 * k as f32);
+            }
+            assert!(
+                rows_in_panel(&f) > wide,
+                "scale {scale}: narrower, more rows"
+            );
+            drag_to(&f, x, y, -150.0);
+            let runs_at_release = f.ctl.borrow().panels.wrap_count();
+            let before = rows_in_panel(&f);
+            f.h.release(x - 150.0, y, slint::platform::PointerEventButton::Left);
+            f.pump();
+            assert_eq!(
+                f.ctl.borrow().panels.wrap_count(),
+                runs_at_release,
+                "scale {scale}: the rows already fit the width, the release wraps nothing again"
+            );
+            assert_eq!(rows_in_panel(&f), before, "scale {scale}");
+            assert_eq!(
+                f.h.comp.get_panel_wrapped_cols(),
+                f.h.comp.get_panel_wrap_cols(),
+                "scale {scale}: exact after the release"
+            );
+            f.pump();
+            f.ctl.borrow_mut().refresh();
+            assert_eq!(f.ctl.borrow().panels.wrap_count(), runs_at_release);
+        }
+    }
+
+    #[test]
+    fn a_live_drag_keeps_the_line_at_the_top_in_place() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "many.txt", &many_long_lines());
+            f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+            f.h.comp.invoke_panel_scroll_by(0.0, -18.0 * 700.0);
+            f.h.advance(0);
+            let line = top_line_number(&f);
+            assert!(line > 100, "scale {scale}: scrolled into the file ({line})");
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            let rows0 = rows_in_panel(&f);
+            let mut rows_changed = false;
+            for k in [1.0f32, 2.0, 3.0, 4.0, 3.0, 2.0, -1.0, -3.0] {
+                drag_to(&f, x, y, -20.0 * k);
+                f.h.advance(0);
+                rows_changed |= rows_in_panel(&f) != rows0;
+                assert_eq!(
+                    top_line_number(&f),
+                    line,
+                    "scale {scale}: the same line stays at the top at step {k}"
+                );
+            }
+            assert!(
+                rows_changed,
+                "scale {scale}: the rows re-wrapped mid-drag (settle-only code fails here)"
+            );
+            f.h.release(x, y, slint::platform::PointerEventButton::Left);
+            f.pump();
+            assert_eq!(
+                top_line_number(&f),
+                line,
+                "scale {scale}: and after the release"
+            );
+        }
+    }
+
+    /// A text file over the live threshold, so a drag wraps it on a worker.
+    fn big_body() -> String {
+        format!("{}\n", "word ".repeat(300).trim_end()).repeat(900)
+    }
+
+    #[test]
+    fn a_big_file_drag_never_stalls_the_ui_and_ends_exact() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "big.txt", &big_body());
+            f.pump_until("the wrapped rows", |f| {
+                f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+            });
+            let rows0 = rows_in_panel(&f);
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            let mut worst = Duration::ZERO;
+            let mut changed_mid_drag = false;
+            let runs0 = f.ctl.borrow().panels.wrap_count();
+            for k in 1..=40 {
+                let t = Instant::now();
+                f.h.move_to(x - 6.0 * k as f32, y);
+                f.h.advance(0);
+                f.pump();
+                worst = worst.max(t.elapsed());
+                changed_mid_drag |= rows_in_panel(&f) != rows0;
+                // Long enough now and then for a worker's answer to land while the drag goes on.
+                std::thread::sleep(Duration::from_millis(if k % 5 == 0 { 150 } else { 8 }));
+            }
+            // A step hands the work to a worker and goes on: no step waits for a wrap of the whole file.
+            assert!(
+                worst < Duration::from_millis(100),
+                "scale {scale}: a drag step took {worst:?}"
+            );
+            // Fewer wraps than steps is fine (one in flight, the newest width next), but never none.
+            let runs = f.ctl.borrow().panels.wrap_count() - runs0;
+            assert!(
+                (1..=40).contains(&runs),
+                "scale {scale}: {runs} wraps for 40 steps"
+            );
+            f.h.release(x - 240.0, y, slint::platform::PointerEventButton::Left);
+            f.pump_until("the exact final wrap", |f| {
+                f.h.advance(0);
+                f.h.comp.get_panel_wrapped()
+                    && f.h.comp.get_panel_wrapped_cols() == f.h.comp.get_panel_wrap_cols()
+            });
+            assert!(
+                changed_mid_drag,
+                "scale {scale}: a worker's answer re-wrapped the rows while the drag was still held"
+            );
+            let lines: Vec<slint::SharedString> =
+                big_body().lines().map(slint::SharedString::from).collect();
+            let (expect, _) = crate::panel_ctl::wrap_lines(
+                &lines,
+                usize::try_from(f.h.comp.get_panel_wrap_cols()).unwrap(),
+                &|| false,
+            );
+            assert_eq!(rows_in_panel(&f), expect.len(), "scale {scale}: exact");
+        }
+    }
+
+    #[test]
+    fn a_small_file_wrap_per_step_is_cheap() {
+        // The common case: a whole drag step (model build, push, top-line restore) on a file just under the live
+        // threshold. Judged against one bare wrap of the same file, so a loaded machine moves both.
+        let (f, _h, _) = live(Opts::default());
+        let body: String = (0..1000)
+            .map(|i| {
+                format!(
+                    "line {i} {}
+",
+                    "word ".repeat(34).trim_end()
+                )
+            })
+            .collect();
+        assert!((170_000..=200_000).contains(&body.len()), "{}", body.len());
+        show_text(&f, "small.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let lines: Vec<slint::SharedString> = body.lines().map(slint::SharedString::from).collect();
+        let t = Instant::now();
+        let _ = crate::panel_ctl::wrap_lines(&lines, 40, &|| false);
+        let base = t.elapsed();
+        let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+        let y = f.h.comp.get_grid_top() + 200.0;
+        f.h.move_to(x, y);
+        f.h.press(x, y, slint::platform::PointerEventButton::Left);
+        let mut steps = Vec::new();
+        for k in 1..=24 {
+            let t = Instant::now();
+            drag_to(&f, x, y, -7.0 * k as f32);
+            steps.push(t.elapsed());
+        }
+        f.h.release(x, y, slint::platform::PointerEventButton::Left);
+        steps.sort();
+        let median = steps[steps.len() / 2];
+        eprintln!("small-file step {median:?} (bare wrap {base:?})");
+        assert!(
+            median < base * 40 + Duration::from_millis(60),
+            "a step took {median:?}, a bare wrap {base:?}"
+        );
+    }
+
+    /// A file between the live threshold and the settle threshold (about 540 KB).
+    fn mid_body() -> String {
+        format!(
+            "{}
+",
+            "word ".repeat(120).trim_end()
+        )
+        .repeat(900)
+    }
+
+    #[test]
+    fn a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker() {
+        let (f, _h, _) = live(Opts::default());
+        let body = mid_body();
+        assert!(body.len() > 200_000 && body.len() < 1_000_000);
+        show_text(&f, "mid.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let rows0 = rows_in_panel(&f);
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        // The slot's width moves with no splitter held (what a window edge does), and a refresh comes between steps
+        // (a shell redraw, an agent streaming).
+        f.h.comp.set_panel_share(0.3);
+        f.h.advance(0);
+        assert_eq!(
+            rows_in_panel(&f),
+            rows0,
+            "the first step did not wrap inline"
+        );
+        let runs1 = f.ctl.borrow().panels.wrap_count();
+        assert_eq!(runs1, runs0 + 1, "one worker wrap started");
+        for share in [0.33f32, 0.36, 0.4] {
+            f.h.comp.set_panel_share(share);
+            f.h.advance(0);
+            f.ctl.borrow_mut().refresh();
+            assert_eq!(
+                f.ctl.borrow().panels.wrap_count(),
+                runs1,
+                "a step or a refresh with a wrap in flight starts nothing (no inline wrap, no restart)"
+            );
+            assert_eq!(rows_in_panel(&f), rows0, "still no inline wrap");
+        }
+        // The worker's answer arrives before any settle timer.
+        f.pump_until("a worker answer", |f| rows_in_panel(f) != rows0);
+        f.ctl.borrow_mut().panels.set_wrap_moving(false);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the exact wrap", |f| {
+            f.h.advance(0);
+            f.h.comp.get_panel_wrapped_cols() == f.h.comp.get_panel_wrap_cols()
+        });
+    }
+
+    /// A file of 300 long lines, each wrapping to several rows.
+    fn many_long_lines() -> String {
+        (0..300)
+            .map(|i| format!("line {i} {}\n", "word ".repeat(40).trim_end()))
+            .collect()
+    }
+
+    /// The number of the line at the top of the text view (the nearest numbered row at or above the first).
+    fn top_line_number(f: &Fx) -> i32 {
+        let nums = nums_in_panel(f);
+        let first = usize::try_from(f.h.comp.get_panel_first_line()).unwrap();
+        if nums.is_empty() {
+            return i32::try_from(first).unwrap() + 1;
+        }
+        (0..=first.min(nums.len() - 1))
+            .rev()
+            .map(|r| nums[r])
+            .find(|n| *n > 0)
+            .unwrap_or(1)
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_line_the_reader_was_on_at_the_top() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "many.txt", &many_long_lines());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        // Down to somewhere in the middle of the file.
+        f.h.comp.invoke_panel_scroll_by(0.0, -18.0 * 700.0);
+        f.h.advance(0);
+        let line = top_line_number(&f);
+        assert!(line > 100, "scrolled far into the file (line {line})");
+        let rows0 = rows_in_panel(&f);
+        // A much wider slot: fewer rows, other row offsets.
+        f.h.comp.invoke_panel_splitter_released(0.6);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(rows_in_panel(&f) < rows0, "the rows were made again");
+        assert_eq!(
+            top_line_number(&f),
+            line,
+            "the same line is still at the top after the re-wrap"
+        );
+        // And a narrower slot back: the same.
+        f.h.comp.invoke_panel_splitter_released(0.25);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "and back again");
+        // Toggling wrap off keeps it too (the rows are the lines: row = line - 1).
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap off");
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap on");
+        // The view never sits past the end: the last row is still reachable.
+        let _ = a;
+        assert!(
+            f.h.comp.get_panel_text_scroll_y() <= 0.0,
+            "the viewport is inside the content"
+        );
+    }
+
+    #[test]
+    fn turning_wrap_on_brings_a_sideways_scrolled_view_back_to_the_left_edge() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(!f.h.comp.get_panel_wrapped());
+        f.h.comp.invoke_panel_scroll_by(-200.0, 0.0);
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_panel_text_scroll_x() < -50.0,
+            "scrolled right ({})",
+            f.h.comp.get_panel_text_scroll_x()
+        );
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.h.comp.get_panel_text_scroll_x(),
+            0.0,
+            "wrapped rows start at the gutter's edge again"
+        );
+    }
+
+    #[test]
+    fn settings_in_front_wraps_nothing_and_the_return_wraps_once() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let rows = rows_in_panel(&f);
+        let runs = f.ctl.borrow().panels.wrap_count();
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs,
+            "no wrap while a page is in front (the slot is off show)"
+        );
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump_until("the text again", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        assert_eq!(rows_in_panel(&f), rows);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs + 1,
+            "the return wraps the file once, not an unwrap and a wrap"
+        );
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_tells_the_person_in_the_panel() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        assert!(!f.h.comp.get_panel_open());
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab: id })));
+        f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
+        assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_file_in_a_window_too_narrow_for_a_slot_opens_it_in_windows() {
+        let (f, _h, _) = live(Opts::default());
+        let abs = f.dir.path().join("narrow.txt");
+        std::fs::write(&abs, "x").unwrap(); // sync-ok: test code only
+        let abs = abs.to_string_lossy().into_owned();
+        // No room for a slot (the same as a half-screen window with vertical tabs).
+        f.h.comp.set_panel_usable_min(10_000.0);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_fits());
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
+        }
+        assert_eq!(f.openers.records().len(), 1, "the click did something");
+        assert!(!f.h.comp.get_panel_open(), "and opened no invisible panel");
+    }
+
+    #[test]
+    fn a_tab_that_comes_back_finds_its_file_where_the_reader_left_it() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let body: String = (1..=300).map(|i| format!("line {i}\n")).collect();
+        show_text(&f, "long.txt", &body);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        f.h.comp.invoke_panel_scroll_to_row(120);
+        f.h.advance(0);
+        let first = f.h.comp.get_panel_first_line();
+        assert!(first >= 100, "scrolled: {first}");
+        // Another tab with a panel of its own, then back.
+        let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the file back", |f| {
+            f.h.comp.get_panel_title().as_str() == "long.txt" && rows_in_panel(f) == 300
+        });
+        f.h.advance(0);
+        let back = f.h.comp.get_panel_first_line();
+        assert!(
+            (back - first).abs() <= 1,
+            "came back at line {back}, left at {first}"
+        );
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_leaves_the_panel_that_is_open_as_it_was() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "keep.txt", "one\ntwo");
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let id = f.ctl.borrow().front_id().unwrap();
+        let rows = rows_in_panel(&f);
+        let target = f.ctl.borrow().panels.snap(&id).unwrap().path;
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused {
+                tab: id.clone(),
+            })));
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(f.h.comp.get_panel_kind(), 2, "still the text file");
+        assert_eq!(rows_in_panel(&f), rows);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "keep.txt");
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"),
+            "{}",
+            f.h.comp.get_panel_sub()
+        );
+        assert_eq!(f.ctl.borrow().panels.snap(&id).unwrap().path, target);
+        // Showing something else ends the note.
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        assert!(!f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"));
+    }
+
+    #[test]
+    fn a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing() {
+        use crate::panel_ctl::{PanelMsg, PanelMsgBox};
+        let (f, _h, _) = live(Opts::default());
+        let body = format!("{}\n", "x".repeat(1500)).repeat(900);
+        show_text(&f, "big.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let rows = rows_in_panel(&f);
+        assert!(rows > 900, "{rows}");
+        // An answer for a wrap that is no longer the newest is dropped.
+        let id = f.ctl.borrow().front_id().unwrap();
+        let generation = f.ctl.borrow().panels.generation_for_test();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Wrapped {
+                generation,
+                tab: id,
+                seq: 0,
+                cols: 9,
+                rows: vec!["stale".into()],
+                nums: vec![1],
+            })));
+        assert_eq!(rows_in_panel(&f), rows);
+    }
+
+    #[test]
+    fn the_splitter_release_stores_the_share_for_that_tab_only() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(
+            f.h.comp.get_panel_share(),
+            0.0,
+            "not set until the splitter moves"
+        );
+        f.h.comp.invoke_panel_splitter_released(0.31);
+        assert!((f.h.comp.get_panel_share() - 0.31).abs() < 1e-6);
+        // Another tab with a panel starts at the default.
+        let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the second panel", |f| {
+            f.h.comp.get_panel_title().as_str() == "b.txt" && f.h.comp.get_panel_kind() == 2
+        });
+        assert_eq!(f.h.comp.get_panel_share(), 0.0);
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        assert!(
+            (f.h.comp.get_panel_share() - 0.31).abs() < 1e-6,
+            "the first tab kept its own"
+        );
+        // A nonsense share is refused.
+        f.h.comp.invoke_panel_splitter_released(7.0);
+        assert!((f.h.comp.get_panel_share() - 0.31).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_answer_for_a_file_no_longer_on_show_is_dropped() {
+        use crate::panel_ctl::{PanelMsg, PanelMsgBox};
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "real");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        let stale = || crate::panel_ctl::TextRows {
+            lines: Arc::new(vec!["stale".into(), "stale".into()]),
+            cols: 5,
+            bytes: 12,
+            foot: String::new(),
+        };
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Text {
+                generation: 12345,
+                tab: id.clone(),
+                result: Ok(stale()),
+            })));
+        assert_eq!(rows_in_panel(&f), 1, "the old generation changed nothing");
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Text {
+                generation: 1,
+                tab: "t-other".into(),
+                result: Ok(stale()),
+            })));
+        assert_eq!(rows_in_panel(&f), 1, "another tab's answer changed nothing");
+    }
+
+    #[test]
+    fn a_new_click_replaces_the_panel_and_a_late_answer_of_the_old_one_is_dropped() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "one.txt", "one");
+        show_text(&f, "two.txt", "two\ntwo");
+        f.pump_until("the second file", |f| {
+            f.h.comp.get_panel_title().as_str() == "two.txt" && f.h.comp.get_panel_kind() == 2
+        });
+        // Both workers have answered by now; the first's answer, whenever it came, did not win.
+        f.pump();
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "two.txt");
+        assert_eq!(rows_in_panel(&f), 2);
+    }
+
+    #[test]
+    fn a_panel_comes_back_with_its_tab_and_a_closed_one_stays_closed() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", None)],
+            ..Opts::default()
+        });
+        let note = f.dir.path().join("note.txt");
+        std::fs::write(&note, "kept\nlines").unwrap(); // sync-ok: test code only
+        let target = note.to_string_lossy().into_owned();
+        let panel = |open: bool, width: Option<f32>| flare_surfaces::TabPanel {
+            kind: flare_surfaces::PanelKind::Text,
+            target: target.clone(),
+            open,
+            width,
+        };
+        let file = f.dir.path().join("panels.json");
+        let saved = [
+            flare_surfaces::store::SavedTabPanel {
+                cwd: "C:\\a".into(),
+                panel: Some(panel(true, Some(0.3))),
+            },
+            flare_surfaces::store::SavedTabPanel {
+                cwd: "C:\\b".into(),
+                panel: Some(panel(false, None)),
+            },
+        ];
+        std::fs::write(&file, flare_surfaces::store::panels_json(&saved)).unwrap(); // sync-ok: test code only
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.start_restore_and_wait();
+        // The strip restores with the first tab in front: its panel is open at its width.
+        f.pump_until("the restored panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "note.txt");
+        assert!((f.h.comp.get_panel_share() - 0.3).abs() < 1e-6);
+        assert_eq!(rows_in_panel(&f), 2);
+        // The second tab's panel was closed when saved: it is still closed.
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        // A change is written: close the first, and the file says so.
+        f.ctl.borrow_mut().close_front_panel();
+        store.flush();
+        let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].panel.as_ref().map(|p| p.open), Some(false));
+        assert_eq!(back[0].panel.as_ref().and_then(|p| p.width), Some(0.3));
+    }
+
+    #[test]
+    fn a_stored_panel_whose_target_is_not_a_local_file_of_its_kind_is_dropped() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        // A network path (it would make Windows reach out), and a script named as a picture's kind.
+        for target in [r"\\server\share\p.png", r"C:\x\run.bat", "relative.png"] {
+            let raw = format!(
+                r#"{{"version":1,"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"image","target":{}}}}}]}}"#,
+                serde_json::Value::String(target.into())
+            );
+            std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+            let g = fx_with(Opts {
+                saved: vec![("C:\\a", None)],
+                ..Opts::default()
+            });
+            let gfile = g.dir.path().join("panels.json");
+            std::fs::copy(&file, &gfile).unwrap(); // sync-ok: test code only
+            g.ctl
+                .borrow_mut()
+                .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                    &gfile,
+                    Duration::from_millis(30),
+                )));
+            g.start_restore_and_wait();
+            assert_eq!(g.ctl.borrow().open_panels(), 0, "{target}");
+            assert!(!g.h.comp.get_panel_open(), "{target}");
+        }
+    }
+
+    // ---- the control channel's calls (Surfaces stage 2) ----
+
+    /// One control channel op, answered the way the worker would get it.
+    fn ctl_call(
+        f: &Fx,
+        op: crate::ctl_app::CtlOp,
+    ) -> Result<serde_json::Value, flare_ctl::CtlError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op,
+                    deadline: std::time::Instant::now() + Duration::from_secs(5),
+                    reply: tx,
+                },
+            )));
+        rx.try_recv().expect("the UI thread answers at once")
+    }
+
+    fn show_text_op(tab: &str, text: &str, title: Option<&str>) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::ShowText {
+            tab: tab.into(),
+            text: text.into(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    type Events = Arc<std::sync::Mutex<Vec<(String, serde_json::Value, Option<String>)>>>;
+
+    /// Starts recording the control channel events the controller publishes.
+    fn recorded_events(f: &Fx) -> Events {
+        let store: Events = Arc::default();
+        let keep = Arc::clone(&store);
+        f.ctl.borrow_mut().set_ctl(
+            Arc::new(move |name, params, tab| {
+                keep.lock()
+                    .unwrap()
+                    .push((name.to_string(), params, tab.map(str::to_string)));
+            }),
+            crate::appctl::CtlInfo::default(),
+        );
+        store
+    }
+
+    #[test]
+    fn view_text_shows_in_the_front_tabs_panel_with_its_title() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let v = ctl_call(&f, show_text_op(&id, "alpha\nbeta\ngamma", Some("Plan"))).unwrap();
+        assert_eq!(v["panel"]["kind"], "text");
+        assert_eq!(v["panel"]["title"], "Plan");
+        assert!(v["panel"].get("path").is_none(), "text has no file");
+        f.pump_until("the text", |f| rows_in_panel(f) == 3);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Plan");
+        assert_eq!(f.h.comp.get_panel_kind(), 2);
+        assert!(f.h.comp.get_panel_open());
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("3 lines"),
+            "{}",
+            f.h.comp.get_panel_sub()
+        );
+        // A second call replaces it; with no title the header says Text.
+        ctl_call(&f, show_text_op(&id, "one line", None)).unwrap();
+        f.pump_until("the new text", |f| rows_in_panel(f) == 1);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Text");
+        // Text that was handed over never reaches the disk's panel file, and asks nothing of a path.
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+    }
+
+    #[test]
+    fn view_file_shows_a_file_under_a_title_and_a_picture_with_its_size() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let note = f.dir.path().join("n.txt");
+        std::fs::write(&note, "x\ny").unwrap(); // sync-ok: test code only
+        let abs = note.to_string_lossy().into_owned();
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: abs.clone(),
+                title: Some("Notes".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["panel"]["kind"], "text");
+        assert_eq!(v["panel"]["path"], abs.as_str());
+        f.pump_until("the file", |f| rows_in_panel(f) == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Notes");
+        // The same file without a title is shown under its own name again.
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id,
+                kind: flare_surfaces::PanelKind::Text,
+                abs,
+                title: None,
+            },
+        )
+        .unwrap();
+        f.pump_until("the name", |f| {
+            f.h.comp.get_panel_title().as_str() == "n.txt"
+        });
+    }
+
+    #[test]
+    fn a_call_for_a_tab_that_is_behind_stores_its_panel_and_never_switches_tabs() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+        ctl_call(&f, show_text_op(&a, "for a", Some("A"))).unwrap();
+        f.pump();
+        assert_eq!(
+            f.ctl.borrow().front_id().as_deref(),
+            Some(b.as_str()),
+            "the front tab did not change"
+        );
+        assert!(!f.h.comp.get_panel_open(), "b has no panel");
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        // a's panel is there when a comes to the front.
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("a's panel", |f| f.h.comp.get_panel_title().as_str() == "A");
+    }
+
+    #[test]
+    fn panel_state_and_close_report_what_is_open() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let state =
+            |f: &Fx| ctl_call(f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        assert_eq!(state(&f), serde_json::json!({"open": false}));
+        let close = |f: &Fx| {
+            ctl_call(f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap()["closed"]
+                .clone()
+        };
+        assert_eq!(close(&f), false, "nothing open is not an error");
+        ctl_call(&f, show_text_op(&id, "x", Some("T"))).unwrap();
+        let s = state(&f);
+        assert_eq!(s["open"], true);
+        assert_eq!(s["panel"]["kind"], "text");
+        assert_eq!(s["panel"]["title"], "T");
+        assert_eq!(
+            s["width"],
+            serde_json::json!(flare_surfaces::layout::DEFAULT_SHARE)
+        );
+        assert_eq!(close(&f), true);
+        f.pump();
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(state(&f), serde_json::json!({"open": false}));
+        assert_eq!(close(&f), false);
+        // The toggle chord brings back what the agent showed.
+        assert!(f.ctl.borrow_mut().toggle_front_panel());
+        assert_eq!(state(&f)["open"], true);
+    }
+
+    #[test]
+    fn the_tab_list_has_every_shell_tab_or_only_the_callers() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        let all = ctl_call(&f, crate::ctl_app::CtlOp::Tabs { own: None }).unwrap();
+        let ids: Vec<&str> = all["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [a.as_str(), b.as_str()]);
+        assert_eq!(all["tabs"][1]["active"], true);
+        assert_eq!(all["tabs"][0]["active"], false);
+        assert!(!all["tabs"][0]["title"].as_str().unwrap().is_empty());
+        let own = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::Tabs {
+                own: Some(a.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(own["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(own["tabs"][0]["id"], a.as_str());
+        let cwd = ctl_call(&f, crate::ctl_app::CtlOp::TabCwd { tab: a }).unwrap();
+        assert_eq!(cwd["cwd"], "C:\\a");
+    }
+
+    #[test]
+    fn a_closed_or_invented_tab_is_no_tab() {
+        let (f, _h, _) = live(Opts::default());
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        f.ctl.borrow_mut().request_close(&b);
+        f.pump();
+        for tab in [b.as_str(), "nope", "settings", ""] {
+            for op in [
+                show_text_op(tab, "x", None),
+                crate::ctl_app::CtlOp::PanelState { tab: tab.into() },
+                crate::ctl_app::CtlOp::PanelClose { tab: tab.into() },
+                crate::ctl_app::CtlOp::TabCwd { tab: tab.into() },
+            ] {
+                let e = ctl_call(&f, op).unwrap_err();
+                assert_eq!(e.code, flare_ctl::code::NO_TAB, "{tab:?}");
+            }
+        }
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn an_explicit_ask_shows_even_when_clicks_open_previews_in_windows() {
+        let (f, _h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "still shown", None)).unwrap();
+        f.pump_until("the text", |f| rows_in_panel(f) == 1);
+    }
+
+    #[test]
+    fn text_handed_over_is_not_written_to_the_panels_file_and_not_restored() {
+        let (f, _h, _) = live(Opts::default());
+        let file = f.dir.path().join("panels.json");
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        // Tab a holds handed-over text; tab b holds a real file, so the store has something to write
+        // and a missing file cannot pass for "nothing was saved".
+        let a = f.ctl.borrow().front_id().unwrap();
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        let note = f.dir.path().join("kept.txt");
+        std::fs::write(&note, "kept").unwrap(); // sync-ok: test code only
+        ctl_call(&f, show_text_op(&a, "private notes", Some("T"))).unwrap();
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: b.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: note.to_string_lossy().into_owned(),
+                title: None,
+            },
+        )
+        .unwrap();
+        f.ctl.borrow_mut().refresh();
+        store.flush();
+        let raw = std::fs::read_to_string(&file).expect("the store wrote the file"); // sync-ok: test code only
+        assert!(raw.contains("kept.txt"), "the file panel is saved: {raw}");
+        assert!(!raw.contains("private notes"), "{raw}");
+        assert!(!raw.contains("inline"), "{raw}");
+        let back = flare_surfaces::store::parse_panels(&raw);
+        assert_eq!(back.len(), 2);
+        assert!(back[0].panel.is_none(), "the text tab saves no panel");
+        assert!(back[1].panel.is_some());
+        // A new run restores from that file: tab b gets its file, tab a gets nothing.
+        let g = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", None)],
+            ..Opts::default()
+        });
+        let gfile = g.dir.path().join("panels.json");
+        std::fs::copy(&file, &gfile).unwrap(); // sync-ok: test code only
+        g.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &gfile,
+                Duration::from_millis(30),
+            )));
+        g.start_restore_and_wait();
+        assert_eq!(g.ctl.borrow().open_panels(), 1, "only the file came back");
+        assert!(
+            !g.h.comp.get_panel_open(),
+            "the text tab (in front) has no panel"
+        );
+    }
+
+    #[test]
+    fn a_click_after_a_titled_call_shows_the_file_under_its_own_name() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "x", Some("Plan"))).unwrap();
+        f.pump_until("the title", |f| {
+            f.h.comp.get_panel_title().as_str() == "Plan"
+        });
+        let events = recorded_events(&f);
+        let note = f.dir.path().join("clicked.txt");
+        std::fs::write(&note, "c").unwrap(); // sync-ok: test code only
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.pump_until("the file's name", |f| {
+            f.h.comp.get_panel_title().as_str() == "clicked.txt"
+        });
+        let state = ctl_call(&f, crate::ctl_app::CtlOp::PanelState { tab: id.clone() }).unwrap();
+        assert_eq!(state["panel"]["title"], "clicked.txt", "{state}");
+        let ev = events.lock().unwrap().clone();
+        assert_eq!(ev.last().unwrap().1["panel"]["title"], "clicked.txt");
+        // A file given a title keeps it only until the next click or call.
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ShowFile {
+                tab: id.clone(),
+                kind: flare_surfaces::PanelKind::Text,
+                abs: note.to_string_lossy().into_owned(),
+                title: Some("Fake".into()),
+            },
+        )
+        .unwrap();
+        f.pump_until("the given title", |f| {
+            f.h.comp.get_panel_title().as_str() == "Fake"
+        });
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.pump_until("the name again", |f| {
+            f.h.comp.get_panel_title().as_str() == "clicked.txt"
+        });
+    }
+
+    #[test]
+    fn panel_changes_are_published_to_the_tab_s_clients() {
+        let (f, _h, _) = live(Opts::default());
+        let events = recorded_events(&f);
+        let id = f.ctl.borrow().front_id().unwrap();
+        ctl_call(&f, show_text_op(&id, "x", Some("T"))).unwrap();
+        ctl_call(&f, crate::ctl_app::CtlOp::PanelClose { tab: id.clone() }).unwrap();
+        // The close button and a click on a path say so too.
+        let note = f.dir.path().join("p.txt");
+        std::fs::write(&note, "p").unwrap(); // sync-ok: test code only
+        f.ctl.borrow_mut().show_preview(
+            &id,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy(),
+        );
+        f.ctl.borrow_mut().close_front_panel();
+        let ev = events.lock().unwrap().clone();
+        let opens: Vec<bool> = ev
+            .iter()
+            .map(|(n, p, t)| {
+                assert_eq!(n, "panel.changed");
+                assert_eq!(t.as_deref(), Some(id.as_str()));
+                assert_eq!(p["tab"], id.as_str());
+                p["open"].as_bool().unwrap()
+            })
+            .collect();
+        assert_eq!(opens, [true, false, true, false]);
+        assert_eq!(ev[0].1["panel"]["title"], "T");
+        assert!(ev[1].1.get("panel").is_none());
+    }
+
+    #[test]
+    fn a_request_that_arrives_after_its_deadline_changes_nothing() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let past = std::time::Instant::now() - Duration::from_secs(1);
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op: show_text_op(&id, "too late", Some("Late")),
+                    deadline: past,
+                    reply: tx,
+                },
+            )));
+        let answer = rx.try_recv().expect("answered at once");
+        assert_eq!(answer.unwrap_err().code, flare_ctl::code::TIMEOUT);
+        f.pump();
+        assert_eq!(f.ctl.borrow().open_panels(), 0, "no panel was shown");
+        assert!(!f.h.comp.get_panel_open());
+    }
+
+    #[test]
+    fn a_message_after_the_end_of_life_is_dropped_so_its_waiter_lets_go() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().end();
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op: show_text_op(&id, "late", None),
+                    deadline: std::time::Instant::now() + Duration::from_secs(5),
+                    reply: tx,
+                },
+            )));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn a_panel_of_a_kind_this_stage_cannot_draw_is_kept_in_the_file_and_not_shown() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"mod:notes","target":"x"}}]}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.start_restore_and_wait();
+        f.pump();
+        assert!(!f.h.comp.get_panel_open(), "no viewer for it yet");
+        store.flush();
+        let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
+        assert_eq!(
+            back[0].panel.as_ref().map(|p| p.kind.name()),
+            Some("mod:notes".to_string())
+        );
+    }
+
+    #[test]
+    fn a_session_that_never_opens_a_panel_writes_no_file_and_starts_no_writer() {
+        let (f, _h, _) = live(Opts::default());
+        let file = f.dir.path().join("panels.json");
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.ctl.borrow_mut().refresh();
+        f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        store.flush();
+        assert!(!file.exists());
+        assert!(!store.started());
     }
 
     #[test]
@@ -5503,6 +8410,9 @@ mod tests {
             f.h.comp.get_dialog_title().as_str(),
             "Close the tab and end the agent?"
         );
+        // PT's confirm is the solid accent, never the danger fill; a click opened it, so no ring.
+        assert!(!f.h.comp.get_dialog_danger(), "no danger fill");
+        assert!(!f.h.comp.get_dialog_by_key(), "opened by a click");
         let body = {
             let c = f.ctl.borrow();
             ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body
@@ -5716,56 +8626,79 @@ mod tests {
         );
     }
 
-    #[test]
-    fn looking_and_coming_back() {
-        // A pointer moving over an unfocused window is a look.
+    /// A tab "C:\a" finished on the front with the window away.
+    fn finished_away() -> (Fx, Vec<String>) {
         let f = fx();
-        let ids = f.open_tabs(&["C:\\a"]);
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.ctl.borrow_mut().model_mut().pick(&ids[0]);
+        f.ctl.borrow_mut().refresh();
         f.ctl.borrow_mut().on_focus_lost();
         f.say("C:\\a", OSC_WORKING);
         f.say("C:\\a", OSC_DONE);
         f.pump_until("the finished mark", |f| {
             f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
         });
+        (f, ids)
+    }
+
+    #[test]
+    fn coming_back_and_pointer_moves_keep_a_held_mark() {
+        let (f, ids) = finished_away();
         f.clock.set(f.clock.get() + 2_000);
         f.ctl.borrow_mut().on_cursor(10.0, 10.0);
         f.ctl.borrow_mut().on_cursor(20.0, 20.0);
+        assert!(f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+        f.ctl.borrow_mut().on_focus(true);
         assert!(
-            !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "a pointer move is a look"
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
+            "focus returning keeps it"
         );
-        // The look alone, without the rest of a cursor move, does the same.
-        let h = fx();
-        let ids = h.open_tabs(&["C:\\a"]);
-        h.ctl.borrow_mut().on_focus_lost();
-        h.say("C:\\a", OSC_WORKING);
-        h.say("C:\\a", OSC_DONE);
-        h.pump_until("the finished mark", |f| {
-            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
-        });
-        h.clock.set(h.clock.get() + 2_000);
-        h.ctl.borrow_mut().on_pointer_look();
-        h.ctl.borrow_mut().on_pointer_look();
-        assert!(
-            !h.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "a pointer look on an unfocused window is a look"
-        );
-        // Coming back to the window is a look.
-        let g = fx();
-        let ids = g.open_tabs(&["C:\\a"]);
-        g.ctl.borrow_mut().on_focus_lost();
-        g.say("C:\\a", OSC_WORKING);
-        g.say("C:\\a", OSC_DONE);
-        g.pump_until("the finished mark", |f| {
-            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
-        });
-        g.clock.set(g.clock.get() + 2_000);
-        assert!(
-            g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "blurred: the mark stays"
-        );
-        g.ctl.borrow_mut().on_focus(true);
-        assert!(!g.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+    }
+
+    fn held(f: &Fx, id: &str) -> bool {
+        f.ctl
+            .borrow()
+            .hub
+            .indicator()
+            .done_ids()
+            .contains(&id.to_string())
+    }
+
+    #[test]
+    fn a_pick_of_another_tab_takes_a_held_mark_down_on_the_tab_left() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        assert!(held(&f, &ids[0]), "coming back keeps it");
+        f.ctl.borrow_mut().overflow_picked(&ids[1]);
+        assert!(!held(&f, &ids[0]), "no background mark lingers");
+    }
+
+    #[test]
+    fn a_pick_of_the_same_tab_keeps_a_held_mark() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().overflow_picked(&ids[0]);
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn a_switch_with_no_click_takes_a_held_mark_down() {
+        // A key or a wheel moves the front tab with no pick call: the refresh reads it.
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().pick(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(!held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn closing_another_tab_keeps_a_held_mark() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().close(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
     }
 
     // ---- command help (Task 43) ----

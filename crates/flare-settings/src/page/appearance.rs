@@ -302,6 +302,7 @@ mod tests {
             agent_colours: [String::new(), String::new(), String::new()],
             agent_key_labels: String::new(),
             face_of,
+            mods: None,
         };
         f(&env)
     }

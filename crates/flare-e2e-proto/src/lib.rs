@@ -168,6 +168,23 @@ pub enum Request {
     DictRouted {
         result: RouteResult,
     },
+    /// Surfaces stage 3: runs a script in the front tab's web page; replies Ok once it is started and
+    /// the answer is read with the `web.script.result` probe. The only way a scenario looks inside a page.
+    WebScript {
+        js: String,
+    },
+    /// Surfaces stage 4: stands in for the person's own click or key in the front web page (the e2e never
+    /// sends input to a real window); an agent call running there ends `interrupted`.
+    WebUserInput,
+    /// Surfaces stage 4: sets the browser's own zoom of the front web page (as Ctrl+wheel in the panel does).
+    WebZoom {
+        factor: f64,
+    },
+    /// Surfaces stage 7: stands in for the person's click on a notification (the e2e never clicks a real one):
+    /// the window comes up and the tab it was about comes to the front.
+    ToastClick {
+        tab: String,
+    },
 }
 
 /// The routed result of one dictation (M8): the heard text, or a message for the user.
@@ -397,6 +414,7 @@ mod tests {
                 png_b64: None,
             },
             Request::Quit { force: false },
+            Request::ToastClick { tab: "t-3".into() },
         ]
     }
 

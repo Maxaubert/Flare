@@ -37,6 +37,12 @@ pub trait ChordTarget {
     fn find(&mut self);
     /// Alt+Space: the system menu at the window's top-left.
     fn open_system_menu(&mut self);
+    /// Ctrl+Shift+P: shows or hides the tab's panel; does nothing when the tab has none to bring back.
+    /// The key is the app's either way: the shell never hears it.
+    fn toggle_panel(&mut self);
+    /// Ctrl+Shift+O: moves the keys between the terminal and the open panel; does nothing when no
+    /// panel is open. The key is the app's either way.
+    fn focus_panel(&mut self);
 }
 
 /// App.tsx `onKey`, in order: a Ctrl chord that is not Tab, Control or Shift ends a Most recent walk;
@@ -82,6 +88,8 @@ pub fn dispatch(ev: &KeyEvent, ctx: &KeyContext, t: &mut dyn ChordTarget) -> Dis
         ChordId::CloseTab => t.close_tab(),
         ChordId::Find => t.find(),
         ChordId::SystemMenu => t.open_system_menu(),
+        ChordId::Panel => t.toggle_panel(),
+        ChordId::PanelFocus => t.focus_panel(),
     }
     Dispatch::Taken
 }
@@ -145,6 +153,12 @@ mod tests {
         fn open_system_menu(&mut self) {
             self.calls.push("system_menu".into());
         }
+        fn toggle_panel(&mut self) {
+            self.calls.push("panel".into());
+        }
+        fn focus_panel(&mut self) {
+            self.calls.push("panel_focus".into());
+        }
     }
 
     fn on() -> KeyContext {
@@ -197,6 +211,8 @@ mod tests {
             (k("B", "KeyB").ctrl().shift(), "sidebar"),
             (k("f", "KeyF").ctrl(), "find"),
             (k("F1", "F1"), "help"),
+            (k("P", "KeyP").ctrl().shift(), "panel"),
+            (k("O", "KeyO").ctrl().shift(), "panel_focus"),
         ];
         for (ev, call) in cases {
             let (d, calls) = run(&ev, &c);
@@ -230,6 +246,25 @@ mod tests {
                 .1
                 .contains(&"next_tab(-1)".to_string())
         );
+    }
+
+    #[test]
+    fn the_panel_chords_are_always_taken_so_the_shell_never_hears_them() {
+        let mut t = FakeTarget::default();
+        assert_eq!(
+            dispatch(&k("P", "KeyP").ctrl().shift(), &on(), &mut t),
+            Dispatch::Taken
+        );
+        assert_eq!(
+            dispatch(&k("O", "KeyO").ctrl().shift(), &on(), &mut t),
+            Dispatch::Taken
+        );
+        assert!(t.calls.contains(&"panel".to_string()));
+        assert!(t.calls.contains(&"panel_focus".to_string()));
+        // Plain Ctrl+P and Ctrl+O stay the shell's.
+        let (d, calls) = run(&k("p", "KeyP").ctrl(), &on());
+        assert_eq!(d, Dispatch::NotAChord);
+        assert!(!calls.contains(&"panel".to_string()));
     }
 
     #[test]

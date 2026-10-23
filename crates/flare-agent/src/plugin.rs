@@ -151,6 +151,38 @@ pub fn hooks_commands_are_absolute(text: &str) -> bool {
     count > 0
 }
 
+/// What the shipped `plugin.json` carries where the MCP server's program goes. Like the hooks'
+/// placeholder it is never a valid command: [`install_plugin_with`] writes the absolute path of
+/// `flare-mcp.exe` beside the running exe, or leaves the whole `mcpServers` block out.
+pub const MCP_EXE_PLACEHOLDER: &str = "@@FLARE_MCP_EXE@@";
+
+/// The manifest template with the MCP server's program set to `mcp_exe` (an absolute drive path),
+/// or with no `mcpServers` at all when there is none. None when the template does not parse or a
+/// path that is not absolute is given. Nothing depends on Claude Code expanding variables.
+pub fn render_manifest(template: &str, mcp_exe: Option<&str>) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(template).ok()?;
+    let object = value.as_object_mut()?;
+    match mcp_exe {
+        Some(exe) if is_drive_path(exe) => {
+            let server = object
+                .get_mut("mcpServers")?
+                .get_mut("flare")?
+                .as_object_mut()?;
+            if server.get("command").and_then(|c| c.as_str()) != Some(MCP_EXE_PLACEHOLDER) {
+                return None;
+            }
+            server.insert("command".into(), serde_json::Value::String(exe.to_string()));
+        }
+        Some(_) => return None,
+        None => {
+            object.remove("mcpServers");
+        }
+    }
+    let mut text = serde_json::to_string_pretty(&value).ok()?;
+    text.push('\n');
+    Some(text)
+}
+
 /// The sibling a file is written to before it is renamed over its target.
 fn temp_name(target: &Path) -> PathBuf {
     let mut name = target.file_name().unwrap_or_default().to_os_string();
@@ -177,12 +209,30 @@ fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// installed `hooks.json` with a bare name (or a stale path) differs and is rewritten. Returns how
 /// many files were written; an error when the template cannot be rendered (nothing is written).
 pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Result<usize> {
+    install_plugin_with(src, dest, system_dir, None)
+}
+
+/// [`install_plugin`] that also writes `plugin.json` with `mcp_exe` (the absolute `flare-mcp.exe`) as
+/// the MCP server's program. None: the manifest has no MCP server, so a build without the file gives
+/// Claude Code nothing to fail on.
+pub fn install_plugin_with(
+    src: &Path,
+    dest: &Path,
+    system_dir: &Path,
+    mcp_exe: Option<&Path>,
+) -> std::io::Result<usize> {
     let bad = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_string());
     let cmd = system_cmd_path(system_dir).ok_or_else(|| bad("not an absolute System32 folder"))?;
     // sync-ok: install on the spawn worker
     let template = std::fs::read_to_string(src.join("hooks").join("hooks.json"))?;
     let hooks =
         render_hooks(&template, &cmd).ok_or_else(|| bad("hooks.json cannot be rendered"))?;
+    let manifest_rel = Path::new(".claude-plugin").join("plugin.json");
+    // sync-ok: install on the spawn worker
+    let manifest_template = std::fs::read_to_string(src.join(&manifest_rel))?;
+    let mcp_text = mcp_exe.map(|p| p.to_string_lossy().into_owned());
+    let manifest = render_manifest(&manifest_template, mcp_text.as_deref())
+        .ok_or_else(|| bad("plugin.json cannot be rendered"))?;
     let hooks_rel = Path::new("hooks").join("hooks.json");
     let mut written = 0usize;
     let mut pending = vec![PathBuf::new()];
@@ -197,6 +247,8 @@ pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Re
             }
             let bytes = if child == hooks_rel {
                 hooks.clone().into_bytes()
+            } else if child == manifest_rel {
+                manifest.clone().into_bytes()
             } else {
                 std::fs::read(entry.path())? // sync-ok: install on the spawn worker
             };
@@ -215,12 +267,30 @@ pub fn install_plugin(src: &Path, dest: &Path, system_dir: &Path) -> std::io::Re
     Ok(written)
 }
 
-/// Where the installed copy lives: `%LOCALAPPDATA%\Flare\claude-plugin`.
-pub fn installed_plugin_path() -> Option<PathBuf> {
+/// Where the installed copy for the Flare in `exe_dir` lives: `%LOCALAPPDATA%\Flare\claude-plugin-<tag>`, the
+/// tag naming the folder the exe is in. The copy holds the absolute path of THIS Flare's `flare-mcp.exe`, so
+/// two Flares (the installed one, a dev or worktree build) must not share one: the last started would decide
+/// which program every Claude session of every Flare runs, and a removed worktree would break the others.
+pub fn installed_plugin_path(exe_dir: Option<&Path>) -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA")
         .ok()
         .filter(|value| !value.is_empty())?;
-    Some(PathBuf::from(local).join("Flare").join("claude-plugin"))
+    let name = match exe_dir {
+        Some(dir) => format!("claude-plugin-{}", dir_tag(dir)),
+        None => "claude-plugin".to_string(),
+    };
+    Some(PathBuf::from(local).join("Flare").join(name))
+}
+
+/// Eight hex digits naming a folder (FNV-1a of its lowercased path, slashes unified).
+fn dir_tag(dir: &Path) -> String {
+    let text = dir.to_string_lossy().replace('/', "\\").to_lowercase();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.trim_end_matches(|c| c == char::from(92u8)).bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:08x}", hash >> 32)
 }
 
 /// The plugin folder to hand a shell: the bundled template is installed (refreshed) into
@@ -232,9 +302,14 @@ pub fn plugin_dir(env_dir: Option<&str>) -> Option<PathBuf> {
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let src = plugin_dir_in(&candidate_plugin_dirs(env_dir, exe_dir.as_deref()))?;
-    let dest = installed_plugin_path()?;
+    let dest = installed_plugin_path(exe_dir.as_deref())?;
     let system = system_directory()?;
-    match install_plugin(&src, &dest, &system) {
+    // The MCP server is only offered when its program is really beside this exe.
+    let mcp = exe_dir
+        .as_deref()
+        .map(|d| d.join("flare-mcp.exe"))
+        .filter(|p| p.is_file()); // sync-ok: one stat, on the spawn worker
+    match install_plugin_with(&src, &dest, &system, mcp.as_deref()) {
         Ok(_) => Some(dest),
         Err(err) => {
             log::warn!("claude plugin install failed: {err}");
@@ -255,6 +330,24 @@ pub fn plugin_dir_in(candidates: &[PathBuf]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::signal::{AgentSignal, HookState, agent_hook_events, parse_agent_signal};
+
+    #[test]
+    fn two_flares_in_two_folders_never_share_an_installed_plugin() {
+        let a = Path::new(r"C:\Program Files\Flare");
+        let b = Path::new(r"C:\Dev\Flare\.claude\worktrees\s10\target\debug");
+        let (pa, pb) = (
+            installed_plugin_path(Some(a)),
+            installed_plugin_path(Some(b)),
+        );
+        if let (Some(pa), Some(pb)) = (pa, pb) {
+            assert_ne!(pa, pb, "one folder each");
+            // The same folder always gets the same place, however it is spelled.
+            assert_eq!(
+                Some(pa),
+                installed_plugin_path(Some(Path::new("c:/program files/flare/")))
+            );
+        }
+    }
 
     fn plugin_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("claude-plugin")
@@ -310,9 +403,80 @@ mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
         assert!(shaped, "name {name} is not a plugin name");
-        assert_eq!(manifest["version"].as_str(), Some("1.0.0"));
+        assert_eq!(manifest["version"].as_str(), Some("1.1.0"));
         let description = manifest["description"].as_str().expect("description");
         assert!(!description.contains('\u{2014}'));
+    }
+
+    #[test]
+    fn declares_the_flare_mcp_server_by_a_written_in_absolute_path_and_never_by_expansion() {
+        // Surfaces stage 2: Claude in a Flare tab gets show_image, show_file, show_text and
+        // close_panel with no setup. The shipped manifest is a template (like hooks.json): the program
+        // is the absolute `flare-mcp.exe` beside the running exe, written in at install, never a bare
+        // name PATH or the current folder could answer and never a variable Claude Code might not
+        // expand. The tab's secret and the pipe reach the server through Claude's own environment,
+        // not through the manifest or a command line.
+        let template = read_plugin_file(".claude-plugin/plugin.json");
+        let value: serde_json::Value = serde_json::from_str(&template).expect("json");
+        assert_eq!(
+            value["mcpServers"]["flare"]["command"].as_str(),
+            Some(MCP_EXE_PLACEHOLDER)
+        );
+        assert!(
+            !template.contains("${"),
+            "no variable expansion is relied on"
+        );
+        assert!(!template.contains("pipe"), "no pipe name in the manifest");
+        assert!(!template.contains("TOKEN"), "no secret in the manifest");
+
+        let exe = "C:\\Program Files\\Flare\\flare-mcp.exe";
+        let rendered = render_manifest(&template, Some(exe)).expect("renders");
+        let out: serde_json::Value = serde_json::from_str(&rendered).expect("json");
+        let servers = out["mcpServers"].as_object().expect("mcpServers");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers["flare"]["command"].as_str(), Some(exe));
+        assert_eq!(servers["flare"]["args"].as_array().map(Vec::len), Some(0));
+        assert!(servers["flare"].get("env").is_none());
+        assert!(!rendered.contains("@@"));
+        assert_eq!(out["name"].as_str(), Some("flare-status"));
+
+        // No program beside the exe: no server at all, and the plugin is still ours.
+        let bare = render_manifest(&template, None).expect("renders");
+        let bare_value: serde_json::Value = serde_json::from_str(&bare).expect("json");
+        assert!(bare_value.get("mcpServers").is_none());
+        assert_eq!(bare_value["name"].as_str(), Some("flare-status"));
+        // A relative or bare program is never written.
+        assert!(render_manifest(&template, Some("flare-mcp.exe")).is_none());
+        assert!(render_manifest(&template, Some("..\\flare-mcp.exe")).is_none());
+        assert!(render_manifest("not json", None).is_none());
+    }
+
+    #[test]
+    fn install_writes_the_mcp_server_only_when_the_program_exists() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let system = fake_system32(tmp.path());
+        let with = tmp.path().join("with");
+        let exe = tmp.path().join("flare-mcp.exe");
+        install_plugin_with(&plugin_root(), &with, &system, Some(&exe)).expect("install");
+        let text = std::fs::read_to_string(with.join(".claude-plugin").join("plugin.json"))
+            .expect("manifest"); // sync-ok: test fixture on a temp folder
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let command = value["mcpServers"]["flare"]["command"]
+            .as_str()
+            .expect("command");
+        assert!(is_drive_path(command), "{command}");
+        assert!(command.ends_with("flare-mcp.exe"));
+        let without = tmp.path().join("without");
+        install_plugin_with(&plugin_root(), &without, &system, None).expect("install");
+        let text = std::fs::read_to_string(without.join(".claude-plugin").join("plugin.json"))
+            .expect("manifest"); // sync-ok: test fixture on a temp folder
+        assert!(!text.contains("mcpServers") && !text.contains("@@"));
+        assert!(read_is_our_plugin(&without));
+        // The installed copy follows the program: adding it later rewrites the manifest.
+        assert_eq!(
+            install_plugin_with(&plugin_root(), &without, &system, Some(&exe)).expect("again"),
+            1
+        );
     }
 
     #[test]

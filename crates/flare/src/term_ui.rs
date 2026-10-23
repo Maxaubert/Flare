@@ -35,6 +35,7 @@ use flare_term::osc52::OSC52_MAX;
 use flare_term::path_links::{Ask, BATCH_MS, Found, PathLinks};
 use flare_term::path_open::{
     OpenMode, PathHit, PathOpeners, StatFn, StatGate, StatGateOptions, open_term_path, path_kinds,
+    resolve_openable_file,
 };
 use flare_term::sel_machine::{
     ClickCounter, DRAG_SCROLL_MS, Drag, Press, SelMachine, SelOut, ViewBox,
@@ -67,6 +68,20 @@ pub enum TermMsg {
     /// ran (`None` when it was dropped). The UI frees that tab's pending copy when it handles it.
     BigCopied(String, u64, Option<bool>),
     PathAnswer(Ask, Option<Vec<Option<PathHit>>>),
+    /// A click resolved to a file the panel may show: the tab, what to show it as, and the path.
+    Preview {
+        tab: String,
+        kind: flare_surfaces::PanelKind,
+        abs: String,
+        /// The person asked outright ("Show in side panel" in the menu): the "Open previews in Flare" setting,
+        /// which only decides what a plain click does, does not stop it.
+        asked: bool,
+    },
+    /// "Show in side panel" was refused when the worker looked again (the file changed, went away, or is not
+    /// one the panel may show): the app tells the person in the panel. Nothing is ever opened in Windows.
+    PreviewRefused {
+        tab: String,
+    },
 }
 
 /// Everything TermUi needs from the outside, injected.
@@ -86,6 +101,9 @@ pub struct TermDeps {
     pub dbl: DoubleClick,
     /// The stat behind the path-link questions, wrapped once in a metered `StatGate`.
     pub stat: Arc<dyn StatFn>,
+    /// The opt-in "Send right-clicks to programs" setting, read on every right press. Off (the
+    /// default): a right-click opens Flare's menu and sends nothing to the program.
+    pub right_click_reports: Rc<dyn Fn() -> bool>,
 }
 
 /// The front tab as M3's tab model keeps it. `cwd` is the tab's LOCAL folder after
@@ -278,6 +296,9 @@ pub struct TermUi {
     copy_pending: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
     /// The one worker for OSC 52 writes: latest wins.
     osc_copier: LatestCopier,
+    /// "Open previews in Flare" (Surfaces stage 1): a click on a path to a picture or a text file
+    /// asks the app to show it in the tab's panel. Set from the setting on every refresh.
+    previews: bool,
 }
 
 /// The longest a big copy may keep Ctrl+C a copy.
@@ -350,6 +371,7 @@ impl TermUi {
             copy_gen: Arc::new(AtomicU64::new(0)),
             copy_pending: Arc::new(Mutex::new(HashMap::new())),
             osc_copier,
+            previews: true,
         }
     }
 
@@ -479,6 +501,54 @@ impl TermUi {
         );
     }
 
+    /// A plain click on a path. With previews on, a worker re-resolves the path (rule 13) and, when
+    /// it is a picture or a text file on the click allowlist (rule 14), tells the app to show it in
+    /// the tab's panel; everything else (a folder, a document, a script) goes the way it always
+    /// went. Never runs anything.
+    fn click_path_async(&self, tab: String, base: String, text: String) {
+        if !self.previews {
+            self.open_path_async(base, text, OpenMode::Open);
+            return;
+        }
+        self.preview_or_open_async(tab, base, text, true);
+    }
+
+    /// "Show in side panel" from the path menu: the same vetting as the click, and when the path is not a picture or
+    /// a text file after all (it changed since the menu was built) the panel says so: this row never opens anything.
+    fn preview_path_async(&self, tab: String, base: String, text: String) {
+        self.preview_or_open_async(tab, base, text, false);
+    }
+
+    fn preview_or_open_async(&self, tab: String, base: String, text: String, open_else: bool) {
+        let openers = Arc::clone(&self.deps.openers);
+        let home = self.deps.home.clone();
+        let post = Arc::clone(&self.deps.post);
+        thread::spawn(move || {
+            if let Some((abs, real)) = resolve_openable_file(&base, &text, &home)
+                && let Some(kind) = flare_surfaces::preview::classify_resolved(&abs, &real)
+                && flare_surfaces::preview::loadable(&real, &kind)
+            {
+                post(TermMsg::Preview {
+                    tab,
+                    kind,
+                    abs: real,
+                    asked: !open_else,
+                });
+                return;
+            }
+            if open_else {
+                let _ = open_term_path(&base, &text, OpenMode::Open, &*openers, &home);
+            } else {
+                post(TermMsg::PreviewRefused { tab });
+            }
+        });
+    }
+
+    /// Whether a click on a picture or a text file shows it in the panel.
+    pub fn set_previews(&mut self, on: bool) {
+        self.previews = on;
+    }
+
     /// The only way a path is opened: a worker re-resolves it and applies the allowlist.
     fn open_path_async(&self, base: String, text: String, mode: OpenMode) {
         let openers = Arc::clone(&self.deps.openers);
@@ -591,7 +661,7 @@ impl TermUi {
             }
             2 => {
                 let has = tab.handle.with_emu_quiet(|em| em.has_selection());
-                if mouse_owned && !has {
+                if mouse_owned && !has && (self.deps.right_click_reports)() {
                     self.reported_right = true;
                     self.report(
                         tab,
@@ -827,7 +897,7 @@ impl TermUi {
         match click_action(&mark.target, shown.as_deref(), base.as_deref(), 0) {
             LinkAction::OpenUrl(u) => self.open_link(&u),
             LinkAction::OpenPath { base, text } => {
-                self.open_path_async(base, text, OpenMode::Open);
+                self.click_path_async(tab.id.to_string(), base, text);
             }
             LinkAction::Nothing => {}
         }
@@ -1047,6 +1117,8 @@ impl TermUi {
                     self.redraw();
                 }
             }
+            // The app shows it (AppCtl::on_msg takes this before it gets here).
+            TermMsg::Preview { .. } | TermMsg::PreviewRefused { .. } => {}
             TermMsg::PathAnswer(ask, hits) => {
                 let woken = self.inputs.borrow_mut().paths.answer(&ask, hits, now);
                 self.recheck = true;
@@ -1103,6 +1175,9 @@ impl TermUi {
                     OpenMode::Open
                 };
                 self.open_path_async(path.base, path.text, mode);
+            }
+            TermMenuAct::ShowInPanel { path } => {
+                self.preview_path_async(t.id.to_string(), path.base, path.text);
             }
             TermMenuAct::Copy(text) => self.copy(text, COPY_MAX),
             TermMenuAct::OpenLink(u) => self.open_link(&u),
@@ -1416,6 +1491,7 @@ mod tests {
         clock: Rc<Cell<u64>>,
         cursors: Rc<RefCell<Vec<CursorKind>>>,
         agent: Rc<TestAgent>,
+        rcr: Rc<Cell<bool>>,
         g: GridGeom,
         cwd: Option<String>,
         _sp: Arc<FakeSpawner>,
@@ -1467,6 +1543,7 @@ mod tests {
             let clock = Rc::new(Cell::new(0u64));
             let cursors = Rc::new(RefCell::new(Vec::new()));
             let agent = Rc::new(TestAgent(Cell::new(None)));
+            let rcr = Rc::new(Cell::new(false));
             let deps = TermDeps {
                 clipboard: port,
                 openers: openers.clone(),
@@ -1491,6 +1568,10 @@ mod tests {
                 home: std::env::temp_dir().to_string_lossy().to_string(),
                 dbl: FALLBACK,
                 stat: Arc::new(FsStat),
+                right_click_reports: {
+                    let f = Rc::clone(&rcr);
+                    Rc::new(move || f.get())
+                },
             };
             let metrics = cell_metrics(&FakeGlyphs::new(8, 16).font_units(), scale);
             let mut rig = Rig {
@@ -1504,6 +1585,7 @@ mod tests {
                 clock,
                 cursors,
                 agent,
+                rcr,
                 g: GridGeom {
                     metrics,
                     scale,
@@ -2059,11 +2141,11 @@ mod tests {
     #[test]
     fn a_path_link_click_opens_through_the_allowlist_on_a_worker() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("a.pdf"), "x").unwrap();
         std::fs::write(dir.path().join("run.bat"), "x").unwrap();
         std::fs::create_dir(dir.path().join("x.d")).unwrap();
         let mut r = Rig::with_cwd(1.0, dir.path());
-        light_up(&mut r, "a.txt run.bat x.d");
+        light_up(&mut r, "a.pdf run.bat x.d");
         r.frame();
         r.click(2, 0);
         r.click(8, 0);
@@ -2073,7 +2155,7 @@ mod tests {
         let rec = r.openers.records();
         let has = |f: &dyn Fn(&OpenedRecord) -> bool| rec.iter().any(f);
         assert!(
-            has(&|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("a.txt"))),
+            has(&|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("a.pdf"))),
             "{rec:?}"
         );
         assert!(
@@ -2087,6 +2169,138 @@ mod tests {
         assert!(!has(
             &|x| matches!(x, OpenedRecord::Open(p) if p.ends_with("run.bat"))
         ));
+    }
+
+    /// The Preview messages posted so far: (tab, kind name, path).
+    fn previews(r: &Rig) -> Vec<(String, String, String)> {
+        r.msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                TermMsg::Preview { tab, kind, abs, .. } => {
+                    Some((tab.clone(), kind.name(), abs.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("p.png"), "x").unwrap();
+        std::fs::write(dir.path().join("run.bat"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        light_up(&mut r, "a.txt p.png run.bat");
+        r.frame();
+        r.click(2, 0);
+        r.click(8, 0);
+        r.click(15, 0);
+        until("two previews and a reveal", || {
+            previews(&r).len() >= 2 && !r.openers.records().is_empty()
+        });
+        let got = previews(&r);
+        assert!(
+            got.iter()
+                .any(|(_, k, p)| k == "text" && p.ends_with("a.txt")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|(_, k, p)| k == "image" && p.ends_with("p.png")),
+            "{got:?}"
+        );
+        let rec = r.openers.records();
+        assert_eq!(rec.len(), 1, "{rec:?}");
+        assert!(
+            matches!(&rec[0], OpenedRecord::Reveal(p) if p.ends_with("run.bat")),
+            "{rec:?}"
+        );
+    }
+
+    #[test]
+    fn show_in_side_panel_asks_for_the_preview_the_click_asks_for_and_opens_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let base = dir.path().to_string_lossy().into_owned();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.ui.menu = Some(MenuStore {
+            tab: "a".into(),
+            x: 0.0,
+            y: 0.0,
+            selection: String::new(),
+            link: None,
+            path: Some(TermPathAt {
+                kind: flare_term::path_open::PathKind::File,
+                abs: format!("{base}/a.txt"),
+                text: "a.txt".into(),
+                base,
+            }),
+        });
+        let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+        let i = rows
+            .iter()
+            .position(|x| x.label == "Show in side panel")
+            .expect("the row");
+        r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        until("the preview", || !previews(&r).is_empty());
+        let got = previews(&r);
+        assert!(got[0].1 == "text" && got[0].2.ends_with("a.txt"), "{got:?}");
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_file_that_went_away_says_so_and_opens_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let base = dir.path().to_string_lossy().into_owned();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.ui.menu = Some(MenuStore {
+            tab: "a".into(),
+            x: 0.0,
+            y: 0.0,
+            selection: String::new(),
+            link: None,
+            path: Some(TermPathAt {
+                kind: flare_term::path_open::PathKind::File,
+                abs: format!("{base}/a.txt"),
+                text: "a.txt".into(),
+                base,
+            }),
+        });
+        let rows = r.ui.menu_rows(false, "Ctrl+F", "");
+        let i = rows
+            .iter()
+            .position(|x| x.label == "Show in side panel")
+            .expect("the row");
+        // The menu was built with the file there; it is gone when the row is picked.
+        std::fs::remove_file(&file).unwrap();
+        r.with_tab(|ui, t| ui.on_menu_pick(Some(t), i));
+        until("the refusal", || {
+            r.msgs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| matches!(m, TermMsg::PreviewRefused { tab } if tab == "a"))
+        });
+        assert!(previews(&r).is_empty());
+        assert!(r.openers.records().is_empty(), "{:?}", r.openers.records());
+    }
+
+    #[test]
+    fn with_previews_off_no_preview_is_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        r.ui.set_previews(false);
+        light_up(&mut r, "a.txt");
+        r.frame();
+        r.click(2, 0);
+        until("the open", || !r.openers.records().is_empty());
+        assert!(previews(&r).is_empty());
     }
 
     #[test]
@@ -2185,13 +2399,35 @@ mod tests {
     }
 
     #[test]
-    fn a_right_press_in_mouse_mode_is_reported_unless_a_selection_stands() {
+    fn a_right_click_in_mouse_mode_opens_the_menu_and_sends_nothing() {
         let mut r = Rig::new(1.0);
         r.feed("hello world");
         r.feed(MOUSE_ON);
         let out = r.right_click(2, 0);
         assert!(out.open_menu.is_some());
-        let want = b"\x1b[<2;3;1M\x1b[<2;3;1m";
+        thread::sleep(Duration::from_millis(40));
+        assert!(r.written().is_empty(), "nothing reaches the program");
+        // The same with a selection standing.
+        let a = r.css(0, 0, false);
+        let b = r.css(5, 0, false);
+        r.ptr_at(0, 0, a, true, false);
+        r.ptr_at(2, 0, b, true, false);
+        r.ptr_at(1, 0, b, true, false);
+        let out = r.right_click(2, 0);
+        assert!(out.open_menu.is_some());
+        thread::sleep(Duration::from_millis(40));
+        assert!(r.written().is_empty());
+    }
+
+    #[test]
+    fn with_the_setting_on_a_right_press_is_reported_unless_a_selection_stands() {
+        let mut r = Rig::new(1.0);
+        r.rcr.set(true);
+        r.feed("hello world");
+        r.feed(MOUSE_ON);
+        let out = r.right_click(2, 0);
+        assert!(out.open_menu.is_some());
+        let want = b"[<2;3;1M[<2;3;1m";
         assert_eq!(r.wait_written(want.len()), want);
         // A standing selection (made with shift) keeps the press from the program.
         let a = r.css(0, 0, false);

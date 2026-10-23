@@ -28,14 +28,18 @@ pub mod input_b;
 pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
+pub mod mods;
+pub mod panel;
 pub mod resize;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
 pub mod settings_d;
 pub mod strip;
+pub mod surf7;
 pub mod update;
 pub mod vertical;
+pub mod web;
 
 /// What a probe may look at. A probe is read-only: it never changes the controller or the window.
 pub struct ProbeCtx<'a> {
@@ -105,6 +109,7 @@ pub fn register_all(r: &mut ProbeRegistry) {
     input_c::register(r);
     input_d::register(r);
     lifecycle::register(r);
+    panel::register(r);
     resize::register(r);
     settings_a::register(r);
     settings_b::register(r);
@@ -113,4 +118,7 @@ pub fn register_all(r: &mut ProbeRegistry) {
     strip::register(r);
     update::register(r);
     vertical::register(r);
+    web::register(r);
+    surf7::register(r);
+    mods::register(r);
 }

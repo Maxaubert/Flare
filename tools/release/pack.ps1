@@ -30,6 +30,10 @@ foreach ($d in $dictationSeam) {
 }
 $parakeetHost = Join-Path (Split-Path -Parent $Exe) 'flare-parakeet-host.exe'
 Copy-Item -LiteralPath (Need $parakeetHost) -Destination (Join-Path $Stage 'flare-parakeet-host.exe')
+# The MCP server (Surfaces stage 2): built beside Flare.exe, found by the app next to itself and handed to every shell as FLARE_MCP_EXE,
+# which the bundled claude-plugin names as its server (flare-agent/claude-plugin/.claude-plugin/plugin.json).
+$mcpServer = Join-Path (Split-Path -Parent $Exe) 'flare-mcp.exe'
+Copy-Item -LiteralPath (Need $mcpServer) -Destination (Join-Path $Stage 'flare-mcp.exe')
 foreach ($f in 'LICENSE', 'THIRD-PARTY-NOTICES.md') { Copy-Item -LiteralPath (Need (Join-Path $root $f)) -Destination $Stage }
 vpk pack --packId Flare --packTitle Flare --packAuthors Max --packVersion $Version --packDir $Stage --mainExe Flare.exe --icon (Join-Path $root 'build\icon.ico') --shortcuts StartMenuRoot --aumid com.flare.terminal --runtime win-x64 --channel win --delta BestSpeed --releaseNotes $Notes --outputDir $Out
 exit $LASTEXITCODE

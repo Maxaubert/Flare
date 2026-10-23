@@ -137,6 +137,8 @@ export component ContextMenu inherits Rectangle {
     callback picked(int);
     callback trailing(int);
     callback dismissed();
+    // A right-click released outside the panel: the point, in window coordinates.
+    callback outside-right(length, length);
     out property <length> panel-x: panel.x;
     out property <length> panel-y: panel.y;
     out property <length> panel-w: panel.width;
@@ -188,10 +190,20 @@ export component ContextMenu inherits Rectangle {
         }
     }
 
-    // A press outside (the panel's own touch area swallows the ones inside).
+    // A press outside (the panel's own touch area swallows the ones inside). A left press only
+    // closes. A right press waits for its release, then reports the point in window coordinates:
+    // the app closes the menu and hands the same right-click to whatever is under it, so one
+    // click closes this menu and opens the next (a scrim swallows the press, so the surface
+    // beneath never saw it).
     TouchArea {
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { root.dismissed(); }
+            if e.button == PointerEventButton.right {
+                if e.kind == PointerEventKind.up {
+                    root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            } else if e.kind == PointerEventKind.down {
+                root.dismissed();
+            }
         }
     }
     fs := FocusScope {
@@ -202,6 +214,13 @@ export component ContextMenu inherits Rectangle {
             }
             return reject;
         }
+    }
+    // Called on every open, a reopen included: a menu replaced within one event-loop turn never
+    // shows `open` as false, so `changed open` alone would leave the old flyout and focus behind.
+    public function shown() {
+        root.open-sub = -1;
+        root.close-pending = false;
+        fs.focus();
     }
     changed open => {
         root.open-sub = -1;
@@ -230,7 +249,12 @@ export component ContextMenu inherits Rectangle {
         col := VerticalLayout {
             padding: Px.hair();
             for r[i] in root.rows: VerticalLayout {
-                if r.parent < 0 && i > 0: Rectangle { height: Px.hair(); background: Theme.divider; }
+                if r.parent < 0 && i > 0: Rectangle {
+                    // A group starts after a wider gap with the rule in the middle of it (whole pixels).
+                    height: r.group ? Px.snap(9px) : Px.hair();
+                    background: r.group ? transparent : Theme.divider;
+                    if r.group: Rectangle { y: Px.snap(4px); height: Px.hair(); background: Theme.divider; }
+                }
                 if r.parent < 0: MenuItem {
                     item: r;
                     index: i;
@@ -238,6 +262,29 @@ export component ContextMenu inherits Rectangle {
                     picked(n) => { root.pick(n); }
                     trailing(n) => { root.trailing(n); }
                     hovered(n, y) => { root.row-hovered(n, y); }
+                }
+            }
+        }
+    }
+
+    // The menu hangs from the point that was right-clicked, so a second right click on that very
+    // spot lands on the menu's own anchor (the panel's corner, or inside it where the window's edge
+    // pushed the panel in). That is the same click again, not a click in the menu: it reopens the
+    // menu there. The rest of the panel keeps its meaning.
+    TouchArea {
+        x: root.at-x - 2px;
+        y: root.at-y - 2px;
+        width: 5px;
+        height: 5px;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
+                root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            } else if e.button != PointerEventButton.right && e.kind == PointerEventKind.down {
+                // A left press on the fringe outside the panel is a press outside: it closes.
+                let px = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
+                let py = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
+                if px < panel.x || px >= panel.x + panel.width || py < panel.y || py >= panel.y + panel.height {
+                    root.dismissed();
                 }
             }
         }
@@ -376,6 +423,8 @@ export component OverflowList inherits Rectangle {
     callback picked(string);
     callback row-menu(string, length, length);
     callback dismissed();
+    // A right-click released outside the panel: the point, in window coordinates.
+    callback outside-right(length, length);
     callback accepted();
     callback query-edited(string);
     out property <length> box-x: box.x;
@@ -401,9 +450,16 @@ export component OverflowList inherits Rectangle {
 
     visible: root.open;
 
+    // Same as the context menu's scrim: a right press outside closes and is handed on.
     TouchArea {
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { root.dismissed(); }
+            if e.button == PointerEventButton.right {
+                if e.kind == PointerEventKind.up {
+                    root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            } else if e.kind == PointerEventKind.down {
+                root.dismissed();
+            }
         }
     }
     FocusScope {
@@ -535,8 +591,12 @@ export component MenusPreview inherits Window {
     in-out property <int> picked-index: -1;
     in-out property <int> trailing-index: -1;
     in-out property <int> menu-dismissed;
+    in-out property <int> menu-outside-rights;
+    in-out property <length> menu-outside-x;
+    in-out property <length> menu-outside-y;
     out property <length> panel-x: menu.panel-x;
     out property <length> panel-y: menu.panel-y;
+    public function menu-shown() { menu.shown(); }
     out property <length> panel-w: menu.panel-w;
     out property <length> panel-h: menu.panel-h;
     out property <bool> fly-open: menu.fly-open;
@@ -555,6 +615,9 @@ export component MenusPreview inherits Window {
     in-out property <string> ov-edited;
     in-out property <int> ov-accepted;
     in-out property <int> ov-dismissed;
+    in-out property <int> ov-outside-rights;
+    in-out property <length> ov-outside-x;
+    in-out property <length> ov-outside-y;
     out property <length> ov-box-x: ov.box-x;
     out property <length> ov-box-y: ov.box-y;
     out property <length> ov-box-w: ov.box-w;
@@ -589,6 +652,7 @@ export component MenusPreview inherits Window {
         picked(i) => { root.picked-index = i; }
         trailing(i) => { root.trailing-index = i; }
         dismissed => { root.menu-dismissed += 1; root.menu-open = false; }
+        outside-right(x, y) => { root.menu-outside-rights += 1; root.menu-outside-x = x; root.menu-outside-y = y; }
     }
     ov := OverflowList {
         width: root.width;
@@ -601,6 +665,7 @@ export component MenusPreview inherits Window {
         picked(id) => { root.ov-picked = id; }
         accepted => { root.ov-accepted += 1; }
         dismissed => { root.ov-dismissed += 1; root.ov-open = false; }
+        outside-right(x, y) => { root.ov-outside-rights += 1; root.ov-outside-x = x; root.ov-outside-y = y; }
         query-edited(q) => { root.ov-edited = q; }
     }
     tip := Tip {

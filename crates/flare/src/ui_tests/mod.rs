@@ -2,6 +2,8 @@
 
 mod agent_flows;
 mod app;
+mod chip;
+mod convo;
 mod dialog;
 mod dictation_page;
 mod dictation_pill;
@@ -14,6 +16,8 @@ mod marks;
 mod menus;
 mod motion;
 mod overlay_order;
+mod panel;
+mod panel_wrap;
 mod scrollbar;
 mod settings_about;
 mod settings_colour;
@@ -27,6 +31,7 @@ mod settings_ink;
 mod settings_layout;
 mod settings_live;
 mod settings_look;
+mod settings_mods;
 mod settings_row;
 mod settings_select;
 mod settings_slider;

@@ -316,6 +316,32 @@ fn the_dictation_seam_ships_the_engine_folder_and_the_parakeet_host() {
 }
 
 #[test]
+fn the_package_ships_the_mcp_server_beside_the_app_and_every_packing_workflow_builds_it() {
+    // Surfaces stage 2: the app finds `flare-mcp.exe` next to itself and gives every shell its path
+    // (`FLARE_MCP_EXE`); the bundled plugin names it. A package without it would give Claude a server
+    // that cannot start.
+    let pack = read(PACK);
+    assert!(
+        pack.contains("'flare-mcp.exe'"),
+        "pack.ps1 copies flare-mcp.exe"
+    );
+    assert!(
+        read(VERIFY).contains("current/flare-mcp.exe"),
+        "verify-pack.ps1 requires it in the portable zip"
+    );
+    for wf in [
+        WF,
+        ".github/workflows/installer-e2e.yml",
+        ".github/workflows/update-e2e.yml",
+    ] {
+        assert!(
+            read(wf).contains("cargo build --release -p flare-mcp"),
+            "{wf} builds the MCP server before it packs"
+        );
+    }
+}
+
+#[test]
 fn no_fake_binary_is_packed() {
     let pack = read(PACK);
     for fake in [
@@ -373,6 +399,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
         "`ureq` 3.4.2",
         "`zip` 9.0.0",
         "whisper.cpp",
+        "Mermaid 11.17.2",
     ] {
         assert!(readme.contains(line), "README.md lacks {line}");
     }
@@ -382,6 +409,7 @@ fn the_notices_and_the_readme_name_every_new_dependency() {
         "ureq 3.4.2",
         "zip 9.0.0",
         "whisper.cpp engine b5130",
+        "Mermaid 11.17.2",
     ] {
         assert!(
             notices.contains(entry),

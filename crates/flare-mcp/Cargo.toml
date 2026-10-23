@@ -1,0 +1,22 @@
+[package]
+name = "flare-mcp"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lib]
+name = "flare_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flare-mcp"
+path = "src/main.rs"
+
+[dependencies]
+flare-ctl = { path = "../flare-ctl" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

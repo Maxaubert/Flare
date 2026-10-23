@@ -2,7 +2,7 @@
 //!
 //! Source: Prism Terminal's `TerminalPage.tsx`, `ShellSection`, `TerminalTextSection` and
 //! `HelpSection`. Sections in order: shell (only once the detected list is in), opening, keys,
-//! text, help.
+//! links (this app's, Surfaces stage 1), text, help.
 
 use super::{
     BlockModel, Button, Control, Opt, PageEnv, PageModel, RowModel, SectionModel, opts, plain_row,
@@ -12,7 +12,10 @@ use crate::agent_prefs::agent_guard;
 use crate::help_prefs::help_enabled;
 use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use crate::rows::{RowDef, row};
-use crate::term_prefs::{agent_keys, saved_shell_id};
+use crate::term_prefs::{
+    agent_eval, agent_keys, app_network, dev_preview, open_previews, right_click_reports,
+    saved_shell_id, wrap_previews,
+};
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
 
@@ -136,9 +139,30 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
         row_tip: GUARD_TIP.to_string(),
         ..switch_row(def("agent-guard"), agent_guard(env.prefs))
     };
+    let right_click = switch_row(def("right-click-reports"), right_click_reports(env.prefs));
     section(
         "keys",
-        vec![BlockModel::Row(hotkeys), BlockModel::Row(guard)],
+        vec![
+            BlockModel::Row(hotkeys),
+            BlockModel::Row(guard),
+            BlockModel::Row(right_click),
+        ],
+    )
+}
+
+/// The Links section: the previews switch, on by default (Surfaces stage 1), and the switch that lets an
+/// agent run scripts in its web panel, off by default (stage 4), and the one that lets a mini-app load from
+/// the web, off by default (stage 5).
+fn links_section(env: &PageEnv<'_>) -> SectionModel {
+    section(
+        "links",
+        vec![
+            BlockModel::Row(switch_row(def("open-previews"), open_previews(env.prefs))),
+            BlockModel::Row(switch_row(def("wrap-previews"), wrap_previews(env.prefs))),
+            BlockModel::Row(switch_row(def("agent-eval"), agent_eval(env.prefs))),
+            BlockModel::Row(switch_row(def("app-network"), app_network(env.prefs))),
+            BlockModel::Row(switch_row(def("dev-preview"), dev_preview(env.prefs))),
+        ],
     )
 }
 
@@ -194,6 +218,7 @@ pub fn build_terminal(env: &PageEnv<'_>) -> PageModel {
     sections.extend(shell_section(env));
     sections.push(opening_section(env));
     sections.push(keys_section(env));
+    sections.push(links_section(env));
     sections.push(text_section(env));
     sections.push(help_section(env));
     PageModel {
@@ -248,6 +273,7 @@ mod tests {
             agent_colours: [String::new(), String::new(), String::new()],
             agent_key_labels: "Ctrl+S, Ctrl+Tab".to_string(),
             face_of: face,
+            mods: None,
         }
     }
 
@@ -323,7 +349,7 @@ mod tests {
         assert_eq!(page.id, "terminal");
         assert_eq!(
             section_ids(&page),
-            vec!["shell", "opening", "keys", "text", "help"]
+            vec!["shell", "opening", "keys", "links", "text", "help"]
         );
         assert_eq!(
             all_row_ids(&page),
@@ -333,10 +359,105 @@ mod tests {
                 "explorer-verb",
                 "agent-keys",
                 "agent-guard",
+                "right-click-reports",
+                "open-previews",
+                "wrap-previews",
+                "agent-eval",
+                "app-network",
+                "dev-preview",
                 "term-font-family",
                 "term-font",
                 "help-enabled",
             ]
+        );
+    }
+
+    #[test]
+    fn the_previews_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let e = env(&prefs, &look, face);
+        let page = build_terminal(&e);
+        assert_eq!(
+            the_row(&page, "open-previews").control,
+            Control::Switch { on: true }
+        );
+        crate::term_prefs::set_open_previews(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "open-previews").control,
+            Control::Switch { on: false }
+        );
+    }
+
+    #[test]
+    fn the_wrap_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        let row = the_row(&page, "wrap-previews");
+        assert_eq!(row.control, Control::Switch { on: true });
+        assert_eq!(row.label, "Wrap long lines in previews");
+        crate::term_prefs::set_wrap_previews(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "wrap-previews").control,
+            Control::Switch { on: false }
+        );
+    }
+
+    #[test]
+    fn the_scripts_row_is_a_switch_that_is_off_until_turned_on() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "agent-eval").control,
+            Control::Switch { on: false }
+        );
+        crate::term_prefs::set_agent_eval(&prefs, true);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "agent-eval").control,
+            Control::Switch { on: true }
+        );
+    }
+
+    #[test]
+    fn the_mini_app_network_row_is_a_switch_that_is_off_until_turned_on() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "app-network").control,
+            Control::Switch { on: false }
+        );
+        crate::term_prefs::set_app_network(&prefs, true);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "app-network").control,
+            Control::Switch { on: true }
+        );
+    }
+
+    #[test]
+    fn the_local_server_preview_row_is_a_switch_that_is_on_until_turned_off() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        let row = the_row(&page, "dev-preview");
+        assert_eq!(row.control, Control::Switch { on: true });
+        assert_eq!(row.label, "Offer previews of local servers");
+        crate::term_prefs::set_dev_preview(&prefs, false);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "dev-preview").control,
+            Control::Switch { on: false }
         );
     }
 
@@ -429,6 +550,27 @@ mod tests {
         let r = the_row(&build_terminal(&e), "explorer-verb").clone();
         assert!(!r.off);
         assert_eq!(r.control, Control::Switch { on: false });
+    }
+
+    #[test]
+    fn right_clicks_to_programs_is_off_by_default_beside_the_agent_keys() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let e = env(&prefs, &look, face);
+        let page = build_terminal(&e);
+        let r = the_row(&page, "right-click-reports");
+        assert_eq!(r.control, Control::Switch { on: false });
+        assert!(
+            r.sub.split_whitespace().count() <= 8,
+            "plain, at most eight words"
+        );
+        crate::term_prefs::set_right_click_reports(&prefs, true);
+        let page = build_terminal(&e);
+        assert_eq!(
+            the_row(&page, "right-click-reports").control,
+            Control::Switch { on: true }
+        );
     }
 
     #[test]

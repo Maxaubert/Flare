@@ -114,6 +114,10 @@ jobs:
           cargo build --release -p flare @features
           if ($LASTEXITCODE -ne 0) { throw "release build failed" }
 
+      - name: Build the MCP server (pack.ps1 copies it from beside flare.exe)
+        if: steps.ver.outputs.fresh == 'true'
+        run: cargo build --release -p flare-mcp
+
       - name: Build the Parakeet host (pack.ps1 copies it from beside flare.exe)
         if: steps.ver.outputs.fresh == 'true'
         run: cargo build --release -p flare-dictation --bin flare-parakeet-host
