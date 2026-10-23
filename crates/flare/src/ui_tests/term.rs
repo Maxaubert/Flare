@@ -1479,7 +1479,7 @@ mod flow {
                 assert!(w.h.comp.get_menu_open(), "scale {scale}");
                 assert_eq!(w.menu_labels()[0], "Paste", "scale {scale}: plain first");
                 let first = (w.h.comp.get_menu_x(), w.h.comp.get_menu_y());
-                w.feed(&put.replace("ESC", "\x1b"));
+                w.feed(put);
                 w.settle();
                 w.h.right_click(spot.0, spot.1);
                 w.pump();
@@ -1524,6 +1524,11 @@ mod flow {
             "hung at the new point"
         );
         w.wait_written(b"\x1b[<2;11;7M\x1b[<2;11;7m");
+        // Once: more turns of the loop bring no second report.
+        for _ in 0..5 {
+            w.pump();
+        }
+        assert_eq!(w.fake.written(), b"[<2;11;7M[<2;11;7m", "reported once");
     }
 
     /// PT scenario selectionEdit.
