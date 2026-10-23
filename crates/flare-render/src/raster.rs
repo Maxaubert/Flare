@@ -58,6 +58,10 @@ pub struct Rasterizer {
     shared: fallback::Shared,
     /// How many font files were loaded into the database for a fallback walk.
     family_loads: usize,
+    /// Installed families (lowercase) whose files did not load even after a rebuild: a stale
+    /// registry entry or an unreadable file. Never asked for again, so a rebuild cannot repeat
+    /// on every font apply (every tab switch and look change).
+    unloadable: HashSet<String>,
 }
 
 impl Rasterizer {
@@ -95,6 +99,7 @@ impl Rasterizer {
             worker: None,
             shared: fallback::Shared::default(),
             family_loads: 0,
+            unloadable: HashSet::new(),
         }
     }
 
@@ -444,13 +449,26 @@ impl GlyphSource for Rasterizer {
             .iter()
             .find(|f| !files_for_family(&installed, f).is_empty());
         let _ = wanted;
-        let missing = families
-            .iter()
-            .any(|f| !files_for_family(&installed, f).is_empty() && !has_family(&self.fs, f));
+        let missing = !missing_families(
+            families,
+            &installed,
+            &|f| has_family(&self.fs, f),
+            &self.unloadable,
+        )
+        .is_empty();
         if missing {
             // An installed family of the stack is not loaded (a Nerd Font the old stack lacked):
             // swap the database for the new stack.
             self.rebuild_for(families);
+            // What still is not there will never load: do not rebuild for it again.
+            let still = missing_families(
+                families,
+                &installed,
+                &|f| has_family(&self.fs, f),
+                &self.unloadable,
+            );
+            self.unloadable
+                .extend(still.iter().map(|f| f.to_ascii_lowercase()));
         }
         let stack: Vec<String> = families.iter().map(|f| (*f).to_string()).collect();
         let stack_changed = stack != self.stack;
@@ -500,6 +518,25 @@ fn pick_family(fs: &FontSystem, families: &[&str]) -> String {
 }
 
 /// Whether the font database has a face with this family name.
+/// The families of `stack` that the registry lists with files, that are not in the database, and
+/// that did not already fail to load once.
+fn missing_families<'a>(
+    stack: &[&'a str],
+    installed: &[crate::font_catalog::FaceFile],
+    loaded: &dyn Fn(&str) -> bool,
+    unloadable: &HashSet<String>,
+) -> Vec<&'a str> {
+    stack
+        .iter()
+        .copied()
+        .filter(|f| {
+            !unloadable.contains(&f.to_ascii_lowercase())
+                && !files_for_family(installed, f).is_empty()
+                && !loaded(f)
+        })
+        .collect()
+}
+
 fn has_family(fs: &FontSystem, name: &str) -> bool {
     fs.db()
         .faces()
@@ -978,6 +1015,24 @@ mod tests {
     }
 
     #[test]
+    fn a_family_that_will_not_load_is_asked_for_once() {
+        let installed = vec![crate::font_catalog::FaceFile {
+            family: "Ghost Mono".into(),
+            path: "C:/gone/ghost.ttf".into(),
+            index: 0,
+        }];
+        let never = |_: &str| false;
+        let mut bad = HashSet::new();
+        let first = missing_families(&["Ghost Mono", "Absent"], &installed, &never, &bad);
+        assert_eq!(first, vec!["Ghost Mono"]);
+        bad.extend(first.iter().map(|f| f.to_ascii_lowercase()));
+        assert!(missing_families(&["Ghost Mono"], &installed, &never, &bad).is_empty());
+        assert!(
+            missing_families(&["Ghost Mono"], &installed, &|_| true, &HashSet::new()).is_empty()
+        );
+    }
+
+    #[test]
     fn a_fallback_answer_wakes_the_window() {
         let (mut r, gate) = gated();
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -986,11 +1041,18 @@ mod tests {
             w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }));
         assert!(r.glyph(&key("\u{3FFFD}")).is_none());
-        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 0, "held shut");
+        assert_eq!(
+            woken.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "held shut"
+        );
         gate.store(true, std::sync::atomic::Ordering::Release);
         let start = std::time::Instant::now();
         while woken.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            assert!(start.elapsed().as_secs() < 60, "the worker never woke the window");
+            assert!(
+                start.elapsed().as_secs() < 60,
+                "the worker never woke the window"
+            );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
