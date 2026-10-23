@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::manifest::parse;
 
-    /// A manifest with the named tools (no panel, the tools permission only).
+    /// A manifest with the named tools (a panel to answer them, and the tools permission).
     fn mod_with_tools(id: &str, tools: &[&str]) -> Manifest {
         let list: Vec<Value> = tools
             .iter()
@@ -153,7 +153,8 @@ mod tests {
             "version": "1.0.0",
             "protocol": 1,
             "description": "test",
-            "permissions": ["tools"],
+            "permissions": ["panel", "tools"],
+            "panel": { "entry": "index.html", "title": "Test" },
             "tools": list,
         })
         .to_string();

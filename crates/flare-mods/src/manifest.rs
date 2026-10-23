@@ -153,6 +153,10 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     if !tools.is_empty() && !permissions.contains(&Permission::Tools) {
         return Err("tools need the \"tools\" permission; add it to permissions".into());
     }
+    // A tool is answered by the panel's page: with no panel nothing could ever answer it.
+    if !tools.is_empty() && panel.is_none() {
+        return Err("tools need a panel: its page answers them; add a panel".into());
+    }
 
     Ok(Manifest {
         id,
@@ -738,6 +742,15 @@ mod tests {
             .collect();
         let e = err_of(|v| v["tools"] = Value::Array(tools.clone()));
         assert!(e.contains("at most 32"), "{e}");
+    }
+
+    #[test]
+    fn tools_need_a_panel_to_answer_them() {
+        let e = err_of(|v| {
+            v.as_object_mut().unwrap().remove("panel");
+            v["permissions"] = serde_json::json!(["tools"]);
+        });
+        assert!(e.contains("tools need a panel"), "{e}");
     }
 
     #[test]
