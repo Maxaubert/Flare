@@ -248,25 +248,25 @@ fn the_entrance_plays_once() {
     let done = h.render();
     let y_rest = h.comp.get_new_y();
 
-    // The first accent pixel of the finished mark: at the start it is not drawn at all.
+    // The first orange pixel of the finished mark: at the start it is not drawn at all.
     let mut at = None;
     'find: for y in 0..done.h {
         for x in 0..done.w {
-            if Frame::near(done.px(x, y), ACCENT, 2) {
+            if is_orange(done.px(x, y)) {
                 at = Some((x, y));
                 break 'find;
             }
         }
     }
-    let (x, y) = at.expect("the mark is drawn in the accent");
+    let (x, y) = at.expect("the mark is drawn in the icon's orange");
     // The ground is opaque, so the fade shows as the accent's red channel (ground 23, accent
     // 254) sitting below halfway at the start, and at the accent in the finished frame.
     assert!(
-        u32::from(start.px(x, y)[0]) < (23 + 254) / 2,
+        u32::from(start.px(x, y)[0]) < (23 + 255) / 2,
         "the mark is already half there at the start: {:?}",
         start.px(x, y)
     );
-    assert!(Frame::near(done.px(x, y), ACCENT, 2));
+    assert!(is_orange(done.px(x, y)));
     // The block rises 6 px into its place.
     assert!(
         ((y_start - y_rest) - 6.0).abs() < 0.5,
@@ -274,19 +274,172 @@ fn the_entrance_plays_once() {
     );
 }
 
+/// The artwork's orange flame (`#FF4800` to `#FF4000`) and the golden one over it (`#FFC500` to
+/// `#FFD000`), assets/icon/flare-color.svg.
+fn is_orange(p: [u8; 4]) -> bool {
+    p[3] == 255 && p[0] >= 0xF4 && (0x38..=0x50).contains(&p[1]) && p[2] <= 0x10
+}
+
+fn is_gold(p: [u8; 4]) -> bool {
+    p[3] == 255 && p[0] >= 0xF4 && (0xBC..=0xD8).contains(&p[1]) && p[2] <= 0x10
+}
+
+/// Every pixel the test accepts, as (x, y, green).
+fn pixels_of(f: &Frame, is: impl Fn([u8; 4]) -> bool) -> Vec<(u32, u32, u8)> {
+    let mut out = Vec::new();
+    for y in 0..f.h {
+        for x in 0..f.w {
+            let p = f.px(x, y);
+            if is(p) {
+                out.push((x, y, p[1]));
+            }
+        }
+    }
+    out
+}
+
+fn bbox_of(px: &[(u32, u32, u8)]) -> (u32, u32, u32, u32) {
+    let xs = px.iter().map(|p| p.0);
+    let ys = px.iter().map(|p| p.1);
+    (
+        xs.clone().min().unwrap(),
+        ys.clone().min().unwrap(),
+        xs.max().unwrap(),
+        ys.max().unwrap(),
+    )
+}
+
+/// The text of the quoted `commands:` string that follows `from` in `src`, spaces for commas.
+fn commands_after(src: &str, from: usize) -> (String, usize) {
+    let at = src[from..].find("commands: \"").unwrap() + from + "commands: \"".len();
+    let end = src[at..].find('"').unwrap() + at;
+    (src[at..end].replace(',', " "), end)
+}
+
+fn svg_path(svg: &str, id: &str) -> String {
+    let at = svg.find(&format!("id=\"{id}\"")).unwrap();
+    let d = svg[at..].find(" d=\"").unwrap() + at + 4;
+    let end = svg[d..].find('"').unwrap() + d;
+    svg[d..end].replace(',', " ")
+}
+
 #[test]
-fn the_mark_is_the_accent_at_84_px() {
-    // The mark is the owner's flame (M9 Task 26): its ink is 728 x 817 units of the 818-unit square
-    // box, so at 84 px it is about 75 wide and 84 tall (the box is 84; the width does not fill it).
-    let h = screen(1.0, vec![]);
-    let f = h.render();
-    let (x0, y0, x1, y1) = f
-        .bbox_where(0, 0, f.w, f.h, |p| Frame::near(p, ACCENT, 4))
-        .expect("the mark is drawn");
-    let w = (x1 - x0 + 1) as f32;
-    let ht = (y1 - y0 + 1) as f32;
-    assert!((w - 74.8).abs() <= 4.0, "mark ink {w} wide");
-    assert!((ht - 83.9).abs() <= 4.0, "mark ink {ht} tall");
+fn the_color_mark_is_the_artworks_two_paths_and_gradients() {
+    // The software renderer these tests use paints a path in its first stop only, so what the
+    // GPU shows beyond that (the 135 degree gradients of the SVG's x1=0 y1=0 x2=1 y2=1) is pinned
+    // at the source: the two paths are the artwork's own, drawn in one box, in the artwork's stops.
+    let slint = include_str!("../../ui/mark.slint");
+    let svg = include_str!("../../../../assets/icon/flare-color.svg");
+    // The title bar's tinted mark is the same flame outline.
+    let mono = &slint[..slint.find("component AppMarkColor").unwrap()];
+    assert_eq!(
+        commands_after(mono, 0).0,
+        svg_path(svg, "flame"),
+        "the tinted mark is not the artwork's"
+    );
+    let colour = &slint[slint.find("component AppMarkColor").unwrap()..];
+    let (orange, end) = commands_after(colour, 0);
+    let (gold, _) = commands_after(colour, end);
+    assert_eq!(
+        orange,
+        svg_path(svg, "flame"),
+        "the orange flame is not the artwork's"
+    );
+    assert_eq!(
+        gold,
+        svg_path(svg, "golden-flame"),
+        "the golden flame is not the artwork's"
+    );
+    let first = colour
+        .find("fill: @linear-gradient(135deg, IconArt.orange-from 0%, IconArt.orange-to 100%);")
+        .unwrap();
+    let second = colour
+        .find("fill: @linear-gradient(135deg, IconArt.gold-from 0%, IconArt.gold-to 100%);")
+        .unwrap();
+    assert!(first < second, "the gold goes over the orange");
+    let theme = include_str!("../../ui/theme.slint");
+    for (id, a, b) in [("orange", "FF4800", "FF4000"), ("gold", "FFC500", "FFD000")] {
+        assert!(
+            theme.contains(&format!("{id}-from: #{a};"))
+                && theme.contains(&format!("{id}-to: #{b};")),
+            "{id}: the theme's icon colours are not the artwork's"
+        );
+        let at = svg.find(&format!("id=\"{id}\"")).unwrap();
+        let def = &svg[at..at + svg[at..].find("</linearGradient>").unwrap()];
+        assert!(
+            def.contains("x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\""),
+            "{id}: not corner to corner"
+        );
+        assert!(
+            def.contains(&format!("#{a}")) && def.contains(&format!("#{b}")),
+            "{id}: stops"
+        );
+    }
+    // Both paths share one viewbox and one box, so the gold lies exactly over the orange.
+    assert_eq!(colour.matches("viewbox-x: 217;").count(), 2);
+    assert_eq!(colour.matches("viewbox-width: 818;").count(), 2);
+    // The start screen uses it, the old accent flame and the old path are gone.
+    let start = include_str!("../../ui/start.slint");
+    assert!(start.contains("AppMarkColor {") && !start.contains("AppMark {"));
+}
+
+#[test]
+fn the_mark_is_the_two_toned_flame_at_84_px() {
+    // Owner, 2026-10-22: the flame on the start screen is the icon's own, orange with the golden
+    // flame over it (AppMarkColor), not the accent. Its ink is 724 x 816 units of the 818-unit
+    // square box (the golden flame is the right-hand part, x 552 to 988 of the artwork's 1254).
+    for s in [1.0_f32, 2.25] {
+        let h = screen(s, vec![]);
+        let f = h.render();
+        if let Ok(dir) = std::env::var("FLARE_SAVE_FLAME_PNG") {
+            let name = format!("start-screen-{}.png", (s * 100.0) as u32);
+            f.save_png(&std::path::Path::new(&dir).join(name)).unwrap();
+        }
+        let orange = pixels_of(&f, is_orange);
+        let gold = pixels_of(&f, is_gold);
+        let accent = pixels_of(&f, |p| Frame::near(p, ACCENT, 4));
+        assert!(accent.is_empty(), "scale {s}: the old accent flame is back");
+        assert!(
+            orange.len() > 400,
+            "scale {s}: only {} orange pixels",
+            orange.len()
+        );
+        assert!(
+            gold.len() > 200,
+            "scale {s}: only {} gold pixels",
+            gold.len()
+        );
+
+        // The ink (orange and gold together): about 74.4 x 83.8 logical px.
+        let warm = pixels_of(&f, |p| {
+            p[3] == 255 && p[0] > 0x80 && p[0] >= p[1] && p[2] < 0x30
+        });
+        let (ox0, oy0, ox1, oy1) = bbox_of(&warm);
+        let (w, ht) = ((ox1 - ox0 + 1) as f32 / s, (oy1 - oy0 + 1) as f32 / s);
+        assert!(
+            (w - 74.4).abs() <= 3.0,
+            "scale {s}: ink {w} wide ({ox0}..{ox1})"
+        );
+        assert!((ht - 83.8).abs() <= 3.0, "scale {s}: ink {ht} tall");
+
+        // The golden flame sits exactly over the orange one: inside its ink, its left edge
+        // (552 - 265) / 724 of the way across, its right edge level with the orange's.
+        let (gx0, gy0, gx1, gy1) = bbox_of(&gold);
+        let tol = (2.0 * s).ceil() as u32 + 1;
+        assert!(
+            gx0 >= ox0 && gx1 <= ox1 + tol && gy0 >= oy0 && gy1 <= oy1,
+            "scale {s}: gold leaves the orange"
+        );
+        assert!(
+            gx1.abs_diff(ox1) <= tol,
+            "scale {s}: the right edges differ"
+        );
+        let want = ox0 as f32 + (552.2 - 264.56) / 723.85 * (ox1 - ox0 + 1) as f32;
+        assert!(
+            (gx0 as f32 - want).abs() <= 3.0 * s,
+            "scale {s}: gold starts at {gx0}, want {want}"
+        );
+    }
 }
 
 #[test]

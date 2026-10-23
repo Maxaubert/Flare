@@ -4284,6 +4284,46 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_stored_as_vertical_starts_vertical_on_the_first_frame() {
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![("C:\\a", None), ("C:\\b", None)],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Vertical),
+        );
+        assert!(f.h.comp.get_layout_vertical(), "built horizontal");
+        assert!(f.h.comp.get_has_tabs(), "the placeholders show the sidebar");
+        f.start_restore_and_wait();
+        assert!(
+            f.h.comp.get_layout_vertical(),
+            "horizontal after the restore"
+        );
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(f.h.comp.get_layout_vertical());
+    }
+
+    #[test]
+    fn a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar() {
+        // `side-mode` in app.slint is `layout-vertical && has-tabs`, so the zero-tab start screen
+        // shows the top bar by design until the owner decides otherwise (features.md, "Vertical
+        // tabs at start"). This pins both inputs: the layout is vertical, there are no tabs.
+        let f = fx_with_prefs(
+            Opts {
+                saved: vec![],
+                ..Opts::default()
+            },
+            |p| set_tab_layout(p, TabLayout::Vertical),
+        );
+        f.start_restore_and_wait();
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(f.h.comp.get_layout_vertical());
+        assert!(!f.h.comp.get_has_tabs(), "a start screen has no tabs");
+    }
+
+    #[test]
     fn the_key_context_reads_the_prefs() {
         let f = fx();
         let c = f.ctl.borrow().key_context();
