@@ -11,13 +11,15 @@
 //! `null` is `none`. PT's two hooks of one failure (the kind's first) are one hook line with a
 //! `kind` in Flare (M6 `signal.rs`).
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use flare_e2e_proto::{PointerAction, Request};
 use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
+use crate::standins::agent_proc;
 use crate::standins::hooklines::hook_line;
 use crate::until::{wait_on, SystemClock};
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
@@ -357,6 +359,19 @@ fn plugin_template() -> PathBuf {
         .join("claude-plugin")
 }
 
+/// A REAL AGENT PROCESS IN TAB `i` (review #47): a copy of PowerShell named `claude.exe` runs inside the
+/// tab's shell, so the process poll recognises a Claude there and a hook line printed from inside it is a
+/// genuine agent's. Without one, a hook line is a claim about a tab with no agent, and the one look it
+/// asks for takes it back. Leaves the tab inside the stand-in.
+fn start_stand_in(ctx: &mut Ctx, app: &mut App, profile: &Path, i: usize) -> Result<(), String> {
+    let cmd = agent_proc::command(profile)?;
+    at(app, i, &cmd);
+    pause(ctx, agent_proc::SETTLE_MS);
+    at(app, i, IDLE);
+    pause(ctx, 2_500);
+    Ok(())
+}
+
 /// PT: run.mjs:769-998. Two tabs; the hooks go to the first.
 pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
     let (alpha, beta) = {
@@ -390,8 +405,10 @@ pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
         return Err("the two folders did not open as two tabs".into());
     }
 
+    let profile = ctx.ensure_world().profile.clone();
     let result = (|| {
-        hooks_a(ctx, &mut app)?;
+        hooks_claim(ctx, &mut app, &profile)?;
+        hooks_a(ctx, &mut app, &profile)?;
         hooks_b(ctx, &mut app)?;
         hooks_c(ctx, &mut app)?;
         hooks_d(ctx, &mut app)?;
@@ -405,7 +422,7 @@ pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
 }
 
 /// PT: run.mjs:802-840. The plugin, a working hook, and a question's life on a background tab.
-fn hooks_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
+fn hooks_a(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), String> {
     // The process poll has said its first word on every shell (a title set before it lands would be
     // cleared by it).
     let first = tab_id(app, 0).ok_or("tab 0 has no id")?;
@@ -419,6 +436,9 @@ fn hooks_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     });
     ctx.ok(plug, "a new shell is handed the Claude Code plugin");
     crate::world::wait_for_agent_verdict(app, &first, Duration::from_secs(30));
+
+    // A genuine agent's hooks: tab 0 runs a real Claude stand-in from here on.
+    start_stand_in(ctx, app, profile, 0)?;
 
     // WORKING, by the hook alone: no title, no output scoring.
     at(app, 0, &say("working"));
@@ -510,6 +530,42 @@ fn hooks_a(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     ctx.ok(w, "a working hook after it answers it");
     // PT: run.mjs:841
     ctx.ok(line(app, 0) == "none", "and no line is left");
+    Ok(())
+}
+
+/// REVIEW #47, "one check per claim". A capture holding the OSC 777 question signal, cat'ed in a plain
+/// shell tab (no agent runs there), claims the tab; the one look it asks for answers "no agent" and the
+/// mark clears. No timer or polling loop is behind it. Runs on tab 1, which never holds a stand-in.
+fn hooks_claim(ctx: &mut Ctx, app: &mut App, profile: &Path) -> Result<(), String> {
+    for i in 0..2 {
+        let id = tab_id(app, i).ok_or("a tab has no id")?;
+        crate::world::wait_for_agent_verdict(app, &id, Duration::from_secs(30));
+    }
+    let capture = profile.join("claim-capture.bin");
+    fs::write(&capture, b"\x1b]777;flare-agent;state=question\x07").map_err(|e| e.to_string())?;
+    at(
+        app,
+        1,
+        &format!(
+            "cat -Raw -LiteralPath '{}' | Write-Host -NoNewline",
+            capture.display()
+        ),
+    );
+    // The claim lands (tab 1 is in front, where a question is raised too) or is already taken back.
+    let saw = soft(3_000, &mut || state(app, 1) == "question");
+    let gone = ctx.until("the false claim is taken back", 10_000, &mut || {
+        state(app, 1) == "none" && agent(app)["tabs"][1]["present"] == json!(false)
+    });
+    ctx.ok(
+        gone,
+        format!(
+            "a question signal in a plain shell is taken back by the one look it asked for (seen up: {saw})"
+        ),
+    );
+    ctx.ok(
+        badge(app).is_empty(),
+        "and the taskbar badge counts nothing for it",
+    );
     Ok(())
 }
 

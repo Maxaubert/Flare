@@ -1760,6 +1760,20 @@ fn question_checks(ctx: &mut Ctx, app: &mut App, started: Instant) -> Result<(),
         started.elapsed() > Duration::from_secs(12)
     });
     click_terminal(app);
+    // A real agent process in the tab (review #47): a title is a claim, and one look takes it back when
+    // no agent runs there.
+    if let Ok(cmd) = crate::standins::agent_proc::command(&app.profile) {
+        type_line(app, &cmd);
+        let start = std::time::Instant::now();
+        ctx.until(
+            "the poll to have seen the stand-in agents",
+            10_000,
+            &mut || {
+                start.elapsed()
+                    >= std::time::Duration::from_millis(crate::standins::agent_proc::SETTLE_MS)
+            },
+        );
+    }
     type_line(
         app,
         "$Host.UI.RawUI.WindowTitle = [char]0x2733 + ' Claude Code'",

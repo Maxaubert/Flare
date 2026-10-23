@@ -507,7 +507,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `cwdLabel` | 3 | `scenarios/lifecycle.rs`, `cwd_label` | 3 | 0 | ok |
 | `indicator` | 12 | `scenarios/indicators.rs`, `indicator` | 12 | 0 | ok |
 | `attention` | 25 | `scenarios/indicators.rs`, `attention` | 25 | 3 | ok |
-| `agentHooks` | 43 | `scenarios/agent_hooks.rs`, `agent_hooks` | 43 | 0 | ok |
+| `agentHooks` | 43 | `scenarios/agent_hooks.rs`, `agent_hooks` | 45 | 0 | ok |
 | `agentDiag` | 12 | `scenarios/agent_misc.rs`, `agent_diag` | 12 | 0 | ok |
 | `theme` | 8 | `scenarios/chrome.rs`, `theme` | 7 | 1 | ok |
 | `newTabFolder` | 6 | `scenarios/chrome.rs`, `new_tab_folder` | 6 | 0 | ok |
@@ -527,7 +527,7 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `windowColoursSave` | 9 | `scenarios/settings_b.rs`, `window_colours_save` | 10 | 0 | ok |
 | `tooltips` | 11 | `scenarios/strip.rs`, `tooltips` | 18 | 1 | ok |
 | `manyTabs` | 13 | `scenarios/strip.rs`, `many_tabs` | 13 | 0 | ok |
-| `backgroundWork` | 3 | `scenarios/agent_misc.rs`, `background_work` | 3 | 0 | ok |
+| `backgroundWork` | 3 | `scenarios/agent_misc.rs`, `background_work` | 5 | 0 | ok |
 | `systemMenu` | 1 | `scenarios/chrome.rs`, `system_menu` | 2 | 0 | ok |
 | `agentKeys` | 10 | `scenarios/agent_misc.rs`, `agent_keys` | 10 | 0 | ok |
 | `cogToggle` | 8 | `scenarios/chrome.rs`, `cog_toggle` | 8 | 0 | ok |

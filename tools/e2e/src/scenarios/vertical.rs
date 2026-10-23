@@ -713,6 +713,15 @@ fn mark_strip(ctx: &mut Ctx, app: &mut App) {
                     .is_some_and(|r| r.0 + r.2 <= 1100.0)
         });
         hold(ctx, 200);
+        // Each marked tab runs a real agent process: a hook is a claim, and one look takes it back when
+        // no agent runs in the tab (review #47).
+        if let Ok(cmd) = crate::standins::agent_proc::command(&app.profile) {
+            for i in [0usize, 2, 3, 4, 5] {
+                front_tab(ctx, app, i);
+                type_line(app, &cmd);
+            }
+            hold(ctx, crate::standins::agent_proc::SETTLE_MS);
+        }
         for i in [0usize, 2, 3, 4, 5] {
             front_tab(ctx, app, i);
             type_line(app, &say("working", ""));

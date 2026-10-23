@@ -319,8 +319,11 @@ impl AgentHub {
     fn run_effects(&self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::AskLook => {
+                Effect::AskLook { tab } => {
                     if let Some(p) = &self.poll {
+                        // The poll sends only answers that changed: a tab it already reported "no agent"
+                        // would never hear it was wrong without being asked about by name.
+                        p.again(&tab);
                         p.look_now();
                     }
                 }
@@ -1243,6 +1246,30 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        // The poll already said "no agent" for this tab; a stray hook line then claims it.
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        r.rec.agains.borrow_mut().clear();
+        let looks = r.rec.looks.get();
+        r.print("a", &osc("question"));
+        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        // A second claim inside the gap asks for nothing more.
+        r.print("a", &osc("working"));
+        assert_eq!(r.rec.agains.borrow().len(), 1);
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        // The one look answers "no agent" (forced, so it is sent though unchanged): the claim goes.
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        assert!(!r.hub.agent_here("a"));
+        assert!(r.hub.indicator().question_ids().is_empty());
+        assert!(r.hub.indicator().working_ids().is_empty());
+    }
+
+    #[test]
     fn the_poll_arms_and_disarms_the_keys() {
         let mut r = Rig::new();
         r.open("a", None);
@@ -1283,7 +1310,11 @@ mod tests {
         r.title("a", "");
         assert_eq!(r.hub.armed("a"), None);
         assert_eq!(*r.off.borrow(), vec!["a".to_string()]);
-        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
+        // Asked about by name twice: once when the title claimed the tab (review #47), once when it left.
+        assert_eq!(
+            *r.rec.agains.borrow(),
+            vec!["a".to_string(), "a".to_string()]
+        );
     }
 
     #[test]

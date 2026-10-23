@@ -549,6 +549,11 @@ fn review_keys_run(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // PT: run.mjs:4534-4548 (#10). A Claude title makes the close ask; the chords wait for it.
     type_line(app, "echo ready")?;
     pause(1_500); // the process poll's first "no agent" verdict, said once
+                  // A real agent process in the tab (review #47): a title is a claim, and one look takes it back when
+                  // no agent runs there.
+    let stand_in = crate::standins::agent_proc::command(&app.profile)?;
+    type_line(app, &stand_in)?;
+    pause(crate::standins::agent_proc::SETTLE_MS);
     type_line(
         app,
         "$Host.UI.RawUI.WindowTitle = [char]0x2733 + ' Claude Code'",

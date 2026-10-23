@@ -4,7 +4,9 @@
 //! it started with run_in_background, or a workflow, keeps running, and nothing it sends the terminal says
 //! so. Its SCREEN does (MEASURED, Claude Code 2.1.301 fullscreen):
 //! - the turn's summary line ends "· 1 shell still running", and is rewritten without it when the shell ends;
-//! - the footer under the prompt's box says "· 1 shell" after the mode line, gone with it;
+//! - the footer under the prompt's box says "· 1 shell" after the mode line, gone with it (NOT work since
+//!   the owner's 2026-10-23 decision: a run_in_background dev server sits there for hours, so a footer
+//!   count alone ends the turn as Finished);
 //! - a running workflow draws its progress row in the footer ("○ name ▬▬▬ 7/8 · 11m03s").
 //!
 //! Only these LIVE marks count. The "✻ Waiting for 1 dynamic workflow to finish" line stays in the
@@ -20,9 +22,6 @@ static STILL_RUNNING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)·\s*[0-9]+\s+(?:background\s+)?(?:shells?|tasks?|commands?)\s+still running\b")
         .expect("STILL_RUNNING")
 });
-/// The mode line's count of background shells: "auto mode on · 1 shell".
-static FOOTER_COUNT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)·\s*[0-9]+\s+(?:shells?|tasks?)\b").expect("FOOTER_COUNT"));
 /// A running workflow's progress row: "7/8 · 11m03s".
 static FOOTER_WORKFLOW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[0-9]+/[0-9]+\s+·\s+(?:[0-9]+h)?(?:[0-9]+m)?[0-9]+s\b").expect("FOOTER_WORKFLOW")
@@ -45,9 +44,9 @@ pub fn looks_like_background_work(rows: &[String]) -> bool {
     {
         return true;
     }
-    rows[last + 1..]
-        .iter()
-        .any(|r| FOOTER_COUNT.is_match(r) || FOOTER_WORKFLOW.is_match(r))
+    // The footer's own count of shells ("auto mode on · 1 shell") is no sign of work: only a workflow's
+    // progress row is.
+    rows[last + 1..].iter().any(|r| FOOTER_WORKFLOW.is_match(r))
 }
 
 #[cfg(test)]
@@ -69,8 +68,25 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_started_in_the_background_while_it_runs() {
+    fn a_shell_started_in_the_background_while_claude_says_it_still_runs() {
+        // Claude's own summary line ("· 1 shell still running") is it waiting: that is work.
         assert!(looks_like_background_work(&screen("shellRunning")));
+    }
+
+    #[test]
+    fn a_dev_server_in_the_footer_alone_is_not_work() {
+        // The same screen with only the footer's "· 1 shell" left (the summary line has no count).
+        let mut dev = screen("shellRunning");
+        let at = dev
+            .iter()
+            .position(|r| r.contains("1 shell still running"))
+            .expect("the summary row");
+        dev[at] = "\u{273b} Churned for 8s \u{b7} done 7:49".to_string();
+        assert!(
+            dev.iter()
+                .any(|r| r.contains("auto mode on \u{b7} 1 shell"))
+        );
+        assert!(!looks_like_background_work(&dev));
     }
 
     #[test]
