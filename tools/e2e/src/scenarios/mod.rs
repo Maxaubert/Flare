@@ -520,6 +520,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 180,
     },
     Scenario {
+        name: "verticalStart",
+        group: "settings_d",
+        run: settings_live::vertical_start,
+        limit_secs: 120,
+    },
+    Scenario {
         name: "panelImage",
         group: "panel",
         run: panel::panel_image,

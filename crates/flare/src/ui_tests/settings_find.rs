@@ -221,7 +221,7 @@ fn index_ids() -> Vec<String> {
 // ---- the index and the field ------------------------------------------------------------------
 
 #[test]
-fn the_index_has_30_rows_on_this_pc() {
+fn the_index_has_31_rows_on_this_pc() {
     let n = index_ids().len();
     assert_eq!(
         n, 40,

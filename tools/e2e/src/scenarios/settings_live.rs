@@ -158,3 +158,63 @@ pub fn settings_live(ctx: &mut Ctx) -> Result<(), String> {
     app.close();
     Ok(())
 }
+
+/// verticalStart (Flare's own, owner 2026-10-22: "there was a startup bug where it was on vertical
+/// tabs but it was showing the horizontal style"): a profile whose settings say vertical opens with
+/// the tabs down the side and no strip, at 100 and at 225 percent, on the first tab.
+pub fn vertical_start(ctx: &mut Ctx) -> Result<(), String> {
+    let (alpha, profile) = {
+        let w = ctx.ensure_world();
+        (w.alpha.clone(), w.profile.clone())
+    };
+    let _ = std::fs::create_dir_all(&profile);
+    std::fs::write(
+        profile.join("settings.json"),
+        r#"{"flare.window.tabLayout":"vertical","flare.window.sidebar":"open","flare.window.sidebarWidth":"265","flare.window.edges":"faint","flare.term.fontPct":"130"}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    let saved = alpha.to_string_lossy().replace('\\', "\\\\");
+    std::fs::write(
+        profile.join("tabs.json"),
+        format!(r#"{{"tabs":[{{"cwd":"{saved}"}}],"active":0}}"#),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut app = ctx.launch(Launch {
+        folders: vec![],
+        renderer: Some("gpu"),
+        scale_dpi: Some(DPI_225),
+        ..Launch::default()
+    })?;
+    let ready = ctx.until("the first tab", 15_000, &mut || {
+        probe(&mut app, "app.state", Value::Null)["tabs"]
+            .as_array()
+            .is_some_and(|t| !t.is_empty())
+    });
+    ctx.ok(ready, "a tab is open");
+    for at in ["100%", "225%"] {
+        if at == "225%" {
+            let moved = app
+                .session
+                .call(&Request::DpiChange {
+                    dpi: DPI_225,
+                    x: None,
+                    y: None,
+                })
+                .is_ok()
+                && ctx.until("225 percent", 6_000, &mut || scale(&mut app) > 2.2);
+            ctx.ok(moved, "the window moved to a 225 percent monitor");
+        }
+        ctx.ok(
+            vertical(&mut app),
+            format!("{at}: the stored vertical layout is the one in force"),
+        );
+        ctx.ok(
+            has_rect(&mut app, "sidebar") && !has_rect(&mut app, "strip"),
+            format!(
+                "{at}: the tabs are drawn down the side, with no strip, without touching Settings"
+            ),
+        );
+    }
+    app.close();
+    Ok(())
+}

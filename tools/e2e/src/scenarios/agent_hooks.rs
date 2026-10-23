@@ -1,6 +1,6 @@
 //! Agent hooks scenarios (Task 26): agentHooks.
 //!
-//! PT: run.mjs:769-998 (43 assertions). A shell stands in for Claude: it prints the real
+//! PT: run.mjs:769-1005 (48 assertions). A shell stands in for Claude: it prints the real
 //! `OSC 777;flare-agent` hook lines (`hook_line`) and sets the console title, as Claude does.
 //! Two tabs open (alpha, beta); the hooks go to tab 0 while tab 1 is the background or the front.
 //! The plugin comes from the app's plugin seam (`startup::production_plugin_dir`): the run asks
@@ -357,7 +357,7 @@ fn plugin_template() -> PathBuf {
         .join("claude-plugin")
 }
 
-/// PT: run.mjs:769-998. Two tabs; the hooks go to the first.
+/// PT: run.mjs:769-1005. Two tabs; the hooks go to the first.
 pub fn agent_hooks(ctx: &mut Ctx) -> Result<(), String> {
     let (alpha, beta) = {
         let w = ctx.ensure_world();
@@ -639,8 +639,8 @@ fn hooks_c(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// PT: run.mjs:912-936. A Stop on a background tab, and a finish on the tab in front while the
-/// window was away.
+/// PT: run.mjs:912-943. A Stop on a background tab, a finish and a failure on the tab in front
+/// while the window was away.
 fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // DONE on a background tab: the Finished line.
     at(app, 0, &say("working"));
@@ -657,79 +657,153 @@ fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     look(app, 0);
     soft(4_000, &mut || state(app, 0) == "none");
 
-    // FINISHED ON THE TAB IN FRONT WHILE AWAY, THEN BACK (owner, 2026-10-14): away, the finish is
-    // marked and the badge counts it; the pointer moving over the window takes both down.
+    // FINISHED ON THE TAB IN FRONT WHILE AWAY, THEN BACK (owner, 2026-10-14, reversed 2026-10-21:
+    // "it should keep that completed icon until you click a new tab"): away, the finish is marked
+    // and the badge counts it; coming back (focus, the pointer moving) leaves both up, a click on
+    // the same tab leaves them, and a click on another tab takes them down (narrowed 2026-10-23).
+    for other in [false, true] {
+        // Tab 0 in front each round (the last round ended on tab 1).
+        look(app, 0);
+        at(app, 0, &say("working"));
+        soft(8_000, &mut || state(app, 0) == "working");
+        let _ = app.session.call(&Request::Focus { on: false });
+        at(
+            app,
+            0,
+            &format!("Start-Sleep -Milliseconds 2500; {}", say("done")),
+        );
+        let away = ctx.until("a finish while away", 10_000, &mut || {
+            state(app, 0) == "finished"
+        });
+        ctx.ok(
+            away,
+            "a finish on the tab in front, with the window away, is marked",
+        );
+        let counted = ctx.until("the badge to count it", 4_000, &mut || {
+            badge(app) == "1 tab needs a look"
+        });
+        let b = badge(app);
+        ctx.ok(counted, format!("and the badge counts it ({b})"));
+        for (x, y) in [
+            (500.0, 300.0),
+            (507.0, 307.0),
+            (513.0, 313.0),
+            (520.0, 320.0),
+        ] {
+            let _ = app.session.call(&Request::Pointer {
+                x,
+                y,
+                action: PointerAction::Move,
+            });
+        }
+        let _ = app.session.call(&Request::Focus { on: true });
+        // PT waits 1200 ms: a late clear (a timer, a title recheck) must not slip past.
+        let left = ctx.poll(1_200, &mut || {
+            state(app, 0) != "finished" || badge(app) != "1 tab needs a look"
+        });
+        // PT: run.mjs:924
+        ctx.ok(
+            !left && state(app, 0) == "finished",
+            "back, the pointer moving and the focus returning leave the mark up",
+        );
+        // PT: run.mjs:925
+        let b = badge(app);
+        ctx.ok(
+            b == "1 tab needs a look",
+            format!("and the badge with it ({b})"),
+        );
+        if !other {
+            // A click on the tab already in front changes nothing: the mark stays up (owner, 2026-10-23).
+            tab_click(app, 0);
+            let left = ctx.poll(1_200, &mut || {
+                state(app, 0) != "finished" || badge(app) != "1 tab needs a look"
+            });
+            ctx.ok(
+                !left && state(app, 0) == "finished",
+                "a click on the tab already in front leaves the mark and the badge up",
+            );
+        }
+        // Another tab in front takes it down, off the tab left too.
+        tab_click(app, 1);
+        let down = ctx.until(
+            "a click on another tab to take the mark down",
+            4_000,
+            &mut || state(app, 0) == "none",
+        );
+        ctx.ok(
+            down,
+            "a click on another tab takes it down, off the tab left too",
+        );
+        let clear = ctx.until("the badge to go", 4_000, &mut || badge(app).is_empty());
+        let b = badge(app);
+        ctx.ok(clear, format!("and the badge with it ({b})"));
+    }
+
+    // A FAILURE ON THE TAB IN FRONT WHILE AWAY IS HELD TOO. Tab 0 is brought back to the front
+    // first (the loop ended on tab 1), so the failure is raised on the tab in front.
+    look(app, 0);
     at(app, 0, &say("working"));
     soft(8_000, &mut || state(app, 0) == "working");
     let _ = app.session.call(&Request::Focus { on: false });
     at(
         app,
         0,
-        &format!("Start-Sleep -Milliseconds 2500; {}", say("done")),
+        &format!("Start-Sleep -Milliseconds 2500; {}", say("failed")),
     );
-    // PT: run.mjs:927
-    let away = ctx.until("a finish while away", 10_000, &mut || {
-        state(app, 0) == "finished"
+    // PT: run.mjs:936
+    let away = ctx.until("a failure while away", 10_000, &mut || {
+        state(app, 0) == "failed"
     });
     ctx.ok(
         away,
-        "a finish on the tab in front, with the window away, is marked",
+        "a failure on the tab in front, with the window away, is marked",
     );
-    // PT: run.mjs:928
-    let counted = ctx.until("the badge to count it", 4_000, &mut || {
-        badge(app) == "1 tab needs a look"
-    });
-    let b = badge(app);
-    ctx.ok(counted, format!("and the badge counts it ({b})"));
-    let _ = app.session.call(&Request::Pointer {
-        x: 500.0,
-        y: 300.0,
-        action: PointerAction::Move,
-    });
-    for (x, y) in [(507.0, 307.0), (513.0, 313.0), (520.0, 320.0)] {
+    for (x, y) in [(500.0, 300.0), (520.0, 320.0)] {
         let _ = app.session.call(&Request::Pointer {
             x,
             y,
             action: PointerAction::Move,
         });
     }
-    // PT: run.mjs:932
-    let back = ctx.until("the pointer to take the mark down", 4_000, &mut || {
-        state(app, 0) == "none"
-    });
-    ctx.ok(
-        back,
-        "back, the pointer moving over the window takes the mark down",
-    );
-    // PT: run.mjs:933
-    let clear = ctx.until("the badge to go", 4_000, &mut || badge(app).is_empty());
-    let b = badge(app);
-    ctx.ok(clear, format!("and the badge with it ({b})"));
     let _ = app.session.call(&Request::Focus { on: true });
+    let left = ctx.poll(1_200, &mut || state(app, 0) != "failed");
+    // PT: run.mjs:941
+    ctx.ok(!left, "back, the Failed mark stays up");
+    tab_click(app, 1);
+    let down = ctx.until(
+        "another tab's click to take the Failed mark down",
+        4_000,
+        &mut || state(app, 0) == "none",
+    );
+    // PT: run.mjs:943
+    ctx.ok(
+        down,
+        "and a click on another tab takes the Failed mark down",
+    );
     Ok(())
 }
 
-/// PT: run.mjs:938-964. A failure with its kind, the badge, and the Failed switch.
+/// PT: run.mjs:945-969. A failure with its kind, the badge, and the Failed switch.
 fn hooks_e(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // FAILED, with its kind.
     at(app, 0, &say("working"));
     at(app, 0, &later(&say_failed("rate_limit")));
     tab_click(app, 1);
-    // PT: run.mjs:942
+    // PT: run.mjs:949
     let failed = ctx.until("a StopFailure", 10_000, &mut || state(app, 0) == "failed");
     ctx.ok(
         failed,
         "a StopFailure hook on a background tab marks it Failed",
     );
-    // PT: run.mjs:943
+    // PT: run.mjs:950
     ctx.ok(line(app, 0) == "failed", "with the Failed line");
     let tip = tooltip(app, 0);
-    // PT: run.mjs:945
+    // PT: run.mjs:952
     ctx.ok(
         tip.ends_with("\nFailed: rate limit"),
         format!("and the tooltip says what failed ({tip:?})"),
     );
-    // PT: run.mjs:946
+    // PT: run.mjs:953
     let counted = ctx.until("the badge to count it", 4_000, &mut || {
         badge(app) == "1 tab needs a look"
     });
@@ -740,13 +814,13 @@ fn hooks_e(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // THE FAILED SWITCH: off, the line goes and the turn reads as finished.
     open_settings(ctx, app);
     let reached = goto_row(ctx, app, "agent-failed-on");
-    // PT: run.mjs:953
+    // PT: run.mjs:962
     ctx.ok(
         reached && switch_on(app, "agent-failed-on") == Some(true),
         "the Failed indicator is on by default",
     );
     click_switch(app, "agent-failed-on");
-    // PT: run.mjs:955
+    // PT: run.mjs:964
     let finished = ctx.until("the Finished line instead", 4_000, &mut || {
         line(app, 0) == "finished"
     });
@@ -755,17 +829,17 @@ fn hooks_e(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
         "switched off, no Failed line: the Finished one shows instead",
     );
     let done_colour = mark_colour(app, 0);
-    // PT: run.mjs:957
+    // PT: run.mjs:966
     ctx.ok(
         failed_colour != done_colour,
         format!("the Failed line is a colour of its own ({failed_colour} vs {done_colour})"),
     );
     click_switch(app, "agent-failed-on");
-    // PT: run.mjs:959
+    // PT: run.mjs:968
     let again = ctx.until("Failed again", 4_000, &mut || line(app, 0) == "failed");
     ctx.ok(again, "and back on, it is Failed again");
     let hooks_row = goto_row(ctx, app, "agent-hooks");
-    // PT: run.mjs:960
+    // PT: run.mjs:969
     ctx.ok(
         hooks_row && switch_on(app, "agent-hooks") == Some(true),
         "Exact status from Claude Code is on by default",
@@ -773,7 +847,7 @@ fn hooks_e(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// PT: run.mjs:962-998. An Esc is not a finish; other payloads change nothing; a hooked session's
+/// PT: run.mjs:971-1005. An Esc is not a finish; other payloads change nothing; a hooked session's
 /// screen is not read; with the hooks off a new shell has no plugin.
 fn hooks_f(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     // AN ESC: working, then the idle title with no Stop. Not a finish.
@@ -783,19 +857,19 @@ fn hooks_f(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     soft(8_000, &mut || state(app, 0) == "working");
     at(app, 0, &later(IDLE));
     tab_click(app, 1);
-    // PT: run.mjs:971
+    // PT: run.mjs:978
     let stopped = ctx.until("the work to stop", 10_000, &mut || {
         state(app, 0) != "working"
     });
     ctx.ok(stopped, "an idle title after a working hook stops the work");
     pause(ctx, 1000);
     let s = state(app, 0);
-    // PT: run.mjs:973
+    // PT: run.mjs:980
     ctx.ok(
         s == "none" && line(app, 0) == "none",
         format!("and leaves no Finished line, an Esc is not a finish ({s})"),
     );
-    // PT: run.mjs:974
+    // PT: run.mjs:981
     ctx.ok(badge(app).is_empty(), "nor anything for the badge");
 
     // ANOTHER OSC 777, and our prefix with a state we do not know: nothing.
@@ -812,7 +886,7 @@ fn hooks_f(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     tab_click(app, 1);
     pause(ctx, 2500);
     let s = state(app, 0);
-    // PT: run.mjs:980
+    // PT: run.mjs:987
     ctx.ok(
         s == "none",
         format!("another OSC 777 payload changes nothing ({s})"),
@@ -829,7 +903,7 @@ fn hooks_f(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     tab_click(app, 1);
     pause(ctx, 2500);
     let s = state(app, 0);
-    // PT: run.mjs:987
+    // PT: run.mjs:994
     ctx.ok(
         s == "none",
         format!("the question footer on screen does not mark a hooked session ({s})"),
@@ -855,7 +929,7 @@ fn hooks_f(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             grid_text(app, &id).contains("PLUG-0")
         });
     }
-    // PT: run.mjs:997
+    // PT: run.mjs:1004
     ctx.ok(none, "with the setting off, a new shell has no plugin");
     Ok(())
 }
