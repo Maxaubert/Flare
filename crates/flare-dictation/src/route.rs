@@ -213,7 +213,7 @@ pub fn folder_tail(p: &str) -> String {
 
 /// Types into a tab, checked. `decide` names the tab and its limits; then Windows is asked whether Claude runs there,
 /// `decide` is asked again (the same tab and session must win), the paste is written, and after `SEND_ENTER_MS` the Enter
-/// is written only if `decide` still names the same tab.
+/// is written only if `decide` still names the same tab and session and Windows still says Claude runs there.
 pub fn type_checked(
     decide: &dyn Fn() -> SendDecision,
     text: &str,
@@ -242,6 +242,7 @@ pub fn type_checked(
     };
     if let SendDecision::Ok(t) = &said {
         let id = t.id.clone();
+        let session = t.session.clone();
         // Words that never reached the shell get no Enter: an Enter alone would run what was already typed.
         if !host.write(&id, &paste_of(text)) {
             return SendDecision::No(format!("{} could not take the words: send again", t.label));
@@ -249,10 +250,15 @@ pub fn type_checked(
         host.later(
             SEND_ENTER_MS,
             Box::new(move || {
-                if let SendDecision::Ok(still) = decide() {
-                    if still.id == id {
-                        let _ = host.write(&id, "\r");
-                    }
+                // The same tab, the same session, and Windows still says Claude runs there: if Claude
+                // quit while the words were landing, the shell's line editor holds them, and an Enter
+                // now would run them as a command.
+                let ok = match decide() {
+                    SendDecision::Ok(still) => still.id == id && still.session == session,
+                    SendDecision::No(_) => false,
+                };
+                if ok && host.agent_under(&id).as_deref() == Some("claude") {
+                    let _ = host.write(&id, "\r");
                 }
             }),
         );
@@ -318,6 +324,9 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         agent: Option<String>,
+        /// What Windows says from the second question on (Claude quit in between).
+        agent_then: Option<Option<String>>,
+        asked: Cell<usize>,
         /// The window could not take a write (busy): nothing is written.
         refuse: bool,
         written: RefCell<Vec<String>>,
@@ -326,7 +335,12 @@ mod tests {
 
     impl SendHost for Fake {
         fn agent_under(&self, _id: &str) -> Option<String> {
-            self.agent.clone()
+            let n = self.asked.get();
+            self.asked.set(n + 1);
+            match (&self.agent_then, n) {
+                (Some(then), 1..) => then.clone(),
+                _ => self.agent.clone(),
+            }
         }
         fn write(&self, _id: &str, bytes: &str) -> bool {
             if self.refuse {
@@ -663,6 +677,46 @@ mod tests {
             SendDecision::No("Wind changed while it was checked: send again".into())
         );
         assert!(host.written.borrow().is_empty());
+    }
+
+    #[test]
+    fn type_checked_holds_the_enter_back_when_claude_quit_while_the_words_landed() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            // The first question says Claude; by the Enter, Windows says the shell is alone.
+            agent_then: Some(Some("pwsh".into())),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::Ok(tab())
+        );
+        assert_eq!(
+            *host.written.borrow(),
+            vec!["\x1b[200~hello\x1b[201~".to_string()],
+            "the words went in, but no Enter follows them into a shell"
+        );
+    }
+
+    #[test]
+    fn type_checked_holds_the_enter_back_when_the_session_changed_before_it() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            ..Default::default()
+        };
+        let calls = Cell::new(0);
+        let decide = || {
+            calls.set(calls.get() + 1);
+            // Two for the check; the third, at Enter time, is another conversation.
+            let session = if calls.get() <= 2 { A } else { "other" };
+            SendDecision::Ok(SendTab {
+                session: Some(session.into()),
+                ..tab()
+            })
+        };
+        let _ = type_checked(&decide, "hello", &host);
+        assert_eq!(host.written.borrow().len(), 1, "no Enter");
     }
 
     #[test]
