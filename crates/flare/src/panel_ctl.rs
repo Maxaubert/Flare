@@ -144,6 +144,17 @@ enum Content {
     },
 }
 
+/// Where the reader was in a tab's file when the tab left the front: the line at the top of a text view, and whether a
+/// picture was at its real size. Kept for the tabs that left (a few), and used once, when the same file comes back.
+struct ViewMemory {
+    target: String,
+    line: usize,
+    actual: bool,
+}
+
+/// How many tabs' places are kept.
+const MEMORY_CAP: usize = 8;
+
 struct Shown {
     tab: String,
     kind: PanelKind,
@@ -194,6 +205,8 @@ pub struct PanelCtl {
     apps_root: Option<std::path::PathBuf>,
     /// A title a caller gave (the header shows it instead of the file's name), by tab.
     titles: HashMap<String, String>,
+    /// Where the reader was in the files of tabs that went behind, by tab.
+    memory: HashMap<String, ViewMemory>,
     /// A refused "Show in side panel" on a tab whose panel is open: its words sit in the header's second line until the
     /// tab shows something else (the panel itself is left as it was).
     refused: HashMap<String, String>,
@@ -293,6 +306,7 @@ impl PanelCtl {
             apps_root: None,
             titles: HashMap::new(),
             refused: HashMap::new(),
+            memory: HashMap::new(),
             inline: HashMap::new(),
             inline_seq: 0,
             store: None,
@@ -567,6 +581,7 @@ impl PanelCtl {
 
     pub fn forget(&mut self, tab: &str) {
         self.refused.remove(tab);
+        self.memory.remove(tab);
         self.drop_app(tab);
         self.panels.forget(tab);
         self.titles.remove(tab);
@@ -712,7 +727,9 @@ impl PanelCtl {
                 .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
         let Some((tab, kind, target)) = want else {
-            if self.shown.take().is_some() {
+            if self.shown.is_some() {
+                self.remember(app);
+                self.shown = None;
                 self.generation += 1;
                 self.current.store(self.generation, Ordering::SeqCst);
                 self.clear(app);
@@ -730,6 +747,10 @@ impl PanelCtl {
             return;
         }
         self.reload = false;
+        // Another tab's file comes to the front: where the reader was in the one that leaves is kept for its return.
+        if !same && self.shown.as_ref().is_some_and(|s| s.tab != tab) {
+            self.remember(app);
+        }
         self.generation += 1;
         let generation = self.generation;
         self.current.store(generation, Ordering::SeqCst);
@@ -816,6 +837,7 @@ impl PanelCtl {
                 }
                 self.push(app);
                 self.restore_top(app, top);
+                self.apply_memory(app);
                 // The width may have moved while the wrap was on its way.
                 self.settle_wrap(app);
                 return;
@@ -825,6 +847,56 @@ impl PanelCtl {
             s.content = content;
         }
         self.push(app);
+        self.apply_memory(app);
+    }
+
+    /// Keeps the reader's place in the file on show (a text view's top line, a picture's real-size state) for the
+    /// tab that is leaving the front. Only a file that was read and shown counts.
+    fn remember(&mut self, app: &AppWindow) {
+        let Some(s) = self.shown.as_ref() else { return };
+        let (line, actual) = match &s.content {
+            Content::Text { ready: true, .. } => (self.top_line(app).unwrap_or(1), false),
+            Content::Image { .. } => (1, app.get_panel_actual()),
+            _ => return,
+        };
+        let (tab, target) = (s.tab.clone(), s.target.clone());
+        if self.memory.len() >= MEMORY_CAP && !self.memory.contains_key(&tab) {
+            // Not an LRU: the cap only keeps a long session from holding a place for every tab it ever had.
+            if let Some(k) = self.memory.keys().next().cloned() {
+                self.memory.remove(&k);
+            }
+        }
+        self.memory.insert(
+            tab,
+            ViewMemory {
+                target,
+                line,
+                actual,
+            },
+        );
+    }
+
+    /// The file that was just shown is the one this tab left behind: the reader's place comes back, once.
+    fn apply_memory(&mut self, app: &AppWindow) {
+        let Some(s) = self.shown.as_ref() else { return };
+        let ready = match &s.content {
+            Content::Text { ready, .. } => *ready,
+            Content::Image { .. } => true,
+            _ => return,
+        };
+        if !ready {
+            return;
+        }
+        let Some(mem) = self.memory.remove(&s.tab) else {
+            return;
+        };
+        if mem.target != s.target {
+            return;
+        }
+        match &s.content {
+            Content::Text { .. } => self.restore_top(app, Some(mem.line)),
+            _ => app.set_panel_actual(mem.actual),
+        }
     }
 
     /// The columns the window's text view holds now, when previews are wrapped and the slot is on show; else 0.

@@ -6726,6 +6726,38 @@ two",
     }
 
     #[test]
+    fn a_tab_that_comes_back_finds_its_file_where_the_reader_left_it() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let body: String = (1..=300).map(|i| format!("line {i}\n")).collect();
+        show_text(&f, "long.txt", &body);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        f.h.comp.invoke_panel_scroll_to_row(120);
+        f.h.advance(0);
+        let first = f.h.comp.get_panel_first_line();
+        assert!(first >= 100, "scrolled: {first}");
+        // Another tab with a panel of its own, then back.
+        let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the file back", |f| {
+            f.h.comp.get_panel_title().as_str() == "long.txt" && rows_in_panel(f) == 300
+        });
+        f.h.advance(0);
+        let back = f.h.comp.get_panel_first_line();
+        assert!(
+            (back - first).abs() <= 1,
+            "came back at line {back}, left at {first}"
+        );
+    }
+
+    #[test]
     fn a_refused_show_in_side_panel_leaves_the_panel_that_is_open_as_it_was() {
         let (f, _h, _) = live(Opts::default());
         show_text(&f, "keep.txt", "one\ntwo");
