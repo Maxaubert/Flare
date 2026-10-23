@@ -672,6 +672,10 @@ const E2E_SEAMS: &[&str] = &[
     // Surfaces stage 3 (the web panel): a folder of local pages served as https://flare-test.local/, and a
     // pretend missing WebView2 Runtime (tools/e2e web.rs; window.rs reads them through ship_ctl::e2e_var).
     "FLARE_E2E_WEB_ROOT",
+    "FLARE_E2E_APP_NO_POLICY",
+    // Surfaces stage 5 review: a mini-app without the peer-connection script (web_ctl.rs), to test the
+    // browser-level WebRTC policy and the dead proxy on their own.
+    "FLARE_E2E_APP_NO_WEBRTC_SCRIPT",
     "FLARE_E2E_WEBVIEW_RUNTIME",
 ];
 

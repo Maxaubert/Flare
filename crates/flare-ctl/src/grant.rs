@@ -168,6 +168,8 @@ mod tests {
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
+            Method::ViewHtml,
+            Method::ViewDiagram,
             Method::BrowserOpen,
             Method::BrowserNavigate,
             Method::BrowserLook,

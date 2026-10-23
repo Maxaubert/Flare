@@ -13,7 +13,7 @@ use crate::help_prefs::help_enabled;
 use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use crate::rows::{RowDef, row};
 use crate::term_prefs::{
-    agent_eval, agent_keys, open_previews, right_click_reports, saved_shell_id,
+    agent_eval, agent_keys, app_network, open_previews, right_click_reports, saved_shell_id,
 };
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
@@ -150,13 +150,15 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
 }
 
 /// The Links section: the previews switch, on by default (Surfaces stage 1), and the switch that lets an
-/// agent run scripts in its web panel, off by default (stage 4).
+/// agent run scripts in its web panel, off by default (stage 4), and the one that lets a mini-app load from
+/// the web, off by default (stage 5).
 fn links_section(env: &PageEnv<'_>) -> SectionModel {
     section(
         "links",
         vec![
             BlockModel::Row(switch_row(def("open-previews"), open_previews(env.prefs))),
             BlockModel::Row(switch_row(def("agent-eval"), agent_eval(env.prefs))),
+            BlockModel::Row(switch_row(def("app-network"), app_network(env.prefs))),
         ],
     )
 }
@@ -356,6 +358,7 @@ mod tests {
                 "right-click-reports",
                 "open-previews",
                 "agent-eval",
+                "app-network",
                 "term-font-family",
                 "term-font",
                 "help-enabled",
@@ -396,6 +399,24 @@ mod tests {
         let page = build_terminal(&env(&prefs, &look, face));
         assert_eq!(
             the_row(&page, "agent-eval").control,
+            Control::Switch { on: true }
+        );
+    }
+
+    #[test]
+    fn the_mini_app_network_row_is_a_switch_that_is_off_until_turned_on() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "app-network").control,
+            Control::Switch { on: false }
+        );
+        crate::term_prefs::set_app_network(&prefs, true);
+        let page = build_terminal(&env(&prefs, &look, face));
+        assert_eq!(
+            the_row(&page, "app-network").control,
             Control::Switch { on: true }
         );
     }

@@ -12,6 +12,7 @@ const AGENT_KEYS: &str = "flare.window.agentKeys";
 const RIGHT_CLICK_REPORTS: &str = "flare.window.rightClickReports";
 const OPEN_PREVIEWS: &str = "flare.window.openPreviews";
 const AGENT_EVAL: &str = "flare.web.agentEval";
+const APP_NETWORK: &str = "flare.web.appNetwork";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -56,6 +57,17 @@ pub fn set_agent_eval(s: &PrefStore, on: bool) {
     bool_pref_set(s, AGENT_EVAL, on);
 }
 
+/// Let mini apps use the network (Surfaces stage 5): a page an agent wrote may load `https:` content only
+/// when the agent asks AND this is on. Default OFF; only a stored "1" is on. Read from the control
+/// channel's threads at every request.
+pub fn app_network(s: &PrefStore) -> bool {
+    bool_pref_get(s, APP_NETWORK, false)
+}
+
+pub fn set_app_network(s: &PrefStore, on: bool) {
+    bool_pref_set(s, APP_NETWORK, on);
+}
+
 /// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
 pub fn save_shell_id(s: &PrefStore, id: &str) {
     if id.is_empty() {
@@ -89,6 +101,21 @@ mod tests {
         assert!(!agent_eval(&s), "an unknown value reads as the default");
         s.set("flare.web.agentEval", "true");
         assert!(!agent_eval(&s));
+    }
+
+    #[test]
+    fn mini_apps_have_no_network_until_a_stored_one() {
+        let s = PrefStore::memory();
+        assert!(!app_network(&s));
+        set_app_network(&s, true);
+        assert!(app_network(&s));
+        assert_eq!(s.get("flare.web.appNetwork").as_deref(), Some("1"));
+        set_app_network(&s, false);
+        assert!(!app_network(&s));
+        s.set("flare.web.appNetwork", "junk");
+        assert!(!app_network(&s), "an unknown value reads as the default");
+        s.set("flare.web.appNetwork", "true");
+        assert!(!app_network(&s));
     }
 
     #[test]

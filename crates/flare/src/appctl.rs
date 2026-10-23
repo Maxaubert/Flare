@@ -2888,6 +2888,9 @@ impl AppCtl {
         if let Some(u) = &snap.url {
             v["url"] = serde_json::json!(u);
         }
+        if let Some(n) = snap.network {
+            v["network"] = serde_json::json!(n);
+        }
         v
     }
 
@@ -2993,7 +2996,8 @@ impl AppCtl {
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
-            | CtlOp::BrowserAgent { .. } => Err(CtlError::new(
+            | CtlOp::BrowserAgent { .. }
+            | CtlOp::ShowApp { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
             )),
@@ -3953,6 +3957,10 @@ impl AppCtl {
                 // The caller stopped waiting at its deadline and was told `timeout`: a request that
                 // arrives later changes nothing (and the late answer has no reader).
                 if std::time::Instant::now() > req.deadline {
+                    // A mini-app asked for too late is never shown: its folder goes.
+                    if let CtlOp::ShowApp { spec, .. } = req.op {
+                        self.panels.remove_folder(spec);
+                    }
                     let _ = req.reply.send(Err(flare_ctl::CtlError::new(
                         flare_ctl::code::TIMEOUT,
                         "Flare's window did not answer in time",
@@ -3966,6 +3974,10 @@ impl AppCtl {
                         // The agent uses the page: the browser's messages answer these too.
                         op @ CtlOp::BrowserAgent { .. } => {
                             self.ctl_browser_agent(op, req.reply);
+                        }
+                        // A mini-app or a diagram: answered when the page has loaded (and drawn).
+                        op @ CtlOp::ShowApp { .. } => {
+                            self.ctl_show_app(op, req.reply, req.deadline);
                         }
                         op => {
                             let answer = self.ctl_op(op);

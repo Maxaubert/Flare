@@ -6,11 +6,11 @@ implement it from this file alone. The Rust reference is `crates/flare-ctl` (typ
 the connection state machine, the client) and `crates/flare-mcp` (a client). Where this file and the
 code disagree, that is a bug in one of them: fix both in the same commit.
 
-Status of the methods in Flare (stage 4 is done): the framework (transport, hello, grants, errors,
+Status of the methods in Flare (stage 5 is done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
 implements `hello`, `tabs.list`, `panel.open` (kind `web`), `panel.close`, `panel.state`,
-`view.image|file|text`, `browser.open`, `browser.navigate` and the agent's hands on the page
-(`browser.look|click|type|press|scroll|wait|eval`, stage 4). `convo.state` comes with the conversation
+`view.image|file|text|html|diagram`, `browser.open`, `browser.navigate` and the agent's hands on the page
+(`browser.look|click|type|press|scroll|wait|eval`, stage 4); `view.html` and `view.diagram` are the mini-apps and diagrams of stage 5. `convo.state` comes with the conversation
 reader (stage 6), `tools.respond` with mods (stage 8); until then each answers `unavailable` and is not
 listed in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
 grants are fixed now.
@@ -181,7 +181,7 @@ alike.
 |---|---|---|---|
 | `hello`, `tabs.list` | yes | (always) | yes |
 | `panel.open`, `panel.close`, `panel.state` | yes | `panel` | yes |
-| `view.image`, `view.file`, `view.text` | yes | `view` | yes |
+| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram` | yes | `view` | yes |
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
@@ -208,9 +208,11 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|..., "title": string, "path"?: string, "url"?: string}`.
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|..., "title": string, "path"?: string, "url"?: string, "network"?: bool}`.
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
-`title` is the page's title, else the address's host.
+`title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
+neither `path` nor `url` (its address is Flare's own and means nothing to a client), its `title` is the one the
+caller gave (the page cannot rename the panel), and `network` says whether its page may load `https:` content.
 
 ### hello
 
@@ -304,6 +306,61 @@ four spaces, long lines are cut, at most 100 000 lines), replacing what the pane
 in memory for this run: it is **not** written to `panels.json` and is not restored. Result
 `{"panel": PanelInfo}` with no `path`. Errors: `bad_params` (no text, not a string, over 4 MB, a title
 or language that is not a string), `no_tab`, `unavailable`, `timeout`. Stage 2.
+
+### view.html
+
+Params: exactly one of `html` (string, the whole page, at most 4 MB = 4194304 bytes, not empty) and `path` (string, an `.html`
+or `.htm` file, resolved again by the app like a `view.*` path, S2: the same checks as typed and as the file system names it, a
+link that changes the kind is refused; at most 4 MB; UTF-8 text), `title` (as `view.image`; default "Mini-app"), `allow_network`
+(bool, default false). Shows the page in the tab's panel as a **mini-app** (stage 5), replacing what the panel showed, and answers
+**once the page has loaded**: `{"url"?, "title", "loaded": bool, "status"?, "panel": PanelInfo}` (`panel.kind` is `"app"`,
+`panel.network` the network the page really got; `loaded` false when the page did not finish). The page is not stored
+(`panels.json`) and is not restored: its folder lives for the session only.
+
+How the page runs (S4 and the mini-app rules, regression rule 199):
+
+- It is written into a folder of its own (`<profile>\apps\a<n>`, one file, `index.html`; files next to a `path` file are **not**
+  served) and served by the browser from a host name of its own, `https://flare-app-<n>.local/index.html`, so two mini-apps never
+  share an origin, storage or cookies. The view is a WebView2 view of a **private profile** named `flare-app` (apart from the web
+  panel's; nothing is kept on disk), with developer tools and the status bar off.
+- A Content-Security-Policy is the **first thing in the page** (Flare writes `<!doctype html><meta charset><meta
+  http-equiv="Content-Security-Policy" ...>` before the caller's html): `default-src 'self' 'unsafe-inline' data: blob:;
+  connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'`. A meta policy is fixed for the document
+  once the parser has seen it, so a script that removes the tag lifts nothing, and a second policy the page adds can only narrow
+  it. A header would be the same wall; the meta was chosen because the virtual-host folder cannot add response headers. No script,
+  style, font, image, frame, fetch, WebSocket or beacon reaches outside the page.
+- `allow_network` true **and** the user's setting "Let mini apps use the network" (`flare.web.appNetwork`, off by default, read
+  at every request) add `https:` to `default-src` and `connect-src` (never plain `http:`). `panel.network` in the answer is what
+  was granted; an agent that asked and did not get it is told so by `flare-mcp`.
+- A second wall behind the policy: every request of the view that is not the app's own host, `data:`, `blob:`, or (network on)
+  `https:`, is answered by Flare with a 403 and never made.
+- The view cannot navigate: a navigation to anything but its own page (a `#fragment` is the page's business) is cancelled and the
+  header says "Not opened here"; a link or `window.open` opens nothing (not even in the browser panel); downloads are asked about
+  as in the web panel (S6); permissions are denied. Closing the panel (the close button, the toggle chord, `panel.close`) ends the
+  mini-app: nothing is left to bring back, its view is freed and its folder is removed on a worker. A second `view.html`, a
+  `view.diagram`, `view.*` or `browser.open` replaces it (the old folder goes). Folders left by an earlier run are removed when Flare
+  starts.
+- The agent's `browser.*` calls work on a mini-app as on any web page of its own tab (it can look at its own chart and click in
+  it), except that `browser.navigate` with a `url` is `unavailable` ("a mini-app is one page").
+
+Errors: `bad_params` (neither or both of `html` and `path`; empty; over 4 MB; a path with a NUL or over 4096 characters; a
+page that is not UTF-8 text; a non-bool `allow_network`; a title that is not a string), `not_found` (the `path` is missing, a
+folder, a share, not an html file as typed or as the file system names it: all the same answer, S2), `no_tab`, `unavailable` (no
+WebView2 runtime, the view could not be made, Flare is shutting down, the panel was closed before the page loaded, the apps folder
+cannot be written: `internal`), `timeout` (the page did not load in 30 s; 60 s for the call). Stage 5.
+
+### view.diagram
+
+Params: `mermaid` (string, required, Mermaid text, at most 200 KB = 204800 bytes, not empty), `title` (default "Diagram"). Draws
+the diagram with the **bundled** Mermaid build (11.17.2, MIT; never fetched; `assets/mermaid/`), `securityLevel: 'strict'`, in a
+mini-app page of its own with no network (whatever the switch says), and answers **once it has drawn**: the same result as
+`view.html`. The page puts the library beside it in the folder and exposes `window.__flareDiagram`, a promise of
+`{ok: true}` or `{ok: false, error}`; after the page loads Flare asks it with `Runtime.evaluate` (`awaitPromise`, by value). The
+Mermaid text goes into the page as a JSON string in an inert `<script type="application/json">` with `<` escaped, so no text can end
+the element. **A diagram that does not parse** is `bad_params` with the message `the diagram did not draw: <Mermaid's own error text,
+control characters removed, empty lines dropped, at most 800 characters>`; the panel shows the same text in red. The theme follows
+the system's light or dark setting (`prefers-color-scheme`), not Flare's theme (the panel is a web page). Errors as `view.html`
+(`unavailable` also when the page failed to load, the panel closed or the page moved on while the drawing was asked about). Stage 5.
 
 ### browser.* (stage 3 for opening and navigating, stage 4 for the agent using the page)
 
@@ -478,6 +535,8 @@ calls:
 | `show_image` | `path` | `view.image` |
 | `show_file` | `path` | `view.file` |
 | `show_text` | `text` (non-empty), `title` (optional) | `view.text` |
+| `show_html` | exactly one of `html` and `path` (relative paths are made absolute like the other file tools), `title`, `allow_network` | `view.html` (answers with what the page can do: no network, the network it got, or that it asked for the network and the setting is off) |
+| `show_diagram` | `mermaid` (non-empty), `title` | `view.diagram` (a diagram that does not parse is a tool error: `The diagram did not draw. Mermaid said:` and the parser's words, up to 900 characters and a few lines, then `Fix the Mermaid text and call show_diagram again.`) |
 | `open_page` | `url` (non-empty) | `browser.open` |
 | `close_panel` | none | `panel.close` |
 | `browser_look` | none | `browser.look` (answers with MCP image content and the list as text) |
@@ -489,7 +548,7 @@ calls:
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
 
-(`show_diagram` and `show_html` follow in stage 5.) `open_page` answers with
+`open_page` answers with
 the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote
 it) and says so when the page did not finish loading. A tool
 call waits for the method's own timeout plus 5 s (`call_wait`), not a fixed 20 s, so a 60 s

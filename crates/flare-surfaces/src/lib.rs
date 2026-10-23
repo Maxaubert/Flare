@@ -12,6 +12,7 @@
 
 pub mod agent_job;
 pub mod agent_web;
+pub mod app;
 pub mod kind;
 pub mod layout;
 pub mod overlay;

@@ -11,7 +11,7 @@
 //! A tab is named by its secret (`FLARE_TAB_TOKEN`), never by an id: see `docs/surfaces/protocol.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, Permission, co
 use flare_surfaces::PanelKind;
 use flare_surfaces::agent_job::{Op as AgentOp, Target};
 use flare_surfaces::agent_web::{self as agent_web, Button, WaitFor};
+use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::preview;
 use serde_json::{Value, json};
 
@@ -66,6 +67,15 @@ pub enum CtlOp {
         tab: String,
         text: String,
         title: Option<String>,
+    },
+    /// `view.html` and `view.diagram` (stage 5): the page is already written into the folder `spec`
+    /// names (and that folder is the UI thread's to remove from now on). Answered when the page has
+    /// loaded and, for a diagram, drawn.
+    ShowApp {
+        tab: String,
+        spec: AppSpec,
+        title: String,
+        diagram: bool,
     },
     /// `browser.open` and `panel.open` web: the page is already vetted (`normalize_url`). Answered when
     /// the page has loaded.
@@ -118,6 +128,7 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::PanelClose { .. } => "CtlOp::PanelClose",
             CtlOp::ShowFile { .. } => "CtlOp::ShowFile",
             CtlOp::ShowText { .. } => "CtlOp::ShowText",
+            CtlOp::ShowApp { .. } => "CtlOp::ShowApp",
             CtlOp::BrowserOpen { .. } => "CtlOp::BrowserOpen",
             CtlOp::BrowserNavigate { .. } => "CtlOp::BrowserNavigate",
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
@@ -137,6 +148,49 @@ pub fn real_resolve() -> Resolve {
 /// Which tab owns a secret (the session manager's answer, from any thread).
 pub type TabOf = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// Is "Let mini apps use the network" on? Asked from any thread, at every request.
+pub type NetSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// What `view.html` and `view.diagram` need: where the apps' folders go, how a page named by path is
+/// resolved again, the user's network switch and the Mermaid build a diagram is drawn with.
+pub struct AppsCfg {
+    pub root: std::path::PathBuf,
+    pub resolve_html: Resolve,
+    pub network: NetSwitch,
+    pub mermaid: &'static [u8],
+    /// False only for the e2e's seam `APP_NO_POLICY`: a page is written without its policy so the second
+    /// wall (the browser glue's refusal of outside requests) can be tested alone. Always true otherwise.
+    pub policy: bool,
+    seq: AtomicU64,
+}
+
+impl AppsCfg {
+    pub fn new(
+        root: std::path::PathBuf,
+        resolve_html: Resolve,
+        network: NetSwitch,
+        mermaid: &'static [u8],
+    ) -> Self {
+        Self {
+            root,
+            resolve_html,
+            network,
+            mermaid,
+            policy: true,
+            seq: AtomicU64::new(0),
+        }
+    }
+
+    /// The e2e's seam: pages are written without their policy.
+    pub fn without_policy(mut self) -> Self {
+        self.policy = false;
+        self
+    }
+}
+
+/// The Mermaid build every diagram is drawn with (assets/mermaid/README.md).
+pub static MERMAID: &[u8] = include_bytes!("../../../assets/mermaid/mermaid.min.js");
+
 pub struct AppDispatcher {
     post: Post,
     /// The tab that owns a token (the session manager's, off the UI thread).
@@ -147,6 +201,8 @@ pub struct AppDispatcher {
     stopping: Arc<AtomicBool>,
     /// The user's "Let agents run scripts in pages" switch, read at every request (off by default).
     eval: EvalSwitch,
+    /// Mini-apps (stage 5); without it `view.html` and `view.diagram` answer `unavailable`.
+    apps: Option<AppsCfg>,
 }
 
 /// Is `browser.eval` switched on for the agent? Asked from any thread, at every request.
@@ -167,7 +223,14 @@ impl AppDispatcher {
             home,
             stopping,
             eval: Arc::new(|| false),
+            apps: None,
         }
+    }
+
+    /// Where mini-apps are written and the user's network switch for them (stage 5).
+    pub fn with_apps(mut self, apps: AppsCfg) -> Self {
+        self.apps = Some(apps);
+        self
     }
 
     /// The user's switch for `browser.eval` (S4); without one it is off.
@@ -299,6 +362,151 @@ impl AppDispatcher {
             deadline,
         )
     }
+}
+
+impl AppDispatcher {
+    fn apps(&self) -> Result<&AppsCfg, CtlError> {
+        self.apps.as_ref().ok_or_else(|| {
+            CtlError::new(
+                code::UNAVAILABLE,
+                "mini-apps are not available in this run of Flare",
+            )
+        })
+    }
+
+    /// Writes the app's files and asks the UI thread to show it. The folder belongs to the UI thread
+    /// from the moment it is asked (it removes it when the panel goes, and when it refuses).
+    fn show_app(
+        &self,
+        tab: String,
+        files: &[(&str, &[u8])],
+        allow_network: bool,
+        title: String,
+        diagram: bool,
+        deadline: Instant,
+    ) -> Result<Value, CtlError> {
+        let apps = self.apps()?;
+        let seq = apps.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let spec = app::write_app(&apps.root, seq, files, allow_network).map_err(|e| {
+            CtlError::new(
+                code::INTERNAL,
+                format!("the page could not be written: {e}"),
+            )
+        })?;
+        self.ask_by(
+            CtlOp::ShowApp {
+                tab,
+                spec,
+                title,
+                diagram,
+            },
+            deadline,
+        )
+    }
+
+    /// `view.html`: a page the agent wrote, from `html` or from an `html` file named by `path`.
+    fn view_html(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let tab = Self::tab_of_call(ctx)?;
+        let apps = self.apps()?;
+        let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+        let html = str_param(params, "html")?;
+        let path = str_param(params, "path")?;
+        let title = title_param(params)?;
+        let wants_network = bool_param(params, "allow_network")?.unwrap_or(false);
+        // One deadline for the whole call: the folder question, the disk read, the write and the load.
+        let deadline = Instant::now() + BROWSER_WAIT;
+        let text = match (html, path) {
+            (Some(h), None) => {
+                if h.trim().is_empty() {
+                    return Err(bad("html is empty"));
+                }
+                if h.len() > app::HTML_MAX {
+                    return Err(bad("html is over 4 MB"));
+                }
+                h.to_string()
+            }
+            (None, Some(p)) => {
+                if p.trim().is_empty() || p.len() > 4096 || p.contains('\0') {
+                    return Err(bad("that is not a usable path"));
+                }
+                let base = if std::path::Path::new(p).is_absolute() {
+                    String::new()
+                } else {
+                    let cwd = self.ask_by(CtlOp::TabCwd { tab: tab.clone() }, deadline)?;
+                    cwd["cwd"].as_str().unwrap_or_default().to_string()
+                };
+                // A page nobody may show (missing, a share, not html, a link that changes kind) answers
+                // the same way, so a probe learns nothing about the disk.
+                let (_, real) = (apps.resolve_html)(&base, p, &self.home).ok_or_else(|| {
+                    CtlError::new(code::NOT_FOUND, "no such html file that Flare may show")
+                })?;
+                read_page(&real)?
+            }
+            _ => return Err(bad("give either html or path, not both and not neither")),
+        };
+        let allow = wants_network && (apps.network)();
+        let page = if apps.policy {
+            app::wrap_html(&text, allow)
+        } else {
+            text
+        };
+        let title = title.unwrap_or_else(|| app::default_title(false).to_string());
+        self.show_app(
+            tab,
+            &[(app::PAGE, page.as_bytes())],
+            allow,
+            title,
+            false,
+            deadline,
+        )
+    }
+
+    /// `view.diagram`: Mermaid text drawn by the bundled build.
+    fn view_diagram(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        let tab = Self::tab_of_call(ctx)?;
+        let apps = self.apps()?;
+        let src = str_param(params, "mermaid")?
+            .ok_or_else(|| CtlError::new(code::BAD_PARAMS, "mermaid is required"))?;
+        if src.trim().is_empty() {
+            return Err(CtlError::new(code::BAD_PARAMS, "mermaid is empty"));
+        }
+        if src.len() > app::DIAGRAM_MAX {
+            return Err(CtlError::new(code::BAD_PARAMS, "mermaid is over 200 KB"));
+        }
+        let title = title_param(params)?.unwrap_or_else(|| app::default_title(true).to_string());
+        let page = app::wrap_html(&app::diagram_page(src), false);
+        self.show_app(
+            tab,
+            &[
+                (app::PAGE, page.as_bytes()),
+                (app::MERMAID_FILE, apps.mermaid),
+            ],
+            false,
+            title,
+            true,
+            Instant::now() + BROWSER_WAIT,
+        )
+    }
+}
+
+/// Reads a page the backend has resolved: at most the cap, and text.
+fn read_page(real: &str) -> Result<String, CtlError> {
+    use std::io::Read;
+    let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+    let file = std::fs::File::open(real) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| CtlError::new(code::NOT_FOUND, "no such html file that Flare may show"))?;
+    let mut bytes = Vec::new();
+    file.take(app::HTML_MAX as u64 + 1)
+        .read_to_end(&mut bytes) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| bad("that page could not be read"))?;
+    if bytes.len() > app::HTML_MAX {
+        return Err(bad("that page is over 4 MB"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| bad("that page is not UTF-8 text"))?;
+    if text.trim().is_empty() {
+        return Err(bad("that page is empty"));
+    }
+    Ok(text)
 }
 
 fn str_param<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, CtlError> {
@@ -532,7 +740,7 @@ impl Dispatcher for AppDispatcher {
     /// What this build does. `panel.open` answers (`unavailable`, no web panel yet) but is not listed:
     /// a client that reads this list must not offer what cannot be done.
     fn capabilities(&self) -> Vec<Method> {
-        vec![
+        let mut all = vec![
             Method::Hello,
             Method::TabsList,
             Method::PanelClose,
@@ -550,7 +758,12 @@ impl Dispatcher for AppDispatcher {
             Method::ViewImage,
             Method::ViewFile,
             Method::ViewText,
-        ]
+        ];
+        // Mini-apps are listed only when this run can write them.
+        if self.apps.is_some() {
+            all.extend([Method::ViewHtml, Method::ViewDiagram]);
+        }
+        all
     }
 
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
@@ -644,6 +857,8 @@ impl Dispatcher for AppDispatcher {
                 let (op, wait) = agent_op(method, &params)?;
                 self.ask_by(CtlOp::BrowserAgent { tab, op }, Instant::now() + wait)
             }
+            Method::ViewHtml => self.view_html(ctx, &params),
+            Method::ViewDiagram => self.view_diagram(ctx, &params),
             Method::ViewImage => self.view_file(ctx, PanelKind::Image, &params),
             Method::ViewFile => self.view_file(ctx, PanelKind::Text, &params),
             Method::ViewText => {
@@ -706,11 +921,13 @@ impl CtlServer {
         tab_of: TabOf,
         home: String,
         eval: EvalSwitch,
+        apps: AppsCfg,
     ) -> std::io::Result<Self> {
         let stopping = Arc::new(AtomicBool::new(false));
         let dispatcher = Arc::new(
             AppDispatcher::new(post, tab_of, real_resolve(), home, Arc::clone(&stopping))
-                .with_eval(eval),
+                .with_eval(eval)
+                .with_apps(apps),
         );
         // sync-ok: startup, creates the pipe and its accept thread
         let server =
@@ -1257,6 +1474,8 @@ mod tests {
             (Method::ViewImage, json!({"path": "C:\\work\\a.png"})),
             (Method::ViewFile, json!({"path": "C:\\work\\a.txt"})),
             (Method::ViewText, json!({"text": "x"})),
+            (Method::ViewHtml, json!({"html": "<p>x"})),
+            (Method::ViewDiagram, json!({"mermaid": "graph TD\nA-->B"})),
             (Method::BrowserOpen, json!({"url": "https://a.example/"})),
             (Method::BrowserNavigate, json!({"action": "reload"})),
             (Method::PanelOpen, json!({"kind": "web"})),
@@ -1606,6 +1825,376 @@ mod tests {
             UI_WAIT < Method::ViewImage.timeout(),
             "the call answers `timeout` itself before the server gives up on it"
         );
+    }
+
+    // ---- mini-apps and diagrams (stage 5) ------------------------------------------------------------
+
+    const FAKE_MERMAID: &[u8] = b"/* mermaid stand-in */";
+
+    /// A dispatcher that can write mini-apps into `root`; the UI thread answers every op at once and
+    /// the ops it saw are kept.
+    struct AppRig {
+        d: AppDispatcher,
+        ops: Arc<Mutex<Vec<CtlOp>>>,
+    }
+
+    fn app_rig(
+        root: &std::path::Path,
+        network: bool,
+        pages: &'static [(&'static str, &'static str)],
+    ) -> AppRig {
+        let ops: Arc<Mutex<Vec<CtlOp>>> = Arc::default();
+        let seen = ops.clone();
+        let post: Post = Arc::new(move |m: UiMsg| {
+            let UiMsg::Ctl(CtlRequestBox(req)) = m else {
+                return;
+            };
+            let answer = match &req.op {
+                CtlOp::TabCwd { .. } => json!({"cwd": "C:\\work"}),
+                CtlOp::ShowApp { spec, .. } => json!({
+                    "panel": {"kind": "app", "network": spec.allow_network},
+                    "loaded": true,
+                }),
+                _ => json!({}),
+            };
+            seen.lock().unwrap().push(req.op);
+            let _ = req.reply.send(Ok(answer));
+        });
+        let resolve_html: Resolve = Arc::new(move |_base, text, _home| {
+            pages
+                .iter()
+                .find(|(name, _)| *name == text)
+                .map(|(name, real)| ((*name).to_string(), (*real).to_string()))
+        });
+        let tab_of: TabOf = Arc::new(|t| (t == "secret").then(|| "tab-1".to_string()));
+        let d = AppDispatcher::new(
+            post,
+            tab_of,
+            Arc::new(|_, _, _| None),
+            "C:\\Users\\x".into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_apps(AppsCfg::new(
+            root.to_path_buf(),
+            resolve_html,
+            Arc::new(move || network),
+            FAKE_MERMAID,
+        ));
+        AppRig { d, ops }
+    }
+
+    /// The `ShowApp` the UI thread was last asked for: (tab, spec, title, diagram).
+    fn last_app(r: &AppRig) -> (String, AppSpec, String, bool) {
+        match r.ops.lock().unwrap().iter().rev().find_map(|o| match o {
+            CtlOp::ShowApp {
+                tab,
+                spec,
+                title,
+                diagram,
+            } => Some((tab.clone(), spec.clone(), title.clone(), *diagram)),
+            _ => None,
+        }) {
+            Some(x) => x,
+            None => panic!("the UI thread was not asked to show an app"),
+        }
+    }
+
+    #[test]
+    fn view_html_writes_the_page_policy_first_and_asks_the_ui_to_show_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = app_rig(dir.path(), false, &[]);
+        let v =
+            r.d.call(
+                &agent_in_tab(),
+                Method::ViewHtml,
+                json!({"html": "<h1 id=a>hi</h1><script>1</script>", "title": "Chart"}),
+            )
+            .unwrap();
+        assert_eq!(v["panel"]["kind"], "app");
+        let (tab, spec, title, diagram) = last_app(&r);
+        assert_eq!(
+            (tab.as_str(), title.as_str(), diagram),
+            ("tab-1", "Chart", false)
+        );
+        assert!(!spec.allow_network);
+        assert_eq!(spec.url, app::app_url(&spec.host));
+        assert!(app::is_app_url(&spec.url));
+        assert!(spec.folder.starts_with(dir.path()));
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.starts_with("<!doctype html><meta charset=\"utf-8\">"));
+        assert!(page.contains(&app::csp(false)));
+        assert!(page.find("Content-Security-Policy") < page.find("<h1"));
+        assert!(page.ends_with("<h1 id=a>hi</h1><script>1</script>"));
+        // Only the page: no other file is served from the folder.
+        assert_eq!(std::fs::read_dir(&spec.folder).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_title_defaults_and_each_app_gets_a_host_and_folder_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = app_rig(dir.path(), false, &[]);
+        let c = agent_in_tab();
+        r.d.call(&c, Method::ViewHtml, json!({"html": "<p>one"}))
+            .unwrap();
+        let first = last_app(&r);
+        r.d.call(&c, Method::ViewHtml, json!({"html": "<p>two"}))
+            .unwrap();
+        let second = last_app(&r);
+        assert_eq!(first.2, "Mini-app");
+        assert_ne!(first.1.host, second.1.host);
+        assert_ne!(first.1.folder, second.1.folder);
+        assert!(first.1.folder.is_dir() && second.1.folder.is_dir());
+    }
+
+    #[test]
+    fn the_network_needs_the_agent_to_ask_and_the_users_switch_to_be_on() {
+        let page = |network: bool, ask: Value| {
+            let dir = tempfile::tempdir().unwrap();
+            let r = app_rig(dir.path(), network, &[]);
+            let mut p = json!({"html": "<p>x"});
+            if !ask.is_null() {
+                p["allow_network"] = ask;
+            }
+            r.d.call(&agent_in_tab(), Method::ViewHtml, p).unwrap();
+            let (_, spec, _, _) = last_app(&r);
+            let text = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+            (spec.allow_network, text.contains("https:"))
+        };
+        assert_eq!(page(false, json!(null)), (false, false));
+        assert_eq!(page(false, json!(false)), (false, false));
+        assert_eq!(
+            page(false, json!(true)),
+            (false, false),
+            "the switch is off"
+        );
+        assert_eq!(
+            page(true, json!(null)),
+            (false, false),
+            "the agent did not ask"
+        );
+        assert_eq!(page(true, json!(false)), (false, false));
+        assert_eq!(page(true, json!(true)), (true, true));
+    }
+
+    #[test]
+    fn view_html_checks_its_params_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = app_rig(dir.path(), false, &[]);
+        let c = agent_in_tab();
+        let too_big = "x".repeat(app::HTML_MAX + 1);
+        for bad in [
+            json!({}),
+            json!({"html": ""}),
+            json!({"html": "   "}),
+            json!({"html": 4}),
+            json!({"html": too_big}),
+            json!({"html": "x", "path": "C:\\a.html"}),
+            json!({"path": ""}),
+            json!({"path": "a\u{0}b.html"}),
+            json!({"html": "x", "allow_network": "yes"}),
+            json!({"html": "x", "title": []}),
+        ] {
+            let shown = format!("{bad}").chars().take(60).collect::<String>();
+            assert_eq!(
+                code_of(r.d.call(&c, Method::ViewHtml, bad)),
+                code::BAD_PARAMS,
+                "{shown}"
+            );
+        }
+        assert!(r.ops.lock().unwrap().is_empty(), "the UI was never asked");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing written"
+        );
+        // Exactly the cap is fine.
+        let exact = "x".repeat(app::HTML_MAX);
+        assert!(
+            r.d.call(&c, Method::ViewHtml, json!({"html": exact}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_page_named_by_path_is_resolved_again_vetted_and_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let good = src.path().join("chart.html");
+        std::fs::write(&good, "<p id=g>from a file</p>").unwrap();
+        let big = src.path().join("big.html");
+        std::fs::write(&big, vec![b'x'; app::HTML_MAX + 1]).unwrap();
+        let bin = src.path().join("bin.html");
+        std::fs::write(&bin, [0xffu8, 0xfe, 0x00, 0x80]).unwrap();
+        let empty = src.path().join("empty.html");
+        std::fs::write(&empty, "  \n").unwrap();
+        // The resolver stands in for the backend's: it knows these names only.
+        let leak: &'static [(&'static str, &'static str)] = Box::leak(
+            vec![
+                (
+                    "chart.html",
+                    &*Box::leak(good.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "big.html",
+                    &*Box::leak(big.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "bin.html",
+                    &*Box::leak(bin.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                (
+                    "empty.html",
+                    &*Box::leak(empty.to_string_lossy().into_owned().into_boxed_str()),
+                ),
+                ("gone.html", "C:\\no\\such\\gone.html"),
+            ]
+            .into_boxed_slice(),
+        );
+        let r = app_rig(dir.path(), false, leak);
+        let c = agent_in_tab();
+        r.d.call(&c, Method::ViewHtml, json!({"path": "chart.html"}))
+            .unwrap();
+        let (_, spec, title, _) = last_app(&r);
+        assert_eq!(title, "Mini-app");
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.contains("<p id=g>from a file</p>"));
+        assert!(page.contains("Content-Security-Policy"));
+        for (p, want) in [
+            ("not-listed.html", code::NOT_FOUND),
+            ("gone.html", code::NOT_FOUND),
+            ("big.html", code::BAD_PARAMS),
+            ("bin.html", code::BAD_PARAMS),
+            ("empty.html", code::BAD_PARAMS),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&c, Method::ViewHtml, json!({"path": p}))),
+                want,
+                "{p}"
+            );
+        }
+        // A relative path asks the UI thread for the tab's folder first; an absolute one does not.
+        let before = r.ops.lock().unwrap().len();
+        let _ =
+            r.d.call(&c, Method::ViewHtml, json!({"path": "C:\\abs\\x.html"}));
+        assert_eq!(r.ops.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn view_diagram_writes_the_page_and_the_library_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = app_rig(dir.path(), true, &[]);
+        let c = agent_in_tab();
+        r.d.call(
+            &c,
+            Method::ViewDiagram,
+            json!({"mermaid": "graph TD\nA-->B", "title": "Flow"}),
+        )
+        .unwrap();
+        let (tab, spec, title, diagram) = last_app(&r);
+        assert_eq!(
+            (tab.as_str(), title.as_str(), diagram),
+            ("tab-1", "Flow", true)
+        );
+        // No network for a diagram, whatever the switch says.
+        assert!(!spec.allow_network);
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.contains("Content-Security-Policy"));
+        assert!(page.contains("securityLevel: 'strict'"));
+        assert!(page.contains("A-->B"));
+        assert_eq!(
+            std::fs::read(spec.folder.join(app::MERMAID_FILE)).unwrap(),
+            FAKE_MERMAID
+        );
+        let default_title = r.d.call(
+            &c,
+            Method::ViewDiagram,
+            json!({"mermaid": "graph TD\nA-->B"}),
+        );
+        assert!(default_title.is_ok());
+        assert_eq!(last_app(&r).2, "Diagram");
+    }
+
+    #[test]
+    fn view_diagram_checks_its_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = app_rig(dir.path(), false, &[]);
+        let c = agent_in_tab();
+        let big = "x".repeat(app::DIAGRAM_MAX + 1);
+        for bad in [
+            json!({}),
+            json!({"mermaid": ""}),
+            json!({"mermaid": " \n "}),
+            json!({"mermaid": 3}),
+            json!({"mermaid": big}),
+            json!({"mermaid": "x", "title": 1}),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&c, Method::ViewDiagram, bad)),
+                code::BAD_PARAMS
+            );
+        }
+        assert!(r.ops.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn without_a_folder_to_write_to_mini_apps_are_unavailable_and_not_listed() {
+        let r = rig(ok_all, false, FILES);
+        let c = agent_in_tab();
+        assert_eq!(
+            code_of(r.d.call(&c, Method::ViewHtml, json!({"html": "<p>x"}))),
+            code::UNAVAILABLE
+        );
+        assert_eq!(
+            code_of(r.d.call(
+                &c,
+                Method::ViewDiagram,
+                json!({"mermaid": "graph TD\nA-->B"})
+            )),
+            code::UNAVAILABLE
+        );
+        let caps = r.d.capabilities();
+        assert!(!caps.contains(&Method::ViewHtml) && !caps.contains(&Method::ViewDiagram));
+        let dir = tempfile::tempdir().unwrap();
+        let with = app_rig(dir.path(), false, &[]);
+        let caps = with.d.capabilities();
+        assert!(caps.contains(&Method::ViewHtml) && caps.contains(&Method::ViewDiagram));
+    }
+
+    #[test]
+    fn the_bundled_mermaid_is_the_pinned_build() {
+        use sha2::{Digest, Sha256};
+        // assets/mermaid/README.md and the notices name this exact file (mermaid 11.17.2, dist/mermaid.min.js).
+        assert_eq!(MERMAID.len(), 3_572_661);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(MERMAID)),
+            "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+        );
+        assert!(
+            MERMAID.ends_with(b"default;\n"),
+            "it sets globalThis.mermaid last"
+        );
+    }
+
+    #[test]
+    fn the_debug_form_of_a_mini_app_request_prints_its_kind_only() {
+        let (tx, _rx) = mpsc::channel();
+        let b = CtlRequestBox(CtlRequest {
+            op: CtlOp::ShowApp {
+                tab: "t".into(),
+                spec: AppSpec {
+                    host: "flare-app-1.local".into(),
+                    folder: "C:\\SECRET".into(),
+                    url: "https://flare-app-1.local/index.html".into(),
+                    allow_network: false,
+                },
+                title: "SECRET".into(),
+                diagram: false,
+            },
+            deadline: Instant::now(),
+            reply: tx,
+        });
+        assert_eq!(format!("{b:?}"), "CtlOp::ShowApp");
     }
 
     #[test]

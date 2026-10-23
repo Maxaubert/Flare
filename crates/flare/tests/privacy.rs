@@ -37,6 +37,10 @@ pub const INVENTORY: &[(&str, &str)] = &[
     // The web panel: the address rules (a bare host gets https, a local one http: strings, no request), the
     // Runtime's download page (opened only on a click) and the e2e's local test host and refusal cases.
     ("flare-surfaces/src/web.rs", "Web panel"),
+    // Mini-apps: the host names a mini-app is served from (a local virtual host, no request), the policy
+    // text that keeps a page off the network, and the e2e's loopback addresses a blocked request points at.
+    ("flare-surfaces/src/app.rs", "Web panel"),
+    ("e2e/src/scenarios/mini_app.rs", "Web panel"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
 ];

@@ -299,6 +299,8 @@ export component AppWindow inherits Window {
     callback panel-pressed();
     // The web panel (stage 3): what the bar shows, the still, and where the page sits.
     in property <string> panel-web-url;
+    // A mini-app (stage 5): the page is the agent's own, so the bar (address, back, reload) is not drawn.
+    in property <bool> panel-web-app;
     in property <bool> panel-web-loading;
     in property <bool> panel-web-can-back;
     in property <bool> panel-web-can-forward;
@@ -839,6 +841,7 @@ export component AppWindow inherits Window {
                         max-cols: root.panel-max-cols;
                         foot: root.panel-foot;
                         web-url: root.panel-web-url;
+                        web-app: root.panel-web-app;
                         web-loading: root.panel-web-loading;
                         web-can-back: root.panel-web-can-back;
                         web-can-forward: root.panel-web-can-forward;

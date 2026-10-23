@@ -1838,3 +1838,461 @@ fn the_person_focusing_the_page_while_a_call_runs_takes_over() {
     f.pump();
     assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
 }
+
+// ---- mini-apps and diagrams (stage 5) ---------------------------------------------------------------
+
+use flare_surfaces::app::{self, AppSpec};
+
+/// An app written into a folder of this test's own, with the controller told where the apps live.
+fn app_in(f: &Fx, seq: u64) -> (AppSpec, std::path::PathBuf) {
+    let root = f.dir.path().join("apps");
+    f.ctl.borrow_mut().set_apps_root(root.clone());
+    let page = app::wrap_html("<p id=hi>hello</p>", false);
+    let spec = app::write_app(&root, seq, &[(app::PAGE, page.as_bytes())], false).unwrap();
+    (spec, root)
+}
+
+fn app_op(tab: &str, spec: &AppSpec, title: &str, diagram: bool) -> CtlOp {
+    CtlOp::ShowApp {
+        tab: tab.into(),
+        spec: spec.clone(),
+        title: title.into(),
+        diagram,
+    }
+}
+
+fn open_apps(slot: &Slot) -> Vec<(String, AppSpec, bool)> {
+    fake(slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::OpenApp {
+                tab, app, visible, ..
+            } => Some((tab, app, visible)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Shows an app on the tab and plays the browser loading it.
+fn shown_app(f: &Fx, slot: &Slot, tab: &str, spec: &AppSpec, title: &str) -> Value {
+    let rx = ask(f, app_op(tab, spec, title, false), Duration::from_secs(5));
+    finish(&fake(slot), tab, &spec.url, true);
+    f.pump();
+    rx.try_recv().unwrap().unwrap()
+}
+
+#[test]
+fn a_mini_app_gets_a_view_of_its_own_kind_and_answers_when_it_has_loaded() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    let rx = ask(
+        &f,
+        app_op(&id, &spec, "Chart", false),
+        Duration::from_secs(5),
+    );
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "waits for the load"
+    );
+    let o = open_apps(&slot);
+    assert_eq!(o.len(), 1, "{o:?}");
+    assert_eq!((o[0].0.as_str(), &o[0].1), (id.as_str(), &spec));
+    // The plain open was never used for it: the app's view is a different kind.
+    assert!(opened_calls(&slot).is_empty());
+    finish(&fake(&slot), &id, &spec.url, true);
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["panel"]["kind"], "app");
+    assert_eq!(v["panel"]["title"], "Chart");
+    assert_eq!(v["panel"]["network"], false);
+    assert!(
+        v["panel"].get("url").is_none(),
+        "the address is Flare's own"
+    );
+    assert_eq!(v["loaded"], true);
+    // The header is the agent's title, and there is no address bar.
+    assert_eq!(f.h.comp.get_panel_title().as_str(), "Chart");
+    assert!(f.h.comp.get_panel_web_app());
+    assert_eq!(f.h.comp.get_panel_bar_h(), 0.0);
+    assert_eq!(f.ctl.borrow().web_controllers(), 1);
+}
+
+#[test]
+fn the_page_cannot_rename_the_panel_or_move_its_address() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &spec, "Chart");
+    fake(&slot).say(WebEvent::Title {
+        tab: id.clone(),
+        title: "Totally the bank".into(),
+    });
+    fake(&slot).say(WebEvent::Url {
+        tab: id.clone(),
+        url: "https://example.com/login".into(),
+    });
+    f.pump();
+    let state = ask(
+        &f,
+        CtlOp::PanelState { tab: id.clone() },
+        Duration::from_secs(5),
+    );
+    let v = state.try_recv().unwrap().unwrap();
+    assert_eq!(v["panel"]["title"], "Chart");
+    assert_eq!(
+        f.ctl.borrow().panels.web_target(&id).as_deref(),
+        Some(spec.url.as_str())
+    );
+    assert_eq!(f.h.comp.get_panel_title().as_str(), "Chart");
+}
+
+#[test]
+fn the_address_field_and_the_channel_cannot_send_a_mini_app_anywhere() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &spec, "Chart");
+    f.ctl
+        .borrow_mut()
+        .web_submit(&"https://example.com/".into());
+    let nav = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Url("https://example.com/".into()),
+        },
+        Duration::from_secs(5),
+    );
+    assert_eq!(nav.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Navigate(..))),
+        "nothing was sent to the view"
+    );
+}
+
+#[test]
+fn closing_a_mini_app_ends_it_and_removes_its_folder() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &spec, "Chart");
+    assert!(spec.folder.is_dir());
+    let closed = ask(
+        &f,
+        CtlOp::PanelClose { tab: id.clone() },
+        Duration::from_secs(5),
+    );
+    assert_eq!(closed.try_recv().unwrap().unwrap()["closed"], true);
+    f.h.advance(0);
+    assert_eq!(f.ctl.borrow().web_controllers(), 0, "the view is freed");
+    // The folder goes on a worker thread.
+    f.pump_until("the folder to go", |_| !spec.folder.exists());
+    // The toggle chord brings nothing back: there is no panel left to reopen.
+    assert!(f.ctl.borrow().panels.app_spec(&id).is_none());
+    assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(f.ctl.borrow().web_controllers(), 0);
+    assert_eq!(open_apps(&slot).len(), 1);
+}
+
+#[test]
+fn a_page_replaces_a_mini_app_and_a_mini_app_replaces_a_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    let (spec, _root) = app_in(&f, 1);
+    // An app over a page: the page's view is closed and the app gets one of its own kind.
+    let rx = ask(
+        &f,
+        app_op(&id, &spec, "Chart", false),
+        Duration::from_secs(5),
+    );
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    let calls = fake(&slot).calls();
+    let close = calls
+        .iter()
+        .rposition(|c| *c == Call::Close(id.clone()))
+        .expect("closed");
+    let open = calls
+        .iter()
+        .position(|c| matches!(c, Call::OpenApp { .. }))
+        .expect("app opened");
+    assert!(close < open, "the page's view goes first: {calls:?}");
+    finish(&fake(&slot), &id, &spec.url, true);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+    // A page over the app: the app's view and folder go and the page gets a plain view.
+    let rx = ask(&f, open_op(&id, PAGE), Duration::from_secs(5));
+    let calls = fake(&slot).calls();
+    let last_close = calls
+        .iter()
+        .rposition(|c| *c == Call::Close(id.clone()))
+        .unwrap();
+    let last_open = calls
+        .iter()
+        .rposition(|c| matches!(c, Call::Open { .. }))
+        .unwrap();
+    assert!(last_close > close, "the app's view was closed: {calls:?}");
+    assert!(last_close < last_open, "{calls:?}");
+    finish(&fake(&slot), &id, PAGE, true);
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok());
+    assert!(f.ctl.borrow().panels.app_spec(&id).is_none());
+    f.pump_until("the folder to go", |_| !spec.folder.exists());
+    // The plain page's bar is back.
+    assert!(!f.h.comp.get_panel_web_app());
+}
+
+#[test]
+fn a_second_mini_app_replaces_the_first_and_its_folder() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (one, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &one, "One");
+    let (two, _root) = app_in(&f, 2);
+    let v = shown_app(&f, &slot, &id, &two, "Two");
+    assert_eq!(v["panel"]["title"], "Two");
+    f.pump_until("the first folder to go", |_| !one.folder.exists());
+    assert!(two.folder.is_dir());
+    let o = open_apps(&slot);
+    assert_eq!(o.len(), 2, "{:#?}", fake(&slot).calls());
+    assert_ne!(o[0].1.host, o[1].1.host);
+}
+
+#[test]
+fn a_mini_app_for_a_tab_behind_gets_its_view_hidden() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = f.ctl.borrow().front_id().unwrap();
+    let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.ctl.borrow_mut().refresh();
+    let (spec, _root) = app_in(&f, 1);
+    let rx = ask(
+        &f,
+        app_op(&a, &spec, "Chart", false),
+        Duration::from_secs(5),
+    );
+    let o = open_apps(&slot);
+    assert_eq!(o.len(), 1, "the page loads even though nobody is looking");
+    assert!(!o[0].2, "hidden");
+    finish(&fake(&slot), &a, &spec.url, true);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+}
+
+#[test]
+fn a_mini_app_for_a_closed_tab_is_refused_and_its_folder_removed() {
+    let (f, _h, _) = live(Opts::default());
+    let _slot = with_fake(&f);
+    let (spec, _root) = app_in(&f, 1);
+    let rx = ask(
+        &f,
+        app_op("no-such-tab", &spec, "Chart", false),
+        Duration::from_secs(5),
+    );
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::NO_TAB);
+    f.pump_until("the folder to go", |_| !spec.folder.exists());
+}
+
+#[test]
+fn a_mini_app_asked_for_too_late_is_never_shown() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    let rx = ask(&f, app_op(&id, &spec, "Chart", false), Duration::ZERO);
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::TIMEOUT);
+    assert!(slot.borrow().is_none(), "no browser was made for it");
+    f.pump_until("the folder to go", |_| !spec.folder.exists());
+}
+
+#[test]
+fn a_diagram_is_answered_by_the_pages_word_and_a_drawing_that_failed_says_why() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    let rx = ask(&f, app_op(&id, &spec, "Flow", true), Duration::from_secs(5));
+    finish(&fake(&slot), &id, &spec.url, true);
+    f.pump();
+    // Loaded is not drawn: the page is asked, and nothing is answered yet.
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    let asked: Vec<(u64, String)> = fake(&slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Cdp(_, id, m, p) if m == "Runtime.evaluate" => Some((id, p)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].1.contains("window.__flareDiagram"));
+    assert!(asked[0].1.contains("\"awaitPromise\":true"));
+    fake(&slot).say(WebEvent::Cdp {
+        tab: id.clone(),
+        id: asked[0].0,
+        result: Ok(r#"{"result":{"type":"object","value":{"ok":true}}}"#.into()),
+    });
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["panel"]["kind"], "app");
+    assert_eq!(v["panel"]["title"], "Flow");
+
+    // A diagram that does not parse: the call fails with Mermaid's own words (the panel shows them).
+    let (bad, _root) = app_in(&f, 2);
+    let rx = ask(
+        &f,
+        app_op(&id, &bad, "Broken", true),
+        Duration::from_secs(5),
+    );
+    finish(&fake(&slot), &id, &bad.url, true);
+    f.pump();
+    let asked: Vec<u64> = fake(&slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Cdp(_, id, m, _) if m == "Runtime.evaluate" => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked.len(), 2);
+    fake(&slot).say(WebEvent::Cdp {
+        tab: id.clone(),
+        id: asked[1],
+        result: Ok(serde_json::json!({"result": {"type": "object", "value": {
+            "ok": false,
+            "error": "Parse error on line 2:\nA-->\n---^\nExpecting 'SEMI'"
+        }}})
+        .to_string()),
+    });
+    f.pump();
+    let e = rx.try_recv().unwrap().unwrap_err();
+    assert_eq!(e.code, code::BAD_PARAMS);
+    assert!(
+        e.message
+            .starts_with("the diagram did not draw: Parse error on line 2:"),
+        "{}",
+        e.message
+    );
+    // The panel stays on the error page (it shows the text), still under the agent's title.
+    assert_eq!(f.h.comp.get_panel_title().as_str(), "Broken");
+}
+
+#[test]
+fn a_diagram_whose_page_failed_closed_or_moved_on_answers_unavailable() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    // The page failed to load.
+    let (one, _root) = app_in(&f, 1);
+    let rx = ask(&f, app_op(&id, &one, "A", true), Duration::from_secs(5));
+    finish(&fake(&slot), &id, &one.url, false);
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+    // The panel is closed while the page is being asked.
+    let (two, _root) = app_in(&f, 2);
+    let rx = ask(&f, app_op(&id, &two, "B", true), Duration::from_secs(5));
+    finish(&fake(&slot), &id, &two.url, true);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    let closed = ask(
+        &f,
+        CtlOp::PanelClose { tab: id.clone() },
+        Duration::from_secs(5),
+    );
+    closed.try_recv().unwrap().unwrap();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+    // The page moves on while the question is out.
+    let (three, _root) = app_in(&f, 3);
+    let rx = ask(&f, app_op(&id, &three, "C", true), Duration::from_secs(5));
+    finish(&fake(&slot), &id, &three.url, true);
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    fake(&slot).say(WebEvent::Loading {
+        tab: id.clone(),
+        url: three.url.clone(),
+        nav: 777,
+    });
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+}
+
+#[test]
+fn the_agents_browser_calls_work_on_a_mini_app() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &spec, "Chart");
+    with_shop(&slot);
+    let rx = look(&f, &id);
+    f.pump();
+    let v = rx.try_recv().unwrap().unwrap();
+    assert_eq!(v["elements"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore() {
+    // An app's panel is not written to panels.json ...
+    let f = fx_with(Opts {
+        saved: vec![("C:\\a", None)],
+        ..Opts::default()
+    });
+    let file = f.dir.path().join("panels.json");
+    f.ctl
+        .borrow_mut()
+        .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        )));
+    let slot = with_fake(&f);
+    f.start_restore_and_wait();
+    f.wait_made("C:\\a");
+    let id = f.ctl.borrow().front_id().unwrap();
+    let (spec, _root) = app_in(&f, 1);
+    shown_app(&f, &slot, &id, &spec, "Chart");
+    f.ctl.borrow_mut().refresh();
+    std::thread::sleep(Duration::from_millis(250)); // sync-ok: test code only, past the store's 30 ms delay
+    assert!(
+        !file.exists()
+            || !std::fs::read_to_string(&file) // sync-ok: test code only
+                .unwrap()
+                .contains("flare-app-"),
+        "no app address on disk"
+    );
+    // ... and one an old or edited file holds is dropped, like any address a panel cannot open.
+    let g = fx_with(Opts {
+        saved: vec![("C:\\a", None)],
+        ..Opts::default()
+    });
+    let file = g.dir.path().join("panels.json");
+    let raw = r#"{"version":1,"tabs":[
+        {"cwd":"C:\\a","panel":{"kind":"web","target":"https://flare-app-1.local/index.html"}}]}"#;
+    std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+    g.ctl
+        .borrow_mut()
+        .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        )));
+    let slot = with_fake(&g);
+    g.start_restore_and_wait();
+    g.h.advance(0);
+    g.pump();
+    assert_eq!(g.ctl.borrow().open_panels(), 0);
+    assert!(slot.borrow().is_none(), "no browser for a dead app");
+}

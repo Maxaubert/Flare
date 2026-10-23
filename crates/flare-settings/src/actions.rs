@@ -190,6 +190,7 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "right-click-reports" => term_prefs::set_right_click_reports(p, on),
         "open-previews" => term_prefs::set_open_previews(p, on),
         "agent-eval" => term_prefs::set_agent_eval(p, on),
+        "app-network" => term_prefs::set_app_network(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         _ => {}
     }

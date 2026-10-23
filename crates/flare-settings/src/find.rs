@@ -249,14 +249,14 @@ mod tests {
     }
 
     #[test]
-    fn the_index_has_42_rows_without_nvidia() {
-        // 31 rows outside dictation, 8 dictation rows and From any app (the GPU row needs NVIDIA).
+    fn the_index_has_43_rows_without_nvidia() {
+        // 32 rows outside dictation, 8 dictation rows and From any app (the GPU row needs NVIDIA).
         let n = settings_index(&IndexEnv {
             nvidia: false,
             dictation_wired: true,
         })
         .len();
-        assert_eq!(n, 42);
+        assert_eq!(n, 43);
         assert!(
             settings_index(&IndexEnv {
                 nvidia: false,

@@ -212,3 +212,45 @@ line. Nothing is fetched, no real window gets input (the person's takeover is th
   navigate and back, and a page with a hostile title (a quote, a fake end marker, hidden tag characters) staying inside the markers.
 - The probes: `web.state` now also reports `ribbon` (`shown`, `text`, `w`) and `agent` (`op`, `refs`, `ribbon`, `keys_heard`), and the
   test hook has two more requests, `WebUserInput`, the stand-in for the person's own click or key in the page, and `WebZoom`, which sets the browser zoom of the front page (what Ctrl+wheel does).
+
+## Mini-apps and diagrams (Surfaces stage 5)
+
+`tools/e2e/src/scenarios/mini_app.rs`: three scenarios, each in its own world and profile, offscreen, speaking the control channel with
+the `flare-ctl` client (or `flare-mcp.exe` over stdio). Nothing is fetched from the network: what a page is blocked from loading points
+at `http://127.0.0.1:9/` (the discard port), and the proof that the policy and not a closed port stopped it is the page's own
+`securitypolicyviolation` events.
+
+```powershell
+cargo run -p flare-e2e --bin flare-e2e --release --target-dir <TARGET> -- --exe <TARGET>\release\flare.exe miniApp diagram
+```
+
+- `miniApp` (119 checks) at 100 and 225 percent, then two more launches. A stale folder in `<profile>\apps` is gone at start. `view.html`
+  answers once the page has loaded with `panel.kind` `app` and `panel.network` false though the agent asked; the browser reports the
+  host `flare-app-1.local`, the profile `flare-app` and its private flag; the header is the agent's title and the bar's height is 0;
+  the browser window equals the layout maths and what Slint drew. The page's script ran and its policy tag has no `https:`. A fetch, an
+  image and a script from `127.0.0.1:9` are each a violation event; the page removes its policy tag and a new fetch is still a
+  violation. `location.href` to outside and to a sibling file, and `window.open`, leave one view at its own address and the header says
+  "Not opened here". `browser.look` finds the page's button, `browser.click` changes its text, `browser.navigate` with an address is
+  `unavailable`. A second app is another host with one view, the same browser process id, none of the first app's `localStorage` or cookie,
+  and the first folder is gone. A page by relative path runs; a script, a text file, a missing file, a `..` escape and a share are
+  `not_found`; html over 4 MB, no arguments, empty and both arguments are `bad_params`. `panel.close` leaves no view and no folder.
+  A launch with `FLARE_E2E_APP_NO_POLICY` (read only under `--e2e`: pages are written without their policy) holds the second wall: a
+  `no-cors` fetch to `127.0.0.1:9` resolves as an opaque response, which only Flare's own refusal can produce (a real attempt to a closed
+  port rejects). A launch with `flare.web.appNetwork` seeded in the profile holds the network switch: the policy allows `https:`, never
+  `http:`, and a page that does not ask has no network.
+  A launch with `FLARE_E2E_APP_NO_POLICY` and `FLARE_E2E_APP_NO_WEBRTC_SCRIPT` (both read only under `--e2e`: no page policy and no
+  peer-connection script) holds the browser's own walls ("webrtc" checks). For an app with no network and then one with it: the app
+  still renders in its own browser; a WebSocket to a loopback listener is stopped by the dead proxy for the first and reaches the
+  listener for the second (the control); a peer connection with a STUN server on a loopback UDP socket of the e2e gathers no candidate
+  and sends no packet from the window, a srcdoc frame and an about:blank frame. The web panel is the control: the same probe there
+  does reach the socket. `app_on` also checks that the page policy shuts child frames and that a srcdoc and an about:blank frame have
+  no usable `RTCPeerConnection`, at once and 600 ms later.
+- `diagram` (18): `view.diagram` answers once the diagram has drawn; the page has one `svg` with the flowchart's four nodes and their
+  labels; a sequence diagram draws with its actors; with no title the header says Diagram; a diagram that does not parse is `bad_params`
+  with Mermaid's text and the page shows the same text in red; over 200 KB, no text, empty and a number are `bad_params`.
+- `mcpDiagram` (10): `show_html` and `show_diagram` are described for an agent; `show_diagram` draws; a bad diagram is a tool error that
+  starts `The diagram did not draw. Mermaid said:` and ends with what to do; `show_html` reports that the network it asked for was not
+  given; `browser_look` sees the page's button; a missing path and a call with nothing to show are tool errors.
+- The seam: `FLARE_E2E_APP_NO_POLICY` (the `APP_NO_POLICY` e2e variable, `ship_ctl::e2e_var`) writes `view.html` pages without the policy
+  tag so the second wall can be tested alone. It does nothing without `--e2e`, and a diagram always has its policy.
+- The probe `web.state` now also reports the browser's own profile name and private flag in `controller` (`profile`, `private`).

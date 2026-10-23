@@ -1115,3 +1115,97 @@ MCP tools and how a look is written for the model).
   with scripts on) and `mcpBrowser` (26 checks, `flare-mcp.exe` over stdio). See `docs/e2e.md`.
 - **By hand, not machine-tested:** a real mouse click (a quick tap too) in the page while a call runs (the polling of the real buttons), a real key,
   the ribbon's look at the 18 themes, a monitor change during a look. The list is at the end of `docs/surfaces/lessons.md` (Stage 4).
+
+## Surfaces: mini-apps and diagrams (stage 5), 2026-10-22
+
+Issues #23 and #24. The owner's wish: when Claude has something to show that is not a picture or a text (a chart of numbers it just
+worked out, a calculator, an explainer, a 3D viewer, a diagram of a flow), it writes a small page and Flare shows it beside the
+terminal, working, instead of describing it in words. Choices: `docs/surfaces/decisions.md` (Stage 5); the notes for the port:
+`docs/surfaces/lessons.md` (Stage 5); the contract: `docs/surfaces/protocol.md` (`view.html`, `view.diagram`, the `app` panel kind,
+the MCP tools `show_html` and `show_diagram`); the rule: `docs/regression-rules.md` 199 to 201.
+
+- **A page Claude writes.** `show_html` / `view.html` takes the whole page (`html`, at most 4 MB) or the path of an `.html` file and
+  shows it in the tab's panel, answering once the page has loaded. It is a web panel with a different view: the panel has no address
+  bar, is named by the title the agent gave (the page cannot rename it), cannot be navigated and is not stored. Held by
+  `view_html_writes_the_page_policy_first_and_asks_the_ui_to_show_it`, `view_html_checks_its_params_before_anything_is_written`
+  (`ctl_app.rs`), `a_mini_app_gets_a_view_of_its_own_kind_and_answers_when_it_has_loaded`,
+  `the_page_cannot_rename_the_panel_or_move_its_address`, `the_address_field_and_the_channel_cannot_send_a_mini_app_anywhere`,
+  `a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore` (`web_tests.rs`) and the e2e `miniApp` (the page's
+  script runs, the header is the agent's title, no bar, the browser window sits exactly on the slot at 100 and 225 percent).
+- **A sandbox of its own, with no network.** The page is served from a host of its own (`flare-app-<n>.local`, a site each, so two apps never
+  share storage or a `Domain=` cookie), in a private browser profile of its own (`flare-app`, apart from the web panel's, nothing on disk), and the first
+  thing in it is a Content-Security-Policy (`default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' ...`). A fetch, an
+  image and a script from outside are each a policy violation (the page's own `securitypolicyviolation` events are the proof, not a
+  refused connection), and a script that removes the policy tag lifts nothing. Behind the policy a second wall answers every request
+  that is not the app's own with a refusal (the e2e switches the policy off with a seam that exists only under `--e2e` and a
+  `no-cors` fetch to outside still gets an answer from Flare, not a connection attempt). Held by
+  `the_policy_has_no_network_unless_asked`, `the_policy_comes_before_anything_the_page_says`,
+  `a_request_leaves_only_as_far_as_the_network_switch_allows`, `hosts_are_one_per_app_and_never_the_web_panels` (`app.rs`) and the
+  e2e `miniApp` (profile name and private flag read back from the browser, the three violations, the tag removed, the wall, the next
+  app finding no storage or cookie of the first).
+- **The network is two keys.** `allow_network` from the agent AND the new setting "Let mini apps use the network" (Settings >
+  Terminal > Links, default OFF, read at every request); the answer says what the page got, `show_html` tells the agent when it asked
+  and did not get it, and plain `http:` is never allowed. Held by `the_network_needs_the_agent_to_ask_and_the_users_switch_to_be_on`
+  (`ctl_app.rs`), `mini_apps_have_no_network_until_a_stored_one`, `the_mini_app_network_row_is_a_switch_that_is_off_until_turned_on`
+  (`flare-settings`), `the_network_the_agent_asked_for_is_reported_as_given_or_not` (`flare-mcp`) and the e2e `miniApp` (a second
+  launch with the switch seeded: the policy allows `https:` and still blocks `http:`).
+- **It goes nowhere.** A navigation to anything but its own page is cancelled and the header says "Not opened here"; a link and
+  `window.open` open nothing, not even in the browser panel; developer tools and the status bar are off; permissions are denied.
+  Held by `a_view_stays_on_its_own_page` (`app.rs`), `an_app_view_and_a_page_view_replace_each_other` (`flare-web`) and the e2e `miniApp`
+  (`location.href` to outside and to a sibling file, and `window.open`, leave one view at its own address).
+- **A page named by path is vetted.** Resolved again by the backend (S2): only `html` and `htm`, as typed and as the file system
+  names it; a script, a text file, a missing file, a folder, a share or a `..` escape is the same `not_found`; at most 4 MB; UTF-8.
+  A click on a path still never opens a page (`html` is not on the click allowlist), and files next to the page are not served. Held by
+  `a_page_for_a_mini_app_is_html_or_htm_and_nothing_else`, `a_page_resolves_in_the_backend_and_a_script_a_folder_or_a_share_does_not`
+  (`path_open.rs`), `a_page_named_by_path_is_resolved_again_vetted_and_read` (`ctl_app.rs`) and the e2e `miniApp`.
+- **Folders live and die with the panel.** `<profile>\apps\a<n>\index.html`, written off the UI thread before the request; removed on
+  a worker when the panel closes, another panel replaces the app, the tab closes, the request is too late or the tab is gone;
+  renamed aside at start and swept on a worker, emptied at quit; only a folder directly inside the apps root is ever removed. Held by
+  `an_app_is_written_to_a_folder_of_its_own_and_removed_with_it`, `only_a_folder_directly_inside_the_apps_root_is_ever_removed`,
+  `startup_empties_the_apps_folder_and_leaves_the_profile_alone`, `retiring_the_root_renames_it_aside_and_the_sweep_deletes_every_old_one`, `the_page_loses_peer_connections_and_prefetch_before_its_own_code`, `a_file_name_with_a_separator_is_refused_and_leaves_nothing_outside`
+  (`app.rs`), `closing_a_mini_app_ends_it_and_removes_its_folder`, `a_second_mini_app_replaces_the_first_and_its_folder`,
+  `a_mini_app_for_a_closed_tab_is_refused_and_its_folder_removed`, `a_mini_app_asked_for_too_late_is_never_shown` (`web_tests.rs`) and
+  the e2e (a stale folder gone at start, one folder at a time, none after `panel.close`).
+- **Updating in place.** A second `show_html`, a diagram, a `view.*` or `open_page` swaps the page in the same browser (the process
+  id does not change), and the other way round. Held by `a_page_replaces_a_mini_app_and_a_mini_app_replaces_a_page`,
+  `a_second_mini_app_replaces_the_first_and_its_folder`, `a_mini_app_for_a_tab_behind_gets_its_view_hidden` and the e2e (the browser
+  process id before and after).
+- **Diagrams.** `show_diagram` / `view.diagram` draws Mermaid text with the bundled build (11.17.2, MIT, compiled into the exe; never
+  fetched), `securityLevel: 'strict'`, no network, and answers once it has drawn. A diagram that does not parse fails the call with
+  Mermaid's own error text (up to 800 characters and its line breaks) and the panel shows it in red; the MCP tool says what to do
+  next. Held by `the_diagram_text_cannot_end_its_element`, `a_drawn_diagram_is_ok_and_an_error_carries_mermaids_words`,
+  `an_error_is_plain_short_text` (`app.rs`), `view_diagram_writes_the_page_and_the_library_beside_it`, `view_diagram_checks_its_params`,
+  `the_bundled_mermaid_is_the_pinned_build` (`ctl_app.rs`), `a_diagram_is_answered_by_the_pages_word_and_a_drawing_that_failed_says_why`,
+  `a_diagram_whose_page_failed_closed_or_moved_on_answers_unavailable` (`web_tests.rs`),
+  `a_diagram_that_did_not_draw_returns_mermaids_own_words` (`flare-mcp`) and the e2e `diagram` (a flowchart with its four nodes
+  and labels, a sequence diagram with its actors, a bad diagram refused with the parser's text that the panel shows too) and
+  `mcpDiagram` (through `flare-mcp.exe`).
+- **The agent can look at its own page.** The `browser_*` tools work on a mini-app as on any web panel of the tab (it sees its chart
+  and clicks in it); `browser_navigate` with an address is `unavailable`. Held by `the_agents_browser_calls_work_on_a_mini_app`
+  (`web_tests.rs`) and the e2e (`browser.look` finds the page's button, `browser.click` changes its text; through MCP the same).
+- **MCP.** `flare-mcp` lists 15 tools (the seven that show things and the eight browser tools); `show_html` and `show_diagram` are
+  described for an agent: what they are for, the 4 MB and 200 KB caps, no network by default and what `allow_network` needs, that
+  Mermaid errors come back. Held by `tools_list_has_the_show_tools_then_the_browser_tools_with_object_schemas`,
+  `show_html_tells_the_agent_what_the_page_can_and_cannot_do`, `show_html_routes_html_or_a_path_and_never_both`,
+  `show_diagram_routes_to_view_diagram` and the e2e `mcpDiagram` and `mcpRoundTrip` (the tool list).
+- **Nothing costs anything while unused.** No folder, no browser view and no profile until the first mini-app; the profile is
+  created with its first view and keeps nothing on disk. The mini-apps' own browser (apart from the web panel's, one kind for apps
+  with no network and one for apps with it) is made with the first app of its kind and closed with the last; while one is open it is
+  a second set of browser processes, with the memory and the extra start-up time that means.
+- **No peer connections, three ways.** The page loses `RTCPeerConnection` and the other RTC classes before its own code in every
+  frame (the script is awaited before the page loads; a failure fails the view), the mini-apps' browser is started with the WebRTC
+  policy `disable_non_proxied_udp` (and, with no network, a proxy that is not there), and the page policy shuts child frames
+  (`frame-src 'none'; child-src 'none'; worker-src 'self' blob:`). `show_html` tells the agent exactly what is and is not blocked.
+  Held by the e2e `miniApp` "webrtc" checks (script and policy both off by seams: a loopback UDP socket as STUN server hears nothing
+  from the window or from a srcdoc or about:blank frame, for an app with no network and for one with it, and does hear the web panel
+  as the control; a WebSocket to a loopback listener is stopped for a sealed app and reaches it for a networked one), the frame
+  probe in `app_on` (no usable `RTCPeerConnection` in a srcdoc or about:blank frame, at once and later) and the unit tests named in
+  rule 199. Decision: `docs/surfaces/decisions.md` (stage 5 second review).
+- **End to end (the release exe, its own profile, offscreen):** `miniApp` (92 checks, at 100 and 225 percent, then a launch with the
+  policy off by the seam and one with the network switch on), `diagram` (18) and `mcpDiagram` (10). The existing `webPanel`,
+  `webVideo`, `webNoRuntime`, `agentBrowser`, `mcpBrowser`, `ctlChannel` and `mcpRoundTrip` still pass. See `docs/e2e.md`.
+- **By hand, not machine-tested:** the list at the end of `docs/surfaces/lessons.md` (Stage 5): a mini-app in a tab behind, an
+  overlay over it, the light and dark system themes, a real Claude session, the network setting against a real https address, a
+  4 MB page.
+
+- Mini-apps (2026-10-22): the sandbox also refuses to start when a Windows policy overrides the browser's arguments, launches no external program, and no longer wipes the shared cookie jar; the tool text says storage lasts until the last mini-app panel closes.
