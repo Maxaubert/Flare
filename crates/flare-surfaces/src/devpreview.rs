@@ -274,6 +274,18 @@ impl DevChips {
         }
     }
 
+    /// The answer of the look a CLICK made. It is not one of the periodic looks: the one that may be out keeps its
+    /// own flight, and this answer never counts as a miss, a hit or the end of a stale flight (one server state would
+    /// otherwise count twice). It only takes the chip when another process holds the port.
+    pub fn on_click_check(&mut self, tab: &str, token: u64, look: PortLook) {
+        if look != PortLook::Foreign {
+            return;
+        }
+        if self.chips.get(tab).is_some_and(|c| c.token == token) {
+            self.chips.remove(tab);
+        }
+    }
+
     /// The chip to show on the tab, if any.
     pub fn shown(&self, tab: &str) -> Option<&ChipServer> {
         self.chips
@@ -372,6 +384,30 @@ mod tests {
             }
             self.now = end;
         }
+    }
+
+    #[test]
+    fn a_clicks_look_never_counts_as_one_of_the_periodic_looks() {
+        let mut r = Rig::new();
+        r.listening.push(3000);
+        r.chips.on_reading("a", 1, Some(server(3000)), 0);
+        r.run(0);
+        assert!(r.chips.shown("a").is_some());
+        // A periodic look is out when the person clicks.
+        let due = r.chips.due(RECHECK_MS);
+        assert_eq!(due.len(), 1);
+        let token = due[0].token;
+        r.chips.on_click_check("a", token, PortLook::Nobody);
+        assert!(
+            r.chips.due(RECHECK_MS).is_empty(),
+            "the click's answer did not free the flight: no second look starts over the first"
+        );
+        r.chips.on_click_check("a", token, PortLook::InTree);
+        assert!(r.chips.due(RECHECK_MS).is_empty());
+        // Another process holding the port still takes the chip at once.
+        r.chips.on_click_check("a", token, PortLook::Foreign);
+        assert!(r.chips.shown("a").is_none());
+        assert_eq!(r.chips.tracked(), 0);
     }
 
     #[test]

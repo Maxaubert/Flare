@@ -397,9 +397,11 @@ impl Convo {
             return;
         };
         let status = input.get("status").and_then(Value::as_str);
+        // The task list is shared: a subagent commonly updates a task the main agent made (and the main agent one
+        // a subagent made). The caller's own list is looked in first, then the main one, then every other.
+        let list = self.list_holding(&task_id, sidechain);
         if status == Some("deleted") {
-            self.list_mut(sidechain)
-                .retain(|t| t.id.as_deref() != Some(task_id.as_str()) && t.key != task_id);
+            list.retain(|t| t.id.as_deref() != Some(task_id.as_str()) && t.key != task_id);
             return;
         }
         let title = input
@@ -407,7 +409,6 @@ impl Convo {
             .or_else(|| input.get("content"))
             .and_then(Value::as_str);
         let active = input.get("activeForm").and_then(Value::as_str);
-        let list = self.list_mut(sidechain);
         let Some(task) = list
             .iter_mut()
             .find(|t| t.id.as_deref() == Some(task_id.as_str()) || t.key == task_id)
@@ -422,6 +423,35 @@ impl Convo {
         }
         if let Some(active) = active {
             task.active_form = Some(active.to_string());
+        }
+    }
+
+    /// The list that holds the task `task_id` (by its id or its key): the caller's own, else the main one, else
+    /// a subagent's. The caller's own when none holds it.
+    fn list_holding(&mut self, task_id: &str, sidechain: bool) -> &mut Vec<Task> {
+        let has = |l: &Vec<Task>| {
+            l.iter()
+                .any(|t| t.id.as_deref() == Some(task_id) || t.key == task_id)
+        };
+        let own = if sidechain {
+            self.side_tasks.get(&self.source)
+        } else {
+            Some(&self.tasks)
+        };
+        if own.is_some_and(has) {
+            return self.list_mut(sidechain);
+        }
+        if has(&self.tasks) {
+            return &mut self.tasks;
+        }
+        let other = self
+            .side_tasks
+            .iter()
+            .find(|(_, l)| has(l))
+            .map(|(k, _)| k.clone());
+        match other {
+            Some(k) => self.side_tasks.entry(k).or_default(),
+            None => self.list_mut(sidechain),
         }
     }
 

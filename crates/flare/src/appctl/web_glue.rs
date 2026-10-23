@@ -117,6 +117,13 @@ impl AppCtl {
             && !self.panels.is_app(&id)
             && self.web.can_go(&id, nav)
         {
+            // Reload on a page whose renderer died makes the page again; any other step has nothing to step.
+            if self.web.failure(&id).is_some() {
+                if nav == Nav::Reload && self.web.recover(&id) {
+                    self.refresh();
+                }
+                return;
+            }
             self.web.nav(&id, nav);
         }
     }
@@ -127,6 +134,8 @@ impl AppCtl {
         if self.panels.web_target(&id).is_none() || self.panels.is_app(&id) {
             return;
         }
+        // A page whose renderer died starts again at what is typed (the refresh below makes it).
+        self.web.recover(&id);
         match self.web.submit(&id, text) {
             Ok(url) => {
                 self.panels.set_web_url(&id, &url);
@@ -167,6 +176,18 @@ impl AppCtl {
                         // The second Escape: the keys go back to the terminal.
                         self.panel_escape();
                     } else if let Some(ev) = key_event_of(&k) {
+                        // The page still holds the Windows keyboard focus while the chord runs. A chord that moves
+                        // the keys into a field of the window (find, the tab list, help) would type into the
+                        // page, so the window takes the focus back first. The chords that decide about the page
+                        // themselves (the panel's focus and toggle, closing the tab) keep it: they hand it back.
+                        use flare_tabs::keymap::ChordId;
+                        let ctx = self.key_context();
+                        if flare_tabs::keymap::chord_of(&ev, &ctx).is_some_and(|c| {
+                            !matches!(c, ChordId::PanelFocus | ChordId::Panel | ChordId::CloseTab)
+                        }) {
+                            let hwnd = self.app().and_then(|a| crate::window::hwnd_of(&a));
+                            self.web.release_focus(hwnd);
+                        }
                         let _ = self.on_key(&ev);
                     }
                 }
@@ -374,6 +395,8 @@ impl AppCtl {
         if !self.is_shell_tab(tab) {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
         }
+        // A page whose renderer died is made again for the address (the refresh below opens it).
+        self.web.recover(tab);
         // A tab that showed a mini-app gets a fresh view for the page (the app's view is its own kind).
         let had = self.web.has_tab(tab)
             && self.panels.web_target(tab).is_some()
@@ -413,6 +436,18 @@ impl AppCtl {
                 code::UNAVAILABLE,
                 "no web page is open in this tab; browser.open opens one",
             ));
+        }
+        // A page whose renderer died: an address starts it again, a step through its history cannot.
+        if !matches!(to, NavTo::Url(_))
+            && let Some((why, _)) = self.web.failure(tab)
+        {
+            return Err(CtlError::new(
+                code::UNAVAILABLE,
+                format!("{why}; browser.open opens the page again"),
+            ));
+        }
+        if matches!(to, NavTo::Url(_)) && !self.panels.is_app(tab) {
+            self.web.recover(tab);
         }
         let up = self.web.has_tab(tab);
         match to {

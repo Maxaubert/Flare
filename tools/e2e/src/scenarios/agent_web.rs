@@ -272,7 +272,10 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         ),
     );
     ctx.ok(
-        (ws - dpr).abs() < 0.01 || iw == 1600,
+        // The browser cuts the clip to whole css pixels, so the picture can be up to one css pixel (dpr device
+        // pixels) narrower than the viewport at the display's ratio: the reported scale, picture over viewport,
+        // is off by at most dpr / width. (Which fraction the viewport has depends on the page's width.)
+        (ws - dpr).abs() <= dpr / vw.max(1.0) + 0.01 || iw == 1600,
         format!("{at}: at the display's own resolution ({ws} picture px per css px, the ratio is {dpr}), or scaled to 1600 wide"),
     );
     let btn = ref_of(&v, "button", "Press me");
@@ -776,6 +779,7 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             version: "1".into(),
             token: None,
             tab_token: None,
+            no_events: false,
         },
         Duration::from_secs(10),
     )

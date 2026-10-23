@@ -39,7 +39,7 @@ ignored. Every refusal is one sentence that names the field; Settings > Mods sho
 | `description` | text | Required. Not blank, at most 500 characters. |
 | `permissions` | list of names | Required (may be `[]`). Each name once. See below. |
 | `panel` | object | Optional. `{"entry": "index.html", "title": "Notes"}`. Needs the `panel` permission, and the `panel` permission needs a panel. |
-| `tools` | list of objects | Optional. At most 32. Needs the `tools` permission. |
+| `tools` | list of objects | Optional. At most 32. Needs the `tools` permission and a `panel` (the page answers them). |
 
 ### Permissions
 

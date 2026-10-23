@@ -349,6 +349,15 @@ export component AppWindow inherits Window {
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }
+    // A different tab's (or session's) conversation panel opens at the top, not where the last one was scrolled.
+    public function panel-convo-reset-scroll() { panel-slot.convo-reset-scroll(); }
+    // The splitter drag ends: the share dragged so far is kept (the pointer's left button went up, or the grab was cancelled).
+    public function end-splitter() {
+        if (root.panel-splitting) {
+            root.panel-splitting = false;
+            root.panel-splitter-released(root.panel-drag-w / max(page.width, 1px));
+        }
+    }
     callback panel-close();
     callback panel-escape();
     callback panel-pressed();
@@ -546,7 +555,7 @@ export component AppWindow inherits Window {
     out property <length> find-bar-y: find.bar-y;
     out property <length> find-bar-w: find.bar-w;
     out property <length> find-bar-h: find.bar-h;
-    out property <length> badge-x: badge.pill-x;
+    out property <length> badge-x: badge.x + badge.pill-x;
     out property <length> badge-y: badge.pill-y;
     out property <length> badge-w: badge.pill-w;
     out property <length> badge-h: badge.pill-h;
@@ -957,9 +966,8 @@ export component AppWindow inherits Window {
                                     splitter.start-pointer = splitter.absolute-position.x + self.mouse-x;
                                     root.panel-drag-w = root.panel-slot-w;
                                     root.panel-splitting = true;
-                                } else if (root.panel-splitting && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
-                                    root.panel-splitting = false;
-                                    root.panel-splitter-released(root.panel-drag-w / max(page.width, 1px));
+                                } else if (root.panel-splitting && ((e.kind == PointerEventKind.up && e.button == PointerEventButton.left) || e.kind == PointerEventKind.cancel)) {
+                                    root.end-splitter();
                                 }
                             }
                             moved => {
@@ -1306,10 +1314,12 @@ export component AppWindow inherits Window {
             confirm => { root.dialog-confirm(); }
         }
         // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
+        // Centred over the terminal, not the window: a web panel's browser window sits above anything drawn, and the
+        // window's middle is inside it once the slot is wide.
         badge := CopiedBadge {
-            x: 0px;
+            x: root.grid-left;
             y: 0px;
-            width: root.width;
+            width: root.grid-w;
             height: root.height;
             phase: root.copied-phase;
         }

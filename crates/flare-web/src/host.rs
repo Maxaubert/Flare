@@ -1578,6 +1578,15 @@ impl WebBackend for WebHost {
         }
     }
 
+    fn parent_moved(&mut self) {
+        for v in self.state.views.values() {
+            if let Some(l) = &v.live {
+                // SAFETY: `controller` is a live COM object.
+                let _ = unsafe { l.controller.NotifyParentWindowPositionChanged() };
+            }
+        }
+    }
+
     fn set_visible(&mut self, tab: &str, visible: bool) {
         if let Some(v) = self.state.views.get_mut(tab) {
             v.visible = visible;

@@ -177,6 +177,21 @@ fn a_web_panel_makes_its_controller_at_the_slot_and_frees_it_when_closed() {
 }
 
 #[test]
+fn moving_the_window_tells_the_browser_where_its_parent_is() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let _ = up(&f, &slot);
+    f.h.advance(0);
+    assert!(!fake(&slot).calls().contains(&Call::ParentMoved));
+    let o = observed(1000, 700, 1.0, false);
+    f.ctl.borrow_mut().on_geometry(o);
+    assert!(
+        fake(&slot).calls().contains(&Call::ParentMoved),
+        "the select lists and the IME would stay at the old place"
+    );
+}
+
+#[test]
 fn the_toggle_chord_brings_the_page_back_at_its_last_address() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -884,6 +899,28 @@ fn page_key(tab: &str, vk: u32, ctrl: bool, shift: bool) -> WebEvent {
 }
 
 #[test]
+fn a_chord_that_opens_a_field_of_the_window_takes_the_keyboard_from_the_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.has_focus());
+    // Ctrl+Shift+F from inside the page: the find bar opens, and what is typed next is the bar's.
+    fake(&slot).say(page_key(&id, 0x46, true, true));
+    f.pump();
+    f.h.advance(0);
+    assert!(
+        !f.ctl.borrow().web.has_focus(),
+        "the page kept the keyboard through a chord of the window's"
+    );
+}
+
+#[test]
 fn a_chord_the_page_hands_back_is_the_apps() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -1194,6 +1231,60 @@ fn a_lost_browser_marks_the_page_and_closing_the_panel_lets_the_next_start_fresh
 }
 
 #[test]
+fn a_page_whose_renderer_died_starts_again_for_the_next_open() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.failure(&id).is_some());
+    // The agent opens a page again: it is made anew (not driven hidden behind the note), and answers.
+    let rx = ask(&f, open_op(&id, TWO), Duration::from_secs(5));
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)), "waits");
+    f.h.advance(0);
+    f.pump();
+    // (The browser object went with its last view, so the slot holds a new one that was asked to open.)
+    let made = opened_calls(&slot);
+    assert!(
+        matches!(made.as_slice(), [Call::Open { url, .. }] if url == TWO),
+        "a new view was made for the address: {made:?}"
+    );
+    assert!(f.ctl.borrow().web.failure(&id).is_none());
+    finish(&fake(&slot), &id, TWO, true);
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok());
+    // And a step through the history of a dead page says so instead of driving it.
+    fake(&slot).say(WebEvent::Gone {
+        tab: id.clone(),
+        why: "the page's process ended".into(),
+    });
+    f.pump();
+    let before = fake(&slot).calls().len();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id,
+            to: NavTo::Reload,
+        },
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_err());
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .skip(before)
+            .any(|c| matches!(c, Call::Go(..))),
+        "nothing navigated the dead page"
+    );
+}
+
+#[test]
 fn a_navigate_to_a_fragment_of_the_same_page_answers() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
@@ -1217,6 +1308,75 @@ fn a_navigate_to_a_fragment_of_the_same_page_answers() {
     let v = rx.try_recv().expect("answered").unwrap();
     assert_eq!(v["url"], target.as_str());
     assert_eq!(v["loaded"], true);
+}
+
+#[test]
+fn back_over_a_same_document_history_entry_answers_at_once() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: false,
+    });
+    f.pump();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Back,
+        },
+        Duration::from_secs(5),
+    );
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    // A step inside one document (pushState, a #fragment) raises no navigation, only this.
+    fake(&slot).say(WebEvent::SameDocument {
+        tab: id,
+        url: format!("{PAGE}#before"),
+    });
+    f.pump();
+    let v = rx
+        .try_recv()
+        .expect("answered, not left to time out")
+        .unwrap();
+    assert_eq!(v["url"], format!("{PAGE}#before").as_str());
+    assert_eq!(v["loaded"], true);
+}
+
+#[test]
+fn a_pages_own_replace_state_does_not_answer_a_back_that_has_not_happened() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::Loaded {
+        tab: id.clone(),
+        url: PAGE.into(),
+        ok: true,
+        status: String::new(),
+        nav: 1,
+    });
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: false,
+    });
+    f.pump();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Back,
+        },
+        Duration::from_secs(5),
+    );
+    // The page rewrites its own address (same url) before the history step: not the call's answer.
+    fake(&slot).say(WebEvent::SameDocument {
+        tab: id,
+        url: PAGE.into(),
+    });
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
 #[test]
@@ -2295,4 +2455,26 @@ fn a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore() {
     g.pump();
     assert_eq!(g.ctl.borrow().open_panels(), 0);
     assert!(slot.borrow().is_none(), "no browser for a dead app");
+}
+
+#[test]
+fn a_shell_that_exits_takes_its_web_panel_and_browser_with_it() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.wait_made(r"C:\b");
+    f.pump();
+    assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(id, b);
+    assert_eq!(f.ctl.borrow().web_controllers(), 1);
+    // The person types `exit`: the tab goes unasked, and so must everything held for it.
+    f.made_with(r"C:\b")[0].exit(0);
+    f.pump_until("the tab to close", |f| f.rows() == 1);
+    f.h.advance(0);
+    assert_eq!(f.ctl.borrow().open_panels(), 0, "the panel entry is gone");
+    assert_eq!(f.ctl.borrow().web_controllers(), 0, "so is its browser");
+    assert!(fake(&slot).calls().contains(&Call::Close(b)));
 }

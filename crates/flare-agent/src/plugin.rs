@@ -267,12 +267,30 @@ pub fn install_plugin_with(
     Ok(written)
 }
 
-/// Where the installed copy lives: `%LOCALAPPDATA%\Flare\claude-plugin`.
-pub fn installed_plugin_path() -> Option<PathBuf> {
+/// Where the installed copy for the Flare in `exe_dir` lives: `%LOCALAPPDATA%\Flare\claude-plugin-<tag>`, the
+/// tag naming the folder the exe is in. The copy holds the absolute path of THIS Flare's `flare-mcp.exe`, so
+/// two Flares (the installed one, a dev or worktree build) must not share one: the last started would decide
+/// which program every Claude session of every Flare runs, and a removed worktree would break the others.
+pub fn installed_plugin_path(exe_dir: Option<&Path>) -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA")
         .ok()
         .filter(|value| !value.is_empty())?;
-    Some(PathBuf::from(local).join("Flare").join("claude-plugin"))
+    let name = match exe_dir {
+        Some(dir) => format!("claude-plugin-{}", dir_tag(dir)),
+        None => "claude-plugin".to_string(),
+    };
+    Some(PathBuf::from(local).join("Flare").join(name))
+}
+
+/// Eight hex digits naming a folder (FNV-1a of its lowercased path, slashes unified).
+fn dir_tag(dir: &Path) -> String {
+    let text = dir.to_string_lossy().replace('/', "\\").to_lowercase();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.trim_end_matches(|c| c == char::from(92u8)).bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:08x}", hash >> 32)
 }
 
 /// The plugin folder to hand a shell: the bundled template is installed (refreshed) into
@@ -284,7 +302,7 @@ pub fn plugin_dir(env_dir: Option<&str>) -> Option<PathBuf> {
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let src = plugin_dir_in(&candidate_plugin_dirs(env_dir, exe_dir.as_deref()))?;
-    let dest = installed_plugin_path()?;
+    let dest = installed_plugin_path(exe_dir.as_deref())?;
     let system = system_directory()?;
     // The MCP server is only offered when its program is really beside this exe.
     let mcp = exe_dir
@@ -312,6 +330,24 @@ pub fn plugin_dir_in(candidates: &[PathBuf]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::signal::{AgentSignal, HookState, agent_hook_events, parse_agent_signal};
+
+    #[test]
+    fn two_flares_in_two_folders_never_share_an_installed_plugin() {
+        let a = Path::new(r"C:\Program Files\Flare");
+        let b = Path::new(r"C:\Dev\Flare\.claude\worktrees\s10\target\debug");
+        let (pa, pb) = (
+            installed_plugin_path(Some(a)),
+            installed_plugin_path(Some(b)),
+        );
+        if let (Some(pa), Some(pb)) = (pa, pb) {
+            assert_ne!(pa, pb, "one folder each");
+            // The same folder always gets the same place, however it is spelled.
+            assert_eq!(
+                Some(pa),
+                installed_plugin_path(Some(Path::new("c:/program files/flare/")))
+            );
+        }
+    }
 
     fn plugin_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("claude-plugin")

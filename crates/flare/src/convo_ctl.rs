@@ -148,16 +148,14 @@ impl ConvoCtl {
     /// Brings the trackers in line with the tabs that want one. True when a tracker started or stopped.
     pub fn sync(&mut self, wants: &[Want]) -> bool {
         let mut changed = false;
-        let live: HashSet<&str> = wants
-            .iter()
-            .filter(|w| w.session.is_some())
-            .map(|w| w.tab.as_str())
-            .collect();
+        // A tab whose panel is open keeps its tracker when Claude leaves (the session is then unknown): what
+        // Claude changed and planned is what the person most wants to read at that moment. A different session
+        // replaces it below, and a tab whose panel closed loses it.
+        let open: HashSet<&str> = wants.iter().map(|w| w.tab.as_str()).collect();
         let before = self.tracked.len();
-        self.tracked.retain(|tab, _| live.contains(tab.as_str()));
+        self.tracked.retain(|tab, _| open.contains(tab.as_str()));
         changed |= self.tracked.len() != before;
         // A tab without a panel loses what the person picked in it; one that only lacks a session keeps it.
-        let open: HashSet<&str> = wants.iter().map(|w| w.tab.as_str()).collect();
         self.views.retain(|tab, _| open.contains(tab.as_str()));
         let Some(dir) = self.claude_dir() else {
             return changed;
@@ -488,6 +486,10 @@ impl ConvoCtl {
         app.set_panel_sub(sub.into());
         app.set_panel_note(note.into());
         app.set_panel_convo_selected(sel.unwrap_or_default().into());
+        // The views are one set shared by every tab: a different tab, kind or session starts at the top.
+        if all {
+            app.invoke_panel_convo_reset_scroll();
+        }
         self.populated = true;
         self.pushed = Some(key);
     }
@@ -669,6 +671,31 @@ mod tests {
             .to_string(),
         );
         c
+    }
+
+    #[test]
+    fn the_tracker_outlives_the_session_while_the_panel_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = ConvoCtl::new(Arc::new(|_| {}));
+        c.set_claude_dir(Some(dir.path().to_path_buf()));
+        let with = |session: Option<&str>| {
+            vec![Want {
+                tab: "t1".into(),
+                folder: r"C:\a".into(),
+                session: session.map(str::to_string),
+            }]
+        };
+        c.sync(&with(Some("11111111-2222-4333-8444-555555555555")));
+        assert_eq!(c.tracker_count(), 1);
+        // Claude exits: the session is unknown, and the changes stay readable.
+        c.sync(&with(None));
+        assert_eq!(c.tracker_count(), 1, "the tracker was dropped at /exit");
+        // The same session comes back: nothing starts over.
+        c.sync(&with(Some("11111111-2222-4333-8444-555555555555")));
+        assert_eq!(c.tracker_count(), 1);
+        // The panel closes: now it goes.
+        c.sync(&[]);
+        assert_eq!(c.tracker_count(), 0);
     }
 
     #[test]

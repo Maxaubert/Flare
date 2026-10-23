@@ -30,6 +30,8 @@ pub enum Call {
     Go(String, Nav),
     Bounds(String, PhysRect),
     Visible(String, bool),
+    /// The parent window moved (the browser was told).
+    ParentMoved,
     Capture(String, u64),
     Focus(String),
     Close(String),
@@ -192,6 +194,10 @@ impl WebBackend for FakeWeb {
         if let Some(v) = s.views.get_mut(tab) {
             v.bounds = bounds;
         }
+    }
+
+    fn parent_moved(&mut self) {
+        self.state.borrow_mut().calls.push(Call::ParentMoved);
     }
 
     fn set_visible(&mut self, tab: &str, visible: bool) {

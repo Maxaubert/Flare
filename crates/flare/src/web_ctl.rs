@@ -157,6 +157,9 @@ struct Pending {
     /// A diagram: once the page has loaded, the page is asked whether the drawing worked, and the call
     /// is answered with that.
     diagram: bool,
+    /// The address the page was on when the call began: a same-document entry answers a call with no
+    /// address only when it moved the page off this one.
+    from: String,
 }
 
 /// A diagram page that has loaded: its tab, the call waiting and what the load said.
@@ -230,6 +233,46 @@ fn flush_button_edges() {
             GetAsyncKeyState(i32::from(k));
         }
     }
+    for vk in TYPING_KEYS {
+        // SAFETY: as above, for the keyboard.
+        unsafe {
+            GetAsyncKeyState(i32::from(vk));
+        }
+    }
+}
+
+/// The keys that count as the person typing: every key but the mouse buttons and the modifiers alone
+/// (a held Shift or Ctrl is not typing; the key pressed with it is).
+const TYPING_KEYS: std::ops::RangeInclusive<u8> = 0x08..=0xFE;
+
+/// Tab and Escape hand the keyboard back, the F-keys, the media and browser keys and the IME packet are
+/// not text either; none of them is the person typing at the page.
+fn is_typing_key(vk: u8) -> bool {
+    TYPING_KEYS.contains(&vk)
+        && !matches!(
+            vk,
+            0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5 | 0x14 | 0x90 | 0x91
+                | 0x09 | 0x1B | 0x70..=0x87 | 0xA6..=0xB7 | 0xE7
+        )
+}
+
+/// Was a real key pressed (down now, or since the last look)? WebView2 hands the host only chords and
+/// non-character keys, so plain typing in the page never reaches the key filter: the keyboard is read here.
+/// The agent's own keys are browser events and press nothing.
+fn real_key_pressed() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    let down = |vk: u8| {
+        // SAFETY: a plain read of a key state.
+        (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8000 != 0
+    };
+    // A chord with Alt or Win (Alt+Tab, a panel chord) is the shell's, not typing.
+    if down(0x12) || down(0x5B) || down(0x5C) {
+        return false;
+    }
+    TYPING_KEYS.filter(|vk| is_typing_key(*vk)).any(|vk| {
+        // SAFETY: a plain read of a key state.
+        (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8001 != 0
+    })
 }
 
 /// Is a real mouse button down, or was one pressed since the last look, with the pointer over `r`
@@ -298,6 +341,8 @@ struct TabWeb {
     app_host: Option<String>,
     /// A diagram's "did it draw" question, while it is out.
     probe: Option<Probe>,
+    /// The browser's number of the last navigation the host allowed (one it cancelled never has its own).
+    started_nav: Option<u64>,
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -933,6 +978,21 @@ impl WebCtl {
 
     // ---- what the user and the channel ask ---------------------------------------------------------
 
+    /// A page whose renderer died (not one that could never start) is let go, so the next sync makes it
+    /// again at the panel's address. True when there was one: the caller refreshes. Without this the dead
+    /// page stayed, hidden behind its note, still driven by Reload and the address bar.
+    pub fn recover(&mut self, tab: &str) -> bool {
+        let lost = self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.failed.as_ref())
+            .is_some_and(|(_, missing)| !missing);
+        if lost {
+            self.close_tab(tab);
+        }
+        lost
+    }
+
     /// The address field was submitted. The error is the words to show.
     pub fn submit(&mut self, tab: &str, text: &str) -> Result<String, UrlError> {
         let url = normalize_url(text)?;
@@ -957,6 +1017,15 @@ impl WebCtl {
     pub fn notice(&mut self, tab: &str, text: &str) {
         if let Some(t) = self.tabs.get_mut(tab) {
             t.notice = text.to_string();
+        }
+    }
+
+    /// The window moved or changed size or monitor: every live page is told where its parent is now.
+    pub fn parent_moved(&mut self) {
+        if !self.tabs.is_empty()
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.parent_moved();
         }
     }
 
@@ -1009,6 +1078,7 @@ impl WebCtl {
             url: url.to_string(),
             nav: None,
             diagram,
+            from: t.url.clone(),
         };
         if let Some(old) = t.pending.replace(pending) {
             let _ = old.reply.send(Err(CtlError::new(
@@ -1277,6 +1347,15 @@ impl WebCtl {
         {
             self.user_input();
         }
+        // The person's keyboard: a key typed while the page has the keys and the agent is working in it.
+        if self.has_focus
+            && let Some(tab) = self.shown_tab.clone()
+            && self.tabs.get(&tab).is_some_and(|t| t.agent.is_some())
+            && self.phase == Phase::Live
+            && real_key_pressed()
+        {
+            self.user_input();
+        }
         let busy: Vec<String> = self
             .tabs
             .iter()
@@ -1436,10 +1515,17 @@ impl WebCtl {
                 tab: tab.clone(),
                 ready: false,
             }),
-            WebEvent::Loaded { tab, ok, .. } if self.is_mod_tab(tab) => Some(WebOut::ModPage {
-                tab: tab.clone(),
-                ready: *ok,
-            }),
+            // Only the load of a navigation the host allowed counts: a navigation it cancelled (a link out of the
+            // mod's own host) still ends with a failed load, and the page that is open is untouched by it.
+            WebEvent::Loaded { tab, ok, nav, .. }
+                if self.is_mod_tab(tab)
+                    && self.tabs.get(tab).and_then(|t| t.started_nav) == Some(*nav) =>
+            {
+                Some(WebOut::ModPage {
+                    tab: tab.clone(),
+                    ready: *ok,
+                })
+            }
             WebEvent::Failed { tab, .. } | WebEvent::Gone { tab, .. } if self.is_mod_tab(tab) => {
                 Some(WebOut::ModLost { tab: tab.clone() })
             }
@@ -1497,6 +1583,7 @@ impl WebCtl {
             }
             WebEvent::Loading { tab, url, nav } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.started_nav = Some(nav);
                     t.loading = true;
                     // The page moved on while a diagram's question was out.
                     if let Some(p) = t.probe.take() {
@@ -1592,9 +1679,15 @@ impl WebCtl {
                 {
                     t.url.clone_from(&url);
                     // No navigation is raised for it: a call that sent the page to exactly this address
-                    // (a `#fragment` of the page it is on) is answered here.
+                    // (a `#fragment` of the page it is on) is answered here, and so is a back, forward or reload
+                    // (no address) that stepped through the history inside one document.
                     let wanted = t.pending.as_ref().is_some_and(|p| {
-                        p.nav.is_none() && !p.url.is_empty() && url_matches(&p.url, &url, true)
+                        p.nav.is_none()
+                            && if p.url.is_empty() {
+                                !url_matches(&p.from, &url, true)
+                            } else {
+                                url_matches(&p.url, &url, true)
+                            }
                     });
                     if wanted {
                         let p = t.pending.take().expect("checked just above");
@@ -2179,5 +2272,23 @@ mod tests {
     fn the_runtime_link_is_microsofts() {
         assert!(RUNTIME_URL.starts_with("https://go.microsoft.com/"));
         assert!(runtime_missing_note().contains(RUNTIME_URL));
+    }
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::is_typing_key;
+
+    #[test]
+    fn letters_digits_space_enter_and_arrows_are_typing_and_buttons_and_modifiers_alone_are_not() {
+        for vk in [b'A', b'Z', b'0', b'9', 0x20, 0x0D, 0x25, 0x08, 0xBA] {
+            assert!(is_typing_key(vk), "{vk:#x}");
+        }
+        for vk in [
+            0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0xA0, 0xA2, 0xA4, 0x14, 0x09, 0x1B, 0x70,
+            0x87, 0xAD, 0xB3, 0xE7,
+        ] {
+            assert!(!is_typing_key(vk), "{vk:#x}");
+        }
     }
 }

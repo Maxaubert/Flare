@@ -58,7 +58,7 @@ const WRAP_INLINE_MAX: usize = 1_000_000;
 /// them in a model.
 pub struct TextRows {
     pub lines: Arc<Vec<SharedString>>,
-    /// The widest row, in characters.
+    /// The widest row, in screen columns.
     pub cols: usize,
     /// The file's real length.
     pub bytes: u64,
@@ -68,10 +68,12 @@ pub struct TextRows {
 
 impl TextRows {
     pub fn from_doc(doc: preview::TextDoc) -> Self {
+        // The widest line in screen columns: a wide letter or an emoji takes two, so counting characters would leave
+        // the right half of such a line out of the scroll range.
         let cols = doc
             .lines
             .iter()
-            .map(|l| l.chars().count())
+            .map(|l| flare_surfaces::wrap::display_cols(l))
             .max()
             .unwrap_or(0);
         let foot = match doc.cut {
@@ -142,6 +144,17 @@ enum Content {
     },
 }
 
+/// Where the reader was in a tab's file when the tab left the front: the line at the top of a text view, and whether a
+/// picture was at its real size. Kept for the tabs that left (a few), and used once, when the same file comes back.
+struct ViewMemory {
+    target: String,
+    line: usize,
+    actual: bool,
+}
+
+/// How many tabs' places are kept.
+const MEMORY_CAP: usize = 8;
+
 struct Shown {
     tab: String,
     kind: PanelKind,
@@ -192,6 +205,11 @@ pub struct PanelCtl {
     apps_root: Option<std::path::PathBuf>,
     /// A title a caller gave (the header shows it instead of the file's name), by tab.
     titles: HashMap<String, String>,
+    /// Where the reader was in the files of tabs that went behind, by tab.
+    memory: HashMap<String, ViewMemory>,
+    /// A refused "Show in side panel" on a tab whose panel is open: its words sit in the header's second line until the
+    /// tab shows something else (the panel itself is left as it was).
+    refused: HashMap<String, String>,
     /// Text handed over for a tab's panel, by tab.
     inline: HashMap<String, InlineText>,
     inline_seq: u64,
@@ -287,6 +305,8 @@ impl PanelCtl {
             mods: HashMap::new(),
             apps_root: None,
             titles: HashMap::new(),
+            refused: HashMap::new(),
+            memory: HashMap::new(),
             inline: HashMap::new(),
             inline_seq: 0,
             store: None,
@@ -349,7 +369,21 @@ impl PanelCtl {
         // call, and text it handed over, end with what they were for.
         self.titles.remove(tab);
         self.inline.remove(tab);
+        self.refused.remove(tab);
         self.panels.show(tab, kind, target)
+    }
+
+    /// A "Show in side panel" the file could not honour, on a tab whose panel is open: the panel is left as it was
+    /// and the words go in its header. False when the tab has no open panel (the caller shows them as a note).
+    pub fn refuse(&mut self, app: &AppWindow, tab: &str, text: &str) -> bool {
+        if self.panels.open_on(tab).is_none() {
+            return false;
+        }
+        self.refused.insert(tab.to_string(), text.to_string());
+        if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
+            self.push(app);
+        }
+        true
     }
 
     pub fn close(&mut self, tab: &str) -> bool {
@@ -546,6 +580,8 @@ impl PanelCtl {
     }
 
     pub fn forget(&mut self, tab: &str) {
+        self.refused.remove(tab);
+        self.memory.remove(tab);
         self.drop_app(tab);
         self.panels.forget(tab);
         self.titles.remove(tab);
@@ -691,7 +727,9 @@ impl PanelCtl {
                 .map(|p| (t.to_string(), p.kind.clone(), p.target.clone()))
         });
         let Some((tab, kind, target)) = want else {
-            if self.shown.take().is_some() {
+            if self.shown.is_some() {
+                self.remember(app);
+                self.shown = None;
                 self.generation += 1;
                 self.current.store(self.generation, Ordering::SeqCst);
                 self.clear(app);
@@ -709,6 +747,10 @@ impl PanelCtl {
             return;
         }
         self.reload = false;
+        // Another tab's file comes to the front: where the reader was in the one that leaves is kept for its return.
+        if !same && self.shown.as_ref().is_some_and(|s| s.tab != tab) {
+            self.remember(app);
+        }
         self.generation += 1;
         let generation = self.generation;
         self.current.store(generation, Ordering::SeqCst);
@@ -795,6 +837,7 @@ impl PanelCtl {
                 }
                 self.push(app);
                 self.restore_top(app, top);
+                self.apply_memory(app);
                 // The width may have moved while the wrap was on its way.
                 self.settle_wrap(app);
                 return;
@@ -804,6 +847,56 @@ impl PanelCtl {
             s.content = content;
         }
         self.push(app);
+        self.apply_memory(app);
+    }
+
+    /// Keeps the reader's place in the file on show (a text view's top line, a picture's real-size state) for the
+    /// tab that is leaving the front. Only a file that was read and shown counts.
+    fn remember(&mut self, app: &AppWindow) {
+        let Some(s) = self.shown.as_ref() else { return };
+        let (line, actual) = match &s.content {
+            Content::Text { ready: true, .. } => (self.top_line(app).unwrap_or(1), false),
+            Content::Image { .. } => (1, app.get_panel_actual()),
+            _ => return,
+        };
+        let (tab, target) = (s.tab.clone(), s.target.clone());
+        if self.memory.len() >= MEMORY_CAP && !self.memory.contains_key(&tab) {
+            // Not an LRU: the cap only keeps a long session from holding a place for every tab it ever had.
+            if let Some(k) = self.memory.keys().next().cloned() {
+                self.memory.remove(&k);
+            }
+        }
+        self.memory.insert(
+            tab,
+            ViewMemory {
+                target,
+                line,
+                actual,
+            },
+        );
+    }
+
+    /// The file that was just shown is the one this tab left behind: the reader's place comes back, once.
+    fn apply_memory(&mut self, app: &AppWindow) {
+        let Some(s) = self.shown.as_ref() else { return };
+        let ready = match &s.content {
+            Content::Text { ready, .. } => *ready,
+            Content::Image { .. } => true,
+            _ => return,
+        };
+        if !ready {
+            return;
+        }
+        let Some(mem) = self.memory.remove(&s.tab) else {
+            return;
+        };
+        if mem.target != s.target {
+            return;
+        }
+        match &s.content {
+            Content::Text { .. } => self.restore_top(app, Some(mem.line)),
+            _ => app.set_panel_actual(mem.actual),
+        }
     }
 
     /// The columns the window's text view holds now, when previews are wrapped and the slot is on show; else 0.
@@ -1178,6 +1271,14 @@ impl PanelCtl {
                 app.set_panel_foot(foot.as_str().into());
             }
         }
+        if let Some(why) = self.refused.get(&s.tab)
+            && matches!(
+                s.content,
+                Content::Image { .. } | Content::Text { ready: true, .. }
+            )
+        {
+            app.set_panel_sub(why.as_str().into());
+        }
     }
 
     /// Nothing on show: the picture and the rows are let go.
@@ -1378,6 +1479,18 @@ mod tests {
         assert_eq!(human_bytes(1025), "2 KB");
         assert_eq!(human_bytes(4 * 1024 * 1024), "4.0 MB");
         assert_eq!(human_bytes(1536 * 1024), "1.5 MB");
+    }
+
+    #[test]
+    fn a_wide_line_scrolls_by_its_screen_columns_not_its_characters() {
+        let doc = preview::TextDoc {
+            lines: vec!["abc".into(), "\u{65e5}\u{672c}\u{8a9e}".repeat(50)],
+            truncated: false,
+            cut: None,
+            bytes: 0,
+        };
+        // 150 characters, two columns each.
+        assert_eq!(TextRows::from_doc(doc).cols, 300);
     }
 
     #[test]

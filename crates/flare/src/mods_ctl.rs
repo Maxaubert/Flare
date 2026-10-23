@@ -77,6 +77,9 @@ impl std::fmt::Debug for ModsMsgBox {
     }
 }
 
+/// Messages kept for a page that is not ready (the oldest are dropped past this).
+const QUEUE_CAP: usize = 64;
+
 /// A mod's page in a tab.
 #[derive(Debug, Default)]
 struct ModTab {
@@ -263,7 +266,20 @@ impl ModCtl {
                     t.generation = generation;
                 }
                 if ready {
+                    // A tool call whose caller gave up while the page was not ready (timed out, cancelled, failed)
+                    // is not run now: the agent was told it failed, and it would run twice.
+                    let hub = &self.hub;
                     std::mem::take(&mut t.queue)
+                        .into_iter()
+                        .filter(|m| {
+                            serde_json::from_str::<serde_json::Value>(m)
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("callId").and_then(|c| c.as_str().map(str::to_string))
+                                })
+                                .is_none_or(|id| hub.is_pending(&id))
+                        })
+                        .collect()
                 } else {
                     Vec::new()
                 }
@@ -279,6 +295,10 @@ impl ModCtl {
         if t.ready {
             Some(msg)
         } else {
+            // Nobody reads it while the page is not ready: the oldest go first past the cap.
+            if t.queue.len() >= QUEUE_CAP {
+                t.queue.remove(0);
+            }
             t.queue.push(msg);
             None
         }

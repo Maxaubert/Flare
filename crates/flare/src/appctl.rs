@@ -289,6 +289,9 @@ const CHORD_LIST_RIGHT_GAP: f32 = 170.0;
 /// The timer period while anything is pending.
 const TICK_MS: u64 = 50;
 /// The slide's fallback step when no frame comes.
+/// How long the page's width must hold still before the text view is wrapped to it (a window edge being dragged).
+const WRAP_SETTLE_MS: u64 = 120;
+
 const SLIDE_STEP_MS: u64 = 16;
 /// The mark clock's frame (about 60 per second); it runs only while a mark moves.
 const MARK_FRAME_MS: u64 = 16;
@@ -2231,12 +2234,18 @@ impl AppCtl {
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
+        self.forget_tab_surfaces(id);
+        self.refresh();
+    }
+
+    /// Everything the Surfaces keep for a tab that is gone: its panel (and mini-app), its tracker,
+    /// its dev chip, its notifier row and its browser. One list for a close and for a shell that exited.
+    fn forget_tab_surfaces(&mut self, id: &str) {
         self.panels.forget(id);
         self.convo.forget(id);
         self.dev_forget(id);
         self.s7.notifier.forget(id);
         self.web.close_tab(id);
-        self.refresh();
     }
 
     fn toggle_settings(&mut self) {
@@ -2901,6 +2910,12 @@ impl AppCtl {
         if self.panel_front_seen != front {
             self.panel_front_seen.clone_from(&front);
             app.set_panel_splitting(false);
+            // The keys were in the old tab's panel. The new tab may show a panel too (so `panel-shown` never
+            // drops), and a panel takes no plain key: the keys are the terminal's now.
+            if app.get_panel_has_focus() {
+                self.panel_focus_seen = false;
+                app.invoke_focus_terminal();
+            }
         }
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
@@ -3129,6 +3144,26 @@ impl AppCtl {
             .iter()
             .any(|t| t.id == tab);
         if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
+            return;
+        }
+        // A window too narrow for a slot would open a panel nobody can see, and the click would look dead: the file
+        // goes the way a click goes with previews off.
+        if self.app().is_some_and(|a| !a.get_panel_fits()) {
+            let (openers, home) = (Arc::clone(&self.deps.term.openers), self.deps.home.clone());
+            let path = std::path::Path::new(abs);
+            let base = path.parent().map(|p| p.to_string_lossy().into_owned());
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            if let (Some(base), Some(name)) = (base, name) {
+                std::thread::spawn(move || {
+                    let _ = flare_term::path_open::open_term_path(
+                        &base,
+                        &name,
+                        flare_term::path_open::OpenMode::Open,
+                        &*openers,
+                        &home,
+                    );
+                });
+            }
             return;
         }
         self.show_preview_asked(tab, kind, abs);
@@ -3428,9 +3463,23 @@ impl AppCtl {
     /// The text view holds a different number of columns now. A splitter drag changes it at every step, so nothing
     /// happens until the release (`settle_wrap` checks); the release's refresh settles it.
     fn panel_wrap_cols_changed(&mut self) {
-        if let Some(app) = self.app() {
-            self.panels.settle_wrap(&app);
+        let Some(app) = self.app() else { return };
+        // The sidebar's slide changes the page's width at every frame: the slide's end refresh wraps once (rule 217).
+        if app.get_sidebar_sliding() {
+            return;
         }
+        // A window edge dragged changes it at every step too: the text is wrapped once the width has been still a
+        // moment. (A release of the splitter, a toggle and the like refresh, and settle at once.)
+        let weak = self.me.clone();
+        crate::timer_registry::set("panel.wrap-settle", WRAP_SETTLE_MS, false, move || {
+            if let Some(rc) = weak.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+                && let Some(app) = c.app()
+                && !app.get_sidebar_sliding()
+            {
+                c.panels.settle_wrap(&app);
+            }
+        });
     }
 
     /// Esc in the panel: the keys go back to the terminal.
@@ -3872,8 +3921,12 @@ impl AppCtl {
             && sidebar_mode(&self.prefs) == SidebarMode::Open
             && cursor_css.0 < side_width;
         if !(on_strip || on_side) {
-            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path).
-            if cursor_css.1 >= BAR_H {
+            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path), unless the pointer
+            // is over the side panel: a file dropped there is not meant for the shell on the left.
+            let over_panel = self.app().is_some_and(|a| {
+                a.get_panel_shown() && cursor_css.0 >= a.get_grid_left() + a.get_panel_slot_x()
+            });
+            if cursor_css.1 >= BAR_H && !over_panel {
                 let front = self.front_tab();
                 {
                     let info = front.as_ref().map(FrontTab::info);
@@ -3908,6 +3961,7 @@ impl AppCtl {
     /// The window moved, resized or changed mode: remember the normal bounds (saved on a delay).
     pub fn on_geometry(&mut self, o: Observed) {
         self.bounds.observe(&o);
+        self.web.parent_moved();
         self.maximised = o.maximised;
         self.on_minimised(o.minimised);
         if let Some(state) = self.bounds.state(o.maximised) {
@@ -4366,13 +4420,26 @@ impl AppCtl {
                 }
             }
             UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
-                // The person picked "Show in side panel" and the file is no longer showable: say so, in the panel.
-                if self.is_shell_tab(&tab)
-                    && self.panels.show_text(
-                        &tab,
-                        "This file cannot be shown here. It may have changed or been removed since the menu opened.",
-                        Some("Cannot show this file"),
-                    )
+                // The person picked "Show in side panel" and the file is no longer showable: say so. A tab with no
+                // panel open gets the words as a note in one; a tab whose panel is open keeps what it shows (a mini-app
+                // or a page would be ended by a note) and says it in the panel's header or the page's bar.
+                const WHY: &str = "This file cannot be shown here. It may have changed or been removed since the menu opened.";
+                const SHORT: &str = "Cannot show that file: it changed or was removed";
+                if !self.is_shell_tab(&tab) {
+                    return;
+                }
+                if self.panels.is_open(&tab) {
+                    if let Some(app) = self.app() {
+                        if self.panels.web_target(&tab).is_some() && !self.panels.is_app(&tab) {
+                            self.web.notice(&tab, SHORT);
+                        } else {
+                            self.panels.refuse(&app, &tab, SHORT);
+                        }
+                    }
+                    self.refresh();
+                } else if self
+                    .panels
+                    .show_text(&tab, WHY, Some("Cannot show this file"))
                 {
                     self.refresh();
                     self.panel_changed(&tab);
@@ -4430,9 +4497,8 @@ impl AppCtl {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
-                    self.dev_forget(&id);
-                    self.s7.notifier.forget(&id);
                     self.term.tab_closed(&id);
+                    self.forget_tab_surfaces(&id);
                     if self.model.close(&id) {
                         changed = true;
                     }
@@ -5744,6 +5810,36 @@ mod tests {
     }
 
     #[test]
+    fn a_drop_over_the_side_panel_types_nothing_into_the_shell() {
+        let (f, _h, fake) = live(Opts::default());
+        show_text(&f, "p.txt", "hello");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        let slot_left = f.h.comp.get_grid_left() + f.h.comp.get_panel_slot_x();
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_panel.png"),
+            (slot_left + 30.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only
+        f.pump();
+        assert!(
+            fake.written().is_empty(),
+            "a path was typed into the shell: {:?}",
+            String::from_utf8_lossy(&fake.written())
+        );
+        // Over the terminal part of the window it is typed as before.
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_grid.png"),
+            (slot_left - 100.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        until_written(&fake, |w| !w.is_empty());
+    }
+
+    #[test]
     fn a_cmd_tab_with_no_requested_shell_quotes_a_drop_for_cmd() {
         let cmd = ShellDef {
             id: "cmd".to_string(),
@@ -6273,6 +6369,37 @@ two",
     }
 
     #[test]
+    fn the_keys_return_to_the_terminal_when_the_tab_changes_to_one_with_a_panel_too() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel on a", |f| f.h.comp.get_panel_kind() == 2);
+        let b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the panel on b", |f| f.h.comp.get_panel_kind() == 2);
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel back on a", |f| {
+            f.h.comp.get_panel_title().as_str() == "a.txt"
+        });
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // The other tab has a panel too: it is still shown, and the keys are the terminal's.
+        f.ctl.borrow_mut().model_mut().pick(&b);
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        f.pump_until("the panel on b again", |f| {
+            f.h.comp.get_panel_title().as_str() == "b.txt"
+        });
+        assert!(f.h.comp.get_panel_shown());
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+    }
+
+    #[test]
     fn a_click_on_the_file_already_shown_reads_it_again() {
         let (f, _h, _) = live(Opts::default());
         let abs = show_text(&f, "a.txt", "one");
@@ -6439,6 +6566,37 @@ two",
         f.pump();
         f.ctl.borrow_mut().refresh();
         assert!(rows_in_panel(&f) > 3);
+    }
+
+    #[test]
+    fn the_sidebar_sliding_wraps_the_text_once_not_at_every_frame() {
+        let (f, _h, _) = live(Opts::default());
+        set_tab_layout(&f.prefs, TabLayout::Vertical);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(300);
+        f.pump();
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        let cols0 = f.h.comp.get_panel_wrap_cols();
+        f.ctl.borrow_mut().toggle_sidebar();
+        let mut widths = std::collections::BTreeSet::new();
+        for _ in 0..80 {
+            f.clock.set(f.clock.get() + 16);
+            f.h.advance(16);
+            f.pump();
+            widths.insert(f.h.comp.get_panel_wrap_cols());
+        }
+        f.h.advance(400);
+        f.pump();
+        assert_ne!(
+            f.h.comp.get_panel_wrap_cols(),
+            cols0,
+            "the slide changed the page's width"
+        );
+        assert!(widths.len() > 2, "the width went through steps: {widths:?}");
+        let runs = f.ctl.borrow().panels.wrap_count() - runs0;
+        assert_eq!(runs, 1, "wrapped {runs} times for one slide");
     }
 
     #[test]
@@ -6633,6 +6791,92 @@ two",
         f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
         assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
         assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_file_in_a_window_too_narrow_for_a_slot_opens_it_in_windows() {
+        let (f, _h, _) = live(Opts::default());
+        let abs = f.dir.path().join("narrow.txt");
+        std::fs::write(&abs, "x").unwrap(); // sync-ok: test code only
+        let abs = abs.to_string_lossy().into_owned();
+        // No room for a slot (the same as a half-screen window with vertical tabs).
+        f.h.comp.set_panel_usable_min(10_000.0);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_fits());
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
+        }
+        assert_eq!(f.openers.records().len(), 1, "the click did something");
+        assert!(!f.h.comp.get_panel_open(), "and opened no invisible panel");
+    }
+
+    #[test]
+    fn a_tab_that_comes_back_finds_its_file_where_the_reader_left_it() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        let body: String = (1..=300).map(|i| format!("line {i}\n")).collect();
+        show_text(&f, "long.txt", &body);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        f.h.comp.invoke_panel_scroll_to_row(120);
+        f.h.advance(0);
+        let first = f.h.comp.get_panel_first_line();
+        assert!(first >= 100, "scrolled: {first}");
+        // Another tab with a panel of its own, then back.
+        let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the file back", |f| {
+            f.h.comp.get_panel_title().as_str() == "long.txt" && rows_in_panel(f) == 300
+        });
+        f.h.advance(0);
+        let back = f.h.comp.get_panel_first_line();
+        assert!(
+            (back - first).abs() <= 1,
+            "came back at line {back}, left at {first}"
+        );
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_leaves_the_panel_that_is_open_as_it_was() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "keep.txt", "one\ntwo");
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let id = f.ctl.borrow().front_id().unwrap();
+        let rows = rows_in_panel(&f);
+        let target = f.ctl.borrow().panels.snap(&id).unwrap().path;
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused {
+                tab: id.clone(),
+            })));
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(f.h.comp.get_panel_kind(), 2, "still the text file");
+        assert_eq!(rows_in_panel(&f), rows);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "keep.txt");
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"),
+            "{}",
+            f.h.comp.get_panel_sub()
+        );
+        assert_eq!(f.ctl.borrow().panels.snap(&id).unwrap().path, target);
+        // Showing something else ends the note.
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        assert!(!f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"));
     }
 
     #[test]

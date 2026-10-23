@@ -115,6 +115,7 @@ pub(super) fn hello(pipe: &str, tab_token: &str) -> Result<Client<PipeEnd>, Clie
             version: "1".into(),
             token: None,
             tab_token: Some(tab_token.to_string()),
+            no_events: false,
         },
         Duration::from_secs(10),
     )?;

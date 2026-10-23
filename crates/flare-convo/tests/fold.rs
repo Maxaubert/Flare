@@ -158,6 +158,33 @@ fn a_task_tool_create_then_update_by_its_id() {
 }
 
 #[test]
+fn a_subagent_updates_a_task_the_main_agent_made() {
+    let mut convo = folded();
+    let line = serde_json::json!({"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "id": "toolu_sub_upd", "name": "TaskUpdate",
+        "input": {"taskId": "7", "status": "completed"}}]}})
+    .to_string();
+    convo.fold_from("agent-abc.jsonl", &line);
+    assert_eq!(
+        convo.tasks[2].status,
+        TaskStatus::Completed,
+        "the shared list is the main one's"
+    );
+    assert!(
+        !convo.side_tasks.contains_key("agent-abc.jsonl")
+            || convo.side_tasks["agent-abc.jsonl"].is_empty(),
+        "no phantom task on the subagent's own list"
+    );
+    // And a subagent may delete it.
+    let del = serde_json::json!({"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "id": "toolu_sub_del", "name": "TaskUpdate",
+        "input": {"taskId": "7", "status": "deleted"}}]}})
+    .to_string();
+    convo.fold_from("agent-abc.jsonl", &del);
+    assert_eq!(convo.tasks.len(), 2);
+}
+
+#[test]
 fn a_subagent_todolist_never_replaces_the_main_one() {
     let convo = folded();
     assert_eq!(convo.side_tasks[""].len(), 1);

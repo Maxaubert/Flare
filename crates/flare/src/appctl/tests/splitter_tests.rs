@@ -495,3 +495,35 @@ fn switching_tabs_by_key_during_a_drag_lets_go_and_stores_nothing_on_the_other_t
         );
     }
 }
+
+#[test]
+fn another_button_going_up_mid_drag_does_not_end_it_and_the_left_up_does() {
+    let (f, _h, _) = live(Opts::default());
+    open_panel(&f, 2);
+    let c = &f.h.comp;
+    let (x, y) = start_point(&f);
+    let w0 = c.get_panel_slot_w();
+    f.h.move_to(x, y);
+    f.h.press(x, y, LEFT);
+    f.h.move_to(x - 40.0, y);
+    f.h.advance(0);
+    assert!(c.get_panel_splitting());
+    // A right-button press and release while the left is held.
+    f.h.press(x - 40.0, y, PointerEventButton::Right);
+    f.h.release(x - 40.0, y, PointerEventButton::Right);
+    f.h.advance(0);
+    assert!(
+        c.get_panel_splitting(),
+        "the right button's release ended the drag"
+    );
+    // The drag's sure end: the left button up (the window's hook calls this wherever the pointer is).
+    c.invoke_end_splitter();
+    f.h.advance(0);
+    f.pump();
+    assert!(!c.get_panel_splitting());
+    assert!(
+        (c.get_panel_slot_w() - (w0 + 40.0)).abs() <= 1.5,
+        "the share dragged so far was kept: {}",
+        c.get_panel_slot_w()
+    );
+}
