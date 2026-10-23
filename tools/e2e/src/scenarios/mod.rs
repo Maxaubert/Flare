@@ -3,9 +3,12 @@
 pub mod agent_hooks;
 pub mod agent_launch;
 pub mod agent_misc;
+pub mod agent_web;
 pub mod anywhere;
 pub mod chrome;
 pub mod closeask;
+pub mod convo;
+pub mod ctl;
 pub mod diag;
 pub mod dictation;
 pub mod dpi;
@@ -17,7 +20,12 @@ pub mod input_b;
 pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
+pub mod live_preview;
 mod marks_px;
+pub mod mini_app;
+pub mod mods;
+pub mod panel;
+pub mod panel_split;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -27,6 +35,7 @@ pub mod strip;
 pub mod update;
 pub mod vertical;
 pub mod visual;
+pub mod web;
 
 use crate::ctx::Scenario;
 
@@ -517,6 +526,108 @@ pub const ALL: &[Scenario] = &[
         group: "settings_d",
         run: settings_live::settings_live,
         limit_secs: 180,
+    },
+    Scenario {
+        name: "verticalStart",
+        group: "settings_d",
+        run: settings_live::vertical_start,
+        limit_secs: 120,
+    },
+    Scenario {
+        name: "panelImage",
+        group: "panel",
+        run: panel::panel_image,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "panelSplitter",
+        group: "panel",
+        run: panel_split::panel_splitter,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "ctlChannel",
+        group: "ctl",
+        run: ctl::ctl_channel,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "mcpRoundTrip",
+        group: "ctl",
+        run: ctl::mcp_round_trip,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "webPanel",
+        group: "web",
+        run: web::web_panel,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "webVideo",
+        group: "web",
+        run: web::web_video,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "webNoRuntime",
+        group: "web",
+        run: web::web_no_runtime,
+        limit_secs: 120,
+    },
+    Scenario {
+        name: "agentBrowser",
+        group: "web",
+        run: agent_web::agent_browser,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "mcpBrowser",
+        group: "web",
+        run: agent_web::mcp_browser,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "convoPanels",
+        group: "convo",
+        run: convo::convo_panels,
+        limit_secs: 300,
+    },
+    Scenario {
+        name: "miniApp",
+        group: "web",
+        run: mini_app::mini_app,
+        limit_secs: 480,
+    },
+    Scenario {
+        name: "diagram",
+        group: "web",
+        run: mini_app::diagram,
+        limit_secs: 180,
+    },
+    Scenario {
+        name: "mcpDiagram",
+        group: "web",
+        run: mini_app::mcp_diagram,
+        limit_secs: 240,
+    },
+    Scenario {
+        name: "modsSample",
+        group: "web",
+        run: mods::mods_sample,
+        limit_secs: 480,
+    },
+    Scenario {
+        name: "devPreview",
+        group: "preview",
+        run: live_preview::dev_preview,
+        limit_secs: 480,
+    },
+    Scenario {
+        name: "questionToast",
+        group: "preview",
+        run: live_preview::question_toast,
+        limit_secs: 300,
     },
 ];
 

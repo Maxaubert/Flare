@@ -507,14 +507,14 @@ checks or lists each drop with a reason in a `// DROPPED:` note in its scenario 
 | `cwdLabel` | 3 | `scenarios/lifecycle.rs`, `cwd_label` | 3 | 0 | ok |
 | `indicator` | 12 | `scenarios/indicators.rs`, `indicator` | 12 | 0 | ok |
 | `attention` | 25 | `scenarios/indicators.rs`, `attention` | 25 | 3 | ok |
-| `agentHooks` | 43 | `scenarios/agent_hooks.rs`, `agent_hooks` | 43 | 0 | ok |
+| `agentHooks` | 48 | `scenarios/agent_hooks.rs`, `agent_hooks` | 49 | 0 | ok |
 | `agentDiag` | 12 | `scenarios/agent_misc.rs`, `agent_diag` | 12 | 0 | ok |
 | `theme` | 8 | `scenarios/chrome.rs`, `theme` | 7 | 1 | ok |
 | `newTabFolder` | 6 | `scenarios/chrome.rs`, `new_tab_folder` | 6 | 0 | ok |
 | `caretHold` | 6 | `scenarios/input_a.rs`, `caret_hold` | 7 | 0 | ok |
 | `mouseReport` | 6 | `scenarios/input_a.rs`, `mouse_report` | 6 | 0 | ok |
 | `clickCaret` | 3 | `scenarios/input_a.rs`, `click_caret` | 4 | 1 | ok |
-| `selectionEdit` | 18 | `scenarios/input_b.rs`, `selection_edit` | 18 | 0 | ok |
+| `selectionEdit` | 18 | `scenarios/input_b.rs`, `selection_edit` | 19 | 0 | ok |
 | `findKey` | 5 | `scenarios/input_a.rs`, `find_key` | 6 | 0 | ok |
 | `scrollbar` | 5 | `scenarios/input_a.rs`, `scrollbar` | 6 | 0 | ok |
 | `paste` | 4 | `scenarios/input_a.rs`, `paste` | 5 | 0 | ok |

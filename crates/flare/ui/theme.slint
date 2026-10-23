@@ -160,6 +160,15 @@ export global SettingsFixed {
     out property <string> font-mono: "Cascadia Mono";
 }
 
+// The icon artwork's own colours (assets/icon/flare-color.svg: the orange flame and the golden one over it,
+// each a gradient from the first stop to the second), fixed: never part of a theme.
+export global IconArt {
+    out property <color> orange-from: #FF4800;
+    out property <color> orange-to: #FF4000;
+    out property <color> gold-from: #FFC500;
+    out property <color> gold-to: #FFD000;
+}
+
 // Reduced motion, app-wide (parity line 37, PT index.css: every transition and animation drops to
 // 0.01 ms). Rust sets `reduced` from `crate::e2e::animations_enabled()` with the other globals; every
 // `animate` duration in the UI is wrapped in `Motion.d()` (scan: `no_animate_block_bypasses_the_motion_global`).

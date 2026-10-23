@@ -19,7 +19,14 @@ pub struct TermMenuAt {
 /// What a menu row does when picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TermMenuAct {
-    OpenPath { path: TermPathAt, reveal: bool },
+    OpenPath {
+        path: TermPathAt,
+        reveal: bool,
+    },
+    /// "Show in side panel": the same vetted preview a left click makes, never an open.
+    ShowInPanel {
+        path: TermPathAt,
+    },
     Copy(String),
     OpenLink(String),
     Paste,
@@ -60,6 +67,16 @@ pub fn term_menu_rows(
                 reveal: false,
             },
         ));
+        // Only what a left click would preview: a file of a kind the panel draws (a worker vets it again, rules 13 and
+        // 14, when the row is picked).
+        if !dir && flare_surfaces::preview::classify(&p.abs).is_some() {
+            rows.push(row(
+                "Show in side panel",
+                "",
+                "menu-panel",
+                TermMenuAct::ShowInPanel { path: p.clone() },
+            ));
+        }
         rows.push(row(
             "Show in Explorer",
             "",
@@ -136,6 +153,7 @@ pub fn to_menu_row(r: &TermMenuRow) -> MenuRowData {
         trailing_icon: None,
         trailing_filled: false,
         trailing_tip: String::new(),
+        group: false,
     }
 }
 
@@ -208,6 +226,64 @@ mod tests {
 
         let file = term_menu_rows(&at("", None, Some(file_path())), false, FIND, HELP);
         assert_eq!(file[0].label, "Open");
+    }
+
+    fn file_named(name: &str) -> TermPathAt {
+        TermPathAt {
+            kind: PathKind::File,
+            abs: format!(r"C:\work\{name}"),
+            text: name.to_string(),
+            base: r"C:\work".to_string(),
+        }
+    }
+
+    #[test]
+    fn show_in_side_panel_follows_open_for_a_file_the_panel_draws() {
+        for name in ["notes.txt", "pic.png", "main.rs", "data.json", "a.MD"] {
+            let rows = term_menu_rows(&at("", None, Some(file_named(name))), false, FIND, HELP);
+            assert_eq!(
+                labels(&rows)[..4],
+                [
+                    "Open",
+                    "Show in side panel",
+                    "Show in Explorer",
+                    "Copy path"
+                ],
+                "{name}"
+            );
+            let side = &rows[1];
+            assert_eq!(side.icon, "menu-panel");
+            assert_eq!(
+                side.act,
+                TermMenuAct::ShowInPanel {
+                    path: file_named(name)
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn show_in_side_panel_is_offered_only_where_a_left_click_would_preview() {
+        // Not a folder, not svg or pdf, not a script or program (rule 14). The click setting does not hide it: this
+        // is an explicit ask.
+        let none = |p: TermPathAt| term_menu_rows(&at("", None, Some(p)), false, FIND, HELP);
+        for name in [
+            "x.svg",
+            "x.pdf",
+            "run.exe",
+            "go.ps1",
+            "go.bat",
+            "go.sh",
+            "x.html",
+            "Dockerfile",
+        ] {
+            assert!(
+                !labels(&none(file_named(name))).contains(&"Show in side panel"),
+                "{name}"
+            );
+        }
+        assert!(!labels(&none(folder_path())).contains(&"Show in side panel"));
+        assert!(labels(&none(file_path())).contains(&"Show in side panel"));
     }
 
     #[test]

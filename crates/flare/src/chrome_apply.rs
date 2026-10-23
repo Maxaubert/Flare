@@ -17,7 +17,7 @@ use flare_theme::see_through::glyph_stroke_floor_device_px;
 use slint::{Color, Global};
 
 use crate::host::GridHost;
-use crate::{AppWindow, Motion, Theme};
+use crate::{AppWindow, ConvoInk, Motion, Theme};
 
 /// (`--p-` token, Slint property, its setter, its getter), in `CHROME_COLOUR_TOKENS` order.
 macro_rules! token_table {
@@ -147,6 +147,12 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     theme.set_window_clear(clear);
     theme.set_glyph_stroke_floor(glyph_stroke_floor_device_px(look.glass));
     theme.set_light(look.light);
+    // The conversation panels' diff inks are the theme's terminal green and red (stage 6).
+    let pal = palette_of(&look.term);
+    let ink = |c: Rgba| Color::from_argb_u8(255, c.r, c.g, c.b);
+    let diff = ConvoInk::get(app);
+    diff.set_added(ink(pal.ansi[2]));
+    diff.set_removed(ink(pal.ansi[1]));
     // Reduced motion, app-wide (parity line 37): every animate duration goes through Motion.d().
     Motion::get(app).set_reduced(!crate::e2e::animations_enabled());
     if let Ok(mut slot) = TEXT_INK.lock() {

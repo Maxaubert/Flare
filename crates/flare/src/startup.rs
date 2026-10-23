@@ -53,8 +53,24 @@ impl Profile {
         self.dir.join("window.json")
     }
 
+    /// Which tab had which panel (Surfaces stage 1), kept next to `tabs.json`.
+    pub fn panels_file(&self) -> PathBuf {
+        self.dir.join("panels.json")
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.dir.join("settings.json")
+    }
+
+    /// Where mods live (Surfaces stage 8): one folder per mod, `<profile>\mods\<id>\mod.json`. The default
+    /// profile is `%APPDATA%\Flare`; a run with its own `--user-data-dir` (the e2e) has its own mods.
+    pub fn mods_dir(&self) -> PathBuf {
+        self.dir.join("mods")
+    }
+
+    /// Which mods the user turned on (`{"version":1,"mods":{"notes":true}}`), next to the mods folder.
+    pub fn mods_file(&self) -> PathBuf {
+        self.dir.join("mods.json")
     }
 
     /// The diagnostics log folder (M9 Task 31): `<profile>\logs`, whichever way the profile was chosen.
@@ -1189,7 +1205,10 @@ mod m7_start_tests {
                 .unwrap_or_else(|| panic!("window.rs has {needle}"))
         };
         let import = at("import_at_start(");
-        assert!(import < at("TabHost::new("), "the import precedes the tabs");
+        assert!(
+            import < at("TabHost::with_options("),
+            "the import precedes the tabs"
+        );
         assert!(import < at("LookCtl::new("), "the import precedes the look");
         assert!(
             import < at("app.show()?"),
