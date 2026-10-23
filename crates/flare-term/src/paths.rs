@@ -18,6 +18,27 @@ pub struct PathCandidate {
 pub fn find_paths(text: &str) -> Vec<PathCandidate> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
+    // A quoted run that holds spaces and is rooted like a path is ONE candidate ('C:/Users/X/OneDrive -
+    // Contoso/plan.docx'), never the prefix before its first space. Its chars are blanked for the word pass.
+    let mut masked = chars.clone();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(close) = quoted_path_end(&chars, i) {
+            let inner: String = chars[i + 1..close].iter().collect();
+            if let Some((from, path)) = candidate(&inner) {
+                let start = i + 1 + from;
+                let end = start + path.chars().count();
+                out.push(PathCandidate { start, end, path });
+                for m in &mut masked[i + 1..close] {
+                    *m = ' ';
+                }
+                i = close + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let chars = masked;
     let mut i = 0;
     while i < chars.len() {
         if is_break(chars[i]) {
@@ -36,7 +57,43 @@ pub fn find_paths(text: &str) -> Vec<PathCandidate> {
         }
         i = j;
     }
+    out.sort_by_key(|c| c.start);
     out
+}
+
+/// Where a quoted run opened at `at` closes, when it is a path with spaces in it: the quote opens a word
+/// (not an apostrophe inside one), closes on the same quote before one more word starts, holds white
+/// space, and begins like a path (a drive, a root, `./`, `../`, `~`).
+fn quoted_path_end(chars: &[char], at: usize) -> Option<usize> {
+    let q = *chars.get(at)?;
+    if !matches!(q, '"' | '\'' | '`') {
+        return None;
+    }
+    let opens = at == 0 || chars[at - 1].is_whitespace() || "([{=,:".contains(chars[at - 1]);
+    if !opens {
+        return None;
+    }
+    let close = (at + 1..chars.len()).find(|&k| chars[k] == q)?;
+    if chars.get(close + 1).is_some_and(|c| c.is_alphanumeric()) {
+        return None;
+    }
+    let inner = &chars[at + 1..close];
+    if inner.is_empty()
+        || inner[0].is_whitespace()
+        || inner[inner.len() - 1].is_whitespace()
+        || !inner.iter().any(|c| c.is_whitespace())
+    {
+        return None;
+    }
+    let head: String = inner.iter().take(3).collect();
+    let rooted = head.starts_with(['/', '\\', '~'])
+        || head.starts_with("./")
+        || head.starts_with(".\\")
+        || head.starts_with("../")
+        || head.starts_with("..\\")
+        || (head.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && head[1..].starts_with(':'));
+    rooted.then_some(close)
 }
 
 /// Whitespace, quotes and the characters a Windows path can never hold.
@@ -55,6 +112,8 @@ fn candidate(word: &str) -> Option<(usize, String)> {
     // Sentence punctuation and a line number, in either order ("a.ts:12)." ).
     for _ in 0..3 {
         let before = w.clone();
+        // "(line,col)" first: the trailing punctuation would eat its closing bracket.
+        w = PAREN_LINE.replace(&w, "").into_owned();
         w = TRAIL.replace(&w, "").into_owned();
         w = LINE_NO.replace(&w, "").into_owned();
         if w == before {
@@ -88,6 +147,9 @@ static TRAIL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[.,;:!)\]}]+$").expect("static regex"));
 static LINE_NO: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":[0-9]+(?::[0-9]+)?$").expect("static regex"));
+/// MSBuild's and tsc's "(12,5)" (and "(12)"), with the punctuation after it.
+static PAREN_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\([0-9]+(?:,[0-9]+)?\)[.,;:!]*$").expect("static regex"));
 static EXTENSION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9_-]\.[A-Za-z0-9]{1,8}$").expect("static regex"));
 static BARE_DRIVE: LazyLock<Regex> =
@@ -157,5 +219,29 @@ mod tests {
             paths("open \"docs/a b.pdf\" or 'x/y.md'"),
             vec!["docs/a", "b.pdf", "x/y.md"]
         );
+    }
+
+    #[test]
+    fn a_quoted_path_with_spaces_is_one_candidate_not_its_prefix() {
+        let text = "open 'C:/Users/X/OneDrive - Contoso/plan.docx' now";
+        let got = find_paths(text);
+        assert_eq!(
+            got.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["C:/Users/X/OneDrive - Contoso/plan.docx"],
+            "never 'C:/Users/X/OneDrive' on its own"
+        );
+        assert_eq!(
+            slice(text, got[0].start, got[0].end),
+            "C:/Users/X/OneDrive - Contoso/plan.docx"
+        );
+        assert_eq!(paths("cat \"./my docs/a.txt\":12"), vec!["./my docs/a.txt"]);
+        // An apostrophe inside prose is no quote.
+        assert_eq!(paths("it's in docs/a.md, the dev's"), vec!["docs/a.md"]);
+    }
+
+    #[test]
+    fn a_trailing_line_and_column_in_parentheses_is_not_part_of_the_path() {
+        assert_eq!(paths("src/a.ts(12,5): error"), vec!["src/a.ts"]);
+        assert_eq!(paths("src/a.ts(12):"), vec!["src/a.ts"]);
     }
 }
