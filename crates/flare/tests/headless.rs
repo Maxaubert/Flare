@@ -423,9 +423,25 @@ fn count_colour(img: &Decoded, colour: [u8; 3]) -> usize {
 #[test]
 fn the_find_scene_shows_the_match_fill() {
     let (_dir, img) = scene_png("term-find", "1");
-    let matches = count_colour(&img, [0x4a, 0x51, 0x60]);
+    // The fills come from the worn theme (review #52), held to the theme's foreground.
+    let look = flare_theme::look::apply_look(&flare_theme::look::LookInput {
+        theme_id: "pt-default",
+        custom: None,
+        draft: None,
+        background: None,
+        accent: None,
+        secondary: None,
+        edges: flare_theme::edges::DEFAULT_WINDOW_EDGES,
+        see_through: 0,
+        glass_possible: false,
+    });
+    let rgb = |hex: &str| {
+        let n = u32::from_str_radix(&hex[1..7], 16).expect("a hex colour");
+        [(n >> 16) as u8, (n >> 8) as u8, n as u8]
+    };
+    let matches = count_colour(&img, rgb(&look.find.bg));
     assert!(matches > 100, "only {matches} match-fill pixels");
-    let active = count_colour(&img, [0xf6, 0xa2, 0x5b]);
+    let active = count_colour(&img, rgb(&look.find.active_bg));
     assert!(active > 50, "only {active} active-fill pixels");
 }
 

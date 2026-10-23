@@ -1202,7 +1202,12 @@ fn a_stop_with_one_shell_still_running_stays_working() {
     f.visit(0);
     f.say(
         "C:\\b",
-        &paint(&["\u{273b} Churned for 8s \u{b7} done 7:49 \u{b7} 1 shell still running"]),
+        &paint(&[
+            "\u{273b} Churned for 8s \u{b7} done 7:49 \u{b7} 1 shell still running",
+            "\u{2500}".repeat(40).as_str(),
+            "\u{276f} ",
+            "\u{2500}".repeat(40).as_str(),
+        ]),
     );
     f.say("C:\\b", W);
     f.say("C:\\b", D);

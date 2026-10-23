@@ -1286,7 +1286,11 @@ mod tests {
         r.title("a", "");
         assert_eq!(r.hub.armed("a"), None);
         assert_eq!(*r.off.borrow(), vec!["a".to_string()]);
-        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
+        // Asked about by name twice: once when the title claimed the tab (review #47), once when it left.
+        assert_eq!(
+            *r.rec.agains.borrow(),
+            vec!["a".to_string(), "a".to_string()]
+        );
     }
 
     #[test]

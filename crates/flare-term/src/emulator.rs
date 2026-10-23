@@ -931,10 +931,12 @@ impl Emulator {
             .find_active
             .and_then(|m| self.match_bounds(m))
             .zip(self.sel_bounds());
-        if let Some(((start, end), (s, e, block))) = found {
-            if !block && s == start && e == end {
-                self.sel_clear();
-            }
+        if let Some(((start, end), (s, e, block))) = found
+            && !block
+            && s == start
+            && e == end
+        {
+            self.sel_clear();
         }
         self.find_clear();
     }

@@ -61,7 +61,7 @@ component WidgetRow inherits Rectangle {
     background: root.live ? root.accent.with-alpha(0.16) : root.ink.with-alpha(0.05);
     border-color: root.live ? root.accent.with-alpha(0.45) : transparent;
     // A row that cannot be picked is told by its inks (the dim ink, held to the ground), not by fading the
-    // whole row: a 0.55 opacity took text and number under the floor (review #93).
+    // whole row: a 0.55 opacity took text and number under the floor (a review finding).
     accessible-role: button;
     accessible-label: root.item.n + ". " + root.item.label + " " + root.item.folder;
     accessible-description: root.item.reason;

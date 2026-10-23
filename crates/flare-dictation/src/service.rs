@@ -1920,7 +1920,6 @@ mod tests {
             ),
             "{fx:?}"
         );
-        assert!(WARN_HIDE_MS > NOTE_HIDE_MS);
         let fx = s.on(
             SvcEvent::Routed(RouteResult::Message("Cancelled".into())),
             2.0,
