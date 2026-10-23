@@ -15,7 +15,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 5. **One Ctrl+V is one paste; one image key per agent.** The native paste and the app's paste both ran once. Native: the key handler consumes Ctrl+V and returns handled; the image key is a single lookup by agent kind (ESC v for Claude, ^V otherwise); a test asserts one pty write per key. Source: two-apps.md ONE CTRL+V IS ONE PASTE; core/renderer/lib/termPaste.ts imagePasteKey (#170).
 6. **Shift+Enter is a newline only where an agent runs.** A backslash at a plain prompt ran a command with a stray backslash. Native: the newline key is sent only while the agent-armed state is true. Source: core/renderer/lib/termKeys.ts (#21, #175).
 7. **Host chords never reach the pty, and one table decides both.** A chord missing from the "owns this key" check typed into a program while the app acted on it. Native: one keymap table in Rust used by the window key handler and the terminal input encoder; a test asserts the two agree. Source: src/renderer/src/lib/keymap.ts; two-apps.md (#198, table audit 2026-10-12).
-8. **Chords match by key name, with the physical key as fallback for letters.** Russian and Greek layouts send other letters. Native (built in M5): Ctrl+C and Ctrl+V match the physical key, so Russian and Greek layouts still copy (open decision O2 answered; `ctrl_c_by_physical_key_copies`, flare-term `keys.rs`). Source: keymap.ts letter(); termKeys.ts isKey (rule 11).
+8. **Chords and control bytes match by key name, with the physical key as fallback for letters.** Russian and Greek layouts send other letters. The key's ASCII name decides alone, so Dvorak, AZERTY and QWERTZ users get the control byte of the key they pressed (Ctrl+C is 0x03 where the key labelled C sits at physical KeyI); only a key named outside ASCII falls back to its position (general review 2026-10-23, term-1; `ctrl_letters_follow_the_layout_not_the_position`, `chords_follow_the_layout_letter`). Native (built in M5): Ctrl+C and Ctrl+V match the physical key, so Russian and Greek layouts still copy (open decision O2 answered; `ctrl_c_by_physical_key_copies`, flare-term `keys.rs`). Source: keymap.ts letter(); termKeys.ts isKey (rule 11).
 9. **Typing is heard from keys, never from the terminal's own replies.** Focus reports and device attribute answers made untouched shells look typed-into. Native: mark "typed" only in the key-input path; bytes the terminal writes back never update typed, echo or activity state. Source: regression-rules.md typing-on-onkey (#99); core/renderer/lib/termActivity.ts.
 10. **The app answers a program only what it asked.** OSC 52 is write-only (cap 1 MB, "c" or empty only, reads never answered); colour and version replies only on request; theme reports stop when the agent leaves. Native: every reply the grid writes back answers a query; no unsolicited bytes to the pty. Source: regression-rules.md replies-only-when-asked (#168 to #176); core/renderer/lib/termOsc52.ts.
 11. **FORCE_HYPERLINK is never set.** It made supports-hyperlinks put raw OSC 8 into pipes. Native: the environment builder never sets it; a user's own value passes through. Source: core/main/terminal.ts ptyEnv (review 2026-10-11).
@@ -309,7 +309,7 @@ keysFor (N13, N16).
 182. **Typing into a tab is checked three times, and dictation never presses Enter inside the window.** Before dictated
 text goes into a Claude tab, the tab must still exist, run Claude by its mark with a session, and not be asking; Windows'
 process tree under that tab's shell must show Claude; and the same tab and session must win again right before the paste
-and again before the Enter (one lone CR after 300 ms, and only if the tab is still sendable). A bare shell never receives
+and again before the Enter (one lone CR after 300 ms, and only if the tab is still sendable, the session is the same and Windows still says Claude runs there; `type_checked_holds_the_enter_back_when_claude_quit_while_the_words_landed`). A bare shell never receives
 dictated text with an Enter. Native: `route.rs` (`decide_into`, `type_checked`) and `service.rs` (`dictation_answers`),
 with the Windows check through the process tree. Held by `type_checked_types_nothing_where_windows_says_no_claude_runs`,
 `type_checked_types_nothing_when_the_tab_changed_while_windows_was_asked`,
@@ -337,3 +337,30 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
+186. **A quitting instance takes no hand-off.** The end of life stops the hand-off server before it kills a single shell,
+so a second launch finds no pipe, waits for the lock and becomes the first instance; a message that was written and
+acknowledged would be dropped. A message over the caps is split by the sender (each part keeps the exe), the server
+refuses with a log line, and a client that connects and never writes is cut off after 2 s so one stalled process cannot
+jam the pipe. Native: `appctl.rs` (`finish`, `set_handoff_stop`), `single_instance.rs` (`split_handoff`,
+`read_message_within`). Held by `the_end_of_life_stops_the_handoff_server_before_anything_slow`,
+`a_stopped_server_refuses_a_handoff`, `a_big_handoff_is_split_under_the_caps_and_loses_no_argument` and
+`a_stalled_client_does_not_jam_the_server`. Source: general review 2026-10-23 (app-1, app-5, platform-5); rule 32.
+187. **A zoom resizes one tab.** Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
+that wear the settings' size. A tab with a zoom of its own keeps its grid until it comes to the front, so no hidden shell
+is reflowed. Native: `tab_host.rs` (`refit_unzoomed`), `appctl.rs` (`apply_font`). Held by
+`a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size`. Source: general review 2026-10-23 (render-2).
+188. **An agent is a program or a package, never a word.** A command line is an agent only when its FIRST token is the
+program (`claude`, `codex`, `aider`, `gemini`, with or without a path and `.exe`, `.cmd`, `.ps1`), an argument is such a
+program file, or it holds a package signature (`@anthropic-ai/claude-code`, `@openai/codex`, `@google/gemini-cli`, or the
+agent's own folder followed by its entry file). A folder called `claude`, `claude-code-ui` or `gemini` never matches. A
+process older than its listed parent (a recycled pid) is not counted under a shell. A change of kind under a present agent
+reaches the tab. Native: `detect.rs` (`classify`), `procs.rs` (`born_after`), `poll.rs`. Held by
+`a_path_or_word_in_the_arguments_is_not_an_agent`, `a_process_older_than_its_listed_parent_is_not_its_child` and
+`a_change_of_kind_under_a_present_agent_is_sent`. Source: general review 2026-10-23 (agent-1, agent-2, agent-4).
+189. **A store file that does not parse is kept, never overwritten.** Text that is not valid JSON is set aside as
+`<file>.bad` before the first save, a leading BOM is dropped, and a quit waits (at most 2 s) for a save already in the
+background writer. A blocked log rotation never shifts the history (the live file moves first). Native: `atomic.rs`
+(`open_text`), `debounce.rs` (`flush`), `writer.rs` (`rotate_if_due`). Held by
+`a_bom_is_dropped_and_broken_text_is_kept_as_bad`, `flush_waits_for_a_save_already_in_the_background_writer` and
+`a_blocked_rotation_that_retries_never_costs_an_older_generation`. Source: general review 2026-10-23 (app-3, app-4,
+platform-3); rule 41.

@@ -697,3 +697,31 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   front, and a real dictation at 225%.
 - **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
   not measured at this commit, so this entry gives none yet.
+
+## General review, 2026-10-23
+
+A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,
+186 to 189 and the dictation send rule carry the notable ones):
+
+- **Terminal.** Ctrl chords follow the layout letter (term-1); the default mouse report is UTF-8 past column 94 (term-5);
+  an OSC 52 write at its cap survives the scanner (term-7); OSC 8 links are percent-escaped before the browser sees them
+  (term-3); DECRQM 2031 is answered once, even inside a synchronized update (term-6); a cmd resume never searches the tab's
+  folder (term-8); a resize waits for neither the pump nor the console host (term-4); closing a tab spares processes in a
+  console window of their own (term-2); the missing-folder test tests the absolute path (term-9).
+- **Rendering.** A lazily found fallback font repaints an idle window (render-1); a zoom reflows one tab (render-2); a
+  family that will not load is asked for once (render-3, the repeat only); the cell underline is the one hairline
+  (render-4); the see-through texture is freed when the ground is solid (render-5).
+- **App and platform.** Hand-offs (app-1, app-5, platform-5), restore stats with a deadline (app-2), unreadable stores and
+  a quit that waits for a save (app-3, app-4), an absolute `--user-data-dir` (platform-6), the log rotation and the verbose
+  switch (platform-3, platform-4), the clipboard block (platform-8), the dictation Enter (platform-1).
+- **Agents.** Detection by program or package (agent-1), a change of kind (agent-2), `CLAUDE_CONFIG_DIR` (agent-3),
+  recycled pids (agent-4, platform-2), a title cut across two reads (agent-5), and two tests that now test what they say
+  (agent-6, agent-7).
+- **UI.** Ctrl+C copies Flare's own selection over an idle agent (ui-1); Settings lays out again when only the scale
+  changes (ui-2); the chrome is named for a screen reader and Space presses a dialog button (ui-3,
+  `crates/flare/tests/chrome_access.rs`); the theme editor's code fields follow the popover's alpha rules (ui-4); Open
+  folder uses Explorer by absolute path on a worker (ui-5); the flash poll timer stops with its watch (ui-6).
+- **Not fixed here.** render-3's one-time font database build on the UI thread when a new family is picked (the font
+  system is read synchronously by `set_font`; it needs the build moved to a worker with a swap, a design of its own), and
+  term-6's second half (scanner replies such as XTVERSION and OSC 10/11 can still jump ahead of DA replies that alacritty
+  holds inside a synchronized update).
