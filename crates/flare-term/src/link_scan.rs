@@ -4,7 +4,7 @@
 //! and a line whose text, hyperlinks, ink and cwd are unchanged is not scanned again. No decoration
 //! is stored: the marks are rebuilt from the per-line cache on every call.
 
-use crate::cells::{BufferLike, LogicalLine, logical_line_in};
+use crate::cells::{BufferLike, LogicalLine, SCAN_WINDOW_ROWS, logical_line_win};
 use crate::osc8::is_web_link;
 use crate::path_links::PathLinks;
 use std::collections::hash_map::DefaultHasher;
@@ -126,10 +126,12 @@ impl LinkScanner {
         let mut out = Vec::new();
         let mut next: HashMap<usize, (u64, Vec<LinkMark>)> = HashMap::new();
         let mut y = first;
+        let mut floor = 0;
         while y <= last {
             // Across rows a program broke by hand too (`cells::by_hand`): a path it cut at the
             // edge is read whole, and each row keeps its own piece of the mark.
-            let ll = logical_line_in(b, cols, y, true);
+            // A very long line is read in pieces of a window of rows, each from where the last ended.
+            let ll = logical_line_win(b, cols, y, true, floor, SCAN_WINDOW_ROWS);
             let row_end = ll.last;
             let links = line_links(&ll, cols, ctx);
             let blank = ll.text_end == 0 && links.iter().all(Option::is_none);
@@ -153,6 +155,7 @@ impl LinkScanner {
                 next.insert(ll.first, (key, marks));
             }
             y = row_end + 1;
+            floor = y;
         }
         self.waiting.retain(|r| next.contains_key(r));
         self.cache = next;
@@ -282,12 +285,14 @@ mod tests {
     struct Row {
         text: String,
         wrapped: bool,
+        loads: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl LineLike for Row {
         fn is_wrapped(&self) -> bool {
             self.wrapped
         }
         fn load_cell(&self, x: usize, into: &mut ScratchCell) -> bool {
+            self.loads.set(self.loads.get() + 1);
             into.chars = self
                 .text
                 .chars()
@@ -300,6 +305,7 @@ mod tests {
     }
     struct Buf {
         rows: Vec<Row>,
+        loads: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl BufferLike for Buf {
         fn len(&self) -> usize {
@@ -310,14 +316,17 @@ mod tests {
         }
     }
     fn buf(rows: &[(&str, bool)]) -> Buf {
+        let loads = std::rc::Rc::new(std::cell::Cell::new(0));
         Buf {
             rows: rows
                 .iter()
                 .map(|&(t, w)| Row {
                     text: t.to_string(),
                     wrapped: w,
+                    loads: loads.clone(),
                 })
                 .collect(),
+            loads,
         }
     }
 
@@ -488,13 +497,16 @@ mod tests {
     #[test]
     fn a_burst_of_scrollback_is_not_scanned() {
         let mut h = H::new();
+        let loads = std::rc::Rc::new(std::cell::Cell::new(0));
         let b = Buf {
             rows: (0..44)
                 .map(|i| Row {
                     text: format!("https://a.io/{i}"),
                     wrapped: false,
+                    loads: loads.clone(),
                 })
                 .collect(),
+            loads,
         };
         h.scan(&b, 30, 40, 43);
         assert_eq!(h.scanner.lines_scanned(), 4);
@@ -565,6 +577,46 @@ mod tests {
                 }
             ]
         );
+    }
+
+    /// Review #37: a URL Claude's Ink hard-wraps at the edge is one link to the whole address.
+    #[test]
+    fn a_url_broken_by_hand_at_the_edge_is_one_mark_to_the_whole_address() {
+        let mut h = H::new();
+        let b = buf(&[("go https://git", false), ("hub.com/x/1234", false)]);
+        let m = h.scan(&b, 14, 0, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Web("https://github.com/x/1234".into()),
+            "the click must open the whole address, never the first row's prefix"
+        );
+        assert_eq!(m[0].pieces.len(), 2);
+        assert_eq!((m[0].pieces[1].row, m[0].pieces[1].col), (1, 0));
+    }
+
+    /// Review #39: one huge logical line (a megabyte of JSON on one line) is read in a window around
+    /// the viewport, not rebuilt whole on every scan.
+    #[test]
+    fn a_huge_logical_line_is_scanned_in_a_window_not_whole() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mut rows: Vec<(&str, bool)> = (0..6000).map(|_| (filler, true)).collect();
+        rows[0].1 = false;
+        rows[3000] = ("see https://a.io/xy ", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 2995, 3005);
+        assert_eq!(m.len(), 1, "{} marks", m.len());
+        assert_eq!(m[0].target, LinkTarget::Web("https://a.io/xy".into()));
+        assert_eq!(m[0].pieces[0].row, 3000);
+        let cells = b.loads.get();
+        assert!(
+            cells < 20 * 200,
+            "{cells} cells read: the whole 6000-row line must not be built for one scan"
+        );
+        // Scrolling on reads another window, never duplicating a mark.
+        let m = h.scan(&b, 20, 2999, 3009);
+        assert_eq!(m.len(), 1);
     }
 
     #[test]

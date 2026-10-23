@@ -20,6 +20,12 @@ static PERMISSION_YES: LazyLock<Regex> =
 
 /// True when the rows show a question box: the question tool's footer, or a permission prompt.
 pub fn looks_like_question(rows: &[String]) -> bool {
+    // A question box takes the place of the prompt box. With the empty input box up, between its two
+    // rules, nothing is being asked: words that quote the footer or "Do you want to ...?" are
+    // conversation (review #49).
+    if input_box_up(rows) {
+        return false;
+    }
     let text = rows.join("\n");
     // The question tool's footer.
     if FOOTER_SELECT.is_match(&text) && FOOTER_CANCEL.is_match(&text) {
@@ -27,6 +33,20 @@ pub fn looks_like_question(rows: &[String]) -> bool {
     }
     // A permission prompt: the question and its first, numbered answer.
     PERMISSION_ASK.is_match(&text) && PERMISSION_YES.is_match(&text)
+}
+
+/// A rule of the prompt's box: a long run of box-drawing dashes.
+static RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*─{20,}\s*$").expect("RULE"));
+
+/// The prompt box is on the screen: a rule, the `❯` input row (and any more rows of a draft), a rule.
+fn input_box_up(rows: &[String]) -> bool {
+    rows.iter().enumerate().any(|(i, r)| {
+        RULE.is_match(r)
+            && rows.get(i + 1).is_some_and(|p| p.starts_with('❯'))
+            && rows[i + 2..rows.len().min(i + 8)]
+                .iter()
+                .any(|x| RULE.is_match(x))
+    })
 }
 
 /// The keys that settle a question: Enter, Esc, Ctrl+C, or exactly one digit 1 to 9.
@@ -192,6 +212,24 @@ mod tests {
     fn does_not_take_a_finished_answer_or_an_idle_prompt_for_a_question() {
         assert!(!looks_like_question(&finished()));
         assert!(!looks_like_question(&rows(&["PS C:\\Users\\me> "])));
+    }
+
+    #[test]
+    fn conversation_that_quotes_a_question_above_the_prompt_box_is_not_one() {
+        let dashes = "─".repeat(40);
+        let quoting = rows(&[
+            "● The footer says \"Enter to select · Esc to cancel\" and the prompt",
+            "  asks: Do you want to proceed?",
+            "   1. Yes",
+            "",
+            &dashes,
+            "❯ ",
+            &dashes,
+            "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        ]);
+        assert!(!looks_like_question(&quoting));
+        // The same words with the real box up (no input box) still read as a question.
+        assert!(looks_like_question(&permission()));
     }
 
     #[test]

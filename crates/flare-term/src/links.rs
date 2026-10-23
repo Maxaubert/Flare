@@ -68,23 +68,14 @@ pub(crate) fn char_slice(text: &str, start: usize, end: usize) -> &str {
     &text[s..e]
 }
 
-/// `find_links`, never across a row broken by hand: only a PATH is read across one, where
-/// existing on disk says it was one path (PT termLinks.ts `findLinksIn`).
-pub fn find_links_in(text: &str, joins: &[usize]) -> Vec<LinkSpan> {
-    if joins.is_empty() {
-        return find_links(text);
-    }
-    segments_of(text.chars().count(), joins)
-        .into_iter()
-        .flat_map(|(s, e)| {
-            find_links(char_slice(text, s, e))
-                .into_iter()
-                .map(move |l| LinkSpan {
-                    start: l.start + s,
-                    end: l.end + s,
-                })
-        })
-        .collect()
+/// `find_links` over a logical line that holds rows the program broke by hand (`joins`, from
+/// `cells::by_hand`). Claude's Ink breaks its own lines at the window's edge and writes each row
+/// on its own, so a URL cut there is ONE link: it is read across the join like a path is, instead
+/// of marked (and opened) as its truncated first row (review #37). A join only exists where the
+/// run of URL characters really crosses the edge (`by_hand`), and a link ends at any space, so a
+/// link on either side of a join that ends before the edge stays as it was.
+pub fn find_links_in(text: &str, _joins: &[usize]) -> Vec<LinkSpan> {
+    find_links(text)
 }
 
 static CANDIDATE: LazyLock<Regex> =
@@ -149,16 +140,36 @@ mod tests {
     }
 
     #[test]
-    fn find_links_in_never_crosses_a_hand_break() {
-        let top = "go https://a.io/x";
-        let text = format!("{top}/y/z and 日 https://b.io");
+    fn find_links_in_reads_a_url_across_a_hand_break() {
+        // Row one ends at the edge in the middle of the address; the program wrote the rest on row two.
+        let top = "go https://github.com/Maxaubert/Flare/pull/123";
+        let text = format!("{top}4 and 日 https://b.io");
         let n = top.chars().count();
         let got: Vec<String> = find_links_in(&text, &[n])
             .into_iter()
             .map(|l| slice(&text, l.start, l.end))
             .collect();
-        assert_eq!(got, vec!["https://a.io/x", "https://b.io"]);
+        assert_eq!(
+            got,
+            vec![
+                "https://github.com/Maxaubert/Flare/pull/1234",
+                "https://b.io"
+            ],
+            "PR/123 + 4 must be PR/1234, never the truncated first row"
+        );
         assert_eq!(segments_of(5, &[2, 4]), vec![(0, 2), (2, 4), (4, 5)]);
+    }
+
+    #[test]
+    fn a_link_that_ends_before_the_edge_is_not_joined_to_the_next_rows_words() {
+        let top = "go https://a.io/x ";
+        let text = format!("{top}and more");
+        let n = top.chars().count();
+        let got: Vec<String> = find_links_in(&text, &[n])
+            .into_iter()
+            .map(|l| slice(&text, l.start, l.end))
+            .collect();
+        assert_eq!(got, vec!["https://a.io/x"]);
     }
 
     #[test]

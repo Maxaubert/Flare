@@ -3015,7 +3015,7 @@ mod tests {
     }
 
     #[test]
-    fn a_web_link_is_never_carried_across_a_row_broken_by_hand() {
+    fn a_web_link_is_carried_across_a_row_broken_by_hand_review_37() {
         let mut e = Emulator::new(17, 4);
         e.feed(b"go https://a.io/x\r\n/y/z");
         let m = marks(&mut e);
@@ -3024,7 +3024,7 @@ mod tests {
             .map(|m| &m.target)
             .filter(|t| matches!(t, LinkTarget::Web(_)))
             .collect();
-        assert_eq!(web, vec![&LinkTarget::Web("https://a.io/x".into())]);
+        assert_eq!(web, vec![&LinkTarget::Web("https://a.io/x/y/z".into())]);
     }
 
     #[test]

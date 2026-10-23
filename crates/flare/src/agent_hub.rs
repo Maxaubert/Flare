@@ -318,8 +318,11 @@ impl AgentHub {
     fn run_effects(&self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::AskLook => {
+                Effect::AskLook { tab } => {
                     if let Some(p) = &self.poll {
+                        // The poll sends only answers that changed: a tab it already reported "no agent"
+                        // would never hear it was wrong without being asked about by name.
+                        p.again(&tab);
                         p.look_now();
                     }
                 }

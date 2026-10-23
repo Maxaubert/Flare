@@ -30,13 +30,21 @@ static FOOTER_WORKFLOW: LazyLock<Regex> = LazyLock::new(|| {
 
 /// True when a shell or workflow is still running under this Claude screen.
 pub fn looks_like_background_work(rows: &[String]) -> bool {
-    if rows.iter().any(|r| STILL_RUNNING.is_match(r)) {
-        return true;
-    }
     // The footer: the rows under the prompt box's lower rule.
     let Some(last) = rows.iter().rposition(|r| RULE.is_match(r)) else {
         return false;
     };
+    // The turn's summary line lives in one place: the last text row above the prompt box's top rule.
+    // The same words anywhere else are conversation (a quote, a log) and say nothing about now.
+    if let Some(top) = rows[..last].iter().rposition(|r| RULE.is_match(r))
+        && rows[..top]
+            .iter()
+            .rev()
+            .find(|r| !r.trim().is_empty())
+            .is_some_and(|r| STILL_RUNNING.is_match(r))
+    {
+        return true;
+    }
     rows[last + 1..]
         .iter()
         .any(|r| FOOTER_COUNT.is_match(r) || FOOTER_WORKFLOW.is_match(r))
@@ -78,6 +86,19 @@ mod tests {
     #[test]
     fn the_workflow_finished_its_stale_waiting_for_line_alone_is_not_work() {
         assert!(!looks_like_background_work(&screen("workflowDone")));
+    }
+
+    #[test]
+    fn the_phrase_in_conversation_text_is_not_a_live_summary_line() {
+        let mut quoted = screen("shellDone");
+        // Claude's answer quotes the summary line; the live one (above the box) has no count.
+        let at = quoted
+            .iter()
+            .position(|r| r.contains("Nothing else is pending"))
+            .expect("the answer row");
+        quoted[at] =
+            "● It printed \"✻ Churned for 8s · 1 shell still running\" earlier.".to_string();
+        assert!(!looks_like_background_work(&quoted));
     }
 
     #[test]
