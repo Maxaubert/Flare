@@ -840,6 +840,100 @@ fn after_the_page_dies_the_next_call_makes_a_fresh_page_and_is_answered() {
 }
 
 #[test]
+fn a_navigation_the_host_cancelled_does_not_make_a_ready_page_unready() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, sample_notes);
+    turn(&f, "notes", true);
+    let tab = page_up(&f, &w, &slot, "notes");
+    assert!(f.ctl.borrow().mods.as_ref().unwrap().is_ready(&tab));
+    // The person clicks a link out of the mod's host: the host cancels it (Refused), and the browser still
+    // ends that navigation with a failed load of a number the page never started.
+    fake(&slot).say(WebEvent::Refused {
+        tab: tab.clone(),
+        url: "https://example.com/".into(),
+    });
+    fake(&slot).say(WebEvent::Loaded {
+        tab: tab.clone(),
+        url: modview::mod_url(&modview::mod_host("notes")),
+        ok: false,
+        status: "3".into(),
+        nav: 424_242,
+    });
+    f.pump();
+    assert!(
+        f.ctl.borrow().mods.as_ref().unwrap().is_ready(&tab),
+        "the page that is open is still the mod's, and still ready"
+    );
+    // The next tool call reaches it at once.
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_notes_append_note", "input": {"text": "a"}}),
+    );
+    f.pump_until("the tool event", |_| !posts(&slot, &tab).is_empty());
+    let id = posts(&slot, &tab)[0]["callId"].as_str().unwrap().to_string();
+    page_says(
+        &slot,
+        &tab,
+        &json!({"t":"respond","call_id":id,"result":{"ok":true}}).to_string(),
+    );
+    assert!(answer_of(&f, &rx).is_ok());
+}
+
+#[test]
+fn a_tool_call_whose_caller_gave_up_is_not_run_when_the_page_becomes_ready() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, sample_notes);
+    turn(&f, "notes", true);
+    let tab = page_up(&f, &w, &slot, "notes");
+    let host = modview::mod_url(&modview::mod_host("notes"));
+    // The page begins to load again (not ready); a call is queued for it, then its caller gives up.
+    fake(&slot).say(WebEvent::Loading {
+        tab: tab.clone(),
+        url: host.clone(),
+        nav: 777,
+    });
+    f.pump();
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_notes_append_note", "input": {"text": "late"}}),
+    );
+    f.pump_until("the call to be waiting", |f| {
+        f.ctl.borrow().mods.as_ref().unwrap().hub().pending_of("notes") == 1
+    });
+    let id = f
+        .ctl
+        .borrow()
+        .mods
+        .as_ref()
+        .unwrap()
+        .hub()
+        .pending_ids("notes")
+        .remove(0);
+    f.ctl.borrow().mods.as_ref().unwrap().hub().cancel(&id);
+    drop(rx);
+    // The page finishes loading: the abandoned call is not delivered.
+    fake(&slot).say(WebEvent::Loaded {
+        tab: tab.clone(),
+        url: host,
+        ok: true,
+        status: "0".into(),
+        nav: 777,
+    });
+    f.pump();
+    assert!(
+        posts(&slot, &tab).is_empty(),
+        "an abandoned call ran: {:?}",
+        posts(&slot, &tab)
+    );
+}
+
+#[test]
 fn a_reply_meant_for_an_older_document_is_not_given_to_a_newer_one() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);

@@ -324,6 +324,8 @@ struct TabWeb {
     app_host: Option<String>,
     /// A diagram's "did it draw" question, while it is out.
     probe: Option<Probe>,
+    /// The browser's number of the last navigation the host allowed (one it cancelled never has its own).
+    started_nav: Option<u64>,
 }
 
 /// The state the key hook reads (it runs inside a WebView2 callback and may not borrow the window).
@@ -1495,10 +1497,17 @@ impl WebCtl {
                 tab: tab.clone(),
                 ready: false,
             }),
-            WebEvent::Loaded { tab, ok, .. } if self.is_mod_tab(tab) => Some(WebOut::ModPage {
-                tab: tab.clone(),
-                ready: *ok,
-            }),
+            // Only the load of a navigation the host allowed counts: a navigation it cancelled (a link out of the
+            // mod's own host) still ends with a failed load, and the page that is open is untouched by it.
+            WebEvent::Loaded { tab, ok, nav, .. }
+                if self.is_mod_tab(tab)
+                    && self.tabs.get(tab).and_then(|t| t.started_nav) == Some(*nav) =>
+            {
+                Some(WebOut::ModPage {
+                    tab: tab.clone(),
+                    ready: *ok,
+                })
+            }
             WebEvent::Failed { tab, .. } | WebEvent::Gone { tab, .. } if self.is_mod_tab(tab) => {
                 Some(WebOut::ModLost { tab: tab.clone() })
             }
@@ -1556,6 +1565,7 @@ impl WebCtl {
             }
             WebEvent::Loading { tab, url, nav } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.started_nav = Some(nav);
                     t.loading = true;
                     // The page moved on while a diagram's question was out.
                     if let Some(p) = t.probe.take() {

@@ -547,6 +547,21 @@ impl Hub {
         self.lock().pending.remove(call_id);
     }
 
+    /// The ids of the calls waiting on the mod (tests).
+    pub fn pending_ids(&self, mod_id: &str) -> Vec<String> {
+        self.lock()
+            .pending
+            .iter()
+            .filter(|(_, p)| p.mod_id == mod_id)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Is a call with this id still waiting for its answer (not answered, cancelled, failed or timed out)?
+    pub fn is_pending(&self, call_id: &str) -> bool {
+        self.lock().pending.contains_key(call_id)
+    }
+
     /// Fails every call waiting on `mod_id` (its panel closed, its page died, it was turned off).
     pub fn fail_calls(&self, mod_id: &str, why: &str) -> usize {
         let mut g = self.lock();
