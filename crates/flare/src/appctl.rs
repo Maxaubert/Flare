@@ -2896,6 +2896,12 @@ impl AppCtl {
         if self.panel_front_seen != front {
             self.panel_front_seen.clone_from(&front);
             app.set_panel_splitting(false);
+            // The keys were in the old tab's panel. The new tab may show a panel too (so `panel-shown` never
+            // drops), and a panel takes no plain key: the keys are the terminal's now.
+            if app.get_panel_has_focus() {
+                self.panel_focus_seen = false;
+                app.invoke_focus_terminal();
+            }
         }
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
@@ -6220,6 +6226,37 @@ two",
         assert!(f.h.comp.get_panel_has_focus());
         f.h.comp.invoke_panel_close();
         f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_tab_changes_to_one_with_a_panel_too() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel on a", |f| f.h.comp.get_panel_kind() == 2);
+        let b = f.ctl.borrow_mut().open_folder(r"C:\b");
+        f.ctl.borrow_mut().refresh();
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the panel on b", |f| f.h.comp.get_panel_kind() == 2);
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel back on a", |f| {
+            f.h.comp.get_panel_title().as_str() == "a.txt"
+        });
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // The other tab has a panel too: it is still shown, and the keys are the terminal's.
+        f.ctl.borrow_mut().model_mut().pick(&b);
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        f.pump_until("the panel on b again", |f| {
+            f.h.comp.get_panel_title().as_str() == "b.txt"
+        });
+        assert!(f.h.comp.get_panel_shown());
         assert!(!f.h.comp.get_panel_has_focus());
         assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
     }
