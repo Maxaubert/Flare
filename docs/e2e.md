@@ -149,3 +149,12 @@ slot at 100 and 225 percent (the window is 1000 by 640 css px at both): the slot
 `panel.state` probe reports both), the painted pixels, the 1:1 zoom, Ctrl+Shift+P and Ctrl+Shift+O, the splitter, the
 overlay flag, the close button, and that the terminal refits and answers. The probe is `panel.state`; the `ui.rect` names
 are `panel`, `splitter`, `panel-body`, `panel-image` and `panel-close`. Docs for the port: `docs/surfaces/`.
+
+## Control channel scenarios (Surfaces stage 2)
+
+`ctlChannel` and `mcpRoundTrip` (`tools/e2e/src/scenarios/ctl.rs`) start the built release exe with two folders in its own world,
+so its pipe has its own scoped name. The scenario reads the pipe and each tab's secret through the `ctl.info` probe (only answered
+under `--e2e`) and talks to the pipe with the `flare-ctl` client; it connects to nothing else. `ctlChannel` also prints
+`FLARE_TAB_TOKEN`, `FLARE_CTL_PIPE` and `FLARE_MCP_EXE` from inside the real shell and compares them. `mcpRoundTrip` runs
+`flare-mcp.exe` from beside the exe (build it first: `cargo build --release -p flare -p flare-mcp`) with `CREATE_NO_WINDOW`, killed
+on every way out. The probes are `ctl.info` and `panel.state` (which now also reports `row0`, the first row of the text viewer).

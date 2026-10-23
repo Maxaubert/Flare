@@ -69,3 +69,128 @@ Newest last.
 - **Overlay lists drift.** The F12 diagnostics card and the tab-drag ghost were drawn over the page but not counted.
   The test that reads the property's line counts terms against `Overlay::ALL`, so adding to both keeps them together.
 - **Clippy 1.99 wants `as_chunks::<2>()`** over `chunks_exact(2)` with a constant size.
+## Stage 2, library part (flare-ctl, flare-mcp), 2026-10-21
+
+- **A closed pipe can eat the last line.** The server writes a refusal (`too_many_clients`) and closes
+  at once. The client's `hello` write then fails with a broken pipe before it ever reads, and the
+  refusal is lost: the test for the 65th client failed about one run in three. Two fixes, both needed:
+  the reader treats "peer closed" as "read what is left, then end" (a peek reports a broken pipe even
+  though a read may still return buffered bytes), and a client whose write fails reads one more line
+  (up to 500 ms) before it says "closed". Node's `net.Socket` shows the same race as `EPIPE` on write
+  versus `data` on read: handle `error` after `data`, not instead of it.
+- **Synchronous handles serialise.** A parked `ReadFile` on a handle blocks every `WriteFile` on the
+  same handle. Probe with `PeekNamedPipe` and sleep, or use overlapped I/O. Node does not have this
+  problem (libuv is overlapped), so the port needs no polling.
+- **Node cannot easily set a pipe's DACL.** Flare creates the pipe with `D:P(A;;GA;;;<SID>)`. The
+  default descriptor libuv gives a named pipe may let other local users connect. The Electron port
+  should not rely on the ACL alone: create the pipe through a tiny native helper, or add a per-run
+  secret (a random key in an environment variable the app puts in its shells, sent in `hello`). Open
+  question for the port; Flare's ACL is enforced and its SDDL is pinned (`dacl_sddl`), and the client
+  also refuses a server that runs as another user.
+- **Pipe names are global to the machine.** Another user can create `\\.\pipe\flare-ctl-<hash>` first.
+  The server uses `FILE_FLAG_FIRST_PIPE_INSTANCE` (it fails to start instead of serving a squatter's
+  name) and the client checks the server process's user before sending anything. Both are cheap; keep
+  both.
+- **The pipe tests use one name per test** (`pid` plus a counter), never the real name, so they run in
+  parallel and can never meet a running Flare.
+- **A SID helper was copied, not shared.** `flare-ctl/src/winid.rs` repeats about 60 lines of
+  `flare-win`'s token code, so the MCP server and mods' helpers link nothing of the app. Fold the two
+  together the next time `flare-win` is edited (a parallel stage-2 builder owns that area now).
+- **JSON lines over stdio needs no length framing**, but stdout must carry protocol messages only. The
+  MCP binary logs nothing and prints to stderr only on a fatal error; a stray `println!` would corrupt
+  the stream silently. The stdio test parses every stdout line as JSON to pin this.
+- **Notifications never get a reply**, including ones a client invents (`notifications/cancelled`). A
+  reply to a notification is a protocol error that some clients treat as fatal.
+- **A line reader must remember where it already looked.** Searching the whole buffer for a newline
+  after every chunk is quadratic: a 16 MB screenshot answer in 4 KB pieces took 44 s in a debug build.
+  Keep a `scanned` offset, reuse one read scratch buffer instead of zero-filling a chunk per idle poll,
+  and pin it with a 16 MB trickle test. (The first fix attempt silently did nothing because the edit
+  script's pattern did not match; the test caught it.)
+- **A blocked write is not interrupted by a stop flag.** The worker was parked in `WriteFile` to a client
+  that never reads, so `stop()` waited its full 2 s and abandoned the thread. `CancelIoEx` on the
+  handle from the stopping thread fails the write at once; clear the hook before the handle closes so
+  it can never hit a recycled handle value. Node: destroy the socket.
+- **Count what you cap.** "Stuck handlers" was incremented for every call, so the cap measured
+  concurrency, not timeouts. Increment on the timeout edge, decrement on the finish edge, and order
+  the two atomically (count first, then compare-and-swap the state, undo if it lost).
+- **Do not write events while a request is half-read.** Both sides can block on 64 KB pipe buffers.
+  Flush the outbox only between whole messages.
+- **A known-answer test beats an equality test for anything a port must reproduce.** The pipe-name
+  test only compared names with each other; a Node FNV with a different truncation would have passed
+  its own tests and connected to nothing. The vectors are now in protocol.md section 1.
+- **Read the live object back, not the string you built it from.** The DACL test now opens the running
+  pipe and reads its descriptor (`GetSecurityInfo`). `GA` reads back as `FA`.
+- **Tooling note**: when scripting edits, assert that every replacement matched; a silent no-op
+  hides behind a green compile.
+
+## Stage 2, the channel inside Flare, 2026-10-21
+
+- **A name is not an identity.** The first version let `hello` carry a free-form `tab`; the stage 2 security review found that
+  any process of the user could claim any tab, and `tabs.list` handed out the ids to do it. The fix is a secret per tab that
+  only the tab's shell is given. **What Electron must do:** make the token in the main process when it spawns the pty
+  (`crypto.randomBytes(32).toString('hex')`), put it in the pty environment as `FLARE_TAB_TOKEN` (the same `ptyEnv` function and
+  its test list that drops an inherited copy), keep a `Map<token, tabId>` that is checked on every request, never log it or put
+  it on a command line (`node-pty` env is the way), refuse a `tab` param, and compare with `crypto.timingSafeEqual`. Keep the
+  public tab id separate (hook lines and Sonara carry it).
+- **The same variable name can come from outside.** A Flare started from a Flare tab inherits that tab's `FLARE_TAB_TOKEN`; if
+  the builder only overwrote the variable when a channel was present, a Flare without one would pass the outer secret to its
+  shells. `pty_env` drops all three variables unconditionally and then sets them. Electron: strip them in `ptyEnv` first.
+- **A one-shot channel in the message is the whole bridge.** The worker posts `UiMsg::Ctl` carrying an `mpsc::Sender`, the UI
+  thread answers on it, the worker waits with a deadline and polls a stop flag in 50 ms slices. Three ways out all end the wait:
+  an answer, the deadline (`timeout`), a dropped sender (the message was thrown away because the window is gone, `unavailable`).
+  The third is free: dropping the message drops the sender. Electron: `ipcMain.handle` already is this; add the deadline and
+  answer `unavailable` once `before-quit` has run.
+- **`Debug` on a message must not print its data.** `UiMsg` is `Debug`; the request type prints its kind only, because a path or
+  a 4 MB text must never reach a log through `{:?}`. A test pins it.
+- **A scan that counts blocking calls caught the wait.** The `sync_calls` scan flags `recv_timeout`; the channel's wait is
+  correct (it is a worker thread), so it carries a `sync-ok` reason. Check the scan's list when adding a new waiting thread.
+- **Moving the test that reads source order.** `the_import_runs_before_the_look_and_the_first_paint` searches `window.rs` for the
+  text `TabHost::new(`; the constructor changed name and the test failed with "window.rs has ...". A test that reads source text
+  should name the function it protects in its failure.
+- **Do not rely on Claude Code expanding `${VAR}` in `plugin.json`.** The first draft named the server `${FLARE_MCP_EXE}` and passed
+  the secrets as `${VAR:-}`; the review found that expansion unverified for a plugin manifest (documented for `.mcp.json`), and that
+  a build with no `flare-mcp.exe` left the variable unset, which makes Claude Code report an error for the `flare` server in every
+  tab. Fixed the way `hooks.json` already is: a template, with the absolute path written in at install and the block left out when
+  the file is missing. Electron: do the same (render `plugin.json` when the plugin is copied, `process.execPath`'s folder as the
+  place of the exe), never a variable. **Merge gate, by hand (not machine-verified, the safe rules forbid starting Claude against
+  the owner's settings):** open a Flare tab, run `claude`, `/mcp` must list `flare` connected with four tools, then ask Claude to
+  "show README.md in a panel". If a stdio server turns out not to inherit the shell's environment, put `FLARE_TAB_TOKEN`,
+  `FLARE_CTL_PIPE` and `FLARE_CTL_PID` in the manifest's `env` by rendering them at install; the secret must then never be written to
+  disk, so prefer fixing the inheritance (a wrapper) over writing it.
+- **Hands-on list for the owner (not machine-tested):** Claude Code lists the `flare` server in `/mcp`; the tools appear to Claude
+  and `show_text` fills a panel; the agent in a tab that is behind shows its panel without the tab switching; the Velopack
+  install path finds `flare-mcp.exe` beside `Flare.exe` (the portable zip is checked by `verify-pack.ps1`, an install is not run
+  here).
+- **A relative path is the tab's, and the e2e's front tab is not the first folder.** The scenario wrote its picture into the first
+  folder and the front tab was the second (the last opened is in front). The channel was right and the test wrong; the picture is
+  now written into both folders. Electron: resolve a relative `path` against the tab's cwd, not the main process's.
+- **Merge leftovers hide in docs.** `docs/features.md` still held the conflict markers of the stage 2 library merge (two sections
+  between `<<<<<<<` and `>>>>>>>`), found only because this stage edited the same file. Grep for `^<<<<<<<` before a PR.
+
+## Stage 2 review fixes, 2026-10-21
+
+- **A click must reset what a call set.** The tab's title and handed-over text were set by the channel and only cleared by the next
+  channel call, so a user's click showed a real file under the agent's title. Any path that puts a file in a panel clears both.
+  Electron: keep the title in the panel record and write it on every show.
+- **Tell the shells about a channel only after it runs.** Building the environment before starting the server meant a failed start
+  (the name taken by another process) still handed every shell a secret and a pipe name. The environment is read at spawn time from a
+  flag the start sets. Electron: set the variables in the pty options only after `server.listen` succeeds.
+- **A squatted pipe name is the one gap a per-user ACL cannot close.** The name is predictable from the SID, and a process of the same
+  user (low integrity, restricted token) can create it first. The server fails to start (`FILE_FLAG_FIRST_PIPE_INSTANCE`) and the
+  client trusted whoever answered. Give the shell the server's process id and have the client compare it with the pipe's server
+  (`GetNamedPipeServerProcessId` on Windows). Electron: `net.createServer` cannot say who connected; if the port keeps a pipe, pass
+  the pid and check it with the same API from a small native helper, or use a random pipe name that only this app and its shells know
+  (no predictable name at all), which is simpler and also closes it.
+- **A refusal's text is a prompt-injection path.** Whatever answers on the pipe, `message` ended in the model's tool result. The
+  client cleans it (one line, no control characters, 200 characters).
+- **One deadline per call, carried by the request.** Two UI round trips of 10 s each plus a disk read can pass the server's 15 s, and
+  a request still queued then acts after the caller was told it timed out. Share one deadline, skip the folder ask for an absolute
+  path and let the UI thread drop a request that arrives late. Electron: an IPC handler checks `Date.now() > deadline` before it acts.
+- **A test that reads a file with `unwrap_or_default()` can pass with no file.** The panels.json test did exactly that for text that
+  was never written. Make the store write something real first (a file panel on another tab), assert the file exists, then assert the
+  text is absent and that a restore brings back only the file.
+- **Identical fixtures hide a wrong folder.** The relative-path e2e wrote the same picture into both folders. Different sizes now say
+  which folder was read, from each tab's own connection, and `mcpRoundTrip` starts `flare-mcp.exe` in a folder that is not the tab's
+  to pin its own rule.
+- **The design spec is a source too.** It still said `hello` carries `tab` from `FLARE_TAB_ID`; a later stage reading it first would
+  rebuild the hole stage 2 closed. Fixed in the spec; protocol.md and decisions.md are the truth.

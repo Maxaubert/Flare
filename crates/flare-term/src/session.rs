@@ -9,7 +9,7 @@ use crate::batcher::{BATCH_MAX_BYTES, BATCH_WINDOW, OutputBatcher, READ_MIN, Rea
 use crate::exit_poll::{ExitPoller, PollStep};
 use crate::pty::{PtyProcess, PtySpawner, SpawnSpec};
 use flare_shells::cwd::cd_command;
-use flare_shells::env::{PluginEnv, plugin_key, pty_env};
+use flare_shells::env::{CtlEnv, PluginEnv, plugin_key, pty_env};
 use flare_shells::list::{ShellDef, shell_by_id};
 use flare_shells::resume::{Launch, with_resume};
 use std::collections::{HashMap, HashSet};
@@ -69,6 +69,61 @@ pub struct SessionOptions {
     pub is_ours: IsOurs,
     /// The environment a shell inherits; None = the process environment (a test seam).
     pub base_env: Option<Vec<(String, String)>>,
+    /// The control channel of this Flare instance: every shell gets its own secret token plus the
+    /// pipe name (and the MCP server's path) in its environment. None: no channel (tests, headless).
+    pub ctl: Option<CtlInstance>,
+    /// Whether the control channel is really serving. None: always (tests, headless). Some: a shell is
+    /// told about the channel only while this reads true, so a server that failed to start (the name is
+    /// taken by another process) leaves no tab holding a secret that anyone else could be listening for.
+    pub ctl_up: Option<Arc<AtomicBool>>,
+}
+
+/// What every shell of one Flare instance shares about the control channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CtlInstance {
+    /// `\.\pipelare-ctl-...`, per user and profile.
+    pub pipe: String,
+    /// The process id of this Flare, the one that serves the pipe.
+    pub pid: u32,
+    /// `flare-mcp.exe` beside `flare.exe`, when present.
+    pub mcp_exe: Option<String>,
+}
+
+/// A fresh secret for a tab: two random UUIDs (the OS random generator), 64 hex digits, well over 128
+/// bits. Not derived from anything about the tab, so seeing a tab's id, its folder or its process id
+/// tells nothing about it.
+pub fn new_ctl_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// The two values every new shell is given: the public id of its tab (`FLARE_TAB_ID`, in hook lines
+/// and to Sonara) and the control channel secret (`FLARE_TAB_TOKEN`). Different, independent values.
+struct ShellTokens {
+    tab_id: String,
+    ctl: String,
+}
+
+impl ShellTokens {
+    fn fresh() -> Self {
+        Self {
+            tab_id: uuid::Uuid::new_v4().simple().to_string(),
+            ctl: new_ctl_token(),
+        }
+    }
+}
+
+/// Compares two secrets without stopping at the first difference.
+fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0));
+    }
+    diff == 0
 }
 
 impl Default for SessionOptions {
@@ -83,6 +138,8 @@ impl Default for SessionOptions {
             backlog_max: 4 * 1024 * 1024,
             is_ours: IsOurs::default(),
             base_env: None,
+            ctl: None,
+            ctl_up: None,
         }
     }
 }
@@ -132,6 +189,8 @@ struct Threads {
 struct Session {
     token: u64,
     tab_token: String,
+    /// The secret of the control channel, in this shell's environment as `FLARE_TAB_TOKEN`.
+    ctl_token: String,
     def_id: String,
     plugin_key: String,
     pid: u32,
@@ -362,6 +421,7 @@ struct Fresh<'a> {
     def_id: &'a str,
     plugin_key: String,
     tab_token: String,
+    ctl_token: String,
     warm_key: Option<String>,
     dest: Dest,
 }
@@ -377,6 +437,7 @@ fn launch(sh: &Arc<Shared>, f: Fresh<'_>) -> Result<Arc<Session>, String> {
     let s = Arc::new(Session {
         token: sh.next_token.fetch_add(1, Ordering::SeqCst),
         tab_token: f.tab_token,
+        ctl_token: f.ctl_token,
         def_id: f.def_id.to_string(),
         plugin_key: f.plugin_key,
         pid,
@@ -597,7 +658,7 @@ impl SessionManager {
         size: (usize, usize),
         resume: Option<&str>,
         plugin: Option<&PluginEnv>,
-        token: &str,
+        tokens: &ShellTokens,
     ) -> SpawnSpec {
         let launch = match resume {
             Some(r) => with_resume(def, r),
@@ -611,12 +672,25 @@ impl SessionManager {
             Some(b) => b.clone(),
             None => std::env::vars().collect(),
         };
+        let up = self
+            .sh
+            .opts
+            .ctl_up
+            .as_ref()
+            .is_none_or(|flag| flag.load(Ordering::Acquire));
+        let ctl = self.sh.opts.ctl.as_ref().filter(|_| up).map(|c| CtlEnv {
+            tab_token: tokens.ctl.clone(),
+            pipe: c.pipe.clone(),
+            pid: c.pid,
+            mcp_exe: c.mcp_exe.clone(),
+        });
         let mut env = pty_env(
             &from,
             Some(def.id.as_str()),
             plugin,
             Some(&*self.sh.opts.is_ours.0),
-            Some(token),
+            Some(&tokens.tab_id),
+            ctl.as_ref(),
         );
         if let Some(pair) = launch.env {
             env.push(pair);
@@ -703,13 +777,14 @@ impl SessionManager {
             }
             size = Self::size_for(&st, id);
         }
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        let spec = self.spec_for(&def, root, size, resume, plugin, &token);
+        let tokens = ShellTokens::fresh();
+        let spec = self.spec_for(&def, root, size, resume, plugin, &tokens);
         let fresh = Fresh {
             spec: &spec,
             def_id: &def.id,
             plugin_key: pk,
-            tab_token: token,
+            tab_token: tokens.tab_id,
+            ctl_token: tokens.ctl,
             warm_key: None,
             dest: Dest::Sink {
                 id: id.to_string(),
@@ -801,13 +876,14 @@ impl SessionManager {
         for v in victims {
             self.dispose(v);
         }
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        let spec = self.spec_for(&def, root, size, None, plugin, &token);
+        let tokens = ShellTokens::fresh();
+        let spec = self.spec_for(&def, root, size, None, plugin, &tokens);
         let fresh = Fresh {
             spec: &spec,
             def_id: &def.id,
             plugin_key: pk,
-            tab_token: token,
+            tab_token: tokens.tab_id,
+            ctl_token: tokens.ctl,
             warm_key: Some(key.clone()),
             dest: Dest::Buffer(Vec::new()),
         };
@@ -993,6 +1069,32 @@ impl SessionManager {
             .sessions
             .get(id)
             .map(|s| s.tab_token.clone())
+    }
+
+    /// The tab whose shell was started with this control channel secret. A warm spare no tab has
+    /// adopted yet, a tab that was closed and an invented token all answer None. Any thread.
+    pub fn tab_for_ctl_token(&self, token: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+        let st = lk(&self.sh.st);
+        // No early exit: the time does not say which tab was close.
+        let mut found = None;
+        for (id, s) in &st.sessions {
+            if same_secret(&s.ctl_token, token) {
+                found = Some(id.clone());
+            }
+        }
+        found
+    }
+
+    /// The control channel secret of the tab's shell. Only the e2e probe reads this, to play the shell's
+    /// part (a real client is handed the token through the shell's environment, never by the app).
+    pub fn ctl_token(&self, id: &str) -> Option<String> {
+        lk(&self.sh.st)
+            .sessions
+            .get(id)
+            .map(|s| s.ctl_token.clone())
     }
 
     pub fn shells_dying(&self) -> usize {
@@ -1603,6 +1705,172 @@ mod tests {
         let warm_token = tab_id_of(&sp.made()[2]);
         assert!(m.spawn("tab", "C:\\home", Some("pwsh"), null(), None, None));
         assert_eq!(m.tab_token("tab"), Some(warm_token));
+    }
+
+    fn ctl_opts() -> SessionOptions {
+        SessionOptions {
+            ctl: Some(CtlInstance {
+                pipe: "\\\\.\\pipe\\flare-ctl-test".into(),
+                pid: 4242,
+                mcp_exe: Some("C:\\Flare\\flare-mcp.exe".into()),
+            }),
+            base_env: Some(vec![(
+                "FLARE_TAB_TOKEN".to_string(),
+                "inherited-from-the-user".to_string(),
+            )]),
+            ..fast()
+        }
+    }
+
+    fn env_value(f: &crate::fake::FakeState, key: &str) -> Option<String> {
+        f.spec()
+            .env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn every_shell_gets_its_own_unguessable_control_token_and_the_pipe() {
+        let sp = FakeSpawner::new();
+        let m = mgr_with(&sp, FakeShells::new(), ctl_opts());
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, None));
+        let (fa, fb) = (Arc::clone(&sp.made()[0]), Arc::clone(&sp.made()[1]));
+        let (ta, tb) = (
+            env_value(&fa, "FLARE_TAB_TOKEN").expect("a token"),
+            env_value(&fb, "FLARE_TAB_TOKEN").expect("a token"),
+        );
+        // 64 hex digits from two random UUIDs: far more than 128 bits, different every time.
+        for t in [&ta, &tb] {
+            assert_eq!(t.len(), 64);
+            assert!(t.chars().all(|c| c.is_ascii_hexdigit()), "{t}");
+        }
+        assert_ne!(ta, tb);
+        assert_ne!(
+            ta, "inherited-from-the-user",
+            "the user's own value is overwritten"
+        );
+        // The secret is not the tab's public id, and neither is derivable from the other.
+        assert_ne!(Some(ta.clone()), env_value(&fa, "FLARE_TAB_ID"));
+        assert!(!ta.contains(&tab_id_of(&fa)));
+        for f in [&fa, &fb] {
+            assert_eq!(
+                env_value(f, "FLARE_CTL_PIPE").as_deref(),
+                Some("\\\\.\\pipe\\flare-ctl-test")
+            );
+            assert_eq!(
+                env_value(f, "FLARE_MCP_EXE").as_deref(),
+                Some("C:\\Flare\\flare-mcp.exe")
+            );
+        }
+        assert_eq!(m.tab_for_ctl_token(&ta).as_deref(), Some("a"));
+        assert_eq!(m.tab_for_ctl_token(&tb).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn an_unknown_empty_or_partial_token_names_no_tab() {
+        let sp = FakeSpawner::new();
+        let m = mgr_with(&sp, FakeShells::new(), ctl_opts());
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        let ta = env_value(&sp.made()[0], "FLARE_TAB_TOKEN").unwrap();
+        for bad in [
+            "",
+            "a",
+            "inherited-from-the-user",
+            &ta[..63],
+            &format!("{ta}0"),
+            &ta.to_uppercase(),
+            // The public id of the tab is not its secret.
+            &tab_id_of(&sp.made()[0]),
+            "a-tab-id",
+        ] {
+            assert_eq!(m.tab_for_ctl_token(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one() {
+        let sp = FakeSpawner::new();
+        let m = mgr_with(&sp, FakeShells::new(), ctl_opts());
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        let first = env_value(&sp.made()[0], "FLARE_TAB_TOKEN").unwrap();
+        m.kill("a");
+        assert_eq!(m.tab_for_ctl_token(&first), None);
+        // The same tab id again (a restore after a relaunch does exactly this): a new secret.
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        let second = env_value(&sp.made()[1], "FLARE_TAB_TOKEN").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(m.tab_for_ctl_token(&first), None);
+        assert_eq!(m.tab_for_ctl_token(&second).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_warm_spare_belongs_to_no_tab_until_one_adopts_it() {
+        let sp = FakeSpawner::new();
+        let m = mgr_with(&sp, FakeShells::new(), ctl_opts());
+        m.prewarm("C:\\home", Some("pwsh"), None);
+        let token = env_value(&sp.made()[0], "FLARE_TAB_TOKEN").unwrap();
+        assert_eq!(m.tab_for_ctl_token(&token), None);
+        assert!(m.spawn("tab", "C:\\home", Some("pwsh"), null(), None, None));
+        assert_eq!(m.tab_for_ctl_token(&token).as_deref(), Some("tab"));
+    }
+
+    #[test]
+    fn a_channel_that_did_not_start_leaves_no_control_variable_in_a_new_shell() {
+        let sp = FakeSpawner::new();
+        let up = Arc::new(AtomicBool::new(false));
+        let opts = SessionOptions {
+            ctl_up: Some(Arc::clone(&up)),
+            ..ctl_opts()
+        };
+        let m = mgr_with(&sp, FakeShells::new(), opts);
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), null(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        for k in [
+            "FLARE_TAB_TOKEN",
+            "FLARE_CTL_PIPE",
+            "FLARE_CTL_PID",
+            "FLARE_MCP_EXE",
+        ] {
+            assert_eq!(env_value(&f, k), None, "{k}");
+        }
+        // Once the server is serving, the next shell is told.
+        up.store(true, Ordering::Release);
+        assert!(m.spawn("b", "C:\\x", Some("pwsh"), null(), None, None));
+        let f = Arc::clone(&sp.made()[1]);
+        assert_eq!(env_value(&f, "FLARE_CTL_PID").as_deref(), Some("4242"));
+        assert!(env_value(&f, "FLARE_TAB_TOKEN").is_some());
+    }
+
+    #[test]
+    fn with_no_channel_no_control_variable_is_set() {
+        let sp = FakeSpawner::new();
+        let opts = SessionOptions {
+            base_env: Some(vec![("FLARE_CTL_PIPE".into(), "x".into())]),
+            ..fast()
+        };
+        let m = mgr_with(&sp, FakeShells::new(), opts);
+        assert!(spawn_a(&m));
+        let f = Arc::clone(&sp.made()[0]);
+        for k in [
+            "FLARE_TAB_TOKEN",
+            "FLARE_CTL_PIPE",
+            "FLARE_CTL_PID",
+            "FLARE_MCP_EXE",
+        ] {
+            assert_eq!(env_value(&f, k), None, "{k}");
+        }
+        assert_eq!(m.tab_for_ctl_token("x"), None);
+    }
+
+    #[test]
+    fn the_secret_compare_looks_at_every_byte() {
+        assert!(same_secret("abc", "abc"));
+        assert!(!same_secret("abc", "abd"));
+        assert!(!same_secret("abc", "ab"));
+        assert!(!same_secret("ab", "abc"));
+        assert!(same_secret("", ""));
     }
 
     #[test]

@@ -17,6 +17,7 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - Links: web links and OSC 8 links, and existing paths, painted and opened by a left click through an allowlist.
 - A terminal right-click menu that fits what was clicked.
 - Panels: a click on a path to a picture or a text file shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
+- Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
 
 Details and the tests that hold each one: [docs/features.md](docs/features.md).
 

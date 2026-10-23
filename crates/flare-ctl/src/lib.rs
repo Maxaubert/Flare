@@ -1,0 +1,33 @@
+//! The Flare control channel, protocol v1: one local, per-user, versioned channel that the UI, the
+//! agent tools (`flare-mcp`) and mods all use to show content and drive panels.
+//!
+//! - `proto`: wire types, error codes, parsing.
+//! - `method`: the method names and their timeouts.
+//! - `grant`: who may call what (rule S3 and friends), a pure function.
+//! - `framing`: JSON lines over a [`framing::Wire`], with a size cap.
+//! - `session`: one connection's server side, over any wire; the [`session::Dispatcher`] the app
+//!   implements.
+//! - `client`: the client library, over any wire.
+//! - `pipe` (Windows): the named pipe, its owner-only descriptor, the accept loop, `connect`.
+//!
+//! The contract is `docs/surfaces/protocol.md`; this crate must stay app-neutral so the same rules
+//! can be ported to Prism Terminal.
+
+pub mod client;
+pub mod framing;
+pub mod grant;
+pub mod method;
+pub mod pipe;
+pub mod proto;
+pub mod session;
+mod winid;
+
+pub use client::{Client, ClientError, HelloInfo, HelloParams};
+pub use grant::{Grant, Permission};
+pub use method::Method;
+pub use pipe::{
+    ENV_PIPE, PipeEnd, Server, connect, connect_default, connect_to_server, default_pipe_name,
+    pipe_name,
+};
+pub use proto::{CtlError, Event, MAX_LINE, PROTOCOL, code};
+pub use session::{CallContext, Dispatcher, ServerConfig};

@@ -102,7 +102,14 @@ fn wait_cwd(rig: &Rig, dir: &Path, ms: u64) -> bool {
 }
 
 fn spawn_def(def: &ShellDef, dir: &Path) -> Rig {
-    let env = pty_env(&std_env(), Some(def.id.as_str()), None, None, Some("tok"));
+    let env = pty_env(
+        &std_env(),
+        Some(def.id.as_str()),
+        None,
+        None,
+        Some("tok"),
+        None,
+    );
     let args: Vec<&str> = def.args.iter().map(String::as_str).collect();
     Rig::spawn(&def.exe, &args, dir, Some(env), 100, 30)
 }
@@ -114,7 +121,7 @@ fn any_row(rig: &Rig, pred: impl Fn(&str) -> bool) -> bool {
 #[test]
 fn cmd_reports_its_folder_with_osc_9_9() {
     let dir = temp_dir_named("flare-m2-cwd");
-    let env = pty_env(&std_env(), Some("cmd"), None, None, Some("tok"));
+    let env = pty_env(&std_env(), Some("cmd"), None, None, Some("tok"), None);
     let rig = Rig::spawn(&sys_tools().cmd, &[], dir.path(), Some(env), 100, 30);
     assert!(
         wait_cwd(&rig, dir.path(), 10_000),
@@ -170,7 +177,7 @@ fn the_environment_reaches_the_shell() {
         ("SystemRoot".to_string(), get("SystemRoot")),
         ("ComSpec".to_string(), get("ComSpec")),
     ];
-    let env = pty_env(&from, Some("cmd"), None, None, Some("tok-7"));
+    let env = pty_env(&from, Some("cmd"), None, None, Some("tok-7"), None);
     let rig = Rig::spawn(&sys_tools().cmd, &[], dir.path(), Some(env), 100, 30);
     assert!(
         wait_cwd(&rig, dir.path(), 10_000),
@@ -224,7 +231,7 @@ fn the_cd_line_moves_cmd() {
 #[test]
 fn a_cmd_prompt_with_text_typed_is_not_mistaken_for_a_report() {
     let dir = temp_dir_named("flare-m2-typed");
-    let env = pty_env(&std_env(), Some("cmd"), None, None, Some("tok"));
+    let env = pty_env(&std_env(), Some("cmd"), None, None, Some("tok"), None);
     let rig = Rig::spawn(&sys_tools().cmd, &[], dir.path(), Some(env), 100, 30);
     assert!(wait_cwd(&rig, dir.path(), 10_000), "no first Cwd");
     rig.wait_quiet(300);

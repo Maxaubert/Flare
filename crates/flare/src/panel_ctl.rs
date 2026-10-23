@@ -10,6 +10,7 @@
 //! empty values. Only the front tab's panel is loaded; a tab behind keeps its path and reads it
 //! again when it comes to the front.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,8 +125,37 @@ struct Shown {
     content: Content,
 }
 
+/// What a panel's target starts with when the content was handed over as text (`view.text`), not read
+/// from a file. Such a target never loads from disk, is never written to `panels.json` and is never
+/// restored: the text lives in memory for the session only.
+pub const INLINE: &str = "inline:";
+
+/// The text a tab's panel shows, with the target that names it (`inline:<n>`).
+struct InlineText {
+    target: String,
+    text: Arc<str>,
+}
+
+/// What the control channel reports of a tab's panel (`PanelInfo`, `panel.state`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelSnap {
+    /// The kind's name on the wire: `image`, `text`, ...
+    pub kind: String,
+    pub title: String,
+    /// The file shown; None for text that was handed over.
+    pub path: Option<String>,
+    pub open: bool,
+    /// The slot's share of the page the user dragged it to, if they did.
+    pub width: Option<f32>,
+}
+
 pub struct PanelCtl {
     panels: TabPanels,
+    /// A title a caller gave (the header shows it instead of the file's name), by tab.
+    titles: HashMap<String, String>,
+    /// Text handed over for a tab's panel, by tab.
+    inline: HashMap<String, InlineText>,
+    inline_seq: u64,
     store: Option<Arc<PanelStore>>,
     /// The entries the file held at start, until the restore gives them to the tabs.
     boot: Vec<SavedTabPanel>,
@@ -186,6 +216,9 @@ impl PanelCtl {
     pub fn new(post: Post) -> Self {
         Self {
             panels: TabPanels::default(),
+            titles: HashMap::new(),
+            inline: HashMap::new(),
+            inline_seq: 0,
             store: None,
             boot: Vec::new(),
             saved: None,
@@ -233,6 +266,10 @@ impl PanelCtl {
         if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
             self.reload = true;
         }
+        // A click or a restore shows the file under its own name: a title an agent gave an earlier
+        // call, and text it handed over, end with what they were for.
+        self.titles.remove(tab);
+        self.inline.remove(tab);
         self.panels.show(tab, kind, target)
     }
 
@@ -255,6 +292,67 @@ impl PanelCtl {
 
     pub fn forget(&mut self, tab: &str) {
         self.panels.forget(tab);
+        self.titles.remove(tab);
+        self.inline.remove(tab);
+    }
+
+    /// Shows a file on the tab like [`PanelCtl::show`], under a caller's title (None: the file's name).
+    pub fn show_titled(
+        &mut self,
+        tab: &str,
+        kind: PanelKind,
+        target: &str,
+        title: Option<&str>,
+    ) -> bool {
+        if !self.show(tab, kind, target) {
+            return false;
+        }
+        match title {
+            Some(t) => {
+                self.titles.insert(tab.to_string(), t.to_string());
+            }
+            None => {
+                self.titles.remove(tab);
+            }
+        }
+        true
+    }
+
+    /// Shows a piece of text on the tab (`view.text`). Each call is a new target, so the panel reads
+    /// it afresh. False for a tab that cannot hold a panel target.
+    pub fn show_text(&mut self, tab: &str, text: &str, title: Option<&str>) -> bool {
+        self.inline_seq += 1;
+        let target = format!("{INLINE}{}", self.inline_seq);
+        if !self.panels.show(tab, PanelKind::Text, &target) {
+            return false;
+        }
+        self.inline.insert(
+            tab.to_string(),
+            InlineText {
+                target,
+                text: Arc::from(text),
+            },
+        );
+        self.titles
+            .insert(tab.to_string(), title.unwrap_or("Text").to_string());
+        true
+    }
+
+    /// What the control channel says of the tab's panel; None when it has none (open or closed).
+    pub fn snap(&self, tab: &str) -> Option<PanelSnap> {
+        let p = self.panels.get(tab)?;
+        let inline = p.target.starts_with(INLINE);
+        Some(PanelSnap {
+            kind: p.kind.name(),
+            title: self
+                .titles
+                .get(tab)
+                .cloned()
+                .unwrap_or_else(|| file_name(&p.target).to_string()),
+            path: (!inline).then(|| p.target.clone()),
+            open: p.open,
+            width: p.width,
+        })
     }
 
     pub fn set_share(&mut self, tab: &str, share: f32) -> bool {
@@ -275,7 +373,12 @@ impl PanelCtl {
             .iter()
             .map(|(id, cwd)| SavedTabPanel {
                 cwd: cwd.clone(),
-                panel: self.panels.get(id).cloned(),
+                // Text that was handed over lives in memory for this run only.
+                panel: self
+                    .panels
+                    .get(id)
+                    .filter(|p| !p.target.starts_with(INLINE))
+                    .cloned(),
             })
             .collect();
         let blank = is_blank(&list);
@@ -393,7 +496,11 @@ impl PanelCtl {
         let Some(s) = &self.shown else {
             return;
         };
-        app.set_panel_title(file_name(&s.target).into());
+        let title = self
+            .titles
+            .get(&s.tab)
+            .map_or_else(|| file_name(&s.target), String::as_str);
+        app.set_panel_title(title.into());
         app.set_panel_actual(false);
         let empty_rows: ModelRc<SharedString> = ModelRc::default();
         match &s.content {
@@ -495,8 +602,31 @@ impl PanelCtl {
         let target = target.to_string();
         let kind = kind.clone();
         let current = Arc::clone(&self.current);
+        // Text that was handed over is shaped on the worker too (a 4 MB string is 100 000 rows).
+        let inline = self
+            .inline
+            .get(tab.as_str())
+            .filter(|i| i.target == target)
+            .map(|i| Arc::clone(&i.text));
+        let is_inline = target.starts_with(INLINE);
         let job = move || {
             let stale = || current.load(Ordering::SeqCst) != generation;
+            if is_inline {
+                let result = match inline {
+                    Some(text) => Ok(TextRows::from_doc(preview::text_doc_from_str(
+                        &text, TEXT_CAP,
+                    ))),
+                    None => Err(Reason::Other("the text is gone".to_string())),
+                };
+                if !stale() {
+                    post(UiMsg::Panel(PanelMsgBox(PanelMsg::Text {
+                        generation,
+                        tab,
+                        result,
+                    })));
+                }
+                return;
+            }
             // Every load, a click's or one restored from panels.json, is vetted the same way.
             let result = vetted(&target, &kind).and_then(|real| match kind {
                 PanelKind::Image => {
