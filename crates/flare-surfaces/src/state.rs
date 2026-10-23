@@ -141,6 +141,19 @@ impl TabPanels {
     pub fn open_count(&self) -> usize {
         self.by_tab.values().filter(|p| p.open).count()
     }
+
+    /// The tabs whose OPEN panel shows the conversation (Changes or Tasks), with the kind. Only these tabs need a
+    /// transcript tracker.
+    pub fn open_convo(&self) -> Vec<(String, PanelKind)> {
+        let mut v: Vec<(String, PanelKind)> = self
+            .by_tab
+            .iter()
+            .filter(|(_, p)| p.open && p.kind.is_convo())
+            .map(|(t, p)| (t.clone(), p.kind.clone()))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +222,25 @@ mod tests {
         assert!(!p.show("t1", img(), &"x".repeat(TARGET_MAX + 1)));
         assert!(p.is_empty());
         assert!(TabPanel::new(img(), "").is_none());
+    }
+
+    #[test]
+    fn only_open_conversation_panels_are_listed_for_a_tracker() {
+        let mut p = TabPanels::default();
+        p.show("t1", PanelKind::Changes, "changes");
+        p.show("t2", PanelKind::Tasks, "tasks");
+        p.show("t3", img(), "a.png");
+        p.show("t4", PanelKind::Changes, "changes");
+        p.close("t4");
+        assert_eq!(
+            p.open_convo(),
+            vec![
+                ("t1".to_string(), PanelKind::Changes),
+                ("t2".to_string(), PanelKind::Tasks)
+            ]
+        );
+        p.reopen("t4");
+        assert_eq!(p.open_convo().len(), 3);
     }
 
     #[test]

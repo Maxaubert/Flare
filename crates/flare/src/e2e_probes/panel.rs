@@ -10,6 +10,7 @@ use super::{ProbeCtx, ProbeRegistry};
 /// Adds this file's probes to `r`.
 pub fn register(r: &mut ProbeRegistry) {
     r.add("panel.state", panel_state);
+    r.add("convo.state", convo_state);
     r.add("ctl.info", ctl_info);
 }
 
@@ -66,6 +67,20 @@ pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
             a.get_panel_body_h(),
             k,
         )),
+        // A row of the Changes file list (the list at its top): the whole width of the body.
+        n if n.starts_with("convo-file-") && a.get_panel_kind() == 4 => {
+            let i: f32 = n["convo-file-".len()..]
+                .parse()
+                .map_err(|_| format!("ui.rect {n}: not a row number"))?;
+            let h = a.get_panel_convo_list_row_h();
+            Ok(rect_json(
+                a.get_panel_body_x(),
+                a.get_panel_body_y() + i * h,
+                a.get_panel_body_w(),
+                h,
+                k,
+            ))
+        }
         "panel-image" if a.get_panel_kind() == 1 => Ok(rect_json(
             a.get_panel_image_x(),
             a.get_panel_image_y(),
@@ -87,6 +102,55 @@ pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
         }
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }
+}
+
+/// What the conversation panels show and what runs for them (Surfaces stage 6): the kind, the rows, the picks, how
+/// many rows the window built (the virtualised views) and how many transcript trackers exist.
+fn convo_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
+    use slint::Model;
+    let a = ctx.app;
+    let files: Vec<Value> = a
+        .get_panel_convo_files()
+        .iter()
+        .map(|f| json!({"name": f.name.to_string(), "meta": f.meta.to_string(), "path": f.path.to_string()}))
+        .collect();
+    let rows = a.get_panel_convo_rows();
+    let diff: Vec<Value> = rows
+        .iter()
+        .take(60)
+        .map(|r| json!({"kind": r.kind, "old": r.old_no.to_string(), "new": r.new_no.to_string(), "text": r.text.to_string()}))
+        .collect();
+    let tasks: Vec<Value> = a
+        .get_panel_convo_tasks()
+        .iter()
+        .map(|t| json!({"kind": t.kind, "state": t.state, "text": t.text.to_string(), "sub": t.sub.to_string(), "active": t.active, "collapsed": t.collapsed}))
+        .collect();
+    let (trackers, sessions) = ctx.ctl.try_borrow().map_or((0, Vec::new()), |c| {
+        let s: Vec<String> = c.convo().sessions();
+        (c.convo().tracker_count(), s)
+    });
+    // The Claude session the hooks named for the tab in front (the scenario waits for it).
+    let front_session = ctx.ctl.try_borrow().ok().and_then(|c| {
+        let tab = c.front_id()?;
+        c.hub().claude_session(&tab).map(str::to_string)
+    });
+    Ok(json!({
+        "front_session": front_session,
+        "kind": a.get_panel_kind(),
+        "shown": a.get_panel_shown(),
+        "title": a.get_panel_title().to_string(),
+        "sub": a.get_panel_sub().to_string(),
+        "note": a.get_panel_note().to_string(),
+        "selected": a.get_panel_convo_selected().to_string(),
+        "files": files,
+        "diff_rows": rows.row_count(),
+        "diff": diff,
+        "tasks": tasks,
+        "list_built": a.get_panel_convo_list_built(),
+        "diff_built": a.get_panel_convo_diff_built(),
+        "trackers": trackers,
+        "sessions": sessions,
+    }))
 }
 
 fn panel_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {

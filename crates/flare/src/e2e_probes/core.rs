@@ -494,6 +494,8 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
         "panel" | "splitter" | "panel-body" | "panel-image" | "panel-close" => {
             super::panel::rects(ctx, name)
         }
+        // A row of the Changes file list (Surfaces stage 6).
+        n if n.starts_with("convo-file-") => super::panel::rects(ctx, n),
         "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }

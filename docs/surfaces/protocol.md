@@ -6,12 +6,13 @@ implement it from this file alone. The Rust reference is `crates/flare-ctl` (typ
 the connection state machine, the client) and `crates/flare-mcp` (a client). Where this file and the
 code disagree, that is a bug in one of them: fix both in the same commit.
 
-Status of the methods in Flare (stage 5 is done): the framework (transport, hello, grants, errors,
+Status of the methods in Flare (stages 4, 5 and 6 are done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
-implements `hello`, `tabs.list`, `panel.open` (kind `web`), `panel.close`, `panel.state`,
-`view.image|file|text|html|diagram`, `browser.open`, `browser.navigate` and the agent's hands on the page
-(`browser.look|click|type|press|scroll|wait|eval`, stage 4); `view.html` and `view.diagram` are the mini-apps and diagrams of stage 5. `convo.state` comes with the conversation
-reader (stage 6), `tools.respond` with mods (stage 8); until then each answers `unavailable` and is not
+implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks`), `panel.close`, `panel.state`,
+`view.image|file|text|html|diagram`, `browser.open`, `browser.navigate`, the agent's hands on the page
+(`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
+(`view.html` and `view.diagram`) and `convo.state` (stage 6, the conversation reader). `tools.respond` comes
+with mods (stage 8); until then it answers `unavailable` and is not
 listed in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
 grants are fixed now.
 
@@ -208,7 +209,8 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|..., "title": string, "path"?: string, "url"?: string, "network"?: bool}`.
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|..., "title": string, "path"?: string, "url"?: string, "network"?: bool}`
+(`changes` and `tasks`, stage 6, have neither a `path` nor a `url`).
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
 `title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
 neither `path` nor `url` (its address is Flare's own and means nothing to a client), its `title` is the one the
@@ -249,11 +251,21 @@ tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open
 
-Params: `kind` (string, required; v1 accepts `"web"`), `url` (string, optional; without it the panel opens
-`about:blank`). Opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with
-the same address (below), including the wait for the page to load and its result. For images, files and text
-use `view.*`. Errors: `no_tab`, `bad_params` (no kind, a kind other than `web`, or an address `browser.open`
-refuses), `unavailable` (there is no WebView2 runtime), `timeout`. Stage 3.
+Params: `kind` (string, required; `"web"`, `"changes"` or `"tasks"`), `url` (string, optional, `web` only; without
+it the panel opens `about:blank`).
+
+- `web` opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with the same
+  address (below), including the wait for the page to load and its result. Stage 3.
+- `changes` and `tasks` (stage 6) open the tab's conversation panel: the files the agent edited (with each file's
+  diff), or the agent's task list. They are native panels with no file or address behind them, so `url`, `path` and
+  `text` are refused (`bad_params`). The call answers at once with `{"panel": PanelInfo}` (`kind` `changes` or
+  `tasks`, `title` `Changes` or `Tasks`, no `path`). The panel replaces whatever the tab showed; a tab that is behind
+  keeps it stored and is not switched to. Opening one is what makes Flare read the tab's transcript (see
+  `convo.state`).
+
+For images, files and text use `view.*`. Errors: `no_tab`, `bad_params` (no kind, another kind, `url`, `path` or
+`text` with `changes` or `tasks`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
+runtime), `timeout`.
 
 ### panel.close
 
@@ -458,10 +470,30 @@ browser is made when the tab comes to the front, and nothing switches tabs. No W
 with the download link in the message (the panel shows it too). `panel.changed` follows every address the
 page moves to.
 
-### convo.state (stage 6, reserved)
+### convo.state (stage 6)
 
-Params: none. Result: `{"session"?: string, "tasks": [...], "changes": [...]}`. Until the reader
-exists it answers `unavailable`.
+A compact summary of the caller's own tab's conversation, from what Flare has read of the Claude Code transcript.
+Params: none (a `tab` param is ignored, as for every method: the tab is the connection's own). Flare reads a
+tab's transcript ONLY while a Changes or Tasks panel is open on it and its Claude session is known (the session
+comes from the `flare-status` hooks), so the answer has two shapes.
+
+Not reading (no such panel, or no session yet): `{"tracking": false, "note": string}`. The note says that
+`panel.open` with kind `changes` or `tasks` makes Flare read it. This is an answer, not an error.
+
+Reading: `{"tracking": true, "session": string, "found": bool, "files": int, "edits": int, "failed": int,
+"tasks": {"pending": int, "in_progress": int, "done": int, "other": int}, "subagent_lists": int,
+"active"?: string, "changed": [{"path": string, "edits": int, "failed": int}]}`.
+
+- `found` is false until the transcript file exists; the counts are 0 until it is read.
+- `files` is the number of different files edited (Edit, MultiEdit, Write, NotebookEdit calls); `edits` the calls on
+  them; `failed` the calls whose result was an error. A failed call stays counted because the agent made it.
+- `tasks` counts the MAIN agent's list by state; `subagent_lists` is how many subagents kept a list of their own;
+  `active` is the title of the main list's first task in progress.
+- `changed` is the 20 newest changed files, newest first. No file contents and no diffs leave the app.
+
+Grant: the agent's own tab only (the `convo` permission for a mod). Errors: `no_tab`. Held by
+`convo_state_summarises_the_tabs_own_conversation` and the dispatcher tests (`ctl_app.rs`) and by the e2e
+`convoPanels`. Format notes for the port: `convo.md`.
 
 ### tools.respond (stage 8, reserved)
 

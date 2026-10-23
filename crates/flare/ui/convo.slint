@@ -1,0 +1,545 @@
+// The conversation panels (Surfaces stage 6): Changes (the files the agent edited, then one file's diff) and Tasks
+// (the agent's task list). Both are drawn from rows the controller made on a worker, so the window only wraps
+// them. Only the rows in view are instantiated (a diff can hold thousands), and a closed panel holds no rows at all.
+//
+// Whole device pixels everywhere (`Px.snap`), as the rest of the chrome. Nothing here moves on its own.
+
+import { Theme, Px, SettingsFixed } from "theme.slint";
+import { Glyphs } from "glyphs.slint";
+
+// One changed file in the list.
+export struct ConvoFileRow {
+    path: string,
+    name: string,
+    dir: string,
+    meta: string,      // "3 edits", "1 edit, 1 failed"
+    failed: bool,
+}
+
+// One row of a diff. kind: 0 header, 1 context, 2 removed, 3 added, 4 note.
+export struct ConvoDiffRow {
+    kind: int,
+    old-no: string,
+    new-no: string,
+    text: string,
+}
+
+// One row of the task list. kind: 0 group header, 1 task. state: 0 pending, 1 in progress, 2 done, 3 other.
+export struct ConvoTaskRow {
+    kind: int,
+    state: int,
+    text: string,
+    sub: string,       // what the agent is doing, for the task in progress
+    active: bool,
+    key: string,       // a group header's key, for collapsing
+    collapsed: bool,
+    count: string,     // a group header's "2 of 5 done"
+}
+
+// The added and removed inks. Rust sets them from the theme's terminal palette (green and red), so a theme
+// that recolours the terminal recolours the diff.
+export global ConvoInk {
+    in property <color> added: SettingsFixed.copied;
+    in property <color> removed: Theme.danger-fill;
+}
+
+// A thin scroll thumb on the right edge, as the text viewer's: it shows where the view is and takes no pointer.
+component ConvoThumb inherits Rectangle {
+    in property <length> view-h;
+    in property <length> content-h;
+    in property <length> scrolled;   // the viewport's offset, negative or zero
+    visible: root.content-h > root.view-h + 1px;
+    width: Px.snap(6px);
+    height: root.view-h;
+    Rectangle {
+        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
+        property <length> travel: root.view-h - self.len;
+        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
+        x: 0px;
+        y: Px.snap(self.at * self.travel);
+        width: parent.width;
+        height: Px.snap(self.len);
+        border-radius: self.width / 2;
+        background: Theme.text.with-alpha(0.4);
+    }
+}
+
+// The files the agent changed, newest first.
+component FileList inherits Rectangle {
+    in property <[ConvoFileRow]> files;
+    callback picked(string);
+    callback pressed();
+
+    out property <length> row-h: Px.snap(44px);
+    out property <int> count: root.files.length;
+    out property <int> built: min(root.files.length, ceil(root.height / root.row-h) + 2);
+    out property <int> first: max(0, floor(-flick.content-y / root.row-h + 0.01));
+    out property <length> content-h: root.count * root.row-h;
+
+    public function scroll-by(dy: length) {
+        flick.content-y = min(0px, max(root.height - flick.content-height, flick.content-y + dy));
+    }
+    public function scroll-to(top: bool) {
+        flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
+    }
+
+    clip: true;
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        content-width: root.width;
+        content-height: max(root.content-h, root.height);
+        for k in root.built: Rectangle {
+            property <int> n: root.first + k;
+            property <ConvoFileRow> f: root.files[self.n];
+            y: self.n * root.row-h;
+            height: root.row-h;
+            width: flick.content-width;
+            visible: self.n < root.count;
+            background: row-ta.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: self.f.name + ", " + self.f.meta;
+            accessible-action-default => { root.picked(self.f.path); }
+            Text {
+                x: Px.snap(14px);
+                y: Px.snap(6px);
+                width: parent.width - Px.snap(28px) - meta-text.preferred-width - Px.snap(8px);
+                height: Px.snap(16px);
+                vertical-alignment: center;
+                text: parent.f.name;
+                font-family: Theme.font-ui;
+                font-size: 12.5px;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                x: Px.snap(14px);
+                y: Px.snap(24px);
+                width: parent.width - Px.snap(28px);
+                height: Px.snap(14px);
+                vertical-alignment: center;
+                text: parent.f.dir;
+                font-family: Theme.font-ui;
+                font-size: 11px;
+                color: Theme.dim;
+                overflow: elide;
+            }
+            meta-text := Text {
+                x: parent.width - Px.snap(14px) - self.preferred-width;
+                y: Px.snap(6px);
+                height: Px.snap(16px);
+                vertical-alignment: center;
+                text: parent.f.meta;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                color: parent.f.failed ? ConvoInk.removed : Theme.dim;
+            }
+            Rectangle {
+                y: parent.height - Px.hair();
+                height: Px.hair();
+                background: Theme.divider;
+            }
+            row-ta := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.pressed();
+                    }
+                }
+                clicked => { root.picked(parent.f.path); }
+            }
+        }
+    }
+    ConvoThumb {
+        x: root.width - self.width;
+        y: 0px;
+        view-h: root.height;
+        content-h: flick.content-height;
+        scrolled: flick.content-y;
+    }
+}
+
+// One file's edits as diff rows: monospace, two line-number columns, added and removed rows tinted.
+component DiffView inherits Rectangle {
+    in property <[ConvoDiffRow]> rows;
+    in property <int> max-cols;
+    callback pressed();
+
+    out property <length> row-h: Px.snap(18px);
+    out property <int> count: root.rows.length;
+    out property <length> content-h: root.count * root.row-h;
+    out property <length> char-w: probe.preferred-width;
+    out property <length> num-w: Px.snap(4 * root.char-w + 8px);
+    out property <length> text-x: Px.snap(2 * root.num-w + 22px);
+    // The rows instantiated: the ones in view and two spare, never the whole diff.
+    out property <int> built: min(root.rows.length, ceil(root.height / root.row-h) + 2);
+    property <int> first: max(0, floor(-flick.content-y / root.row-h + 0.01));
+    out property <int> first-row: root.first;
+
+    public function scroll-by(dx: length, dy: length) {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x + dx));
+        flick.content-y = min(0px, max(root.height - flick.content-height, flick.content-y + dy));
+    }
+    public function scroll-to(top: bool) {
+        flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
+    }
+
+    clip: true;
+    probe := Text {
+        visible: false;
+        text: "M";
+        font-family: SettingsFixed.font-mono;
+        font-size: 12px;
+    }
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        content-width: max(root.width, root.text-x + (root.max-cols + 2) * root.char-w);
+        content-height: max(root.content-h, root.height);
+        for k in root.built: Rectangle {
+            property <int> n: root.first + k;
+            property <ConvoDiffRow> r: root.rows[self.n];
+            y: self.n * root.row-h;
+            height: root.row-h;
+            width: flick.content-width;
+            visible: self.n < root.count;
+            background: self.r.kind == 3 ? ConvoInk.added.with-alpha(0.16) : (self.r.kind == 2 ? ConvoInk.removed.with-alpha(0.16) : (self.r.kind == 0 ? Theme.hover : transparent));
+            if self.r.kind == 0 || self.r.kind == 4: Text {
+                x: Px.snap(10px);
+                height: parent.height;
+                vertical-alignment: center;
+                text: parent.r.text;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                font-weight: parent.r.kind == 0 ? 600 : 400;
+                color: parent.r.kind == 0 ? Theme.text-soft : Theme.dim;
+                wrap: no-wrap;
+            }
+            if self.r.kind == 1 || self.r.kind == 2 || self.r.kind == 3: Text {
+                x: 0px;
+                width: root.num-w - Px.snap(6px);
+                height: parent.height;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                text: parent.r.old-no;
+                font-family: SettingsFixed.font-mono;
+                font-size: 11px;
+                color: Theme.dim2;
+            }
+            if self.r.kind == 1 || self.r.kind == 2 || self.r.kind == 3: Text {
+                x: root.num-w;
+                width: root.num-w - Px.snap(6px);
+                height: parent.height;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                text: parent.r.new-no;
+                font-family: SettingsFixed.font-mono;
+                font-size: 11px;
+                color: Theme.dim2;
+            }
+            if self.r.kind == 2 || self.r.kind == 3: Text {
+                x: 2 * root.num-w + Px.snap(4px);
+                height: parent.height;
+                vertical-alignment: center;
+                text: parent.r.kind == 3 ? "+" : "-";
+                font-family: SettingsFixed.font-mono;
+                font-size: 12px;
+                font-weight: 700;
+                color: parent.r.kind == 3 ? ConvoInk.added : ConvoInk.removed;
+            }
+            if self.r.kind == 1 || self.r.kind == 2 || self.r.kind == 3: Text {
+                x: root.text-x;
+                height: parent.height;
+                vertical-alignment: center;
+                text: parent.r.text;
+                wrap: no-wrap;
+                font-family: SettingsFixed.font-mono;
+                font-size: 12px;
+                color: parent.r.kind == 1 ? Theme.text-soft : Theme.text;
+            }
+        }
+        TouchArea {
+            width: flick.content-width;
+            height: flick.content-height;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.pressed();
+                }
+            }
+        }
+    }
+    ConvoThumb {
+        x: root.width - self.width;
+        y: 0px;
+        view-h: root.height;
+        content-h: flick.content-height;
+        scrolled: flick.content-y;
+    }
+}
+
+// The Changes panel: the list, or (after a pick) one file's diff under a bar with a way back and the file's path.
+export component ChangesView inherits Rectangle {
+    in property <[ConvoFileRow]> files;
+    in property <[ConvoDiffRow]> rows;
+    in property <int> max-cols;
+    in property <string> selected;        // the path of the file shown, "" for the list
+    callback select(string);              // a file picked ("" goes back to the list)
+    callback open(string);                // the path was clicked: show the file itself
+    callback pressed();
+
+    out property <length> bar-h: root.selected == "" ? 0px : Px.snap(30px);
+    out property <bool> in-diff: root.selected != "";
+    out property <int> list-built: list.built;
+    out property <int> list-first: list.first;
+    out property <int> diff-built: diff.built;
+    out property <int> diff-first: diff.first-row;
+    out property <length> diff-num-w: diff.num-w;
+    out property <length> diff-text-x: diff.text-x;
+    out property <length> list-row-h: list.row-h;
+    out property <length> diff-row-h: diff.row-h;
+
+    public function back() { root.select(""); }
+    public function scroll-by(dx: length, dy: length) {
+        if (root.in-diff) { diff.scroll-by(dx, dy); } else { list.scroll-by(dy); }
+    }
+    public function scroll-to(top: bool) {
+        if (root.in-diff) { diff.scroll-to(top); } else { list.scroll-to(top); }
+    }
+    public function page() -> length { return root.height - root.bar-h - diff.row-h; }
+
+    clip: true;
+    list := FileList {
+        visible: !root.in-diff;
+        width: parent.width;
+        height: parent.height;
+        files: root.files;
+        picked(p) => { root.select(p); }
+        pressed => { root.pressed(); }
+    }
+    if root.in-diff: Rectangle {
+        x: 0px;
+        y: 0px;
+        height: root.bar-h;
+        width: parent.width;
+        background: Theme.side-flat;
+        back-btn := Rectangle {
+            x: Px.snap(6px);
+            y: Px.snap((parent.height - self.height) / 2);
+            width: back-label.preferred-width + Px.snap(24px);
+            height: Px.snap(22px);
+            border-radius: Theme.radius-button;
+            background: back-ta.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: "Back to the files";
+            accessible-action-default => { root.select(""); }
+            Path {
+                x: Px.snap(6px) - self.stroke-width / 2;
+                y: Px.snap((parent.height - 10px) / 2) - self.stroke-width / 2;
+                width: 10px + self.stroke-width;
+                height: 10px + self.stroke-width;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Glyphs.chevron-left;
+                fill: transparent;
+                stroke: back-ta.has-hover ? Theme.text : Theme.icon;
+                stroke-width: 2.2 * 10px / 24;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+            }
+            back-label := Text {
+                x: Px.snap(20px);
+                height: parent.height;
+                vertical-alignment: center;
+                text: "Files";
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: back-ta.has-hover ? Theme.text : Theme.text-soft;
+            }
+            back-ta := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.select(""); }
+            }
+        }
+        path-btn := Rectangle {
+            x: back-btn.x + back-btn.width + Px.snap(4px);
+            y: Px.snap((parent.height - self.height) / 2);
+            width: parent.width - self.x - Px.snap(8px);
+            height: Px.snap(22px);
+            border-radius: Theme.radius-button;
+            background: path-ta.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: "Open " + root.selected;
+            accessible-action-default => { root.open(root.selected); }
+            Text {
+                x: Px.snap(8px);
+                width: parent.width - Px.snap(16px);
+                height: parent.height;
+                vertical-alignment: center;
+                text: root.selected;
+                font-family: SettingsFixed.font-mono;
+                font-size: 11px;
+                color: path-ta.has-hover ? Theme.accent-hi : Theme.dim;
+                overflow: elide;
+            }
+            path-ta := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.open(root.selected); }
+            }
+        }
+        Rectangle {
+            y: parent.height - Px.hair();
+            height: Px.hair();
+            background: Theme.divider;
+        }
+    }
+    diff := DiffView {
+        visible: root.in-diff;
+        y: root.bar-h;
+        width: parent.width;
+        height: parent.height - root.bar-h;
+        rows: root.rows;
+        max-cols: root.max-cols;
+        pressed => { root.pressed(); }
+    }
+}
+
+// The marker in front of a task: a ring for pending, a filled dot for the one in progress, a dot with a tick for done.
+component TaskMark inherits Rectangle {
+    in property <int> state;
+    width: Px.snap(14px);
+    height: Px.snap(14px);
+    border-radius: self.width / 2;
+    background: root.state == 1 ? Theme.accent : (root.state == 2 ? Theme.dim2 : transparent);
+    border-width: root.state == 1 || root.state == 2 ? 0px : Px.snap(1.5px);
+    border-color: root.state == 3 ? Theme.dim2 : Theme.dim;
+    if root.state == 2: Path {
+        x: (parent.width - 8px) / 2 - self.stroke-width / 2;
+        y: (parent.height - 8px) / 2 - self.stroke-width / 2;
+        width: 8px + self.stroke-width;
+        height: 8px + self.stroke-width;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M2 8.5l4 4 8-9";
+        fill: transparent;
+        stroke: Theme.ground;
+        stroke-width: 2.4 * 8px / 16;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+// The Tasks panel: the agent's list, the one in progress highlighted; a subagent's list is a group that folds.
+export component TasksView inherits Rectangle {
+    in property <[ConvoTaskRow]> rows;
+    callback toggle(string);
+    callback pressed();
+
+    out property <int> row-count: root.rows.length;
+    out property <length> content-h: col.preferred-height;
+
+    public function scroll-by(dy: length) {
+        flick.content-y = min(0px, max(root.height - flick.content-height, flick.content-y + dy));
+    }
+    public function scroll-to(top: bool) {
+        flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
+    }
+
+    clip: true;
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        content-width: root.width;
+        content-height: max(col.preferred-height, root.height);
+        col := VerticalLayout {
+            width: flick.content-width;
+            y: 0px;
+            alignment: start;
+            for r[i] in root.rows: Rectangle {
+                // Every row says its own height (a header 30 px, a task as tall as its words), so the list does not
+                // depend on a conditional layout reporting one.
+                height: r.kind == 0 ? Px.snap(30px) : max(Px.snap(30px), Px.snap(6px) + Px.snap(words.preferred-height + Px.hair()) + (r.sub == "" ? 0px : Px.snap(2px) + Px.snap(doing.preferred-height + Px.hair())) + Px.snap(6px));
+                background: r.kind == 0 ? Theme.side-flat : (r.active ? Theme.accent.with-alpha(0.14) : transparent);
+                accessible-role: text;
+                accessible-label: r.kind == 0 ? r.text + ", " + r.count : (r.state == 1 ? "In progress: " : (r.state == 2 ? "Done: " : "To do: ")) + r.text;
+                if r.kind == 0: Path {
+                    x: Px.snap(10px) - self.stroke-width / 2;
+                    y: Px.snap((parent.height - 10px) / 2) - self.stroke-width / 2;
+                    width: 10px + self.stroke-width;
+                    height: 10px + self.stroke-width;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: r.collapsed ? Glyphs.chevron-right : Glyphs.chevron-down;
+                    fill: transparent;
+                    stroke: Theme.icon;
+                    stroke-width: 2.2 * 10px / 24;
+                    stroke-line-cap: round;
+                    stroke-line-join: round;
+                }
+                if r.kind == 1: TaskMark {
+                    x: Px.snap(16px);
+                    y: Px.snap(8px);
+                    state: r.state;
+                }
+                words := Text {
+                    x: r.kind == 0 ? Px.snap(28px) : Px.snap(40px);
+                    y: r.kind == 0 ? Px.snap((parent.height - self.preferred-height) / 2) : Px.snap(6px);
+                    width: parent.width - self.x - (r.kind == 0 ? counted.preferred-width + Px.snap(24px) : Px.snap(12px));
+                    text: r.text;
+                    wrap: r.kind == 0 ? no-wrap : word-wrap;
+                    overflow: r.kind == 0 ? elide : clip;
+                    font-family: Theme.font-ui;
+                    font-size: r.kind == 0 ? 12px : 12.5px;
+                    font-weight: r.kind == 0 || r.active ? 600 : 400;
+                    color: r.kind == 1 && r.state == 2 ? Theme.dim : Theme.text;
+                }
+                counted := Text {
+                    visible: r.kind == 0;
+                    x: parent.width - self.preferred-width - Px.snap(12px);
+                    y: Px.snap((parent.height - self.preferred-height) / 2);
+                    text: r.count;
+                    font-family: Theme.font-ui;
+                    font-size: 11.5px;
+                    color: Theme.dim;
+                }
+                doing := Text {
+                    visible: r.kind == 1 && r.sub != "";
+                    x: Px.snap(40px);
+                    y: Px.snap(6px) + Px.snap(words.preferred-height + Px.hair()) + Px.snap(2px);
+                    width: parent.width - Px.snap(40px) - Px.snap(12px);
+                    text: r.sub;
+                    wrap: word-wrap;
+                    font-family: Theme.font-ui;
+                    font-size: 11.5px;
+                    color: Theme.accent-hi;
+                }
+                if r.kind == 0: TouchArea {
+                    accessible-role: button;
+                    accessible-label: (r.collapsed ? "Show " : "Hide ") + r.text;
+                    accessible-action-default => { root.toggle(r.key); }
+                    mouse-cursor: MouseCursor.pointer;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.pressed();
+                        }
+                    }
+                    clicked => { root.toggle(r.key); }
+                }
+                if r.kind == 1: TouchArea {
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.pressed();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ConvoThumb {
+        x: root.width - self.width;
+        y: 0px;
+        view-h: root.height;
+        content-h: flick.content-height;
+        scrolled: flick.content-y;
+    }
+}
