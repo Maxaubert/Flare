@@ -599,7 +599,10 @@ fn answer(
             Ok(h) => {
                 let result = hello_result(shared, &h.ctx.grant, h.ctx.tab.as_deref());
                 *handle.tab.lock().unwrap_or_else(|e| e.into_inner()) = h.ctx.tab.clone();
-                handle.said_hello.store(true, Ordering::SeqCst);
+                // A client that reads only while it waits for an answer says `events: false`: it is sent no
+                // events, so a full pipe can never block this worker (and so deadlock a big request).
+                let wants_events = req.params.get("events").and_then(Value::as_bool) != Some(false);
+                handle.said_hello.store(wants_events, Ordering::SeqCst);
                 *hello = Some(h);
                 (Response::ok(id, result), false)
             }
@@ -1258,6 +1261,17 @@ mod tests {
         assert_eq!(ev["params"]["k"], 2);
         assert_eq!(r.shared.hub.publish("x", json!({}), None), 1);
         assert_eq!(r.recv()["event"], "x");
+        r.finish();
+    }
+
+    #[test]
+    fn a_connection_that_says_no_events_is_sent_none() {
+        let mut r = rig();
+        r.hello(r#","tab_token":"tok1","events":false"#);
+        assert_eq!(r.shared.hub.publish("panel.changed", json!({}), Some("t1")), 0);
+        assert_eq!(r.shared.hub.publish("x", json!({}), None), 0);
+        let v = r.ask(r#"{"id":1,"method":"tabs.list","params":{}}"#);
+        assert_eq!(v["id"], 1, "the next line is the answer, no event came first");
         r.finish();
     }
 

@@ -42,6 +42,9 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
+/// Events a client keeps while it waits for answers (the oldest go first).
+const EVENTS_KEPT: usize = 256;
+
 /// What `hello` sends.
 #[derive(Clone, Debug, Default)]
 pub struct HelloParams {
@@ -50,6 +53,8 @@ pub struct HelloParams {
     pub token: Option<String>,
     /// The secret of the tab this client runs in (`FLARE_TAB_TOKEN`). The tab itself is never named.
     pub tab_token: Option<String>,
+    /// True for a client that reads only while it waits for an answer: the server sends it no events.
+    pub no_events: bool,
 }
 
 /// What `hello` answered.
@@ -132,6 +137,9 @@ impl<W: Wire> Client<W> {
         if let Some(t) = &h.tab_token {
             params["tab_token"] = json!(t);
         }
+        if h.no_events {
+            params["events"] = json!(false);
+        }
         let v = self.call(Method::Hello, params, timeout)?;
         HelloInfo::from_value(v)
     }
@@ -178,7 +186,13 @@ impl<W: Wire> Client<W> {
                 .read_line(&self.wire, Some(deadline), &self.never)
                 .map_err(read_error)?;
             match parse_incoming(&line).map_err(ClientError::Protocol)? {
-                Incoming::Event(e) => self.events.push_back(e),
+                Incoming::Event(e) => {
+                    // A client that never takes them must not grow without bound.
+                    if self.events.len() >= EVENTS_KEPT {
+                        self.events.pop_front();
+                    }
+                    self.events.push_back(e);
+                }
                 Incoming::Response(r) => {
                     // A null id is the server refusing the connection (parse error, too large).
                     let ours = r.id == json!(id) || (r.id.is_null() && r.error.is_some());
@@ -271,6 +285,7 @@ mod tests {
                     version: "1".into(),
                     token: None,
                     tab_token: Some("tok".into()),
+                    no_events: false,
                 },
                 Duration::from_secs(2),
             )
@@ -297,6 +312,24 @@ mod tests {
             .unwrap();
         assert_eq!(v["v"], 1);
         assert_eq!(cl.take_events()[0].event, "a");
+    }
+
+    #[test]
+    fn events_nobody_takes_are_capped_and_the_newest_stay() {
+        let (s, c) = pair();
+        let mut script = String::new();
+        for i in 0..(EVENTS_KEPT + 50) {
+            script.push_str(&format!("{{\"event\":\"e\",\"params\":{{\"i\":{i}}}}}
+"));
+        }
+        script.push_str(r#"{"id":1,"result":{"v":1}}"#);
+        serve_script(s, vec![script]);
+        let mut cl = Client::new(c);
+        cl.call(Method::PanelState, json!({}), Duration::from_secs(5))
+            .unwrap();
+        let got = cl.take_events();
+        assert_eq!(got.len(), EVENTS_KEPT);
+        assert_eq!(got.last().unwrap().params["i"], EVENTS_KEPT + 49);
     }
 
     #[test]

@@ -59,6 +59,7 @@ fn hello(name: &str, tab_token: Option<&str>, token: Option<&str>) -> Client<fla
             version: "1".into(),
             token: token.map(str::to_string),
             tab_token: tab_token.map(str::to_string),
+            no_events: false,
         },
         WAIT,
     )
@@ -87,6 +88,7 @@ fn hello_and_a_call_round_trip() {
                 version: "1".into(),
                 token: None,
                 tab_token: Some("tok1".into()),
+                no_events: false,
             },
             WAIT,
         )
@@ -138,6 +140,7 @@ fn a_mod_token_works_and_a_bad_one_is_refused() {
             version: "1".into(),
             token: Some("nope".into()),
             tab_token: None,
+            no_events: false,
         },
         WAIT,
     );
@@ -157,6 +160,7 @@ fn the_65th_client_is_refused_and_the_first_64_keep_working() {
             version: "1".into(),
             token: None,
             tab_token: None,
+            no_events: false,
         },
         WAIT,
     );

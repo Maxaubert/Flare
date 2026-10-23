@@ -755,6 +755,7 @@ impl FlareChannel {
             self.pipe.as_deref(),
             self.server_pid,
             CALL_TIMEOUT,
+            false,
         )?);
         Ok(())
     }
@@ -766,6 +767,7 @@ impl FlareChannel {
         pipe: Option<&str>,
         server_pid: Option<u32>,
         timeout: Duration,
+        events: bool,
     ) -> Result<flare_ctl::Client<flare_ctl::PipeEnd>, ChannelError> {
         let Some(tab_token) = tab_token else {
             return Err(ChannelError::NotRunning(
@@ -789,6 +791,9 @@ impl FlareChannel {
                     version: env!("CARGO_PKG_VERSION").into(),
                     token: None,
                     tab_token: Some(tab_token.to_string()),
+                    // The call connection reads only while a call waits: events sent to it would fill the
+                    // pipe and wedge a big request. The watcher's connection takes the events.
+                    no_events: !events,
                 },
                 timeout,
             )
@@ -821,6 +826,7 @@ fn watch_loop(
             pipe.as_deref(),
             server_pid,
             Duration::from_secs(2),
+            true,
         ) {
             failures = 0;
             loop {
