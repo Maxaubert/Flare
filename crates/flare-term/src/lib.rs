@@ -5,6 +5,7 @@ pub mod caret_hold;
 pub mod cells;
 pub mod click_caret;
 pub mod conpty;
+pub mod dev_server;
 pub mod emulator;
 pub mod exit_poll;
 pub mod fake;

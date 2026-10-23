@@ -14,6 +14,7 @@ const RAINBOW: &str = "flare.term.agentRainbow";
 const HOOKS: &str = "flare.term.agentHooks";
 const TASKBAR_BADGE: &str = "flare.window.taskbarBadge";
 const AGENT_GUARD: &str = "flare.window.agentGuard";
+const NOTIFY_ASK: &str = "flare.window.notifyAsk";
 
 /// The look keys the marks follow, for one subscription: M4's four plus M6's three attention
 /// switches and the rainbow.
@@ -77,6 +78,16 @@ pub fn set_taskbar_badge_on(s: &PrefStore, on: bool) {
     bool_pref_set(s, TASKBAR_BADGE, on);
 }
 
+/// "Notify me when an agent asks" (Surfaces stage 7): a Windows notification when an agent in a tab out of
+/// sight, or in a window without the keyboard, raises a question. Default ON; only a stored "0" is off.
+pub fn notify_ask_on(s: &PrefStore) -> bool {
+    bool_pref_get(s, NOTIFY_ASK, true)
+}
+
+pub fn set_notify_ask_on(s: &PrefStore, on: bool) {
+    bool_pref_set(s, NOTIFY_ASK, on);
+}
+
 /// Keep agent sessions open: with an agent in the front tab Ctrl+D never reaches it.
 pub fn agent_guard(s: &PrefStore) -> bool {
     bool_pref_get(s, AGENT_GUARD, true)
@@ -138,6 +149,20 @@ mod tests {
 
         s.set(FAILED_ON, "x");
         assert!(agent_failed_on(&s), "a stored value other than 0 reads on");
+    }
+
+    #[test]
+    fn the_question_notification_is_on_until_a_stored_zero() {
+        let s = PrefStore::memory();
+        assert!(notify_ask_on(&s));
+        set_notify_ask_on(&s, false);
+        assert!(!notify_ask_on(&s));
+        assert_eq!(s.get(NOTIFY_ASK).as_deref(), Some("0"));
+        assert!(NOTIFY_ASK.starts_with("flare."));
+        set_notify_ask_on(&s, true);
+        assert!(notify_ask_on(&s));
+        s.set(NOTIFY_ASK, "junk");
+        assert!(notify_ask_on(&s), "an unknown value reads as the default");
     }
 
     #[test]

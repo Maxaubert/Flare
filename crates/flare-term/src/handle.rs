@@ -565,6 +565,16 @@ impl TermHandle {
         self.emu.lock().watch_rows()
     }
 
+    /// The local dev server address the program printed since the screen was last cleared.
+    pub fn dev_server(&self) -> crate::dev_server::DevState {
+        self.emu.lock().dev_state()
+    }
+
+    /// Output arrived that `dev_server` has not read yet.
+    pub fn dev_pending(&self) -> bool {
+        self.emu.lock().dev_pending()
+    }
+
     pub fn last_typed(&self) -> Option<Instant> {
         *lk(&self.sh.last_typed)
     }

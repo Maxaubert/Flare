@@ -94,11 +94,12 @@ pub fn spawn(ctx: &mut Ctx) -> Result<(), String> {
         "an empty launch lands on the start screen",
     );
 
-    // PT: run.mjs:479-490. Owner, 2026-10-12: the app's mark, in the accent, on the start page.
+    // PT: run.mjs:479-490. Owner, 2026-10-12: the app's mark on the start page; 2026-10-22: the icon's own orange and gold flame, not the accent.
     let colour = start["mark_colour"].as_str().unwrap_or("").to_string();
+    let gold = start["mark_gold"].as_str().unwrap_or("").to_string();
     ctx.ok(
-        is_chromatic(&colour),
-        format!("the start screen shows the app's mark in the accent ({colour})"),
+        colour == "#ff4800" && gold == "#ffc500",
+        format!("the start screen shows the icon's orange flame with the golden one over it ({colour}, {gold})"),
     );
     ctx.shot(&mut app, "start-screen");
 

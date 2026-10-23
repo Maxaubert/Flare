@@ -1,0 +1,21 @@
+[package]
+name = "flare-surfaces"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+flare-ctl = { path = "../flare-ctl" }
+flare-settings = { path = "../flare-settings" }
+serde_json.workspace = true
+image = { workspace = true }
+log.workspace = true
+url.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

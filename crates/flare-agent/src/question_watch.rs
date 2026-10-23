@@ -68,6 +68,11 @@ impl QuestionWatch {
         current
     }
 
+    /// The question the widget showed at the last look, None once the widget was gone at a look.
+    pub fn current(&self) -> Option<&ShownQuestion> {
+        self.last.as_ref()
+    }
+
     /// Stops the watch: no more polls report, and no output arms one.
     pub fn dispose(&mut self) {
         self.disposed = true;

@@ -11,8 +11,8 @@ pub struct PageDef {
     pub end: bool,
 }
 
-/// The six pages, in the rail's order.
-pub const PAGES: [PageDef; 6] = [
+/// The seven pages, in the rail's order.
+pub const PAGES: [PageDef; 7] = [
     PageDef {
         id: "appearance",
         label: "Appearance",
@@ -35,6 +35,12 @@ pub const PAGES: [PageDef; 6] = [
         id: "dictation",
         label: "Dictation",
         icon: "dictation",
+        end: false,
+    },
+    PageDef {
+        id: "mods",
+        label: "Mods",
+        icon: "chip",
         end: false,
     },
     PageDef {
@@ -92,6 +98,7 @@ mod tests {
                 "terminal",
                 "agents",
                 "dictation",
+                "mods",
                 "diagnostics",
                 "about"
             ]

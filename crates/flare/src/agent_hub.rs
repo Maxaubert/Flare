@@ -379,6 +379,23 @@ impl AgentHub {
         }
     }
 
+    /// The text of the question the tab's agent shows on screen, when the widget is up and the screen was read.
+    pub fn question_text(&self, tab: &str) -> Option<String> {
+        match self.watches.get(tab)?.current()? {
+            ShownQuestion::Text(t) => Some(t.clone()),
+            ShownQuestion::Review => None,
+        }
+    }
+
+    /// The tabs whose agent has an open question now (the mark), in the order the hub heard of them.
+    pub fn question_tabs(&self) -> Vec<String> {
+        self.order
+            .iter()
+            .filter(|t| self.ind.question_ids().contains(*t) && self.ind.agent_ids().contains(*t))
+            .cloned()
+            .collect()
+    }
+
     /// The whole drained batch, in order.
     pub fn on_host_events(&mut self, evs: &[HostEvent]) {
         let now = self.now();
@@ -555,12 +572,6 @@ impl AgentHub {
         self.settle(now);
     }
 
-    pub fn pointer_moved(&mut self) {
-        let now = self.now();
-        self.ind.pointer_moved(now);
-        self.settle(now);
-    }
-
     /// Applies the poll worker's answers.
     pub fn drain_poll(&mut self) {
         let now = self.now();
@@ -665,6 +676,15 @@ impl AgentHub {
             return None;
         }
         self.ind.agent_kind(tab).and_then(DetectedAgent::resumable)
+    }
+
+    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not Codex.
+    /// Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
+    pub fn claude_session(&self, tab: &str) -> Option<&str> {
+        if self.ind.agent_kind(tab) == Some(DetectedAgent::Codex) {
+            return None;
+        }
+        self.sessions.get(tab).map(String::as_str)
     }
 
     /// True once the process poll has answered for the tab (the first word is said once).

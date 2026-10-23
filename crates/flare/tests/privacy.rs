@@ -34,6 +34,24 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare/src/dictation_ctl.rs", "Dictation"),
     // The e2e's explicit fetch step names the sample recording it may download for the dictation scenarios.
     ("e2e/src/fixtures.rs", "Dictation"),
+    // The web panel: the address rules (a bare host gets https, a local one http: strings, no request), the
+    // Runtime's download page (opened only on a click) and the e2e's local test host and refusal cases.
+    ("flare-surfaces/src/web.rs", "Web panel"),
+    // The live preview: the local-address rule compares printed text with the `http://` and `https://` prefixes (no
+    // request is made), and the e2e names the loopback address of a stand-in server it runs itself.
+    ("flare-term/src/dev_server.rs", "Web panel"),
+    ("e2e/src/scenarios/live_preview.rs", "Web panel"),
+    // Mini-apps: the host names a mini-app is served from (a local virtual host, no request), the policy
+    // text that keeps a page off the network, and the e2e's loopback addresses a blocked request points at.
+    ("flare-surfaces/src/app.rs", "Web panel"),
+    // Mods: the host name a mod's page is served from (a local name, answered by Flare itself: no request) and
+    // the rules that keep the page off the network.
+    ("flare-surfaces/src/modview.rs", "Web panel"),
+    ("e2e/src/scenarios/mini_app.rs", "Web panel"),
+    // The mods scenario names the address a mod's page is served from (a local name Flare answers itself).
+    ("e2e/src/scenarios/mods.rs", "Web panel"),
+    ("flare/src/web_ctl.rs", "Web panel"),
+    ("e2e/src/scenarios/web.rs", "Web panel"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

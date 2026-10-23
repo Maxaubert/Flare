@@ -1255,17 +1255,53 @@ pub fn cursor_forward(e: &WindowEvent, sidebar_collapsed: bool) -> Option<Option
 }
 
 impl GlueCtx {
+    /// `WebScript`: starts a script in the front tab's page (the answer is a probe).
+    fn web_script(&self, js: &str) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.web_script(js)
+            .map(|_| ())
+            .ok_or_else(|| "the front tab has no web page".to_string())
+    }
+
+    /// `WebZoom`: the browser zoom of the front web page.
+    fn web_zoom(&self, factor: f64) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        if c.web_zoom(factor) {
+            Ok(())
+        } else {
+            Err("the front tab has no web page".to_string())
+        }
+    }
+
+    /// `ToastClick`: the person clicked a notification about this tab.
+    fn toast_click(&self, tab: &str) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.e2e_toast_click(tab);
+        Ok(())
+    }
+
+    /// `WebUserInput`: the person took over the front web page.
+    fn web_user_input(&self) -> Result<(), String> {
+        let rc = self.ctl.upgrade().ok_or("the controller is gone")?;
+        let mut c = rc
+            .try_borrow_mut()
+            .map_err(|_| "the controller is busy".to_string())?;
+        c.web_user_input();
+        Ok(())
+    }
+
     fn dispatch(&self, events: Vec<WindowEvent>) -> Result<(), String> {
         let app = self.app.upgrade().ok_or("the window is gone")?;
         for e in events {
-            // A pointer move over an unfocused window is a look; the real window tells the
-            // controller so, and an injected Slint event does not.
-            if matches!(e, WindowEvent::PointerMoved { .. })
-                && let Some(rc) = self.ctl.upgrade()
-                && let Ok(mut c) = rc.try_borrow_mut()
-            {
-                c.on_pointer_look();
-            }
             let in_flight = self
                 .ctl
                 .upgrade()
@@ -1845,6 +1881,10 @@ fn handle(ctx: &GlueCtx, req: Request, resp: Responder) {
         Request::DictLine { line } => crate::dictation_ctl::e2e_line(&line),
         Request::DictRoute { text, front } => crate::dictation_ctl::e2e_route(&text, front),
         Request::DictRouted { result } => crate::dictation_ctl::e2e_routed(&result),
+        Request::WebScript { js } => ctx.web_script(&js),
+        Request::WebUserInput => ctx.web_user_input(),
+        Request::WebZoom { factor } => ctx.web_zoom(factor),
+        Request::ToastClick { tab } => ctx.toast_click(&tab),
     };
     resp.reply(match result {
         Ok(()) => Reply::Ok,

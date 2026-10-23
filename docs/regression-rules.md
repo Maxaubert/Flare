@@ -19,7 +19,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 9. **Typing is heard from keys, never from the terminal's own replies.** Focus reports and device attribute answers made untouched shells look typed-into. Native: mark "typed" only in the key-input path; bytes the terminal writes back never update typed, echo or activity state. Source: regression-rules.md typing-on-onkey (#99); core/renderer/lib/termActivity.ts.
 10. **The app answers a program only what it asked.** OSC 52 is write-only (cap 1 MB, "c" or empty only, reads never answered); colour and version replies only on request; theme reports stop when the agent leaves. Native: every reply the grid writes back answers a query; no unsolicited bytes to the pty. Source: regression-rules.md replies-only-when-asked (#168 to #176); core/renderer/lib/termOsc52.ts.
 11. **FORCE_HYPERLINK is never set.** It made supports-hyperlinks put raw OSC 8 into pipes. Native: the environment builder never sets it; a user's own value passes through. Source: core/main/terminal.ts ptyEnv (review 2026-10-11).
-12. **The environment is clean: no session markers, no colour silencing, TERM is 256-colour.** Native: one pure function `pty_env` with the test list; the per-tab variable is `FLARE_TAB_ID`. Source: core/main/terminal.ts SESSION_MARKERS, ptyEnv.
+12. **The environment is clean: no session markers, no colour silencing, TERM is 256-colour.** Native: one pure function `pty_env` with the test list; the per-tab variable is `FLARE_TAB_ID`. Surfaces stage 2 adds three variables to the same function and the same test list: `FLARE_TAB_TOKEN` (the tab's control channel secret, see S1), `FLARE_CTL_PIPE` (this Flare's pipe) and `FLARE_MCP_EXE` (the MCP server beside the exe). A user's own value under any of the three names is replaced, and none is inherited, so a Flare started from a Flare tab never hands its shells the outer tab's secret. Held by `the_control_channel_variables_reach_the_shell_and_replace_the_users_own`, `without_a_channel_an_inherited_token_never_passes` and `no_exe_means_no_exe_variable` (`crates/flare-shells/src/env.rs`). Source: core/main/terminal.ts SESSION_MARKERS, ptyEnv.
 13. **A path on screen is a link when it exists; the backend resolves it again.** Native: the UI sends only text and folder; the backend refuses UNC and NUL, caps length, checks with a metered stat, returns the kind. Source: regression-rules.md path-links (#99); core/main/termPathOpen.ts.
 14. **A runnable file is never run by a click.** Native: runnable extensions are revealed with `explorer.exe /select,` and never passed to ShellExecute; one test per listed extension. Source: core/main/termPathOpen.ts RUNNABLE.
 15. **OSC 8 opens the shown host, http(s) only, no confirm.** Native: when label and uri hosts differ the click opens the address shown; only http and https reach the opener. Source: regression-rules.md links-painted (#169); core/renderer/lib/termOsc8.ts osc8Target.
@@ -41,7 +41,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 ## Processes, lifetime, quit
 
 27. **Closing the window quits; closing the last tab does not.** Native: the window's close-request handler flushes tabs.json and window.json synchronously, kills every shell, waits, exits; no tray; the last tab removal shows the start screen. Source: regression-rules.md close-quits; src/main/index.ts; e2e lastTab.
-28. **The quit waits for every shell to be gone (3 s cap), on the child's exit code.** A native callback landing during teardown aborted the process (0xc0000409). Native: every kill goes through one function that waits for exit with reader threads joined and a 3 s timeout; no detached thread outlives main; a test kills ten shells and asserts none remain. Source: regression-rules.md quit-waits-for-shells (#127); core/main/terminal.ts shellsGone.
+28. **The quit waits for every shell to be gone (3 s cap), on the child's exit code.** A native callback landing during teardown aborted the process (0xc0000409). Native: every kill goes through one function that waits for exit with reader threads joined and a 3 s timeout; no detached thread outlives main (one recorded exception: the control channel's accept thread, a timed-out call and a handler still running at the end of its 2 s stop wait may outlive the stop; they touch only `post`, which fails once the loop has ended, the stop flag and their own pipe, and a call arriving after the stop is never posted, rule 186); a test kills ten shells and asserts none remain. Since Surfaces stage 3 the web views are closed in the same place, before the window hides (`WebCtl::close_all`, held by `quitting_closes_every_web_view_before_the_window_goes` and the e2e `webPanel`, which watches the browser's own process end with the window). Source: regression-rules.md quit-waits-for-shells (#127); core/main/terminal.ts shellsGone.
 29. **Bundled ConPTY.** The inbox conhost fast-fails the process when a pty is killed mid-read. Native: ship `conpty.dll` and `OpenConsole.exe` beside the exe, load the bundled DLL first, a startup check fails loudly if missing. Source: regression-rules.md bundled-conpty; core/main/terminal.ts PTY_OPTS.
 30. **Warm shells never leak, and a spawn killed while pending starts nothing.** Native: a warm entry is removed only by identity (compare the handle), every eviction kills its process; a spawn state holds a cancel flag set by kill. Source: core/main/terminal.sessions.test.ts (#2, #12).
 31. **Output is coalesced every 8 ms and flushed before the exit event.** Native: batch per tab, flush before the exit message so the last words are painted. Source: core/main/terminal.ts OutputBatcher.
@@ -83,7 +83,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 58. **Claude's hooks run in exec form with a static echo.** Native: `cmd.exe /d /c call <root>\hook.cmd <args>`, never a shell string, no stdin read, timeout 5 s; a test reads hooks.json and checks event, matcher and args against the table. Source: core/renderer/lib/agentHookSignal.ts; core/claude-plugin.
 59. **A hooked session is never scored from output; the screen is read only to hold a question the hooks raised.** Native: the screen read is a function of the grid called only from the hook step path. Source: regression-rules.md claude-hooks.
 60. **While the question box is on screen the question stands (#148); a spinner after a question is the approved work but never from the answer key; a Stop with the spinner up waits for the next title (#149, STOP_SETTLE_MS 1500).** Native: a deadline on the tab's own timer, cancelled by any state change; pin with the measured timelines. Source: agentHookState.ts; agentHookState.timelines.test.
-61. **Failed and Finished are news; Question is state.** Native: done and failed clear on looking; question clears on answer, work again, agent gone or tab close; a look is focus plus the active tab, or a pointer move within 1000 ms while unfocused. Source: regression-rules.md finished-and-question (#144).
+61. **Failed and Finished are news; Question is state.** Native: done and failed clear on looking; question clears on answer, work again, agent gone or tab close; a look is focus plus the active tab. EXCEPT a done or failed mark raised on the tab in front while the window was unfocused: it is HELD, and neither focus returning nor the pointer moving takes it down (the 2026-10-14 pointer look is gone); only the front tab changing to a DIFFERENT tab (a click, a key, an overflow pick; clicking the tab already in front does nothing, and closing another tab keeps the mark), work again, agent gone or tab close does, and the badge counts it until then (owner, 2026-10-21, narrowed 2026-10-23; PT core 0.44.4, narrowed in PT #252). Source: regression-rules.md finished-and-question (#144).
 62. **Every working tab has its own mark; the taskbar counts marked tabs, as an overlay only.** Native: one mark per tab from its own state; the only window-level mark is the taskbar overlay (ITaskbarList3), never a window icon. Source: regression-rules.md finished-and-question.
 63. **Ring or Bar only, Ring by default, theme-coloured.** Native: stored off or full reads Ring; colours follow the theme until picked. Source: regression-rules.md indicator-minimal.
 64. **A folder path is not the program.** Native: match the agent by exact basename or first argv token, never by a path segment alone. Source: two-apps.md; resumeReveal.ts namesAgent; agentDetect.ts.
@@ -211,7 +211,7 @@ builds it; `docs/parity.md` holds the matching checklist lines.
 158. **The clipboard is read and written off the UI thread; a copy is refused, never trimmed; the program is told nothing.** Native: `ClipboardPort`, `copy_async`, `read_async`, `BoundedClip` (8 ms), tests `copy_async_refuses_empty_and_oversize_without_touching_the_clipboard`, `no_blocking_clipboard_call_on_the_ui_thread`. Source: `ipc.ts writeCapped`; rules 10, 34.
 159. **Decorations are opaque solid colours in whole device pixels.** The selection is the theme colour blended over the ground in Rust; outlines and underlines are `max(1, floor(scale))` pixels; no alpha reaches a rectangle on either painter. Native: `decor.rs`, tests `the_selection_is_the_opaque_blend_over_the_ground`, `a_find_outline_is_hair_thick_and_outside_the_box`, `gpu_and_cpu_agree_with_a_decor`. Source: rules 23, 131; M3 Verified facts (hairline).
 160. **A folder click never runs a file; a clipboard read never leaves its block.** Native: Explorer and ShellExecute get only the canonical path, checked on it immediately before the call (a folder open holds the canonical directory open without delete sharing, refusing a file, link or junction, from before the Explorer spawn until 10 s after it, so neither it nor a folder above it can be renamed or removed while Explorer resolves the name; a file open must not be a directory and must pass `may_open` again; a drive root is passed bare), COM is initialised once per worker thread, and every CF_UNICODETEXT read (the test helper too) stops at the block size (`GlobalSize / 2` units), null-checks the lock and unlocks and closes the clipboard on every path. Pinned by `a_folder_open_refuses_a_file_swapped_in_and_spawns_nothing`, `a_folder_is_held_against_rename_and_delete_while_explorer_starts`, `a_file_open_refuses_a_directory_and_never_executes`, `a_file_open_asks_the_allowlist_on_the_canonical_path_and_runs_that_path`, `the_verbatim_prefix_is_stripped_without_changing_a_unc_into_something_else`, `an_unterminated_block_is_read_exactly_to_its_end`. Source: M5 security review.
-161. **A hook never runs a program found by name.** Claude Code (node/libuv) searches the current folder first on Windows, so a `cmd.exe` planted in a project folder would run on every hook. Native: the shipped `hooks.json` carries `@@FLARE_SYSTEM_CMD@@` and is never valid as-is; `install_plugin` writes the installed copy (`%LOCALAPPDATA%\Flare\claude-plugin`) with the absolute `System32\cmd.exe` from `GetSystemDirectoryW` (never from an environment variable alone), refuses a folder that is not a drive-rooted `System32`, and rewrites any installed file whose bytes differ (a bare name, a moved system folder); `plugin_dir()` hands out only the installed copy. Pinned by `the_template_is_never_valid_as_is`, `install_leaves_no_bare_program_name`, `an_installed_plugin_with_a_bare_name_is_rewritten`, `a_relative_or_misnamed_system_folder_installs_nothing`, `the_real_system_directory_is_an_absolute_system32`. Source: M6 security review; rule 1.
+161. **A hook never runs a program found by name.** Claude Code (node/libuv) searches the current folder first on Windows, so a `cmd.exe` planted in a project folder would run on every hook. Native: the shipped `hooks.json` carries `@@FLARE_SYSTEM_CMD@@` and is never valid as-is; `install_plugin` writes the installed copy (`%LOCALAPPDATA%\Flare\claude-plugin-<tag>`, one per exe folder) with the absolute `System32\cmd.exe` from `GetSystemDirectoryW` (never from an environment variable alone), refuses a folder that is not a drive-rooted `System32`, and rewrites any installed file whose bytes differ (a bare name, a moved system folder); `plugin_dir()` hands out only the installed copy. Pinned by `the_template_is_never_valid_as_is`, `install_leaves_no_bare_program_name`, `an_installed_plugin_with_a_bare_name_is_rewritten`, `a_relative_or_misnamed_system_folder_installs_nothing`, `the_real_system_directory_is_an_absolute_system32`. Source: M6 security review; rule 1.
 
 ## Agent indicator, resume and plugin (M6)
 
@@ -337,7 +337,199 @@ reducer only through the test seam (`DictLine` lines and `DictRoute`), and every
 does. Native: `dictation_ctl.rs` (`e2e: bool` in the options, `e2e_line`), `service.rs` (`HookStart` never emitted under
 the flag). Held by `the_hook_is_never_started_under_e2e` and `the_hook_starts_with_the_bindings_keys_and_mask_and_only_once`
 (the second for the normal path). Source: globalDictKey.ts; src/main/index.ts E2E (N16).
-186. **A quitting instance takes no hand-off.** The end of life stops the hand-off server before it kills a single shell,
+
+## Surfaces: the control channel (stage 2)
+
+The security rules of the design (`docs/superpowers/specs/2026-10-21-surfaces-design.md`, "Security rules"), numbered after
+the last rule above and kept under their design names S1 to S6. The contract they protect is `docs/surfaces/protocol.md`.
+
+186. **S1. The control channel is per user and per tab, and never listens on a network.** The pipe is
+`\\.\pipe\flare-ctl-<hash of the SID>` (plus a hash of the profile folder for any profile but the default), created first-instance
+with the descriptor `D:P(A;;GA;;;<SID>)` and `PIPE_REJECT_REMOTE_CLIENTS`; a client refuses a server of another user, **and a
+client that was told which process serves the pipe (`FLARE_CTL_PID`, put in every shell next to `FLARE_CTL_PIPE`, an inherited copy
+dropped, rule 12) refuses any other process**: the name is predictable from the SID, so a process of the same user at low integrity
+or with a restricted token could create it first and would otherwise be handed the tab's secret and be able to put its words in a
+tool result (`flare-mcp` also cleans a refusal's text to one short line and refuses to connect with no pid). The shells are told
+about the channel only once its server is serving: a server that failed to start leaves no tab with a secret or a pipe name. On top
+of that a connection acts as a tab only by presenting that tab's secret: 64 hex digits from two random UUIDs (the OS generator),
+made when the tab's shell is started and put in its environment as `FLARE_TAB_TOKEN`; never on a command line (rule 3), never
+logged, never sent to Sonara or printed in a hook line (those carry the public `FLARE_TAB_ID`). `hello` takes `tab_token` and
+refuses a `tab` name (`bad_params`); an unknown token is `unauthorized` and closes; the token is looked up again on every request,
+so a closed tab's token stops working at once; a restored tab gets a new secret each launch. Native: `flare-ctl` `pipe.rs`,
+`session.rs`; `flare-term` `session.rs` (`new_ctl_token`, `tab_for_ctl_token`); `flare-shells` `env.rs`. Held by
+`the_live_pipe_carries_the_owner_only_descriptor`, `the_pipe_is_closed_to_other_users`, `a_second_server_on_the_same_name_fails_to_start`,
+`the_pipe_name_has_known_answers`, `every_shell_gets_its_own_unguessable_control_token_and_the_pipe`,
+`an_unknown_empty_or_partial_token_names_no_tab`, `a_closed_tab_s_token_stops_working_and_a_new_shell_gets_a_fresh_one`,
+`a_channel_that_did_not_start_leaves_no_control_variable_in_a_new_shell`,
+`a_client_told_which_process_serves_the_pipe_speaks_to_no_other`, `a_pipe_served_by_another_process_is_never_given_the_secret`,
+`a_refusal_shown_to_the_model_is_one_short_clean_line`, `a_warm_spare_belongs_to_no_tab_until_one_adopts_it`, `an_unknown_tab_token_is_refused_and_closes_the_client`,
+`a_tab_name_is_refused_because_only_the_secret_names_a_tab`, `a_closed_tab_loses_its_connection_s_tab_at_once`, and the e2e
+`ctlChannel` (a wrong secret, the tab's id and a tab named in `hello` are all refused; the shell's `FLARE_CTL_PID` is the app's) and
+`mcpRoundTrip` (a server named as another process, or none, is never connected to). Source: the design spec; the stage 2 security
+review (2026-10-21).
+187. **S2. A `view.*` path is resolved again by the backend and shown only if the user could already open it.** The call's own
+worker resolves it with the click's function (rule 13), requires the click allowlist as named AND as the file system names it
+(rule 14), requires the kind asked for (a picture for `view.image`, text or code for `view.file`), and answers `not_found` for
+anything else a probe could learn from (missing, a share, a program, outside the list); a program is never shown and never run.
+`view.text` is a string, capped at 4 MB. The UI thread is only given a path that passed. Native: `crates/flare/src/ctl_app.rs`
+(`view_file`). A call has ONE deadline for all its steps (10 s, inside the channel's 15 s), an absolute path never asks the UI for a
+folder, and the UI thread does nothing for a request that arrives after its deadline (answers `timeout`), so a call told it timed
+out never changes the window. A file shown by a click clears the title and the handed-over text of an earlier call, so a real file
+is never under a title an agent chose. Held by `every_request_carries_one_deadline_inside_the_channel_s_own_timeout`,
+`an_absolute_path_never_asks_the_ui_for_a_folder_and_a_relative_one_does`, `a_request_that_arrives_after_its_deadline_changes_nothing`,
+`a_click_after_a_titled_call_shows_the_file_under_its_own_name`, `a_path_nobody_may_open_is_not_found_and_never_reaches_the_ui_thread`,
+`the_kind_must_match_and_a_link_that_changes_kind_shows_nothing`, `view_text_is_capped_and_a_title_is_one_short_line` and the e2e
+`ctlChannel` (a missing file, a program, a program named like a picture and a network path; a relative name is read from the folder
+of the tab that asks, two pictures of different sizes telling the folders apart) and `mcpRoundTrip` (the server's own folder rules a
+relative name).
+188. **S3. The agent grant shows content and drives its own tab's panel; it cannot type into a shell, read other tabs' screens,
+change settings or enable mods.** `shell.input`, `settings.set` and `mods.enable` exist as names only so the refusal is a pinned
+test, and the `ui` grant never crosses the pipe. `tabs.list` gives the agent its own tab only (ids and titles, never a screen); a
+method acts on the connection's own tab and never on a `tab` in its params. Native: `flare-ctl` `grant.rs`, `session.rs`;
+`ctl_app.rs` (`call`). Held by `rule_s3_the_agent_cannot_type_into_shells_change_settings_or_enable_mods`,
+`nothing_over_the_pipe_reaches_the_ui_namespace`, `a_ui_token_is_refused_at_hello`, `tabs_list_gives_the_agent_its_own_tab_only`,
+`a_call_with_no_tab_is_no_tab_and_asks_the_ui_nothing`, and the e2e `ctlChannel` (`shell.input` and `browser.eval` are forbidden).
+189. **S4. Web panels never use the user's own browser profile, and `browser_eval` is off by default.** The channel half is built
+(`browser.eval` needs the user's switch, and `browser` and `eval` for a mod); the web panel (stage 3) keeps its profile in the run's
+own folder and never in Edge's. Held by `browser_eval_needs_both_browser_and_eval`, `the_agent_cannot_reach_ui_methods_or_eval`
+(the channel), `the_profile_lives_under_the_named_profile_or_local_appdata` and `the_profile_is_never_an_edge_folder`
+(`flare-surfaces` `web.rs`, the profile folder), `every_other_scheme_is_refused`, `a_login_in_the_address_is_refused`,
+`a_refused_navigation_answers_a_waiting_call` and `a_refused_navigation_is_said_in_the_header_and_leaves_the_page` (only http,
+https and about:blank open, whoever asks), and the e2e `webPanel` (a location request is denied, `window.open` goes to the same
+panel, the data folder is the world's). `browser.eval` itself is stage 4.
+190. **S5. A mod gets exactly its granted permissions, and a disabled mod's token is dead.** The channel half is built (the token
+is looked up on every request, so an open connection dies at once); mods themselves are stage 8, and until then every mod token
+is unknown. Held by `disabling_a_mod_kills_its_open_connection`, `a_mod_token_gets_the_mod_grant` and
+`the_token_decides_the_tab` (no token resolves to a mod).
+191. **S6. A download from a web panel is held until the person answers; no silent saves.** WebView2's own behaviour is to save
+straight into Downloads, so Flare registers `DownloadStarting`, takes a deferral and asks in its own dialog ("Save this file?", the
+file name and the host, Save or Cancel). A yes lets the browser save to its proposed path in Downloads; a no, a closed panel, a
+closing window, a runtime that cannot hold a download back, or no answer at all means no file. A second download waits behind the
+first. Electron must show the same question (`will-download`, `item.pause()`, the same dialog, then `item.setSavePath` or
+`item.cancel()`); the channel has no method that saves a file. Held by `a_download_is_asked_about_and_saved_only_on_a_yes`,
+`a_no_cancels_the_download_and_a_second_one_waits_its_turn`, `a_download_of_a_page_that_is_closed_is_not_asked_about`
+(`web_tests.rs`), `download_ask.rs` (`the_question_names_the_file_and_where_it_comes_from`, `a_name_cannot_inject_markup_or_run_on`,
+`a_second_download_waits_behind_the_first`) and the e2e `webPanel` (an `<a download>` asks, nothing reaches Downloads while the
+question is open, and a no saves nothing).
+192. **The plugin manifest never names the MCP server by a variable.** `plugin.json` is a template with `@@FLARE_MCP_EXE@@` and the
+install step writes the absolute path of `flare-mcp.exe` beside the running exe into the installed copy (like the System32 `cmd.exe` in
+`hooks.json`, rule 161); with no such file the `mcpServers` block is left out, so a build without it never gives Claude Code a server
+that fails in every tab and the status hooks of the same plugin are never affected. No secret, pipe name or `${...}` is written in the
+manifest. Native: `flare-agent` `plugin.rs` (`render_manifest`, `install_plugin_with`). Held by
+`declares_the_flare_mcp_server_by_a_written_in_absolute_path_and_never_by_expansion` and
+`install_writes_the_mcp_server_only_when_the_program_exists`. Source: the stage 2 review (2026-10-21).
+193. **The agent's hands on a page never wait on the UI thread, and every call is answered exactly once.** A look, click, type, press,
+scroll, wait or eval is a job (`flare_surfaces::agent_job`) that the window drives from the browser's completion messages; the
+browser's completion handlers only post (rule 34). One call runs on a page at a time (a second is `unavailable` and the first is
+untouched); a call is answered when it is done, when the person takes over (`interrupted`), at its own deadline (`timeout`), when the
+panel or tab closes, the page's process ends or the window quits (`unavailable`), and a late answer for a finished job is ignored.
+Held by `a_second_call_while_one_runs_is_refused_and_the_first_is_not_disturbed`, `closing_the_panel_answers_the_call_that_was_running`,
+`a_page_whose_process_ends_answers_the_call_too`, `quitting_answers_a_call_that_was_running` (`web_tests.rs`),
+`a_call_the_page_never_answers_times_out`, `answers_for_other_calls_are_ignored` (`agent_job.rs`),
+`quitting_closes_every_web_view_before_the_window_goes` (`web_tests.rs`), the scan in `flare-web/tests/sync_calls.rs` and the e2e
+`agentBrowser`. A call that is cut short in the middle of a press (a takeover, a timeout) lets go of the button or key it had pressed
+(`a_click_cut_short_lets_go_of_the_button`, `a_click_that_times_out_still_lets_go`,
+`the_person_taking_over_a_click_lets_go_of_the_button`), and an agent in a tab that is behind gets a hidden page made for it, never a
+"no web page is open" loop (`an_agent_in_a_tab_behind_gets_a_hidden_page_and_does_not_loop_on_open_page`).
+194. **The agent never runs its own script in a page unless the user switched it on, and a wait is never a script runner.**
+`browser.eval` needs "Let agents run scripts in pages" (off by default, read at every request); a text or selector wait sends ONE fixed
+checker whose only variable part is a JSON string literal. Held by `the_agent_grant_follows_the_users_switch_for_scripts`,
+`scripts_for_agents_are_off_until_a_stored_one`, `the_wait_checker_is_a_fixed_template_around_one_string_literal`,
+`a_wait_asks_the_page_with_the_fixed_checker_only`, `a_look_goes_through_devtools_and_answers_with_the_picture_and_the_elements` (only
+protocol methods are sent, and the one script is exactly `window.devicePixelRatio`, with a time limit:
+`the_pixel_ratio_question_has_a_time_limit_and_nothing_else_is_script`) and the e2e `agentBrowser` (eval is `forbidden` with the switch off, works
+with it on, a hostile wait text leaves the page unchanged) and `mcpBrowser` (the refusal names the setting).
+195. **Page text is data, never instructions.** What a page says reaches the agent only after Flare removed control, direction-override,
+zero-width and other invisible characters (Unicode tag characters, variation selectors and fillers among them: one list,
+`flare_ctl::text`), collapsed white space (line separators too) and capped every field, and `flare-mcp` does the same again, writes each name as a
+quoted string, one element per line, between `BEGIN PAGE CONTENT` and `END PAGE CONTENT` marker lines that no page text can forge. Held
+by `page_text_is_cleaned_before_it_goes_anywhere`, `a_long_name_is_cut_to_the_cap`, `a_hostile_tree_cannot_loop_or_blow_up`
+(`agent_web.rs`), `hostile_page_text_cannot_end_the_block_pose_as_an_element_or_hide`, `a_huge_list_is_cut_and_says_so`,
+`a_bad_or_missing_picture_is_left_out_without_losing_the_list` (`flare-mcp` `browser.rs`) and the e2e `mcpBrowser`. The title and the
+address a navigation answers with are page text too: they sit between the markers, quoted and cleaned, never in Flare's own sentence
+(`a_hostile_title_or_address_after_a_navigation_stays_inside_the_markers`, `an_eval_result_cannot_fake_the_end_with_a_line_separator`,
+`hidden_characters_of_every_kind_are_dropped` in `flare-ctl` `text.rs`, and the e2e `mcpBrowser`).
+196. **The person keeps control of the page.** A key of theirs in the page, or a mouse button pressed over it, ends the agent's running
+call with `interrupted`, takes the ribbon down and forgets the refs; the mouse is read every 16 ms and a press that came and went between two reads still
+counts (`GetAsyncKeyState`'s "pressed since" bit, cleared when the call starts), and the page taking the window's keyboard focus while a
+call runs is a takeover too (`the_person_focusing_the_page_while_a_call_runs_takes_over`); the agent's own key presses are neither the person's nor the app's
+chords (an agent pressing Ctrl+Shift+P closes nothing); a click in another window that covers the page is not a takeover. No keyboard
+or mouse hook is installed and nothing is sent to a real window. Held by
+`the_ribbon_is_up_while_the_call_runs_and_the_person_taking_over_ends_the_call`,
+`a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,
+`a_point_is_inside_a_rectangle_by_its_near_edges` and the e2e `agentBrowser`. The real-button polling is on the by-hand list.
+197. **The ribbon never changes the page.** "Claude is using this page" sits over the head of the panel; the browser window's rectangle is
+the same with and without it, so an agent reading coordinates never sees the page reflow for the ribbon. It is up while a call runs on
+the page in front and for 1.5 s after, and the timer that serves it exists only then. Its background is opaque (a tint over a solid
+base), so the page's title does not show through it. Held by
+`the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `nothing_exists_before_a_web_panel_opens` and the e2e
+`agentBrowser` (the rectangle is compared).
+198. **Refs are only as old as the page they were made on.** A ref after a page load, a takeover, or for an element that is gone answers
+`not_found` and sends nothing to the page; positions are resolved when the action runs. Held by
+`a_ref_is_forgotten_when_the_page_loads_something_new`, `a_stale_ref_is_not_found_and_nothing_is_sent`,
+`an_element_that_vanished_is_not_found`, `a_look_that_finishes_after_a_navigation_does_not_put_back_the_old_refs` (a look keeps its
+names only when the page is still the document it read) and the e2e `agentBrowser`.
+199. **A page the agent wrote runs in a sandbox that cannot reach out, and the page cannot lift it.** A mini-app (`show_html`) is served
+from a host of its own (`flare-app-<n>.local`: its own SITE, so its storage and cookies are not another app's, not even through a `Domain=` cookie), in a private browser profile of
+its own (never the web panel's, never Edge's), and the first element of the page is a Content-Security-Policy that Flare wrote
+(`default-src 'self' 'unsafe-inline' data: blob:; connect-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'`,
+no `'unsafe-eval'`; `https:` is added only when the agent asked AND the user's setting "Let mini apps use the network" is on, plain `http:`
+never). A script that removes the tag removes nothing, a second wall answers every request that is not the app's own with a refusal (every request source, workers too), and the page loses the peer-connection API three ways: a script before its own code in every frame whose completion is AWAITED before the view navigates (an error fails the view, no unprotected fallback), a browser environment of the mini-apps' own (never the web panel's; one for apps with no network, one for apps with it, each started with the WebRTC policy `disable_non_proxied_udp`, the sealed one also with a proxy that is not there) and a policy that shuts child frames (`frame-src 'none'; child-src 'none'; worker-src 'self' blob:`). The browser walls are tested alone, by seams that switch the policy and the script off, with a UDP socket as the STUN server (0 packets for an app, more than 0 for the web panel as the control) and a WebSocket to a loopback listener (stopped for a sealed app); held also by `a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy`, `the_policy_has_no_child_frames_and_only_own_or_blob_workers`, `the_two_app_environments_have_folders_of_their_own_beside_the_panels`.
+The view cannot navigate away, a link or `window.open` opens nothing, developer tools are off. Native: `flare_surfaces::app` (`csp`,
+`wrap_html`, `nav_allowed`, `request_allowed`) and the host's `configure_app`. Held by `the_policy_has_no_network_unless_asked`,
+`the_policy_comes_before_anything_the_page_says`, `a_view_stays_on_its_own_page`, `a_request_leaves_only_as_far_as_the_network_switch_allows`,
+`the_network_needs_the_agent_to_ask_and_the_users_switch_to_be_on` and the e2e `miniApp` (violation events for a fetch, an image and a
+script from outside; the tag removed and a fetch still blocked; the second wall alone answering with the policy off by the `--e2e` seam;
+a navigation, a sibling page and `window.open` going nowhere; the profile's name and private flag read back; the next app finding no
+storage or cookie). Source: the Surfaces design, "Security rules" (S4) and the stage 5 review.
+200. **A mini-app's files are the app's own and go with it.** One folder per app directly under `<profile>\apps`, holding only the page
+(and a diagram's Mermaid file): files next to a `path` page are never served. The folder is written off the UI thread before the UI is
+asked, then belongs to the UI thread, which removes it on a worker when the panel closes, another panel replaces the app, the tab closes,
+the request arrives too late or the tab is gone; the whole folder is emptied at start; and only a folder directly inside the apps root is
+ever deleted, whatever it is handed. A page named by `path` is resolved again by the backend (rule 187) and must be `html` or `htm` as
+typed and as the file system names it; a click on a path never opens a page. Native: `app::write_app`, `remove_app`, `clean_root`;
+`flare_term::path_open::resolve_html_file`. Held by `only_a_folder_directly_inside_the_apps_root_is_ever_removed`,
+`startup_empties_the_apps_folder_and_leaves_the_profile_alone`, `retiring_the_root_renames_it_aside_and_the_sweep_deletes_every_old_one`, `the_page_loses_peer_connections_and_prefetch_before_its_own_code`, `a_page_for_a_mini_app_is_html_or_htm_and_nothing_else`,
+`a_page_named_by_path_is_resolved_again_vetted_and_read`, `closing_a_mini_app_ends_it_and_removes_its_folder`,
+`a_mini_app_for_a_closed_tab_is_refused_and_its_folder_removed`, `a_mini_app_asked_for_too_late_is_never_shown` and the e2e `miniApp`.
+201. **A diagram is drawn by the bundled build and its error is the agent's to read.** Mermaid is the file in `assets/mermaid/` (hash held
+by `the_bundled_mermaid_is_the_pinned_build`), compiled into the exe, never fetched; `securityLevel` is `strict`; the text reaches the page
+as a JSON string in an inert script element with `<` escaped (`the_diagram_text_cannot_end_its_element`), never as markup; a diagram has no
+network whatever the setting says. The call is answered only when the page says whether it drew, and a failure is `bad_params` with
+Mermaid's own text cleaned and capped at 800 characters (`a_drawn_diagram_is_ok_and_an_error_carries_mermaids_words`,
+`a_diagram_is_answered_by_the_pages_word_and_a_drawing_that_failed_says_why`, the e2e `diagram` and `mcpDiagram`). Replacing one page by
+another keeps the browser environment (`a_page_replaces_a_mini_app_and_a_mini_app_replaces_a_page`, the e2e checks the browser process id).
+
+199 (addendum, 2026-10-22). The sealed app's browser also resolves no name (`--host-resolver-rules="MAP * ~NOTFOUND"`), a WebView2 environment variable that would replace its arguments is removed and a policy value that does so refuses the app, an external protocol launch is cancelled and frames navigate only to blank, srcdoc or the app's page. Held by `an_overriding_policy_refuses_the_app_and_none_lets_it_start`, `a_sealed_app_browser_has_the_webrtc_policy_and_a_dead_proxy_a_networked_one_only_the_policy` and the e2e `miniApp` (unregistered-protocol navigation from page and frame, a listener on port 9 hears nothing).
+
+## Surfaces: live preview, questions as notifications (stage 7; the agent board was removed)
+
+202. **A Preview chip only ever offers a local address.** The host is compared whole against `localhost`, `127.0.0.1` and `[::1]`; a port (1 to 65535) is required; a user part, a space, a control, hidden or look-alike character refuses it; the address is checked again at the click and opened through the address bar's own normaliser. Output cannot make the chip open a remote page. The chip opens only the ORIGIN (`scheme://host:port/`; path, query and fragment are dropped in `parse_local`), the label and tooltip are that origin. Native: `flare_term::dev_server::parse_local`, `local_server_in`. Held by `a_remote_host_never_qualifies`, `a_port_is_required_and_must_be_a_real_one`, `a_confusable_or_hidden_character_is_refused`, `an_address_that_is_not_local_never_gets_a_chip` and the e2e `devPreview` (a remote line prints, nothing is tracked).
+203. **A tab's screen is read for an address on demand, in bounded pieces, input excluded, and a clear is heard.** The finder reads the emulator's LIVE screen (its logical lines, wrapped rows joined; never the history, never the alternate screen, never the row the cursor is on) of any tab, at most once per 40 ms per tab and only after output arrived, so the cost is the screen's size whatever the volume; a different address on a row no older than the held one is news, the same one printed again is not; ED 2, ED 3 and RIS are heard in the bytes and drop the held address (rules 16 and 25). Held by the `ClearWatch` tests (every cut of a clear, strings skipped), `the_emulator_reads_a_local_server_address_off_its_screen`, `the_row_the_cursor_is_on_is_input_and_never_read`, `a_suggestion_painted_after_the_cursor_and_typed_over_is_not_read`, `an_address_that_scrolled_off_the_screen_is_still_the_one_held`, `a_cleared_screen_forgets_the_address_though_the_history_still_holds_it`, `a_long_address_wrapped_over_rows_is_read_whole`, `nothing_is_read_on_the_alternate_screen_and_no_remote_address_ever`, `a_reading_asked_for_too_soon_is_owed_not_lost`, `quiet_output_costs_nothing_here`.
+204. **A chip needs a listener in the tab's own process tree and is looked up without connecting.** Every listener on the port (IPv4 and IPv6) must be the tab's shell or one of its descendants (`flare_win::tcp_owner::listening_in_tree`, `descendants`); a port held by any other process, or by a server outside the tree (WSL), gets no chip. The port is read from the system's TCP listener table (IPv4 and IPv6) on a worker, never by connecting to it; a port not listening is looked at again a few times then given up on, a shown chip is looked at every 2.5 s and goes after two failed looks in a row; one chip per tab for the newest address; a clear, a closed tab, an exited shell and the setting off take it. Native: `flare_surfaces::devpreview::DevChips`, `flare_win::tcp_owner::listening_in_tree`. **A foreign holder is not a miss, a click looks again, a stale chip stays hidden, an unreadable table is never trusted, a reused pid is no parent** (2026-10-22 review): a look answers nobody, in the tree or foreign (`PortLook`); a foreign holder drops the chip at once while waiting and while shown; a click opens the page only after a fresh look on a worker finds the SAME chip (token) in the tree, on the tab still in front; a tab coming to the front hides its chip until a look made after that answers; an IPv4 or IPv6 table that cannot be read (or a process list that cannot) answers unreadable, never in the tree; a parent link counts only when the child's creation time is not older than the parent's (and both are known). Held by `a_foreign_holder_takes_a_shown_chip_at_once_with_no_grace`, `a_foreign_holder_while_waiting_ends_the_wait`, `a_chip_coming_to_the_front_is_hidden_until_its_first_look_answers`, `a_look_already_out_when_the_tab_comes_forward_does_not_confirm_it`, `a_click_looks_again_and_opens_nothing_when_the_port_changed_hands`, `an_unreadable_table_never_reads_as_in_tree`, `a_reused_parent_id_does_not_pull_in_an_older_process`, `a_port_held_by_a_stranger_is_foreign_not_nobody`. Held by `descendants_include_the_root_and_every_depth_and_nothing_else`, `a_port_owned_by_another_process_is_not_in_the_tree`, `the_port_is_looked_up_against_the_tabs_own_shell`, `the_chip_shows_exactly_the_origin_and_drops_path_and_query`, `only_the_origin_is_kept_path_query_and_fragment_are_dropped`,  the `devpreview` tests (a scripted table), `a_port_is_listening_while_a_listener_holds_it_on_either_family`, the flow tests `the_chip_goes_when_the_process_that_printed_it_is_gone`, `clearing_the_screen_takes_the_chip_at_once`, `the_newest_address_is_the_only_chip_of_a_tab` and the e2e `devPreview` (a real listener, dropped).
+205. **(RETIRED 2026-10-22, with the agent board (owner, 2026-10-22: "this is basically useless remove it").)** It said the board was the hub's view and cost nothing while closed. There is no board; the number stays so the others keep theirs. What replaced it: a stored `board` panel is dropped as an unknown kind (rule 40, `a_stored_agent_board_panel_is_dropped_on_load`) and `panel.open` kind `board` is refused.
+206. **A question is one notification, and none while the person is looking.** One per question episode, none while the tab is in front AND the window has the keyboard, a question seen that way is never announced later, a 600 ms grace for its text, the setting off keeps a question quiet for good. The toast carries only escaped text (no action, no launch argument, no image) and nothing is registered to answer it after Flare quits; a toast Windows would not take flashes the taskbar button instead. Native: `flare_surfaces::notify::Notifier`, `flare_win::toast`. Held by the `notify` tests, `a_question_in_a_tab_out_of_sight_notifies_once_with_the_tabs_name_and_text`, `nothing_while_the_person_is_looking_at_that_tab`, `an_unfocused_window_notifies_even_for_the_tab_in_front`, `the_setting_turns_the_notification_off`, `a_notification_windows_would_not_take_flashes_the_taskbar_instead`, `nothing_in_a_title_or_a_body_can_become_markup` and the e2e `questionToast` (the recorder, never the desktop).
+
+
+## Surfaces: mods (stage 8, the app part)
+
+207. **A mod's page never holds a secret, and every call it makes is checked against the mod's live grant.** `window.flare` is frozen and holds three functions; the host looks the mod's grant up for every call (`unauthorized` once the mod is off), refuses what the manifest did not ask for (`forbidden`, before anything runs), refuses `hello` and `tools.respond` from a page, allows 16 calls of one mod at once, and runs an allowed call through the control channel's own dispatcher so there is one table of permissions. A mod opens only its OWN panel (`panel.open` of any other kind is `forbidden`: a web panel is the shared profile and the network) and never gets `allow_network` on `view.html`; a reply is given only to the document that asked (a generation per page load); a dead page is made again by the next call. A mod's own `browser.*` is `unavailable` in v1 (no second panel slot). Native: `flare_mods::bridge`, `ModCtl::on_page_message`. Held by `a_mod_opens_only_its_own_panel_and_never_gets_a_networked_page`, `after_the_page_dies_the_next_call_makes_a_fresh_page_and_is_answered`, `a_reply_meant_for_an_older_document_is_not_given_to_a_newer_one`, `a_mod_without_browser_is_refused_every_browser_method_with_forbidden`, `a_permission_the_mod_does_not_hold_is_forbidden_and_hello_and_respond_are_not_calls`, `a_mod_that_is_turned_off_is_refused_at_once_even_with_its_page_open`, `a_page_makes_only_so_many_calls_at_once`, the e2e `modsSample`. Source: the spec's section "Mods" and S5.
+208. **A mod's files are served one request at a time, from the folder as it is NOW, with the host's policy on every answer.** No folder mapping; the path is checked again on every request (a junction or a swapped file serves nothing outside the folder), a file over 16 MB is 413, a miss 404, more than 8 reads at once 503; navigation goes only to the mod's own address, a new window is refused, and any request that is not the mod's own host, `data:` or `blob:` is refused 403. The browser is the mini-apps' sealed one, in a profile of the mod's own. Native: `flare_mods::serve`, `flare_surfaces::modview`, `flare_web::host`. Held by `a_junction_that_points_out_is_never_served`, `navigation_stays_on_the_mods_own_host`, `a_mods_requests_never_reach_the_network`, `a_mods_view_has_a_profile_of_its_own_and_is_the_only_one_a_message_reaches` and the e2e `modsSample` (an outside request blocked, a second page and an image of the folder served).
+209. **A tool call has one owner, one answer and a bounded life.** `mods.call` routes by the agent-facing name to the one mod that offers it; only that mod answers, once (`not_found` after); the page gets the event once it has loaded and in order; the call fails at once when the panel closes or is replaced, the page's process ends, the view cannot be made, the mod is turned off or lost by a scan, or Flare closes; 8 calls may wait on one mod; after 30 s it is `timeout`, naming the mod and the tool. The wait is a worker's, never the UI thread's. Native: `flare_mods::hub`, `appctl::mods_glue`. Held by `a_mod_cannot_answer_a_call_that_was_routed_to_another`, `closing_the_panel_the_page_dying_or_the_mod_going_off_fails_the_waiting_call`, `an_unanswered_call_times_out_and_leaves_nothing_behind`, `a_mod_may_have_only_a_few_calls_waiting`.
+210. **A switch takes effect at once and is saved off the UI thread.** Turning a mod on mints its token and offers its tools; turning it off kills the token, closes its panels, fails its waiting calls and tells the agent's clients (`mods.changed`), all in the same turn; the file is written on a worker with the state as it is when the write runs, a failed write is shown on the page and does not undo the switch, a scan never undoes a switch the file does not hold yet, and a token is never written anywhere. Native: `Hub::set_enabled`, `Hub::persist`. Held by `a_mod_is_off_until_turned_on_and_the_switch_mints_and_kills_its_token_and_tools`, `a_switch_that_cannot_be_saved_is_said_on_the_page_and_still_takes_effect`, `a_save_writes_the_state_as_it_stands_so_a_late_save_cannot_undo_a_later_switch`, `a_rescan_keeps_a_switch_the_file_does_not_hold_yet`, `the_snapshot_and_debug_never_carry_a_token`.
+211. **Settings > Mods shows what a mod may do before it is on, and only what the manifest says.** The permissions are plain words (at most eight each), a folder that is not a mod is a warning with its reason, tools left out for a clash or length are listed, the page is empty where there are no mods, and a long word never changes a row's height. Native: `flare_settings::page::mods`. Held by `the_permissions_show_before_the_mod_is_turned_on_and_the_panel_button_waits_for_it`, `a_folder_that_is_not_a_mod_is_a_warning_row_with_its_reason`, `every_row_sits_whole_in_its_card_on_device_pixels_at_every_scale_and_long_words_do_not_grow_a_row` (100 and 225 percent).
+212. **A mod runs with what the person allowed, never with what its manifest asks for today.** `mods.json` keeps the approved permissions with the switch (`{"notes":{"on":true,"permissions":["panel","tools"]}}`). A scan that finds the manifest asking for anything outside that set turns the mod off (token revoked, live connections refused, tools gone, panel closed) and Settings > Mods says it asks for new permissions; switching it on again approves the new list. Asking for less keeps it on with the smaller set (and the old list needs the person again). New tools under the same permissions need nothing. An on entry with no approved set (the old `"notes":true` form, a hand-edited one) reads as off. Native: `flare_mods::{hub, enabled}`. Held by `a_mod_that_asks_for_more_is_turned_off_and_its_token_dies`, `switching_it_on_again_approves_the_new_list`, `a_mod_that_asks_for_less_stays_on_with_the_smaller_set`, `tools_added_in_a_new_version_keep_the_mod_on`, `an_old_format_store_fails_closed`, `an_on_entry_without_an_approved_set_reads_as_not_enabled`, `a_mod_that_asks_for_new_permissions_says_so_under_its_off_switch`, and the e2e `modsSample`.
+213. **A mod's page opens only its own panel, and `mods.call` always ends before the channel gives up.** `panel.open` from a mod page is `forbidden` for every kind but `mod:<its id>` (nothing is driven, the panel is not replaced); the hub's wait is whatever is left of `MOD_CALL_TIMEOUT` minus the margin, at most 30 s, so a silent page gets Flare's `timeout`. Held by `a_page_may_open_only_its_own_panel_not_another_kind`, `mods_call_ends_before_the_channels_own_timeout_whatever_the_window_took`.
+214. **A page message counts for the mod whose page sent it, only while the tab shows that mod; a mod sees its own tab only; a switch approves the list that was shown; a call id cannot be guessed.** The host puts the host of the receiving view into the message (it names the mod); `WebCtl` drops it unless the tab's view is that host, and the window drops it unless the tab's panel and the controller's binding both name that mod, so a message queued by mod A's page runs with nothing after the tab moved to mod B. `tabs.list` gives a mod its own tab only (the `panel` permission never widened it). Settings hands the permission words the row listed with the switch; `Hub::set_enabled_shown` refuses when the manifest found now lists anything else, and the page draws again. A call id is `c` plus 128 random bits. Native: `flare_web::host`, `flare::web_ctl`, `flare::appctl::mods_glue`, `flare_mods::hub`. Held by `a_message_from_the_page_the_tab_left_is_not_run_with_the_mod_it_shows_now`, `a_mod_sees_its_own_tab_only_whatever_it_may_do`, `a_switch_approves_the_list_the_row_showed_and_nothing_else`, `call_ids_are_long_and_never_repeat`, `the_switch_reaches_the_mods_port_and_the_page_draws_what_the_port_then_says`.
+
+## Surfaces: owner feedback, round 9
+
+215. **"Show in side panel" shows only what a left click would preview, vetted the same way, and opens nothing in Windows.** The row exists for a file whose name is a picture or text kind the panel draws (never a folder, script, program, svg, pdf or page); picking it runs the click's worker (the backend resolves the path again, both names must be of the same previewable kind, local drive only) and a path that stopped qualifying does nothing, not an open. It is an explicit ask, so "Open previews in Flare" does not stop it. Native: `term_menu_rows`, `TermUi::preview_path_async`, `TermMsg::Preview { asked }`. Held by `show_in_side_panel_follows_open_for_a_file_the_panel_draws`, `show_in_side_panel_is_offered_only_where_a_left_click_would_preview`, `show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows`, `show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows`, `show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder`.
+216. **Wrapped text stays virtual, loses no character and numbers a line once.** One row is one line tall; the window builds only the rows in view whatever the file (300 000 rows draw in milliseconds); the rows joined are the lines; the gutter shows a line's number on its first row only and the header counts lines; nothing is drawn past the right margin while wrapped. Native: `flare_surfaces::wrap`, `panel_ctl::wrap_lines`, `TextView`. Held by `no_character_is_ever_lost_or_split_in_two`, `a_500_character_line_wraps_into_several_rows_and_none_is_wider_than_the_columns`, `the_gutter_shows_a_number_on_the_first_row_of_a_line_only`, `wrapped_rows_stay_virtual_only_the_ones_in_view_are_built`, `nothing_is_drawn_past_the_right_edge_of_the_slot_when_wrapped` (100 and 225 percent).
+217. **A text preview wraps live while its width moves, the final wrap is exact, a stale wrap is dropped, and a drag is never stalled.** Every change of the view's columns (a splitter step, a window-edge step) wraps to the columns now and keeps the line at the top; under 200 KB of shaped text where the step lands (a refresh while the width moves is live too, `wrap_moving`; no worker answer wraps during a sidebar slide), a bigger file on a worker with one wrap in flight whose answer wraps again to the newest width; `settle_wrap` is the exact final wrap; a sidebar slide wraps once at its end; the terminal grid still fits once at the release (rule 24). A worker's answer for a wrap that is no longer the newest changes nothing. Held by `a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more`, `a_live_drag_keeps_the_line_at_the_top_in_place`, `a_big_file_drag_never_stalls_the_ui_and_ends_exact`, `a_small_file_wrap_per_step_is_cheap`, `a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker`, `a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing`, `a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on`, `with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too`, the e2e `panelSplitter`.
+218. **The splitter holds its invariants under any hand.** Whatever the steps (quick, slow, shaky, past either limit and back, at 100 or 225 percent, over a picture or text): the drawn slot and the splitter stay inside the limits and on the slot's edge, the slot follows the pointer to the device pixel and never against it, the grid keeps its width and is not fitted while the button is down and is fitted exactly once on the release (rule 24), the settled slot is the dragged one, the grid ends where the slot starts, the panel's content is on every frame, and what shows beside a narrower slot is the terminal's ground. Held by `appctl::tests::splitter_tests` and the e2e `panelSplitter`.
+219. **A splitter drag outlives the pointer leaving the window, and ends on the left button going up or the slot going away.** The window's hook holds back winit's `CursorLeft` while a drag runs (the OS keeps the pointer captured, so moves and the release still arrive from outside the window; the held leave is owed after the release), another button's release does not end it, and the left button up ends it wherever the pointer is (`AppWindow.end-splitter`). A cancelled grab, a tab switch or the slot going away still lets go and keeps the share dragged so far. The hook's CursorLeft hold, its CursorEntered clear and its swallowing of other buttons mid-drag are checked by hand (they live in the winit hook, which no harness drives). Held by `another_button_going_up_mid_drag_does_not_end_it_and_the_left_up_does`, `leaving_the_window_during_a_drag_lets_go_of_the_splitter` (a cancelled grab) and the e2e `panelSplitter`.
+220. **A quitting instance takes no hand-off.** The end of life stops the hand-off server before it kills a single shell,
 so a second launch finds no pipe, waits for the lock and becomes the first instance; a message that was written and
 acknowledged would be dropped. A message over the caps is split by the sender (each part keeps the exe), the server
 refuses with a log line, and a client that connects and never writes is cut off after 2 s so one stalled process cannot
@@ -345,11 +537,11 @@ jam the pipe. Native: `appctl.rs` (`finish`, `set_handoff_stop`), `single_instan
 `read_message_within`). Held by `the_end_of_life_stops_the_handoff_server_before_anything_slow`,
 `a_stopped_server_refuses_a_handoff`, `a_big_handoff_is_split_under_the_caps_and_loses_no_argument` and
 `a_stalled_client_does_not_jam_the_server`. Source: general review 2026-10-23 (app-1, app-5, platform-5); rule 32.
-187. **A zoom resizes one tab.** Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
+221. **A zoom resizes one tab.** Ctrl+wheel zoom, and a switch between a zoomed and an unzoomed tab, refit only the tabs
 that wear the settings' size. A tab with a zoom of its own keeps its grid until it comes to the front, so no hidden shell
 is reflowed. Native: `tab_host.rs` (`refit_unzoomed`), `appctl.rs` (`apply_font`). Held by
 `a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size`. Source: general review 2026-10-23 (render-2).
-188. **An agent is a program or a package, never a word.** A command line is an agent only when its FIRST token is the
+222. **An agent is a program or a package, never a word.** A command line is an agent only when its FIRST token is the
 program (`claude`, `codex`, `aider`, `gemini`, with or without a path and `.exe`, `.cmd`, `.ps1`), an argument is such a
 program file, or it holds a package signature (`@anthropic-ai/claude-code`, `@openai/codex`, `@google/gemini-cli`, or the
 agent's own folder followed by its entry file). A folder called `claude`, `claude-code-ui` or `gemini` never matches. A
@@ -357,14 +549,52 @@ process older than its listed parent (a recycled pid) is not counted under a she
 reaches the tab. Native: `detect.rs` (`classify`), `procs.rs` (`born_after`), `poll.rs`. Held by
 `a_path_or_word_in_the_arguments_is_not_an_agent`, `a_process_older_than_its_listed_parent_is_not_its_child` and
 `a_change_of_kind_under_a_present_agent_is_sent`. Source: general review 2026-10-23 (agent-1, agent-2, agent-4).
-189. **A store file that does not parse is kept, never overwritten.** Text that is not valid JSON is set aside as
+223. **A store file that does not parse is kept, never overwritten.** Text that is not valid JSON is set aside as
 `<file>.bad` before the first save, a leading BOM is dropped, and a quit waits (at most 2 s) for a save already in the
 background writer. A blocked log rotation never shifts the history (the live file moves first). Native: `atomic.rs`
 (`open_text`), `debounce.rs` (`flush`), `writer.rs` (`rotate_if_due`). Held by
 `a_bom_is_dropped_and_broken_text_is_kept_as_bad`, `flush_waits_for_a_save_already_in_the_background_writer` and
 `a_blocked_rotation_that_retries_never_costs_an_older_generation`. Source: general review 2026-10-23 (app-3, app-4,
 platform-3); rule 41.
-190. **A claim is checked once, never on a timer.** An OSC 777 `flare-agent` signal or a Claude title can mark a tab
+
+## Dictation: words that cannot be sent
+
+224. **Dictated words that cannot be sent are kept, never dropped** (owner, 2026-10-23: the owner dictated 1m42s from
+outside Flare, no Claude tab was open, the note said "No Claude session to send to" and the words were gone). Every
+finished transcript that ends unsent is copied to the clipboard and the widget note says so: no Claude session, Esc or
+the 30 s timeout on the picker, a refused or failed checked send, a copy of the app that has closed. A picker that is
+dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
+off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
+nothing. A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
+fails says "Words could not be copied" when nothing else is on screen. A paste into this copy's front tab with no shell
+in front (Settings, an empty window) goes on to the list and copies, never claiming "Typed into the tab in front"
+(`SvcEffect::PastePage` is answered with `Pasted`); words another copy routes here with no shell in front are copied by
+that copy (the link has no reply for a paste, so the service copy still says typed: a follow-up). An in-window
+recording whose tab closed copies the words (`Effect::Keep`, "That tab has closed, copied"), as does a paste that finds
+the tab gone. A send carries its words with its answer (`SvcEvent::Sent(decision, text)`), so two sends in flight never
+swap words; a send that cannot start answers No with its words; a refusal that lands after dictation was switched off
+still copies. The new-recording and switch-off paths overwrite the clipboard on purpose (owner to confirm). Native: `SvcEffect::CopyText` in `service.rs` (the clipboard write runs
+on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing_with_no_claude_session_says_so`,
+`esc_keeps_it_unsent`, `thirty_seconds_without_a_pick_says_not_sent`, `a_click_picks_a_row_and_a_refusal_says_why`,
+`a_tab_of_another_copy_with_no_service_is_not_sent`, `a_remote_send_that_is_refused_keeps_the_words`,
+`a_dropped_paste_round_trip_asks_for_the_tabs_and_keeps_the_words_when_none_can_take_them`,
+`dismissing_the_picker_keeps_the_words_without_a_note`,
+`a_new_recording_keeps_the_words_an_earlier_one_was_still_waiting_on`,
+`a_newer_text_never_loses_the_words_of_one_still_waiting`, `switching_off_with_words_waiting_keeps_them`,
+`a_note_with_the_copy_stays_under_the_cap`, `cancelled_heard_nothing_and_a_successful_send_or_paste_copy_nothing`
+(`service.rs`), `words_with_no_session_are_copied_and_the_note_says_so`, `a_failed_copy_puts_the_old_note_back` and
+`a_failed_copy_never_replaces_a_newer_face`, `a_failed_silent_copy_says_so_only_when_nothing_else_is_showing`,
+`a_route_to_this_copy_with_no_shell_in_front_keeps_the_words_and_never_claims_a_paste`,
+`words_routed_here_by_another_copy_with_no_shell_in_front_are_kept`,
+`a_refused_send_keeps_its_own_words_and_one_that_lands_after_switch_off_too` and
+`a_remote_send_with_no_machinery_answers_no_and_keeps_the_words` (`dictation_ctl.rs`), plus
+`a_paste_with_no_shell_in_front_goes_on_to_the_list_and_never_claims_it_typed` and
+`two_sends_in_flight_each_copy_their_own_words` (`service.rs`). Quitting the app while words wait is not covered: the
+process is ending.
+
+## Agent claims and background work
+
+225. **A claim is checked once, never on a timer.** An OSC 777 `flare-agent` signal or a Claude title can mark a tab
 before the process poll has seen an agent there. The poll sends only changed answers, so a tab it already reported "no
 agent" would keep a false claim (a Claude icon, a Question) until the tab closed. Each claim that asks the poll to look
 also calls `PollWorker::again(tab)`: that tab's next answer is sent even if unchanged, and a "no agent" answer takes the
@@ -378,7 +608,7 @@ covered yet). Native: `indicator.rs` `Effect::AskLook { tab }`, `agent_hub.rs` `
 `a_second_claim_inside_the_gap_asks_for_no_second_look`,
 `a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back` and the e2e agentHooks check on a cat'ed
 capture. Source: PT general review #47 (owner, 2026-10-23, "one check per claim").
-191. **A footer shell count is not background work; a Stop with only that is Finished.** Claude's `· N shell(s)` after
+226. **A footer shell count is not background work; a Stop with only that is Finished.** Claude's `· N shell(s)` after
 the mode line (a run_in_background dev server can sit there for hours) no longer holds a tab Working at Stop: the turn
 raises Finished and the close question follows the normal rule for an idle agent. Still Working: a workflow's progress
 row (`7/8 · 11m03s`) and Claude's own `· N shells still running` summary line above the prompt box, which it writes while

@@ -7,7 +7,7 @@
 //! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
-//! of the 39 rows; within each section the order follows the tables.
+//! of the 47 rows; within each section the order follows the tables.
 
 /// What control a row draws. `Registry` is the Explorer verb (read back from Windows, M9);
 /// `Info` is a row that stores nothing (the version).
@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 12] = [
+pub const APP_OPTIONS: [RowDef; 19] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -569,6 +569,84 @@ pub const APP_OPTIONS: [RowDef; 12] = [
         only_nvidia: false,
     },
     RowDef {
+        id: "right-click-reports",
+        label: "Send right clicks to programs",
+        sub: "Off keeps right clicks for the menu.",
+        section: "keys",
+        page: "terminal",
+        icon: "key",
+        keywords: "right click mouse paste menu context claude codex agent clicks program mouse mode",
+        keys: &["flare.window.rightClickReports"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "open-previews",
+        label: "Open previews in Flare",
+        sub: "Pictures and text open beside the terminal.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "link click path picture image text file preview panel side open",
+        keys: &["flare.window.openPreviews"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "wrap-previews",
+        label: "Wrap long lines in previews",
+        sub: "Long lines continue on the next row.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "wrap long lines text file preview panel side horizontal scroll fit width",
+        keys: &["flare.window.wrapPreviews"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "agent-eval",
+        label: "Let agents run scripts in pages",
+        sub: "Agents may run code in their web panel.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "agent claude browser web page script javascript eval run code panel",
+        keys: &["flare.web.agentEval"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "app-network",
+        label: "Let mini apps use the network",
+        sub: "Pages Claude writes may load from the web.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "agent claude mini app html page chart diagram network internet web online fetch",
+        keys: &["flare.web.appNetwork"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "dev-preview",
+        label: "Offer previews of local servers",
+        sub: "A Preview chip for sites you start.",
+        section: "links",
+        page: "terminal",
+        icon: "viewer",
+        keywords: "localhost 127.0.0.1 dev server vite npm port web preview chip browser panel site",
+        keys: &["flare.window.devPreview"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
         id: "taskbar-badge",
         label: "Count marked tabs on the taskbar",
         sub: "A number on the taskbar button.",
@@ -577,6 +655,19 @@ pub const APP_OPTIONS: [RowDef; 12] = [
         icon: "taskbar",
         keywords: "count number badge overlay",
         keys: &["flare.window.taskbarBadge"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
+        id: "notify-ask",
+        label: "Notify me when an agent asks",
+        sub: "A notification when a question waits.",
+        section: "notify",
+        page: "agents",
+        icon: "ask",
+        keywords: "notification toast question alert agent claude codex asks windows banner",
+        keys: &["flare.window.notifyAsk"],
         kind: RowKind::Switch,
         source: Source::App,
         only_nvidia: false,
@@ -596,8 +687,8 @@ pub const APP_OPTIONS: [RowDef; 12] = [
     },
 ];
 
-/// The 39 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 40] = [
+/// The 47 row ids in draw order (Appendix C, the `#` column).
+pub const ROW_ORDER: [&str; 47] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -611,6 +702,12 @@ pub const ROW_ORDER: [&str; 40] = [
     "explorer-verb",
     "agent-keys",
     "agent-guard",
+    "right-click-reports",
+    "open-previews",
+    "wrap-previews",
+    "agent-eval",
+    "app-network",
+    "dev-preview",
     "term-font-family",
     "term-font",
     "help-enabled",
@@ -624,6 +721,7 @@ pub const ROW_ORDER: [&str; 40] = [
     "agent-color",
     "agent-done-color",
     "agent-question-color",
+    "notify-ask",
     "dictation-enabled",
     "dictation-mode",
     "dictation-hotkey",
@@ -700,16 +798,16 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_name_the_40_rows_in_row_order() {
+    fn the_tables_name_the_46_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 40);
+        assert_eq!(ids.len(), 47);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 40);
+        assert_eq!(distinct.len(), 47);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -829,11 +927,18 @@ mod tests {
                 "explorer-verb=registry",
                 "agent-keys=flare.window.agentKeys",
                 "agent-guard=flare.window.agentGuard",
+                "right-click-reports=flare.window.rightClickReports",
+                "open-previews=flare.window.openPreviews",
+                "wrap-previews=flare.window.wrapPreviews",
+                "agent-eval=flare.web.agentEval",
+                "app-network=flare.web.appNetwork",
+                "dev-preview=flare.window.devPreview",
                 "taskbar-badge=flare.window.taskbarBadge",
+                "notify-ask=flare.window.notifyAsk",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 12);
+        assert_eq!(app.len(), 19);
     }
 
     #[test]
@@ -932,7 +1037,10 @@ mod tests {
                 r.page
             );
             assert!(
-                ["window", "opening", "keys", "theme", "marks", "about"].contains(&r.section),
+                [
+                    "window", "opening", "keys", "links", "theme", "marks", "notify", "about"
+                ]
+                .contains(&r.section),
                 "{} section {}",
                 r.id,
                 r.section

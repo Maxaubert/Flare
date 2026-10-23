@@ -1,0 +1,1 @@
+{"type":"assistant","isSidechain":true,"timestamp":"2026-10-21T10:02:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_sub_03","name":"TodoWrite","input":{"todos":[{"content":"Side B","status":"pending","activeForm":"Doing side B"}]}}]}}

@@ -342,7 +342,7 @@ fn the_real_poll_sees_a_real_agent_process_and_hears_it_leave() {
     // Shell stand-ins: a root cmd with a cmd child that waits on a ping. Nothing carries an agent word.
     let root1 = reaper.spawn_cmd(r#""cmd.exe /d /c ping -n 40 127.0.0.1 >nul""#);
     // The second root's CHILD command line carries the agent's package path (the root's own line is never
-    // read; a bare word is not an agent, rule 188).
+    // read; a bare word is not an agent, rule 222).
     let root2 = reaper.spawn_cmd(
         r#""cmd.exe /d /c "ping -n 40 127.0.0.1 >nul & rem @anthropic-ai\claude-code\cli.js"""#,
     );
