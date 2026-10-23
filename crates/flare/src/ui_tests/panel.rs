@@ -153,6 +153,24 @@ fn the_slot_edges_sit_on_whole_device_pixels() {
 }
 
 #[test]
+fn the_copied_badge_stays_over_the_terminal_never_under_a_wide_slot() {
+    for s in SCALES {
+        let h = window(s);
+        open_note(&h);
+        h.comp.set_panel_share(0.65);
+        h.comp.set_copied_phase(1);
+        h.advance(0);
+        let slot_left = h.comp.get_grid_left() + h.comp.get_panel_slot_x();
+        let pill_right = h.comp.get_badge_x() + h.comp.get_badge_w();
+        assert!(
+            pill_right <= slot_left + 0.5,
+            "scale {s}: the pill ends at {pill_right}, the slot begins at {slot_left}"
+        );
+        assert!(h.comp.get_badge_x() >= h.comp.get_grid_left(), "scale {s}");
+    }
+}
+
+#[test]
 fn a_page_without_room_shows_no_slot_and_keeps_the_whole_grid() {
     for s in SCALES {
         // 400 css px: the terminal keeps 320, which leaves 80, under the 120 a slot needs.

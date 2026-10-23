@@ -554,7 +554,7 @@ export component AppWindow inherits Window {
     out property <length> find-bar-y: find.bar-y;
     out property <length> find-bar-w: find.bar-w;
     out property <length> find-bar-h: find.bar-h;
-    out property <length> badge-x: badge.pill-x;
+    out property <length> badge-x: badge.x + badge.pill-x;
     out property <length> badge-y: badge.pill-y;
     out property <length> badge-w: badge.pill-w;
     out property <length> badge-h: badge.pill-h;
@@ -1312,10 +1312,12 @@ export component AppWindow inherits Window {
             confirm => { root.dialog-confirm(); }
         }
         // The Copied badge shows even over a dialog (PT LAYER.toast); the tip is above it.
+        // Centred over the terminal, not the window: a web panel's browser window sits above anything drawn, and the
+        // window's middle is inside it once the slot is wide.
         badge := CopiedBadge {
-            x: 0px;
+            x: root.grid-left;
             y: 0px;
-            width: root.width;
+            width: root.grid-w;
             height: root.height;
             phase: root.copied-phase;
         }

@@ -3913,8 +3913,12 @@ impl AppCtl {
             && sidebar_mode(&self.prefs) == SidebarMode::Open
             && cursor_css.0 < side_width;
         if !(on_strip || on_side) {
-            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path).
-            if cursor_css.1 >= BAR_H {
+            // Below the title row and right of the sidebar: the terminal's (a typed, quoted path), unless the pointer
+            // is over the side panel: a file dropped there is not meant for the shell on the left.
+            let over_panel = self
+                .app()
+                .is_some_and(|a| a.get_panel_shown() && cursor_css.0 >= a.get_grid_left() + a.get_panel_slot_x());
+            if cursor_css.1 >= BAR_H && !over_panel {
                 let front = self.front_tab();
                 {
                     let info = front.as_ref().map(FrontTab::info);
@@ -5747,6 +5751,36 @@ mod tests {
         let rows = f.rows();
         f.ctl.borrow_mut().on_dropped_path(folder, (100.0, 10.0));
         f.pump_until("the new tab", |f| f.rows() == rows + 1);
+    }
+
+    #[test]
+    fn a_drop_over_the_side_panel_types_nothing_into_the_shell() {
+        let (f, _h, fake) = live(Opts::default());
+        show_text(&f, "p.txt", "hello");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        let slot_left = f.h.comp.get_grid_left() + f.h.comp.get_panel_slot_x();
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_panel.png"),
+            (slot_left + 30.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        std::thread::sleep(Duration::from_millis(150)); // sync-ok: test code only
+        f.pump();
+        assert!(
+            fake.written().is_empty(),
+            "a path was typed into the shell: {:?}",
+            String::from_utf8_lossy(&fake.written())
+        );
+        // Over the terminal part of the window it is typed as before.
+        f.ctl.borrow_mut().on_dropped_path(
+            PathBuf::from("C:\\x\\over_the_grid.png"),
+            (slot_left - 100.0, 300.0),
+        );
+        f.clock.set(f.clock.get() + 1000);
+        f.ctl.borrow_mut().tick();
+        until_written(&fake, |w| !w.is_empty());
     }
 
     #[test]
