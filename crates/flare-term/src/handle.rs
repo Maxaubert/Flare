@@ -341,18 +341,22 @@ impl TermHandle {
             *lk(&self.sh.reveal) = Some(st);
         }
         let sh = Arc::clone(&self.sh);
+        // Claimed HERE, before the worker exists: a tab closed in between still finds the id and its
+        // kill is remembered, so the worker starts no shell nobody can reach (review #32).
+        let reserved = sh.mgr.reserve(&sh.id);
         let r = std::thread::Builder::new()
             .name("flare-start".into())
             .spawn(move || {
                 let sink: Arc<dyn SessionSink> = Arc::new(Sink(Arc::downgrade(&sh)));
-                let ok = sh.mgr.spawn(
-                    &sh.id,
-                    &opts.root,
-                    opts.shell_id.as_deref(),
-                    sink,
-                    opts.resume.as_deref(),
-                    opts.plugin.as_ref(),
-                );
+                let ok = reserved
+                    && sh.mgr.spawn_reserved(
+                        &sh.id,
+                        &opts.root,
+                        opts.shell_id.as_deref(),
+                        sink,
+                        opts.resume.as_deref(),
+                        opts.plugin.as_ref(),
+                    );
                 if ok {
                     lk(&sh.events).push(TermEvent::Started);
                     // After a spawn resolves, the real size is sent once more.
@@ -374,6 +378,9 @@ impl TermHandle {
             });
         if let Err(e) = r {
             log::warn!("could not start the spawn worker: {e}");
+            if reserved {
+                self.sh.mgr.release(&self.sh.id);
+            }
             self.sh.finish_reveal();
             lk(&self.sh.events).push(TermEvent::StartFailed);
             self.sh.wake();

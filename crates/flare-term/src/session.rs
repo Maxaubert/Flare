@@ -639,9 +639,44 @@ impl SessionManager {
             .unwrap_or((80, 24))
     }
 
+    /// Claims `id` for a spawn that a worker thread will run (`spawn_reserved`): from now a `kill` of the
+    /// id is remembered, so a tab closed before the worker gets going starts no hidden shell (review
+    /// #32). False when a shell or another spawn already holds the id.
+    pub fn reserve(&self, id: &str) -> bool {
+        let mut st = lk(&self.sh.st);
+        if st.sessions.contains_key(id) || st.pending.contains(id) {
+            return false;
+        }
+        st.pending.insert(id.to_string());
+        true
+    }
+
+    /// Gives a reservation back when no worker will ever run it.
+    pub fn release(&self, id: &str) {
+        let mut st = lk(&self.sh.st);
+        st.pending.remove(id);
+        st.killed_pending.remove(id);
+    }
+
     /// BLOCKING (reads the shell list, spawns): call it from a worker thread, never the UI thread.
     /// Returns whether a shell now runs for `id`.
     pub fn spawn(
+        &self,
+        id: &str,
+        root: &str,
+        shell_id: Option<&str>,
+        sink: Arc<dyn SessionSink>,
+        resume: Option<&str>,
+        plugin: Option<&PluginEnv>,
+    ) -> bool {
+        if !self.reserve(id) {
+            return false;
+        }
+        self.spawn_reserved(id, root, shell_id, sink, resume, plugin)
+    }
+
+    /// `spawn` for an id `reserve` already claimed (on the thread that asked for the start).
+    pub fn spawn_reserved(
         &self,
         id: &str,
         root: &str,
@@ -659,13 +694,6 @@ impl SessionManager {
             );
         }
         let resume = valid;
-        {
-            let mut st = lk(&self.sh.st);
-            if st.sessions.contains_key(id) || st.pending.contains(id) {
-                return false;
-            }
-            st.pending.insert(id.to_string());
-        }
         let _guard = PendingGuard { sh: &self.sh, id };
         // Declared after the pending guard, so it drops first: a kill made below is counted in
         // `dying` before this spawn stops counting as `starting`.
@@ -1200,6 +1228,36 @@ mod tests {
         assert!(!h.join().unwrap());
         assert!(wait_until(|| sp.made().iter().all(|f| f.killed())));
         assert!(m.live_pids().iter().all(|(id, _)| id != "t1"));
+    }
+
+    /// Review #32: a tab closed after the start was asked but before the worker thread reached the
+    /// manager starts no hidden shell (the id was claimed on the asking thread, so the kill is kept).
+    #[test]
+    fn a_tab_closed_before_the_spawn_worker_ran_starts_no_shell() {
+        let sp = FakeSpawner::new();
+        let (shells, opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        assert!(m.reserve("t1"));
+        m.kill("t1");
+        opener.open();
+        // The worker only now reaches the manager.
+        assert!(!m.spawn_reserved("t1", "C:\\x", Some("pwsh"), null(), None, None));
+        assert!(sp.made().is_empty(), "no shell was ever launched");
+        assert!(m.live_pids().iter().all(|(id, _)| id != "t1"));
+        // The claim is gone with it: the id can be spawned afresh.
+        assert!(!m.is_pending("t1"));
+    }
+
+    #[test]
+    fn a_reserved_id_is_refused_to_a_second_spawn_and_given_back_by_release() {
+        let sp = FakeSpawner::new();
+        let (shells, _opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        assert!(m.reserve("t1"));
+        assert!(!m.reserve("t1"));
+        assert!(!m.spawn("t1", "C:\\x", Some("pwsh"), null(), None, None));
+        m.release("t1");
+        assert!(m.reserve("t1"));
     }
 
     #[test]
