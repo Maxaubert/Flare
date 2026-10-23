@@ -1306,6 +1306,39 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_painting_its_startup_is_not_work_and_a_real_prompt_is() {
+        let mut r = Rig::new();
+        r.open("front", None);
+        r.open("a", Some(ID));
+        r.open("b", None);
+        r.hub.set_looking(Some("front"), true);
+        // The real resume timeline in the background tab: the bare name, a loading spinner, then
+        // the idle star, with the agent's paint (output) around each.
+        r.title("a", "claude");
+        r.ev(HostEvent::Output { id: "a".into() });
+        r.advance(400);
+        r.title("a", "\u{2802} Claude Code");
+        r.ev(HostEvent::Output { id: "a".into() });
+        r.advance(900);
+        r.ev(HostEvent::Output { id: "a".into() });
+        r.title("a", CLAUDE_TITLE);
+        r.hub
+            .queue_poll_answer("a", true, Some(DetectedAgent::Claude));
+        r.hub.drain_poll();
+        r.advance(3_000);
+        let ind = r.hub.indicator();
+        assert!(!ind.working_ids().contains("a"), "a startup paint is not work");
+        assert!(ind.done_ids().is_empty(), "nothing finished");
+        assert!(ind.question_ids().is_empty());
+        assert!(ind.failed_ids().is_empty());
+        // The control: the same shape of tab, one that really answered a prompt, does finish.
+        r.print("b", &osc("working"));
+        r.print("b", &osc("done"));
+        r.pump_until("b done", |h| h.indicator().done_ids().contains("b"));
+        assert!(!r.hub.indicator().done_ids().contains("a"));
+    }
+
+    #[test]
     fn typing_and_a_refit_shape_the_scoring() {
         let mut r = Rig::new();
         r.open("front", None);
