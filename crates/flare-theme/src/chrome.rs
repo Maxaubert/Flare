@@ -68,7 +68,24 @@ pub const CHROME_COLOUR_TOKENS: [&str; 31] = [
 pub struct ChromeTokens {
     pub mode: Mode,
     pub vars: BTreeMap<&'static str, String>,
+    /// Flare's own inks, beside PT's 31 (which stay byte for byte PT's, the oracle holds them): the inks
+    /// for the surfaces PT's single floor chain leaves short. Names are in `FLARE_EXTRA_TOKENS`.
+    pub extra: BTreeMap<&'static str, String>,
 }
+
+/// Flare's own colour tokens (not PT's): each is an ink floored on the very fill it is drawn on.
+/// `--f-secondary-text` and `--f-secondary-icon` sit on the picked Secondary (the bar beside the
+/// sidebar, its buttons); `--f-accent-ink` is the accent as small TEXT (4.5:1); `--f-hover-ink` is the
+/// text on the chosen rail page (`--p-hover-hi`); `--f-pressed-ink` is the text on `--p-pressed`;
+/// `--f-track` is the OFF switch track held at 3:1 on the ground.
+pub const FLARE_EXTRA_TOKENS: [&str; 6] = [
+    "--f-secondary-text",
+    "--f-secondary-icon",
+    "--f-accent-ink",
+    "--f-hover-ink",
+    "--f-pressed-ink",
+    "--f-track",
+];
 
 /// A percentage of the mode's ink as the two hex digits of an alpha (PT `pctHex`).
 fn pct_hex(pct: f64) -> String {
@@ -216,6 +233,8 @@ pub fn chrome_tokens(
         sel_bg = composite(&sel_bg, &bg);
     }
     let accent_hi = floor_on(&mix_hex(&solid, &fg, 0.25), QUIET_FLOOR);
+    // Accent as small text: the same colour, held to the body floor on every flat ground.
+    let accent_ink = floor_on(&accent_hi, TEXT_FLOOR);
     // The sidebar inks: on its ground and on the accent pill of the tab in front.
     let side_solid = composite(&secondary, &bg);
     let pill = mix_hex(&side_solid, &accent_hi, 0.18);
@@ -267,6 +286,36 @@ pub fn chrome_tokens(
     } else {
         (mix_hex(&mix_hex(&bg, &fg, 0.035), &fg, 0.16), fg.clone())
     };
+    // Flare's own inks, each held on the fill it is drawn on (see FLARE_EXTRA_TOKENS).
+    let secondary_flat = composite(&secondary, &bg);
+    let secondary_text = ensure_contrast(&fg, &secondary_flat, TEXT_FLOOR);
+    let secondary_icon = ensure_contrast(
+        &mix_hex(&fg, &secondary_flat, if light { 0.18 } else { 0.38 }),
+        &secondary_flat,
+        if light { TEXT_FLOOR } else { QUIET_FLOOR },
+    );
+    let hover_flat = composite(
+        &format!("{ink}{}", pct_hex(if light { 12.0 } else { 11.0 })),
+        &bg,
+    );
+    let hover_ink = ensure_contrast(
+        &ensure_contrast(&fg, &hover_flat, TEXT_FLOOR),
+        &bg,
+        TEXT_FLOOR,
+    );
+    let pressed_held = ensure_contrast(&pressed_ink, &pressed, TEXT_FLOOR);
+    let track_held = ensure_contrast(
+        &mix_hex(&stage, &fg, if light { 0.5 } else { 0.26 }),
+        &bg,
+        QUIET_FLOOR,
+    );
+    let mut extra: BTreeMap<&'static str, String> = BTreeMap::new();
+    extra.insert("--f-secondary-text", secondary_text);
+    extra.insert("--f-secondary-icon", secondary_icon);
+    extra.insert("--f-accent-ink", accent_ink);
+    extra.insert("--f-hover-ink", hover_ink);
+    extra.insert("--f-pressed-ink", pressed_held);
+    extra.insert("--f-track", track_held);
     let mut vars: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut put = |name: &'static str, value: String| {
         vars.insert(name, value);
@@ -323,7 +372,7 @@ pub fn chrome_tokens(
     put("--p-pressed-ink", pressed_ink);
     put("--p-side-text", side_text);
     put("--p-side-dim", side_dim);
-    ChromeTokens { mode, vars }
+    ChromeTokens { mode, vars, extra }
 }
 
 #[cfg(test)]
@@ -504,6 +553,10 @@ mod tests {
         for alpha in [1.0, 153.0 / 255.0] {
             let c = with("prism", alpha, None, None);
             assert_eq!(c.vars.len(), 31);
+            assert_eq!(c.extra.len(), FLARE_EXTRA_TOKENS.len());
+            for name in FLARE_EXTRA_TOKENS {
+                assert!(is_hex(&c.extra[name]), "{name}");
+            }
             for name in CHROME_COLOUR_TOKENS {
                 assert!(is_hex(v(&c, name)), "{name} = {}", v(&c, name));
             }
@@ -1009,6 +1062,71 @@ mod tests {
                 assert!(ratio(ink, v(&c, "--p-sel-bg")) < 2.0, "{}", p.id);
             }
             assert!(ratio(knob, v(&c, "--p-sel-bg")) >= 2.0, "{}", p.id);
+        }
+    }
+
+    fn ex<'a>(c: &'a ChromeTokens, name: &str) -> &'a str {
+        c.extra
+            .get(name)
+            .unwrap_or_else(|| panic!("no extra token {name}"))
+    }
+
+    #[test]
+    fn the_inks_on_a_picked_secondary_hold_their_floor_on_it() {
+        for p in presets() {
+            for pick in ["#808080", "#e8e8e8", "#202020"] {
+                let c = with(p.id, 1.0, None, Some(pick));
+                let on = composite(pick, v(&c, "--p-bg-solid"));
+                assert!(
+                    contrast_ratio(ex(&c, "--f-secondary-text"), &on) >= 4.5,
+                    "{} text on {pick}",
+                    p.id
+                );
+                assert!(
+                    contrast_ratio(ex(&c, "--f-secondary-icon"), &on) >= 3.0,
+                    "{} icon on {pick}",
+                    p.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_accent_as_text_holds_4_5_on_the_ground_and_the_flat_panel() {
+        for p in presets() {
+            for pick in [None, Some("#e07a2f"), Some("#2f6fe0"), Some("#9acd32")] {
+                let c = with(p.id, 1.0, pick, None);
+                for g in [v(&c, "--p-bg-solid"), v(&c, "--p-side-flat")] {
+                    assert!(
+                        ratio(ex(&c, "--f-accent-ink"), g) >= 4.5,
+                        "{} {pick:?} on {g}",
+                        p.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_chosen_rail_page_and_segment_inks_hold_4_5_and_the_off_track_3() {
+        for p in presets() {
+            let c = of(p);
+            let hover = composite(v(&c, "--p-hover-hi"), v(&c, "--p-bg-solid"));
+            assert!(
+                contrast_ratio(ex(&c, "--f-hover-ink"), &hover) >= 4.5,
+                "{} hover ink",
+                p.id
+            );
+            assert!(
+                ratio(ex(&c, "--f-pressed-ink"), v(&c, "--p-pressed")) >= 4.5,
+                "{} pressed ink",
+                p.id
+            );
+            assert!(
+                ratio(ex(&c, "--f-track"), v(&c, "--p-bg-solid")) >= 3.0,
+                "{} track",
+                p.id
+            );
         }
     }
 }

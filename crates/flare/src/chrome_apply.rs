@@ -72,6 +72,16 @@ token_table! {
     ("--p-side-dim", "side-dim", set_side_dim, get_side_dim),
 }
 
+/// Flare's own inks (`FLARE_EXTRA_TOKENS`, in order) and the Slint property each one drives.
+const EXTRA_TABLE: [(&str, &str); 6] = [
+    ("--f-secondary-text", "secondary-text"),
+    ("--f-secondary-icon", "secondary-icon"),
+    ("--f-accent-ink", "accent-ink"),
+    ("--f-hover-ink", "hover-ink"),
+    ("--f-pressed-ink", "pressed-text"),
+    ("--f-track", "track-off"),
+];
+
 static WARNED: AtomicBool = AtomicBool::new(false);
 
 /// The text colour of the look last applied (`--p-text`): the close question's names wear it. Empty until
@@ -123,6 +133,17 @@ pub fn apply_chrome(app: &AppWindow, look: &AppliedLook) {
     } else {
         colour(&look.solid_ground)
     };
+    for (tok, name) in EXTRA_TABLE {
+        let c = colour(look.chrome.extra.get(tok).map(String::as_str).unwrap_or(""));
+        match name {
+            "secondary-text" => theme.set_secondary_text(c),
+            "secondary-icon" => theme.set_secondary_icon(c),
+            "accent-ink" => theme.set_accent_ink(c),
+            "hover-ink" => theme.set_hover_ink(c),
+            "pressed-text" => theme.set_pressed_text(c),
+            _ => theme.set_track_off(c),
+        }
+    }
     theme.set_window_clear(clear);
     theme.set_glyph_stroke_floor(glyph_stroke_floor_device_px(look.glass));
     theme.set_light(look.light);

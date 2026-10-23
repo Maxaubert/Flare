@@ -52,6 +52,8 @@ pub const WIDGET_WIDTH: u32 = 480;
 /// What a heard text may be, and a message.
 pub const TEXT_MAX: usize = 8000;
 pub const MESSAGE_MAX: usize = 200;
+/// A recording whose words have not come back counts as busy this long (the 300 s cap and a final pass).
+const BUSY_MAX_MS: f64 = 330_000.0;
 
 /// The line a disabled row carries (N19).
 pub const NO_PICK_REASON: &str = "Waiting on a question: answer it there first";
@@ -171,6 +173,8 @@ pub enum SvcEvent {
     Pick(String),
     /// The widget dismissed.
     Dismiss,
+    /// The paste into the tab in front at the start found it gone: say so.
+    PasteFailed,
     /// The answer to `AskTabs`: this copy's tabs and every linked copy's, merged (`route::merge_tabs`).
     Tabs(Vec<SendTab>),
     /// The answer to `SendLocal` or `SendRemote`.
@@ -191,6 +195,10 @@ pub enum SvcEffect {
     HookMask(bool),
     /// The picker is open: report and swallow digits and Esc.
     HookPick(bool),
+    /// A recording is live (Start to Stop or Cancel): report and swallow Esc, so it can cancel.
+    HookRec(bool),
+    /// A recording begins: note the tab in front now, the one its words go to when they come back.
+    NoteFront,
     /// Start the hook thread (never emitted under `--e2e`).
     HookStart,
     /// Pick off, then unhook and let the lock go (N15).
@@ -256,6 +264,14 @@ pub struct Service {
     rearm_set: bool,
     /// An outside recording is under way (the widget follows it).
     outside: bool,
+    /// The recording is live, Start to Stop or Cancel: the hook reports Esc meanwhile (`HookRec`).
+    rec: bool,
+    /// What the hook was last told about `rec`.
+    rec_sent: bool,
+    /// When the last recording began and its words have not come back yet (the controller is busy with it).
+    busy_since: Option<f64>,
+    /// The host's clock at the event being handled.
+    now: f64,
     tick_set: bool,
     picking: Option<Picking>,
     /// Heard text waiting for the list of tabs.
@@ -315,6 +331,10 @@ impl Service {
             last_mask: false,
             rearm_set: false,
             outside: false,
+            rec: false,
+            rec_sent: false,
+            busy_since: None,
+            now: 0.0,
             tick_set: false,
             picking: None,
             asking: None,
@@ -358,6 +378,21 @@ impl Service {
 
     pub fn on(&mut self, e: SvcEvent, now_ms: f64) -> Vec<SvcEffect> {
         let mut fx = Vec::new();
+        self.now = now_ms;
+        self.handle(&mut fx, e, now_ms);
+        // The hook reports Esc exactly while a recording is live.
+        if !self.outside {
+            self.rec = false;
+        }
+        if self.rec != self.rec_sent {
+            self.rec_sent = self.rec;
+            fx.push(SvcEffect::HookRec(self.rec));
+        }
+        fx
+    }
+
+    fn handle(&mut self, out: &mut Vec<SvcEffect>, e: SvcEvent, now_ms: f64) {
+        let mut fx = std::mem::take(out);
         match e {
             SvcEvent::Config(c) => self.apply(&mut fx, c),
             SvcEvent::Hook(h) => self.on_hook(&mut fx, h, now_ms),
@@ -374,6 +409,9 @@ impl Service {
                     fx.push(SvcEffect::HookMask(self.last_mask));
                     if self.picking.is_some() {
                         fx.push(SvcEffect::HookPick(true));
+                    }
+                    if self.rec {
+                        fx.push(SvcEffect::HookRec(true));
                     }
                 }
             }
@@ -419,8 +457,11 @@ impl Service {
                 }
             }
             SvcEvent::Stop => self.stop(&mut fx),
+            SvcEvent::PasteFailed => {
+                self.note(&mut fx, "Not typed: that tab has closed", Tone::Warn)
+            }
         }
-        fx
+        *out = fx;
     }
 
     fn key_config(&self) -> KeyConfig {
@@ -506,6 +547,7 @@ impl Service {
             self.asking = None;
             self.pending_paste = None;
             self.rec_front = None;
+            self.busy_since = None;
             // Off sends pick off, then unhooks and lets the lock go (N15).
             if self.picking.take().is_some() {
                 fx.push(SvcEffect::ClearTimer(TimerId::Pick));
@@ -564,12 +606,24 @@ impl Service {
         fx.push(SvcEffect::Crumb(json!({ "key": action_name(a) })));
         let out = match a {
             KeyAction::Start => {
+                // The last recording's words have not come back: a second one would be lost, and the first
+                // would route by the second's front. Say so; the first keeps its own.
+                if self.busy_since.is_some_and(|t| self.now - t < BUSY_MAX_MS) {
+                    self.flash(fx, "Still transcribing", Tone::Quiet);
+                    return;
+                }
+                if self.picking.is_some() {
+                    fx.push(SvcEffect::Crumb(json!({ "pick": "not sent" })));
+                }
                 self.end_pick(fx);
                 // A list still being gathered for an earlier text is stale now.
                 self.asking = None;
                 self.pending_paste = None;
                 self.outside = true;
+                self.rec = true;
+                self.busy_since = Some(self.now);
                 self.rec_front = self.last_front;
+                fx.push(SvcEffect::NoteFront);
                 fx.push(SvcEffect::Widget(OverlayState::Listening {
                     text: String::new(),
                     level: 0.0,
@@ -577,8 +631,14 @@ impl Service {
                 }));
                 OutsideAction::Start
             }
-            KeyAction::Stop => OutsideAction::Stop,
-            KeyAction::Cancel => OutsideAction::Cancel,
+            KeyAction::Stop => {
+                self.rec = false;
+                OutsideAction::Stop
+            }
+            KeyAction::Cancel => {
+                self.rec = false;
+                OutsideAction::Cancel
+            }
         };
         fx.push(SvcEffect::ToController(out));
     }
@@ -649,6 +709,11 @@ impl Service {
 
     fn note(&mut self, fx: &mut Vec<SvcEffect>, message: impl Into<String>, tone: Tone) {
         self.outside = false;
+        self.flash(fx, message, tone);
+    }
+
+    /// A note on the widget that leaves the recording's state alone.
+    fn flash(&mut self, fx: &mut Vec<SvcEffect>, message: impl Into<String>, tone: Tone) {
         fx.push(SvcEffect::Widget(OverlayState::Note {
             message: message.into(),
             tone,
@@ -676,6 +741,7 @@ impl Service {
     /* ----- routing what was heard ----- */
 
     fn routed(&mut self, fx: &mut Vec<SvcEffect>, r: RouteResult) {
+        self.busy_since = None;
         let front = self.rec_front.take();
         let text = match r {
             RouteResult::Message(m) => {
@@ -780,6 +846,7 @@ impl Service {
         self.asking = None;
         self.pending_paste = None;
         self.outside = false;
+        self.busy_since = None;
         self.clear_tick(fx);
         fx.push(SvcEffect::ClearTimer(TimerId::Pick));
         fx.push(SvcEffect::WidgetClose);
@@ -986,6 +1053,87 @@ mod tests {
         let fx = s.on(SvcEvent::Routed(RouteResult::Text("hi".into())), 5.0);
         // 4242 is not this copy and there is no link service: the list.
         assert!(has(&fx, &SvcEffect::AskTabs));
+    }
+
+    /* ----- review: Esc cancels an outside recording, a second press never steals the first ----- */
+
+    #[test]
+    fn a_live_recording_asks_the_hook_for_esc_and_esc_cancels_it() {
+        let mut s = started();
+        let fx = s.on(key(true, Some(7)), 1.0);
+        assert!(has(&fx, &SvcEffect::HookRec(true)), "{fx:?}");
+        s.on(key(false, None), 2.0);
+        let fx = s.on(SvcEvent::Hook(HookEvent::Esc), 400.0);
+        assert!(
+            has(&fx, &SvcEffect::ToController(OutsideAction::Cancel)),
+            "{fx:?}"
+        );
+        assert!(has(&fx, &SvcEffect::HookRec(false)), "{fx:?}");
+    }
+
+    #[test]
+    fn the_hook_is_not_asked_for_esc_before_a_recording_or_after_its_result() {
+        let mut s = started();
+        let fx = s.on(SvcEvent::Tick, 0.5);
+        assert!(!fx.iter().any(|e| matches!(e, SvcEffect::HookRec(_))));
+        s.on(key(true, Some(7)), 1.0);
+        s.on(key(false, None), 2.0);
+        let fx = s.on(
+            SvcEvent::Routed(RouteResult::Message("Cancelled".into())),
+            3.0,
+        );
+        assert!(!fx.iter().any(|e| matches!(e, SvcEffect::HookRec(true))));
+    }
+
+    #[test]
+    fn a_second_press_while_the_first_is_transcribing_keeps_the_first_recordings_front() {
+        let mut s = serving();
+        s.on(key(true, Some(7)), 10.0);
+        s.on(key(false, None), 11.0);
+        // Pressed again before the first result: refused, said so, nothing started.
+        let fx = s.on(key(true, Some(9)), 12.0);
+        assert!(!started_ctl(&fx), "{fx:?}");
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::Widget(OverlayState::Note {
+                    message: "Still transcribing".into(),
+                    tone: Tone::Quiet
+                })
+            ),
+            "{fx:?}"
+        );
+        s.on(key(false, None), 13.0);
+        // The first clip routes by ITS front.
+        let fx = s.on(SvcEvent::Routed(RouteResult::Text("first".into())), 20.0);
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::PasteCopy {
+                    pid: 7,
+                    text: "first".into()
+                }
+            ),
+            "{fx:?}"
+        );
+        // Once it is back, a new press starts again.
+        let fx = s.on(key(true, Some(9)), 30.0);
+        assert!(started_ctl(&fx), "{fx:?}");
+    }
+
+    #[test]
+    fn a_start_notes_the_tab_in_front_and_a_failed_paste_says_so() {
+        let mut s = serving();
+        let fx = s.on(key(true, Some(1)), 10.0);
+        assert!(has(&fx, &SvcEffect::NoteFront), "{fx:?}");
+        let fx = s.on(SvcEvent::PasteFailed, 20.0);
+        assert!(has(
+            &fx,
+            &SvcEffect::Widget(OverlayState::Note {
+                message: "Not typed: that tab has closed".into(),
+                tone: Tone::Warn
+            })
+        ));
     }
 
     /* ----- audit L35: a pref change that is not the binding keeps the key feed ----- */

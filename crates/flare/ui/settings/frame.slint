@@ -69,7 +69,7 @@ component RailButton inherits Rectangle {
         viewbox-height: 24;
         commands: root.item.icon;
         fill: transparent;
-        stroke: (root.on || ta.has-hover || fs.has-focus) ? Theme.text : Theme.dim;
+        stroke: root.on ? Theme.hover-ink : ((ta.has-hover || fs.has-focus) ? Theme.text : Theme.dim);
         stroke-width: 1.7 * 17px / 24;
         stroke-line-cap: round;
         stroke-line-join: round;
@@ -84,7 +84,7 @@ component RailButton inherits Rectangle {
         // PT: font-medium, font-semibold when chosen. Segoe UI has no Medium face and Chromium
         // draws 500 with the Semibold one, so both are 600 here (Task 53).
         font-weight: 600;
-        color: (root.on || ta.has-hover || fs.has-focus) ? Theme.text : Theme.text-soft;
+        color: root.on ? Theme.hover-ink : ((ta.has-hover || fs.has-focus) ? Theme.text : Theme.text-soft);
         vertical-alignment: center;
         overflow: elide;
     }

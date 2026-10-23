@@ -336,6 +336,7 @@ pub trait Parts {
     fn hook_keys(&mut self, vks: Vec<u16>);
     fn hook_mask(&mut self, on: bool);
     fn hook_pick(&mut self, on: bool);
+    fn hook_rec(&mut self, on: bool);
     /// Whether this copy has a link at all (a key and a pipe).
     fn link_available(&self) -> bool;
     fn link_service(&mut self);
@@ -584,6 +585,10 @@ pub struct Dict {
     live_sent_ms: f64,
     widget: Option<OverlayState>,
     stopped: bool,
+    /// The tab in front when the outside recording began: its words are pasted there (`SvcEffect::NoteFront`).
+    rec_session: Option<String>,
+    /// The last paste found its tab gone.
+    paste_gone: bool,
 }
 
 /// Prism Terminal's second lock against an Enter (`pasteSpokenText`, parity 576): every run of line breaks (CR, LF,
@@ -647,6 +652,8 @@ impl Dict {
             live_sent_ms: f64::MIN,
             widget: None,
             stopped: false,
+            rec_session: None,
+            paste_gone: false,
         }
     }
 
@@ -1246,6 +1253,7 @@ impl Dict {
         match self.host.paste(session, &clean) {
             PasteOutcome::Done => {}
             PasteOutcome::Gone => {
+                self.paste_gone = true;
                 let fx = self.ctl_on(Event::TabGone(session.to_string()));
                 self.run(fx);
             }
@@ -1387,6 +1395,12 @@ impl Dict {
                         p.hook_pick(on);
                     }
                 }
+                SvcEffect::HookRec(on) => {
+                    if let Some(p) = self.parts.as_mut() {
+                        p.hook_rec(on);
+                    }
+                }
+                SvcEffect::NoteFront => self.rec_session = self.host.front_session(),
                 SvcEffect::HookStart => self.hook_start(),
                 SvcEffect::HookStop => {
                     if let Some(p) = self.parts.as_mut() {
@@ -1417,10 +1431,17 @@ impl Dict {
                     self.host.widget(None);
                 }
                 SvcEffect::PastePage(text) => {
-                    let fx = self.ctl_on(Event::Front(self.host.front_session()));
+                    // The tab that was in front when the recording began, not the one in front now.
+                    let session = self.rec_session.take();
+                    let had = session.is_some();
+                    let fx = self.ctl_on(Event::Front(session));
                     self.run(fx);
+                    self.paste_gone = false;
                     let fx = self.ctl_on(Event::PasteFront(text));
                     self.run(fx);
+                    if !had || self.paste_gone {
+                        self.svc_on(SvcEvent::PasteFailed);
+                    }
                 }
                 SvcEffect::PasteCopy { pid, text } => {
                     let ok = self
@@ -2959,6 +2980,12 @@ impl Parts for RealParts {
         }
     }
 
+    fn hook_rec(&mut self, on: bool) {
+        if let Some(h) = &self.hook {
+            h.rec(on);
+        }
+    }
+
     fn link_available(&self) -> bool {
         self.link.is_some()
     }
@@ -3247,6 +3274,9 @@ mod tests {
         }
         fn hook_mask(&mut self, _on: bool) {
             self.note("hook_mask");
+        }
+        fn hook_rec(&mut self, on: bool) {
+            self.note(&format!("hook_rec_{on}"));
         }
         fn hook_pick(&mut self, on: bool) {
             self.note(&format!("hook_pick_{on}"));
@@ -3870,6 +3900,33 @@ mod tests {
             !last.1.contains(['\n', '\r', '\u{2028}', '\u{2029}']),
             "{last:?}"
         );
+    }
+
+    /// Review #84: the words go to the tab that was in front when the recording began, not the one in front
+    /// when they come back.
+    #[test]
+    fn the_words_land_in_the_tab_the_recording_began_in() {
+        let mut r = Rig::on_with_model(false);
+        r.d.run_svc(vec![SvcEffect::NoteFront]);
+        *r.host.front.borrow_mut() = Some("t2".into());
+        r.d.run_svc(vec![SvcEffect::PastePage("hello".into())]);
+        let pastes = r.host.pastes.borrow().clone();
+        assert_eq!(
+            pastes.last().map(|p| p.0.as_str()),
+            Some("t1"),
+            "{pastes:?}"
+        );
+    }
+
+    /// Review #84: a tab that closed before the words came back is not typed into, and the paste says so.
+    #[test]
+    fn a_tab_closed_during_transcription_is_not_typed_into() {
+        let mut r = Rig::on_with_model(false);
+        r.d.run_svc(vec![SvcEffect::NoteFront]);
+        r.host.paste_outcome.set(Some(PasteOutcome::Gone));
+        r.d.run_svc(vec![SvcEffect::PastePage("hello".into())]);
+        assert!(r.d.paste_gone, "the gone tab must be noticed");
+        assert!(r.host.pastes.borrow().is_empty());
     }
 
     fn pause_rig() -> Rig {

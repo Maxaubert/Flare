@@ -2,8 +2,8 @@
 //! at e5848cb (D6: native, on its own thread, not a PowerShell helper).
 //!
 //! PRIVACY: the hook reads only the keys the owner names (the dictation binding), says only "another key"
-//! (never which) while one of them is down, and, only while the session picker is open, the digits 1 to 9
-//! and Esc. It swallows nothing else, ever. It is never installed under `--e2e` (the app does not call
+//! (never which) while one of them is down, and, only while the session picker is open (or Esc alone while a
+//! recording is live), the digits 1 to 9 and Esc. It swallows nothing else, ever. It is never installed under `--e2e` (the app does not call
 //! `KeyHook::start` there; N16 feeds helper lines through the test seam), and no test here installs it.
 //!
 //! ONE HOOK FOR EVERY COPY OF THE APP: a hook installs only while this process holds the lock file
@@ -46,6 +46,31 @@ const VK_CTRL: u16 = 0x11;
 const VK_LWIN: u16 = 0x5b;
 const VK_RWIN: u16 = 0x5c;
 const VK_ESC: u16 = 0x1b;
+const VK_SHIFT: u16 = 0x10;
+const VK_MENU: u16 = 0x12;
+const VK_LSHIFT: u16 = 0xa0;
+const VK_RSHIFT: u16 = 0xa1;
+const VK_LMENU: u16 = 0xa4;
+const VK_RMENU: u16 = 0xa5;
+
+/// The modifier families a binding may name: a family counts as held when any of its keys is.
+const FAMILIES: [&[u16]; 4] = [
+    &[VK_LCTRL, VK_RCTRL, VK_CTRL],
+    &[VK_LSHIFT, VK_RSHIFT, VK_SHIFT],
+    &[VK_LMENU, VK_RMENU, VK_MENU],
+    &[VK_LWIN, VK_RWIN],
+];
+
+/// What the owner has switched on for the hook: the picker, a live recording, the Start-menu mask.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flags {
+    /// The session picker is open: digits 1 to 9 and Esc are reported and swallowed.
+    pub pick: bool,
+    /// A recording is live: Esc is reported and swallowed, so it can cancel.
+    pub rec: bool,
+    /// Mask the Start menu on a Win up after Ctrl+Win.
+    pub mask: bool,
+}
 
 /// What the hook remembers between keys: the binding keys held, and the Win and Ctrl rule's flags.
 #[derive(Debug, Default)]
@@ -53,6 +78,8 @@ pub struct HookState {
     down: HashSet<u16>,
     win_down: bool,
     ctrl_with_win: bool,
+    /// Keys whose down was swallowed: their repeats and their up are swallowed with them.
+    swallowed: HashSet<u16>,
 }
 
 impl HookState {
@@ -61,6 +88,7 @@ impl HookState {
         self.down.clear();
         self.win_down = false;
         self.ctrl_with_win = false;
+        self.swallowed.clear();
     }
 }
 
@@ -74,6 +102,39 @@ fn is_win(vk: u16) -> bool {
 
 fn is_digit_key(vk: u16) -> bool {
     (0x31..=0x39).contains(&vk) || (0x61..=0x69).contains(&vk)
+}
+
+/// A key that is no modifier: the one a chord such as Ctrl+Shift+D or F9 ends in.
+fn is_plain_binding_key(vk: u16) -> bool {
+    !FAMILIES.iter().any(|f| f.contains(&vk))
+}
+
+/// True when every modifier family the binding names has a key held (a binding with none is always held).
+fn binding_held(s: &HookState, keys: &HashSet<u16>) -> bool {
+    FAMILIES
+        .iter()
+        .filter(|f| f.iter().any(|k| keys.contains(k)))
+        .all(|f| f.iter().any(|k| s.down.contains(k)))
+}
+
+fn is_alt(vk: u16) -> bool {
+    matches!(vk, VK_LMENU | VK_RMENU | VK_MENU)
+}
+
+/// A Ctrl, Alt (AltGr is Ctrl+Alt), Shift or Win the binding does not name is physically down: the key
+/// is then part of a chord or a typed character in another app.
+fn foreign_modifier_down(keys: &HashSet<u16>, is_down: &dyn Fn(u16) -> bool) -> bool {
+    [
+        (VK_CTRL, FAMILIES[0]),
+        (VK_SHIFT, FAMILIES[1]),
+        (VK_MENU, FAMILIES[2]),
+        (VK_LWIN, FAMILIES[3]),
+    ]
+    .iter()
+    .any(|(generic, family)| {
+        !family.iter().any(|k| keys.contains(k))
+            && (is_down(*generic) || (*generic == VK_LWIN && is_down(VK_RWIN)))
+    })
 }
 
 fn ctrl_held(s: &HookState) -> bool {
@@ -91,6 +152,31 @@ pub fn decide(
     pick: bool,
     mask: bool,
 ) -> (Option<HookEvent>, bool, bool) {
+    decide_with(
+        vk,
+        down,
+        s,
+        keys,
+        Flags {
+            pick,
+            rec: false,
+            mask,
+        },
+        &|_| false,
+    )
+}
+
+/// `decide` with every switch and the system's view of the modifiers (`is_down`, a virtual key in, true when
+/// physically held out: `GetAsyncKeyState` in the hook, a closure in a test).
+pub fn decide_with(
+    vk: u16,
+    down: bool,
+    s: &mut HookState,
+    keys: &HashSet<u16>,
+    flags: Flags,
+    is_down: &dyn Fn(u16) -> bool,
+) -> (Option<HookEvent>, bool, bool) {
+    let Flags { pick, rec, mask } = flags;
     if vk == MASK_VK {
         return (None, false, false);
     }
@@ -109,9 +195,22 @@ pub fn decide(
     } else if is_ctrl(vk) && down && s.win_down {
         s.ctrl_with_win = true;
     }
+    // Alt let go after the binding named it: the window menu must not open on that up.
+    if is_alt(vk) && !down && keys.contains(&vk) {
+        send_mask = true;
+    }
     if keys.contains(&vk) {
+        // The binding's own non-modifier key (F9, the D of Ctrl+Shift+D) is the app's no more while the
+        // whole binding is held: it must not reach the shell (^D) or the app in front. Its repeats and
+        // its up go with it.
+        let mut swallow = false;
         if down {
-            if s.down.insert(vk) {
+            let first = s.down.insert(vk);
+            if is_plain_binding_key(vk) && (binding_held(s, keys) || s.swallowed.contains(&vk)) {
+                swallow = true;
+                s.swallowed.insert(vk);
+            }
+            if first {
                 if let Some(code) = code_of_vk(vk) {
                     return (
                         Some(HookEvent::Key {
@@ -119,13 +218,14 @@ pub fn decide(
                             code,
                             front: None,
                         }),
-                        false,
+                        swallow,
                         send_mask,
                     );
                 }
             }
         } else {
             s.down.remove(&vk);
+            swallow = s.swallowed.remove(&vk);
             if let Some(code) = code_of_vk(vk) {
                 return (
                     Some(HookEvent::Key {
@@ -133,26 +233,34 @@ pub fn decide(
                         code,
                         front: None,
                     }),
-                    false,
+                    swallow,
                     send_mask,
                 );
             }
         }
-        return (None, false, send_mask);
+        return (None, swallow, send_mask);
     }
+    // A modifier the binding does not name, physically down: the key is part of a chord or a typed
+    // character (AltGr+2 is '@') in whatever app is in front, not the picker's.
+    let foreign = || foreign_modifier_down(keys, is_down);
     if down {
-        if pick && is_digit_key(vk) {
+        if pick && is_digit_key(vk) && !foreign() {
             let n = if vk >= 0x61 { vk - 0x60 } else { vk - 0x30 };
+            s.swallowed.insert(vk);
             return (Some(HookEvent::Digit(n as u8)), true, send_mask);
         }
-        if pick && vk == VK_ESC {
+        if (pick || rec) && vk == VK_ESC && !foreign() {
+            s.swallowed.insert(vk);
             return (Some(HookEvent::Esc), true, send_mask);
         }
         if !s.down.is_empty() {
             return (Some(HookEvent::Other), false, send_mask);
         }
-    } else if pick && (is_digit_key(vk) || vk == VK_ESC) {
-        return (None, true, send_mask);
+    } else {
+        let was = s.swallowed.remove(&vk);
+        if was || ((pick && is_digit_key(vk)) || ((pick || rec) && vk == VK_ESC)) && !foreign() {
+            return (None, true, send_mask);
+        }
     }
     (None, false, send_mask)
 }
@@ -164,6 +272,7 @@ pub fn lost_ups(s: &mut HookState, is_down: impl Fn(u16) -> bool) -> Vec<HookEve
     let mut out = Vec::new();
     for vk in gone {
         s.down.remove(&vk);
+        s.swallowed.remove(&vk);
         if let Some(code) = code_of_vk(vk) {
             out.push(HookEvent::Key {
                 down: false,
@@ -206,6 +315,7 @@ struct Shared {
     keys: Mutex<HashSet<u16>>,
     mask: AtomicBool,
     pick: AtomicBool,
+    rec: AtomicBool,
 }
 
 /// The state the hook callback reads: one hook per process (the lock file guarantees it).
@@ -262,13 +372,17 @@ unsafe extern "system" fn hook_proc(n: i32, w: WPARAM, l: LPARAM) -> LRESULT {
                 return (false, false);
             };
             let keys = a.shared.keys.lock().unwrap_or_else(|p| p.into_inner());
-            let (ev, swallow, send_mask) = decide(
+            let (ev, swallow, send_mask) = decide_with(
                 vk,
                 down,
                 &mut a.state,
                 &keys,
-                a.shared.pick.load(Ordering::Relaxed),
-                a.shared.mask.load(Ordering::Relaxed),
+                Flags {
+                    pick: a.shared.pick.load(Ordering::Relaxed),
+                    rec: a.shared.rec.load(Ordering::Relaxed),
+                    mask: a.shared.mask.load(Ordering::Relaxed),
+                },
+                &system_key_down,
             );
             drop(keys);
             if let Some(mut ev) = ev {
@@ -368,6 +482,11 @@ impl KeyHook {
     /// Report and swallow digits 1 to 9 and Esc (the session picker is open).
     pub fn pick(&self, on: bool) {
         self.shared.pick.store(on, Ordering::Relaxed);
+    }
+
+    /// Report and swallow Esc while a recording is live, so Esc cancels it from any app.
+    pub fn rec(&self, on: bool) {
+        self.shared.rec.store(on, Ordering::Relaxed);
     }
 
     /// True while the thread runs. A thread that died is the owner's cue to report `Failed` and re-arm.
@@ -725,7 +844,101 @@ mod tests {
         let k = keys(&[0x31]);
         let mut s = HookState::default();
         let (e, swallow, _) = decide(0x31, true, &mut s, &k, true, false);
-        assert_eq!((e, swallow), (Some(key_ev(true, "Digit1")), false));
+        // A plain binding key is Flare's while the binding is held, even one that is also a picker key.
+        assert_eq!((e, swallow), (Some(key_ev(true, "Digit1")), true));
+    }
+
+    fn flags(pick: bool, rec: bool) -> Flags {
+        Flags {
+            pick,
+            rec,
+            mask: false,
+        }
+    }
+
+    #[test]
+    fn a_plain_binding_key_such_as_f9_is_swallowed_with_its_repeats_and_its_up() {
+        let k = keys(&[0x78]);
+        let mut s = HookState::default();
+        let none = |_| false;
+        let (e, swallow, _) = decide_with(0x78, true, &mut s, &k, flags(false, false), &none);
+        assert_eq!(e, Some(key_ev(true, "F9")));
+        assert!(swallow, "the F9 down must not reach the app in front");
+        let (e, swallow, _) = decide_with(0x78, true, &mut s, &k, flags(false, false), &none);
+        assert_eq!((e, swallow), (None, true), "a repeat goes with it");
+        let (e, swallow, _) = decide_with(0x78, false, &mut s, &k, flags(false, false), &none);
+        assert_eq!(e, Some(key_ev(false, "F9")));
+        assert!(swallow, "and so does the up");
+        let (_, swallow, _) = decide_with(0x78, false, &mut s, &k, flags(false, false), &none);
+        assert!(!swallow, "an up with no swallowed down is the app's");
+    }
+
+    #[test]
+    fn the_d_of_ctrl_shift_d_is_swallowed_only_while_ctrl_and_shift_are_held() {
+        const D: u16 = 0x44;
+        let k = keys(&[LCTRL, 0xa3, 0xa0, 0xa1, D]);
+        let none = |_| false;
+        // A plain d, or Ctrl+D alone, is the shell's.
+        let mut s = HookState::default();
+        let (_, swallow, _) = decide_with(D, true, &mut s, &k, flags(false, false), &none);
+        assert!(!swallow, "a plain d must reach the shell");
+        let mut s = HookState::default();
+        decide_with(LCTRL, true, &mut s, &k, flags(false, false), &none);
+        let (_, swallow, _) = decide_with(D, true, &mut s, &k, flags(false, false), &none);
+        assert!(!swallow, "Ctrl+D alone is the shell's end of input");
+        // The whole chord is Flare's.
+        let mut s = HookState::default();
+        decide_with(LCTRL, true, &mut s, &k, flags(false, false), &none);
+        decide_with(0xa0, true, &mut s, &k, flags(false, false), &none);
+        let (e, swallow, _) = decide_with(D, true, &mut s, &k, flags(false, false), &none);
+        assert_eq!(e, Some(key_ev(true, "KeyD")));
+        assert!(swallow, "Ctrl+Shift+D must not reach the shell as ^D");
+    }
+
+    #[test]
+    fn a_bare_alt_release_masks_the_window_menu() {
+        let k = keys(&[RALT]);
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        let (_, _, mask) = decide(RALT, false, &mut s, &k, false, false);
+        assert!(mask, "an Alt up after the binding must not open the menu");
+    }
+
+    #[test]
+    fn escape_is_reported_and_swallowed_while_a_recording_is_live() {
+        let k = keys(&[RALT]);
+        let none = |_| false;
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(false, true), &none);
+        assert_eq!((e, swallow), (Some(HookEvent::Esc), true));
+        let (e, swallow, _) = decide_with(0x1b, false, &mut s, &k, flags(false, true), &none);
+        assert_eq!((e, swallow), (None, true));
+        // Not recording and not picking: Esc is the app's, and the binding held says only "another key".
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(false, false), &none);
+        assert_eq!((e, swallow), (Some(HookEvent::Other), false));
+    }
+
+    #[test]
+    fn a_digit_with_shift_ctrl_alt_or_altgr_down_is_the_apps_not_the_pickers() {
+        let k = keys(&[0x78]);
+        for held in [0x10u16, 0x11, 0x12, 0x5b] {
+            let mut s = HookState::default();
+            let down = move |vk| vk == held;
+            let (e, swallow, _) = decide_with(0x32, true, &mut s, &k, flags(true, false), &down);
+            assert_eq!((e, swallow), (None, false), "held {held:#x}");
+        }
+        // AltGr reads as Ctrl and Alt together.
+        let mut s = HookState::default();
+        let altgr = |vk| vk == 0x11 || vk == 0x12;
+        let (e, swallow, _) = decide_with(0x32, true, &mut s, &k, flags(true, false), &altgr);
+        assert_eq!((e, swallow), (None, false));
+        // Nothing held: the picker's.
+        let mut s = HookState::default();
+        let (e, swallow, _) = decide_with(0x32, true, &mut s, &k, flags(true, false), &|_| false);
+        assert_eq!((e, swallow), (Some(HookEvent::Digit(2)), true));
     }
 
     #[test]

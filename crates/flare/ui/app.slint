@@ -60,6 +60,8 @@ component TitleButton inherits Rectangle {
     in property <length> icon-size: 13px;
     in property <float> stroke-units: 1.8;
     in property <bool> danger: false;
+    // Drawn on the picked Secondary (the bar beside the sidebar): the inks held on that fill.
+    in property <bool> on-secondary: false;
     in property <string> label;
     // A tooltip, when the button has one (the Command help button).
     in property <string> tip-text;
@@ -81,7 +83,7 @@ component TitleButton inherits Rectangle {
         viewbox-height: 24;
         commands: root.commands;
         fill: transparent;
-        stroke: ta.has-hover ? (root.danger ? #ffffff : Theme.text) : Theme.icon;
+        stroke: ta.has-hover ? (root.danger ? #ffffff : (root.on-secondary ? Theme.secondary-text : Theme.text)) : (root.on-secondary ? Theme.secondary-icon : Theme.icon);
         // Under glass the stroke is at least two device pixels (audit V7), so it never anti-aliases away.
         stroke-width: max(root.stroke-units * root.icon-size / 24, Theme.glyph-stroke-floor * 1phx);
         stroke-line-cap: round;
@@ -131,6 +133,7 @@ component TitleButton inherits Rectangle {
 // is the one source of truth for the strip's reserved space: 154 with four buttons, 190 with the
 // Command help button before them (32 per button, 4 between, 8 and 6 at the ends).
 component TitleButtons inherits Rectangle {
+    in property <bool> on-secondary: false;
     in property <bool> help-visible;
     in property <string> help-tip;
     in property <string> settings-tip;
@@ -149,6 +152,7 @@ component TitleButtons inherits Rectangle {
         if root.help-visible: VerticalLayout {
             alignment: center;
             TitleButton {
+                on-secondary: root.on-secondary;
                 label: "Command help";
                 tip-text: root.help-tip;
                 icon-size: 15px;
@@ -161,6 +165,7 @@ component TitleButtons inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TitleButton {
+                on-secondary: root.on-secondary;
                 label: "Settings";
                 tip-text: root.settings-tip;
                 icon-size: 15px;
@@ -173,6 +178,7 @@ component TitleButtons inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TitleButton {
+                on-secondary: root.on-secondary;
                 label: "Minimize";
                 commands: "M6 12h12";
                 clicked => { root.minimize(); }
@@ -181,6 +187,7 @@ component TitleButtons inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TitleButton {
+                on-secondary: root.on-secondary;
                 label: "Maximize";
                 commands: "M7.5 6h9a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-9a1.5 1.5 0 0 1 1.5-1.5z";
                 clicked => { root.maximize(); }
@@ -189,6 +196,7 @@ component TitleButtons inherits Rectangle {
         VerticalLayout {
             alignment: center;
             TitleButton {
+                on-secondary: root.on-secondary;
                 label: "Close";
                 danger: true;
                 commands: "M7 7l10 10M17 7L7 17";
@@ -630,6 +638,7 @@ export component AppWindow inherits Window {
                     tip-request(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-buttons := TitleButtons {
+                    on-secondary: true;
                     x: parent.width - self.width;
                     help-visible: root.help-visible;
                     help-tip: "Command help (" + root.help-key + ")";

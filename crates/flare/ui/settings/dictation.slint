@@ -76,7 +76,7 @@ export component DictKeyField inherits HorizontalLayout {
                 font-weight: 600;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                color: root.capturing ? Theme.accent-hi : Theme.text;
+                color: root.capturing ? Theme.accent-ink : Theme.text;
             }
 
             // The capture itself reads keys in Rust (the window's key path); the field only starts it.
@@ -237,7 +237,7 @@ component DictPill inherits Rectangle {
         font-weight: 700;
         letter-spacing: 0.38px;
         vertical-alignment: center;
-        color: root.filled ? Theme.on-accent : Theme.accent-hi;
+        color: root.filled ? Theme.on-accent : Theme.accent-ink;
     }
 }
 
