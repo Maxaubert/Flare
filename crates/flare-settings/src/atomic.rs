@@ -124,6 +124,26 @@ impl AtomicWriter {
         Ok(())
     }
 
+    /// Waits until the background queue is empty, for at most `max`; true when it is empty. The quit
+    /// uses this: a write in flight is let finish, but a stuck disk never holds the quit.
+    pub fn idle_within(&self, max: Duration) -> bool {
+        let end = std::time::Instant::now() + max;
+        let mut q = lock(&self.inner.queue);
+        while q.running {
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            q = self
+                .inner
+                .queue_cv
+                .wait_timeout(q, left) // sync-ok: the quit, bounded by `max`
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
     /// Waits until the background queue is empty (tests and the quit).
     pub fn idle(&self) {
         let mut q = lock(&self.inner.queue);
@@ -200,28 +220,45 @@ pub enum Opened {
     },
 }
 
-/// The startup read: only NotFound reads as empty. Any other error moves the file to `<file>.bad`
-/// (logged), or reports that it could not, and never reads as empty.
+/// The startup read: only NotFound (or a blank file) reads as empty. A read error, or text that is not
+/// valid JSON, moves the file to `<file>.bad` (logged), or reports that it could not, and never reads
+/// as empty. A leading BOM is dropped.
 pub fn open_text(file: &Path) -> Opened {
     match std::fs::read_to_string(file) {
         // sync-ok: the startup read of a store file
-        Ok(t) => Opened::Text(t),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Opened::Missing,
-        Err(e) => {
-            let bad = suffixed(file, ".bad");
-            let moved_aside = rename_file(file, &bad).is_ok();
-            log::warn!(
-                "could not read {}: {e}; {}",
-                file.display(),
-                if moved_aside {
-                    "kept as .bad"
-                } else {
-                    "left alone and not written this session"
-                }
-            );
-            Opened::Unreadable { moved_aside }
+        Ok(t) => {
+            // An editor that saves UTF-8 with a BOM must not make a good file read as junk.
+            let t = match t.strip_prefix('\u{feff}') {
+                Some(rest) => rest.to_string(),
+                None => t,
+            };
+            if t.trim().is_empty() || serde_json::from_str::<serde_json::Value>(&t).is_ok() {
+                Opened::Text(t)
+            } else {
+                // Text that does not parse is the user's data, not an empty store: it is kept
+                // as `.bad` before the first save can replace it.
+                set_aside(file, "is not valid JSON")
+            }
         }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Opened::Missing,
+        Err(e) => set_aside(file, &format!("could not be read: {e}")),
     }
+}
+
+/// Moves `file` to `<file>.bad` (logged); `moved_aside` says whether that worked.
+fn set_aside(file: &Path, why: &str) -> Opened {
+    let bad = suffixed(file, ".bad");
+    let moved_aside = rename_file(file, &bad).is_ok();
+    log::warn!(
+        "{} {why}; {}",
+        file.display(),
+        if moved_aside {
+            "kept as .bad"
+        } else {
+            "left alone and not written this session"
+        }
+    );
+    Opened::Unreadable { moved_aside }
 }
 
 /// `<file><suffix>`, for example `tabs.json` and `.tmp` give `tabs.json.tmp`.
@@ -349,5 +386,21 @@ mod tests {
         w.save("x".to_string());
         w.idle();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_bom_is_dropped_and_broken_text_is_kept_as_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, "\u{feff}{\"a\":\"1\"}").unwrap();
+        assert_eq!(open_text(&file), Opened::Text("{\"a\":\"1\"}".to_string()));
+        assert!(file.exists(), "a good file stays where it is");
+        std::fs::write(&file, "{\"a\":").unwrap();
+        assert_eq!(open_text(&file), Opened::Unreadable { moved_aside: true });
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json.bad")).unwrap(),
+            "{\"a\":"
+        );
+        assert_eq!(open_text(&file), Opened::Missing);
     }
 }

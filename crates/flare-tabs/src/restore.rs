@@ -8,6 +8,7 @@ use flare_agent::kinds::{AgentKind, CODEX_RESUME};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Most tabs a saved strip keeps.
 pub const MAX_TABS: usize = 50;
@@ -173,29 +174,61 @@ pub fn with_launch_folders(plan: &mut Restored, folders: &[String]) {
     plan.active = plan.tabs.len() - 1;
 }
 
+/// How long a folder may take to answer "is it there": past this it counts as gone, so one
+/// unreachable folder (an offline mapped drive that Windows spends a minute reconnecting) cannot
+/// hold every tab and every queued hand-off.
+pub const STAT_DEADLINE: Duration = Duration::from_secs(3);
+
 /// BLOCKING (a worker thread): stats every saved folder in parallel, asks `lookup` only for Claude
-/// tabs in a folder that exists, then `plan_restore`. A reported UNC folder is never statted.
+/// tabs in a folder that exists, then `plan_restore`. A reported UNC folder is never statted, and a
+/// folder that does not answer within `STAT_DEADLINE` counts as gone.
 pub fn resolve_restore(
     saved: &SavedTabs,
     is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     lookup: Arc<dyn SessionLookup>,
 ) -> Restored {
-    let present: HashMap<String, bool> = std::thread::scope(|sc| {
-        let handles: Vec<_> = saved
-            .tabs
-            .iter()
-            .filter(|t| !t.cwd.is_empty() && !is_unsafe_restore_folder(&t.cwd))
-            .map(|t| {
-                let is_dir = Arc::clone(&is_dir);
-                let cwd = t.cwd.clone();
-                sc.spawn(move || {
-                    let ok = is_dir(&cwd);
-                    (cwd, ok)
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect() // sync-ok: restore worker threads, never the UI thread
-    });
+    resolve_restore_within(saved, is_dir, lookup, STAT_DEADLINE)
+}
+
+/// `resolve_restore` with the stat deadline made explicit.
+pub fn resolve_restore_within(
+    saved: &SavedTabs,
+    is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    lookup: Arc<dyn SessionLookup>,
+    deadline: Duration,
+) -> Restored {
+    let (tx, rx) = std::sync::mpsc::channel::<(String, bool)>();
+    let mut asked = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for t in &saved.tabs {
+        if t.cwd.is_empty() || is_unsafe_restore_folder(&t.cwd) || !seen.insert(t.cwd.clone()) {
+            continue;
+        }
+        let (is_dir, tx, cwd) = (Arc::clone(&is_dir), tx.clone(), t.cwd.clone());
+        // Detached: a stat that never returns is left behind, not waited for.
+        let spawned = std::thread::Builder::new()
+            .name("flare-restore-stat".into())
+            .spawn(move || {
+                let ok = is_dir(&cwd);
+                let _ = tx.send((cwd, ok));
+            });
+        if spawned.is_ok() {
+            asked += 1;
+        }
+    }
+    drop(tx);
+    let end = Instant::now() + deadline;
+    let mut present: HashMap<String, bool> = HashMap::new();
+    while present.len() < asked {
+        let left = end.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            // sync-ok: the restore worker, bounded by the deadline
+            Ok((cwd, ok)) => {
+                present.insert(cwd, ok);
+            }
+            Err(_) => break,
+        }
+    }
     plan_restore(saved, &|p| present.get(p).copied().unwrap_or(false), &|p| {
         lookup.sessions(p)
     })
@@ -331,8 +364,7 @@ pub fn settle_restore(
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn ids() -> impl FnMut() -> String {
         let mut n = 0;
@@ -582,6 +614,38 @@ mod tests {
                 rt("C:\\a", Some("sess"), Some(0)),
                 rt("C:\\b", None, Some(2))
             ]
+        );
+    }
+
+    #[test]
+    fn one_folder_that_never_answers_does_not_hold_the_rest() {
+        let saved = SavedTabs {
+            tabs: vec![st("Z:\\nas", None), st("C:\\a", None), st("C:\\b", None)],
+            active: 0,
+        };
+        let release = Arc::new(AtomicBool::new(false));
+        let r2 = Arc::clone(&release);
+        let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(move |p| {
+            if p == "Z:\\nas" {
+                while !r2.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            true
+        });
+        let t = Instant::now();
+        let r = resolve_restore_within(
+            &saved,
+            is_dir,
+            Arc::new(NoSessions),
+            Duration::from_millis(300),
+        );
+        let took = t.elapsed();
+        release.store(true, Ordering::SeqCst);
+        assert!(took < Duration::from_secs(2), "held for {took:?}");
+        assert_eq!(
+            r.tabs,
+            vec![rt("C:\\a", None, Some(1)), rt("C:\\b", None, Some(2))]
         );
     }
 

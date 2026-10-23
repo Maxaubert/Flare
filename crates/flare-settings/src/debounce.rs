@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use crate::atomic::AtomicWriter;
 
+/// The longest a flush waits for a write already in flight.
+const FLUSH_WAIT: Duration = Duration::from_secs(2);
+
 pub struct Debounced {
     inner: Arc<Inner>,
 }
@@ -35,10 +38,20 @@ impl Debounced {
         Self::with_gap(file, delay, Duration::ZERO)
     }
 
+    /// Test seam: the writer's background job sleeps `pause` between the temp file and the rename.
+    #[cfg(test)]
+    fn with_writer_pause(file: impl Into<PathBuf>, delay: Duration, pause: Duration) -> Self {
+        Self::build(AtomicWriter::with_pause(file, pause), delay, Duration::ZERO)
+    }
+
     /// Test seam: the worker waits `gap` after it took the pending data, before it hands it to the writer.
     pub fn with_gap(file: impl Into<PathBuf>, delay: Duration, gap: Duration) -> Self {
+        Self::build(AtomicWriter::new(file), delay, gap)
+    }
+
+    fn build(writer: AtomicWriter, delay: Duration, gap: Duration) -> Self {
         let inner = Arc::new(Inner {
-            writer: AtomicWriter::new(file),
+            writer,
             delay,
             gap,
             state: Mutex::new(State::default()),
@@ -76,6 +89,11 @@ impl Debounced {
             && let Err(e) = self.inner.writer.save_now_numbered(n, &data)
         {
             log::warn!("could not write the pending save: {e}");
+        }
+        // A save the worker already handed to the background writer is let finish: the quit ends
+        // the process, and a write killed before its rename leaves the previous file.
+        if !self.inner.writer.idle_within(FLUSH_WAIT) {
+            log::warn!("a save in flight did not finish within the quit wait");
         }
     }
 
@@ -156,6 +174,27 @@ mod tests {
     }
 
     const LONG: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn flush_waits_for_a_save_already_in_the_background_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let d = Debounced::with_writer_pause(
+            &file,
+            Duration::from_millis(10),
+            Duration::from_millis(300),
+        );
+        d.save("new".to_string());
+        // The worker writes it after the delay and hands it to the slow background writer.
+        assert!(wait_until(|| d.pending().is_none(), Duration::from_secs(5)));
+        thread::sleep(Duration::from_millis(60));
+        d.flush();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "new",
+            "the quit must not end the process with the write still in flight"
+        );
+    }
 
     #[test]
     fn debounced_flush_writes_at_once() {
