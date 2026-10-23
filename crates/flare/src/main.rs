@@ -34,6 +34,7 @@ mod mark_colours;
 mod material_ctl;
 mod memory;
 mod menus_ui;
+mod mods_ctl;
 mod openers;
 mod panel_ctl;
 mod picker_ctl;

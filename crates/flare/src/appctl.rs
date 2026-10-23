@@ -162,8 +162,11 @@ pub enum UiMsg {
     ToastClicked(String),
     /// Windows would not take a notification.
     ToastFailed,
+    /// A worker's answer or a Settings action for the mods controller (Surfaces stage 8).
+    Mods(crate::mods_ctl::ModsMsgBox),
 }
 
+mod mods_glue;
 mod surfaces7;
 mod web_glue;
 
@@ -497,6 +500,8 @@ pub struct AppCtl {
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
     /// The Preview chip, the agent board and the question notifications (Surfaces stage 7).
     s7: surfaces7::Surf7,
+    /// Mods (Surfaces stage 8): none until the window hands over the hub.
+    mods: Option<crate::mods_ctl::ModCtl>,
     /// The tabs' panels (Surfaces stage 1).
     panels: PanelCtl,
     /// The conversation panels' transcript trackers (Surfaces stage 6; none run while no such panel is open).
@@ -861,6 +866,7 @@ impl AppCtl {
             panel_focus_seen: false,
             ctl_events: None,
             ctl_info: None,
+            mods: None,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
@@ -2892,6 +2898,7 @@ impl AppCtl {
         self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
         self.sync_board(app);
         self.sync_chip();
+        self.sync_mods();
         self.prune_downloads();
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
@@ -3285,6 +3292,8 @@ impl AppCtl {
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }
             | CtlOp::BrowserAgent { .. }
+            | CtlOp::ShowMod { .. }
+            | CtlOp::ModTool { .. }
             | CtlOp::ShowApp { .. } => Err(CtlError::new(
                 code::INTERNAL,
                 "a browser call reached the wrong handler",
@@ -4047,6 +4056,7 @@ impl AppCtl {
         self.prefs.flush();
         // The browser goes before the window does (rule 28): its views are closed and its calls answered
         // while the window and the COM apartment are still up, so no callback lands during the teardown.
+        self.mods_shutdown();
         self.web.close_all();
         self.downloads.drain();
         (self.deps.hide)();
@@ -4231,6 +4241,7 @@ impl AppCtl {
             UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
             UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
             UiMsg::ToastFailed => self.on_toast_failed(),
+            UiMsg::Mods(crate::mods_ctl::ModsMsgBox(m)) => self.on_mods_msg(m),
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     // A DevTools answer or a timer turn changes the window's properties only when a
@@ -4274,6 +4285,9 @@ impl AppCtl {
                         op @ CtlOp::ShowApp { .. } => {
                             self.ctl_show_app(op, req.reply, req.deadline);
                         }
+                        // A mod's panel, or a tool call put in front of a mod's page (stage 8).
+                        op @ CtlOp::ShowMod { .. } => self.ctl_show_mod(op, req.reply),
+                        op @ CtlOp::ModTool { .. } => self.ctl_mod_tool(op, req.reply),
                         op => {
                             let answer = self.ctl_op(op);
                             let _ = req.reply.send(answer);
@@ -4509,6 +4523,7 @@ impl AppCtl {
 
 #[cfg(test)]
 mod tests {
+    mod mods_tests;
     mod web_tests;
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};

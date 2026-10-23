@@ -46,15 +46,15 @@ fn write_picture(path: &Path, width: u32, height: u32) -> Result<(), String> {
 }
 
 /// The pipe and every shell tab's `(id, active, token)`, from the `ctl.info` probe.
-struct Info {
-    pipe: String,
+pub(super) struct Info {
+    pub(super) pipe: String,
     /// The app's process id: what a shell's `FLARE_CTL_PID` must say.
-    pid: u32,
-    mcp_exe: Option<String>,
-    tabs: Vec<(String, bool, String)>,
+    pub(super) pid: u32,
+    pub(super) mcp_exe: Option<String>,
+    pub(super) tabs: Vec<(String, bool, String)>,
 }
 
-fn info(app: &mut App) -> Option<Info> {
+pub(super) fn info(app: &mut App) -> Option<Info> {
     let v = probe(app, "ctl.info", Value::Null);
     let tabs = v["tabs"]
         .as_array()?
@@ -513,7 +513,7 @@ impl Drop for Reaped {
 /// Runs `flare-mcp.exe` with the tab's environment, sends `lines`, closes its input and returns every
 /// reply line. With `token` None the tab variable is not set at all; with `pid` None neither is
 /// `FLARE_CTL_PID`; `cwd` is the folder the server is started in (the agent's folder).
-struct Mcp<'a> {
+pub(super) struct Mcp<'a> {
     exe: &'a Path,
     pipe: &'a str,
     token: Option<&'a str>,
@@ -521,7 +521,7 @@ struct Mcp<'a> {
     cwd: Option<&'a Path>,
 }
 
-fn run_mcp(m: &Mcp, lines: &[Value]) -> Result<Vec<Value>, String> {
+pub(super) fn run_mcp(m: &Mcp, lines: &[Value]) -> Result<Vec<Value>, String> {
     let mut cmd = Command::new(m.exe);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -561,7 +561,12 @@ fn run_mcp(m: &Mcp, lines: &[Value]) -> Result<Vec<Value>, String> {
 }
 
 /// The server as Claude Code would start it inside the tab of `inf`'s app.
-fn mcp<'a>(exe: &'a Path, inf: &'a Info, token: Option<&'a str>, cwd: Option<&'a Path>) -> Mcp<'a> {
+pub(super) fn mcp<'a>(
+    exe: &'a Path,
+    inf: &'a Info,
+    token: Option<&'a str>,
+    cwd: Option<&'a Path>,
+) -> Mcp<'a> {
     Mcp {
         exe,
         pipe: &inf.pipe,
@@ -571,7 +576,7 @@ fn mcp<'a>(exe: &'a Path, inf: &'a Info, token: Option<&'a str>, cwd: Option<&'a
     }
 }
 
-fn mcp_exe_of(ctx: &Ctx) -> PathBuf {
+pub(super) fn mcp_exe_of(ctx: &Ctx) -> PathBuf {
     ctx.exe
         .parent()
         .map(|d| d.join("flare-mcp.exe"))

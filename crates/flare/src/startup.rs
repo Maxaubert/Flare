@@ -62,6 +62,17 @@ impl Profile {
         self.dir.join("settings.json")
     }
 
+    /// Where mods live (Surfaces stage 8): one folder per mod, `<profile>\mods\<id>\mod.json`. The default
+    /// profile is `%APPDATA%\Flare`; a run with its own `--user-data-dir` (the e2e) has its own mods.
+    pub fn mods_dir(&self) -> PathBuf {
+        self.dir.join("mods")
+    }
+
+    /// Which mods the user turned on (`{"version":1,"mods":{"notes":true}}`), next to the mods folder.
+    pub fn mods_file(&self) -> PathBuf {
+        self.dir.join("mods.json")
+    }
+
     /// The diagnostics log folder (M9 Task 31): `<profile>\logs`, whichever way the profile was chosen.
     pub fn logs_dir(&self) -> PathBuf {
         self.dir.join("logs")

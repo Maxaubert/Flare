@@ -160,6 +160,10 @@ pub struct PanelCtl {
     /// The mini-app each tab shows, if any (stage 5). Its panel is a web panel at the app's address;
     /// it lives for the session only (never stored, never restored) and its folder goes with it.
     apps: HashMap<String, AppSpec>,
+    /// The mod each tab shows, if any (stage 8). A mod's panel is a web panel at the mod's own address; it lives
+    /// for the session (a mod must be on first, so it is never stored or restored) and, unlike an app, its folder
+    /// is the user's own and is never touched.
+    mods: HashMap<String, AppSpec>,
     /// Where the apps' folders are (`<profile>\apps`); a folder is removed only from here.
     apps_root: Option<std::path::PathBuf>,
     /// A title a caller gave (the header shows it instead of the file's name), by tab.
@@ -250,6 +254,7 @@ impl PanelCtl {
         Self {
             panels: TabPanels::default(),
             apps: HashMap::new(),
+            mods: HashMap::new(),
             apps_root: None,
             titles: HashMap::new(),
             inline: HashMap::new(),
@@ -284,6 +289,7 @@ impl PanelCtl {
             if let Some(p) = panel
                 && (!p.kind.is_built() || target_ok(&p.kind, &p.target))
                 && !app::is_app_url(&p.target)
+                && !flare_surfaces::modview::is_mod_url(&p.target)
             {
                 self.panels.restore(id, p);
             }
@@ -312,8 +318,9 @@ impl PanelCtl {
     }
 
     pub fn close(&mut self, tab: &str) -> bool {
-        // A mini-app has nothing to come back to: closing it is the end of it (and of its folder).
-        if self.apps.contains_key(tab) {
+        // A mini-app has nothing to come back to: closing it is the end of it (and of its folder). A mod's
+        // panel is the same: it is shown again by the mod, not brought back from a stored address.
+        if self.apps.contains_key(tab) || self.mods.contains_key(tab) {
             let was_open = self.panels.open_on(tab).is_some();
             self.drop_app(tab);
             self.panels.forget(tab);
@@ -328,8 +335,10 @@ impl PanelCtl {
         self.apps_root = Some(root);
     }
 
-    /// Ends the tab's mini-app, if it has one: its folder is removed on a worker (rule 34).
+    /// Ends the tab's mini-app, if it has one: its folder is removed on a worker (rule 34). A mod the tab showed
+    /// is let go too, and its folder is left alone.
     fn drop_app(&mut self, tab: &str) {
+        self.mods.remove(tab);
         if let Some(spec) = self.apps.remove(tab) {
             self.remove_folder(spec);
         }
@@ -369,13 +378,50 @@ impl PanelCtl {
         true
     }
 
-    /// The mini-app the tab shows (open or not).
-    pub fn app_spec(&self, tab: &str) -> Option<&AppSpec> {
-        self.apps.get(tab)
+    /// Shows a mod's panel on the tab (stage 8): a web panel at the mod's own address under the manifest's title.
+    /// What the tab showed goes first. False for an address the panel cannot hold.
+    pub fn show_mod(&mut self, tab: &str, spec: AppSpec, title: &str) -> bool {
+        self.drop_app(tab);
+        self.titles.remove(tab);
+        self.inline.remove(tab);
+        if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
+            self.reload = true;
+        }
+        if !self.panels.show(tab, PanelKind::Web, &spec.url) {
+            return false;
+        }
+        self.titles.insert(tab.to_string(), title.to_string());
+        self.mods.insert(tab.to_string(), spec);
+        true
     }
 
+    /// The mod the tab's panel shows (open or not).
+    pub fn mod_of(&self, tab: &str) -> Option<&str> {
+        self.mods
+            .get(tab)
+            .and_then(|s| s.module.as_ref())
+            .map(|m| m.id.as_str())
+    }
+
+    /// The tabs that show a mod, with the mod's id.
+    pub fn mod_tabs(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .mods
+            .iter()
+            .filter_map(|(t, s)| s.module.as_ref().map(|m| (t.clone(), m.id.clone())))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The mini-app or mod the tab shows (open or not).
+    pub fn app_spec(&self, tab: &str) -> Option<&AppSpec> {
+        self.apps.get(tab).or_else(|| self.mods.get(tab))
+    }
+
+    /// The tab shows a page that is not the person's to point anywhere: a mini-app or a mod (no address bar).
     pub fn is_app(&self, tab: &str) -> bool {
-        self.apps.contains_key(tab)
+        self.apps.contains_key(tab) || self.mods.contains_key(tab)
     }
 
     pub fn reopen(&mut self, tab: &str) -> bool {
@@ -431,7 +477,7 @@ impl PanelCtl {
     /// normal form.
     pub fn set_web_url(&mut self, tab: &str, url: &str) -> bool {
         // A mini-app stays at its own address (the browser cancels every other navigation).
-        if self.apps.contains_key(tab) {
+        if self.is_app(tab) {
             return false;
         }
         let Ok(url) = flare_surfaces::web::normalize_url(url) else {
@@ -447,7 +493,7 @@ impl PanelCtl {
     /// goes back to the host's name).
     pub fn set_web_title(&mut self, tab: &str, title: &str) -> bool {
         // The title the agent gave a mini-app is the panel's name, whatever the page calls itself.
-        if self.apps.contains_key(tab) {
+        if self.is_app(tab) {
             return false;
         }
         if self.panels.get(tab).map(|p| &p.kind) != Some(&PanelKind::Web) {
@@ -524,10 +570,13 @@ impl PanelCtl {
         let p = self.panels.get(tab)?;
         let inline = p.target.starts_with(INLINE);
         let app = self.apps.get(tab);
-        let web = p.kind == PanelKind::Web && app.is_none();
+        let module = self.mods.get(tab).and_then(|s| s.module.as_ref());
+        let web = p.kind == PanelKind::Web && app.is_none() && module.is_none();
         let convo = p.kind.is_convo() || p.kind.is_board();
         Some(PanelSnap {
-            kind: if app.is_some() {
+            kind: if let Some(m) = module {
+                PanelKind::Mod(m.id.clone()).name()
+            } else if app.is_some() {
                 "app".to_string()
             } else {
                 p.kind.name()
@@ -542,7 +591,8 @@ impl PanelCtl {
                     file_name(&p.target).to_string()
                 }
             }),
-            path: (!inline && !web && !convo && app.is_none()).then(|| p.target.clone()),
+            path: (!inline && !web && !convo && app.is_none() && module.is_none())
+                .then(|| p.target.clone()),
             url: web.then(|| p.target.clone()),
             open: p.open,
             width: p.width,
@@ -571,7 +621,7 @@ impl PanelCtl {
                 panel: self
                     .panels
                     .get(id)
-                    .filter(|p| !p.target.starts_with(INLINE) && !self.apps.contains_key(id))
+                    .filter(|p| !p.target.starts_with(INLINE) && !self.is_app(id))
                     .cloned(),
             })
             .collect();

@@ -1589,6 +1589,7 @@ dependencies = [
  "flare-dictation",
  "flare-e2e-proto",
  "flare-help",
+ "flare-mods",
  "flare-render",
  "flare-settings",
  "flare-shells",
@@ -1733,6 +1734,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "flare-mods"
+version = "0.1.0"
+dependencies = [
+ "flare-ctl",
+ "flare-settings",
+ "log",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "flare-render"
 version = "0.1.0"
 dependencies = [
@@ -1839,6 +1852,7 @@ dependencies = [
 name = "flare-web"
 version = "0.1.0"
 dependencies = [
+ "flare-mods",
  "flare-surfaces",
  "log",
  "webview2-com",

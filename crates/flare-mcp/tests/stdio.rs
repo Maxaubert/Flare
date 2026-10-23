@@ -196,3 +196,127 @@ fn a_pipe_served_by_another_process_is_never_given_the_secret() {
         "the server saw no call"
     );
 }
+
+/// A server that offers one mod tool and answers its calls.
+struct ModServer {
+    calls: Mutex<Vec<(Method, Value)>>,
+}
+
+impl Dispatcher for ModServer {
+    fn resolve_token(&self, _: &str) -> Option<flare_ctl::Grant> {
+        None
+    }
+    fn resolve_tab_token(&self, token: &str) -> Option<String> {
+        (token == "secret-7").then(|| "tab-7".to_string())
+    }
+    fn call(&self, _ctx: &CallContext, m: Method, p: Value) -> Result<Value, CtlError> {
+        self.calls.lock().unwrap().push((m, p.clone()));
+        match m {
+            Method::ModsTools => Ok(json!({"tools": [
+                {"name": "mod_notes_append_note", "description": "Adds one line.",
+                 "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}}},
+                // These do not fit the agent's tool space and are left out by the server.
+                {"name": "show_image", "description": "x", "input_schema": {"type": "object"}},
+                {"name": "mod_bad", "description": "x", "input_schema": {"type": "string"}}
+            ]})),
+            Method::ModsCall => {
+                if p["input"]["text"] == "boom" {
+                    Err(CtlError::new("tool_error", "text is empty"))
+                } else {
+                    Ok(json!({"result": {"count": 1}}))
+                }
+            }
+            _ => Ok(json!({})),
+        }
+    }
+}
+
+#[test]
+fn a_mods_tools_are_listed_called_and_announced_when_they_change() {
+    let pipe = format!(r"\\.\pipe\flare-mcp-test-mods-{}", std::process::id());
+    let srv = Arc::new(ModServer {
+        calls: Mutex::new(Vec::new()),
+    });
+    let server = Server::start(&pipe, ServerConfig::default(), srv.clone()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_flare-mcp"))
+        .env("FLARE_TAB_TOKEN", "secret-7")
+        .env("FLARE_CTL_PIPE", &pipe)
+        .env("FLARE_CTL_PID", std::process::id().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut next = move || -> Value {
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).expect("stdout is JSON lines only")
+    };
+    let mut send = |v: Value| writeln!(stdin, "{v}").unwrap();
+
+    send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}));
+    assert_eq!(
+        next()["result"]["capabilities"]["tools"]["listChanged"],
+        true
+    );
+    send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+    let list = next();
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names.len(),
+        16,
+        "the built-in tools and one mod tool: {names:?}"
+    );
+    assert_eq!(names[15], "mod_notes_append_note");
+    assert!(!names[..15].contains(&"mod_bad"));
+
+    // A call goes to the mod through mods.call, and the mod's words come back.
+    send(
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mod_notes_append_note","arguments":{"text":"hi"}}}),
+    );
+    let r = next();
+    assert_eq!(r["result"]["isError"], false);
+    assert_eq!(r["result"]["content"][0]["text"], r#"{"count":1}"#);
+    send(
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"mod_notes_append_note","arguments":{"text":"boom"}}}),
+    );
+    let r = next();
+    assert_eq!(r["result"]["isError"], true);
+    assert_eq!(r["result"]["content"][0]["text"], "text is empty");
+
+    // The mods changed: the server tells the client to list again (the watcher has its own connection, which
+    // takes a moment to say hello, so the publish repeats until the notification is heard).
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let v = next();
+        let _ = tx.send(v);
+    });
+    let mut heard = None;
+    for _ in 0..100 {
+        server.publish("mods.changed", json!({}), None);
+        if let Ok(v) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            heard = Some(v);
+            break;
+        }
+    }
+    let heard = heard.expect("the notification was sent");
+    assert_eq!(heard["method"], "notifications/tools/list_changed");
+    assert!(heard.get("id").is_none());
+    drop(send);
+    drop(stdin);
+    reader.join().unwrap();
+    assert!(child.wait().unwrap().success());
+    let calls = srv.calls.lock().unwrap();
+    assert!(calls.iter().any(|(m, p)| *m == Method::ModsCall
+        && p["name"] == "mod_notes_append_note"
+        && p["input"]["text"] == "hi"));
+    drop(calls);
+    server.stop();
+}

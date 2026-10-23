@@ -107,6 +107,8 @@ impl Grant {
                 N::Browser => method != Method::BrowserEval || *eval,
                 // Answering a tool call is a mod's job, not the agent's.
                 N::Tools => false,
+                // Listing and calling the mods' tools is the agent's job.
+                N::AgentTools => true,
                 N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
             },
             Grant::Mod { permissions, .. } => {
@@ -120,6 +122,8 @@ impl Grant {
                     }
                     N::Convo => has(Permission::Convo),
                     N::Tools => has(Permission::Tools),
+                    // A mod cannot call another mod's tools, or its own: only the agent calls tools.
+                    N::AgentTools => false,
                     N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
                 }
             }
@@ -179,6 +183,8 @@ mod tests {
             Method::BrowserScroll,
             Method::BrowserWait,
             Method::ConvoState,
+            Method::ModsTools,
+            Method::ModsCall,
         ] {
             assert!(g.may_call(m), "agent should call {}", m.name());
         }
@@ -259,6 +265,20 @@ mod tests {
         let g = mod_with(&[P::Tools]);
         assert!(g.may_call(Method::ToolsRespond));
         assert!(!g.may_call(Method::ViewImage));
+        // Not even the mods' own tools: only the agent calls a tool.
+        assert!(!g.may_call(Method::ModsCall));
+        assert!(!g.may_call(Method::ModsTools));
+    }
+
+    #[test]
+    fn a_mod_without_browser_is_refused_every_browser_method_with_forbidden() {
+        let g = mod_with(&[P::Panel, P::Tools]);
+        for m in Method::ALL {
+            if m.namespace() == Namespace::Browser {
+                let e = g.check(m).unwrap_err();
+                assert_eq!(e.code, code::FORBIDDEN, "{}", m.name());
+            }
+        }
     }
 
     #[test]
@@ -307,6 +327,17 @@ mod tests {
                     Namespace::Browser => "browser",
                     Namespace::Convo => "convo",
                     Namespace::Tools => "tools",
+                    // The agent and the app call mod tools; no permission name stands for it.
+                    Namespace::AgentTools => {
+                        assert_eq!(
+                            g.may_call(m),
+                            matches!(g, Grant::Agent { .. } | Grant::Ui),
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        continue;
+                    }
                     Namespace::Ui => "ui",
                 };
                 assert_eq!(

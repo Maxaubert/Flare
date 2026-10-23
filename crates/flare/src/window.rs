@@ -1053,6 +1053,13 @@ pub fn run_window(
         let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
         flare_surfaces::app::retire_root(&apps_root); // sync-ok: startup, before the window shows
         rc.borrow_mut().set_apps_root(apps_root.clone());
+        // Mods (stage 8): `<profile>\mods`, found on a worker at start and when Settings > Mods opens. Off until
+        // the person turns one on.
+        let mods_hub = Arc::new(flare_mods::Hub::new(flare_mods::hub::Config {
+            dir: inst.profile.mods_dir(),
+            state_file: inst.profile.mods_file(),
+        }));
+        let mut mods_dispatcher = None;
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
             match crate::ctl_app::CtlServer::start(
@@ -1081,8 +1088,10 @@ pub fn run_window(
                         cfg
                     }
                 },
+                Some(Arc::clone(&mods_hub)),
             ) {
                 Ok(server) => {
+                    mods_dispatcher = Some(server.dispatcher());
                     rc.borrow_mut().set_ctl(
                         server.events(),
                         crate::appctl::CtlInfo {
@@ -1096,6 +1105,7 @@ pub fn run_window(
                 Err(e) => log::warn!("the control channel did not start: {e}"),
             }
         }
+        rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),
@@ -1166,6 +1176,9 @@ pub fn run_window(
                 Arc::new(flare_win::verb_switch::RegistryVerb::new(switch)),
             );
             let settings = crate::settings_ctl::SettingsCtl::new(&app, sdeps);
+            if let Some(port) = rc.borrow().mods_port() {
+                settings.borrow_mut().set_mods(port);
+            }
             rc.borrow_mut().set_settings(settings);
         }
         *inputs_cell.borrow_mut() = Some(rc.borrow().decor_inputs());

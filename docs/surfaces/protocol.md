@@ -6,14 +6,14 @@ implement it from this file alone. The Rust reference is `crates/flare-ctl` (typ
 the connection state machine, the client) and `crates/flare-mcp` (a client). Where this file and the
 code disagree, that is a bug in one of them: fix both in the same commit.
 
-Status of the methods in Flare (stages 4, 5, 6 and 7 are done): the framework (transport, hello, grants, errors,
+Status of the methods in Flare (stages 4 to 8 are done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
 implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes`, `tasks` and `board`), `panel.close`, `panel.state`,
 `view.image|file|text|html|diagram`, `browser.open`, `browser.navigate`, the agent's hands on the page
 (`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
-(`view.html` and `view.diagram`) and `convo.state` (stage 6, the conversation reader). `tools.respond` comes
-with mods (stage 8); until then it answers `unavailable` and is not
-listed in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
+(`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
+`tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
+list them in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
 grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -119,7 +119,7 @@ Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control c
    library, not only the app, keeps the `ui` namespace off the pipe.
 6. Grant allows the method? No: `forbidden` (stays). The reason text names the rule. A method in the
    `ui` namespace is refused here whatever the grant says.
-7. Run the method with its **timeout**: 15 s, and 60 s for every `browser.*` method. The app's own
+7. Run the method with its **timeout**: 15 s, 60 s for every `browser.*` method (and for `view.html` and `view.diagram`), and 40 s for `mods.call`. The app's own
    waits on the UI thread end earlier (10 s, one deadline shared by every step of a call, `view.*` included),
    and the request carries that deadline: a request the window picks up after it changes nothing, so a
    call that was answered `timeout` never acts later. The app's
@@ -141,10 +141,15 @@ can wait on them inside its quit cap.
 | Line size | 16 MB |
 | Clients | 64 at once. The 65th is accepted, sent `too_many_clients` (null id), and closed. |
 | First hello | 10 s |
-| Request timeout | 15 s; 60 s for `browser.*` |
+| Request timeout | 15 s; 60 s for `browser.*`; 40 s for `mods.call` |
 | Rate | 100/s, burst 200, per connection |
 | Queued events per connection | 256, then the oldest is dropped |
 | Stuck handlers | 32 |
+
+Each `flare-mcp` server holds two connections once the first `mods.tools` is answered (one for calls, one for
+`mods.changed` events), so about 32 agents fit in the 64 clients. A run with no mods hub opens only the first.
+The second gives up after ten failed connects in a row (a restarted Flare cannot be reached again from the old
+environment).
 
 `hello` returns the limits in force, so a client does not hard-code them.
 
@@ -187,6 +192,7 @@ alike.
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
 | `tools.respond` | no | `tools` | yes |
+| `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
@@ -209,7 +215,7 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"board"|..., "title": string, "path"?: string, "url"?: string, "network"?: bool}`
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"board"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
 (`changes` and `tasks`, stage 6, and `board`, stage 7, have neither a `path` nor a `url`).
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
 `title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
@@ -246,7 +252,7 @@ mod token, unknown tab token; closes), `already_hello`.
 
 Params: none. Result: `{"tabs": [{"id": string, "title": string, "active": bool}]}`. Ids and titles
 only: never screen content (S3). The agent grant gets **its own tab only** (an empty list when the
-connection has no tab); a mod gets every tab when it holds `panel`, else its own. `title` is the label the
+connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel` permission no longer widens it). `title` is the label the
 tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open
@@ -256,6 +262,11 @@ without it the panel opens `about:blank`).
 
 - `web` opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with the same
   address (below), including the wait for the page to load and its result. Stage 3.
+- `mod:<id>` (stage 8) opens that mod's panel on the caller's tab: the mod must be turned on and have a panel
+  (`not_found` otherwise; `bad_params` for an id that is not a mod id or with a `url`, `path` or `text`). It answers
+  at once with `{"panel": PanelInfo}` (`kind` `mod:<id>`, `title` the manifest's panel title, no `path`, `url` or
+  `network`). The mod's page is made hidden when the tab is behind. A tab shows ONE panel, so it replaces what the
+  tab showed.
 - `changes` and `tasks` (stage 6) open the tab's conversation panel: the files the agent edited (with each file's
   diff), or the agent's task list. They are native panels with no file or address behind them, so `url`, `path` and
   `text` are refused (`bad_params`). The call answers at once with `{"panel": PanelInfo}` (`kind` `changes` or
@@ -503,10 +514,43 @@ Grant: the agent's own tab only (the `convo` permission for a mod). Errors: `no_
 `convo_state_summarises_the_tabs_own_conversation` and the dispatcher tests (`ctl_app.rs`) and by the e2e
 `convoPanels`. Format notes for the port: `convo.md`.
 
-### tools.respond (stage 8, reserved)
+### tools.respond (stage 8; the contract is in `mods.md`)
 
-A mod answers a tool call the agent made through `flare-mcp`. UI-routed in v1; named now so the grant
-table is complete.
+A mod answers a tool call the agent made through `flare-mcp`. Grant: `tools` only (the agent, and a mod
+without `tools`, are refused `forbidden`). Params: `{"call_id": string, "result"?: any JSON, "error"?: string}`;
+exactly one of `result` or `error` is sent (`error` is the reason the agent sees). A present `result` key whose
+value is `null` is a SUCCESS with the value null; a `result` key that is absent with no `error` is `bad_params`.
+The page's bridge sends `{call_id, error}` when the page gave a string error, and otherwise
+`{call_id, result}` with `result` null when the page gave nothing (`mods.md`, the `respond` wire form). Result:
+`{}`. Errors: `not_found` (no open call with that `call_id`, or it was answered or timed out, or it was routed to
+another mod: a mod answers only its own calls, once), `bad_params` (neither or both of `result` and `error`, or a
+`call_id` that is not a string), `unavailable` (no mods in this run). A mod's page calls it through
+`window.flare.respond`, never directly; a helper process holding the mod's token may call it. The answer reaches
+the agent as the result of its `mods.call`, or, for an `error`, as an error with code `tool_error` and the mod's
+words.
+
+### mods.tools (stage 8)
+
+Params: none. Grant: the agent (and the app); a mod is refused `forbidden`. Result:
+`{"tools": [{"name": string, "description": string, "input_schema": object}]}`: every tool of every mod that is
+turned on, by the name the agent calls it (`mod_<id with - as _>_<tool>`, at most 52 characters), sorted by name.
+A tool that clashes with another mod's, or whose name is too long, is not listed (Settings > Mods says so). Empty
+when no mod is on. `flare-mcp` asks at every `tools/list` and lists the entries after its own tools; it keeps only
+an entry whose name starts with `mod_`, is 52 characters or fewer, and whose `input_schema.type` is `object`, and
+cleans the description (one clean block, 600 characters).
+
+### mods.call (stage 8)
+
+Params: `{"name": string, "input"?: object}` (`input` defaults to `{}`). Grant: the agent (and the app); needs a
+tab (`no_tab`). The call is routed to the mod that offers `name`, the mod's panel is opened in the CALLER's tab if it
+is not showing there (a tab that is behind gets its page made hidden), the call is handed to the page as a `tool`
+event once the page has loaded, and the answer is the page's `window.flare.respond`:
+`{"result": any JSON}`. Timeout: the page has 30 s (`hub::CALL_TIMEOUT`); the channel lets the method run 40 s
+(`MOD_CALL_TIMEOUT`) so the answer is Flare's own. Errors: `not_found` (no mod offers `name`: it does not exist, the
+mod is off, or it clashes), `bad_params` (`input` not an object), `rate_limited` (8 calls already wait on that
+mod), `unavailable` (the page cannot be made, the panel was closed, the page's process ended, the mod was turned off
+or Flare is closing, each before the page answered), `timeout` (the page did not answer in 30 s; the message names
+the mod and the tool), and `tool_error` (the page answered with an `error`: the message is the mod's own reason).
 
 ### shell.input, settings.set, mods.enable (never over the pipe)
 
@@ -532,6 +576,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `unavailable` | known method, cannot be done now (no runtime, nothing open, reserved, overloaded) | no |
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
+| `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `rate_limited` | too many requests | no |
 | `internal` | the server failed | no |
 
@@ -552,6 +597,7 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 |---|---|---|
 | `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*`, `browser.*`, `panel.open` or `panel.close` call, a click on a path, the close button, the toggle chord, or a web panel moving to another address (its `url` in `PanelInfo`) |
 | `tabs.changed` | `{}` | a tab was added, removed or retitled (**reserved**: Flare does not send it yet) |
+| `mods.changed` | `{}` | the set of tools the agent sees changed (a mod was turned on or off, or a scan found a different set). Sent to EVERY connection that said hello, whatever its tab. `flare-mcp` answers it with `notifications/tools/list_changed` |
 
 ## 8. Versioning
 
@@ -565,7 +611,10 @@ behaviour or `unsupported_protocol`.
 A client of this channel, not part of it. A stdio MCP server (JSON-RPC 2.0, one message per line,
 protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05`; the client's version is echoed when listed,
 else the newest). Methods: `initialize`, `notifications/initialized` (no reply), `ping`, `tools/list`,
-`tools/call`. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
+`tools/call`. `initialize` declares `tools.listChanged: true`: after the first `tools/list` the
+server keeps a connection of its own to Flare, and writes `notifications/tools/list_changed` (one line on stdout,
+whenever Flare sends `mods.changed`) so a client that supports it lists again; one that does not simply ignores
+it. It starts with or without Flare. A tool call connects (once, reconnecting after a stale
 connection), says `hello` with `tab_token` from `FLARE_TAB_TOKEN` (the pipe from `FLARE_CTL_PIPE`, and
 only if `FLARE_CTL_PID` is the process that serves it), then
 calls:
@@ -587,6 +636,7 @@ calls:
 | `browser_wait` | one of `text`, `selector`, `ms`; `timeout_ms` | `browser.wait` |
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
+| `mod_<id>_<tool>` | the mod's own `input_schema` | `mods.call` (listed by `mods.tools`; a string result is passed as it is, anything else as compact JSON, cut at 60 000 characters; a mod's own error is `isError` text with its reason, a refusal of Flare is `Flare refused: ...`) |
 
 `open_page` answers with
 the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote

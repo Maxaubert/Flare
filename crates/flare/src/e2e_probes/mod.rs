@@ -28,6 +28,7 @@ pub mod input_b;
 pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
+pub mod mods;
 pub mod panel;
 pub mod resize;
 pub mod settings_a;
@@ -119,4 +120,5 @@ pub fn register_all(r: &mut ProbeRegistry) {
     vertical::register(r);
     web::register(r);
     surf7::register(r);
+    mods::register(r);
 }
