@@ -406,6 +406,7 @@ fn read_message_within(pipe: usize, deadline: Duration) -> Option<Vec<u8>> {
         .name("flare-handoff-watch".into())
         .spawn(move || {
             if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(deadline) {
+                // sync-ok: the watchdog thread, bounded by the deadline
                 // SAFETY: a handle opened here and closed here; a null handle is checked.
                 let h = unsafe { OpenThread(THREAD_TERMINATE, 0, tid) };
                 if !h.is_null() {
