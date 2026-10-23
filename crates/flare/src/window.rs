@@ -899,6 +899,9 @@ pub fn run_window(
             flare_term::session::SessionOptions {
                 ctl: ctl_instance.clone(),
                 ctl_up: Some(Arc::clone(&ctl_up)),
+                // The environment as the person started Flare with: a mini-app's browser takes some WEBVIEW2_*
+                // variables out of this process for good (its walls), and a shell must still get them.
+                base_env: Some(std::env::vars().collect()),
                 ..flare_term::session::SessionOptions::default()
             },
         );

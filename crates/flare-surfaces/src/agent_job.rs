@@ -218,6 +218,8 @@ enum Stage {
     Seq {
         queue: VecDeque<(&'static str, Value)>,
         cur: u64,
+        /// The event in flight: if it is a release and fails, the renderer still holds what it let go of.
+        cur_call: Call,
         result: Value,
     },
     Focus {
@@ -380,6 +382,7 @@ impl Job {
                     Stage::Seq {
                         queue,
                         cur: first.id,
+                        cur_call: first.clone(),
                         result: json!({"clicked": {"x": r1(x), "y": r1(y)}}),
                     },
                     ACT_BUDGET_MS,
@@ -442,6 +445,7 @@ impl Job {
                     Stage::Seq {
                         queue,
                         cur: first.id,
+                        cur_call: first.clone(),
                         result: json!({}),
                     },
                     ACT_BUDGET_MS,
@@ -849,12 +853,28 @@ impl Job {
             Stage::Seq {
                 mut queue,
                 cur,
+                cur_call,
                 result,
             } => {
                 if id != cur {
-                    return (Some(Stage::Seq { queue, cur, result }), Out::Idle);
+                    return (
+                        Some(Stage::Seq {
+                            queue,
+                            cur,
+                            cur_call,
+                            result,
+                        }),
+                        Out::Idle,
+                    );
                 }
                 if let Err(e) = r {
+                    // What the sequence pressed is let go of all the same: the releases still queued, and the
+                    // one that just failed (a press went out, its release did not).
+                    self.release = releases_of(&queue, ids);
+                    if is_release(&cur_call.params) {
+                        self.release
+                            .insert(0, call(ids, &cur_call.method, cur_call.params.clone()));
+                    }
                     return done(err(
                         Fail::Internal,
                         format!("the page refused the input: {e}"),
@@ -867,6 +887,7 @@ impl Job {
                             Some(Stage::Seq {
                                 queue,
                                 cur: c.id,
+                                cur_call: c.clone(),
                                 result,
                             }),
                             Out::Calls(vec![c]),
@@ -1000,6 +1021,7 @@ impl Job {
             Some(Stage::Seq {
                 queue,
                 cur: first.id,
+                cur_call: first.clone(),
                 result,
             }),
             Out::Calls(vec![first]),
@@ -1117,6 +1139,7 @@ fn insert_text(
             stage: Some(Stage::Seq {
                 queue: VecDeque::new(),
                 cur: c.id,
+                cur_call: c.clone(),
                 result: json!({"typed": n}),
             }),
             deadline_ms: now_ms + ACT_BUDGET_MS,
@@ -1172,16 +1195,19 @@ fn seq_of(
     (queue, first)
 }
 
+/// Is this input event a release (a mouse button up, a key up)?
+fn is_release(p: &Value) -> bool {
+    matches!(
+        p.get("type").and_then(Value::as_str),
+        Some("mouseReleased" | "keyUp")
+    )
+}
+
 /// The release events left in a queue of input (a mouse button up, a key up), as calls.
 fn releases_of(queue: &VecDeque<(&'static str, Value)>, ids: &mut Ids<'_>) -> Vec<Call> {
     queue
         .iter()
-        .filter(|(_, p)| {
-            matches!(
-                p.get("type").and_then(Value::as_str),
-                Some("mouseReleased" | "keyUp")
-            )
-        })
+        .filter(|(_, p)| is_release(p))
         .map(|(m, p)| call(ids, m, p.clone()))
         .collect()
 }
@@ -2169,6 +2195,26 @@ mod tests {
             );
         }
         assert!(done.release_calls(&mut Ids(&mut ids)).is_empty());
+    }
+
+    #[test]
+    fn a_click_whose_release_fails_still_lets_go_of_the_button() {
+        // The press went out; the next event (the release) is refused: the renderer must still be told.
+        let mut ids = 0;
+        let mut job = click_job(&mut ids);
+        let page = || Page { url: "", title: "" };
+        // move ok, press ok, then the release is the call in flight.
+        for _ in 0..2 {
+            let cur = ids;
+            let _ = job.on_reply(cur, Ok("{}".into()), page(), 1, &mut Ids(&mut ids));
+        }
+        let cur = ids;
+        let out = job.on_reply(cur, Err("Target closed".into()), page(), 1, &mut Ids(&mut ids));
+        assert!(matches!(out, Out::Done(Err(_))), "{out:?}");
+        let rel = job.release_calls(&mut Ids(&mut ids));
+        assert_eq!(rel.len(), 1, "{rel:?}");
+        assert_eq!(rel[0].params["type"], "mouseReleased");
+        assert!(job.release_calls(&mut Ids(&mut ids)).is_empty(), "once");
     }
 
     #[test]
