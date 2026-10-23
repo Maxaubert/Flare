@@ -416,6 +416,26 @@ impl Indicator {
         if self.polled.contains(tab) {
             return;
         }
+        self.ask_look_gap(now, tab, effects);
+    }
+
+    /// A title or a hook names `kind` for a tab the poll counts as another agent: the poll is asked
+    /// again at once, even though it already reported the tab (its kind may have changed under it).
+    fn ask_look_for_kind(
+        &mut self,
+        now: u64,
+        tab: &str,
+        kind: DetectedAgent,
+        effects: &mut Vec<Effect>,
+    ) {
+        if self.agent_kinds.get(tab).is_some_and(|k| *k != kind) {
+            self.ask_look_gap(now, tab, effects);
+        } else {
+            self.ask_look(now, tab, effects);
+        }
+    }
+
+    fn ask_look_gap(&mut self, now: u64, tab: &str, effects: &mut Vec<Effect>) {
         if self
             .look_asked
             .get(tab)
@@ -494,7 +514,7 @@ impl Indicator {
             state: r.state.as_str().into(),
             agent: Some(r.kind.as_str().into()),
         });
-        self.ask_look(now, tab, effects);
+        self.ask_look_for_kind(now, tab, detected, effects);
         if self.titled.insert(tab.to_string()) {
             self.output_runs.remove(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -545,7 +565,7 @@ impl Indicator {
             state: signal.state.as_str().into(),
             kind: signal.kind.clone(),
         });
-        self.ask_look(now, tab, effects);
+        self.ask_look_for_kind(now, tab, DetectedAgent::Claude, effects);
         if !self.hooked.contains_key(tab) {
             self.output_runs.remove(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -1073,6 +1093,20 @@ mod tests {
         );
         h.poll(16_000, "t1", true, Some(DetectedAgent::Claude));
         assert!(h.title(40_000, "t1", "◐ Claude Code").is_empty());
+    }
+
+    #[test]
+    fn a_claude_title_over_a_tab_the_poll_counts_as_codex_asks_for_a_new_look() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Codex));
+        // The poll already reported the tab, yet Claude's title says the agent changed.
+        assert_eq!(
+            h.title(1000, "t1", "\u{25d0} Claude Code"),
+            vec![Effect::AskLook]
+        );
+        // The poll's next answer names the new kind.
+        h.poll(1500, "t1", true, Some(DetectedAgent::Claude));
+        assert_eq!(h.ind.agent_kind("t1"), Some(DetectedAgent::Claude));
     }
 
     #[test]
