@@ -6,7 +6,7 @@
 // dividers stay crisp at 100 to 300 percent: the nav's spacing is written out, not a layout's.
 import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
-import { AppMark } from "mark.slint";
+import { AppMarkColor } from "mark.slint";
 import { Place } from "types.slint";
 
 // One row of the nav: a 16 px glyph, a name, an optional near-end text that takes the spare
@@ -169,11 +169,10 @@ export component StartScreen inherits Rectangle {
         height: root.height - root.foot-h;
         opacity: root.t;
 
-        AppMark {
+        AppMarkColor {
             x: Px.snap((root.width - 84px) / 2);
             y: root.block-top;
             size: 84px;
-            fill: Theme.accent-solid;
         }
 
         Text {

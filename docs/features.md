@@ -338,7 +338,20 @@ are added as milestones land.
 - **Finished is news and Question is state (2026-10-09).** Finished and Failed are raised once and
   cleared by the next turn or by looking; a question stays until it is answered or the agent leaves.
   The front tab never gets a finished or failed mark while it is being looked at, but a question is
-  raised there. Held by `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
+  raised there. **A mark raised on the tab in front while the window was unfocused is held until the tab in front changes
+  (2026-10-21, narrowed 2026-10-23, owner: "it should only disappear once I click a new tab ... if I'm
+  already in the terminal and I'm on the tab that completes, it should not show the completion badge,
+  only when I have another program in focus"):** looking is the window focused AND that tab in front, and
+  while looking no Finished or Failed mark is raised. Away, the front tab finishing raises the mark and
+  holds it; coming back and the pointer moving do not clear it, the badge counts it, and it comes down
+  only when the front tab changes to a DIFFERENT tab (a click, a key, an overflow pick), work restarts,
+  the agent leaves or the tab closes. Clicking the tab already in front does nothing, and closing another
+  tab with its X keeps it. Background-tab marks are unchanged. Held by `coming_back_does_not_take_a_held_mark_down`,
+  `a_click_on_the_same_tab_keeps_a_held_mark`, `a_click_on_another_tab_releases_the_mark_on_the_tab_left`,
+  `a_keyboard_switch_releases_it_like_a_click`, `closing_another_tab_keeps_a_held_mark_but_forgetting_the_marked_one_drops_it`
+  (flare-agent), `a_pick_of_the_same_tab_keeps_a_held_mark`, `a_pick_of_another_tab_takes_a_held_mark_down_on_the_tab_left`,
+  `closing_another_tab_keeps_a_held_mark` (appctl) and e2e `agentHooks`. Also held by
+  `finished_is_not_raised_on_the_tab_in_front_but_a_question_is`,
   `each_attention_mark_is_behind_its_own_switch` and `working_outranks_question_outranks_failed_outranks_done`.
 - **Keep agent sessions open (2026-10-16).** With an agent in the front tab Ctrl+D never reaches it, and
   Ctrl+C is taken unless the agent works or a selection is held. Never in a plain shell. Held by
@@ -582,7 +595,33 @@ the planner's decisions D1 to D16 are in the M9 plan and summarised as O28 to O4
   icon, rendered as it is with no badge and no outline (O17, 2026-10-17). `tools/make-icon.py` builds the
   frames; `tools/test_make_icon.py` checks them. 2026-10-21: the owner's final icon replaced the first
   artwork: an orange and a gold flame on a dark rounded square (the three SVGs in `assets/icon/`). The
-  in-app mark keeps the flame's outline, tinted by the theme.
+  title bar's and the About card's mark keep the flame's outline, tinted by the theme. 2026-10-22 (owner: "the
+  flame icon on this screen should be the one from the icon which has that two toned design with orange and
+  yellow"): the start screen draws the flame in the icon's own two tones, the orange flame with the golden one
+  exactly over it (`AppMarkColor` in `mark.slint`, the artwork's two paths and their 135 degree gradients, 84 px),
+  never in the accent. Held by `ui_tests::start::the_mark_is_the_two_toned_flame_at_84_px` (orange and gold
+  pixels, the ink size, the gold inside the orange, at 100 and 225 percent) and
+  `the_color_mark_is_the_artworks_two_paths_and_gradients` (the paths, stops and direction are the SVG's), the e2e
+  `lifecycle` (`start.state` reports the two tones).
+- **Taskbar identity per profile.** 2026-10-22 (owner: the stable copy showed the installed Flare's old icon on
+  the taskbar): a run with its own `--user-data-dir` has its own taskbar identity,
+  `com.flare.terminal.p<16 hex>`, the FNV-1a 64 hash of the lowercased profile path (`/` as `\`, trailing
+  separator dropped, a `\?\` prefix dropped, a relative path read against the cwd), so it never groups under the installed Flare's Start menu shortcut and its old icon. The
+  default profile keeps `com.flare.terminal`, which the installer stamps on its shortcut. `flare.exe
+  --print-aumid [--user-data-dir=<path>]` prints the identity and exits, so an install script can stamp it on
+  the shortcut of a second copy (the last `--user-data-dir=` wins; a space form or an empty one exits 2). The install script must stamp exactly the value printed for the path the shortcut launches with. Toasts must use the same value (`ship_ctl::effective_aumid`). Held by
+  `flare_win::names::tests::aumid_is_the_plain_one_for_the_default_profile_and_per_profile_otherwise` and
+  `ship_ctl::tests::profile_arg_reads_the_equals_form_only`.
+- **Vertical tabs at start.** 2026-10-22 (owner: "there was a startup bug where it was on vertical tabs but it
+  was showing the horizontal style, clicking horizontal then vertical in settings fixed it"): cause OPEN, owner
+  decision pending. A likely cause: `side-mode` in `app.slint` is `layout-vertical && has-tabs`, so a vertical
+  profile with ZERO tabs draws the top bar on the start screen; Settings is itself a tab, so opening it sets
+  `has-tabs` and the sidebar appears. Today that is by design (no look change without the owner's yes: should a
+  vertical profile with no tabs show an empty sidebar with its + button?). A profile with saved tabs was checked
+  (with and without a saved tab, GPU and software, 100 and 225 percent) and starts vertical. Held, for those
+  cases only, by `appctl::tests::a_profile_stored_as_vertical_starts_vertical_on_the_first_frame` and the e2e
+  `verticalStart`; `appctl::tests::a_vertical_profile_with_no_tabs_keeps_vertical_but_has_no_tabs_for_the_sidebar`
+  pins the zero-tab inputs as they are.
 - **Privacy.** `PRIVACY.md` states one automatic request, the update check, and that it is off until the
   repository is public. A new network call without a line in `PRIVACY.md` fails the build
   (`a_new_file_with_a_network_call_fails_the_scan`).
@@ -699,6 +738,29 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   front, and a real dictation at 225%.
 - **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
   not measured at this commit, so this entry gives none yet.
+
+## The close question wears the accent, and a right-click never reaches a program (2026-10-22)
+
+- **The close question's confirm is the solid accent, never red** (owner, 2026-10-22: "this button is miscolored it
+  should be just orange on my theme but its orange and red for some reason"). Flare drew "Close tab" with the danger
+  fill (`#b4353f`) and an accent ring; Prism Terminal (0.58.3, main 60b6a4a) gives its choices no `danger`, so the
+  confirm is `bg-[var(--p-accent)]` with `--p-on-accent` text. Text, sizes and button order already matched. Held by
+  `a_tab_hosting_an_agent_asks_naming_it_and_working_for` (appctl: no danger fill) and
+  `the_primary_wears_the_accent_or_the_danger_fill` (the component keeps the unused `danger` for a future host).
+- **The focus ring is `:focus-visible`: it shows only after the keyboard.** Every PT dialog button carries
+  `focus-visible:ring-2 ring-accent-hi`; Chromium rings a programmatically focused button only when the last input was
+  a key. So a question opened by a click rests with no ring, one opened by Ctrl+W has it, and Tab or Enter inside
+  brings it. Flare's close question, update window and theme-switch question follow it (`by-key` in `dialog.slint`,
+  `update.slint`, `settings/wall.slint`). Held by `the_ring_shows_only_after_the_keyboard` and
+  `a_dialog_opened_by_a_chord_shows_the_ring_from_the_start`.
+- **A right-click always opens Flare's menu and sends nothing to the program** (owner, 2026-10-22: "right click pastes
+  in the terminal, it shouldn't ... right click should just open the menu not paste in the input"). Flare never pasted
+  by itself: in a mouse-reporting program (Claude Code) it forwarded the right press and release as `CSI < 2 ; x ; y`
+  while also opening the menu, and the program pasted. Now the press is kept back in every mode. The old behaviour is
+  the opt-in Settings > Terminal > Keys row "Send right clicks to programs" (`flare.window.rightClickReports`, off by
+  default). Held by `a_right_click_in_mouse_mode_opens_the_menu_and_sends_nothing`,
+  `with_the_setting_on_a_right_press_is_reported_unless_a_selection_stands` (term_ui.rs) and
+  `right_clicks_to_programs_is_off_by_default_beside_the_agent_keys` (flare-settings).
 
 ## Panels (Surfaces stage 1), 2026-10-21
 

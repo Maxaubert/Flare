@@ -15,7 +15,7 @@ use flare_update::types::Offer;
 use flare_update::velopack_feed::{self, Hooks};
 #[cfg(feature = "live-updates")]
 use flare_win::names::REPO_URL;
-use flare_win::names::{AUMID, E2E_REG_PREFIX};
+use flare_win::names::{E2E_REG_PREFIX, aumid_for_profile};
 use flare_win::packaged;
 use flare_win::registry::{Registry, WinRegistry};
 use flare_win::verb::remove_verb;
@@ -43,17 +43,33 @@ pub fn e2e_var(suffix: &str) -> Option<String> {
 /// The first statement of `main`: the e2e flag, Velopack's hooks (they may end the process), the
 /// taskbar identity.
 pub fn bootstrap() {
+    // `--print-aumid` prints this run's taskbar identity (honouring --user-data-dir=) and exits, so an
+    // install script can stamp it on a shortcut; before anything else starts.
+    if std::env::args().any(|a| a == "--print-aumid") {
+        crate::attach_parent_console();
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(bad) = malformed_profile_arg(&argv) {
+            eprintln!("--print-aumid: `{bad}` is not --user-data-dir=<path>");
+            std::process::exit(2);
+        }
+        println!("{}", effective_aumid());
+        std::process::exit(0);
+    }
     e2e::init(std::env::args().any(|a| a == "--e2e"));
-    velopack_feed::bootstrap(Hooks {
-        before_uninstall: Box::new(|| {
-            if let Some(root) = classes_root_for_hook() {
-                uninstall_hook(&WinRegistry::current_user(), &root);
-            }
-        }),
-        first_run: Box::new(|v| {
-            let _ = FIRST_RUN.set(v);
-        }),
-    });
+    let aumid = effective_aumid();
+    velopack_feed::bootstrap(
+        Hooks {
+            before_uninstall: Box::new(|| {
+                if let Some(root) = classes_root_for_hook() {
+                    uninstall_hook(&WinRegistry::current_user(), &root);
+                }
+            }),
+            first_run: Box::new(|v| {
+                let _ = FIRST_RUN.set(v);
+            }),
+        },
+        &aumid,
+    );
     set_aumid();
 }
 
@@ -88,10 +104,43 @@ pub fn uninstall_hook(reg: &dyn Registry, root: &str) {
     remove_verb(reg, root);
 }
 
-/// Sets the taskbar identity in every build, so a dev run and an installed run share it.
+/// The `--user-data-dir=<path>` of a command line (the equals form, as `config` reads it: the LAST
+/// one wins).
+pub fn profile_arg(argv: &[String]) -> Option<PathBuf> {
+    argv.iter()
+        .rev()
+        .find_map(|a| a.strip_prefix("--user-data-dir="))
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
+/// A `--user-data-dir` argument that is not a non-empty equals form (`config` rejects it, and
+/// `--print-aumid` must not quietly print the plain identity for it).
+pub fn malformed_profile_arg(argv: &[String]) -> Option<&str> {
+    argv.iter().map(String::as_str).find(|a| {
+        a.starts_with("--user-data-dir")
+            && a.strip_prefix("--user-data-dir=")
+                .is_none_or(|p| p.is_empty())
+    })
+}
+
+/// The taskbar identity of this run: the plain one for the default profile, a per-profile one for a
+/// run with its own `--user-data-dir` (see `flare_win::names::aumid_for_profile`). Toasts must use
+/// this same value.
+pub fn effective_aumid() -> String {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    aumid_for_profile(profile_arg(&argv).as_deref())
+}
+
+/// Sets the taskbar identity in every build, so a dev run and an installed run share it. A second
+/// copy with its own profile gets its own identity, or it would group under the installed Flare's
+/// shortcut and show that shortcut's icon.
 pub fn set_aumid() {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-    let wide: Vec<u16> = AUMID.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = effective_aumid()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call; the call copies it.
     let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
 }
@@ -626,11 +675,43 @@ mod tests {
 
     #[test]
     fn aumid_is_set_in_every_build() {
-        assert_eq!(AUMID, "com.flare.terminal");
+        assert_eq!(flare_win::names::AUMID, "com.flare.terminal");
         let ship = code_of(&src("ship_ctl.rs")).to_string();
         let body = ship.split("pub fn bootstrap()").nth(1).unwrap();
         assert!(body.split("\n}\n").next().unwrap().contains("set_aumid();"));
         assert!(src("main.rs").contains("ship_ctl::bootstrap();"));
+    }
+
+    #[test]
+    fn profile_arg_takes_the_last_and_flags_a_malformed_one() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            profile_arg(&a(&["--user-data-dir=C:\\one", "--user-data-dir=C:\\two"])),
+            Some(PathBuf::from("C:\\two"))
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir", "C:\\p"])),
+            Some("--user-data-dir")
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir="])),
+            Some("--user-data-dir=")
+        );
+        assert_eq!(
+            malformed_profile_arg(&a(&["--user-data-dir=C:\\p", "--e2e"])),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_arg_reads_the_equals_form_only() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(profile_arg(&a(&["--e2e"])), None);
+        assert_eq!(profile_arg(&a(&["--user-data-dir="])), None);
+        assert_eq!(
+            profile_arg(&a(&["x", "--user-data-dir=C:\\p"])),
+            Some(PathBuf::from("C:\\p"))
+        );
     }
 
     #[test]
