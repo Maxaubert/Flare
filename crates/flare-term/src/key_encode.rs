@@ -425,6 +425,9 @@ mod tests {
             Some(vec![0x1b, 0x03])
         );
         // Cyrillic still falls back to the physical key.
-        assert_eq!(enc(&KeyEvent::new("\u{441}", "KeyC").ctrl()), Some(vec![0x03]));
+        assert_eq!(
+            enc(&KeyEvent::new("\u{441}", "KeyC").ctrl()),
+            Some(vec![0x03])
+        );
     }
 }

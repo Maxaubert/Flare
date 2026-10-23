@@ -5,6 +5,9 @@ use crate::list::ShellDef;
 /// The variable that carries the resume id into the shell (never written into the command line).
 pub const RESUME_ENV: &str = "FLARE_RESUME_ID";
 
+/// cmd.exe's switch that keeps the current folder out of the program search.
+const NO_CWD_EXE: &str = "NoDefaultCurrentDirectoryInExePath";
+
 /// How a shell is started for a resumed tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
@@ -38,10 +41,12 @@ pub fn with_resume(def: &ShellDef, resume: &str) -> Launch {
             (args, env)
         }
         "cmd" => {
+            // cmd looks in the current folder (the tab's project) before PATH; a claude.cmd a
+            // repo carries must never run on a restore.
             let step = if codex {
-                "codex resume --last".to_string()
+                format!("set {NO_CWD_EXE}=1& codex resume --last")
             } else {
-                format!("set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%")
+                format!("set {NO_CWD_EXE}=1& set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%")
             };
             (vec!["/K".to_string(), step], env)
         }
@@ -120,10 +125,22 @@ mod tests {
             r.args,
             [
                 "/K",
-                "set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%"
+                "set NoDefaultCurrentDirectoryInExePath=1& set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%"
             ]
         );
         assert!(!r.args[1].contains('"'));
+    }
+
+    #[test]
+    fn a_cmd_resume_never_searches_the_current_folder() {
+        for id in [A, "codex:last"] {
+            let r = with_resume(&cmd(), id);
+            assert!(
+                r.args[1].starts_with("set NoDefaultCurrentDirectoryInExePath=1& "),
+                "{:?}",
+                r.args
+            );
+        }
     }
 
     #[test]
@@ -145,7 +162,13 @@ mod tests {
             }
         );
         let r = with_resume(&cmd(), "codex:last");
-        assert_eq!(r.args, ["/K", "codex resume --last"]);
+        assert_eq!(
+            r.args,
+            [
+                "/K",
+                "set NoDefaultCurrentDirectoryInExePath=1& codex resume --last"
+            ]
+        );
         assert_eq!(r.env, None);
     }
 

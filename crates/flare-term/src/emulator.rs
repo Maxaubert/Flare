@@ -256,12 +256,6 @@ impl Emulator {
                 at = end;
             }
             self.drain(&mut out);
-            if matches!(ev, ScanEvent::Decrqm { mode: 2031, .. })
-                && matches!(out.last(), Some(TermEvent::Reply(r)) if r == b"\x1b[?2031;0$y")
-            {
-                // alacritty does not know the mode and says so; the answer is Flare's.
-                out.pop();
-            }
             self.act(ev, &mut out);
         }
         if at < bytes.len() {
@@ -341,7 +335,15 @@ impl Emulator {
     fn drain(&mut self, out: &mut Vec<TermEvent>) {
         while let Ok(ev) = self.events.try_recv() {
             match ev {
-                Event::PtyWrite(s) => out.push(TermEvent::Reply(normalise_reply(s))),
+                Event::PtyWrite(s) => {
+                    let r = normalise_reply(s);
+                    // alacritty does not know mode 2031 and answers "reset"; the answer is
+                    // Flare's, whenever alacritty gets round to it (a synchronized update holds
+                    // its reply back until the block ends).
+                    if r != b"\x1b[?2031;0$y" {
+                        out.push(TermEvent::Reply(r));
+                    }
+                }
                 Event::Title(t) => out.push(TermEvent::Title(t)),
                 Event::ResetTitle => out.push(TermEvent::ResetTitle),
                 Event::Bell => out.push(TermEvent::Bell),
@@ -2032,6 +2034,15 @@ mod tests {
             e.release_sync_if_due(d),
             vec![TermEvent::Reply(b"\x1b[0n".to_vec())]
         );
+    }
+
+    #[test]
+    fn decrqm_2031_inside_a_synchronized_update_gets_one_answer() {
+        let mut e = Emulator::new(80, 24);
+        let first = replies(&e.feed(b"\x1b[?2026h\x1b[?2031$p"));
+        assert_eq!(first, vec![b"\x1b[?2031;2$y".to_vec()]);
+        let d = e.sync_deadline().expect("deadline");
+        assert!(replies(&e.release_sync_if_due(d)).is_empty());
     }
 
     fn sel(block: bool, r0: usize, b0: usize, r1: usize, b1: usize) -> SelOut {

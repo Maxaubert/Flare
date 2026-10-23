@@ -615,11 +615,7 @@ mod tests {
 
     #[test]
     fn a_missing_folder_is_an_error_not_home() {
-        let r = PortableSpawner.spawn(&cmd_spec(
-            &[],
-            r"C:\no\such\folder\flare",
-            std_env(),
-        ));
+        let r = PortableSpawner.spawn(&cmd_spec(&[], r"C:\no\such\folder\flare", std_env()));
         let Err(msg) = r else {
             panic!("expected an error")
         };
