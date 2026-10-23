@@ -20,6 +20,11 @@ fn cols_of(c: char) -> usize {
     c.width().unwrap_or(1)
 }
 
+/// The columns a whole line takes on screen (the sum of its characters' columns, as the wrap counts them).
+pub fn display_cols(line: &str) -> usize {
+    line.chars().map(cols_of).sum()
+}
+
 /// `line` as rows of at most `cols` columns, in order; an empty line is one empty row and a line that fits is
 /// itself. Never loses a character: the rows joined are the line. A row always holds at least one character.
 pub fn wrap_line(line: &str, cols: usize) -> Vec<&str> {

@@ -58,7 +58,7 @@ const WRAP_INLINE_MAX: usize = 1_000_000;
 /// them in a model.
 pub struct TextRows {
     pub lines: Arc<Vec<SharedString>>,
-    /// The widest row, in characters.
+    /// The widest row, in screen columns.
     pub cols: usize,
     /// The file's real length.
     pub bytes: u64,
@@ -68,10 +68,12 @@ pub struct TextRows {
 
 impl TextRows {
     pub fn from_doc(doc: preview::TextDoc) -> Self {
+        // The widest line in screen columns: a wide letter or an emoji takes two, so counting characters would leave
+        // the right half of such a line out of the scroll range.
         let cols = doc
             .lines
             .iter()
-            .map(|l| l.chars().count())
+            .map(|l| flare_surfaces::wrap::display_cols(l))
             .max()
             .unwrap_or(0);
         let foot = match doc.cut {
@@ -1405,6 +1407,18 @@ mod tests {
         assert_eq!(human_bytes(1025), "2 KB");
         assert_eq!(human_bytes(4 * 1024 * 1024), "4.0 MB");
         assert_eq!(human_bytes(1536 * 1024), "1.5 MB");
+    }
+
+    #[test]
+    fn a_wide_line_scrolls_by_its_screen_columns_not_its_characters() {
+        let doc = preview::TextDoc {
+            lines: vec!["abc".into(), "\u{65e5}\u{672c}\u{8a9e}".repeat(50)],
+            truncated: false,
+            cut: None,
+            bytes: 0,
+        };
+        // 150 characters, two columns each.
+        assert_eq!(TextRows::from_doc(doc).cols, 300);
     }
 
     #[test]
