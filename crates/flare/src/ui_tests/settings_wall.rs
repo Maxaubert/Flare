@@ -849,10 +849,18 @@ fn ask_three_draws_the_focus_ring_on_save_as_custom() {
     let h = harness(scale);
     open_ask(&h);
     h.move_to(990.0, 630.0);
-    let f = h.render();
     let sx = (h.comp.get_ask_save_x() * scale) as u32;
     let sy = (h.comp.get_ask_save_y() * scale) as u32;
     let sh = (h.comp.get_ask_save_h() * scale) as u32;
+    // focus-visible: opened by a click, the question rests with no ring at all
+    let f = h.render();
+    let rest = f.px(sx - 3, sy + sh / 2);
+    assert!(!near(rest, ACCENT_HI, 8), "no ring at rest, got {rest:?}");
+    // Tab round the three buttons: the keyboard brings the ring, and it lands on Save as Custom again
+    for _ in 0..3 {
+        h.key_text(&key(Key::Tab));
+    }
+    let f = h.render();
     // the 2 px ring sits just outside the button's left edge
     let left = f.px(sx - 3, sy + sh / 2);
     assert!(
@@ -864,7 +872,7 @@ fn ask_three_draws_the_focus_ring_on_save_as_custom() {
     let cy = (h.comp.get_ask_cancel_y() * scale) as u32;
     let none = f.px(cx - 3, cy + sh / 2);
     assert!(!is_accent(none), "no ring beside Cancel, got {none:?}");
-    // after Tab the ring is gone from Save as Custom
+    // after one more Tab the ring is gone from Save as Custom
     h.key_text(&key(Key::Tab));
     let f = h.render();
     let left = f.px(sx - 3, sy + sh / 2);

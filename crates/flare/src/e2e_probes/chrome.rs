@@ -172,6 +172,10 @@ pub fn new_row_centre(x: f32, y: f32, w: f32, h: f32, places: usize, k: f32) -> 
     (x + w / 2.0, y + top + NAV_TOP + ROW_H / 2.0)
 }
 
+/// The icon's two flames at their first stops (assets/icon/flare-color.svg).
+const MARK_ORANGE: &str = "#ff4800";
+const MARK_GOLD: &str = "#ffc500";
+
 fn hex(r: u8, g: u8, b: u8) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
@@ -188,8 +192,11 @@ pub fn start_state_json(
     let (cx, cy) = new_row_centre(x, y, w, h, places, k);
     json!({
         "shown": shown,
-        // The mark is drawn in `Theme.accent-solid`, so the accent is the mark's colour.
-        "mark_colour": hex(accent.0, accent.1, accent.2),
+        // The theme's accent (the start screen's mark is no longer drawn in it).
+        "accent": hex(accent.0, accent.1, accent.2),
+        // The mark is the icon's own two tones (owner, 2026-10-22): the orange flame and the golden one over it.
+        "mark_colour": MARK_ORANGE,
+        "mark_gold": MARK_GOLD,
         "button_label": NEW_ROW_LABEL,
         "buttons": [NEW_ROW_LABEL],
         "places": places,
@@ -261,7 +268,9 @@ mod tests {
     fn the_start_state_names_the_mark_colour_and_the_button() {
         let v = start_state_json(true, (0xfe, 0x8f, 0x34), 0, (0.0, 36.0, 800.0, 500.0), 1.0);
         assert_eq!(v["shown"], true);
-        assert_eq!(v["mark_colour"], "#fe8f34");
+        assert_eq!(v["accent"], "#fe8f34");
+        assert_eq!(v["mark_colour"], "#ff4800");
+        assert_eq!(v["mark_gold"], "#ffc500");
         assert_eq!(v["button_label"], "New terminal");
         assert_eq!(v["buttons"], json!(["New terminal"]));
         assert!(v["new_centre"]["x"].as_f64().unwrap() > 0.0);
