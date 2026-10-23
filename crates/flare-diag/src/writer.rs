@@ -31,6 +31,8 @@ pub const DIAG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub const DIAG_KEEP: u32 = 4;
 /// The queue holds at most this many lines; past it the NEWEST are dropped and counted.
 pub const QUEUE_MAX: usize = 2000;
+/// The live file may pass `max_bytes` by this factor while rotation keeps failing; past it lines are dropped.
+const HARD_CAP_FACTOR: u64 = 2;
 /// How long a failed rotation waits before it is tried again (uptime ms).
 pub const ROTATE_RETRY_MS: u64 = 30_000;
 pub const FLUSH_MS: u64 = 250;
@@ -254,10 +256,15 @@ impl DiagLog {
     /// Remembers the switch in the state file (atomically) and logs a `verbose {on}` line.
     pub fn set_verbose(&self, on: bool) {
         guarded(|| {
-            if self.inner.null || self.inner.verbose.swap(on, Ordering::SeqCst) == on {
+            if self.inner.null || self.inner.verbose.load(Ordering::SeqCst) == on {
                 return;
             }
-            self.inner.save_verbose(on);
+            // The flag flips only once it is stored: a refused write leaves it as it was, so the
+            // page never shows a state the next launch will not have.
+            if !self.inner.save_verbose(on) {
+                return;
+            }
+            self.inner.verbose.store(on, Ordering::SeqCst);
             let mut f = Map::new();
             f.insert("on".into(), Value::Bool(on));
             self.write("main", "verbose", f);
@@ -458,6 +465,36 @@ impl Inner {
         }
         let bytes = text.len() as u64;
         self.rotate_if_due(io, bytes);
+        // A rotation that keeps failing (the file is held open) must not let the log grow without bound:
+        // past twice the cap the batch is dropped, counted, and reported as `logger-dropped` once a
+        // rotation works again (review #104).
+        let mut kept = String::new();
+        let text = if io.size.saturating_add(bytes) > self.max_bytes.saturating_mul(HARD_CAP_FACTOR)
+        {
+            let mut n = 0u64;
+            for l in text.lines() {
+                match serde_json::from_str::<Value>(l) {
+                    // The one report of the failure itself still lands.
+                    Ok(v) if v["k"] == "logger-error" => {
+                        kept.push_str(l);
+                        kept.push('\n');
+                    }
+                    // A report of earlier drops carries its count forward.
+                    Ok(v) if v["k"] == "logger-dropped" => n += v["n"].as_u64().unwrap_or(1),
+                    _ => n += 1,
+                }
+            }
+            if n > 0 {
+                lock(&self.q).dropped += n;
+            }
+            if kept.is_empty() {
+                return Ok(());
+            }
+            kept.as_str()
+        } else {
+            text
+        };
+        let bytes = text.len() as u64;
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)
@@ -478,7 +515,23 @@ impl Inner {
             return;
         }
         let numbered = |n: u32| PathBuf::from(format!("{}.{n}", self.file.display()));
+        let parked = PathBuf::from(format!("{}.rotating", self.file.display()));
+        // A leftover parked file (a restore that failed) is never replaced: it is finished first, the
+        // live file stays where it is and the next due rotation takes it.
+        let left_over = parked.exists();
+        let mut took_live = false;
         let result = (|| -> io::Result<()> {
+            // The live file moves first, to a temporary name: when something holds it (a tail
+            // tool, a scanner) this fails before any history is touched, so a blocked rotation
+            // that retries never costs an older generation.
+            if !left_over {
+                match fs::rename(&self.file, &parked) {
+                    // sync-ok: writer thread rotation
+                    Ok(()) => took_live = true,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(e),
+                }
+            }
             match fs::remove_file(numbered(DIAG_KEEP)) {
                 // sync-ok: rotation runs on the writer thread or a quit flush
                 Ok(()) => {}
@@ -489,14 +542,15 @@ impl Inner {
                 // that one may not exist yet
                 let _ = fs::rename(numbered(n), numbered(n + 1)); // sync-ok: writer thread rotation
             }
-            match fs::rename(&self.file, numbered(1)) {
-                // sync-ok: writer thread rotation
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e),
-            }
+            fs::rename(&parked, numbered(1)) // sync-ok: writer thread rotation
         })();
+        if result.is_err() && took_live {
+            // Put the live file back: a retry must park the NEWEST log, never one over the older.
+            let _ = fs::rename(&parked, &self.file); // sync-ok: writer thread rotation
+        }
         match result {
+            // After a leftover only that file moved on: the live file is still big and goes next time.
+            Ok(()) if left_over => {}
             Ok(()) => io.size = 0,
             Err(e) => {
                 io.rotate_after = (self.uptime)() + ROTATE_RETRY_MS;
@@ -505,7 +559,8 @@ impl Inner {
         }
     }
 
-    fn save_verbose(&self, on: bool) {
+    /// True when the switch is on disk.
+    fn save_verbose(&self, on: bool) -> bool {
         let attempt = || -> io::Result<()> {
             if let Some(parent) = self.state_file.parent() {
                 fs::create_dir_all(parent)?; // sync-ok: a Settings click, rare
@@ -519,7 +574,9 @@ impl Inner {
         };
         if let Err(e) = attempt() {
             self.fail(&e.to_string());
+            return false;
         }
+        true
     }
 }
 

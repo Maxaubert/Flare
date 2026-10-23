@@ -111,12 +111,24 @@ pub fn encode_mouse(e: &MouseEvt, tracking: MouseTracking, sgr: bool) -> Option<
         };
         return Some(format!("\x1b[<{};{};{}{}", code, e.col + 1, e.row + 1, end).into_bytes());
     }
-    let cx = e.col + 33;
-    let cy = e.row + 33;
-    if cx > 255 || cy > 255 {
+    let mut out = vec![0x1b, b'[', b'M', code + 32];
+    push_coord(&mut out, e.col + 33)?;
+    push_coord(&mut out, e.row + 33)?;
+    Some(out)
+}
+
+/// One coordinate of a default-encoding report: its value as a character, as xterm sends it
+/// (ConPTY reads its input as UTF-8, so a raw byte above 127 would be U+FFFD). None above 255, like
+/// xterm.js (Prism Terminal): a legacy program reads one byte per coordinate and would misparse a
+/// longer sequence. A wide window past column 222 reports nothing in this encoding (use SGR).
+pub(crate) fn push_coord(out: &mut Vec<u8>, v: usize) -> Option<()> {
+    if v > 0xff {
         return None;
     }
-    Some(vec![0x1b, b'[', b'M', code + 32, cx as u8, cy as u8])
+    let c = char::from_u32(v as u32)?;
+    let mut buf = [0u8; 4];
+    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    Some(())
 }
 
 #[cfg(test)]
@@ -229,7 +241,9 @@ mod tests {
     fn an_unaddressable_cell_is_not_reported_in_the_default_encoding() {
         let far = evt(MouseKind::Press, Some(MouseButton::Left), 223, 0);
         assert_eq!(encode_mouse(&far, MouseTracking::Vt200, false), None);
-        let edge = evt(MouseKind::Press, Some(MouseButton::Left), 222, 0);
+        let far_row = evt(MouseKind::Press, Some(MouseButton::Left), 0, 223);
+        assert_eq!(encode_mouse(&far_row, MouseTracking::Vt200, false), None);
+        let edge = evt(MouseKind::Press, Some(MouseButton::Left), 222, 222);
         assert!(encode_mouse(&edge, MouseTracking::Vt200, false).is_some());
         let wide = evt(MouseKind::Press, Some(MouseButton::Left), 500, 0);
         assert!(encode_mouse(&wide, MouseTracking::Vt200, true).is_some());
@@ -249,5 +263,12 @@ mod tests {
             }
             other => panic!("expected bytes, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_default_report_is_utf8_past_column_94() {
+        let e = evt(MouseKind::Press, Some(MouseButton::Left), 99, 0);
+        let b = encode_mouse(&e, MouseTracking::Vt200, false).unwrap();
+        assert_eq!(b, "\x1b[M \u{84}!".as_bytes());
     }
 }

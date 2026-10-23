@@ -60,11 +60,11 @@ pub fn valid_bg(hex: &str) -> bool {
     b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
 }
 
-/// The frost DWM picks: Rec.709 luma over 0.5. Deliberately not the 0.4 WCAG measure.
+/// The frost DWM picks, and the direction of the window edge: the SAME measure the chrome wears, WCAG
+/// relative luminance over `LIGHT_GROUND` (`flare_theme::marks::ground_mode`), so on a mid-grey ground the
+/// frost and the edge never disagree with the inks drawn on it (review #10 and #80).
 pub fn is_light_bg(hex: &str) -> bool {
-    let n = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
-    let (r, g, b) = ((n >> 16) & 255, (n >> 8) & 255, n & 255);
-    (0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b)) / 255.0 > 0.5
+    valid_bg(hex) && flare_theme::marks::ground_mode(hex) == flare_theme::marks::Mode::Light
 }
 
 pub trait Surface {
@@ -255,6 +255,18 @@ mod tests {
         assert!(!is_light_bg("#0b0b0f"));
         assert!(is_light_bg("#aaaaaa"));
         assert!(!is_light_bg("#777777"));
+    }
+
+    #[test]
+    fn the_frost_and_the_chrome_call_every_grey_the_same_mode() {
+        for v in 0..=255u32 {
+            let hex = format!("#{v:02x}{v:02x}{v:02x}");
+            let chrome = flare_theme::marks::ground_mode(&hex) == flare_theme::marks::Mode::Light;
+            assert_eq!(is_light_bg(&hex), chrome, "{hex}");
+        }
+        // The two greys the old luma rule split from the chrome.
+        assert!(!is_light_bg("#8a8a8a"));
+        assert!(!is_light_bg("#9a9a9a"));
     }
 
     #[test]

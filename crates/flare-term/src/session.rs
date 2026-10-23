@@ -713,9 +713,44 @@ impl SessionManager {
             .unwrap_or((80, 24))
     }
 
+    /// Claims `id` for a spawn that a worker thread will run (`spawn_reserved`): from now a `kill` of the
+    /// id is remembered, so a tab closed before the worker gets going starts no hidden shell (review
+    /// #32). False when a shell or another spawn already holds the id.
+    pub fn reserve(&self, id: &str) -> bool {
+        let mut st = lk(&self.sh.st);
+        if st.sessions.contains_key(id) || st.pending.contains(id) {
+            return false;
+        }
+        st.pending.insert(id.to_string());
+        true
+    }
+
+    /// Gives a reservation back when no worker will ever run it.
+    pub fn release(&self, id: &str) {
+        let mut st = lk(&self.sh.st);
+        st.pending.remove(id);
+        st.killed_pending.remove(id);
+    }
+
     /// BLOCKING (reads the shell list, spawns): call it from a worker thread, never the UI thread.
     /// Returns whether a shell now runs for `id`.
     pub fn spawn(
+        &self,
+        id: &str,
+        root: &str,
+        shell_id: Option<&str>,
+        sink: Arc<dyn SessionSink>,
+        resume: Option<&str>,
+        plugin: Option<&PluginEnv>,
+    ) -> bool {
+        if !self.reserve(id) {
+            return false;
+        }
+        self.spawn_reserved(id, root, shell_id, sink, resume, plugin)
+    }
+
+    /// `spawn` for an id `reserve` already claimed (on the thread that asked for the start).
+    pub fn spawn_reserved(
         &self,
         id: &str,
         root: &str,
@@ -733,13 +768,6 @@ impl SessionManager {
             );
         }
         let resume = valid;
-        {
-            let mut st = lk(&self.sh.st);
-            if st.sessions.contains_key(id) || st.pending.contains(id) {
-                return false;
-            }
-            st.pending.insert(id.to_string());
-        }
         let _guard = PendingGuard { sh: &self.sh, id };
         // Declared after the pending guard, so it drops first: a kill made below is counted in
         // `dying` before this spawn stops counting as `starting`.
@@ -979,29 +1007,37 @@ impl SessionManager {
         }
     }
 
-    /// One try now; on an error, retries on a helper thread while that size is still the wanted one.
+    /// The flush of what is already read (parsed at the old size, before the pty answers at the new
+    /// one) and ResizePseudoConsole both wait on a flooding shell, so neither runs on the caller (the
+    /// UI thread, rule 34): a helper thread flushes, tries now, then retries while that size is still
+    /// the wanted one. The wish is checked under the proc lock,
+    /// so an older helper can never land after a newer size.
     fn apply_resize(&self, s: &Arc<Session>, id: &str, cols: usize, rows: usize) {
-        if try_resize(s, cols, rows) {
-            return;
-        }
         let (sh, s, id) = (Arc::clone(&self.sh), Arc::clone(s), id.to_string());
         let r = std::thread::Builder::new()
             .name("flare-pty-resize".into())
             .spawn(move || {
-                for _ in 0..sh.opts.resize_retries {
-                    std::thread::sleep(sh.opts.resize_retry_delay); // sync-ok: a helper thread, never the caller's
-                    let wanted = {
+                // Output already read is parsed first, so ConPTY's answer lands after it.
+                s.deliver(true);
+                for attempt in 0..=sh.opts.resize_retries {
+                    if attempt > 0 {
+                        std::thread::sleep(sh.opts.resize_retry_delay); // sync-ok: a helper thread, never the caller's
+                    }
+                    if s.killed.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let wanted = || {
                         let st = lk(&sh.st);
                         st.desired.get(&id) == Some(&(cols, rows))
                             && st.sessions.get(&id).is_some_and(|x| x.token == s.token)
                     };
-                    if !wanted || s.killed.load(Ordering::SeqCst) || try_resize(&s, cols, rows) {
+                    if try_resize(&s, cols, rows, &wanted) {
                         return;
                     }
                 }
             });
         if let Err(e) = r {
-            log::warn!("could not start the resize retry: {e}");
+            log::warn!("could not start the resize helper: {e}");
         }
     }
 
@@ -1129,11 +1165,13 @@ impl SessionManager {
     }
 }
 
-fn try_resize(s: &Arc<Session>, cols: usize, rows: usize) -> bool {
+/// One try. True when it is done with (resized, closed, or no longer the wanted size).
+fn try_resize(s: &Arc<Session>, cols: usize, rows: usize, wanted: &dyn Fn() -> bool) -> bool {
     let mut p = lk(&s.proc);
     match p.as_mut() {
         // A closed session has nothing left to resize; stop retrying.
         None => true,
+        Some(_) if !wanted() => true,
         Some(p) => p
             .resize(
                 cols.min(u16::MAX as usize) as u16,
@@ -1292,6 +1330,36 @@ mod tests {
         assert!(!h.join().unwrap());
         assert!(wait_until(|| sp.made().iter().all(|f| f.killed())));
         assert!(m.live_pids().iter().all(|(id, _)| id != "t1"));
+    }
+
+    /// Review #32: a tab closed after the start was asked but before the worker thread reached the
+    /// manager starts no hidden shell (the id was claimed on the asking thread, so the kill is kept).
+    #[test]
+    fn a_tab_closed_before_the_spawn_worker_ran_starts_no_shell() {
+        let sp = FakeSpawner::new();
+        let (shells, opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        assert!(m.reserve("t1"));
+        m.kill("t1");
+        opener.open();
+        // The worker only now reaches the manager.
+        assert!(!m.spawn_reserved("t1", "C:\\x", Some("pwsh"), null(), None, None));
+        assert!(sp.made().is_empty(), "no shell was ever launched");
+        assert!(m.live_pids().iter().all(|(id, _)| id != "t1"));
+        // The claim is gone with it: the id can be spawned afresh.
+        assert!(!m.is_pending("t1"));
+    }
+
+    #[test]
+    fn a_reserved_id_is_refused_to_a_second_spawn_and_given_back_by_release() {
+        let sp = FakeSpawner::new();
+        let (shells, _opener) = FakeShells::gated();
+        let m = mgr_with(&sp, shells, fast());
+        assert!(m.reserve("t1"));
+        assert!(!m.reserve("t1"));
+        assert!(!m.spawn("t1", "C:\\x", Some("pwsh"), null(), None, None));
+        m.release("t1");
+        assert!(m.reserve("t1"));
     }
 
     #[test]
@@ -1527,6 +1595,50 @@ mod tests {
     }
 
     #[test]
+    fn a_resize_never_waits_for_the_console_host() {
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        assert!(spawn_a(&m));
+        let f = Arc::clone(&sp.made()[0]);
+        // Hold the pty the way a stalled ResizePseudoConsole would: the caller must still return.
+        let sess = Arc::clone(&lk(&m.sh.st).sessions["a"]);
+        let held = lk(&sess.proc);
+        let t = Instant::now();
+        m.resize("a", 100, 30);
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "the caller waited"
+        );
+        drop(held);
+        assert!(wait_until(|| f.size() == (100, 30)));
+    }
+
+    #[test]
+    fn a_resize_never_flushes_the_backlog_on_the_caller() {
+        struct Who(Mutex<Vec<std::thread::ThreadId>>);
+        impl SessionSink for Who {
+            fn data(&self, _: &str, _: Vec<u8>) {
+                lk(&self.0).push(std::thread::current().id());
+            }
+            fn exit(&self, _: &str, _: Option<u32>) {}
+        }
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        let who = Arc::new(Who(Mutex::new(Vec::new())));
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), who.clone(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        // Read but not yet due: the batcher holds it while the destination is free.
+        f.feed(&vec![b'x'; 4096]);
+        m.resize("a", 100, 30);
+        assert!(wait_until(|| f.size() == (100, 30)));
+        assert!(wait_until(|| !lk(&who.0).is_empty()));
+        assert!(
+            !lk(&who.0).contains(&std::thread::current().id()),
+            "the caller parsed the backlog"
+        );
+    }
+
+    #[test]
     fn resize_rejects_bad_sizes() {
         let sp = FakeSpawner::new();
         let m = mgr(&sp);
@@ -1565,7 +1677,8 @@ mod tests {
         let h = Arc::clone(&sp.made()[1]);
         h.fail_next_resizes(100);
         slow.resize("c", 91, 30);
-        assert_eq!(h.resize_calls(), 1);
+        // The try runs on a helper, never on the caller.
+        assert!(wait_until(|| h.resize_calls() == 1));
         slow.resize("c", 92, 30);
         std::thread::sleep(Duration::from_millis(400));
         // 1 for 91, 1 for 92, then only 92 keeps retrying (5 more); 91 never retried after the change.

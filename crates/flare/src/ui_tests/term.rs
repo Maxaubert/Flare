@@ -2115,16 +2115,17 @@ mod flow {
         let plain = "C:\\My Dir\\a b.txt";
         assert_eq!(paste_files("pwsh", &[plain]), b"'C:\\My Dir\\a b.txt'");
         assert_eq!(paste_files("cmd", &[plain]), b"\"C:\\My Dir\\a b.txt\"");
+        // A WSL tab gets the path as Linux sees it.
         assert_eq!(
             paste_files("wsl-Ubuntu", &[plain]),
-            b"'C:\\My Dir\\a b.txt'"
+            b"'/mnt/c/My Dir/a b.txt'"
         );
         // A name that would run something stays inert in every shell.
         let cmd_sub = "C:\\d\\$(calc).txt";
         assert_eq!(paste_files("pwsh", &[cmd_sub]), b"'C:\\d\\$(calc).txt'");
         assert_eq!(
             paste_files("wsl-Ubuntu", &[cmd_sub]),
-            b"'C:\\d\\$(calc).txt'"
+            b"'/mnt/c/d/$(calc).txt'"
         );
         // cmd: `%` still acts inside double quotes, so nothing is pasted; `&` is safe inside them.
         assert_eq!(paste_files("cmd", &["C:\\d\\100%.txt"]), b"");
@@ -2138,9 +2139,11 @@ mod flow {
     fn an_image_pastes_the_agent_key_and_shift_enter_is_a_newline_only_for_agents() {
         let w = Wx::new(1.0);
         w.clip.set_image(true);
-        w.clip.set_text("ignored");
         assert_eq!(w.key(ctrl("v", "KeyV")), KeyOutcome::Consumed);
         w.wait_written(&[0x16]);
+        // Text riding along with the image (an Excel copy) is for a plain prompt to take, and an agent
+        // ignores it; from here the clipboard holds both.
+        w.clip.set_text("ignored");
         // A Claude tab takes the image through its own key; the text riding along is ignored.
         w.agent.0.set(Some(AgentKind::Claude));
         assert_eq!(w.key(ctrl("v", "KeyV")), KeyOutcome::Consumed);

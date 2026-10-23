@@ -24,6 +24,10 @@ component StartRow inherits Rectangle {
     height: 36px;
     border-radius: 3px;
     background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.near;
+    accessible-action-default => { root.activated(); }
 
     HorizontalLayout {
         padding-left: 10px;
@@ -255,6 +259,9 @@ export component StartScreen inherits Rectangle {
             height: 24px;
             border-radius: Theme.radius-button;
             background: gh-ta.has-hover ? Theme.hover : transparent;
+            accessible-role: button;
+            accessible-label: "GitHub";
+            accessible-action-default => { root.github(); }
 
             Text {
                 x: 8px;

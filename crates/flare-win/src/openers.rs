@@ -252,6 +252,19 @@ pub fn explorer_open_folder(abs: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The one argument for opening a path in Explorer: `"<abs>"`. None when `abs` holds `"` or any
+/// control character.
+pub fn open_args(abs: &str) -> Option<String> {
+    quotable(abs).map(|t| format!("\"{t}\""))
+}
+
+/// Hands a path to Explorer by its absolute exe path (the Settings page's "Open folder"). Call it
+/// from a worker: the process start can wait on a slow, scanned disk.
+pub fn explorer_open_path(abs: &str) -> Result<(), String> {
+    let args = open_args(abs).ok_or_else(|| "path refused".to_string())?;
+    spawn_explorer(&args)
+}
+
 /// Shows a file selected in Explorer.
 pub fn explorer_reveal(abs: &str) -> Result<(), String> {
     let args = reveal_args(abs).ok_or_else(|| "path refused".to_string())?;
@@ -260,6 +273,16 @@ pub fn explorer_reveal(abs: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_args_quote_the_path_and_refuse_a_quote_or_a_control_character() {
+        assert_eq!(
+            super::open_args("C:\\Users\\me\\logs\\").as_deref(),
+            Some("\"C:\\Users\\me\\logs\"")
+        );
+        assert_eq!(super::open_args("C:\\a\"b"), None);
+        assert_eq!(super::open_args("C:\\a\nb"), None);
+    }
+
     use super::*;
 
     #[test]

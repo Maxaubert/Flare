@@ -337,6 +337,8 @@ impl GpuPainter {
     pub fn paint_straight(&mut self, scene: &Scene, glyphs: &mut dyn GlyphSource) -> wgpu::Texture {
         let painted = self.paint(scene, glyphs);
         if scene.clear.a == 255 {
+            // The ground is solid again: the second window-sized texture goes back to the GPU.
+            self.straight_target = None;
             return painted;
         }
         let _straight = TraceSpan::new(TracePhase::Paint);

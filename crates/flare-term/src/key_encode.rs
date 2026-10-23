@@ -20,7 +20,7 @@ pub fn encode_key(e: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
         return Some(bytes);
     }
     if e.ctrl && !e.alt {
-        if let Some(b) = ctrl_byte(&e.code) {
+        if let Some(b) = ctrl_for(e) {
             return Some(vec![b]);
         }
         return text.map(|t| t.as_bytes().to_vec());
@@ -36,7 +36,7 @@ pub fn encode_key(e: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
         return Some(out);
     }
     if e.ctrl && e.alt {
-        return ctrl_byte(&e.code).map(|b| vec![0x1b, b]);
+        return ctrl_for(e).map(|b| vec![0x1b, b]);
     }
     text.map(|t| t.as_bytes().to_vec())
 }
@@ -155,6 +155,19 @@ fn named_key(e: &KeyEvent, m: u8, app_cursor: bool) -> Option<Vec<u8>> {
 }
 
 /// The control byte a physical key makes with Ctrl (the table in the Task 10 plan).
+/// The control byte for a Ctrl chord. The key's own ASCII letter decides first (the layout
+/// the user types on: Dvorak, AZERTY, QWERTZ); the physical code is the fallback for keys
+/// whose name is not ASCII (Cyrillic, Greek) and for digits and punctuation.
+fn ctrl_for(e: &KeyEvent) -> Option<u8> {
+    let mut chars = e.key.chars();
+    if let (Some(c), None) = (chars.next(), chars.next())
+        && c.is_ascii_alphabetic()
+    {
+        return Some(c.to_ascii_uppercase() as u8 - b'A' + 1);
+    }
+    ctrl_byte(&e.code)
+}
+
 fn ctrl_byte(code: &str) -> Option<u8> {
     if let Some(letter) = code.strip_prefix("Key") {
         let mut chars = letter.chars();
@@ -242,7 +255,7 @@ mod tests {
         ];
         for (code, byte) in table {
             assert_eq!(
-                enc(&KeyEvent::new("k", code).ctrl()),
+                enc(&KeyEvent::new("#", code).ctrl()),
                 Some(vec![*byte]),
                 "{code}"
             );
@@ -395,5 +408,26 @@ mod tests {
         ] {
             assert_eq!(enc(&KeyEvent::new(k, k)), None, "{k}");
         }
+    }
+
+    #[test]
+    fn ctrl_letters_follow_the_layout_not_the_position() {
+        // Dvorak: the key labelled C sits at physical KeyI.
+        assert_eq!(enc(&KeyEvent::new("c", "KeyI").ctrl()), Some(vec![0x03]));
+        // AZERTY: the key labelled W sits at physical KeyZ.
+        assert_eq!(enc(&KeyEvent::new("w", "KeyZ").ctrl()), Some(vec![0x17]));
+        // QWERTZ: Z and Y are swapped.
+        assert_eq!(enc(&KeyEvent::new("z", "KeyY").ctrl()), Some(vec![0x1a]));
+        assert_eq!(enc(&KeyEvent::new("y", "KeyZ").ctrl()), Some(vec![0x19]));
+        // Ctrl+Alt takes the same route.
+        assert_eq!(
+            enc(&KeyEvent::new("c", "KeyI").ctrl().alt()),
+            Some(vec![0x1b, 0x03])
+        );
+        // Cyrillic still falls back to the physical key.
+        assert_eq!(
+            enc(&KeyEvent::new("\u{441}", "KeyC").ctrl()),
+            Some(vec![0x03])
+        );
     }
 }

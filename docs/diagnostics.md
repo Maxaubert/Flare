@@ -77,7 +77,8 @@ a field can never overwrite those four.
 | `crumb` | a crumb (below) | `mem.rs`, `diag_ctl.rs` |
 | `mark` | a user mark (no note; see below) | `control.rs` |
 | `agent-hook`, `agent-title`, `agent-mark`, `agent-restore` | the agent indicator (M6), see below | `agent_diag.rs` |
-| `logger-error`, `logger-dropped` | the log could not write, or dropped lines (said once, then counted) | `writer.rs` |
+| `agent-poll-failing` | the agent poll's process query failed three times in a row, so agent marks go missing (a problem line) | `agent_hub.rs` |
+| `logger-error`, `logger-dropped` | the log could not write, or dropped lines (said once, then counted; past twice the 2 MB cap, while rotation keeps failing, lines are dropped and counted too) | `writer.rs` |
 
 The kinds the page version wrote have no native equivalent, so they are not written:
 

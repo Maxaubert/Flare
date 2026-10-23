@@ -60,7 +60,8 @@ component WidgetRow inherits Rectangle {
     property <bool> live: touch.has-hover && !root.item.disabled;
     background: root.live ? root.accent.with-alpha(0.16) : root.ink.with-alpha(0.05);
     border-color: root.live ? root.accent.with-alpha(0.45) : transparent;
-    opacity: root.item.disabled ? 0.55 : 1.0;
+    // A row that cannot be picked is told by its inks (the dim ink, held to the ground), not by fading the
+    // whole row: a 0.55 opacity took text and number under the floor (a review finding).
     accessible-role: button;
     accessible-label: root.item.n + ". " + root.item.label + " " + root.item.folder;
     accessible-description: root.item.reason;
@@ -82,7 +83,7 @@ component WidgetRow inherits Rectangle {
             font-family: "Segoe UI";
             font-size: 15px;
             font-weight: 700;
-            color: root.ink;
+            color: root.item.disabled ? root.dim : root.ink;
         }
     }
 
@@ -97,7 +98,7 @@ component WidgetRow inherits Rectangle {
         font-family: "Segoe UI";
         font-size: 15px;
         font-weight: 600;
-        color: root.ink;
+        color: root.item.disabled ? root.dim : root.ink;
         overflow: elide;
         wrap: no-wrap;
     }
@@ -157,6 +158,8 @@ export component DictationWidget inherits Window {
     // The bar's scale, 0.04 to 1 (Rust: max(0.04, min(1, level * 3))).
     in property <float> bar: 0.04;
     in property <bool> warn;
+    // The warning's ink, held to 3:1 on the ground by Rust (it was a fixed amber on every theme).
+    in property <color> warn-ink: Theme.widget-warn;
     // The surface has no per-pixel alpha (no glass): the window is the ground colour and the card has no shadow.
     in property <bool> flat: false;
     in property <[WidgetItem]> items;
@@ -241,17 +244,18 @@ export component DictationWidget inherits Window {
                 y: 7.5px;
                 size: 19px;
                 weight: root.phase == 5 ? 2.6 : 1.9;
-                ink: root.warn && root.phase == 6 ? Theme.widget-warn : root.accent;
+                ink: root.warn && root.phase == 6 ? root.warn-ink : root.accent;
                 commands: root.phase == 5 ? "M6 12.5l4 4 8-9"
                     : (root.warn && root.phase == 6 ? "M12 4l9 16H3z M12 10v4 M12 17.2v.1"
                     : "M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3z M6 11.5a6 6 0 0 0 12 0 M12 17.5v3");
             }
         }
+        // A note's message wraps (the card grows with it); every other face keeps one elided line.
         Text {
             x: 62px;
-            y: root.head-y;
+            y: root.phase == 6 ? 10px : root.head-y;
             width: card.width - 62px - 16px;
-            height: 34px;
+            height: root.phase == 6 ? card.height - 20px : 34px;
             vertical-alignment: center;
             text: root.head;
             font-family: "Segoe UI";
@@ -259,7 +263,7 @@ export component DictationWidget inherits Window {
             font-weight: 600;
             color: root.ink;
             overflow: elide;
-            wrap: no-wrap;
+            wrap: root.phase == 6 ? word-wrap : no-wrap;
         }
 
         // Listening: the 4 px level bar, the live words, the hint.

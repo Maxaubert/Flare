@@ -107,9 +107,16 @@ fn k(e: &KeyEvent) -> String {
     e.key.to_lowercase()
 }
 
-/// The letter, by the key or by the physical key (regression rule 11).
+/// The letter, by the key the layout types; the physical key answers only for a key named outside
+/// ASCII (Russian, Greek), as in flare-term's `is_key` (regression rule 11).
 fn letter(e: &KeyEvent, l: char) -> bool {
-    k(e) == l.to_string() || e.code == format!("Key{}", l.to_ascii_uppercase())
+    let mut chars = e.key.chars();
+    if let (Some(c), None) = (chars.next(), chars.next())
+        && c.is_ascii()
+    {
+        return c.to_ascii_lowercase() == l;
+    }
+    e.code == format!("Key{}", l.to_ascii_uppercase())
 }
 
 fn is_digit_1_to_9(e: &KeyEvent) -> bool {
@@ -404,6 +411,34 @@ mod tests {
             }
         }
         e
+    }
+
+    #[test]
+    fn the_agent_guard_reads_the_layout_letter_first() {
+        let c = on();
+        // Dvorak: Ctrl+J sits on the physical C key, Ctrl+E on D: both are Claude's, not the guard's.
+        assert_ne!(
+            chord_of(&KeyEvent::new("j", "KeyC").ctrl(), &c),
+            Some(ChordId::AgentGuard)
+        );
+        assert_ne!(
+            chord_of(&KeyEvent::new("e", "KeyD").ctrl(), &c),
+            Some(ChordId::AgentGuard)
+        );
+        // Dvorak's real Ctrl+C and Ctrl+D (physical J and E) are still the guard's.
+        assert_eq!(
+            chord_of(&KeyEvent::new("c", "KeyJ").ctrl(), &c),
+            Some(ChordId::AgentGuard)
+        );
+        assert_eq!(
+            chord_of(&KeyEvent::new("d", "KeyE").ctrl(), &c),
+            Some(ChordId::AgentGuard)
+        );
+        // A key named outside ASCII (Russian) falls back to the physical key.
+        assert_eq!(
+            chord_of(&KeyEvent::new("\u{441}", "KeyC").ctrl(), &c),
+            Some(ChordId::AgentGuard)
+        );
     }
 
     #[test]

@@ -23,6 +23,14 @@ component MenuItem inherits Rectangle {
     }
     background: root.lit ? Theme.hover : transparent;
     opacity: root.item.disabled ? 0.5 : 1;
+    accessible-role: button;
+    accessible-label: root.item.label;
+    accessible-enabled: !root.item.disabled;
+    accessible-action-default => {
+        if !root.item.disabled {
+            root.picked(root.index);
+        }
+    }
     ta := TouchArea {
         enabled: !root.item.disabled;
         clicked => { root.picked(root.index); }
@@ -357,6 +365,9 @@ component OverflowItem inherits Rectangle {
         height: 34px;
         border-radius: 3px;
         background: ta.has-hover ? Theme.hover : transparent;
+        accessible-role: button;
+        accessible-label: root.item.label + " " + root.item.folder;
+        accessible-action-default => { root.picked(root.item.id); }
         ta := TouchArea {
             pointer-event(e) => {
                 if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {

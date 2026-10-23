@@ -44,6 +44,14 @@ export global Theme {
     in property <color> pressed: #3d3c39;      // --p-pressed
     in property <color> pressed-ink: #dedacf;  // --p-pressed-ink
 
+    // Flare's own inks (flare_theme::chrome::FLARE_EXTRA_TOKENS), each held on the fill it is drawn on.
+    in property <color> secondary-text: #dedacf; // --f-secondary-text (text on the picked Secondary)
+    in property <color> secondary-icon: #929089; // --f-secondary-icon (glyphs on the picked Secondary)
+    in property <color> accent-ink: #f6a25b;     // --f-accent-ink (the accent as small text, 4.5:1)
+    in property <color> hover-ink: #dedacf;      // --f-hover-ink (text on the chosen rail page)
+    in property <color> pressed-text: #dedacf;   // --f-pressed-ink (text on a chosen segment)
+    in property <color> track-off: #5e5c59;      // --f-track (the OFF switch track, 3:1 on the ground)
+
     // The window's own clear colour (PT's setBackgroundColor): the solid ground, or transparent under glass.
     in property <color> window-clear: #171717;
     // The thinnest a chrome glyph stroke may be, in device pixels: 2 under glass, 0 on a solid window

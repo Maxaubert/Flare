@@ -82,7 +82,18 @@ pub fn paste_action(
                 return PasteAction::Nothing;
             }
             match decide_paste(state, shell) {
-                PasteDecision::Key => PasteAction::ImageKey(image_paste_key(agent)),
+                PasteDecision::Key => {
+                    // An image key means something only to an agent that reads the clipboard. At a plain
+                    // prompt it is a literal ^V (readline's quoted insert), so an Excel or Word copy (text
+                    // plus a bitmap) pastes its text there.
+                    if agent.is_none() {
+                        let text = sanitize_paste(&state.text);
+                        if !text.is_empty() {
+                            return PasteAction::Text(text);
+                        }
+                    }
+                    PasteAction::ImageKey(image_paste_key(agent))
+                }
                 PasteDecision::Text(t) => PasteAction::Text(t),
                 PasteDecision::None => PasteAction::Nothing,
             }
@@ -329,9 +340,27 @@ mod tests {
     }
 
     #[test]
-    fn an_image_beats_text_riding_along() {
+    fn an_image_beats_text_riding_along_only_when_an_agent_runs() {
+        let both = cs(true, "caption", &[]);
         assert_eq!(
-            paste_action(&cs(true, "caption", &[]), PasteMode::Normal, None, None),
+            paste_action(&both, PasteMode::Normal, None, Some(AgentKind::Claude)),
+            PasteAction::ImageKey("\x1bv")
+        );
+        assert_eq!(
+            paste_action(&both, PasteMode::Normal, None, Some(AgentKind::Codex)),
+            PasteAction::ImageKey("\x16")
+        );
+    }
+
+    #[test]
+    fn an_image_with_text_at_a_plain_prompt_pastes_the_text_not_a_literal_ctrl_v() {
+        assert_eq!(
+            paste_action(&cs(true, "a\tb", &[]), PasteMode::Normal, None, None),
+            PasteAction::Text("a\tb".to_string())
+        );
+        // No text to paste: the key is all there is.
+        assert_eq!(
+            paste_action(&cs(true, "", &[]), PasteMode::Normal, None, None),
             PasteAction::ImageKey("\x16")
         );
     }

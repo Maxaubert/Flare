@@ -441,6 +441,8 @@ pub struct AppCtl {
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
     working: HashMap<String, u64>,
     ended: bool,
+    /// Stops the hand-off server (set by the window); run once at the start of the end of life.
+    handoff_stop: Option<Rc<dyn Fn()>>,
     /// The grid's face and size (Task 27); set by the window after the controller is made.
     font: Option<FontCtl>,
     /// The terminal's input controller: selection, copy, paste, find, links and the menu (M5).
@@ -845,6 +847,7 @@ impl AppCtl {
             last_saved: None,
             working: HashMap::new(),
             ended: false,
+            handoff_stop: None,
             font: None,
             term,
             term_due: None,
@@ -3789,7 +3792,12 @@ impl AppCtl {
             agent_guard: agent_guard(&self.prefs),
             agent_here: front.is_some_and(|f| self.hub.agent_here(f)),
             agent_working: front.is_some_and(|f| self.hub.working(f)),
-            agent_selecting: self.term.program_selecting(),
+            // A selection the program made itself, or Flare's own selection in the grid: Ctrl+C
+            // copies it (rule 50), the guard leaves the key alone.
+            agent_selecting: self.term.program_selecting()
+                || self
+                    .front_tab()
+                    .is_some_and(|f| self.term.has_selection(&f.info())),
         }
     }
 
@@ -3811,7 +3819,15 @@ impl AppCtl {
             self.close_menu();
             return KeyOutcome::Consumed;
         }
-        let ctx = self.key_context();
+        let mut ctx = self.key_context();
+        // A text field of the window (the find bar, the sidebar find box, the help search) has the
+        // keys: Ctrl+C and Ctrl+D there are the field's, never the agent guard's.
+        if self
+            .app()
+            .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+        {
+            ctx.agent_guard = false;
+        }
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
         let shell_in_front = self.front_handle().is_some();
         // Start-up trace: the first key that reaches a tab already showing a prompt row is the
@@ -4070,6 +4086,11 @@ impl AppCtl {
         }
     }
 
+    /// The window hands over what stops the hand-off server at the end of life.
+    pub fn set_handoff_stop(&mut self, stop: Rc<dyn Fn()>) {
+        self.handoff_stop = Some(stop);
+    }
+
     /// The window hands over the font controller; the face and size in force apply at once.
     pub fn set_font_ctl(&mut self, f: FontCtl) {
         self.font = Some(f);
@@ -4087,7 +4108,14 @@ impl AppCtl {
             && rows >= 1
         {
             self.grid_dims = (cols, rows);
-            self.deps.host.refit_all(cols, rows);
+            let front = self.front_id();
+            if ov.is_some() {
+                // The front tab wears its own zoom: only it takes this grid.
+                self.deps.host.set_dims(cols, rows, front.as_deref());
+            } else {
+                // The settings' size: every tab without a zoom of its own follows.
+                self.deps.host.refit_unzoomed(cols, rows);
+            }
         }
         if let Some(app) = self.app() {
             app.window().request_redraw();
@@ -4208,6 +4236,11 @@ impl AppCtl {
             return;
         }
         self.ended = true;
+        // Stop listening before anything slow: a launch that connects while the shells are killed
+        // and waited for would get its folders acknowledged and then dropped.
+        if let Some(stop) = self.handoff_stop.take() {
+            stop();
+        }
         // Dictation first (parity 834): the engine's children, the link and the key hook stop before the shells are
         // killed and waited for, so a picker never keeps swallowing digits while the window is already hidden.
         crate::dictation_ctl::stop_all();
@@ -5394,6 +5427,58 @@ mod tests {
     }
 
     #[test]
+    fn a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size() {
+        use crate::host::{GridHost, GridPainter};
+        use flare_render::glyph::FakeGlyphs;
+        use flare_settings::look::LookStore;
+        let f = fx();
+        f.start_restore_and_wait();
+        let grid = Rc::new(RefCell::new(GridHost::new(
+            Box::new(FakeGlyphs::new(8, 16)),
+            GridPainter::Cpu,
+        )));
+        grid.borrow_mut().resize(648, 264, 1.0);
+        f.ctl
+            .borrow_mut()
+            .set_font_ctl(FontCtl::new(LookStore::new(f.prefs.clone()), grid));
+        let a = f.ctl.borrow_mut().open_folder("C:\\za");
+        let b = f.ctl.borrow_mut().open_folder("C:\\zb");
+        f.wait_made("C:\\za");
+        f.wait_made("C:\\zb");
+        let size_of = |cwd: &str| {
+            f.sp.made()
+                .iter()
+                .find(|m| m.spec().cwd == cwd)
+                .map(|m| m.size())
+                .unwrap()
+        };
+        let settle = || std::thread::sleep(Duration::from_millis(150));
+        settle();
+        let base = size_of("C:\\za");
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        settle();
+        let zoomed = size_of("C:\\zb");
+        assert_ne!(zoomed, base, "the front tab follows its zoom");
+        assert_eq!(size_of("C:\\za"), base, "a background shell is not touched");
+        // Back to A: B, now in the background, keeps its zoomed grid.
+        f.ctl.borrow_mut().model.pick(&a);
+        f.ctl.borrow_mut().refresh();
+        settle();
+        assert_eq!(size_of("C:\\za"), base);
+        assert_eq!(
+            size_of("C:\\zb"),
+            zoomed,
+            "no reflow of a hidden zoomed shell"
+        );
+        f.ctl.borrow_mut().model.pick(&b);
+        f.ctl.borrow_mut().refresh();
+        settle();
+        assert_eq!(size_of("C:\\zb"), zoomed);
+        assert_eq!(size_of("C:\\za"), base, "the unzoomed shell keeps its size");
+    }
+
+    #[test]
     fn a_pick_swaps_the_grid_source_once() {
         let f = fx();
         let a = f.ctl.borrow_mut().open_folder("C:\\a");
@@ -5468,6 +5553,21 @@ mod tests {
         f.ctl.borrow_mut().on_msg(UiMsg::FolderResolved(dir));
         assert_eq!(f.rows(), 0);
         assert_eq!(f.log.borrow().raised, 0);
+    }
+
+    #[test]
+    fn the_end_of_life_stops_the_handoff_server_before_anything_slow() {
+        let f = fx();
+        f.start_restore_and_wait();
+        let stops = Rc::new(Cell::new(0));
+        let s = stops.clone();
+        f.ctl
+            .borrow_mut()
+            .set_handoff_stop(Rc::new(move || s.set(s.get() + 1)));
+        f.ctl.borrow_mut().end();
+        assert_eq!(stops.get(), 1, "a late launch must find no pipe");
+        f.ctl.borrow_mut().end();
+        assert_eq!(stops.get(), 1, "once");
     }
 
     #[test]
@@ -8517,6 +8617,41 @@ two",
         assert_eq!(f.key(c()), KeyOutcome::Pty, "Ctrl+C passes while working");
         flare_settings::agent_prefs::set_agent_guard(&f.prefs, false);
         assert_eq!(f.key(d()), KeyOutcome::Pty, "the guard off: both pass");
+    }
+
+    #[test]
+    fn ctrl_c_copies_a_grid_selection_over_an_idle_agent() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        let a = f.ctl.borrow().front_id().unwrap();
+        f.claude_in("C:\\a");
+        let c = || ctrl("c", "KeyC");
+        assert_eq!(
+            f.key(c()),
+            KeyOutcome::Consumed,
+            "no selection: taken while idle"
+        );
+        // Flare's own selection in the grid (the agent does not report the mouse).
+        let h = f.ctl.borrow().deps.host.handle(&a).unwrap();
+        h.with_emu(|e| {
+            e.feed(b"some output\r\n");
+            e.sel_apply(flare_term::sel_machine::SelOut::Set(
+                flare_term::sel_machine::SelSpec {
+                    block: false,
+                    start: flare_term::sel_machine::Anchor { row: 0, b: 0 },
+                    end: flare_term::sel_machine::Anchor { row: 0, b: 4 },
+                },
+            ));
+        });
+        assert!(h.with_emu_quiet(|e| e.has_selection()));
+        assert_eq!(
+            f.key(c()),
+            KeyOutcome::Consumed,
+            "Ctrl+C with a selection is the copy, not the guard"
+        );
+        f.pump_until("the copy", |f| {
+            f.clip.read_text().is_some_and(|t| !t.is_empty())
+        });
     }
 
     #[test]

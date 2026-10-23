@@ -67,6 +67,12 @@ pub fn names_agent(title: &str, agent: AgentKind) -> bool {
     t.rsplit(['\\', '/']).next() == Some(exe.as_str())
 }
 
+/// The title the agent itself sets once it runs (Claude Code's `<mark> Claude Code`), which is not
+/// its program name. Only Claude Code has one that is certain.
+fn is_agent_title(title: &str, agent: AgentKind) -> bool {
+    agent == AgentKind::Claude && title.to_lowercase().contains("claude code")
+}
+
 /// The OSC 0 or 2 title scanner: ended by BEL or ST, matched on raw bytes so a split UTF-8
 /// sequence before it cannot move the offset.
 fn title_re() -> &'static Regex {
@@ -75,6 +81,33 @@ fn title_re() -> &'static Regex {
         Regex::new(r"(?-u)\x1b\](?:0|2);([^\x07\x1b]*)(?:\x07|\x1b\\)")
             .expect("the title pattern is a fixed, valid regex")
     })
+}
+
+/// True when `prefix` (the bytes of a chunk before a title) holds visible text: the agent has begun to
+/// paint. The tail of a title cut by the previous read (up to its terminator) and every escape
+/// sequence are not text.
+fn has_visible_text(prefix: &[u8]) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let esc = RE.get_or_init(|| {
+        Regex::new(
+            r"(?-u)\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[\x20-\x7e]?",
+        )
+        .expect("the escape pattern is a fixed, valid regex")
+    });
+    let mut rest = prefix;
+    // A title cut across two reads leaves its tail first: `de ESC \`, or `de BEL`.
+    if let Some(end) = rest.iter().position(|&b| b == 0x07 || b == 0x1b)
+        && !rest[..end].contains(&b'[')
+    {
+        if rest[end] == 0x07 {
+            rest = &rest[end + 1..];
+        } else if rest.get(end + 1) == Some(&b'\\') {
+            rest = &rest[end + 2..];
+        }
+    }
+    esc.replace_all(rest, &b""[..])
+        .iter()
+        .any(|&b| b > 0x20 && b != 0x7f)
 }
 
 /// A chunk of pty output arrives. Returns the new state and where to write the clear, as a BYTE
@@ -94,6 +127,17 @@ pub fn on_chunk(s: &RevealState, data: &[u8], now: u64) -> (RevealState, Option<
             if names_agent(&title, state.agent) {
                 clear_at = Some(whole.start());
                 state.cleared = true;
+            } else if is_agent_title(&title, state.agent) {
+                // The bare name was never seen whole (a title cut across two reads of the pty): the
+                // agent's own title is the next best mark. It comes before the agent's first
+                // paint, so the shell's words are cleared in time, and the agent is drawing now. But
+                // when the agent's words already stand before the title in this chunk, it painted
+                // first: clearing would wipe its own frame, which it redraws only where it changes.
+                if !has_visible_text(&data[..whole.start()]) {
+                    clear_at = Some(whole.start());
+                }
+                state.cleared = true;
+                state.settle_at = Some(now + SETTLE_MS);
             }
             continue;
         }
@@ -158,6 +202,38 @@ mod tests {
         let (s, _) = on_chunk(&start, &chunk, 3600);
         assert!(s.cleared);
         s
+    }
+
+    #[test]
+    fn a_bare_name_cut_across_two_reads_still_clears_and_settles_on_the_agents_title() {
+        let start = start_reveal(AgentKind::Claude, 0);
+        // The bare name is split by the batching: no read holds it whole.
+        let (s, at) = on_chunk(&start, b"PS C:\\work> \x1b]0;clau", 3600);
+        assert_eq!((s.cleared, at), (false, None));
+        let mut second = b"de\x1b\\".to_vec();
+        let agent_title_at = second.len();
+        second.extend(title("\u{2733} Claude Code", false));
+        let (s, at) = on_chunk(&s, &second, 5400);
+        assert!(s.cleared, "the agent's own title starts the clear");
+        assert_eq!(at, Some(agent_title_at));
+        assert_eq!(
+            s.settle_at,
+            Some(5400 + SETTLE_MS),
+            "and the settle, not the ceiling"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_painted_before_its_title_is_not_cleared_away() {
+        let start = start_reveal(AgentKind::Claude, 0);
+        let (s, _) = on_chunk(&start, b"PS C:\\work> \x1b]0;clau", 3600);
+        let mut second = b"de\x1b\\".to_vec();
+        second.extend_from_slice(b"\x1b[2K\x1b[1GWelcome to Claude Code\r\n> ");
+        second.extend(title("\u{2733} Claude Code", false));
+        let (s, at) = on_chunk(&s, &second, 5400);
+        assert!(s.cleared, "the fallback is spent");
+        assert_eq!(at, None, "a clear would wipe Claude's own frame");
+        assert_eq!(s.settle_at, Some(5400 + SETTLE_MS));
     }
 
     #[test]

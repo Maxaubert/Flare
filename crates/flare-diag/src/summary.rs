@@ -28,6 +28,7 @@ const SINK_KINDS: &[&str] = &[
     "agent-title",
     "agent-mark",
     "agent-restore",
+    "agent-poll-failing",
     "frame-slow",
 ];
 const DAY_MS: u64 = 86_400_000;
@@ -367,6 +368,8 @@ mod tests {
         for k in ["agent-hook", "agent-title", "agent-mark", "agent-restore"] {
             assert!(sink_allows(k, false), "{k}");
         }
+        // The poll's own failure: why agent marks went missing (review #103).
+        assert!(sink_allows("agent-poll-failing", false));
         assert!(!sink_allows("agent-anything", false));
         assert!(!sink_allows("agent-bogus", false));
     }

@@ -8,9 +8,12 @@ use flare_agent::kinds::{AgentKind, CODEX_RESUME};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-/// Most tabs a saved strip keeps.
-pub const MAX_TABS: usize = 50;
+/// Most tabs a saved strip keeps: a sanity cap on a hand-edited or damaged file, far above what anyone
+/// opens (nothing in the strip or the model limits the tabs, so a lower cap lost tabs 51 and up, with
+/// their resumes, at the next launch: review #11).
+pub const MAX_TABS: usize = 500;
 
 /// One saved tab: its folder and the resumable agent it hosted.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,30 +176,63 @@ pub fn with_launch_folders(plan: &mut Restored, folders: &[String]) {
     plan.active = plan.tabs.len() - 1;
 }
 
+/// How long a folder may take to answer "is it there": past this the restore stops WAITING for it, so
+/// one slow folder (an offline mapped drive that Windows spends a minute reconnecting, a USB disk
+/// spinning up) cannot hold every tab and every queued hand-off. The tab is KEPT (stored-state rules
+/// 36-41: only a folder that answered "gone" drops its tab), and the next save still writes it.
+pub const STAT_DEADLINE: Duration = Duration::from_secs(3);
+
 /// BLOCKING (a worker thread): stats every saved folder in parallel, asks `lookup` only for Claude
-/// tabs in a folder that exists, then `plan_restore`. A reported UNC folder is never statted.
+/// tabs in a folder that exists, then `plan_restore`. A reported UNC folder is never statted, and a
+/// folder that does not answer within `STAT_DEADLINE` is kept, not dropped.
 pub fn resolve_restore(
     saved: &SavedTabs,
     is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     lookup: Arc<dyn SessionLookup>,
 ) -> Restored {
-    let present: HashMap<String, bool> = std::thread::scope(|sc| {
-        let handles: Vec<_> = saved
-            .tabs
-            .iter()
-            .filter(|t| !t.cwd.is_empty() && !is_unsafe_restore_folder(&t.cwd))
-            .map(|t| {
-                let is_dir = Arc::clone(&is_dir);
-                let cwd = t.cwd.clone();
-                sc.spawn(move || {
-                    let ok = is_dir(&cwd);
-                    (cwd, ok)
-                })
-            })
-            .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect() // sync-ok: restore worker threads, never the UI thread
-    });
-    plan_restore(saved, &|p| present.get(p).copied().unwrap_or(false), &|p| {
+    resolve_restore_within(saved, is_dir, lookup, STAT_DEADLINE)
+}
+
+/// `resolve_restore` with the stat deadline made explicit.
+pub fn resolve_restore_within(
+    saved: &SavedTabs,
+    is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    lookup: Arc<dyn SessionLookup>,
+    deadline: Duration,
+) -> Restored {
+    let (tx, rx) = std::sync::mpsc::channel::<(String, bool)>();
+    let mut asked = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for t in &saved.tabs {
+        if t.cwd.is_empty() || is_unsafe_restore_folder(&t.cwd) || !seen.insert(t.cwd.clone()) {
+            continue;
+        }
+        let (is_dir, tx, cwd) = (Arc::clone(&is_dir), tx.clone(), t.cwd.clone());
+        // Detached: a stat that never returns is left behind, not waited for.
+        let spawned = std::thread::Builder::new()
+            .name("flare-restore-stat".into())
+            .spawn(move || {
+                let ok = is_dir(&cwd);
+                let _ = tx.send((cwd, ok));
+            });
+        if spawned.is_ok() {
+            asked += 1;
+        }
+    }
+    drop(tx);
+    let end = Instant::now() + deadline;
+    let mut present: HashMap<String, bool> = HashMap::new();
+    while present.len() < asked {
+        let left = end.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            // sync-ok: the restore worker, bounded by the deadline
+            Ok((cwd, ok)) => {
+                present.insert(cwd, ok);
+            }
+            Err(_) => break,
+        }
+    }
+    plan_restore(saved, &|p| present.get(p).copied().unwrap_or(true), &|p| {
         lookup.sessions(p)
     })
 }
@@ -258,7 +294,22 @@ pub fn settle_restore(
     r: &Restored,
     new_id: &mut dyn FnMut() -> String,
 ) -> Settled {
+    settle_restore_from(s, slots, None, r, new_id)
+}
+
+/// `settle_restore`, told which placeholder the boot put in front (`peek_state`): a placeholder in front
+/// that is NOT that one was clicked by the owner during the skeleton phase, and the restore keeps it
+/// in front (review #66). `None` is unknown: a pending front is then never taken for a pick.
+pub fn settle_restore_from(
+    s: &TabState,
+    slots: &[String],
+    boot_front: Option<&str>,
+    r: &Restored,
+    new_id: &mut dyn FnMut() -> String,
+) -> Settled {
     let mut spawn = Vec::new();
+    // The id each answered tab ended up with (None: closed meanwhile), in the answer's own order.
+    let mut by_at: Vec<Option<String>> = Vec::with_capacity(r.tabs.len());
     // The tab at `r.active` in the answer's own order; a tab closed meanwhile leaves no id, so counting
     // the spawned ones would shift the front onto its neighbour (audit 2026-10-20, L18).
     let mut front_id: Option<String> = None;
@@ -268,6 +319,7 @@ pub fn settle_restore(
         let id = match rt.from {
             Some(f) => {
                 let Some(slot_id) = slots.get(f) else {
+                    by_at.push(None);
                     continue;
                 };
                 let still_pending = s
@@ -275,6 +327,7 @@ pub fn settle_restore(
                     .iter()
                     .any(|t| &t.id == slot_id && t.pending.is_some());
                 if !still_pending {
+                    by_at.push(None);
                     continue;
                 }
                 claims.insert(slot_id.clone(), rt.cwd.clone());
@@ -294,6 +347,7 @@ pub fn settle_restore(
         if at == r.active {
             front_id = Some(id.clone());
         }
+        by_at.push(Some(id.clone()));
         spawn.push(Spawn {
             id,
             cwd: rt.cwd.clone(),
@@ -313,13 +367,27 @@ pub fn settle_restore(
         }
     }
     tabs.extend(extras);
+    // The front the owner chose: a tab of their own, or a placeholder they clicked while the strip was
+    // still a skeleton (a pending front other than the one the boot picked).
     let picked = s.active_id.as_ref().filter(|a| {
-        s.tabs.iter().any(|t| &t.id == *a && t.pending.is_none())
-            && tabs.iter().any(|t| &t.id == *a)
+        tabs.iter().any(|t| &t.id == *a)
+            && s.tabs.iter().any(|t| {
+                &t.id == *a && (t.pending.is_none() || boot_front.is_some_and(|b| b != a.as_str()))
+            })
     });
+    // Else the tab at the answer's `active`; if the owner closed it meanwhile, the next kept tab after
+    // it, then the nearest before, never just the last of the strip.
+    let near_front = || {
+        by_at
+            .iter()
+            .skip(r.active + 1)
+            .chain(by_at.iter().take(r.active).rev())
+            .find_map(|x| x.clone())
+    };
     let active_id = picked
         .cloned()
         .or(front_id)
+        .or_else(near_front)
         .or_else(|| tabs.last().map(|t| t.id.clone()));
     Settled {
         state: TabState { tabs, active_id },
@@ -331,8 +399,7 @@ pub fn settle_restore(
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn ids() -> impl FnMut() -> String {
         let mut n = 0;
@@ -403,12 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_caps_the_list_at_fifty() {
-        let items: Vec<String> = (0..80)
+    fn parse_caps_a_runaway_list_at_the_sanity_cap() {
+        let items: Vec<String> = (0..MAX_TABS + 30)
             .map(|i| format!(r#"{{"cwd":"C:\\d{i}"}}"#))
             .collect();
         let raw = format!(r#"{{"tabs":[{}],"active":0}}"#, items.join(","));
-        assert_eq!(parse_tabs(&raw).tabs.len(), 50);
+        assert_eq!(parse_tabs(&raw).tabs.len(), MAX_TABS);
     }
 
     #[test]
@@ -580,6 +647,43 @@ mod tests {
             r.tabs,
             vec![
                 rt("C:\\a", Some("sess"), Some(0)),
+                rt("C:\\b", None, Some(2))
+            ]
+        );
+    }
+
+    #[test]
+    fn one_folder_that_never_answers_does_not_hold_the_rest_and_keeps_its_tab() {
+        let saved = SavedTabs {
+            tabs: vec![st("Z:\\nas", None), st("C:\\a", None), st("C:\\b", None)],
+            active: 0,
+        };
+        let release = Arc::new(AtomicBool::new(false));
+        let r2 = Arc::clone(&release);
+        let is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(move |p| {
+            if p == "Z:\\nas" {
+                while !r2.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            true
+        });
+        let t = Instant::now();
+        let r = resolve_restore_within(
+            &saved,
+            is_dir,
+            Arc::new(NoSessions),
+            Duration::from_millis(300),
+        );
+        let took = t.elapsed();
+        release.store(true, Ordering::SeqCst);
+        assert!(took < Duration::from_secs(2), "held for {took:?}");
+        // The slow folder keeps its tab (and so its place in tabs.json); only a "gone" answer drops one.
+        assert_eq!(
+            r.tabs,
+            vec![
+                rt("Z:\\nas", None, Some(0)),
+                rt("C:\\a", None, Some(1)),
                 rt("C:\\b", None, Some(2))
             ]
         );
@@ -792,6 +896,71 @@ mod tests {
         let s = settle_restore(&state, &b.slots, &r, &mut n);
         assert_eq!(tab_ids(&s.state), vec!["t3", "new"]);
         assert_eq!(s.state.active_id.as_deref(), Some("t3"));
+    }
+
+    fn boot_all_three() -> (Boot, Restored) {
+        let b = boot_abc();
+        let r = Restored {
+            tabs: vec![
+                rt(r"C:\a", None, Some(0)),
+                rt(r"C:\b", None, Some(1)),
+                rt(r"C:\c", None, Some(2)),
+            ],
+            active: 0,
+        };
+        (b, r)
+    }
+
+    #[test]
+    fn a_placeholder_the_owner_clicked_during_the_skeleton_stays_in_front() {
+        let (b, r) = boot_all_three();
+        let mut state = b.state.clone();
+        // The boot fronted t1; the owner clicked the placeholder t2 before the answer.
+        state.active_id = Some("t2".into());
+        let s = settle_restore_from(&state, &b.slots, Some("t1"), &r, &mut ids());
+        assert_eq!(s.state.active_id.as_deref(), Some("t2"));
+        // Left alone, the boot front is simply the front the answer names.
+        let s = settle_restore_from(&b.state, &b.slots, Some("t1"), &r, &mut ids());
+        assert_eq!(s.state.active_id.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn a_launch_folder_still_fronts_over_the_untouched_boot_placeholder() {
+        let (b, mut r) = boot_all_three();
+        r.tabs.push(rt(r"D:\handed", None, None));
+        r.active = 3;
+        let mut n = || "new".to_string();
+        let s = settle_restore_from(&b.state, &b.slots, Some("t1"), &r, &mut n);
+        assert_eq!(s.state.active_id.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn a_front_closed_before_the_answer_falls_to_the_next_kept_tab_not_the_last() {
+        let (b, r) = boot_all_three();
+        let mut state = b.state.clone();
+        state.tabs.retain(|t| t.id != "t1");
+        state.active_id = None;
+        let s = settle_restore_from(&state, &b.slots, Some("t1"), &r, &mut ids());
+        assert_eq!(tab_ids(&s.state), vec!["t2", "t3"]);
+        assert_eq!(s.state.active_id.as_deref(), Some("t2"));
+    }
+
+    #[test]
+    fn a_strip_of_more_than_fifty_tabs_is_saved_and_read_whole() {
+        let tabs: Vec<SavedTab> = (0..120)
+            .map(|i| SavedTab {
+                cwd: format!(r"C:\w{i}"),
+                agent: None,
+            })
+            .collect();
+        let json = tabs_json(&SavedTabs { tabs, active: 119 });
+        let back = parse_tabs(&json);
+        assert_eq!(
+            back.tabs.len(),
+            120,
+            "tabs 51 and up must survive a restart"
+        );
+        assert_eq!(back.active, 119);
     }
 
     #[test]

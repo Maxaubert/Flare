@@ -832,6 +832,7 @@ impl SettingsCtl {
             .dict_ask_answered(n));
         on!(app, rc, on_frame_resized, |c, w: f32, h: f32| c
             .frame_resized(f64::from(w), f64::from(h)));
+        on!(app, rc, on_scale_changed, |c| c.scale_changed());
         on!(app, rc, on_escape_unhandled, |c| {
             c.escape();
         });
@@ -919,7 +920,7 @@ impl SettingsCtl {
         crate::dictation_ctl::page_left();
         self.page = DEFAULT_PAGE;
         self.find.set_query("");
-        self.watch = None;
+        self.finish_watch();
         self.flash = None;
         self.wall_expanded = false;
         self.wall_anim = None;
@@ -1364,11 +1365,14 @@ impl SettingsCtl {
         let wells: Vec<EditorWell> = entries
             .into_iter()
             .map(|(key, label, value, alpha_max)| {
-                let range = flare_theme::colour_contrast::AlphaRange {
-                    alpha: true,
-                    alpha_min: 0.0,
-                    alpha_max,
-                };
+                let range = Self::well_info(&self.deps.look, &key).map_or(
+                    flare_theme::colour_contrast::AlphaRange {
+                        alpha: true,
+                        alpha_min: 0.0,
+                        alpha_max,
+                    },
+                    |i| i.range,
+                );
                 let text = match self.well_drafts.get(&key) {
                     Some(f) => f.shown(&value, &range, format),
                     None => CodeField::default().shown(&value, &range, format),
@@ -1409,6 +1413,22 @@ impl SettingsCtl {
 
     // ---- events ---------------------------------------------------------------------------------------
 
+    /// The window's scale moved while the logical size stayed: every row, hairline and card edge was
+    /// snapped for the old scale, so the page is laid out again at the new one (rule 81).
+    fn scale_changed(&mut self) {
+        let Some(app) = self.weak.upgrade() else {
+            return;
+        };
+        let now = Self::scale_of(&app);
+        let stale = self
+            .built
+            .as_ref()
+            .is_some_and(|b| (b.scale - now).abs() > f64::EPSILON);
+        if stale && self.visible {
+            self.rebuild();
+        }
+    }
+
     fn frame_resized(&mut self, w: f64, h: f64) {
         if w <= 0.0 || h <= 0.0 {
             return;
@@ -1433,7 +1453,7 @@ impl SettingsCtl {
             "settings-page",
             &[("page", crate::diag_ctl::txt(self.page))],
         );
-        self.watch = None;
+        self.finish_watch();
         if let Some(app) = self.weak.upgrade() {
             app.global::<SettingsBridge>().set_scroll_y(0.0);
         }
@@ -1820,21 +1840,12 @@ impl SettingsCtl {
     }
 
     fn well_committed(&mut self, key: &str) {
-        let Some(draft) = self.deps.look.draft() else {
+        // The same value and alpha range as the popover's: the Background takes no alpha, the
+        // Selection stops at 254/255, and an unset Selection is compared with the colour drawn.
+        let Some(info) = Self::well_info(&self.deps.look, key) else {
             return;
         };
-        let value = match key {
-            "bg" => draft.bg.clone(),
-            "fg" => draft.fg.clone(),
-            "cursor" => draft.cursor.clone(),
-            "selection" => draft.selection.clone().unwrap_or_default(),
-            k => ANSI_KEYS
-                .iter()
-                .position(|a| *a == k)
-                .and_then(|i| draft.ansi[i].clone())
-                .unwrap_or_else(unset_ansi),
-        };
-        let range = flare_theme::colour_contrast::AlphaRange::default();
+        let (value, range) = (info.value, info.range);
         let stored = self
             .well_drafts
             .remove(key)
@@ -2002,6 +2013,11 @@ impl SettingsCtl {
     /// One look for the chosen row. The row may be drawn late (the shell list), so it is polled.
     fn poll_watch(&mut self) {
         let now = (self.deps.clock)();
+        if self.built.is_none() || self.watch.is_none() {
+            // Nothing left to look for: the repeating timer must not outlive its watch.
+            self.poll_timer.stop();
+            return;
+        }
         let Some(built) = self.built.as_ref() else {
             return;
         };
@@ -2893,6 +2909,33 @@ mod tests {
     }
 
     #[test]
+    fn leaving_the_page_stops_the_poll_of_a_late_row() {
+        let f = fx();
+        f.page("terminal");
+        f.b().invoke_find_edited("shell".into());
+        let idx = (0..f.b().get_hits().row_count())
+            .find(|i| f.b().get_hits().row_data(*i).unwrap().id == "term-shell")
+            .expect("the shell row is found");
+        f.b().invoke_hit_chosen(idx as i32);
+        assert!(f.ctl.borrow().watch.is_some(), "still looking");
+        assert!(f.ctl.borrow().poll_timer.running(), "the poll runs");
+        // The user goes to another page before the row is drawn.
+        f.page("appearance");
+        assert!(f.ctl.borrow().watch.is_none());
+        assert!(
+            !f.ctl.borrow().poll_timer.running(),
+            "the poll timer outlived its watch"
+        );
+        // Closing the Settings tab stops a watch the same way.
+        f.page("terminal");
+        f.ctl.borrow_mut().watch = Some(FlashWatch::new(1_000, "no-such-row", None));
+        f.ctl.borrow_mut().poll_watch();
+        assert!(f.ctl.borrow().poll_timer.running());
+        f.ctl.borrow_mut().on_settings_tab(false);
+        assert!(!f.ctl.borrow().poll_timer.running());
+    }
+
+    #[test]
     fn typing_in_a_code_field_is_not_clobbered_by_a_rebuild() {
         let f = fx();
         f.b()
@@ -2953,6 +2996,59 @@ mod tests {
         b.invoke_picker_escape();
         assert!(!b.get_picker_open());
         assert_eq!(ACCENT.get(&f.prefs), None, "back to following the theme");
+    }
+
+    #[test]
+    fn a_typed_code_follows_the_popovers_alpha_rules() {
+        let f = fx();
+        let id = wall::wall_cards(&f.look)[0].id.clone();
+        f.ctl.borrow_mut().event(Event::WallEdit { id });
+        let draft = || f.ctl.borrow().deps.look.draft().expect("an open draft");
+        // Background takes no alpha: a half-clear code does not make the draft see-through.
+        f.ctl.borrow_mut().well_edited("bg", "#ff000080");
+        f.ctl.borrow_mut().well_committed("bg");
+        let bg = draft().bg;
+        assert!(
+            bg.eq_ignore_ascii_case("#ff0000") || bg.eq_ignore_ascii_case("#ff0000ff"),
+            "background kept alpha: {bg}"
+        );
+        // Selection stops at 254/255.
+        f.ctl.borrow_mut().well_edited("selection", "#ffffffff");
+        f.ctl.borrow_mut().well_committed("selection");
+        let sel = draft().selection.expect("a stored selection");
+        assert!(
+            sel.to_lowercase().ends_with("fe"),
+            "selection alpha above the cap: {sel}"
+        );
+    }
+
+    #[test]
+    fn retyping_the_drawn_selection_does_not_pin_it() {
+        let f = fx();
+        let id = wall::wall_cards(&f.look)[0].id.clone();
+        f.ctl.borrow_mut().event(Event::WallEdit { id });
+        let info = SettingsCtl::well_info(&f.look, "selection").expect("a well");
+        if f.look.draft().unwrap().selection.is_some() {
+            return; // this theme pins a selection already: nothing to follow
+        }
+        f.ctl.borrow_mut().well_edited("selection", &info.value);
+        f.ctl.borrow_mut().well_committed("selection");
+        assert!(
+            f.look.draft().unwrap().selection.is_none(),
+            "the shown colour was retyped: it still follows the theme"
+        );
+    }
+
+    #[test]
+    fn a_scale_change_at_the_same_logical_size_lays_the_page_out_again() {
+        let mut f = fx();
+        assert_eq!(f.ctl.borrow().built.as_ref().map(|b| b.scale), Some(1.0));
+        let before = f.ctl.borrow().rebuilds;
+        // A move to a 150% monitor: the logical size stays, only the scale moves.
+        f.h.rescale(1.5);
+        f.h.advance(0);
+        assert!(f.ctl.borrow().rebuilds > before, "the page was not rebuilt");
+        assert_eq!(f.ctl.borrow().built.as_ref().map(|b| b.scale), Some(1.5));
     }
 
     #[test]

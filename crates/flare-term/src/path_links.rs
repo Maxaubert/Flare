@@ -384,7 +384,7 @@ impl PathLinks {
     }
 
     /// `link_ranges`, with `joins` saying where rows broken by hand start in `text`
-    /// (`cells::by_hand`): a path is read across them, a web link never is.
+    /// (`cells::by_hand`): a path and a web link are both read across them.
     pub fn link_ranges_in(
         &mut self,
         text: &str,
@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_web_link_is_never_carried_across_a_hand_break() {
+    fn a_web_link_is_carried_across_a_hand_break_review_37() {
         let top = "go https://a.io/x";
         let n = top.chars().count();
         let text = format!("{top}/y/z");
@@ -711,12 +711,9 @@ mod tests {
             .into_iter()
             .map(|r| (r.start, r.end))
             .collect();
-        assert_eq!(r, vec![(3, n)]);
-        let paths: Vec<String> = path_candidates_in(&text, None, &[n])
-            .into_iter()
-            .map(|c| c.path)
-            .collect();
-        assert_eq!(paths, vec!["/y/z"]);
+        assert_eq!(r, vec![(3, text.chars().count())]);
+        // The second row is part of the address, not a path of its own.
+        assert!(path_candidates_in(&text, None, &[n]).is_empty());
     }
 
     #[test]

@@ -52,6 +52,7 @@ fn fallback() -> WindowState {
 /// kept only when both are numbers AND the window (logical size times scale, in device pixels) overlaps
 /// some work area. `scale` is a number above 0, clamped to 0.5..=4.0, else 1.0.
 pub fn parse_window_state(raw: &str, areas: &[Area]) -> WindowState {
+    let raw = raw.trim_start_matches('\u{feff}');
     let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(raw) else {
         return fallback();
     };

@@ -512,7 +512,7 @@ mod tests {
                     e.y + e.h as i32 <= y + m.cell_h as i32,
                     "scale {scale}: {e:?}"
                 );
-                assert_eq!(e.w.min(e.h), m.underline_h.max(1), "scale {scale}");
+                assert_eq!(e.w.min(e.h), crate::decor::hair_px(scale), "scale {scale}");
             }
         }
     }

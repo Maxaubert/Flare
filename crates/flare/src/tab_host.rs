@@ -228,6 +228,25 @@ impl TabHost {
         }
     }
 
+    /// A settings font change or a tab switch: every open tab that wears the settings' size takes
+    /// the new grid. A tab with a zoom of its own keeps its grid (it refits when it comes to the
+    /// front), so a zoom never reflows the other shells.
+    pub fn refit_unzoomed(&mut self, cols: usize, rows: usize) {
+        if cols < 2 || rows < 1 {
+            return;
+        }
+        self.dims = (cols, rows);
+        self.mgr.resize("", cols, rows);
+        for id in &self.order {
+            if self.font_override.contains_key(id) {
+                continue;
+            }
+            if let Some(h) = self.handles.get(id) {
+                h.resize(cols, rows);
+            }
+        }
+    }
+
     /// BLOCKING inside `SessionManager::prewarm`, so it runs on a worker thread; best effort.
     pub fn prewarm(&self, cwd: &str) {
         let mgr = Arc::clone(&self.mgr);

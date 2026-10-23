@@ -4,7 +4,7 @@
 //! and a line whose text, hyperlinks, ink and cwd are unchanged is not scanned again. No decoration
 //! is stored: the marks are rebuilt from the per-line cache on every call.
 
-use crate::cells::{BufferLike, LogicalLine, logical_line_in};
+use crate::cells::{BufferLike, LogicalLine, SCAN_WINDOW_ROWS, logical_line_win};
 use crate::osc8::is_web_link;
 use crate::path_links::PathLinks;
 use std::collections::hash_map::DefaultHasher;
@@ -126,14 +126,19 @@ impl LinkScanner {
         let mut out = Vec::new();
         let mut next: HashMap<usize, (u64, Vec<LinkMark>)> = HashMap::new();
         let mut y = first;
+        let mut floor = 0;
+        // Where the mark the last piece left for this one starts (it touched that piece's bottom edge).
+        let mut carry: Option<(usize, usize)> = None;
         while y <= last {
             // Across rows a program broke by hand too (`cells::by_hand`): a path it cut at the
             // edge is read whole, and each row keeps its own piece of the mark.
-            let ll = logical_line_in(b, cols, y, true);
+            // A very long line is read in pieces of a window of rows, each from where the last ended.
+            let ll = logical_line_win(b, cols, y, true, floor, SCAN_WINDOW_ROWS);
             let row_end = ll.last;
             let links = line_links(&ll, cols, ctx);
             let blank = ll.text_end == 0 && links.iter().all(Option::is_none);
             if blank {
+                carry = None;
                 self.waiting.remove(&ll.first);
             } else {
                 let key = line_key(&ll, cols, &links, ctx);
@@ -149,15 +154,65 @@ impl LinkScanner {
                         marks
                     }
                 };
-                out.extend(marks.iter().cloned());
+                // A piece cut from a longer line: a mark touching the cut edge is only half a link, left to
+                // the piece that has its other half; a mark wholly in the overlap was the last piece's.
+                // A mark the last piece dropped at ITS bottom edge is this piece's, even wholly above `y`.
+                let owed = carry;
+                out.extend(
+                    marks
+                        .iter()
+                        .filter(|m| !(ll.cut_top && touches_top(m, &ll)))
+                        .filter(|m| !(ll.cut_bottom && touches_bottom(m, &ll, cols)))
+                        .filter(|m| {
+                            m.pieces.iter().any(|p| p.row >= y)
+                                || owed.is_some_and(|c| (m.pieces[0].row, m.pieces[0].col) >= c)
+                        })
+                        .cloned(),
+                );
+                // The start of the first mark this piece leaves for the next (touching its bottom edge).
+                carry = if ll.cut_bottom {
+                    marks
+                        .iter()
+                        .filter(|m| touches_bottom(m, &ll, cols))
+                        .map(|m| (m.pieces[0].row, m.pieces[0].col))
+                        .min()
+                } else {
+                    None
+                };
                 next.insert(ll.first, (key, marks));
             }
             y = row_end + 1;
+            // A line cut at the window's bottom goes on in the next piece, which starts a few rows back
+            // so a link straddling the cut is read whole in it.
+            // The next piece starts a row above the mark left at the bottom edge, if that is further back, so
+            // a link longer than the overlap is read whole.
+            floor = if ll.cut_bottom {
+                let mut back = y.saturating_sub(CUT_OVERLAP_ROWS);
+                if let Some((row, _)) = carry {
+                    back = back.min(row.saturating_sub(1));
+                }
+                back.max(ll.first + 1)
+            } else {
+                y
+            };
         }
         self.waiting.retain(|r| next.contains_key(r));
         self.cache = next;
         out
     }
+}
+
+/// Rows a piece of a very long line starts back into the previous one.
+const CUT_OVERLAP_ROWS: usize = 6;
+
+fn touches_top(m: &LinkMark, ll: &LogicalLine) -> bool {
+    m.pieces.iter().any(|p| p.row == ll.first && p.col == 0)
+}
+
+fn touches_bottom(m: &LinkMark, ll: &LogicalLine, cols: usize) -> bool {
+    m.pieces
+        .iter()
+        .any(|p| p.row == ll.last && p.col + p.width >= cols)
 }
 
 /// The hyperlink of every cell of the line (a wide character's spacer shares its character's).
@@ -282,12 +337,14 @@ mod tests {
     struct Row {
         text: String,
         wrapped: bool,
+        loads: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl LineLike for Row {
         fn is_wrapped(&self) -> bool {
             self.wrapped
         }
         fn load_cell(&self, x: usize, into: &mut ScratchCell) -> bool {
+            self.loads.set(self.loads.get() + 1);
             into.chars = self
                 .text
                 .chars()
@@ -300,6 +357,7 @@ mod tests {
     }
     struct Buf {
         rows: Vec<Row>,
+        loads: std::rc::Rc<std::cell::Cell<usize>>,
     }
     impl BufferLike for Buf {
         fn len(&self) -> usize {
@@ -310,14 +368,17 @@ mod tests {
         }
     }
     fn buf(rows: &[(&str, bool)]) -> Buf {
+        let loads = std::rc::Rc::new(std::cell::Cell::new(0));
         Buf {
             rows: rows
                 .iter()
                 .map(|&(t, w)| Row {
                     text: t.to_string(),
                     wrapped: w,
+                    loads: loads.clone(),
                 })
                 .collect(),
+            loads,
         }
     }
 
@@ -488,13 +549,16 @@ mod tests {
     #[test]
     fn a_burst_of_scrollback_is_not_scanned() {
         let mut h = H::new();
+        let loads = std::rc::Rc::new(std::cell::Cell::new(0));
         let b = Buf {
             rows: (0..44)
                 .map(|i| Row {
                     text: format!("https://a.io/{i}"),
                     wrapped: false,
+                    loads: loads.clone(),
                 })
                 .collect(),
+            loads,
         };
         h.scan(&b, 30, 40, 43);
         assert_eq!(h.scanner.lines_scanned(), 4);
@@ -565,6 +629,112 @@ mod tests {
                 }
             ]
         );
+    }
+
+    /// Review #37: a URL Claude's Ink hard-wraps at the edge is one link to the whole address.
+    #[test]
+    fn a_url_broken_by_hand_at_the_edge_is_one_mark_to_the_whole_address() {
+        let mut h = H::new();
+        let b = buf(&[("go https://git", false), ("hub.com/x/1234", false)]);
+        let m = h.scan(&b, 14, 0, 1);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert_eq!(
+            m[0].target,
+            LinkTarget::Web("https://github.com/x/1234".into()),
+            "the click must open the whole address, never the first row's prefix"
+        );
+        assert_eq!(m[0].pieces.len(), 2);
+        assert_eq!((m[0].pieces[1].row, m[0].pieces[1].col), (1, 0));
+    }
+
+    /// Review #39: one huge logical line (a megabyte of JSON on one line) is read in a window around
+    /// the viewport, not rebuilt whole on every scan.
+    #[test]
+    fn a_huge_logical_line_is_scanned_in_a_window_not_whole() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mut rows: Vec<(&str, bool)> = (0..6000).map(|_| (filler, true)).collect();
+        rows[0].1 = false;
+        rows[3000] = ("see https://a.io/xy ", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 2995, 3005);
+        assert_eq!(m.len(), 1, "{} marks", m.len());
+        assert_eq!(m[0].target, LinkTarget::Web("https://a.io/xy".into()));
+        assert_eq!(m[0].pieces[0].row, 3000);
+        let cells = b.loads.get();
+        assert!(
+            cells < 20 * 200,
+            "{cells} cells read: the whole 6000-row line must not be built for one scan"
+        );
+        // Scrolling on reads another window, never duplicating a mark.
+        let m = h.scan(&b, 20, 2999, 3009);
+        assert_eq!(m.len(), 1);
+    }
+
+    /// A link that straddles the cut between two pieces of a long line is one whole mark, not two
+    /// truncated ones (NEW-F).
+    #[test]
+    fn a_link_across_the_cut_of_a_long_line_is_one_whole_mark() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mut rows: Vec<(&str, bool)> = (0..200).map(|_| (filler, true)).collect();
+        rows[0].1 = false;
+        // 20 columns: the first window ends after row 24, so this address crosses rows 24 and 25.
+        rows[24] = ("aaaaaaaaaa https://a", true);
+        rows[25] = (".io/xyz aaaaaaaaaaa ", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        assert_eq!(webs[0].target, LinkTarget::Web("https://a.io/xyz".into()));
+        assert_eq!(webs[0].pieces.len(), 2);
+    }
+
+    /// R2: a link longer than the overlap, and one ending exactly at the cut column, are marks too.
+    #[test]
+    fn a_link_longer_than_the_overlap_or_ending_at_the_cut_column_is_kept() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mk = || -> Vec<(&str, bool)> {
+            let mut rows: Vec<(&str, bool)> = (0..200).map(|_| (filler, true)).collect();
+            rows[0].1 = false;
+            rows
+        };
+        // Nine rows long, straddling the cut after row 24.
+        let mut rows = mk();
+        rows[20] = ("aaaaa https://a.io/x", true);
+        for r in rows.iter_mut().take(28).skip(21) {
+            *r = ("xxxxxxxxxxxxxxxxxxxx", true);
+        }
+        rows[28] = ("xxxx aaaaaaaaaaaaaaa", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        let LinkTarget::Web(u) = &webs[0].target else {
+            unreachable!()
+        };
+        assert_eq!(u.len(), "https://a.io/x".len() + 7 * 20 + 4, "{u}");
+        assert_eq!(webs[0].pieces.len(), 9);
+        // Ending on the last column of the last row of the first piece.
+        let mut h = H::new();
+        let mut rows = mk();
+        rows[24] = ("aaaa https://a.io/xy", true);
+        rows[25] = (" aaaaaaaaaaaaaaaaaaa", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        assert_eq!(webs[0].target, LinkTarget::Web("https://a.io/xy".into()));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flare_render::glyph::GlyphSource as _;
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::stats::{FrameTrace, TracePhase};
 use flare_settings::kv::{FileBackend, PrefStore};
@@ -73,7 +74,9 @@ pub struct Instance {
     /// The hand-off server, started by `main` right after the lock, BEFORE the backend and the
     /// window: a second launch that starts while this one is still creating its window must
     /// find the pipe within its wait. Declared before `_guard`, so it stops first.
-    pub server: Option<PipeServer>,
+    /// Shared with the controller, which stops it at the start of the end of life: a hand-off
+    /// that lands while the shells are being killed would be written, acknowledged and dropped.
+    pub server: Rc<RefCell<Option<PipeServer>>>,
     /// Where the server's hand-offs wait until the controller exists.
     pub sink: HandoffSink,
     /// Held only so the lock lasts as long as the run.
@@ -96,7 +99,7 @@ impl Instance {
         };
         Self {
             profile,
-            server,
+            server: Rc::new(RefCell::new(server)),
             sink,
             _guard: guard,
         }
@@ -581,10 +584,20 @@ fn settings_deps(
                 // Under --e2e nothing opens; the attempt is recorded in the log instead.
                 log::info!("e2e: open {text} (nothing opened)");
                 crate::openers::record_window_open(p);
-            } else if let Err(e) = std::process::Command::new("explorer.exe").arg(p).spawn()
-            // sync-ok: spawn returns at once
-            {
-                log::warn!("open {text} failed: {e}");
+            } else {
+                // Explorer by its absolute path (never the bare name, which a copy beside the exe
+                // would answer), started on a worker so the window never waits on it.
+                let path = text.into_owned();
+                let spawned = std::thread::Builder::new()
+                    .name("flare-open-path".into())
+                    .spawn(move || {
+                        if let Err(e) = flare_win::openers::explorer_open_path(&path) {
+                            log::warn!("open failed: {e}");
+                        }
+                    });
+                if let Err(e) = spawned {
+                    log::warn!("open did not start: {e}");
+                }
             }
         }),
         clipboard: Rc::new(|_: &str| {}),
@@ -658,10 +671,15 @@ pub fn run_window(
         RendererChoice::Gpu => GridPainter::Gpu,
         RendererChoice::Software => GridPainter::Cpu,
     };
-    let host = Rc::new(RefCell::new(GridHost::new(
-        Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0)),
-        painter,
-    )));
+    let mut rasterizer = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+    {
+        // A fallback font found off the UI thread must repaint an idle window (GPU path).
+        let weak = app.as_weak();
+        rasterizer.set_fallback_waker(std::sync::Arc::new(move || {
+            let _ = weak.upgrade_in_event_loop(|app| app.window().request_redraw());
+        }));
+    }
+    let host = Rc::new(RefCell::new(GridHost::new(Box::new(rasterizer), painter)));
     // Why the grid is not on the GPU even though it was asked for, set by the notifier.
     let note: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(outcome.fallback_reason.clone()));
     let effective = outcome.effective;
@@ -1243,6 +1261,17 @@ pub fn run_window(
                 b
             }));
         }
+        {
+            // The end of life stops listening first, so a late launch finds no pipe, waits for
+            // the lock and becomes the first instance (rule 32: every argv path is taken).
+            let slot = inst.server.clone();
+            rc.borrow_mut().set_handoff_stop(Rc::new(move || {
+                let s = slot.borrow_mut().take();
+                if let Some(s) = s {
+                    s.stop();
+                }
+            }));
+        }
         ctl = Some(rc);
     }
 
@@ -1556,7 +1585,8 @@ pub fn run_window(
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();
     let mut instance = instance;
-    if let Some(s) = instance.as_mut().and_then(|i| i.server.take()) {
+    let server = instance.as_mut().and_then(|i| i.server.borrow_mut().take());
+    if let Some(s) = server {
         s.stop();
     }
     if let Some(w) = session_end {

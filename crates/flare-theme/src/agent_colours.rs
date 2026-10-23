@@ -52,18 +52,41 @@ pub fn theme_agent_colours(
     let bg = vars.get("--p-bg-solid").cloned().unwrap_or_default();
     let working = vars.get("--p-accent-solid").cloned().unwrap_or_default();
 
-    let green = ensure_contrast(
-        &normalize_color(theme.green().unwrap_or(""), FALLBACK_DONE),
-        &bg,
-        FLOOR,
-    );
-    // Near-identical colours measure about 1:1 against each other.
-    let finished = if contrast_ratio(&green, &working) < 1.15 {
+    let floored = |c: Option<&str>, fallback: &str| {
+        ensure_contrast(&normalize_color(c.unwrap_or(""), fallback), &bg, FLOOR)
+    };
+    let green = floored(theme.green(), FALLBACK_DONE);
+    // PT's choice first (near-identical colours measure about 1:1 against each other), but Finished must
+    // read apart from Working by hue or distance, as Failed does: lightness alone cannot tell two greens.
+    let pt_finished = if contrast_ratio(&green, &working) < 1.15 {
         ensure_contrast(FALLBACK_DONE, &bg, FLOOR)
     } else {
-        green
+        green.clone()
     };
-    let question = ensure_contrast(QUESTION_BLUE, &bg, FLOOR);
+    let finished_tries = [
+        pt_finished.clone(),
+        green,
+        floored(Some(FALLBACK_DONE), FALLBACK_DONE),
+        floored(theme.ansi_at(crate::ansi::idx::CYAN), FALLBACK_DONE),
+        floored(theme.ansi_at(crate::ansi::idx::YELLOW), FALLBACK_DONE),
+    ];
+    let finished = finished_tries
+        .iter()
+        .find(|c| marks_apart(c, &working))
+        .cloned()
+        .unwrap_or(pt_finished);
+    // Question is the blue, then the theme's cyan, then its magenta: the first that reads apart from both
+    // Working and Finished (a blue accent made Question the same blue as Working).
+    let question_tries = [
+        floored(Some(QUESTION_BLUE), QUESTION_BLUE),
+        floored(theme.ansi_at(crate::ansi::idx::CYAN), QUESTION_BLUE),
+        floored(theme.magenta(), QUESTION_BLUE),
+    ];
+    let question = question_tries
+        .iter()
+        .find(|c| marks_apart(c, &working) && marks_apart(c, &finished))
+        .cloned()
+        .unwrap_or_else(|| question_tries[0].clone());
 
     // Failed is the theme's red, then the plain red, the theme's magenta, the last resort. Told apart by hue
     // or distance, never by contrast alone (which only sees lightness).
@@ -252,9 +275,48 @@ mod tests {
                     .unwrap_or_else(|| panic!("no fixture row {key}"));
                 let field = |name: &str| row[name].as_str().unwrap_or_default().to_string();
                 assert_eq!(got.working, field("working"), "{key} working");
-                assert_eq!(got.finished, field("finished"), "{key} finished");
-                assert_eq!(got.question, field("question"), "{key} question");
+                // PT's own Finished and Question stand wherever they already read apart from the marks
+                // beside them. Where they did not (a green accent's Finished, a blue accent's Question:
+                // review #75) the walk of candidates answers instead, and must read apart.
+                let want_finished = field("finished");
+                if marks_apart(&want_finished, &got.working) {
+                    assert_eq!(got.finished, want_finished, "{key} finished");
+                } else {
+                    assert!(marks_apart(&got.finished, &got.working), "{key} finished");
+                }
+                let want_question = field("question");
+                if marks_apart(&want_question, &got.working)
+                    && marks_apart(&want_question, &got.finished)
+                {
+                    assert_eq!(got.question, want_question, "{key} question");
+                } else {
+                    assert!(marks_apart(&got.question, &got.working), "{key} question");
+                    assert!(marks_apart(&got.question, &got.finished), "{key} question");
+                }
                 assert_eq!(got.failed, field("failed"), "{key} failed");
+            }
+        }
+    }
+
+    #[test]
+    fn working_finished_and_question_read_as_three_whatever_the_accent() {
+        for p in presets() {
+            let theme = resolve_preset(p);
+            for accent in [None, Some("#22c55e"), Some("#3b82f6"), Some("#4ade80")] {
+                let c = theme_agent_colours(&theme, p.accent, None, accent);
+                let what = format!("{} {accent:?}", p.id);
+                assert!(
+                    marks_apart(&c.finished, &c.working),
+                    "{what} finished/working"
+                );
+                assert!(
+                    marks_apart(&c.question, &c.working),
+                    "{what} question/working"
+                );
+                assert!(
+                    marks_apart(&c.question, &c.finished),
+                    "{what} question/finished"
+                );
             }
         }
     }

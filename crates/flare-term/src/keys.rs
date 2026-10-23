@@ -68,10 +68,18 @@ pub enum TermKeyAction {
     Pty,
 }
 
-/// True when the key is `letter`, by its typed key or by its physical code (regression rule 11, O2).
+/// True when the key is `letter`, by its ASCII key name, else by its physical code (regression rule 11, O2).
 pub fn is_key(e: &KeyEvent, letter: char) -> bool {
-    e.key.to_lowercase() == letter.to_string()
-        || e.code == format!("Key{}", letter.to_ascii_uppercase())
+    let mut chars = e.key.chars();
+    // An ASCII key name is the layout the user types on, and it decides alone (Dvorak Ctrl+J
+    // is not a copy). The physical code answers only for a key named outside ASCII (Russian,
+    // Greek), where the letter cannot be read from the name.
+    if let (Some(c), None) = (chars.next(), chars.next())
+        && c.is_ascii()
+    {
+        return c.to_ascii_lowercase() == letter;
+    }
+    e.code == format!("Key{}", letter.to_ascii_uppercase())
 }
 
 /// What the decision needs to know about the terminal and the host.
@@ -261,5 +269,17 @@ mod tests {
             run(&key("c").ctrl().alt(), true, false, false, false),
             TermKeyAction::Pty
         );
+    }
+
+    #[test]
+    fn chords_follow_the_layout_letter() {
+        // Dvorak: Ctrl+J is physical KeyC, and must not copy.
+        let e = KeyEvent::new("j", "KeyC").ctrl();
+        assert!(!is_key(&e, 'c'));
+        assert!(is_key(&e, 'j'));
+        // Dvorak: the key labelled C is physical KeyI, and does copy.
+        assert!(is_key(&KeyEvent::new("c", "KeyI"), 'c'));
+        // Russian: a Cyrillic name falls back to the physical key.
+        assert!(is_key(&KeyEvent::new("\u{441}", "KeyC"), 'c'));
     }
 }

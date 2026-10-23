@@ -22,6 +22,15 @@ export component DialogButton inherits Rectangle {
     background: ta.has-hover && root.enabled && root.is-primary ? root.base.brighter(0.1) : root.base;
     border-width: root.is-primary ? 0px : Px.hair();
     border-color: Theme.divider;
+    // A screen reader hears the button by its label and can press it.
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
     HorizontalLayout {
         padding-left: 14px;
         padding-right: 14px;
@@ -135,6 +144,7 @@ export component Dialog inherits Rectangle {
                 }
                 return accept;
             }
+            // Space presses the button that has the focus, as Enter does.
             if e.text == Key.Return || e.text == " " {
                 root.by-key = true;
                 if root.focus-idx == 1 {

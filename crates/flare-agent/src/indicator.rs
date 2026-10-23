@@ -415,6 +415,26 @@ impl Indicator {
         if self.polled.contains(tab) {
             return;
         }
+        self.ask_look_gap(now, tab, effects);
+    }
+
+    /// A title or a hook names `kind` for a tab the poll counts as another agent: the poll is asked
+    /// again at once, even though it already reported the tab (its kind may have changed under it).
+    fn ask_look_for_kind(
+        &mut self,
+        now: u64,
+        tab: &str,
+        kind: DetectedAgent,
+        effects: &mut Vec<Effect>,
+    ) {
+        if self.agent_kinds.get(tab).is_some_and(|k| *k != kind) {
+            self.ask_look_gap(now, tab, effects);
+        } else {
+            self.ask_look(now, tab, effects);
+        }
+    }
+
+    fn ask_look_gap(&mut self, now: u64, tab: &str, effects: &mut Vec<Effect>) {
         if self
             .look_asked
             .get(tab)
@@ -457,10 +477,14 @@ impl Indicator {
             self.failed.remove(tab);
         }
         if present {
-            // An agent's birth state is idle: its startup paint is not the agent answering.
-            self.output_runs.remove(tab);
-            self.activity.mark_born(tab, now);
-            self.working.remove(tab);
+            // An agent's birth state is idle: its startup paint is not the agent answering. Only the FIRST
+            // present answer of a tab scored from its output says so: a hook or a title that already set
+            // Working said more, and the poll lands seconds into a turn.
+            if !was && !self.titled.contains(tab) && !self.hooked.contains_key(tab) {
+                self.output_runs.remove(tab);
+                self.activity.mark_born(tab, now);
+                self.working.remove(tab);
+            }
             self.agent_ids.insert(tab.to_string());
         } else {
             self.agent_ids.remove(tab);
@@ -493,7 +517,7 @@ impl Indicator {
             state: r.state.as_str().into(),
             agent: Some(r.kind.as_str().into()),
         });
-        self.ask_look(now, tab, effects);
+        self.ask_look_for_kind(now, tab, detected, effects);
         if self.titled.insert(tab.to_string()) {
             self.output_runs.remove(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -544,7 +568,7 @@ impl Indicator {
             state: signal.state.as_str().into(),
             kind: signal.kind.clone(),
         });
-        self.ask_look(now, tab, effects);
+        self.ask_look_for_kind(now, tab, DetectedAgent::Claude, effects);
         if !self.hooked.contains_key(tab) {
             self.output_runs.remove(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -931,7 +955,13 @@ mod testdata {
 
     /// A background shell still running under the turn's summary.
     pub fn background() -> Vec<String> {
-        rows(&["✻ Churned for 8s · done 7:49 · 1 shell still running"])
+        rows(&[
+            "✻ Churned for 8s · done 7:49 · 1 shell still running",
+            "────────────────────────────────────────",
+            "❯ ",
+            "────────────────────────────────────────",
+            "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        ])
     }
 }
 
@@ -1063,6 +1093,27 @@ mod tests {
     }
 
     #[test]
+    fn a_poll_landing_mid_turn_keeps_the_working_a_hook_set_and_raises_no_finished() {
+        let mut h = H::new();
+        h.hook(0, "t1", HookState::Working);
+        assert!(has(h.ind.working_ids(), "t1"));
+        // The first present answer comes seconds into the turn.
+        h.poll(3000, "t1", true, Some(DetectedAgent::Claude));
+        assert!(has(h.ind.working_ids(), "t1"), "the hook's Working stays");
+        assert!(h.ind.done_ids().is_empty(), "and nothing finished");
+    }
+
+    #[test]
+    fn a_poll_landing_mid_turn_keeps_the_working_a_title_set() {
+        let mut h = H::new();
+        h.title(0, "t1", "◐ Claude Code");
+        let was_working = has(h.ind.working_ids(), "t1");
+        h.poll(3000, "t1", true, Some(DetectedAgent::Claude));
+        assert_eq!(has(h.ind.working_ids(), "t1"), was_working);
+        assert!(h.ind.done_ids().is_empty());
+    }
+
+    #[test]
     fn another_agent_in_the_shell_forgets_what_claudes_hooks_said() {
         let mut h = H::new();
         h.hook(0, "t1", HookState::Working);
@@ -1084,6 +1135,20 @@ mod tests {
         );
         h.poll(16_000, "t1", true, Some(DetectedAgent::Claude));
         assert!(h.title(40_000, "t1", "◐ Claude Code").is_empty());
+    }
+
+    #[test]
+    fn a_claude_title_over_a_tab_the_poll_counts_as_codex_asks_for_a_new_look() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Codex));
+        // The poll already reported the tab, yet Claude's title says the agent changed.
+        assert_eq!(
+            h.title(1000, "t1", "\u{25d0} Claude Code"),
+            vec![Effect::AskLook]
+        );
+        // The poll's next answer names the new kind.
+        h.poll(1500, "t1", true, Some(DetectedAgent::Claude));
+        assert_eq!(h.ind.agent_kind("t1"), Some(DetectedAgent::Claude));
     }
 
     #[test]

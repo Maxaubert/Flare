@@ -390,6 +390,43 @@ impl Drop for PipeServer {
     }
 }
 
+/// How long a client that connected may take to write its message. A client that stalls between
+/// opening the pipe and writing (frozen, or just holding it) would jam the one pipe instance for
+/// the rest of the session; past this the read is cancelled and the client dropped.
+const READ_DEADLINE: Duration = Duration::from_secs(2);
+
+/// `read_message` with a watchdog that cancels the blocked read of this thread after `deadline`.
+fn read_message_within(pipe: usize, deadline: Duration) -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
+    use windows_sys::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_TERMINATE};
+    // SAFETY: plain call; the id names this thread.
+    let tid = unsafe { GetCurrentThreadId() };
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let dog = std::thread::Builder::new()
+        .name("flare-handoff-watch".into())
+        .spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(deadline) {
+                // sync-ok: the watchdog thread, bounded by the deadline
+                // SAFETY: a handle opened here and closed here; a null handle is checked.
+                let h = unsafe { OpenThread(THREAD_TERMINATE, 0, tid) };
+                if !h.is_null() {
+                    // SAFETY: `h` is a live thread handle with the right the call needs.
+                    unsafe {
+                        CancelSynchronousIo(h);
+                        CloseHandle(h);
+                    }
+                }
+            }
+        })
+        .ok();
+    let got = read_message(pipe);
+    let _ = done.send(());
+    if let Some(d) = dog {
+        let _ = d.join(); // sync-ok: the hand-off worker thread; the watchdog ends at once
+    }
+    got
+}
+
 fn read_message(pipe: usize) -> Option<Vec<u8>> {
     let mut data: Vec<u8> = Vec::new();
     let mut overflow = false;
@@ -476,10 +513,16 @@ pub fn serve(
                 }
                 // ERROR_NO_DATA: the client connected, wrote and closed before this call; what it
                 // wrote is still in the pipe and is read like any other message.
-                if (connected != 0 || err == ERROR_PIPE_CONNECTED || err == ERROR_NO_DATA)
-                    && let Some(h) = read_message(raw).as_deref().and_then(decode_handoff)
-                {
-                    on_handoff(h);
+                if connected != 0 || err == ERROR_PIPE_CONNECTED || err == ERROR_NO_DATA {
+                    match read_message_within(raw, READ_DEADLINE)
+                        .as_deref()
+                        .and_then(decode_handoff)
+                    {
+                        Some(h) => on_handoff(h),
+                        None => {
+                            log::warn!("a hand-off was refused: unreadable, too big or too long");
+                        }
+                    }
                 }
                 // SAFETY: valid pipe handle; makes the instance ready for the next client.
                 unsafe { DisconnectNamedPipe(raw as _) };
@@ -523,6 +566,65 @@ pub fn send_handoff(
 
 /// `send_handoff` with the identity source made explicit, so a test can stand in another user.
 pub fn send_handoff_with(
+    names: &InstanceNames,
+    h: &Handoff,
+    total_wait: Duration,
+    source: &dyn IdentitySource,
+) -> Result<(), HandoffError> {
+    for part in split_handoff(h) {
+        send_one(names, &part, total_wait, source)?;
+    }
+    Ok(())
+}
+
+/// The hand-off as one or more messages the server accepts: each keeps the working folder and the
+/// exe (the first argument), and carries at most `MAX_ARGS` arguments and `MAX_HANDOFF` bytes. An
+/// argument that cannot fit a message of its own is dropped with a log line (a path that long is
+/// not one Windows can open).
+pub fn split_handoff(h: &Handoff) -> Vec<Handoff> {
+    let (head, rest): (Vec<String>, &[String]) = match h.args.split_first() {
+        Some((exe, rest)) => (vec![exe.clone()], rest),
+        None => (Vec::new(), &[]),
+    };
+    let size_of = |args: &[String]| {
+        encode_handoff(&Handoff {
+            cwd: h.cwd.clone(),
+            args: args.to_vec(),
+        })
+        .len()
+    };
+    // Room for the JSON glue of one more argument and a little slack.
+    let budget = MAX_HANDOFF - 64;
+    let head_size = size_of(&head);
+    let mut out: Vec<Handoff> = Vec::new();
+    let mut cur = head.clone();
+    let mut size = head_size;
+    for a in rest {
+        let cost = serde_json::to_string(a).map_or(a.len() + 3, |j| j.len() + 1);
+        if a.chars().count() > MAX_ARG_LEN || head_size + cost > budget {
+            log::warn!("a hand-off argument is too long to send and was dropped");
+            continue;
+        }
+        if cur.len() >= MAX_ARGS || size + cost > budget {
+            out.push(Handoff {
+                cwd: h.cwd.clone(),
+                args: std::mem::replace(&mut cur, head.clone()),
+            });
+            size = head_size;
+        }
+        cur.push(a.clone());
+        size += cost;
+    }
+    if cur.len() > head.len() || out.is_empty() {
+        out.push(Handoff {
+            cwd: h.cwd.clone(),
+            args: cur,
+        });
+    }
+    out
+}
+
+fn send_one(
     names: &InstanceNames,
     h: &Handoff,
     total_wait: Duration,
@@ -586,6 +688,72 @@ mod tests {
     /// How long the server thread waits before its first `ConnectNamedPipe` (tests only; each
     /// nextest test is its own process, so one test setting it touches no other).
     pub(super) static FIRST_CONNECT_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn a_big_handoff_is_split_under_the_caps_and_loses_no_argument() {
+        // 600 folders with non-ASCII names: past both MAX_ARGS and (in bytes) MAX_HANDOFF.
+        let mut args = vec!["flare.exe".to_string()];
+        for i in 0..600 {
+            args.push(format!("C:/proj/{}/{i}", "\u{4e2d}\u{6587}".repeat(60)));
+        }
+        let h = Handoff {
+            cwd: "C:/x".into(),
+            args: args.clone(),
+        };
+        let parts = split_handoff(&h);
+        assert!(parts.len() > 1);
+        let mut got = Vec::new();
+        for p in &parts {
+            let bytes = encode_handoff(p);
+            let back = decode_handoff(&bytes).expect("every part is accepted by the server");
+            assert_eq!(back.args[0], "flare.exe");
+            got.extend(back.args[1..].iter().cloned());
+        }
+        assert_eq!(got, args[1..]);
+    }
+
+    /// A client that connects and never writes must not jam the one pipe instance for good.
+    #[test]
+    fn a_stalled_client_does_not_jam_the_server() {
+        let n = names_for_test();
+        let (tx, rx) = mpsc::channel();
+        let _server = serve(&n, move |h| {
+            let _ = tx.send(h);
+        })
+        .unwrap();
+        let _stalled = loop {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&n.pipe) {
+                break f;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let h = Handoff {
+            cwd: "C:/x".into(),
+            args: vec!["flare.exe".into(), "C:/x".into()],
+        };
+        send_handoff(&n, &h, Duration::from_secs(8)).expect("the server frees itself");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), h);
+    }
+
+    /// A server that has stopped listening takes nothing: the client is told so (and retries the
+    /// lock), never handed an Ok for a message nobody will read.
+    #[test]
+    fn a_stopped_server_refuses_a_handoff() {
+        let n = names_for_test();
+        let (tx, rx) = mpsc::channel();
+        let server = serve(&n, move |h| {
+            let _ = tx.send(h);
+        })
+        .unwrap();
+        server.stop();
+        let h = Handoff {
+            cwd: "C:/x".into(),
+            args: vec!["flare.exe".into(), "C:/x".into()],
+        };
+        let r = send_handoff(&n, &h, Duration::from_millis(300));
+        assert!(matches!(r, Err(HandoffError::Failed(_))), "{r:?}");
+        assert!(rx.try_recv().is_err());
+    }
 
     /// Review fix: a client that connects, writes and closes before the server thread first
     /// reaches `ConnectNamedPipe` makes it answer ERROR_NO_DATA. The message is still in the pipe

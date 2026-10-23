@@ -341,18 +341,22 @@ impl TermHandle {
             *lk(&self.sh.reveal) = Some(st);
         }
         let sh = Arc::clone(&self.sh);
+        // Claimed HERE, before the worker exists: a tab closed in between still finds the id and its
+        // kill is remembered, so the worker starts no shell nobody can reach (review #32).
+        let reserved = sh.mgr.reserve(&sh.id);
         let r = std::thread::Builder::new()
             .name("flare-start".into())
             .spawn(move || {
                 let sink: Arc<dyn SessionSink> = Arc::new(Sink(Arc::downgrade(&sh)));
-                let ok = sh.mgr.spawn(
-                    &sh.id,
-                    &opts.root,
-                    opts.shell_id.as_deref(),
-                    sink,
-                    opts.resume.as_deref(),
-                    opts.plugin.as_ref(),
-                );
+                let ok = reserved
+                    && sh.mgr.spawn_reserved(
+                        &sh.id,
+                        &opts.root,
+                        opts.shell_id.as_deref(),
+                        sink,
+                        opts.resume.as_deref(),
+                        opts.plugin.as_ref(),
+                    );
                 if ok {
                     lk(&sh.events).push(TermEvent::Started);
                     // After a spawn resolves, the real size is sent once more.
@@ -374,6 +378,9 @@ impl TermHandle {
             });
         if let Err(e) = r {
             log::warn!("could not start the spawn worker: {e}");
+            if reserved {
+                self.sh.mgr.release(&self.sh.id);
+            }
             self.sh.finish_reveal();
             lk(&self.sh.events).push(TermEvent::StartFailed);
             self.sh.wake();
@@ -410,13 +417,12 @@ impl TermHandle {
         self.sh.dirty.load(Ordering::SeqCst)
     }
 
-    /// Parses what is already read, resizes the emulator, THEN the pty, so ConPTY's answer lands
-    /// on the new size.
+    /// Resizes the emulator, then the pty; the session's helper flushes what is already read first, so
+    /// ConPTY's answer lands on the new size and the UI thread never parses a backlog (rule 34).
     pub fn resize(&self, cols: usize, rows: usize) {
         if cols < 2 || rows < 1 {
             return;
         }
-        self.sh.mgr.flush_output(&self.sh.id);
         self.emu.lock().resize(cols, rows);
         self.sh.mgr.resize(&self.sh.id, cols, rows);
         self.sh.dirty.store(true, Ordering::SeqCst);
@@ -546,6 +552,12 @@ impl TermHandle {
     /// The last non-blank line of the buffer and the lines above it (see `Emulator::text_tail`).
     pub fn screen_tail(&self, rows: usize) -> Vec<String> {
         self.emu.lock().text_tail(rows)
+    }
+
+    /// `screen_tail` with dim, reverse-video and grey cells blanked: the typed ink only (a placeholder in an
+    /// empty prompt box is not a draft).
+    pub fn typed_tail(&self, rows: usize) -> Vec<String> {
+        self.emu.lock().typed_tail(rows)
     }
 
     /// The question watch's rows: the live screen and a screen of history above it.

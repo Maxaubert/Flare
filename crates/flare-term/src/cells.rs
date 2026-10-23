@@ -136,6 +136,10 @@ pub struct LogicalLine {
     /// Where in `text` (char index) a row broken BY HAND starts (`by_hand`); empty unless asked
     /// for (`logical_line_in` with `hand`).
     pub joins: Vec<usize>,
+    /// The read stopped at the window's top edge although the line goes on above it.
+    pub cut_top: bool,
+    /// The read stopped at the window's bottom edge although the line goes on below it.
+    pub cut_bottom: bool,
 }
 
 /// What a path's piece can be made of: one character that is not a break of `paths.rs`
@@ -212,18 +216,40 @@ pub fn logical_line(b: &dyn BufferLike, cols: usize, y: usize) -> LogicalLine {
 /// `logical_line`, and with `hand` across rows broken `by_hand` too, with `joins` saying where
 /// those rows start in the text (PT termCells.ts `logicalLine(..., hand)`).
 pub fn logical_line_in(b: &dyn BufferLike, cols: usize, y: usize, hand: bool) -> LogicalLine {
+    logical_line_win(b, cols, y, hand, 0, usize::MAX)
+}
+
+/// How many rows each way from the row asked about the link scan reads of one logical line: a link or a
+/// path is a few KB at most, and a megabyte of JSON on one line is thousands of rows (review #39).
+pub const SCAN_WINDOW_ROWS: usize = 24;
+
+/// `logical_line_in`, but the walk goes no further than `reach` rows from `y` each way, and never above
+/// row `floor`: the line is read as a piece. The scan walks a long line piece by piece (each starting
+/// where the last ended), so its work per pass is the window's, not the whole line's.
+pub fn logical_line_win(
+    b: &dyn BufferLike,
+    cols: usize,
+    y: usize,
+    hand: bool,
+    floor: usize,
+    reach: usize,
+) -> LogicalLine {
     let mut scratch = ScratchCell::default();
     let mut goes_on = |r: usize| {
         b.line(r).is_some_and(LineLike::is_wrapped) || (hand && by_hand(b, cols, r, &mut scratch))
     };
+    let lo = floor.max(y.saturating_sub(reach));
+    let hi = y.saturating_add(reach);
     let mut first = y;
-    while first > 0 && goes_on(first) {
+    while first > lo && goes_on(first) {
         first -= 1;
     }
     let mut last = y;
-    while last + 1 < b.len() && goes_on(last + 1) {
+    while last + 1 < b.len() && last < hi && goes_on(last + 1) {
         last += 1;
     }
+    let cut_top = first > 0 && first == lo && goes_on(first);
+    let cut_bottom = last + 1 < b.len() && last >= hi && goes_on(last + 1);
     let mut cells = Vec::new();
     let mut hand_rows = Vec::new();
     for i in first..=last {
@@ -250,6 +276,8 @@ pub fn logical_line_in(b: &dyn BufferLike, cols: usize, y: usize, hand: bool) ->
         index,
         text_end,
         joins,
+        cut_top,
+        cut_bottom,
     }
 }
 

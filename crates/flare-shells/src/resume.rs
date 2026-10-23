@@ -5,6 +5,9 @@ use crate::list::ShellDef;
 /// The variable that carries the resume id into the shell (never written into the command line).
 pub const RESUME_ENV: &str = "FLARE_RESUME_ID";
 
+/// cmd.exe's switch that keeps the current folder out of the program search.
+const NO_CWD_EXE: &str = "NoDefaultCurrentDirectoryInExePath";
+
 /// How a shell is started for a resumed tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
@@ -15,6 +18,25 @@ pub struct Launch {
 
 /// The launch for a resumed tab; the id travels in the environment, so two resumes share one command line.
 pub fn with_resume(def: &ShellDef, resume: &str) -> Launch {
+    let prior = std::env::var(NO_CWD_EXE).ok();
+    with_resume_prior(def, resume, prior.as_deref())
+}
+
+/// A user's own value of the search switch can go back after the resume only if cmd reads it as plain text:
+/// no character that ends or reshapes a command line.
+fn plain_switch_value(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+        && !v.contains(['&', '|', '<', '>', '^', '%', '"', '!', '(', ')'])
+}
+
+/// `with_resume` with the shell's own value of `NoDefaultCurrentDirectoryInExePath` (what the tab inherits)
+/// given: the resume line puts it back when the agent ends, where it used to erase it.
+pub fn with_resume_prior(def: &ShellDef, resume: &str, prior: Option<&str>) -> Launch {
+    let restore = match prior {
+        Some(v) if plain_switch_value(v) => format!("set {NO_CWD_EXE}={v}"),
+        _ => format!("set {NO_CWD_EXE}="),
+    };
     let codex = resume == "codex:last";
     let env = if codex {
         None
@@ -38,10 +60,14 @@ pub fn with_resume(def: &ShellDef, resume: &str) -> Launch {
             (args, env)
         }
         "cmd" => {
+            // cmd looks in the current folder (the tab's project) before PATH; a claude.cmd a
+            // repo carries must never run on a restore.
             let step = if codex {
-                "codex resume --last".to_string()
+                format!("set {NO_CWD_EXE}=1& codex resume --last& {restore}")
             } else {
-                format!("set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%")
+                format!(
+                    "set {NO_CWD_EXE}=1& set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%& {restore}"
+                )
             };
             (vec!["/K".to_string(), step], env)
         }
@@ -115,15 +141,67 @@ mod tests {
 
     #[test]
     fn cmd_resume_has_no_quote() {
-        let r = with_resume(&cmd(), A);
+        let r = with_resume_prior(&cmd(), A, None);
         assert_eq!(
             r.args,
             [
                 "/K",
-                "set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%"
+                "set NoDefaultCurrentDirectoryInExePath=1& set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%& set NoDefaultCurrentDirectoryInExePath="
             ]
         );
         assert!(!r.args[1].contains('"'));
+    }
+
+    #[test]
+    fn a_cmd_resume_clears_the_search_switch_once_the_agent_ends() {
+        for id in [A, "codex:last"] {
+            let r = with_resume_prior(&cmd(), id, None);
+            assert!(
+                r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath="),
+                "{}",
+                r.args[1]
+            );
+        }
+    }
+
+    /// A user's own value of the switch is put back, not erased (new-4 residual).
+    #[test]
+    fn a_cmd_resume_puts_the_users_own_switch_value_back() {
+        for id in [A, "codex:last"] {
+            let r = with_resume_prior(&cmd(), id, Some("1"));
+            assert!(
+                r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath=1"),
+                "{}",
+                r.args[1]
+            );
+            assert!(
+                r.args[1].starts_with("set NoDefaultCurrentDirectoryInExePath=1& "),
+                "{}",
+                r.args[1]
+            );
+            // A value cmd would read as more than text is cleared, never spliced into the line.
+            for bad in ["a&calc", "x|y", "%PATH%", "q\"z", ""] {
+                let r = with_resume_prior(&cmd(), id, Some(bad));
+                assert!(
+                    r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath="),
+                    "{bad}: {}",
+                    r.args[1]
+                );
+                assert!(!r.args[1].contains(bad) || bad.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_cmd_resume_never_searches_the_current_folder() {
+        for id in [A, "codex:last"] {
+            let r = with_resume_prior(&cmd(), id, None);
+            assert!(
+                r.args[1].starts_with("set NoDefaultCurrentDirectoryInExePath=1& "),
+                "{:?}",
+                r.args
+            );
+        }
     }
 
     #[test]
@@ -144,8 +222,14 @@ mod tests {
                 env: None,
             }
         );
-        let r = with_resume(&cmd(), "codex:last");
-        assert_eq!(r.args, ["/K", "codex resume --last"]);
+        let r = with_resume_prior(&cmd(), "codex:last", None);
+        assert_eq!(
+            r.args,
+            [
+                "/K",
+                "set NoDefaultCurrentDirectoryInExePath=1& codex resume --last& set NoDefaultCurrentDirectoryInExePath="
+            ]
+        );
         assert_eq!(r.env, None);
     }
 

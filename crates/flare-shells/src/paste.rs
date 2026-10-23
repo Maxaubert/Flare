@@ -27,6 +27,8 @@ pub enum PathShell {
     PowerShell,
     Cmd,
     Bash,
+    /// A WSL distro's bash: a Windows path is written as the Linux path it has inside (`/mnt/c/...`).
+    Wsl,
 }
 
 /// Removes every char in U+0000..=U+0008, U+000B, U+000C, U+000E..=U+001F, U+007F and U+009B.
@@ -47,6 +49,36 @@ fn is_control(c: char) -> bool {
     n < 0x20 || (0x7F..=0x9F).contains(&n)
 }
 
+/// A Windows path as the WSL distro sees it: `C:\a\b` is `/mnt/c/a/b`, `\\wsl$\Ubuntu\home\me` (and
+/// `\\wsl.localhost\...`) is `/home/me`. A path already in Linux form passes as is. `None` for what WSL
+/// cannot name (a UNC share, a relative path with backslashes): it is refused, never guessed.
+pub fn wsl_path(p: &str) -> Option<String> {
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let rest = &p[2..];
+        if !rest.is_empty() && !rest.starts_with(['\\', '/']) {
+            return None; // `C:foo` is relative to the drive's own folder
+        }
+        let drive = (b[0] as char).to_ascii_lowercase();
+        let tail = rest.replace('\\', "/");
+        return Some(format!("/mnt/{drive}{tail}"));
+    }
+    if let Some(unc) = p.strip_prefix("\\\\") {
+        let mut parts = unc.splitn(3, '\\');
+        let host = parts.next()?.to_ascii_lowercase();
+        if host == "wsl$" || host == "wsl.localhost" {
+            let _distro = parts.next()?;
+            let tail = parts.next().unwrap_or("").replace('\\', "/");
+            return Some(format!("/{tail}"));
+        }
+        return None;
+    }
+    if p.contains('\\') {
+        return None;
+    }
+    Some(p.to_string())
+}
+
 /// Quotes one path so the shell reads it as a single inert word. `None` means the path cannot be
 /// typed safely and must not be: any control character (every shell), and for cmd any of `%`, `!`
 /// or `"`, which still act inside double quotes.
@@ -65,6 +97,10 @@ pub fn quote_path(p: &str, shell: Option<PathShell>) -> Option<String> {
             }
         }
         None | Some(PathShell::Bash) => Some(format!("'{}'", p.replace('\'', "'\\''"))),
+        Some(PathShell::Wsl) => {
+            let linux = wsl_path(p)?;
+            Some(format!("'{}'", linux.replace('\'', "'\\''")))
+        }
         Some(PathShell::PowerShell) => Some(ps_quote(p)),
     }
 }
@@ -101,6 +137,13 @@ pub fn decide_paste(clip: &ClipboardState, shell: Option<PathShell>) -> PasteDec
 /// sanitised the text (`sanitize_paste`); this does not filter again.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     let body = text.replace("\r\n", "\r").replace('\n', "\r");
+    // A program that never asked for bracketed paste (cmd, PSReadLine) runs each line at its CR: the last
+    // line is left at the prompt, for the owner to read and send, never run unseen.
+    let body = if bracketed {
+        body.as_str()
+    } else {
+        body.trim_end_matches('\r')
+    };
     let mut out = Vec::with_capacity(body.len() + 12);
     if bracketed {
         out.extend_from_slice(b"\x1b[200~");
@@ -122,7 +165,9 @@ pub fn path_shell_of(shell_id: Option<&str>) -> PathShell {
     let lower = id.to_ascii_lowercase();
     if lower == "cmd" {
         PathShell::Cmd
-    } else if lower.starts_with("wsl") || lower.contains("bash") {
+    } else if lower.starts_with("wsl") {
+        PathShell::Wsl
+    } else if lower.contains("bash") {
         PathShell::Bash
     } else {
         PathShell::PowerShell
@@ -418,6 +463,46 @@ mod paste_bytes_tests {
     }
 
     #[test]
+    fn an_unbracketed_multi_line_paste_never_sends_its_final_enter() {
+        assert_eq!(
+            paste_bytes("a\nRemove-Item x\n", false),
+            b"a\rRemove-Item x".to_vec()
+        );
+        assert_eq!(paste_bytes("a\r\nb\r\n\r\n", false), b"a\rb".to_vec());
+        assert_eq!(paste_bytes("\n", false), Vec::<u8>::new());
+        // Bracketed, the program holds the whole block until the owner sends it.
+        assert_eq!(paste_bytes("a\n", true), b"\x1b[200~a\r\x1b[201~".to_vec());
+    }
+
+    #[test]
+    fn a_wsl_tab_gets_the_linux_path() {
+        let q = |p: &str| quote_path(p, Some(PathShell::Wsl));
+        assert_eq!(
+            q(r"C:\Users\me\shot.png").as_deref(),
+            Some("'/mnt/c/Users/me/shot.png'")
+        );
+        assert_eq!(
+            q(r"d:\a b\it's.png").as_deref(),
+            Some(r"'/mnt/d/a b/it'\''s.png'")
+        );
+        assert_eq!(q(r"C:\").as_deref(), Some("'/mnt/c/'"));
+        assert_eq!(
+            q(r"\\wsl$\Ubuntu\home\me\a.txt").as_deref(),
+            Some("'/home/me/a.txt'")
+        );
+        assert_eq!(
+            q(r"\\wsl.localhost\Ubuntu\tmp\a.txt").as_deref(),
+            Some("'/tmp/a.txt'")
+        );
+        assert_eq!(q("/mnt/c/x").as_deref(), Some("'/mnt/c/x'"));
+        // What WSL cannot name is refused, not guessed.
+        assert_eq!(q(r"\\server\share\a.txt"), None);
+        assert_eq!(q(r"C:foo"), None);
+        assert_eq!(q(r"sub\a.txt"), None);
+        assert_eq!(q("C:\\a\u{1b}b"), None);
+    }
+
+    #[test]
     fn paste_bytes_brackets_when_asked() {
         assert_eq!(paste_bytes("x", true), b"\x1b[200~x\x1b[201~".to_vec());
     }
@@ -459,8 +544,8 @@ mod paste_bytes_tests {
         assert_eq!(path_shell_of(Some("powershell")), PathShell::PowerShell);
         assert_eq!(path_shell_of(Some("cmd")), PathShell::Cmd);
         assert_eq!(path_shell_of(Some("CMD")), PathShell::Cmd);
-        assert_eq!(path_shell_of(Some("wsl-Ubuntu")), PathShell::Bash);
-        assert_eq!(path_shell_of(Some("wsl-Debian-12")), PathShell::Bash);
+        assert_eq!(path_shell_of(Some("wsl-Ubuntu")), PathShell::Wsl);
+        assert_eq!(path_shell_of(Some("wsl-Debian-12")), PathShell::Wsl);
         assert_eq!(path_shell_of(Some("git-bash")), PathShell::Bash);
         assert_eq!(path_shell_of(Some("")), PathShell::PowerShell);
         assert_eq!(path_shell_of(None), PathShell::PowerShell);

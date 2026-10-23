@@ -170,9 +170,15 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     assert!(log.failed());
     log.flush();
     let kinds = kinds_of(tmp.path());
-    for k in ["a", "b", "c", "d"] {
+    // The log keeps writing while the rotation fails, up to twice the cap (past it lines are dropped and
+    // counted: a held file must not grow without bound).
+    for k in ["a", "b", "c"] {
         assert!(kinds.iter().any(|x| x == k), "{kinds:?}");
     }
+    assert!(
+        kinds.iter().any(|x| x == "d" || x == "logger-dropped"),
+        "{kinds:?}"
+    );
     assert_eq!(kinds.iter().filter(|k| *k == "logger-error").count(), 1);
     assert!(!tmp.path().join("logs").join("diag.jsonl.1").exists());
     drop(held);
@@ -180,6 +186,150 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     log.write("main", "e", fields(&[("pad", json!(pad))]));
     log.flush();
     assert!(tmp.path().join("logs").join("diag.jsonl.1").exists());
+}
+
+#[test]
+fn a_rotation_that_keeps_failing_never_lets_the_live_file_grow_past_twice_the_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(live(tmp.path()))
+        .unwrap();
+    for _ in 0..30 {
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+    }
+    let len = fs::metadata(live(tmp.path())).unwrap().len();
+    assert!(
+        len <= 2 * 600 + 300,
+        "the held file grew to {len} bytes: nothing bounded it"
+    );
+    drop(held);
+    up.fetch_add(30_001, Ordering::SeqCst);
+    log.write("main", "e", fields(&[("pad", json!(pad))]));
+    log.flush();
+    log.flush();
+    let all = lines_of(&live(tmp.path()));
+    let dropped: u64 = all
+        .iter()
+        .filter(|l| l["k"] == "logger-dropped")
+        .map(|l| l["n"].as_u64().unwrap_or(0))
+        .sum();
+    assert!(
+        dropped > 0,
+        "what was dropped is said once the log recovers: {all:?}"
+    );
+}
+
+#[test]
+fn a_blocked_rotation_that_retries_never_costs_an_older_generation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    // Four generations of history already exist.
+    let dir = tmp.path().join("logs");
+    for n in 1..=4 {
+        fs::write(dir.join(format!("diag.jsonl.{n}")), format!("gen{n}")).unwrap();
+    }
+    // Something holds the live file: it cannot be renamed.
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(live(tmp.path()))
+        .unwrap();
+    for round in 0..5u64 {
+        up.fetch_add(30_001, Ordering::SeqCst);
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+        for n in 1..=4 {
+            assert_eq!(
+                fs::read_to_string(dir.join(format!("diag.jsonl.{n}"))).unwrap(),
+                format!("gen{n}"),
+                "generation {n} was lost on retry {round}"
+            );
+        }
+    }
+    drop(held);
+}
+
+#[test]
+fn a_rotation_that_fails_after_the_park_puts_the_live_file_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    let dir = tmp.path().join("logs");
+    for n in 1..=4 {
+        fs::write(dir.join(format!("diag.jsonl.{n}")), format!("gen{n}")).unwrap();
+    }
+    // Something holds the oldest generation without share-delete: the live file parks, then
+    // removing .4 fails.
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(dir.join("diag.jsonl.4"))
+        .unwrap();
+    for round in 0..4u64 {
+        up.fetch_add(30_001, Ordering::SeqCst);
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+        assert!(
+            !dir.join("diag.jsonl.rotating").exists(),
+            "the parked file was left behind on retry {round}"
+        );
+        let kinds = kinds_of(tmp.path());
+        assert!(
+            kinds.iter().any(|k| k == "a"),
+            "history lost on retry {round}: {kinds:?}"
+        );
+    }
+    assert!(log.failed());
+    drop(held);
+    up.fetch_add(30_001, Ordering::SeqCst);
+    log.write("main", "c", fields(&[("pad", json!(pad))]));
+    log.flush();
+    let first = fs::read_to_string(dir.join("diag.jsonl.1")).unwrap();
+    assert!(
+        first.contains("\"k\":\"a\""),
+        "the newest history went to .1"
+    );
+}
+
+#[test]
+fn a_refused_verbose_write_leaves_the_switch_as_it_was() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A folder where the state file should be: the atomic write is refused.
+    fs::create_dir(tmp.path().join("diag.json")).unwrap();
+    let log = DiagLog::start(opts(tmp.path()));
+    assert!(!log.verbose());
+    log.set_verbose(true);
+    assert!(
+        !log.verbose(),
+        "the page must not claim a switch that was not stored"
+    );
 }
 
 #[test]

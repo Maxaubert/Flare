@@ -150,6 +150,15 @@ export component TabStrip inherits Rectangle {
         visible: row.mode != 2;
         z: row.carried ? 5 : 0;
         background: row.active ? Theme.tab-active : (tab.hov ? Theme.hover : transparent);
+        // The tab's name is its accessible label (an icon tab has no text to read).
+        accessible-role: AccessibleRole.tab;
+        accessible-label: row.label != "" ? row.label : row.tip;
+        accessible-checkable: true;
+        accessible-checked: row.active;
+        accessible-action-default => {
+            root.press(row.id, index, tab.absolute-position.x + tab.width / 2, root.absolute-position.x);
+            root.drag-released();
+        }
         animate x {
             duration: Motion.d((root.carrying && !row.carried) ? 170ms : 0ms);
             easing: cubic-bezier(0.23, 1, 0.32, 1);
@@ -277,6 +286,11 @@ export component TabStrip inherits Rectangle {
         height: parent.height - 8px;
         border-radius: 4px;
         background: (mta.has-hover || root.list-open) ? Theme.hover-hi : transparent;
+        accessible-role: button;
+        accessible-label: root.geom.more-count + " more tabs";
+        accessible-action-default => {
+            root.more-clicked(self.absolute-position.x + self.width, self.absolute-position.y + self.height);
+        }
         HorizontalLayout {
             alignment: center;
             spacing: 6px;
@@ -343,6 +357,9 @@ export component TabStrip inherits Rectangle {
         height: parent.height - 8px;
         border-radius: 4px;
         background: pta.has-hover ? Theme.hover-hi : transparent;
+        accessible-role: button;
+        accessible-label: root.new-tab-title;
+        accessible-action-default => { root.new-tab(); }
         Path {
             x: (parent.width - 13px) / 2 - (2 * 13px / 24) / 2;
             y: (parent.height - 13px) / 2 - (2 * 13px / 24) / 2;

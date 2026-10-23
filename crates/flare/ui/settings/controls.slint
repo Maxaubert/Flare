@@ -26,7 +26,7 @@ export component SetSwitch inherits Rectangle {
     height: SettingsShape.switch-h;
     border-radius: SettingsShape.switch-h / 2;
     opacity: root.disabled ? 0.5 : 1;
-    background: root.on ? (ta.has-hover && !root.disabled ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg) : Theme.track;
+    background: root.on ? (ta.has-hover && !root.disabled ? Theme.sel-bg.brighter(0.1) : Theme.sel-bg) : Theme.track-off;
     accessible-role: switch;
     accessible-label: root.label;
     accessible-description: root.sub;
@@ -143,7 +143,7 @@ export component SetSegmented inherits Rectangle {
                 font-weight: 600;
                 horizontal-alignment: center;
                 vertical-alignment: center;
-                color: seg.chosen ? Theme.pressed-ink : (seg.hot ? Theme.text : Theme.dim);
+                color: seg.chosen ? Theme.pressed-text : (seg.hot ? Theme.text : Theme.dim);
             }
 
             fs := FocusScope {
@@ -361,7 +361,7 @@ export component SetResetLink inherits Rectangle {
         font-family: SettingsFixed.font-text;
         font-size: 11px;
         font-weight: 600;
-        color: Theme.accent-hi;
+        color: Theme.accent-ink;
     }
 
     Rectangle {

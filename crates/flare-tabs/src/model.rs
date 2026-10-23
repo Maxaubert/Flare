@@ -3,7 +3,7 @@
 //! Source: PT App.tsx (state, openTab, closeNow, the mru effect, commitWalk, next-tab, jump-tab,
 //! settings cases, the tabsChanged effect). One object the UI thread owns; the glue calls it.
 
-use crate::restore::{Restored, SavedTab, SavedTabs, Spawn, peek_state, settle_restore};
+use crate::restore::{Restored, SavedTab, SavedTabs, Spawn, peek_state, settle_restore_from};
 use crate::tab_mru::{Walk, start_walk, step_walk, sync_mru, touch_mru, walk_holds, walk_target};
 use crate::tabs::{self, Pending, SETTINGS_ID, Tab, TabKind, TabState};
 use flare_agent::kinds::AgentKind;
@@ -16,6 +16,8 @@ pub struct TabModel {
     mru: Vec<String>,
     walk: Option<Walk>,
     slots: Vec<String>,
+    /// The placeholder the boot put in front (`peek_state`): any other pending front was the owner's click.
+    boot_front: Option<String>,
     seq: u64,
     clock_ms: u64,
     restore_done: bool,
@@ -34,6 +36,7 @@ impl TabModel {
             mru: Vec::new(),
             walk: None,
             slots: Vec::new(),
+            boot_front: None,
             seq: 0,
             clock_ms,
             restore_done: false,
@@ -47,6 +50,7 @@ impl TabModel {
         let mut seq = 0;
         let boot = peek_state(saved, &mut || make_id(clock_ms, &mut seq));
         m.seq = seq;
+        m.boot_front = boot.state.active_id.clone();
         m.state = boot.state;
         m.slots = boot.slots;
         m.after_change();
@@ -219,9 +223,13 @@ impl TabModel {
     pub fn settle(&mut self, r: &Restored) -> Vec<Spawn> {
         let clock = self.clock_ms;
         let mut seq = self.seq;
-        let settled = settle_restore(&self.state, &self.slots, r, &mut || {
-            make_id(clock, &mut seq)
-        });
+        let settled = settle_restore_from(
+            &self.state,
+            &self.slots,
+            self.boot_front.as_deref(),
+            r,
+            &mut || make_id(clock, &mut seq),
+        );
         self.seq = seq;
         self.state = settled.state;
         self.restore_done = true;

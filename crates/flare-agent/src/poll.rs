@@ -84,7 +84,7 @@ impl PollHandle {
 pub struct AgentPoll {
     send: AgentSend,
     deps: PollDeps,
-    agent_state: HashMap<String, bool>,
+    agent_state: HashMap<String, Option<DetectedAgent>>,
     seen_ticks: Option<u64>,
     every: u64,
     next: u64,
@@ -175,8 +175,10 @@ impl AgentPoll {
         for (id, pid) in &live {
             let kind = tree_agent_kind(&rows, *pid);
             let has = kind.is_some();
-            if self.agent_state.get(id) != Some(&has) {
-                self.agent_state.insert(id.clone(), has);
+            // Presence AND kind: Codex quit and Claude started inside one back-off window is a
+            // change the tab must hear (what it resumes on the next start depends on it).
+            if self.agent_state.get(id) != Some(&kind) {
+                self.agent_state.insert(id.clone(), kind);
                 changed = true;
                 (self.send)(id, has, kind);
             } else if asking.contains(id) {
@@ -624,6 +626,25 @@ mod tests {
         );
         p.look(false);
         assert_eq!(w.borrow().asked, 2);
+    }
+
+    #[test]
+    fn a_change_of_kind_under_a_present_agent_is_sent() {
+        let w = world(Some(rows("100 1\n200 100 codex resume --last")));
+        let mut p = poll_in(&w, PollHandle::new());
+        p.look(false);
+        // Codex quits and Claude starts before any ask: presence holds, the kind moves.
+        w.borrow_mut().out = Some(rows(&format!("100 1\n300 100 node {CLAUDE}")));
+        w.borrow_mut().ticks = 1;
+        w.borrow_mut().now = AGENT_POLL_MIN;
+        p.look(true);
+        assert_eq!(
+            sent(&w),
+            vec![
+                t1(true, Some(DetectedAgent::Codex)),
+                t1(true, Some(DetectedAgent::Claude))
+            ]
+        );
     }
 
     #[test]

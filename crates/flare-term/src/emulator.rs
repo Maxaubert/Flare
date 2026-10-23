@@ -368,12 +368,6 @@ impl Emulator {
                 at = end;
             }
             self.drain(&mut out);
-            if matches!(ev, ScanEvent::Decrqm { mode: 2031, .. })
-                && matches!(out.last(), Some(TermEvent::Reply(r)) if r == b"\x1b[?2031;0$y")
-            {
-                // alacritty does not know the mode and says so; the answer is Flare's.
-                out.pop();
-            }
             self.act(ev, &mut out);
         }
         if at < bytes.len() {
@@ -453,7 +447,15 @@ impl Emulator {
     fn drain(&mut self, out: &mut Vec<TermEvent>) {
         while let Ok(ev) = self.events.try_recv() {
             match ev {
-                Event::PtyWrite(s) => out.push(TermEvent::Reply(normalise_reply(s))),
+                Event::PtyWrite(s) => {
+                    let r = normalise_reply(s);
+                    // alacritty does not know mode 2031 and answers "reset"; the answer is
+                    // Flare's, whenever alacritty gets round to it (a synchronized update holds
+                    // its reply back until the block ends).
+                    if r != b"\x1b[?2031;0$y" {
+                        out.push(TermEvent::Reply(r));
+                    }
+                }
                 Event::Title(t) => out.push(TermEvent::Title(t)),
                 Event::ResetTitle => out.push(TermEvent::ResetTitle),
                 Event::Bell => out.push(TermEvent::Bell),
@@ -590,6 +592,14 @@ impl Emulator {
 
     /// The cells of one screen line as text, trailing blanks trimmed, wide spacers skipped.
     pub fn row_text(&self, line: i32) -> String {
+        self.row_text_with(line, false)
+    }
+
+    /// `row_text`, with `ghosts` true blanking the cells that are not typed ink: dim (SGR 2), reverse
+    /// video (a cursor block drawn over a character) and bright-black grey, which is how an agent paints
+    /// a placeholder or a suggested prompt in an empty box.
+    fn row_text_with(&self, line: i32, ghosts: bool) -> String {
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
         let grid = self.term.grid();
         let mut s = String::new();
         for col in 0..self.term.columns() {
@@ -600,12 +610,49 @@ impl Emulator {
             {
                 continue;
             }
+            if ghosts
+                && (cell.flags.intersects(Flags::DIM | Flags::INVERSE)
+                    || matches!(
+                        cell.fg,
+                        Color::Named(NamedColor::BrightBlack | NamedColor::DimBlack)
+                            | Color::Indexed(8)
+                    ))
+            {
+                s.push(' ');
+                continue;
+            }
             s.push(if cell.c == '\0' { ' ' } else { cell.c });
             if let Some(z) = cell.zerowidth() {
                 s.extend(z.iter());
             }
         }
         s.trim_end().to_string()
+    }
+
+    /// `text_tail` with placeholder ink blanked (see `row_text_with`): what the prompt-draft check reads.
+    pub fn typed_tail(&self, rows: usize) -> Vec<String> {
+        let top = -(self.history_size() as i32);
+        let bottom = self.rows() as i32 - 1;
+        let Some(last) = (top..=bottom)
+            .rev()
+            .find(|&l| !self.row_text(l).trim().is_empty())
+        else {
+            return vec![self.row_text(top)];
+        };
+        let start = (last - rows.max(1) as i32 + 1).max(top);
+        // A rule row of the prompt box keeps its plain text: an ANSI-only theme draws it in grey or dim,
+        // and blanking it would hide the box the draft check looks for.
+        (start..=last)
+            .map(|l| {
+                let plain = self.row_text(l);
+                let t = plain.trim();
+                if t.chars().count() >= 20 && t.chars().all(|c| c == '\u{2500}') {
+                    plain
+                } else {
+                    self.row_text_with(l, true)
+                }
+            })
+            .collect()
     }
 
     /// PT `setScreenTail`: scan from the bottom screen line up through the history for the last
@@ -1007,22 +1054,48 @@ impl Emulator {
     /// Selects one match: a Simple selection over its cells. The end is the last cell's
     /// boundary plus one, so a match ending at a row's last cell stays on that row.
     fn select_match(&mut self, m: FindMatch) {
-        let cols = self.cols();
-        if cols == 0 {
+        let Some((start, end)) = self.match_bounds(m) else {
             return;
-        }
-        let last = m.row * cols + m.col + m.size.max(1) - 1;
+        };
         self.sel_apply(SelOut::Set(SelSpec {
             block: false,
             start: Anchor {
-                row: m.row,
-                b: m.col,
+                row: start.0,
+                b: start.1,
             },
             end: Anchor {
-                row: last / cols,
-                b: last % cols + 1,
+                row: end.0,
+                b: end.1,
             },
         }));
+    }
+
+    /// The (row, boundary) start and end `select_match` selects for a match.
+    fn match_bounds(&self, m: FindMatch) -> Option<((usize, usize), (usize, usize))> {
+        let cols = self.cols();
+        if cols == 0 {
+            return None;
+        }
+        let last = m.row * cols + m.col + m.size.max(1) - 1;
+        Some(((m.row, m.col), (last / cols, last % cols + 1)))
+    }
+
+    /// The find bar closed: the highlights go, and so does the selection when it is the one the active
+    /// match put there (a Ctrl+C with it would copy the match instead of interrupting the program, and
+    /// Backspace could delete it). A selection the owner made themselves stays.
+    pub fn find_close(&mut self) {
+        let found = self
+            .find_active
+            .and_then(|m| self.match_bounds(m))
+            .zip(self.sel_bounds());
+        if let Some(((start, end), (s, e, block))) = found
+            && !block
+            && s == start
+            && e == end
+        {
+            self.sel_clear();
+        }
+        self.find_clear();
     }
 
     /// The match a search starts from: the active one, else a zero-size match at the selection's
@@ -2038,6 +2111,63 @@ mod tests {
         assert_eq!(t.len(), 16);
     }
 
+    /// Claude Code's empty prompt box: a dim placeholder after the mark (with its first letter drawn as the
+    /// cursor, reverse video) is not a draft; typed text is (NEW-E).
+    #[test]
+    fn a_dim_placeholder_in_an_empty_prompt_box_is_not_a_draft() {
+        let rule = "\u{2500}".repeat(30);
+        let screen = |input: &str| {
+            let mut e = Emulator::new(60, 8);
+            e.feed(format!("done\r\n{rule}\r\n{input}\r\n{rule}\r\n  auto mode on").as_bytes());
+            e
+        };
+        let draft = |e: &Emulator| flare_agent::question::prompt_has_draft(&e.typed_tail(16));
+        let plain = |e: &Emulator| flare_agent::question::prompt_has_draft(&e.text_tail(16));
+        // dim placeholder, first letter reversed as the cursor
+        let e = screen("\u{276f} \x1b[7mT\x1b[0m\x1b[2mry \"fix lint errors\"\x1b[0m");
+        assert!(plain(&e), "the plain-text read mistakes it for a draft");
+        assert!(!draft(&e));
+        // grey (bright black) suggestion
+        let e = screen("\u{276f} \x1b[90mrun the tests\x1b[0m");
+        assert!(!draft(&e));
+        // a real draft, cursor block after it
+        let e = screen("\u{276f} fix the thing\x1b[7m \x1b[0m");
+        assert!(draft(&e));
+        // typed text before a dim tail still counts
+        let e = screen("\u{276f} half\x1b[2m a suggestion\x1b[0m");
+        assert!(draft(&e));
+    }
+
+    /// An ANSI-only theme draws the box rules in bright black or dim: the box must still be found (R3).
+    #[test]
+    fn a_grey_or_dim_rule_still_shows_a_draft_in_the_box() {
+        let rule = "\u{2500}".repeat(30);
+        for paint in ["\x1b[90m", "\x1b[2m", "\x1b[38;5;8m"] {
+            let mut e = Emulator::new(60, 8);
+            e.feed(
+                format!(
+                    "done\r\n{paint}{rule}\x1b[0m\r\n\u{276f} fix it\r\n{paint}{rule}\x1b[0m\r\n  auto"
+                )
+                .as_bytes(),
+            );
+            assert!(
+                flare_agent::question::prompt_has_draft(&e.typed_tail(16)),
+                "{paint:?}"
+            );
+            let mut e = Emulator::new(60, 8);
+            e.feed(
+                format!(
+                    "done\r\n{paint}{rule}\x1b[0m\r\n\u{276f} \x1b[2mTry x\x1b[0m\r\n{paint}{rule}\x1b[0m\r\n  auto"
+                )
+                .as_bytes(),
+            );
+            assert!(
+                !flare_agent::question::prompt_has_draft(&e.typed_tail(16)),
+                "{paint:?} empty"
+            );
+        }
+    }
+
     #[test]
     fn an_all_blank_buffer_gives_the_single_top_line() {
         let e = Emulator::new(20, 10);
@@ -2144,6 +2274,15 @@ mod tests {
             e.release_sync_if_due(d),
             vec![TermEvent::Reply(b"\x1b[0n".to_vec())]
         );
+    }
+
+    #[test]
+    fn decrqm_2031_inside_a_synchronized_update_gets_one_answer() {
+        let mut e = Emulator::new(80, 24);
+        let first = replies(&e.feed(b"\x1b[?2026h\x1b[?2031$p"));
+        assert_eq!(first, vec![b"\x1b[?2031;2$y".to_vec()]);
+        let d = e.sync_deadline().expect("deadline");
+        assert!(replies(&e.release_sync_if_due(d)).is_empty());
     }
 
     fn sel(block: bool, r0: usize, b0: usize, r1: usize, b1: usize) -> SelOut {
@@ -3048,6 +3187,39 @@ mod tests {
     }
 
     #[test]
+    fn closing_find_drops_the_selection_the_match_made_so_ctrl_c_is_the_programs() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        assert!(e.has_selection(), "the active match is selected");
+        e.find_close();
+        assert!(
+            !e.has_selection(),
+            "closing the bar must not leave the match selected"
+        );
+        assert_eq!(e.find_spans(), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn closing_find_keeps_a_selection_the_owner_made() {
+        let mut e = Emulator::new(20, 3);
+        e.feed(b"foo bar");
+        e.find_set("foo");
+        count_all(&mut e);
+        e.find_next("foo", false);
+        // The owner then selects "bar" themselves.
+        e.sel_apply(SelOut::Set(SelSpec {
+            block: false,
+            start: Anchor { row: 0, b: 4 },
+            end: Anchor { row: 0, b: 7 },
+        }));
+        e.find_close();
+        assert!(e.has_selection(), "the owner's own selection stays");
+    }
+
+    #[test]
     fn highlights_cover_the_alternate_screen() {
         let mut e = Emulator::new(20, 3);
         e.feed(b"\x1b[?1049h");
@@ -3272,7 +3444,7 @@ mod tests {
     }
 
     #[test]
-    fn a_web_link_is_never_carried_across_a_row_broken_by_hand() {
+    fn a_web_link_is_carried_across_a_row_broken_by_hand_review_37() {
         let mut e = Emulator::new(17, 4);
         e.feed(b"go https://a.io/x\r\n/y/z");
         let m = marks(&mut e);
@@ -3281,7 +3453,7 @@ mod tests {
             .map(|m| &m.target)
             .filter(|t| matches!(t, LinkTarget::Web(_)))
             .collect();
-        assert_eq!(web, vec![&LinkTarget::Web("https://a.io/x".into())]);
+        assert_eq!(web, vec![&LinkTarget::Web("https://a.io/x/y/z".into())]);
     }
 
     #[test]

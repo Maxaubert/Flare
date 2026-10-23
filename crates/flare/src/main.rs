@@ -257,8 +257,10 @@ fn end_process_clean() {
     std::process::exit(0);
 }
 
-/// How long a second launch waits for the first instance to take its folders.
-const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a second launch waits for the first instance to take its folders. It also covers a
+/// first instance that is quitting: it stops listening at once, and the lock comes free after
+/// the shells are gone (up to 3 s), when the second launch takes over as the first.
+const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// The command line with the exe first, as `folders_from_argv` expects it.
 fn argv_with_exe() -> Vec<String> {
