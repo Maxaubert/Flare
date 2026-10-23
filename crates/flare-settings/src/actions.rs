@@ -153,7 +153,19 @@ pub fn apply(ctx: &Ctx, ev: Event) -> Vec<Effect> {
             let pending = ctx.pending_pick.borrow_mut().take();
             match (answer, pending) {
                 (AskAnswer::SaveAsCustom, Some(id)) => {
-                    save_theme(ctx);
+                    // Switching TO the saved Custom: saving the theme in force would write ITS palette over
+                    // the Custom and the switch would do nothing. Keep the Custom's own palette and save
+                    // the setup in force beside it (review #72).
+                    match (id == "custom").then(|| ctx.look.custom()).flatten() {
+                        Some(c) => {
+                            ctx.look.save_as_custom(&c.palette);
+                            set_custom_window_colours(
+                                ctx.prefs,
+                                Some(&read_window_colours(ctx.prefs)),
+                            );
+                        }
+                        None => save_theme(ctx),
+                    }
                     ctx.look.land_theme(&id, false);
                 }
                 (AskAnswer::Discard, Some(id)) => ctx.look.land_theme(&id, false),
@@ -534,6 +546,32 @@ mod tests {
         });
         assert_eq!(r.look.custom().expect("saved").see_through, Some(20));
         assert_eq!(r.look.theme_id(), "dracula");
+    }
+
+    /// Review #72: "save as Custom" on the way TO Custom keeps the Custom's palette.
+    #[test]
+    fn ask_save_as_custom_on_the_way_to_custom_keeps_the_saved_palette() {
+        let r = Rig::new();
+        r.pick("dracula");
+        r.save();
+        let saved = r.look.custom().expect("saved").palette.bg;
+        r.pick("nord");
+        r.slide("term-acrylic", 20);
+        r.pick("custom");
+        r.go(Event::Ask {
+            answer: AskAnswer::SaveAsCustom,
+        });
+        let c = r.look.custom().expect("still saved");
+        assert_eq!(
+            c.palette.bg, saved,
+            "the Custom's palette is not overwritten by nord's"
+        );
+        assert_eq!(
+            c.see_through,
+            Some(20),
+            "the setup in force is saved with it"
+        );
+        assert_eq!(r.look.theme_id(), "custom");
     }
 
     #[test]

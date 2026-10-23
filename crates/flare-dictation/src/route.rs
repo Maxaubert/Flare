@@ -79,6 +79,11 @@ pub trait SendHost {
     fn agent_under(&self, id: &str) -> Option<String>;
     /// Write to a tab's shell. False when nothing was written (the window could not take it).
     fn write(&self, id: &str, bytes: &str) -> bool;
+    /// Whether Claude's prompt box in this tab already holds unsent text (read off its screen): the Enter
+    /// that follows the words would send that draft with them. Unknown (no box to read) is `false`.
+    fn prompt_has_draft(&self, _id: &str) -> bool {
+        false
+    }
     /// Run `f` after `ms` milliseconds. The real host sleeps on the send's worker, then calls `f`.
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>);
 }
@@ -240,6 +245,17 @@ pub fn type_checked(
         },
         other => other,
     };
+    // Claude reads a leading "!" as a shell command and "#" as a memory note: dictated words are neither.
+    let said = match said {
+        SendDecision::Ok(t) if text.trim_start().starts_with(['!', '#']) => SendDecision::No(
+            format!("{}: words that start with ! or # are not typed", t.label),
+        ),
+        SendDecision::Ok(t) if host.prompt_has_draft(&t.id) => SendDecision::No(format!(
+            "{} has unsent text in its prompt: send or clear it first",
+            t.label
+        )),
+        other => other,
+    };
     if let SendDecision::Ok(t) = &said {
         let id = t.id.clone();
         let session = t.session.clone();
@@ -323,6 +339,7 @@ mod tests {
     /// A stand-in host: Windows says `agent`, writes are recorded, and `later` runs at once (recording its delay).
     #[derive(Default)]
     struct Fake {
+        draft: bool,
         agent: Option<String>,
         /// What Windows says from the second question on (Claude quit in between).
         agent_then: Option<Option<String>>,
@@ -341,6 +358,9 @@ mod tests {
                 (Some(then), 1..) => then.clone(),
                 _ => self.agent.clone(),
             }
+        }
+        fn prompt_has_draft(&self, _id: &str) -> bool {
+            self.draft
         }
         fn write(&self, _id: &str, bytes: &str) -> bool {
             if self.refuse {
@@ -641,6 +661,50 @@ mod tests {
             host.delays.borrow().is_empty(),
             "no Enter is even scheduled"
         );
+    }
+
+    #[test]
+    fn type_checked_types_nothing_into_a_prompt_that_holds_an_unsent_draft() {
+        let host = Fake {
+            agent: Some("claude".into()),
+            draft: true,
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert_eq!(
+            type_checked(&decide, "hello", &host),
+            SendDecision::No("Wind has unsent text in its prompt: send or clear it first".into())
+        );
+        assert!(
+            host.written.borrow().is_empty(),
+            "the draft is never sent with it"
+        );
+        assert!(host.delays.borrow().is_empty());
+    }
+
+    #[test]
+    fn type_checked_types_nothing_that_claude_would_read_as_a_command_or_a_note() {
+        for text in ["!del *", "  # remember", "#x"] {
+            let host = Fake {
+                agent: Some("claude".into()),
+                ..Default::default()
+            };
+            let decide = || SendDecision::Ok(tab());
+            assert!(
+                matches!(type_checked(&decide, text, &host), SendDecision::No(_)),
+                "{text}"
+            );
+            assert!(host.written.borrow().is_empty(), "{text}");
+        }
+        let host = Fake {
+            agent: Some("claude".into()),
+            ..Default::default()
+        };
+        let decide = || SendDecision::Ok(tab());
+        assert!(matches!(
+            type_checked(&decide, "hello! world #1", &host),
+            SendDecision::Ok(_)
+        ));
     }
 
     #[test]

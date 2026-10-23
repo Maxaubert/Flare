@@ -64,7 +64,12 @@ pub fn apply_look(i: &LookInput) -> AppliedLook {
     } else {
         1.0
     };
-    let background = i.background.filter(|b| !b.is_empty());
+    // While the colour editor's draft is open its ground is what the owner is editing, so it wins over a
+    // picked Background (otherwise editing the ground changed nothing on screen until Save: review #79).
+    let background = i
+        .background
+        .filter(|b| !b.is_empty())
+        .filter(|_| i.draft.is_none());
 
     // The chrome never takes the ground from the grid: a picked background replaces the theme's.
     let mut chrome_theme = resolve_theme(id, id, i.custom, i.draft, None);
@@ -314,6 +319,32 @@ mod tests {
         assert_eq!(with.term.cursor, "#ff00aa");
         assert_eq!(v(&with.chrome, "--p-accent"), "#e07a2f");
         assert_eq!(v(&without.chrome, "--p-accent"), "#fe8f34");
+    }
+
+    #[test]
+    fn an_open_draft_ground_wins_over_a_picked_background_while_it_is_edited() {
+        let saved = custom_pt_default();
+        let mut draft = custom_pt_default();
+        draft.bg = "#102030".into();
+        let mut i = input("custom");
+        i.custom = Some(&saved);
+        i.background = Some("#f4f1ea");
+        let picked = apply_look(&i);
+        assert_eq!(
+            picked.term.background, "#f4f1ea",
+            "no draft: the pick covers"
+        );
+        i.draft = Some(&draft);
+        let editing = apply_look(&i);
+        assert_eq!(
+            editing.term.background, "#102030",
+            "the grid shows the draft's ground"
+        );
+        assert_eq!(
+            v(&editing.chrome, "--p-bg-solid"),
+            "#102030",
+            "and so does the chrome"
+        );
     }
 
     #[test]

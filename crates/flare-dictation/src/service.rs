@@ -868,6 +868,10 @@ pub trait ClientHost: Send + Sync + 'static {
     fn agent_under(&self, id: &str) -> Option<String>;
     /// Write to a tab's shell. False when nothing was written (the window could not take it).
     fn write(&self, id: &str, data: &str) -> bool;
+    /// Whether Claude's prompt box in the tab holds unsent text (read off its screen). Unknown is `false`.
+    fn prompt_has_draft(&self, _id: &str) -> bool {
+        false
+    }
     /// Wait this long (the Enter follows the paste after `SEND_ENTER_MS`). The link's handler thread sleeps; the
     /// UI thread never calls this.
     fn pause(&self, ms: u64) {
@@ -886,6 +890,9 @@ impl<H: ClientHost> SendHost for Checked<'_, H> {
     }
     fn write(&self, id: &str, bytes: &str) -> bool {
         self.0.write(id, bytes)
+    }
+    fn prompt_has_draft(&self, id: &str) -> bool {
+        self.0.prompt_has_draft(id)
     }
     fn later(&self, ms: u64, f: Box<dyn FnOnce() + '_>) {
         self.0.pause(ms);

@@ -49,6 +49,24 @@ fn input_box_up(rows: &[String]) -> bool {
     })
 }
 
+/// Text already typed in Claude's prompt box, unsent: a row of the box (between its two rules) holds
+/// something after the `❯` mark. `false` when no box is on the screen to be read: the caller then cannot
+/// tell, and the send's other checks stand (review #27).
+pub fn prompt_has_draft(rows: &[String]) -> bool {
+    let Some(low) = rows.iter().rposition(|r| RULE.is_match(r)) else {
+        return false;
+    };
+    let Some(top) = rows[..low].iter().rposition(|r| RULE.is_match(r)) else {
+        return false;
+    };
+    rows[top + 1..low].iter().any(|r| {
+        let body = r.trim_start_matches(['❯', '>']);
+        !body
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{a0}')
+            .is_empty()
+    })
+}
+
 /// The keys that settle a question: Enter, Esc, Ctrl+C, or exactly one digit 1 to 9.
 ///
 /// A question lasts until it is answered. Turning a permission prompt down or cancelling with Esc ends
@@ -212,6 +230,19 @@ mod tests {
     fn does_not_take_a_finished_answer_or_an_idle_prompt_for_a_question() {
         assert!(!looks_like_question(&finished()));
         assert!(!looks_like_question(&rows(&["PS C:\\Users\\me> "])));
+    }
+
+    #[test]
+    fn a_draft_in_the_prompt_box_is_seen_and_an_empty_box_is_not() {
+        let dashes = "─".repeat(40);
+        let with =
+            |input: &str| rows(&["● done", "", &dashes, input, &dashes, "  ⏵⏵ auto mode on"]);
+        assert!(!prompt_has_draft(&with("❯ ")));
+        assert!(!prompt_has_draft(&with("❯\u{a0}")));
+        assert!(prompt_has_draft(&with("❯ fix the thing")));
+        assert!(prompt_has_draft(&with("❯\u{a0}half a thought")));
+        // No box on the screen: unknown, so no draft is claimed.
+        assert!(!prompt_has_draft(&rows(&["PS C:\\w> npm test"])));
     }
 
     #[test]

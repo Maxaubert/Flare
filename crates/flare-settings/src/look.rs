@@ -292,15 +292,12 @@ impl LookStore {
         self.store.set(SEE_THROUGH_KEY, "0");
     }
 
-    /// Re-applies the non-colour half of a saved Custom. The indicator is written only where Flare draws
-    /// it, colours only when valid, and the see-through level is the save's (none is 0).
+    /// Re-applies the non-colour half of a saved Custom. The indicator's volume is NOT applied: it is how
+    /// loudly a tab speaks, the owner's own (a Custom imported from Prism Terminal keeps its `indicator`
+    /// field, and picking it must not change theirs: review #77). Colours only when valid, and the
+    /// see-through level is the save's (none is 0).
     pub fn apply_custom_extras(&self, c: Option<&CustomTheme>) {
         let Some(c) = c else { return };
-        if let Some(i) = c.indicator.as_deref()
-            && (i == "ring" || i == "minimal")
-        {
-            self.store.set(INDICATOR_KEY, i);
-        }
         self.write_choice(AgentColourState::Working, c.indicator_color.as_deref());
         self.write_choice(AgentColourState::Finished, c.done_color.as_deref());
         self.write_choice(AgentColourState::Question, c.question_color.as_deref());
@@ -591,6 +588,23 @@ mod tests {
         );
         l.apply_custom_extras(c.as_ref());
         assert_eq!(p.get(INDICATOR_KEY).as_deref(), Some("minimal"));
+    }
+
+    #[test]
+    fn picking_a_custom_keeps_the_owners_indicator_whatever_the_custom_carries() {
+        let (p, l) = store();
+        l.set_agent_indicator(AgentIndicator::Minimal);
+        for carried in ["ring", "minimal"] {
+            let c = parse_custom(&format!(
+                r##"{{"bg":"#111111","fg":"#eeeeee","cursor":"#fff","ansi":{{}},"indicator":"{carried}"}}"##
+            ));
+            l.apply_custom_extras(c.as_ref());
+            assert_eq!(
+                p.get(INDICATOR_KEY).as_deref(),
+                Some("minimal"),
+                "{carried}"
+            );
+        }
     }
 
     #[test]

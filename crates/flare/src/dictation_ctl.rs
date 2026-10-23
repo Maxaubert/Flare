@@ -300,6 +300,10 @@ pub trait DictHost {
     fn paste(&self, session: &str, text: &str) -> PasteOutcome;
     /// Writes `text` as is to a tab's shell (the checked send's bracketed paste and its Enter).
     fn write_tab(&self, tab: &str, text: &str) -> bool;
+    /// Whether Claude's prompt box in this tab holds unsent text, read off its screen. Unknown is `false`.
+    fn prompt_has_draft(&self, _tab: &str) -> bool {
+        false
+    }
     /// This copy's tabs, as the send rules see them.
     fn send_tabs(&self) -> Vec<SendTab>;
     fn set_timer(&self, key: TimerKey, ms: u64, repeat: bool);
@@ -509,6 +513,12 @@ impl ClientHost for Bridge {
     fn write(&self, id: &str, data: &str) -> bool {
         let (id, data) = (id.to_string(), data.to_string());
         self.call(move |d| d.host.write_tab(&id, &data))
+            .unwrap_or(false)
+    }
+
+    fn prompt_has_draft(&self, id: &str) -> bool {
+        let id = id.to_string();
+        self.call(move |d| d.host.prompt_has_draft(&id))
             .unwrap_or(false)
     }
 
@@ -2667,6 +2677,20 @@ impl DictHost for AppHost {
             }
             None => false,
         }
+    }
+
+    fn prompt_has_draft(&self, tab: &str) -> bool {
+        let Some(rc) = self.ctl.upgrade() else {
+            return false;
+        };
+        let Ok(c) = rc.try_borrow() else {
+            return false;
+        };
+        c.handle_of(tab).is_some_and(|h| {
+            flare_agent::question::prompt_has_draft(
+                &h.screen_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
+            )
+        })
     }
 
     fn send_tabs(&self) -> Vec<SendTab> {
