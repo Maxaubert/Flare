@@ -745,7 +745,7 @@ fn the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else() {
 }
 
 #[test]
-fn the_page_fills_the_body_less_the_slots_hairline_at_every_scale() {
+fn the_page_fills_the_body_less_the_splitters_reach_at_every_scale() {
     for s in SCALES {
         let h = window(s);
         open_web(&h);
@@ -757,8 +757,15 @@ fn the_page_fills_the_body_less_the_slots_hairline_at_every_scale() {
             s,
         );
         let page = web_box(&h);
-        let hair = flare_surfaces::web::hair_px(f64::from(s));
-        assert_eq!(page.x, body.x + hair, "scale {s}: after the hairline");
+        let inset = flare_surfaces::web::web_inset_px(f64::from(s));
+        assert_eq!(page.x, body.x + inset, "scale {s}: after the splitter's reach");
+        // The splitter's whole grab zone lies left of the page: a press in it can only be the splitter's.
+        let splitter_right = ((h.comp.get_panel_splitter_x() + h.comp.get_panel_splitter_w()) * s).round() as i32;
+        assert!(
+            page.x >= splitter_right,
+            "scale {s}: the page starts at {} under the grab zone that ends at {splitter_right}",
+            page.x
+        );
         assert_eq!(page.right(), body.right(), "scale {s}");
         assert_eq!(
             (page.y, page.bottom()),

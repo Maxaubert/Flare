@@ -739,11 +739,12 @@ export component PanelSlot inherits Rectangle {
             width: parent.width;
             height: parent.height - root.header-h - root.bar-h;
             clip: true;
-            // Where the browser window sits: the body less the hairline of the slot. While an overlay
-            // hides the window, a still of its last frame is drawn here instead.
+            // Where the browser window sits: the body less half the splitter's grab zone (the zone is centred
+            // on the slot's edge, and a child window takes the mouse above anything drawn, so none of it may
+            // lie under the page). While an overlay hides the window, a still of its last frame is drawn here.
             web-box := Rectangle {
-                x: Px.hair();
-                width: parent.width - Px.hair();
+                x: Px.snap(4px);
+                width: parent.width - Px.snap(4px);
                 height: parent.height;
                 visible: root.kind == 3;
                 background: root.web-has-still ? Theme.ground : transparent;

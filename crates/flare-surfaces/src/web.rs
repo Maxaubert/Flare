@@ -313,8 +313,20 @@ pub fn phys_rect(x: f32, y: f32, w: f32, h: f32, scale: f32) -> PhysRect {
     }
 }
 
-/// The hairline at the slot's left edge, in physical pixels (the web view starts after it, so the
-/// splitter's visible line stays drawn).
+/// How far the web view starts inside the slot's left edge, in physical pixels: past the splitter's whole
+/// grab zone (half of `SPLITTER_HIT`, which is centred on the edge). A browser window is a child window and
+/// takes the mouse above anything the window draws, so any part of the grab zone under it would click into
+/// the page and never start a drag.
+pub fn web_inset_px(scale: f64) -> i32 {
+    let k = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (layout::SPLITTER_HIT / 2.0 * k).round() as i32
+}
+
+/// The hairline at the slot's left edge, in physical pixels.
 pub fn hair_px(scale: f64) -> i32 {
     let k = if scale.is_finite() && scale > 0.0 {
         scale
@@ -341,11 +353,11 @@ pub fn web_rect(
     if !l.shown {
         return None;
     }
-    let hair = hair_px(scale);
+    let inset = web_inset_px(scale);
     Some(PhysRect {
-        x: page_left + page_w - l.slot_w + hair,
+        x: page_left + page_w - l.slot_w + inset,
         y: page_top + header,
-        w: (l.slot_w - hair).max(0),
+        w: (l.slot_w - inset).max(0),
         h: (page_h - header).max(0),
     })
 }
@@ -688,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn the_web_rect_is_the_slot_less_the_header_and_the_hairline() {
+    fn the_web_rect_is_the_slot_less_the_header_and_the_splitters_reach() {
         for scale in [1.0f64, 1.5, 2.25, 3.0] {
             let page_w = (1000.0 * scale).round() as i32;
             let page_h = (600.0 * scale).round() as i32;
@@ -696,7 +708,11 @@ mod tests {
             let r = web_rect(0, 0, page_w, page_h, scale, None, header).unwrap();
             let l = layout::slot_layout(page_w, scale, None);
             assert_eq!(r.right(), page_w, "the page's right edge at {scale}");
-            assert_eq!(r.x, page_w - l.slot_w + hair_px(scale));
+            assert_eq!(r.x, page_w - l.slot_w + web_inset_px(scale));
+            assert!(
+                r.x >= page_w - l.slot_w + (layout::SPLITTER_HIT / 2.0 * scale).floor() as i32,
+                "no part of the grab zone is under the page at {scale}"
+            );
             assert_eq!(r.y, header);
             assert_eq!(r.h, page_h - header);
             assert!(r.w > 0 && r.w < l.slot_w);
@@ -709,7 +725,7 @@ mod tests {
         let r = web_rect(240, 31, 1000, 600, 1.0, Some(0.5), 64).unwrap();
         assert_eq!(
             (r.x, r.y, r.right(), r.h),
-            (240 + 500 + 1, 31 + 64, 240 + 1000, 536)
+            (240 + 500 + 4, 31 + 64, 240 + 1000, 536)
         );
     }
 
@@ -749,5 +765,19 @@ mod tests {
     fn the_host_is_the_label_of_an_address() {
         assert_eq!(host_label("https://example.com/a?b"), "example.com");
         assert_eq!(host_label("about:blank"), "about:blank");
+    }
+}
+
+#[cfg(test)]
+mod inset_tests {
+    use super::*;
+
+    #[test]
+    fn the_inset_is_half_the_grab_zone_at_every_scale() {
+        assert_eq!(web_inset_px(1.0), 4);
+        assert_eq!(web_inset_px(1.5), 6);
+        assert_eq!(web_inset_px(2.25), 9);
+        assert_eq!(web_inset_px(0.0), 4);
+        assert_eq!(web_inset_px(f64::NAN), 4);
     }
 }
