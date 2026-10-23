@@ -174,14 +174,15 @@ pub fn with_launch_folders(plan: &mut Restored, folders: &[String]) {
     plan.active = plan.tabs.len() - 1;
 }
 
-/// How long a folder may take to answer "is it there": past this it counts as gone, so one
-/// unreachable folder (an offline mapped drive that Windows spends a minute reconnecting) cannot
-/// hold every tab and every queued hand-off.
+/// How long a folder may take to answer "is it there": past this the restore stops WAITING for it, so
+/// one slow folder (an offline mapped drive that Windows spends a minute reconnecting, a USB disk
+/// spinning up) cannot hold every tab and every queued hand-off. The tab is KEPT (stored-state rules
+/// 36-41: only a folder that answered "gone" drops its tab), and the next save still writes it.
 pub const STAT_DEADLINE: Duration = Duration::from_secs(3);
 
 /// BLOCKING (a worker thread): stats every saved folder in parallel, asks `lookup` only for Claude
 /// tabs in a folder that exists, then `plan_restore`. A reported UNC folder is never statted, and a
-/// folder that does not answer within `STAT_DEADLINE` counts as gone.
+/// folder that does not answer within `STAT_DEADLINE` is kept, not dropped.
 pub fn resolve_restore(
     saved: &SavedTabs,
     is_dir: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -229,7 +230,7 @@ pub fn resolve_restore_within(
             Err(_) => break,
         }
     }
-    plan_restore(saved, &|p| present.get(p).copied().unwrap_or(false), &|p| {
+    plan_restore(saved, &|p| present.get(p).copied().unwrap_or(true), &|p| {
         lookup.sessions(p)
     })
 }
@@ -618,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn one_folder_that_never_answers_does_not_hold_the_rest() {
+    fn one_folder_that_never_answers_does_not_hold_the_rest_and_keeps_its_tab() {
         let saved = SavedTabs {
             tabs: vec![st("Z:\\nas", None), st("C:\\a", None), st("C:\\b", None)],
             active: 0,
@@ -643,9 +644,14 @@ mod tests {
         let took = t.elapsed();
         release.store(true, Ordering::SeqCst);
         assert!(took < Duration::from_secs(2), "held for {took:?}");
+        // The slow folder keeps its tab (and so its place in tabs.json); only a "gone" answer drops one.
         assert_eq!(
             r.tabs,
-            vec![rt("C:\\a", None, Some(1)), rt("C:\\b", None, Some(2))]
+            vec![
+                rt("Z:\\nas", None, Some(0)),
+                rt("C:\\a", None, Some(1)),
+                rt("C:\\b", None, Some(2))
+            ]
         );
     }
 

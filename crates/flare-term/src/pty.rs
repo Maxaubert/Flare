@@ -213,14 +213,18 @@ struct ProcInfo {
     /// The console host process the process is attached to (flags masked off); None when it
     /// cannot be read. A program the user opened in its own console window has another host.
     console: Option<usize>,
+    /// The console host owns a visible window: a console window the user can see. A child started
+    /// hidden (CREATE_NO_WINDOW, Node's windowsHide) has a host with no window, and is not spared.
+    console_visible: bool,
 }
 
 /// Pure: the processes below `root` that closing the tab may end. A GUI-subsystem process is an app the
 /// user started from the shell (Notepad, Excel, Chrome): it is spared, with everything under it. A process
 /// created before its listed parent only carries a recycled parent id (the real parent died and the number
 /// was reused): it is spared too, and so is one whose creation time cannot be read (audit H1, L1). A
-/// console process attached to another console host than the shell's (`start cmd /k npm run dev`, a
-/// window of its own) does not hold this tab's pseudo console, and is spared like Prism Terminal does.
+/// console process attached to another console host than the shell's, whose host has a VISIBLE window
+/// (`start cmd /k npm run dev`), does not hold this tab's pseudo console, and is spared. A hidden console
+/// (CREATE_NO_WINDOW: Claude Code's Bash tool and MCP servers) is not: it ends with the tab.
 fn kill_set(rows: &[(u32, u32)], root: u32, info: &dyn Fn(u32) -> ProcInfo) -> Vec<u32> {
     let root_console = info(root).console;
     walk(rows, root, &|parent, child| {
@@ -230,6 +234,7 @@ fn kill_set(rows: &[(u32, u32)], root: u32, info: &dyn Fn(u32) -> ProcInfo) -> V
         }
         if let (Some(mine), Some(theirs)) = (root_console, c.console)
             && mine != theirs
+            && c.console_visible
         {
             return false;
         }
@@ -262,7 +267,7 @@ fn pe_subsystem(path: &std::path::Path) -> Option<u16> {
     Some(u16::from_le_bytes(s))
 }
 
-fn proc_info(pid: u32) -> ProcInfo {
+fn proc_info(pid: u32, windowed: &std::collections::HashSet<u32>) -> ProcInfo {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -271,6 +276,7 @@ fn proc_info(pid: u32) -> ProcInfo {
         created: None,
         gui: false,
         console: None,
+        console_visible: false,
     };
     // SAFETY: plain values in; a null handle means failure and is checked.
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -314,7 +320,34 @@ fn proc_info(pid: u32) -> ProcInfo {
         created: ok.then(|| (u64::from(cr.dwHighDateTime) << 32) | u64::from(cr.dwLowDateTime)),
         gui,
         console,
+        console_visible: console.is_some_and(|c| windowed.contains(&(c as u32))),
     }
+}
+
+/// The ids of the processes that own a visible top-level window.
+fn visible_window_owners() -> std::collections::HashSet<u32> {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> i32 {
+        // SAFETY: `l` is the address of the set below, alive for the whole EnumWindows call.
+        let set = unsafe { &mut *(l as *mut std::collections::HashSet<u32>) };
+        // SAFETY: plain handle in; a window that vanished answers false or 0.
+        if unsafe { IsWindowVisible(h) } != 0 {
+            let mut pid = 0u32;
+            // SAFETY: `pid` is a live out value.
+            unsafe { GetWindowThreadProcessId(h, &mut pid) };
+            if pid != 0 {
+                set.insert(pid);
+            }
+        }
+        1
+    }
+    let mut set = std::collections::HashSet::new();
+    // SAFETY: the callback only touches `set`, which outlives the call.
+    unsafe { EnumWindows(Some(each), (&raw mut set) as LPARAM) };
+    set
 }
 
 /// Ends the console processes below `root` (TerminateProcess), sparing GUI apps. Never waits; failures are
@@ -345,12 +378,13 @@ fn kill_descendants(root: u32) {
     // SAFETY: `snap` is closed once.
     unsafe { CloseHandle(snap) };
     // Each process is read once: the walk asks about a parent for every child it has.
+    let windowed = visible_window_owners();
     let cache = std::cell::RefCell::new(std::collections::HashMap::<u32, ProcInfo>::new());
     let info = |pid: u32| {
         *cache
             .borrow_mut()
             .entry(pid)
-            .or_insert_with(|| proc_info(pid))
+            .or_insert_with(|| proc_info(pid, &windowed))
     };
     // Deepest first is not needed: a parent's death does not stop a child.
     for pid in kill_set(&rows, root, &info) {
@@ -464,11 +498,13 @@ mod tests {
                     created: Some(r.1),
                     gui: r.2,
                     console: Some(7),
+                    console_visible: false,
                 })
                 .unwrap_or(ProcInfo {
                     created: None,
                     gui: false,
                     console: None,
+                    console_visible: false,
                 })
         }
     }
@@ -482,10 +518,26 @@ mod tests {
             created: Some(100 + u64::from(pid)),
             gui: false,
             console: Some(if pid == 20 || pid == 30 { 8 } else { 7 }),
+            console_visible: pid == 20 || pid == 30,
         };
         let mut k = kill_set(&rows, 10, &info);
         k.sort();
         assert_eq!(k, vec![40]);
+    }
+
+    #[test]
+    fn a_hidden_console_child_is_ended_with_the_tab() {
+        // shell 10 (host 7) -> node 20 (CREATE_NO_WINDOW: host 8, no window) -> mcp 30 (host 8).
+        let rows = [(20, 10), (30, 20)];
+        let info = |pid: u32| ProcInfo {
+            created: Some(100 + u64::from(pid)),
+            gui: false,
+            console: Some(if pid == 10 { 7 } else { 8 }),
+            console_visible: false,
+        };
+        let mut k = kill_set(&rows, 10, &info);
+        k.sort();
+        assert_eq!(k, vec![20, 30]);
     }
 
     #[test]

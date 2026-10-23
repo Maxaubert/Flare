@@ -189,24 +189,6 @@ impl Session {
         }
     }
 
-    /// `deliver(true)` when the destination is free right now; otherwise nothing.
-    fn deliver_nowait(&self) {
-        let Ok(mut dest) = self.dest.try_lock() else {
-            return;
-        };
-        if self.killed.load(Ordering::SeqCst) {
-            return;
-        }
-        let chunk = lk(&self.state).batcher.flush();
-        self.space_cv.notify_all();
-        if let Some(bytes) = chunk {
-            match &mut *dest {
-                Dest::Buffer(buf) => append_capped(buf, &bytes, self.banner_cap),
-                Dest::Sink { id, sink } => sink.data(id, bytes),
-            }
-        }
-    }
-
     fn stop_io(&self) {
         lk(&self.state).stop = true;
         self.pump_cv.notify_all();
@@ -888,16 +870,6 @@ impl SessionManager {
         lk(&self.sh.st).sessions.get(id).map(|s| s.def_id.clone())
     }
 
-    /// Like `flush_output`, but never waits: when the pump holds the session (it is parsing a
-    /// chunk) the flush is skipped, because that chunk is on its way to the emulator anyway. The
-    /// UI thread calls this on a resize, and may not sit behind a flooding shell (rule 34).
-    pub fn flush_output_nowait(&self, id: &str) {
-        let s = lk(&self.sh.st).sessions.get(id).cloned();
-        if let Some(s) = s {
-            s.deliver_nowait();
-        }
-    }
-
     /// Delivers what the batcher holds NOW, on the caller's thread.
     pub fn flush_output(&self, id: &str) {
         let s = lk(&self.sh.st).sessions.get(id).cloned();
@@ -931,15 +903,18 @@ impl SessionManager {
         }
     }
 
-    /// ResizePseudoConsole talks to the console host and can wait on it while a shell floods, so
-    /// it never runs on the caller (the UI thread, rule 34): a helper thread tries now, then
-    /// retries while that size is still the wanted one. The wish is checked under the proc lock,
+    /// The flush of what is already read (parsed at the old size, before the pty answers at the new
+    /// one) and ResizePseudoConsole both wait on a flooding shell, so neither runs on the caller (the
+    /// UI thread, rule 34): a helper thread flushes, tries now, then retries while that size is still
+    /// the wanted one. The wish is checked under the proc lock,
     /// so an older helper can never land after a newer size.
     fn apply_resize(&self, s: &Arc<Session>, id: &str, cols: usize, rows: usize) {
         let (sh, s, id) = (Arc::clone(&self.sh), Arc::clone(s), id.to_string());
         let r = std::thread::Builder::new()
             .name("flare-pty-resize".into())
             .spawn(move || {
+                // Output already read is parsed first, so ConPTY's answer lands after it.
+                s.deliver(true);
                 for attempt in 0..=sh.opts.resize_retries {
                     if attempt > 0 {
                         std::thread::sleep(sh.opts.resize_retry_delay); // sync-ok: a helper thread, never the caller's
@@ -1476,6 +1451,31 @@ mod tests {
         );
         drop(held);
         assert!(wait_until(|| f.size() == (100, 30)));
+    }
+
+    #[test]
+    fn a_resize_never_flushes_the_backlog_on_the_caller() {
+        struct Who(Mutex<Vec<std::thread::ThreadId>>);
+        impl SessionSink for Who {
+            fn data(&self, _: &str, _: Vec<u8>) {
+                lk(&self.0).push(std::thread::current().id());
+            }
+            fn exit(&self, _: &str, _: Option<u32>) {}
+        }
+        let sp = FakeSpawner::new();
+        let m = mgr(&sp);
+        let who = Arc::new(Who(Mutex::new(Vec::new())));
+        assert!(m.spawn("a", "C:\\x", Some("pwsh"), who.clone(), None, None));
+        let f = Arc::clone(&sp.made()[0]);
+        // Read but not yet due: the batcher holds it while the destination is free.
+        f.feed(&vec![b'x'; 4096]);
+        m.resize("a", 100, 30);
+        assert!(wait_until(|| f.size() == (100, 30)));
+        assert!(wait_until(|| !lk(&who.0).is_empty()));
+        assert!(
+            !lk(&who.0).contains(&std::thread::current().id()),
+            "the caller parsed the backlog"
+        );
     }
 
     #[test]

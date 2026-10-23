@@ -484,15 +484,21 @@ impl Inner {
         }
         let numbered = |n: u32| PathBuf::from(format!("{}.{n}", self.file.display()));
         let parked = PathBuf::from(format!("{}.rotating", self.file.display()));
+        // A leftover parked file (a restore that failed) is never replaced: it is finished first, the
+        // live file stays where it is and the next due rotation takes it.
+        let left_over = parked.exists();
+        let mut took_live = false;
         let result = (|| -> io::Result<()> {
             // The live file moves first, to a temporary name: when something holds it (a tail
             // tool, a scanner) this fails before any history is touched, so a blocked rotation
             // that retries never costs an older generation.
-            match fs::rename(&self.file, &parked) {
-                // sync-ok: writer thread rotation
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e),
+            if !left_over {
+                match fs::rename(&self.file, &parked) {
+                    // sync-ok: writer thread rotation
+                    Ok(()) => took_live = true,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(e),
+                }
             }
             match fs::remove_file(numbered(DIAG_KEEP)) {
                 // sync-ok: rotation runs on the writer thread or a quit flush
@@ -506,7 +512,13 @@ impl Inner {
             }
             fs::rename(&parked, numbered(1)) // sync-ok: writer thread rotation
         })();
+        if result.is_err() && took_live {
+            // Put the live file back: a retry must park the NEWEST log, never one over the older.
+            let _ = fs::rename(&parked, &self.file); // sync-ok: writer thread rotation
+        }
         match result {
+            // After a leftover only that file moved on: the live file is still big and goes next time.
+            Ok(()) if left_over => {}
             Ok(()) => io.size = 0,
             Err(e) => {
                 io.rotate_after = (self.uptime)() + ROTATE_RETRY_MS;

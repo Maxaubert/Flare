@@ -410,13 +410,12 @@ impl TermHandle {
         self.sh.dirty.load(Ordering::SeqCst)
     }
 
-    /// Parses what is already read, resizes the emulator, THEN the pty, so ConPTY's answer lands
-    /// on the new size.
+    /// Resizes the emulator, then the pty; the session's helper flushes what is already read first, so
+    /// ConPTY's answer lands on the new size and the UI thread never parses a backlog (rule 34).
     pub fn resize(&self, cols: usize, rows: usize) {
         if cols < 2 || rows < 1 {
             return;
         }
-        self.sh.mgr.flush_output_nowait(&self.sh.id);
         self.emu.lock().resize(cols, rows);
         self.sh.mgr.resize(&self.sh.id, cols, rows);
         self.sh.dirty.store(true, Ordering::SeqCst);

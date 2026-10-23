@@ -221,6 +221,55 @@ fn a_blocked_rotation_that_retries_never_costs_an_older_generation() {
 }
 
 #[test]
+fn a_rotation_that_fails_after_the_park_puts_the_live_file_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    let dir = tmp.path().join("logs");
+    for n in 1..=4 {
+        fs::write(dir.join(format!("diag.jsonl.{n}")), format!("gen{n}")).unwrap();
+    }
+    // Something holds the oldest generation without share-delete: the live file parks, then
+    // removing .4 fails.
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(dir.join("diag.jsonl.4"))
+        .unwrap();
+    for round in 0..4u64 {
+        up.fetch_add(30_001, Ordering::SeqCst);
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+        assert!(
+            !dir.join("diag.jsonl.rotating").exists(),
+            "the parked file was left behind on retry {round}"
+        );
+        let kinds = kinds_of(tmp.path());
+        assert!(
+            kinds.iter().any(|k| k == "a"),
+            "history lost on retry {round}: {kinds:?}"
+        );
+    }
+    assert!(log.failed());
+    drop(held);
+    up.fetch_add(30_001, Ordering::SeqCst);
+    log.write("main", "c", fields(&[("pad", json!(pad))]));
+    log.flush();
+    let first = fs::read_to_string(dir.join("diag.jsonl.1")).unwrap();
+    assert!(
+        first.contains("\"k\":\"a\""),
+        "the newest history went to .1"
+    );
+}
+
+#[test]
 fn a_refused_verbose_write_leaves_the_switch_as_it_was() {
     let tmp = tempfile::tempdir().unwrap();
     // A folder where the state file should be: the atomic write is refused.

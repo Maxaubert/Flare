@@ -44,9 +44,11 @@ pub fn with_resume(def: &ShellDef, resume: &str) -> Launch {
             // cmd looks in the current folder (the tab's project) before PATH; a claude.cmd a
             // repo carries must never run on a restore.
             let step = if codex {
-                format!("set {NO_CWD_EXE}=1& codex resume --last")
+                format!("set {NO_CWD_EXE}=1& codex resume --last& set {NO_CWD_EXE}=")
             } else {
-                format!("set {NO_CWD_EXE}=1& set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%")
+                format!(
+                    "set {NO_CWD_EXE}=1& set {RESUME_ENV}=& claude --resume %{RESUME_ENV}%& set {NO_CWD_EXE}="
+                )
             };
             (vec!["/K".to_string(), step], env)
         }
@@ -125,10 +127,22 @@ mod tests {
             r.args,
             [
                 "/K",
-                "set NoDefaultCurrentDirectoryInExePath=1& set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%"
+                "set NoDefaultCurrentDirectoryInExePath=1& set FLARE_RESUME_ID=& claude --resume %FLARE_RESUME_ID%& set NoDefaultCurrentDirectoryInExePath="
             ]
         );
         assert!(!r.args[1].contains('"'));
+    }
+
+    #[test]
+    fn a_cmd_resume_clears_the_search_switch_once_the_agent_ends() {
+        for id in [A, "codex:last"] {
+            let r = with_resume(&cmd(), id);
+            assert!(
+                r.args[1].ends_with("& set NoDefaultCurrentDirectoryInExePath="),
+                "{}",
+                r.args[1]
+            );
+        }
     }
 
     #[test]
@@ -166,7 +180,7 @@ mod tests {
             r.args,
             [
                 "/K",
-                "set NoDefaultCurrentDirectoryInExePath=1& codex resume --last"
+                "set NoDefaultCurrentDirectoryInExePath=1& codex resume --last& set NoDefaultCurrentDirectoryInExePath="
             ]
         );
         assert_eq!(r.env, None);
