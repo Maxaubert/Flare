@@ -3135,6 +3135,26 @@ impl AppCtl {
         if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
             return;
         }
+        // A window too narrow for a slot would open a panel nobody can see, and the click would look dead: the file
+        // goes the way a click goes with previews off.
+        if self.app().is_some_and(|a| !a.get_panel_fits()) {
+            let (openers, home) = (Arc::clone(&self.deps.term.openers), self.deps.home.clone());
+            let path = std::path::Path::new(abs);
+            let base = path.parent().map(|p| p.to_string_lossy().into_owned());
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            if let (Some(base), Some(name)) = (base, name) {
+                std::thread::spawn(move || {
+                    let _ = flare_term::path_open::open_term_path(
+                        &base,
+                        &name,
+                        flare_term::path_open::OpenMode::Open,
+                        &*openers,
+                        &home,
+                    );
+                });
+            }
+            return;
+        }
         self.show_preview_asked(tab, kind, abs);
     }
 
@@ -6681,6 +6701,28 @@ two",
         f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
         assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
         assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_file_in_a_window_too_narrow_for_a_slot_opens_it_in_windows() {
+        let (f, _h, _) = live(Opts::default());
+        let abs = f.dir.path().join("narrow.txt");
+        std::fs::write(&abs, "x").unwrap(); // sync-ok: test code only
+        let abs = abs.to_string_lossy().into_owned();
+        // No room for a slot (the same as a half-screen window with vertical tabs).
+        f.h.comp.set_panel_usable_min(10_000.0);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_fits());
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: test code only
+        }
+        assert_eq!(f.openers.records().len(), 1, "the click did something");
+        assert!(!f.h.comp.get_panel_open(), "and opened no invisible panel");
     }
 
     #[test]
