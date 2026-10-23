@@ -673,6 +673,7 @@ mod flow {
         fake: Arc<FakeState>,
         sp: Arc<FakeSpawner>,
         dir: tempfile::TempDir,
+        prefs: PrefStore,
         scale: f32,
     }
 
@@ -904,6 +905,7 @@ mod flow {
                 fake,
                 sp,
                 dir,
+                prefs: prefs.clone(),
                 scale,
             };
             // The first render lays the window out, which tells the grid its size.
@@ -1503,6 +1505,8 @@ mod flow {
     #[test]
     fn an_outside_right_click_goes_where_a_normal_one_would() {
         let w = Wx::new(1.0);
+        // A right click is reported to a mouse program only when the owner switched that on (default off).
+        flare_settings::term_prefs::set_right_click_reports(&w.prefs, true);
         w.feed("hello world");
         w.settle();
         w.right_click(2, 0);

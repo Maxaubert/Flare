@@ -5486,7 +5486,18 @@ mod tests {
         f.wait_made("C:\\a");
         f.wait_made("C:\\b");
         assert_eq!(f.ctl.borrow().model().active().unwrap().id, b);
-        let resizes: Vec<usize> = f.sp.made().iter().map(|m| m.resize_calls()).collect();
+        // Resizes run on a helper thread now (rule 34), so a start's own size lands late: wait until the
+        // counts hold still before taking them.
+        let count = || -> Vec<usize> { f.sp.made().iter().map(|m| m.resize_calls()).collect() };
+        let mut resizes = count();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let now = count();
+            if now == resizes {
+                break;
+            }
+            resizes = now;
+        }
         let sources = f.log.borrow().sources.len();
         // A click (press and release, no travel) on tab A.
         let (x, origin) = {
@@ -5506,7 +5517,8 @@ mod tests {
             f.log.borrow().sources.last().unwrap().as_deref(),
             Some(a.as_str())
         );
-        let after: Vec<usize> = f.sp.made().iter().map(|m| m.resize_calls()).collect();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let after = count();
         assert_eq!(resizes, after, "a pick does not resize a shell");
         f.ctl.borrow_mut().toggle_settings();
         assert_eq!(f.log.borrow().sources.last().unwrap(), &None);

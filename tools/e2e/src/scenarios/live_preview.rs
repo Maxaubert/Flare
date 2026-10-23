@@ -26,6 +26,8 @@ use std::time::Duration;
 use flare_e2e_proto::Request;
 use serde_json::{json, Value};
 
+use crate::standins::agent_proc;
+
 use super::input_b::{css, front_tab, probe, prompt, type_line};
 use super::web::script;
 use crate::ctx::{App, Ctx, Launch};
@@ -566,6 +568,10 @@ fn toast_on(ctx: &mut Ctx, app: &mut App, root: &Path, alpha: &Path) -> Result<(
     // Tab 1 holds the agent; tab 2 is where the person is.
     let a = go_to(ctx, app, 1, at)?;
     prompt(app)?;
+    // A real agent process holds the hooks (review #47): a plain shell's claim is taken back by its one look.
+    type_line(app, &agent_proc::command(&app.profile)?)?;
+    pass(ctx, agent_proc::SETTLE_MS);
+    prompt(app)?;
     type_line(app, &asker(&go1, &go2))?;
     let working = ctx.until("the agent to be working", 20_000, &mut || {
         first_agent_is(app, "working")
@@ -642,6 +648,10 @@ fn toast_off(ctx: &mut Ctx, app: &mut App, root: &Path) -> Result<(), String> {
     let _ = fs::remove_file(&go1);
     let _ = fs::write(&go2, "go");
     let _a = go_to(ctx, app, 1, at)?;
+    prompt(app)?;
+    // A real agent process holds the hooks (review #47): a plain shell's claim is taken back by its one look.
+    type_line(app, &agent_proc::command(&app.profile)?)?;
+    pass(ctx, agent_proc::SETTLE_MS);
     prompt(app)?;
     type_line(app, &asker(&go1, &go2))?;
     let working = ctx.until("the agent to be working", 20_000, &mut || {
