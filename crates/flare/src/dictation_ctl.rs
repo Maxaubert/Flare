@@ -2688,7 +2688,7 @@ impl DictHost for AppHost {
         };
         c.handle_of(tab).is_some_and(|h| {
             flare_agent::question::prompt_has_draft(
-                &h.screen_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
+                &h.typed_tail(flare_agent::indicator::SCREEN_TAIL_ROWS),
             )
         })
     }

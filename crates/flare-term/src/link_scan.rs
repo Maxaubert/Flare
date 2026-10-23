@@ -151,16 +151,44 @@ impl LinkScanner {
                         marks
                     }
                 };
-                out.extend(marks.iter().cloned());
+                // A piece cut from a longer line: a mark touching the cut edge is only half a link, left to
+                // the piece that has its other half; a mark wholly in the overlap was the last piece's.
+                out.extend(
+                    marks
+                        .iter()
+                        .filter(|m| !(ll.cut_top && touches_top(m, &ll)))
+                        .filter(|m| !(ll.cut_bottom && touches_bottom(m, &ll, cols)))
+                        .filter(|m| m.pieces.iter().any(|p| p.row >= y))
+                        .cloned(),
+                );
                 next.insert(ll.first, (key, marks));
             }
             y = row_end + 1;
-            floor = y;
+            // A line cut at the window's bottom goes on in the next piece, which starts a few rows back
+            // so a link straddling the cut is read whole in it.
+            floor = if ll.cut_bottom {
+                y.saturating_sub(CUT_OVERLAP_ROWS).max(ll.first + 1)
+            } else {
+                y
+            };
         }
         self.waiting.retain(|r| next.contains_key(r));
         self.cache = next;
         out
     }
+}
+
+/// Rows a piece of a very long line starts back into the previous one.
+const CUT_OVERLAP_ROWS: usize = 6;
+
+fn touches_top(m: &LinkMark, ll: &LogicalLine) -> bool {
+    m.pieces.iter().any(|p| p.row == ll.first && p.col == 0)
+}
+
+fn touches_bottom(m: &LinkMark, ll: &LogicalLine, cols: usize) -> bool {
+    m.pieces
+        .iter()
+        .any(|p| p.row == ll.last && p.col + p.width >= cols)
 }
 
 /// The hyperlink of every cell of the line (a wide character's spacer shares its character's).
@@ -617,6 +645,28 @@ mod tests {
         // Scrolling on reads another window, never duplicating a mark.
         let m = h.scan(&b, 20, 2999, 3009);
         assert_eq!(m.len(), 1);
+    }
+
+    /// A link that straddles the cut between two pieces of a long line is one whole mark, not two
+    /// truncated ones (NEW-F).
+    #[test]
+    fn a_link_across_the_cut_of_a_long_line_is_one_whole_mark() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mut rows: Vec<(&str, bool)> = (0..200).map(|_| (filler, true)).collect();
+        rows[0].1 = false;
+        // 20 columns: the first window ends after row 24, so this address crosses rows 24 and 25.
+        rows[24] = ("aaaaaaaaaa https://a", true);
+        rows[25] = (".io/xyz aaaaaaaaaaa ", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        assert_eq!(webs[0].target, LinkTarget::Web("https://a.io/xyz".into()));
+        assert_eq!(webs[0].pieces.len(), 2);
     }
 
     #[test]

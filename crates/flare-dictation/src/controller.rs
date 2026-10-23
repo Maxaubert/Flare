@@ -58,6 +58,8 @@ const CLIP_CAP: usize = ((MAX_SECONDS + 2.0) * TARGET_RATE as f64) as usize;
 
 const NO_MODEL: &str = "Choose a model in Settings";
 const NO_MODEL_OUTSIDE: &str = "Choose a speech model in Settings";
+const OUTSIDE_OFF: &str = "Dictation is off";
+const OUTSIDE_BUSY: &str = "Already dictating";
 const NO_ENGINE: &str = "The speech engine is missing. Reinstall the app.";
 const ENGINE_STOPPED: &str = "The speech engine stopped. Try again.";
 const TAB_CLOSED: &str = "That tab has closed";
@@ -379,7 +381,17 @@ impl Controller {
     fn on_outside(&mut self, fx: &mut Vec<Effect>, now: f64, a: OutsideAction) {
         match a {
             OutsideAction::Start => {
-                if !self.has_sink || !self.prefs.enabled {
+                if !self.has_sink {
+                    return;
+                }
+                // The service waits for an answer to every outside start (it refuses the next press until one
+                // comes), so a start that is ignored still answers.
+                if !self.prefs.enabled {
+                    fx.push(Effect::Route(RouteResult::Message(OUTSIDE_OFF.into())));
+                    return;
+                }
+                if self.rec.is_some() {
+                    fx.push(Effect::Route(RouteResult::Message(OUTSIDE_BUSY.into())));
                     return;
                 }
                 // No model: said in the host's widget, where the owner is looking.
@@ -997,7 +1009,10 @@ mod tests {
             ..prefs()
         });
         assert!(h.ev(Event::Key(KeyAction::Start)).is_empty());
-        assert!(h.ev(Event::Outside(OutsideAction::Start)).is_empty());
+        assert!(h
+            .ev(Event::Outside(OutsideAction::Start))
+            .iter()
+            .all(|e| matches!(e, Effect::Route(RouteResult::Message(_)))));
         assert!(warms(&h.all).is_empty());
         assert!(!h.c.recording());
     }
@@ -1089,7 +1104,11 @@ mod tests {
         let mut h = H::new();
         h.listen();
         assert!(h.ev(Event::Key(KeyAction::Start)).is_empty());
-        assert!(h.ev(Event::Outside(OutsideAction::Start)).is_empty());
+        // The outside press is ignored but answered (NEW-B): the service clears its busy mark on it.
+        assert_eq!(
+            routes(&h.ev(Event::Outside(OutsideAction::Start))),
+            vec![RouteResult::Message("Already dictating".into())]
+        );
     }
 
     #[test]
@@ -1706,7 +1725,12 @@ mod tests {
         let mut h = H::new();
         h.ev(Event::Role(Role::Service));
         h.set(|p| p.enabled = false);
-        assert!(h.ev(Event::Outside(OutsideAction::Start)).is_empty());
+        // Ignored, but answered, so the service does not wait for words that will never come.
+        assert_eq!(
+            routes(&h.ev(Event::Outside(OutsideAction::Start))),
+            vec![RouteResult::Message("Dictation is off".into())]
+        );
+        assert!(!h.c.recording());
         let mut h = H::new();
         h.c.set_sink(false);
         assert!(h.ev(Event::Outside(OutsideAction::Start)).is_empty());

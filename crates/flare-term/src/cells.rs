@@ -136,6 +136,10 @@ pub struct LogicalLine {
     /// Where in `text` (char index) a row broken BY HAND starts (`by_hand`); empty unless asked
     /// for (`logical_line_in` with `hand`).
     pub joins: Vec<usize>,
+    /// The read stopped at the window's top edge although the line goes on above it.
+    pub cut_top: bool,
+    /// The read stopped at the window's bottom edge although the line goes on below it.
+    pub cut_bottom: bool,
 }
 
 /// What a path's piece can be made of: one character that is not a break of `paths.rs`
@@ -244,6 +248,8 @@ pub fn logical_line_win(
     while last + 1 < b.len() && last < hi && goes_on(last + 1) {
         last += 1;
     }
+    let cut_top = first > 0 && first == lo && goes_on(first);
+    let cut_bottom = last + 1 < b.len() && last >= hi && goes_on(last + 1);
     let mut cells = Vec::new();
     let mut hand_rows = Vec::new();
     for i in first..=last {
@@ -270,6 +276,8 @@ pub fn logical_line_win(
         index,
         text_end,
         joins,
+        cut_top,
+        cut_bottom,
     }
 }
 

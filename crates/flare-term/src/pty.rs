@@ -267,7 +267,7 @@ fn pe_subsystem(path: &std::path::Path) -> Option<u16> {
     Some(u16::from_le_bytes(s))
 }
 
-fn proc_info(pid: u32, windowed: &std::collections::HashSet<u32>) -> ProcInfo {
+fn proc_info(pid: u32) -> ProcInfo {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -320,8 +320,36 @@ fn proc_info(pid: u32, windowed: &std::collections::HashSet<u32>) -> ProcInfo {
         created: ok.then(|| (u64::from(cr.dwHighDateTime) << 32) | u64::from(cr.dwLowDateTime)),
         gui,
         console,
-        console_visible: console.is_some_and(|c| windowed.contains(&(c as u32))),
+        console_visible: false,
     }
+}
+
+/// The console host of a process (flags masked off), None when it cannot be read.
+fn console_host_of(pid: u32) -> Option<usize> {
+    proc_info(pid).console
+}
+
+fn hosts_of(windowed: &std::collections::HashSet<u32>) -> std::collections::HashSet<usize> {
+    windowed
+        .iter()
+        .filter_map(|&w| console_host_of(w))
+        .collect()
+}
+
+/// Pure: does the console host `host` front a window the user can see? A classic console window is
+/// owned by a CLIENT of the host (cmd.exe, not conhost), so a host is visible when a window owner
+/// is attached to it (`owner_hosts`). With Windows Terminal as the default terminal the window belongs
+/// to WindowsTerminal.exe, which runs the host (OpenConsole) as its child, so a host whose parent owns a
+/// window is visible too. A CREATE_NO_WINDOW or ConPTY-hosted child has neither (NEW-A).
+fn host_is_visible(
+    host: u32,
+    parent_of: &dyn Fn(u32) -> Option<u32>,
+    windowed: &std::collections::HashSet<u32>,
+    owner_hosts: &std::collections::HashSet<usize>,
+) -> bool {
+    windowed.contains(&host)
+        || owner_hosts.contains(&(host as usize))
+        || parent_of(host).is_some_and(|p| windowed.contains(&p))
 }
 
 /// The ids of the processes that own a visible top-level window.
@@ -350,19 +378,17 @@ fn visible_window_owners() -> std::collections::HashSet<u32> {
     set
 }
 
-/// Ends the console processes below `root` (TerminateProcess), sparing GUI apps. Never waits; failures are
-/// ignored.
-fn kill_descendants(root: u32) {
+/// (pid, parent pid) for every process.
+fn process_rows() -> Vec<(u32, u32)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     // SAFETY: plain values in; an invalid handle is checked.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE || snap.is_null() {
-        return;
+        return Vec::new();
     }
     let mut rows: Vec<(u32, u32)> = Vec::new();
     // SAFETY: PROCESSENTRY32W is plain data; zero is valid before dwSize is set.
@@ -377,14 +403,33 @@ fn kill_descendants(root: u32) {
     }
     // SAFETY: `snap` is closed once.
     unsafe { CloseHandle(snap) };
+    rows
+}
+
+/// Ends the console processes below `root` (TerminateProcess), sparing GUI apps. Never waits; failures are
+/// ignored.
+fn kill_descendants(root: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    let rows = process_rows();
     // Each process is read once: the walk asks about a parent for every child it has.
     let windowed = visible_window_owners();
+    let parents: std::collections::HashMap<u32, u32> = rows.iter().copied().collect();
+    let owner_hosts = hosts_of(&windowed);
     let cache = std::cell::RefCell::new(std::collections::HashMap::<u32, ProcInfo>::new());
     let info = |pid: u32| {
-        *cache
-            .borrow_mut()
-            .entry(pid)
-            .or_insert_with(|| proc_info(pid, &windowed))
+        *cache.borrow_mut().entry(pid).or_insert_with(|| {
+            let mut i = proc_info(pid);
+            i.console_visible = i.console.is_some_and(|h| {
+                host_is_visible(
+                    h as u32,
+                    &|x| parents.get(&x).copied(),
+                    &windowed,
+                    &owner_hosts,
+                )
+            });
+            i
+        })
     };
     // Deepest first is not needed: a parent's death does not stop a child.
     for pid in kill_set(&rows, root, &info) {
@@ -523,6 +568,22 @@ mod tests {
         let mut k = kill_set(&rows, 10, &info);
         k.sort();
         assert_eq!(k, vec![40]);
+    }
+
+    #[test]
+    fn a_console_host_is_visible_through_its_client_or_its_parent_window() {
+        use std::collections::{HashMap, HashSet};
+        let parents: HashMap<u32, u32> = [(80, 90), (81, 1)].into_iter().collect();
+        let parent_of = |p: u32| parents.get(&p).copied();
+        // Classic: conhost 70 has no window itself; its client cmd 71 owns one, so the host is in owner_hosts.
+        let owners: HashSet<usize> = [70].into_iter().collect();
+        let windowed: HashSet<u32> = [71, 90].into_iter().collect();
+        assert!(host_is_visible(70, &parent_of, &windowed, &owners));
+        // Windows Terminal default: OpenConsole 80 is WindowsTerminal 90's child, and 90 owns the window.
+        assert!(host_is_visible(80, &parent_of, &windowed, &owners));
+        // Headless: CREATE_NO_WINDOW host 81 whose parent owns no window.
+        assert!(!host_is_visible(81, &parent_of, &windowed, &owners));
+        assert!(!host_is_visible(99, &parent_of, &windowed, &owners));
     }
 
     #[test]
@@ -747,6 +808,109 @@ mod tests {
         let (buf, _w, _h) = pump(g.0.as_mut().unwrap());
         assert!(wait_for(&buf, "Microsoft Windows", 1));
         assert!(g.0.as_mut().unwrap().resize(100, 30).is_ok());
+    }
+
+    /// Real Win32: is `pid`'s console visible by the rule the kill uses?
+    fn console_visible_now(pid: u32) -> Option<bool> {
+        let rows = process_rows();
+        let parents: std::collections::HashMap<u32, u32> = rows.iter().copied().collect();
+        let windowed = visible_window_owners();
+        let owners = hosts_of(&windowed);
+        let host = proc_info(pid).console?;
+        Some(host_is_visible(
+            host as u32,
+            &|x| parents.get(&x).copied(),
+            &windowed,
+            &owners,
+        ))
+    }
+
+    fn kill_tree(pid: u32) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+
+    /// A CREATE_NO_WINDOW child (Claude Code's Bash tool, an MCP server) has a windowless console host.
+    #[test]
+    fn real_hidden_console_child_is_not_visible() {
+        use std::os::windows::process::CommandExt;
+        let mut c = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping", "-n", "30", "localhost"])
+            .creation_flags(0x0800_0000)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = c.id();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let v = console_visible_now(pid);
+        kill_tree(pid);
+        let _ = c.wait();
+        assert_eq!(v, Some(false));
+    }
+
+    /// `start /min cmd /k` opens a console window of its own (classic conhost or Windows Terminal, whichever
+    /// is the default terminal): it must count as visible (NEW-A). Opens a minimised window for a moment, so
+    /// it only runs on request: `cargo test -p flare-term real_start_window -- --ignored`.
+    #[test]
+    #[ignore = "opens a minimised console window on the desktop"]
+    fn real_start_window_is_visible() {
+        use std::os::windows::process::CommandExt;
+        let tag = format!("flare-start-probe-{}", std::process::id());
+        let c = std::process::Command::new("cmd.exe")
+            .args([
+                "/c",
+                "start",
+                "/min",
+                "cmd",
+                "/k",
+                &format!("title {tag}& ping -n 40 localhost >nul"),
+            ])
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(c.success());
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        // find the ping child of the `start`ed cmd
+        let rows = process_rows();
+        let ping = rows.iter().find_map(|&(pid, par)| {
+            let name_ok = proc_name(pid).is_some_and(|n| n.eq_ignore_ascii_case("ping.exe"));
+            (name_ok && proc_name(par).is_some_and(|n| n.eq_ignore_ascii_case("cmd.exe")))
+                .then_some(pid)
+        });
+        let v = ping.and_then(console_visible_now);
+        if let Some(p) = ping {
+            kill_tree(p);
+        }
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/FI", &format!("WINDOWTITLE eq {tag}*")])
+            .output();
+        assert_eq!(v, Some(true));
+    }
+
+    fn proc_name(pid: u32) -> Option<String> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        };
+        // SAFETY: plain values; null checked; handle closed once; buffer sized by `len`.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return None;
+            }
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
+            CloseHandle(h);
+            (ok != 0).then(|| {
+                let full = String::from_utf16_lossy(&buf[..len as usize]);
+                full.rsplit(std::path::MAIN_SEPARATOR)
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
+        }
     }
 
     fn alive(pid: u32) -> bool {

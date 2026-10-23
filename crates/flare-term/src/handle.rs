@@ -554,6 +554,12 @@ impl TermHandle {
         self.emu.lock().text_tail(rows)
     }
 
+    /// `screen_tail` with dim, reverse-video and grey cells blanked: the typed ink only (a placeholder in an
+    /// empty prompt box is not a draft).
+    pub fn typed_tail(&self, rows: usize) -> Vec<String> {
+        self.emu.lock().typed_tail(rows)
+    }
+
     /// The question watch's rows: the live screen and a screen of history above it.
     pub fn question_rows(&self) -> Vec<String> {
         self.emu.lock().watch_rows()

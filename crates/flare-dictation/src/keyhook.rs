@@ -80,6 +80,9 @@ pub struct HookState {
     ctrl_with_win: bool,
     /// Keys whose down was swallowed: their repeats and their up are swallowed with them.
     swallowed: HashSet<u16>,
+    /// A bound Alt went down and no other key has gone down since: only then does its up open the
+    /// window menu, so only then is the mask sent (an AltGr character or Alt+Tab needs none).
+    alt_alone: bool,
 }
 
 impl HookState {
@@ -89,6 +92,7 @@ impl HookState {
         self.win_down = false;
         self.ctrl_with_win = false;
         self.swallowed.clear();
+        self.alt_alone = false;
     }
 }
 
@@ -132,7 +136,12 @@ fn foreign_modifier_down(keys: &HashSet<u16>, is_down: &dyn Fn(u16) -> bool) -> 
     ]
     .iter()
     .any(|(generic, family)| {
-        !family.iter().any(|k| keys.contains(k))
+        // AltGr layouts: the system injects a Left Ctrl around every Right Alt, so a binding that names
+        // Right Alt (or Alt in general) does not count Ctrl as foreign (NEW-C).
+        let altgr_ctrl =
+            *generic == VK_CTRL && (keys.contains(&VK_RMENU) || keys.contains(&VK_MENU));
+        !altgr_ctrl
+            && !family.iter().any(|k| keys.contains(k))
             && (is_down(*generic) || (*generic == VK_LWIN && is_down(VK_RWIN)))
     })
 }
@@ -195,9 +204,18 @@ pub fn decide_with(
     } else if is_ctrl(vk) && down && s.win_down {
         s.ctrl_with_win = true;
     }
-    // Alt let go after the binding named it: the window menu must not open on that up.
-    if is_alt(vk) && !down && keys.contains(&vk) {
-        send_mask = true;
+    // Alt let go after the binding named it: the window menu must not open on that up, unless another key
+    // went down in between (then the menu was never going to open).
+    if is_alt(vk) && keys.contains(&vk) {
+        if down {
+            if !s.down.contains(&vk) {
+                s.alt_alone = true;
+            }
+        } else if std::mem::take(&mut s.alt_alone) {
+            send_mask = true;
+        }
+    } else if down && !keys.contains(&vk) {
+        s.alt_alone = false;
     }
     if keys.contains(&vk) {
         // The binding's own non-modifier key (F9, the D of Ctrl+Shift+D) is the app's no more while the
@@ -902,6 +920,56 @@ mod tests {
         decide(RALT, true, &mut s, &k, false, false);
         let (_, _, mask) = decide(RALT, false, &mut s, &k, false, false);
         assert!(mask, "an Alt up after the binding must not open the menu");
+    }
+
+    #[test]
+    fn an_alt_that_typed_or_chorded_masks_nothing() {
+        const LALT: u16 = 0xa4;
+        // AltGr+2 ('@'): the digit goes down between the Alt's down and up.
+        let k = keys(&[RALT]);
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        decide(0x32, true, &mut s, &k, false, false);
+        decide(0x32, false, &mut s, &k, false, false);
+        let (_, _, mask) = decide(RALT, false, &mut s, &k, false, false);
+        assert!(!mask, "an AltGr character needs no mask");
+        // Alt+Tab with a Left Alt binding.
+        let k = keys(&[LALT]);
+        let mut s = HookState::default();
+        decide(LALT, true, &mut s, &k, false, false);
+        decide(0x09, true, &mut s, &k, false, false);
+        decide(0x09, false, &mut s, &k, false, false);
+        let (_, _, mask) = decide(LALT, false, &mut s, &k, false, false);
+        assert!(!mask, "Alt+Tab needs no mask");
+        // The next bare press and release masks again.
+        decide(LALT, true, &mut s, &k, false, false);
+        let (_, _, mask) = decide(LALT, false, &mut s, &k, false, false);
+        assert!(mask);
+        // Key repeat of the held Alt does not re-arm after another key.
+        let mut s = HookState::default();
+        decide(LALT, true, &mut s, &k, false, false);
+        decide(0x09, true, &mut s, &k, false, false);
+        decide(LALT, true, &mut s, &k, false, false);
+        let (_, _, mask) = decide(LALT, false, &mut s, &k, false, false);
+        assert!(!mask);
+    }
+
+    #[test]
+    fn esc_cancels_while_the_altgr_ctrl_is_down_on_a_right_alt_binding() {
+        // AltGr layouts inject Left Ctrl with Right Alt: the system says Ctrl is down, but it is the Alt's.
+        let k = keys(&[RALT]);
+        let altgr = |vk| vk == 0x11 || vk == 0x12;
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(false, true), &altgr);
+        assert_eq!((e, swallow), (Some(HookEvent::Esc), true));
+        // A Left Alt binding is not AltGr: a held Ctrl is still the app's.
+        let k = keys(&[0xa4]);
+        let ctrl = |vk| vk == 0x11;
+        let mut s = HookState::default();
+        decide(0xa4, true, &mut s, &k, false, false);
+        let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(false, true), &ctrl);
+        assert_eq!((e, swallow), (Some(HookEvent::Other), false));
     }
 
     #[test]

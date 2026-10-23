@@ -480,6 +480,14 @@ impl Emulator {
 
     /// The cells of one screen line as text, trailing blanks trimmed, wide spacers skipped.
     pub fn row_text(&self, line: i32) -> String {
+        self.row_text_with(line, false)
+    }
+
+    /// `row_text`, with `ghosts` true blanking the cells that are not typed ink: dim (SGR 2), reverse
+    /// video (a cursor block drawn over a character) and bright-black grey, which is how an agent paints
+    /// a placeholder or a suggested prompt in an empty box.
+    fn row_text_with(&self, line: i32, ghosts: bool) -> String {
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
         let grid = self.term.grid();
         let mut s = String::new();
         for col in 0..self.term.columns() {
@@ -490,12 +498,39 @@ impl Emulator {
             {
                 continue;
             }
+            if ghosts
+                && (cell.flags.intersects(Flags::DIM | Flags::INVERSE)
+                    || matches!(
+                        cell.fg,
+                        Color::Named(NamedColor::BrightBlack | NamedColor::DimBlack)
+                            | Color::Indexed(8)
+                    ))
+            {
+                s.push(' ');
+                continue;
+            }
             s.push(if cell.c == '\0' { ' ' } else { cell.c });
             if let Some(z) = cell.zerowidth() {
                 s.extend(z.iter());
             }
         }
         s.trim_end().to_string()
+    }
+
+    /// `text_tail` with placeholder ink blanked (see `row_text_with`): what the prompt-draft check reads.
+    pub fn typed_tail(&self, rows: usize) -> Vec<String> {
+        let top = -(self.history_size() as i32);
+        let bottom = self.rows() as i32 - 1;
+        let Some(last) = (top..=bottom)
+            .rev()
+            .find(|&l| !self.row_text(l).trim().is_empty())
+        else {
+            return vec![self.row_text(top)];
+        };
+        let start = (last - rows.max(1) as i32 + 1).max(top);
+        (start..=last)
+            .map(|l| self.row_text_with(l, true))
+            .collect()
     }
 
     /// PT `setScreenTail`: scan from the bottom screen line up through the history for the last
@@ -1952,6 +1987,33 @@ mod tests {
         let t = e.text_tail(16);
         assert_eq!((t[0].as_str(), t[15].as_str()), ("line15", "line30"));
         assert_eq!(t.len(), 16);
+    }
+
+    /// Claude Code's empty prompt box: a dim placeholder after the mark (with its first letter drawn as the
+    /// cursor, reverse video) is not a draft; typed text is (NEW-E).
+    #[test]
+    fn a_dim_placeholder_in_an_empty_prompt_box_is_not_a_draft() {
+        let rule = "\u{2500}".repeat(30);
+        let screen = |input: &str| {
+            let mut e = Emulator::new(60, 8);
+            e.feed(format!("done\r\n{rule}\r\n{input}\r\n{rule}\r\n  auto mode on").as_bytes());
+            e
+        };
+        let draft = |e: &Emulator| flare_agent::question::prompt_has_draft(&e.typed_tail(16));
+        let plain = |e: &Emulator| flare_agent::question::prompt_has_draft(&e.text_tail(16));
+        // dim placeholder, first letter reversed as the cursor
+        let e = screen("\u{276f} \x1b[7mT\x1b[0m\x1b[2mry \"fix lint errors\"\x1b[0m");
+        assert!(plain(&e), "the plain-text read mistakes it for a draft");
+        assert!(!draft(&e));
+        // grey (bright black) suggestion
+        let e = screen("\u{276f} \x1b[90mrun the tests\x1b[0m");
+        assert!(!draft(&e));
+        // a real draft, cursor block after it
+        let e = screen("\u{276f} fix the thing\x1b[7m \x1b[0m");
+        assert!(draft(&e));
+        // typed text before a dim tail still counts
+        let e = screen("\u{276f} half\x1b[2m a suggestion\x1b[0m");
+        assert!(draft(&e));
     }
 
     #[test]
