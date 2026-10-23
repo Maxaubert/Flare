@@ -192,6 +192,9 @@ pub struct PanelCtl {
     apps_root: Option<std::path::PathBuf>,
     /// A title a caller gave (the header shows it instead of the file's name), by tab.
     titles: HashMap<String, String>,
+    /// A refused "Show in side panel" on a tab whose panel is open: its words sit in the header's second line until the
+    /// tab shows something else (the panel itself is left as it was).
+    refused: HashMap<String, String>,
     /// Text handed over for a tab's panel, by tab.
     inline: HashMap<String, InlineText>,
     inline_seq: u64,
@@ -287,6 +290,7 @@ impl PanelCtl {
             mods: HashMap::new(),
             apps_root: None,
             titles: HashMap::new(),
+            refused: HashMap::new(),
             inline: HashMap::new(),
             inline_seq: 0,
             store: None,
@@ -349,7 +353,21 @@ impl PanelCtl {
         // call, and text it handed over, end with what they were for.
         self.titles.remove(tab);
         self.inline.remove(tab);
+        self.refused.remove(tab);
         self.panels.show(tab, kind, target)
+    }
+
+    /// A "Show in side panel" the file could not honour, on a tab whose panel is open: the panel is left as it was
+    /// and the words go in its header. False when the tab has no open panel (the caller shows them as a note).
+    pub fn refuse(&mut self, app: &AppWindow, tab: &str, text: &str) -> bool {
+        if self.panels.open_on(tab).is_none() {
+            return false;
+        }
+        self.refused.insert(tab.to_string(), text.to_string());
+        if self.shown.as_ref().is_some_and(|s| s.tab == tab) {
+            self.push(app);
+        }
+        true
     }
 
     pub fn close(&mut self, tab: &str) -> bool {
@@ -546,6 +564,7 @@ impl PanelCtl {
     }
 
     pub fn forget(&mut self, tab: &str) {
+        self.refused.remove(tab);
         self.drop_app(tab);
         self.panels.forget(tab);
         self.titles.remove(tab);
@@ -1177,6 +1196,14 @@ impl PanelCtl {
                 app.set_panel_max_cols(i32::try_from(*cols).unwrap_or(i32::MAX));
                 app.set_panel_foot(foot.as_str().into());
             }
+        }
+        if let Some(why) = self.refused.get(&s.tab)
+            && matches!(
+                s.content,
+                Content::Image { .. } | Content::Text { ready: true, .. }
+            )
+        {
+            app.set_panel_sub(why.as_str().into());
         }
     }
 

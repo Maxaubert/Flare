@@ -4369,14 +4369,24 @@ impl AppCtl {
                 }
             }
             UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
-                // The person picked "Show in side panel" and the file is no longer showable: say so, in the panel.
-                if self.is_shell_tab(&tab)
-                    && self.panels.show_text(
-                        &tab,
-                        "This file cannot be shown here. It may have changed or been removed since the menu opened.",
-                        Some("Cannot show this file"),
-                    )
-                {
+                // The person picked "Show in side panel" and the file is no longer showable: say so. A tab with no
+                // panel open gets the words as a note in one; a tab whose panel is open keeps what it shows (a mini-app
+                // or a page would be ended by a note) and says it in the panel's header or the page's bar.
+                const WHY: &str = "This file cannot be shown here. It may have changed or been removed since the menu opened.";
+                const SHORT: &str = "Cannot show that file: it changed or was removed";
+                if !self.is_shell_tab(&tab) {
+                    return;
+                }
+                if self.panels.is_open(&tab) {
+                    if let Some(app) = self.app() {
+                        if self.panels.web_target(&tab).is_some() && !self.panels.is_app(&tab) {
+                            self.web.notice(&tab, SHORT);
+                        } else {
+                            self.panels.refuse(&app, &tab, SHORT);
+                        }
+                    }
+                    self.refresh();
+                } else if self.panels.show_text(&tab, WHY, Some("Cannot show this file")) {
                     self.refresh();
                     self.panel_changed(&tab);
                 }
@@ -6623,6 +6633,36 @@ two",
         f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
         assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
         assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_leaves_the_panel_that_is_open_as_it_was() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "keep.txt", "one\ntwo");
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let id = f.ctl.borrow().front_id().unwrap();
+        let rows = rows_in_panel(&f);
+        let target = f.ctl.borrow().panels.snap(&id).unwrap().path;
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab: id.clone() })));
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(f.h.comp.get_panel_kind(), 2, "still the text file");
+        assert_eq!(rows_in_panel(&f), rows);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "keep.txt");
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"),
+            "{}",
+            f.h.comp.get_panel_sub()
+        );
+        assert_eq!(f.ctl.borrow().panels.snap(&id).unwrap().path, target);
+        // Showing something else ends the note.
+        show_text(&f, "other.txt", "x");
+        f.pump_until("the other file", |f| {
+            f.h.comp.get_panel_title().as_str() == "other.txt"
+        });
+        assert!(!f.h.comp.get_panel_sub().as_str().starts_with("Cannot show"));
     }
 
     #[test]
