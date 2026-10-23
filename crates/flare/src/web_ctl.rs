@@ -975,6 +975,15 @@ impl WebCtl {
         }
     }
 
+    /// The window moved or changed size or monitor: every live page is told where its parent is now.
+    pub fn parent_moved(&mut self) {
+        if !self.tabs.is_empty()
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.parent_moved();
+        }
+    }
+
     pub fn nav(&mut self, tab: &str, nav: Nav) {
         if let Some(b) = self.backend.as_mut() {
             b.go(tab, nav);

@@ -177,6 +177,21 @@ fn a_web_panel_makes_its_controller_at_the_slot_and_frees_it_when_closed() {
 }
 
 #[test]
+fn moving_the_window_tells_the_browser_where_its_parent_is() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let _ = up(&f, &slot);
+    f.h.advance(0);
+    assert!(!fake(&slot).calls().contains(&Call::ParentMoved));
+    let o = observed(1000, 700, 1.0, false);
+    f.ctl.borrow_mut().on_geometry(o);
+    assert!(
+        fake(&slot).calls().contains(&Call::ParentMoved),
+        "the select lists and the IME would stay at the old place"
+    );
+}
+
+#[test]
 fn the_toggle_chord_brings_the_page_back_at_its_last_address() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);

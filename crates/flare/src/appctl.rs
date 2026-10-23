@@ -3912,6 +3912,7 @@ impl AppCtl {
     /// The window moved, resized or changed mode: remember the normal bounds (saved on a delay).
     pub fn on_geometry(&mut self, o: Observed) {
         self.bounds.observe(&o);
+        self.web.parent_moved();
         self.maximised = o.maximised;
         self.on_minimised(o.minimised);
         if let Some(state) = self.bounds.state(o.maximised) {

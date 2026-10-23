@@ -219,6 +219,9 @@ pub trait WebBackend {
     fn go(&mut self, tab: &str, nav: Nav);
     fn set_bounds(&mut self, tab: &str, bounds: PhysRect);
     fn set_visible(&mut self, tab: &str, visible: bool);
+    /// The window the pages sit in moved (or changed monitor or size): the browser must be told, or the
+    /// popups it draws (a select's list, the IME's candidates, its menus) keep the old screen position.
+    fn parent_moved(&mut self) {}
     /// Takes a still of the page; answered by `WebEvent::Still` with the same token.
     fn capture_still(&mut self, tab: &str, token: u64);
     /// Gives the page the keyboard.
