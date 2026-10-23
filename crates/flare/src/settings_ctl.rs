@@ -1311,11 +1311,14 @@ impl SettingsCtl {
         let wells: Vec<EditorWell> = entries
             .into_iter()
             .map(|(key, label, value, alpha_max)| {
-                let range = flare_theme::colour_contrast::AlphaRange {
-                    alpha: true,
-                    alpha_min: 0.0,
-                    alpha_max,
-                };
+                let range = Self::well_info(&self.deps.look, &key).map_or(
+                    flare_theme::colour_contrast::AlphaRange {
+                        alpha: true,
+                        alpha_min: 0.0,
+                        alpha_max,
+                    },
+                    |i| i.range,
+                );
                 let text = match self.well_drafts.get(&key) {
                     Some(f) => f.shown(&value, &range, format),
                     None => CodeField::default().shown(&value, &range, format),
@@ -1751,21 +1754,12 @@ impl SettingsCtl {
     }
 
     fn well_committed(&mut self, key: &str) {
-        let Some(draft) = self.deps.look.draft() else {
+        // The same value and alpha range as the popover's: the Background takes no alpha, the
+        // Selection stops at 254/255, and an unset Selection is compared with the colour drawn.
+        let Some(info) = Self::well_info(&self.deps.look, key) else {
             return;
         };
-        let value = match key {
-            "bg" => draft.bg.clone(),
-            "fg" => draft.fg.clone(),
-            "cursor" => draft.cursor.clone(),
-            "selection" => draft.selection.clone().unwrap_or_default(),
-            k => ANSI_KEYS
-                .iter()
-                .position(|a| *a == k)
-                .and_then(|i| draft.ansi[i].clone())
-                .unwrap_or_else(unset_ansi),
-        };
-        let range = flare_theme::colour_contrast::AlphaRange::default();
+        let (value, range) = (info.value, info.range);
         let stored = self
             .well_drafts
             .remove(key)
@@ -2884,6 +2878,44 @@ mod tests {
         b.invoke_picker_escape();
         assert!(!b.get_picker_open());
         assert_eq!(ACCENT.get(&f.prefs), None, "back to following the theme");
+    }
+
+    #[test]
+    fn a_typed_code_follows_the_popovers_alpha_rules() {
+        let f = fx();
+        let id = wall::wall_cards(&f.look)[0].id.clone();
+        f.ctl.borrow_mut().event(Event::WallEdit { id });
+        let draft = || f.ctl.borrow().deps.look.draft().expect("an open draft");
+        // Background takes no alpha: a half-clear code does not make the draft see-through.
+        f.ctl.borrow_mut().well_edited("bg", "#ff000080");
+        f.ctl.borrow_mut().well_committed("bg");
+        let bg = draft().bg;
+        assert!(
+            bg.eq_ignore_ascii_case("#ff0000") || bg.eq_ignore_ascii_case("#ff0000ff"),
+            "background kept alpha: {bg}"
+        );
+        // Selection stops at 254/255.
+        f.ctl.borrow_mut().well_edited("selection", "#ffffffff");
+        f.ctl.borrow_mut().well_committed("selection");
+        let sel = draft().selection.expect("a stored selection");
+        assert!(sel.to_lowercase().ends_with("fe"), "selection alpha above the cap: {sel}");
+    }
+
+    #[test]
+    fn retyping_the_drawn_selection_does_not_pin_it() {
+        let f = fx();
+        let id = wall::wall_cards(&f.look)[0].id.clone();
+        f.ctl.borrow_mut().event(Event::WallEdit { id });
+        let info = SettingsCtl::well_info(&f.look, "selection").expect("a well");
+        if f.look.draft().unwrap().selection.is_some() {
+            return; // this theme pins a selection already: nothing to follow
+        }
+        f.ctl.borrow_mut().well_edited("selection", &info.value);
+        f.ctl.borrow_mut().well_committed("selection");
+        assert!(
+            f.look.draft().unwrap().selection.is_none(),
+            "the shown colour was retyped: it still follows the theme"
+        );
     }
 
     #[test]
