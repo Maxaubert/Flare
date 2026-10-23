@@ -486,6 +486,10 @@ impl ConvoCtl {
         app.set_panel_sub(sub.into());
         app.set_panel_note(note.into());
         app.set_panel_convo_selected(sel.unwrap_or_default().into());
+        // The views are one set shared by every tab: a different tab, kind or session starts at the top.
+        if all {
+            app.invoke_panel_convo_reset_scroll();
+        }
         self.populated = true;
         self.pushed = Some(key);
     }

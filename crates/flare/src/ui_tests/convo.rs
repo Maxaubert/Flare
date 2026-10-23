@@ -238,6 +238,49 @@ fn the_diff_view_windows_a_model_of_a_hundred_thousand_rows_and_scrolls() {
 }
 
 #[test]
+fn another_file_opens_at_the_top_not_at_the_offset_of_the_last_one() {
+    for s in SCALES2 {
+        let h = window(s);
+        h.activate();
+        open_changes(&h, 3, "C:\\p\\file0.rs", 5_000);
+        h.comp.invoke_focus_panel();
+        h.advance(0);
+        h.key_text(&key(Key::PageDown));
+        h.key_text(&key(Key::PageDown));
+        h.advance(0);
+        assert!(h.comp.get_panel_convo_diff_first() > 20, "scale {s}");
+        // Back to the list and another file, with a diff just as long.
+        h.comp.set_panel_convo_selected("C:\\p\\file1.rs".into());
+        h.comp.set_panel_convo_rows(diff(5_000));
+        h.advance(0);
+        assert_eq!(
+            h.comp.get_panel_convo_diff_first(),
+            0,
+            "scale {s}: the new diff opened part way down"
+        );
+    }
+}
+
+#[test]
+fn a_reset_puts_the_task_list_back_at_the_top() {
+    let h = window(1.0);
+    h.activate();
+    let rows: Vec<ConvoTaskRow> = (0..200)
+        .map(|i| task(1, 0, &format!("Task number {i}"), false))
+        .collect();
+    open_tasks(&h, rows);
+    h.comp.invoke_focus_panel();
+    h.advance(0);
+    let top = h.render();
+    h.key_text(&key(Key::PageDown));
+    h.advance(0);
+    assert_ne!(top.rgba, h.render().rgba, "it scrolled");
+    h.comp.invoke_panel_convo_reset_scroll();
+    h.advance(0);
+    assert_eq!(h.render().rgba, top.rgba, "another tab's list opens at its top");
+}
+
+#[test]
 fn added_and_removed_rows_wear_the_themes_inks_and_context_rows_wear_none() {
     for s in SCALES2 {
         let h = window(s);

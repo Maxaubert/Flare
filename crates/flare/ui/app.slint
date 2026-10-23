@@ -349,6 +349,8 @@ export component AppWindow inherits Window {
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }
+    // A different tab's (or session's) conversation panel opens at the top, not where the last one was scrolled.
+    public function panel-convo-reset-scroll() { panel-slot.convo-reset-scroll(); }
     // The splitter drag ends: the share dragged so far is kept (the pointer's left button went up, or the grab was cancelled).
     public function end-splitter() {
         if (root.panel-splitting) {

@@ -476,6 +476,10 @@ export component PanelSlot inherits Rectangle {
     in property <int> convo-max-cols;
     in property <string> convo-selected;
     in property <[ConvoTaskRow]> convo-tasks;
+    public function convo-reset-scroll() {
+        changes.reset-scroll();
+        tasks.reset-scroll();
+    }
     out property <int> convo-list-built: changes.list-built;
     out property <int> convo-list-first: changes.list-first;
     out property <int> convo-diff-built: changes.diff-built;

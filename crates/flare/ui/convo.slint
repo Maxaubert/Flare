@@ -82,6 +82,10 @@ component FileList inherits Rectangle {
     public function scroll-to(top: bool) {
         flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
     }
+    public function reset-scroll() {
+        flick.content-x = 0px;
+        flick.content-y = 0px;
+    }
 
     clip: true;
     flick := Flickable {
@@ -183,6 +187,10 @@ component DiffView inherits Rectangle {
     }
     public function scroll-to(top: bool) {
         flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
+    }
+    public function reset-scroll() {
+        flick.content-x = 0px;
+        flick.content-y = 0px;
     }
 
     clip: true;
@@ -300,6 +308,12 @@ export component ChangesView inherits Rectangle {
     out property <length> diff-row-h: diff.row-h;
 
     public function back() { root.select(""); }
+    // Another tab's list, or another file's diff, opens at its top and left, never at the offset the last one had.
+    public function reset-scroll() {
+        list.reset-scroll();
+        diff.reset-scroll();
+    }
+    changed selected => { diff.reset-scroll(); }
     public function scroll-by(dx: length, dy: length) {
         if (root.in-diff) { diff.scroll-by(dx, dy); } else { list.scroll-by(dy); }
     }
@@ -443,6 +457,10 @@ export component TasksView inherits Rectangle {
     }
     public function scroll-to(top: bool) {
         flick.content-y = top ? 0px : min(0px, root.height - flick.content-height);
+    }
+    public function reset-scroll() {
+        flick.content-x = 0px;
+        flick.content-y = 0px;
     }
 
     clip: true;
