@@ -196,6 +196,7 @@ fn panel_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         // Wrapping (2026-10-22): the columns that fit, whether the rows are wrapped, the setting, and how many wraps ran.
         "wrap_cols": a.get_panel_wrap_cols(),
         "wrapped": a.get_panel_wrapped(),
+        "wrapped_cols": a.get_panel_wrapped_cols(),
         "wrap_on": a.get_panel_wrap_on(),
         "grid_fits": ctx.ctl.try_borrow().map_or(0, |c| c.grid_fit_count()),
         "wrap_runs": ctx.ctl.try_borrow().map_or(0, |c| c.panel_wrap_count()),

@@ -763,3 +763,8 @@ A review by many agents (flag, verify, then fix) of the newest Surfaces work: th
 - A held-back `CursorLeft` needs its undo in `CursorEntered`, or a drag that goes out and back in still owes a fake leave at the release.
 - Slint's TouchArea drops its grab on ANY button's release: the hook swallows other buttons' press and release while a splitter drag runs.
 - A key that is not text (Tab, Escape, F-keys, media keys, a chord with Alt or Win) is not "the person typing at the page"; a same-document entry answers an address-less call only when it moved the page off the address the call began on.
+
+## Round 11: live wrap
+
+- **Live wrap needs the cost bounded, not avoided.** Round 9 wrapped once at the settle because a wrap per step looked expensive. Measured, a file under 200 KB wraps in about 4 ms even in a debug build, so it runs where the step lands; only a bigger file needs a worker, and then ONE in flight with the answer re-checking the width (dropping stale widths is free, cancelling a thread is not needed). Electron: not relevant, CSS wraps live natively (`white-space: pre-wrap`), so Prism Terminal's panel never needed this; the port should keep CSS and not copy the row model.
+- **A test that pins the old behaviour is the one to rewrite, not relax.** `narrowing_the_slot_mid_drag_cuts_no_wrapped_text...` asserted rows overflow until the release; it now asserts the rows fit the slot at every step.

@@ -53,6 +53,8 @@ pub enum PanelMsg {
 /// Text under this many bytes is wrapped on the UI thread where it arrives (a few milliseconds at most); a bigger
 /// one is wrapped on a worker, and the panel says "Opening" until it answers.
 const WRAP_INLINE_MAX: usize = 1_000_000;
+/// While the width is moving, a file over this many bytes is wrapped on a worker, not where the step lands.
+const WRAP_LIVE_INLINE_MAX: usize = 200_000;
 
 /// A text file ready for the window: the lines are shaped on the worker, so the UI thread only wraps
 /// them in a model.
@@ -137,6 +139,8 @@ enum Content {
         cols: usize,
         foot: String,
         bytes: u64,
+        /// The shaped text's size (the lines' bytes, tabs already spaces): what the live wrap judges, as `is_big` does.
+        shaped: usize,
         /// The columns the shown rows are wrapped to; 0 while they are the lines.
         wrapped_cols: usize,
         /// False while a big file waits for its first wrap (the panel says "Opening").
@@ -236,6 +240,9 @@ pub struct PanelCtl {
     wrap_current: Arc<AtomicU64>,
     /// The columns of the wrap on its way from a worker (0: none).
     wrap_pending: usize,
+    /// The width is still moving (a window edge or splitter step, until the settle timer fires): a refresh then
+    /// wraps live, never the exact way.
+    wrap_moving: bool,
     /// How many wraps were made (inline or on a worker): the tests hold that a drag makes none and its release one.
     wraps: u64,
 }
@@ -323,6 +330,7 @@ impl PanelCtl {
             wrap_seq: 0,
             wrap_current: Arc::new(AtomicU64::new(0)),
             wrap_pending: 0,
+            wrap_moving: false,
             wraps: 0,
         }
     }
@@ -743,7 +751,11 @@ impl PanelCtl {
             .is_some_and(|s| s.tab == tab && s.kind == kind && s.target == target);
         if same && !std::mem::take(&mut self.reload) {
             // The width or the setting may have changed since the rows were made.
-            self.settle_wrap(app);
+            if self.wrap_moving {
+                self.live_wrap(app);
+            } else {
+                self.settle_wrap(app);
+            }
             return;
         }
         self.reload = false;
@@ -838,8 +850,8 @@ impl PanelCtl {
                 self.push(app);
                 self.restore_top(app, top);
                 self.apply_memory(app);
-                // The width may have moved while the wrap was on its way.
-                self.settle_wrap(app);
+                // The width may have moved while the wrap was on its way (a drag goes on while it is made).
+                self.live_wrap(app);
                 return;
             }
         };
@@ -979,6 +991,7 @@ impl PanelCtl {
         app.set_panel_number_count(i32::try_from(t.lines.len()).unwrap_or(i32::MAX));
         let want = self.want_cols(app);
         let count = t.lines.len();
+        let shaped = shaped_len(&t.lines);
         let (shown, nums, wrapped_cols, ready) = if want == 0 {
             self.next_wrap_seq();
             (line_model(&t.lines), no_nums(), 0, true)
@@ -1004,6 +1017,7 @@ impl PanelCtl {
             cols: t.cols,
             foot: t.foot,
             bytes: t.bytes,
+            shaped,
             wrapped_cols,
             ready,
         }
@@ -1057,23 +1071,48 @@ impl PanelCtl {
         self.wraps
     }
 
+    /// The width is moving (true: a step arrived) or has settled (false: the timer fired, the exact wrap is next).
+    pub fn set_wrap_moving(&mut self, moving: bool) {
+        self.wrap_moving = moving;
+    }
+
     /// The setting "Wrap long lines in previews" as the window last had it.
     pub fn set_wrap(&mut self, on: bool) {
         self.wrap = on;
     }
 
     /// The text view's width may have settled (a splitter let go, a window resized, the setting flipped): wrap again
-    /// to the columns that fit, once, and only if they differ from the ones the rows are wrapped to. Never while the
-    /// splitter is held: a drag changes the width at every step, and the rows are made once, at the release.
+    /// to the columns that fit, once, and only if they differ from the ones the rows are wrapped to. The exact final
+    /// wrap: a wrap still in flight for another width is replaced.
     pub fn settle_wrap(&mut self, app: &AppWindow) {
+        // A held splitter is the live wrap's (`live_wrap`); the release settles.
+        if app.get_panel_splitting() {
+            return;
+        }
+        self.wrap_to_width(app, false);
+    }
+
+    /// The text view's width is moving (a splitter dragged, a window edge dragged): re-wrap to the columns that fit
+    /// NOW, at every step, keeping the line at the top in place (2026-10-23, owner: "make that dynamic so it wraps
+    /// as you move it"). A small file is wrapped where the step lands (a millisecond or two); a big one on a worker,
+    /// one wrap in flight at a time, whose answer wraps again to the newest width, so a drag is never stalled.
+    pub fn live_wrap(&mut self, app: &AppWindow) {
+        // A sidebar slide wraps once, at its end (rule 217): no worker answer starts another wrap mid-slide.
+        if app.get_sidebar_sliding() {
+            return;
+        }
+        self.wrap_to_width(app, true);
+    }
+
+    fn wrap_to_width(&mut self, app: &AppWindow, live: bool) {
         enum Act {
             Nothing,
             Lines,
-            Wrap(String, u64, Arc<Vec<SharedString>>),
+            Wrap(String, u64, Arc<Vec<SharedString>>, bool),
         }
-        // Never while the splitter is held, and never while the slot is off show (Settings, the start screen, a window
-        // too narrow): what is there stays, and the width that comes back settles it.
-        if app.get_panel_splitting() || !app.get_panel_shown() {
+        // Never while the slot is off show (Settings, the start screen, a window too narrow): what is there stays,
+        // and the width that comes back settles it.
+        if !app.get_panel_shown() {
             return;
         }
         let want = self.want_cols(app);
@@ -1085,6 +1124,7 @@ impl PanelCtl {
                     Content::Text {
                         lines,
                         wrapped_cols,
+                        shaped,
                         ready: true,
                         ..
                     },
@@ -1100,8 +1140,16 @@ impl PanelCtl {
                     }
                 } else if (want == *wrapped_cols && pending == 0) || want == pending {
                     Act::Nothing
+                } else if live && pending != 0 {
+                    // One wrap in flight: its answer wraps again to the width then.
+                    Act::Nothing
                 } else {
-                    Act::Wrap(tab.clone(), *generation, Arc::clone(lines))
+                    let worker = if live {
+                        *shaped > WRAP_LIVE_INLINE_MAX
+                    } else {
+                        is_big(lines)
+                    };
+                    Act::Wrap(tab.clone(), *generation, Arc::clone(lines), worker)
                 }
             }
             _ => Act::Nothing,
@@ -1130,8 +1178,8 @@ impl PanelCtl {
                 self.push(app);
                 self.restore_top(app, top);
             }
-            Act::Wrap(tab, generation, lines) => {
-                if is_big(&lines) {
+            Act::Wrap(tab, generation, lines, worker) => {
+                if worker {
                     // The rows on show stay until the new ones are made.
                     self.spawn_wrap(&tab, generation, lines, want);
                     return;
@@ -1390,9 +1438,14 @@ fn no_nums() -> ModelRc<i32> {
     ModelRc::from(Rc::new(VecModel::<i32>::default()))
 }
 
+/// The lines' bytes as shaped (one newline each).
+fn shaped_len(lines: &[SharedString]) -> usize {
+    lines.iter().map(|l| l.len() + 1).sum()
+}
+
 /// A file too big to wrap where it arrives.
 fn is_big(lines: &[SharedString]) -> bool {
-    lines.iter().map(|l| l.len() + 1).sum::<usize>() > WRAP_INLINE_MAX
+    shaped_len(lines) > WRAP_INLINE_MAX
 }
 
 /// The window shows no wrapped text: its numbers and flags go back to the default.

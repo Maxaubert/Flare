@@ -320,7 +320,7 @@ export component AppWindow inherits Window {
     out property <bool> panel-image-can-zoom: panel-slot.image-can-zoom;
     out property <length> panel-gutter-w: panel-slot.text-gutter-w;
     out property <int> panel-first-line: panel-slot.text-first-line;
-    // Wrapping a text preview (2026-10-22): the columns that fit (the controller wraps to them once the width settles),
+    // Wrapping a text preview (2026-10-22): the columns that fit (the controller wraps to them at every width change, live while a drag moves it),
     // the rows' line numbers (0 on a continuation row), whether the rows are wrapped now, the setting, and the file's
     // line count for the gutter's width.
     out property <int> panel-wrap-cols: panel-slot.text-wrap-cols;
