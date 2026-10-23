@@ -411,7 +411,7 @@ fn the_slot_going_away_during_a_drag_lets_go_of_the_grab() {
 }
 
 #[test]
-fn narrowing_the_slot_mid_drag_cuts_no_wrapped_text_it_overflows_and_the_release_settles() {
+fn narrowing_the_slot_mid_drag_rewraps_at_once_so_the_text_never_overflows_or_is_cut() {
     for scale in [1.0f32, 2.25] {
         let (f, _h, _) = live(Opts {
             scale,
@@ -429,7 +429,8 @@ fn narrowing_the_slot_mid_drag_cuts_no_wrapped_text_it_overflows_and_the_release
         let (x, y) = start_point(&f);
         f.h.move_to(x, y);
         f.h.press(x, y, LEFT);
-        // Dragging right makes the slot narrower; the rows keep their columns until the release.
+        // Dragging right makes the slot narrower; the rows wrap to the new width at every step (2026-10-23).
+        let mut last_cols = c.get_panel_wrap_cols();
         for k in 1..=6 {
             f.h.move_to(x + 40.0 * k as f32, y);
             f.h.advance(0);
@@ -437,21 +438,24 @@ fn narrowing_the_slot_mid_drag_cuts_no_wrapped_text_it_overflows_and_the_release
             let body = c.get_panel_body_w();
             let need = c.get_panel_text_content_w();
             assert!(
-                need >= settled_w - 8.0,
-                "scale {scale} step {k}: the view stays as wide as its rows need ({need} vs {settled_w}); the slot is {body}"
+                need <= body + 1.0,
+                "scale {scale} step {k}: the rows fit the slot while it moves ({need} vs {body})"
             );
+            assert_eq!(
+                c.get_panel_wrapped_cols(),
+                c.get_panel_wrap_cols(),
+                "scale {scale} step {k}: wrapped to the width on show"
+            );
+            assert!(c.get_panel_wrap_cols() <= last_cols, "scale {scale}");
+            last_cols = c.get_panel_wrap_cols();
         }
-        assert!(
-            c.get_panel_text_content_w() > c.get_panel_body_w() + 1.0,
-            "scale {scale}: narrower slot, the rows overflow sideways instead of being cut"
-        );
         f.h.release(x + 240.0, y, LEFT);
         f.pump();
         f.h.advance(0);
         f.h.advance(0);
         assert!(
             (c.get_panel_text_content_w() - c.get_panel_body_w()).abs() <= 1.0,
-            "scale {scale}: after the release the rows fit again"
+            "scale {scale}: after the release the rows fit too"
         );
         assert_eq!(c.get_panel_text_scroll_x(), 0.0, "scale {scale}");
     }

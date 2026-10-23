@@ -53,6 +53,8 @@ pub enum PanelMsg {
 /// Text under this many bytes is wrapped on the UI thread where it arrives (a few milliseconds at most); a bigger
 /// one is wrapped on a worker, and the panel says "Opening" until it answers.
 const WRAP_INLINE_MAX: usize = 1_000_000;
+/// While the width is moving, a file over this many bytes is wrapped on a worker, not where the step lands.
+const WRAP_LIVE_INLINE_MAX: u64 = 200_000;
 
 /// A text file ready for the window: the lines are shaped on the worker, so the UI thread only wraps
 /// them in a model.
@@ -838,8 +840,8 @@ impl PanelCtl {
                 self.push(app);
                 self.restore_top(app, top);
                 self.apply_memory(app);
-                // The width may have moved while the wrap was on its way.
-                self.settle_wrap(app);
+                // The width may have moved while the wrap was on its way (a drag goes on while it is made).
+                self.live_wrap(app);
                 return;
             }
         };
@@ -1063,17 +1065,33 @@ impl PanelCtl {
     }
 
     /// The text view's width may have settled (a splitter let go, a window resized, the setting flipped): wrap again
-    /// to the columns that fit, once, and only if they differ from the ones the rows are wrapped to. Never while the
-    /// splitter is held: a drag changes the width at every step, and the rows are made once, at the release.
+    /// to the columns that fit, once, and only if they differ from the ones the rows are wrapped to. The exact final
+    /// wrap: a wrap still in flight for another width is replaced.
     pub fn settle_wrap(&mut self, app: &AppWindow) {
+        // A held splitter is the live wrap's (`live_wrap`); the release settles.
+        if app.get_panel_splitting() {
+            return;
+        }
+        self.wrap_to_width(app, false);
+    }
+
+    /// The text view's width is moving (a splitter dragged, a window edge dragged): re-wrap to the columns that fit
+    /// NOW, at every step, keeping the line at the top in place (2026-10-23, owner: "make that dynamic so it wraps
+    /// as you move it"). A small file is wrapped where the step lands (a millisecond or two); a big one on a worker,
+    /// one wrap in flight at a time, whose answer wraps again to the newest width, so a drag is never stalled.
+    pub fn live_wrap(&mut self, app: &AppWindow) {
+        self.wrap_to_width(app, true);
+    }
+
+    fn wrap_to_width(&mut self, app: &AppWindow, live: bool) {
         enum Act {
             Nothing,
             Lines,
-            Wrap(String, u64, Arc<Vec<SharedString>>),
+            Wrap(String, u64, Arc<Vec<SharedString>>, bool),
         }
-        // Never while the splitter is held, and never while the slot is off show (Settings, the start screen, a window
-        // too narrow): what is there stays, and the width that comes back settles it.
-        if app.get_panel_splitting() || !app.get_panel_shown() {
+        // Never while the slot is off show (Settings, the start screen, a window too narrow): what is there stays,
+        // and the width that comes back settles it.
+        if !app.get_panel_shown() {
             return;
         }
         let want = self.want_cols(app);
@@ -1085,6 +1103,7 @@ impl PanelCtl {
                     Content::Text {
                         lines,
                         wrapped_cols,
+                        bytes,
                         ready: true,
                         ..
                     },
@@ -1100,8 +1119,16 @@ impl PanelCtl {
                     }
                 } else if (want == *wrapped_cols && pending == 0) || want == pending {
                     Act::Nothing
+                } else if live && pending != 0 {
+                    // One wrap in flight: its answer wraps again to the width then.
+                    Act::Nothing
                 } else {
-                    Act::Wrap(tab.clone(), *generation, Arc::clone(lines))
+                    let worker = if live {
+                        *bytes > WRAP_LIVE_INLINE_MAX
+                    } else {
+                        is_big(lines)
+                    };
+                    Act::Wrap(tab.clone(), *generation, Arc::clone(lines), worker)
                 }
             }
             _ => Act::Nothing,
@@ -1130,8 +1157,8 @@ impl PanelCtl {
                 self.push(app);
                 self.restore_top(app, top);
             }
-            Act::Wrap(tab, generation, lines) => {
-                if is_big(&lines) {
+            Act::Wrap(tab, generation, lines, worker) => {
+                if worker {
                     // The rows on show stay until the new ones are made.
                     self.spawn_wrap(&tab, generation, lines, want);
                     return;

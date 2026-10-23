@@ -1,9 +1,10 @@
 //! Wrapping a text preview's lines to the columns that fit (no Slint, no Win32).
 //!
 //! The text panel is monospace and virtualised: it builds only the rows in view, which needs every row to be one
-//! line tall. So a long line is cut into several rows of at most `cols` characters here, once, when the panel's
-//! width settles (never per drag step), and the window draws the rows. The line-number gutter shows the number on
-//! a line's first row only; the continuation rows carry 0.
+//! line tall. So a long line is cut into several rows of at most `cols` characters here, and the window draws the
+//! rows. The panel wraps again at every step of a splitter or window-edge drag (live, 2026-10-23), so a wrap stays
+//! cheap or runs on a worker. The line-number gutter shows the number on a line's first row only; the continuation
+//! rows carry 0.
 //!
 //! A cut falls after a space or a dash when one sits in the last quarter of the row (a sentence breaks between
 //! words), else it is a hard cut at `cols` characters (a minified line, a long path). A wide character (CJK, emoji) counts as

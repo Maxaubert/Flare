@@ -264,6 +264,9 @@ fn drag(
     let mut last_vis = w0;
     let mut last_x = 0.0f32;
     let step_every = (xs.len() / 6).max(1);
+    // The text preview wraps live (2026-10-23): the columns and the row counts seen while the splitter is held.
+    let mut cols_seen = std::collections::BTreeSet::new();
+    let mut rows_seen = std::collections::BTreeSet::new();
     for (n, dx) in xs.iter().enumerate() {
         pointer(app, x + dx, y, PointerAction::Move)?;
         pass(ctx, wait);
@@ -285,6 +288,16 @@ fn drag(
         }
         last_vis = vis;
         last_x = *dx;
+        if kind == 2 && s["wrap_on"] == json!(true) && s["wrapped"] == json!(true) {
+            cols_seen.insert(s["wrap_cols"].as_i64().unwrap_or(0));
+            rows_seen.insert(s["lines"].as_i64().unwrap_or(0));
+            if s["wrapped_cols"] != s["wrap_cols"] {
+                bad.push(format!(
+                    "{tag}: the rows are wrapped to {} columns, the view holds {}",
+                    s["wrapped_cols"], s["wrap_cols"]
+                ));
+            }
+        }
         if s["splitting"] != json!(true) {
             bad.push(format!("{tag}: the drag ended by itself"));
         }
@@ -318,6 +331,12 @@ fn drag(
                 }
             }
         }
+    }
+    if kind == 2 && cols_seen.len() > 3 && rows_seen.len() < 2 {
+        bad.push(format!(
+            "the view held {} widths during the drag but the rows never re-wrapped ({rows_seen:?})",
+            cols_seen.len()
+        ));
     }
     let end = *xs.last().unwrap_or(&0.0);
     pointer(
@@ -374,7 +393,7 @@ fn drag(
         bad.push("after the release the panel's content is not on the frame".into());
     }
     if kind == 2 && moved {
-        // The rows were wrapped once, to the new width.
+        // The rows are wrapped to the final width.
         let wrapped = s["wrapped"] == json!(true);
         if !wrapped {
             bad.push("after the release the text is not wrapped".into());

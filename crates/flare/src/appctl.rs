@@ -3449,22 +3449,24 @@ impl AppCtl {
         self.refresh();
     }
 
-    /// The text view holds a different number of columns now. A splitter drag changes it at every step, so nothing
-    /// happens until the release (`settle_wrap` checks); the release's refresh settles it.
+    /// The text view holds a different number of columns now (a splitter step, a window edge step, the setting): the
+    /// rows wrap to them at once, so the text follows the drag like any editor's (2026-10-23). The terminal grid
+    /// still fits once, at the release (rule 24); only the preview's wrap is live. A timer settles the exact final
+    /// wrap a moment after the last step.
     fn panel_wrap_cols_changed(&mut self) {
         let Some(app) = self.app() else { return };
         // The sidebar's slide changes the page's width at every frame: the slide's end refresh wraps once (rule 217).
         if app.get_sidebar_sliding() {
             return;
         }
-        // A window edge dragged changes it at every step too: the text is wrapped once the width has been still a
-        // moment. (A release of the splitter, a toggle and the like refresh, and settle at once.)
+        self.panels.live_wrap(&app);
         let weak = self.me.clone();
         crate::timer_registry::set("panel.wrap-settle", WRAP_SETTLE_MS, false, move || {
             if let Some(rc) = weak.upgrade()
                 && let Ok(mut c) = rc.try_borrow_mut()
                 && let Some(app) = c.app()
                 && !app.get_sidebar_sliding()
+                && !app.get_panel_splitting()
             {
                 c.panels.settle_wrap(&app);
             }
@@ -6546,62 +6548,203 @@ two",
         assert_eq!(runs, 1, "wrapped {runs} times for one slide");
     }
 
+    /// Drags the splitter to `x + dx` and gives the window a frame.
+    fn drag_to(f: &Fx, x: f32, y: f32, dx: f32) {
+        f.h.move_to(x + dx, y);
+        f.h.advance(0);
+        f.pump();
+    }
+
     #[test]
-    fn a_splitter_drag_wraps_nothing_and_its_release_wraps_once() {
-        let (f, _h, _) = live(Opts::default());
-        show_text(&f, "long.txt", &long_body());
-        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
-        let rows0 = rows_in_panel(&f);
-        let cols0 = f.h.comp.get_panel_wrap_cols();
-        let runs0 = f.ctl.borrow().panels.wrap_count();
-        let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
-        let y = f.h.comp.get_grid_top() + 200.0;
-        f.h.move_to(x, y);
-        f.h.press(x, y, slint::platform::PointerEventButton::Left);
-        // Many steps, narrower and wider: the width changes at every one, the rows do not.
-        for k in 1..=40 {
-            let dx = if k % 2 == 0 {
-                3.0 * k as f32
-            } else {
-                -2.0 * k as f32
-            };
-            f.h.move_to(x + dx, y);
-            f.h.advance(0);
+    fn a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "many.txt", &many_long_lines());
+            f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+            let rows0 = rows_in_panel(&f);
+            let runs0 = f.ctl.borrow().panels.wrap_count();
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            assert!(f.h.comp.get_panel_splitting(), "scale {scale}");
+            // Step by step wider: the rows come down while the splitter is still held.
+            let mut counts = vec![rows0];
+            for k in 1..=12 {
+                drag_to(&f, x, y, -25.0 * k as f32);
+                assert!(f.h.comp.get_panel_splitting(), "scale {scale}: still held");
+                assert_eq!(
+                    f.h.comp.get_panel_wrapped_cols(),
+                    f.h.comp.get_panel_wrap_cols(),
+                    "scale {scale}, step {k}: the rows are wrapped to the width on show"
+                );
+                counts.push(rows_in_panel(&f));
+            }
+            let distinct: std::collections::BTreeSet<_> = counts.iter().collect();
+            assert!(
+                distinct.len() > 2
+                    && counts[1..counts.len() - 1]
+                        .iter()
+                        .any(|c| *c != counts[0] && *c != counts[counts.len() - 1]),
+                "scale {scale}: rows changed at intermediate widths, not only after the release: {counts:?}"
+            );
+            assert!(
+                counts.windows(2).all(|w| w[1] <= w[0]),
+                "scale {scale}: a wider slot never makes more rows: {counts:?}"
+            );
+            assert!(
+                f.ctl.borrow().panels.wrap_count() > runs0 + 3,
+                "scale {scale}: wraps happened mid-drag"
+            );
+            // And back, narrower: the rows go up again.
+            let wide = rows_in_panel(&f);
+            for k in (0..12).rev() {
+                drag_to(&f, x, y, -25.0 * k as f32);
+            }
+            assert!(
+                rows_in_panel(&f) > wide,
+                "scale {scale}: narrower, more rows"
+            );
+            drag_to(&f, x, y, -150.0);
+            let runs_at_release = f.ctl.borrow().panels.wrap_count();
+            let before = rows_in_panel(&f);
+            f.h.release(x - 150.0, y, slint::platform::PointerEventButton::Left);
             f.pump();
             assert_eq!(
                 f.ctl.borrow().panels.wrap_count(),
-                runs0,
-                "step {k}: a drag step wraps nothing"
+                runs_at_release,
+                "scale {scale}: the rows already fit the width, the release wraps nothing again"
+            );
+            assert_eq!(rows_in_panel(&f), before, "scale {scale}");
+            assert_eq!(
+                f.h.comp.get_panel_wrapped_cols(),
+                f.h.comp.get_panel_wrap_cols(),
+                "scale {scale}: exact after the release"
+            );
+            f.pump();
+            f.ctl.borrow_mut().refresh();
+            assert_eq!(f.ctl.borrow().panels.wrap_count(), runs_at_release);
+        }
+    }
+
+    #[test]
+    fn a_live_drag_keeps_the_line_at_the_top_in_place() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "many.txt", &many_long_lines());
+            f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+            f.h.comp.invoke_panel_scroll_by(0.0, -18.0 * 700.0);
+            f.h.advance(0);
+            let line = top_line_number(&f);
+            assert!(line > 100, "scale {scale}: scrolled into the file ({line})");
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            for k in [1.0f32, 2.0, 3.0, 4.0, 3.0, 2.0, -1.0, -3.0] {
+                drag_to(&f, x, y, -20.0 * k);
+                f.h.advance(0);
+                assert_eq!(
+                    top_line_number(&f),
+                    line,
+                    "scale {scale}: the same line stays at the top at step {k}"
+                );
+            }
+            f.h.release(x, y, slint::platform::PointerEventButton::Left);
+            f.pump();
+            assert_eq!(
+                top_line_number(&f),
+                line,
+                "scale {scale}: and after the release"
             );
         }
-        // Settle on a clearly wider slot, then let go.
-        f.h.move_to(x - 200.0, y);
-        f.h.advance(0);
-        assert!(
-            f.h.comp.get_panel_wrap_cols() > cols0,
-            "the view holds more columns while dragged"
-        );
-        assert_eq!(
-            rows_in_panel(&f),
-            rows0,
-            "but the rows are still the old ones"
-        );
-        f.h.release(x - 200.0, y, slint::platform::PointerEventButton::Left);
-        f.pump();
-        assert_eq!(
-            f.ctl.borrow().panels.wrap_count(),
-            runs0 + 1,
-            "the release wraps once"
-        );
-        assert!(
-            rows_in_panel(&f) < rows0,
-            "wider, fewer rows ({} against {rows0})",
-            rows_in_panel(&f)
-        );
-        // Nothing more happens by itself.
-        f.pump();
-        f.ctl.borrow_mut().refresh();
-        assert_eq!(f.ctl.borrow().panels.wrap_count(), runs0 + 1);
+    }
+
+    /// A text file over the live threshold, so a drag wraps it on a worker.
+    fn big_body() -> String {
+        format!("{}\n", "word ".repeat(300).trim_end()).repeat(900)
+    }
+
+    #[test]
+    fn a_big_file_drag_never_stalls_the_ui_and_ends_exact() {
+        for scale in [1.0f32, 2.25] {
+            let (f, _h, _) = live(Opts {
+                scale,
+                ..Opts::default()
+            });
+            show_text(&f, "big.txt", &big_body());
+            f.pump_until("the wrapped rows", |f| {
+                f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+            });
+            let rows0 = rows_in_panel(&f);
+            let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+            let y = f.h.comp.get_grid_top() + 200.0;
+            f.h.move_to(x, y);
+            f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            let mut worst = Duration::ZERO;
+            let mut changed_mid_drag = false;
+            let runs0 = f.ctl.borrow().panels.wrap_count();
+            for k in 1..=40 {
+                let t = Instant::now();
+                f.h.move_to(x - 6.0 * k as f32, y);
+                f.h.advance(0);
+                f.pump();
+                worst = worst.max(t.elapsed());
+                changed_mid_drag |= rows_in_panel(&f) != rows0;
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            // A step hands the work to a worker and goes on: no step waits for a wrap of the whole file.
+            assert!(
+                worst < Duration::from_millis(100),
+                "scale {scale}: a drag step took {worst:?}"
+            );
+            // Fewer wraps than steps is fine (one in flight, the newest width next), but never none.
+            let runs = f.ctl.borrow().panels.wrap_count() - runs0;
+            assert!(
+                (1..=40).contains(&runs),
+                "scale {scale}: {runs} wraps for 40 steps"
+            );
+            f.h.release(x - 240.0, y, slint::platform::PointerEventButton::Left);
+            f.pump_until("the exact final wrap", |f| {
+                f.h.advance(0);
+                f.h.comp.get_panel_wrapped()
+                    && f.h.comp.get_panel_wrapped_cols() == f.h.comp.get_panel_wrap_cols()
+            });
+            assert!(
+                changed_mid_drag || rows_in_panel(&f) != rows0,
+                "scale {scale}: the rows re-wrapped"
+            );
+            let lines: Vec<slint::SharedString> =
+                big_body().lines().map(slint::SharedString::from).collect();
+            let (expect, _) = crate::panel_ctl::wrap_lines(
+                &lines,
+                usize::try_from(f.h.comp.get_panel_wrap_cols()).unwrap(),
+                &|| false,
+            );
+            assert_eq!(rows_in_panel(&f), expect.len(), "scale {scale}: exact");
+        }
+    }
+
+    #[test]
+    fn a_small_file_wrap_per_step_is_cheap() {
+        // The common case: a step's wrap of a file just under the live threshold costs a few milliseconds.
+        let lines: Vec<slint::SharedString> = (0..1000)
+            .map(|i| slint::SharedString::from(format!("line {i} {}", "word ".repeat(18))))
+            .collect();
+        assert!(lines.iter().map(|l| l.len() + 1).sum::<usize>() <= 200_000);
+        let t = Instant::now();
+        for cols in 20..60 {
+            let _ = crate::panel_ctl::wrap_lines(&lines, cols, &|| false);
+        }
+        let per = t.elapsed() / 40;
+        eprintln!("small-file wrap per step: {per:?}");
+        assert!(per < Duration::from_millis(16), "one wrap took {per:?}");
     }
 
     /// A file of 300 long lines, each wrapping to several rows.
