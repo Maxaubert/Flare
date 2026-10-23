@@ -635,10 +635,15 @@ pub fn run_window(
         RendererChoice::Gpu => GridPainter::Gpu,
         RendererChoice::Software => GridPainter::Cpu,
     };
-    let host = Rc::new(RefCell::new(GridHost::new(
-        Box::new(Rasterizer::new(DEFAULT_FAMILIES, 1.0)),
-        painter,
-    )));
+    let mut rasterizer = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
+    {
+        // A fallback font found off the UI thread must repaint an idle window (GPU path).
+        let weak = app.as_weak();
+        rasterizer.set_fallback_waker(std::sync::Arc::new(move || {
+            let _ = weak.upgrade_in_event_loop(|app| app.window().request_redraw());
+        }));
+    }
+    let host = Rc::new(RefCell::new(GridHost::new(Box::new(rasterizer), painter)));
     // Why the grid is not on the GPU even though it was asked for, set by the notifier.
     let note: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(outcome.fallback_reason.clone()));
     let effective = outcome.effective;

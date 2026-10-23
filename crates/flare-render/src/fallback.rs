@@ -33,6 +33,9 @@ pub struct Shared {
     pub cmap_reads: Arc<AtomicUsize>,
     /// Test hook: while set and false the worker holds every request (a slow disk).
     pub gate: Option<Arc<AtomicBool>>,
+    /// Called from the worker after each answer, so an idle window asks for a frame (on the GPU
+    /// path nothing else would: the dirty flag is read only while a frame is being made).
+    pub wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub struct Worker {
@@ -80,6 +83,9 @@ fn run(rx: Receiver<Request>, tx: Sender<Answer>, shared: Shared) {
             return;
         }
         shared.ready.store(true, Ordering::Release);
+        if let Some(wake) = &shared.wake {
+            wake();
+        }
     }
 }
 

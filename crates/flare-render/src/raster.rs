@@ -416,6 +416,10 @@ impl GlyphSource for Rasterizer {
         self.take_fallbacks()
     }
 
+    fn set_fallback_waker(&mut self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.shared.wake = Some(wake);
+    }
+
     fn set_scale(&mut self, scale: f32) {
         self.scale = scale;
         self.cache.clear();
@@ -971,6 +975,24 @@ mod tests {
         let mut r = Rasterizer::new(DEFAULT_FAMILIES, 1.0);
         r.shared.gate = Some(gate.clone());
         (r, gate)
+    }
+
+    #[test]
+    fn a_fallback_answer_wakes_the_window() {
+        let (mut r, gate) = gated();
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let w = woken.clone();
+        r.set_fallback_waker(std::sync::Arc::new(move || {
+            w.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        assert!(r.glyph(&key("\u{3FFFD}")).is_none());
+        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 0, "held shut");
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        let start = std::time::Instant::now();
+        while woken.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            assert!(start.elapsed().as_secs() < 60, "the worker never woke the window");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]

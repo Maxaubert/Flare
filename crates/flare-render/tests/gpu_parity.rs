@@ -198,6 +198,27 @@ fn paint_straight_unpremultiplies_a_see_through_grid_only() {
     assert_eq!(a, b);
 }
 
+/// The window-sized second texture a see-through ground needs goes back when the ground is solid.
+#[test]
+fn the_straight_texture_is_freed_when_the_ground_is_solid_again() {
+    let (device, queue) = device_or_skip!();
+    let mut fake = FakeGlyphs::new(6, 12);
+    let mut gpu = GpuPainter::new(&device, &queue);
+    let mut glass = empty_scene(256, 128);
+    glass.clear = flare_render::color::Rgba {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
+    let _ = gpu.paint_straight(&glass, &mut fake);
+    let with_glass = gpu.memory().grid_texture;
+    let _ = gpu.paint_straight(&empty_scene(256, 128), &mut fake);
+    let solid = gpu.memory().grid_texture;
+    assert!(solid < with_glass, "kept {solid} of {with_glass} bytes");
+    assert_eq!(solid, 256 * 128 * 4, "only the grid texture is left");
+}
+
 #[test]
 fn texture_is_importable() {
     let (device, queue) = device_or_skip!();

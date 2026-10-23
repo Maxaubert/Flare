@@ -55,6 +55,9 @@ pub trait GlyphSource {
     fn fallback_ready(&self) -> bool {
         false
     }
+    /// What the lazy fallback worker calls (from its own thread) after it answers, so the window
+    /// asks for a frame. Default: nothing to call.
+    fn set_fallback_waker(&mut self, _wake: std::sync::Arc<dyn Fn() + Send + Sync>) {}
     /// Takes the fallback fonts found off the UI thread; true when cells drawn blank before must be
     /// painted again (the caller drops every atlas copy). Default: nothing.
     fn apply_fallbacks(&mut self) -> bool {

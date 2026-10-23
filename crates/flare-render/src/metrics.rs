@@ -94,7 +94,8 @@ pub fn cell_metrics_in(u: &FontUnits, base_px: f32, scale: f32, mode: CellRoundi
     let lead = u.leading * k;
     let cell_h = (asc + desc + lead).ceil().max(1.0) as u32;
     let baseline = (lead / 2.0 + asc).round() as u32;
-    let underline_h = scale.round().max(1.0) as u32;
+    // The one hairline rule (regression rule 159): max(1, floor(scale)) device pixels.
+    let underline_h = crate::decor::hair_px(scale);
     let underline_y = baseline + ((cell_h as f32 - baseline as f32) * 0.4).round().max(1.0) as u32;
     let padding = (TERM_PADDING_LOGICAL * scale).round() as u32;
     CellMetrics {
@@ -277,8 +278,8 @@ mod tests {
         let table: [(f32, u32, u32, u32, u32, u32, u32); 6] = [
             (1.0, 8, 16, 12, 14, 1, 4),
             (1.25, 10, 19, 15, 17, 1, 5),
-            (1.5, 11, 23, 18, 20, 2, 6),
-            (1.75, 13, 27, 21, 23, 2, 7),
+            (1.5, 11, 23, 18, 20, 1, 6),
+            (1.75, 13, 27, 21, 23, 1, 7),
             (2.0, 15, 31, 24, 27, 2, 8),
             (2.25, 17, 34, 27, 30, 2, 9),
         ];
