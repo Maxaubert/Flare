@@ -3186,7 +3186,14 @@ impl AppCtl {
             && rows >= 1
         {
             self.grid_dims = (cols, rows);
-            self.deps.host.refit_all(cols, rows);
+            let front = self.front_id();
+            if ov.is_some() {
+                // The front tab wears its own zoom: only it takes this grid.
+                self.deps.host.set_dims(cols, rows, front.as_deref());
+            } else {
+                // The settings' size: every tab without a zoom of its own follows.
+                self.deps.host.refit_unzoomed(cols, rows);
+            }
         }
         if let Some(app) = self.app() {
             app.window().request_redraw();
@@ -4301,6 +4308,58 @@ mod tests {
         f.wait_made("C:\\a");
         assert_eq!(f.key(ctrl("s", "KeyS")), KeyOutcome::Pty);
         assert_eq!(sidebar_mode(&f.prefs), before);
+    }
+
+    #[test]
+    fn a_zoom_never_resizes_the_other_shells_and_a_switch_keeps_each_zoomed_size() {
+        use crate::host::{GridHost, GridPainter};
+        use flare_render::glyph::FakeGlyphs;
+        use flare_settings::look::LookStore;
+        let f = fx();
+        f.start_restore_and_wait();
+        let grid = Rc::new(RefCell::new(GridHost::new(
+            Box::new(FakeGlyphs::new(8, 16)),
+            GridPainter::Cpu,
+        )));
+        grid.borrow_mut().resize(648, 264, 1.0);
+        f.ctl
+            .borrow_mut()
+            .set_font_ctl(FontCtl::new(LookStore::new(f.prefs.clone()), grid));
+        let a = f.ctl.borrow_mut().open_folder("C:\\za");
+        let b = f.ctl.borrow_mut().open_folder("C:\\zb");
+        f.wait_made("C:\\za");
+        f.wait_made("C:\\zb");
+        let size_of = |cwd: &str| {
+            f.sp.made()
+                .iter()
+                .find(|m| m.spec().cwd == cwd)
+                .map(|m| m.size())
+                .unwrap()
+        };
+        let settle = || std::thread::sleep(Duration::from_millis(150));
+        settle();
+        let base = size_of("C:\\za");
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        assert!(f.ctl.borrow_mut().zoom_front(1.0));
+        settle();
+        let zoomed = size_of("C:\\zb");
+        assert_ne!(zoomed, base, "the front tab follows its zoom");
+        assert_eq!(size_of("C:\\za"), base, "a background shell is not touched");
+        // Back to A: B, now in the background, keeps its zoomed grid.
+        f.ctl.borrow_mut().model.pick(&a);
+        f.ctl.borrow_mut().refresh();
+        settle();
+        assert_eq!(size_of("C:\\za"), base);
+        assert_eq!(
+            size_of("C:\\zb"),
+            zoomed,
+            "no reflow of a hidden zoomed shell"
+        );
+        f.ctl.borrow_mut().model.pick(&b);
+        f.ctl.borrow_mut().refresh();
+        settle();
+        assert_eq!(size_of("C:\\zb"), zoomed);
+        assert_eq!(size_of("C:\\za"), base, "the unzoomed shell keeps its size");
     }
 
     #[test]

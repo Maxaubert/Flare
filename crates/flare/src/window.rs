@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flare_render::glyph::GlyphSource as _;
 use flare_render::raster::{DEFAULT_FAMILIES, Rasterizer};
 use flare_render::stats::{FrameTrace, TracePhase};
 use flare_settings::kv::{FileBackend, PrefStore};
