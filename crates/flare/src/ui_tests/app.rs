@@ -14,7 +14,6 @@ const GROUND: [u8; 4] = [23, 23, 23, 255];
 const DIVIDER: [u8; 4] = [39, 39, 39, 255];
 const SECONDARY: [u8; 4] = [13, 13, 13, 255];
 const RED: [u8; 4] = [255, 0, 0, 255];
-const ACCENT: [u8; 4] = [0xfe, 0x8f, 0x34, 255];
 
 fn is_red(p: [u8; 4]) -> bool {
     Frame::near(p, RED, 2)
@@ -367,14 +366,14 @@ fn front_kind_selects_the_page() {
     let (a, b, c, d) = page(&f);
     assert_eq!(f.count_where(a, b, c, d, is_red), 0);
     assert!(f.count_where(a, b, c, d, bright) > 0, "the word Settings");
-    // 2: the start screen's mark in the accent.
+    // 2: the start screen's mark, the icon's own orange flame.
     h.comp.set_front_kind(2);
     h.advance(0);
     h.advance(450);
     let f = h.render();
     assert_eq!(f.count_where(0, 40, f.w, f.h, is_red), 0);
-    let accent = |p: [u8; 4]| Frame::near(p, ACCENT, 12);
-    assert!(f.count_where(0, 40, f.w, f.h, accent) > 0, "the mark");
+    let orange = |p: [u8; 4]| Frame::near(p, [0xff, 0x48, 0x00, 255], 12);
+    assert!(f.count_where(0, 40, f.w, f.h, orange) > 0, "the mark");
     // 3: bare ground.
     h.comp.set_front_kind(3);
     h.advance(0);

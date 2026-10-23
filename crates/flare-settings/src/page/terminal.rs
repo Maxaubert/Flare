@@ -12,7 +12,9 @@ use crate::agent_prefs::agent_guard;
 use crate::help_prefs::help_enabled;
 use crate::new_tab::{NewTabMode, new_tab_folder, new_tab_mode};
 use crate::rows::{RowDef, row};
-use crate::term_prefs::{agent_eval, agent_keys, app_network, open_previews, saved_shell_id};
+use crate::term_prefs::{
+    agent_eval, agent_keys, app_network, open_previews, right_click_reports, saved_shell_id,
+};
 use crate::verb::VerbState;
 use flare_theme::fonts::{FONT_PCTS, TERM_FONTS};
 
@@ -136,9 +138,14 @@ fn keys_section(env: &PageEnv<'_>) -> SectionModel {
         row_tip: GUARD_TIP.to_string(),
         ..switch_row(def("agent-guard"), agent_guard(env.prefs))
     };
+    let right_click = switch_row(def("right-click-reports"), right_click_reports(env.prefs));
     section(
         "keys",
-        vec![BlockModel::Row(hotkeys), BlockModel::Row(guard)],
+        vec![
+            BlockModel::Row(hotkeys),
+            BlockModel::Row(guard),
+            BlockModel::Row(right_click),
+        ],
     )
 }
 
@@ -348,6 +355,7 @@ mod tests {
                 "explorer-verb",
                 "agent-keys",
                 "agent-guard",
+                "right-click-reports",
                 "open-previews",
                 "agent-eval",
                 "app-network",
@@ -502,6 +510,27 @@ mod tests {
         let r = the_row(&build_terminal(&e), "explorer-verb").clone();
         assert!(!r.off);
         assert_eq!(r.control, Control::Switch { on: false });
+    }
+
+    #[test]
+    fn right_clicks_to_programs_is_off_by_default_beside_the_agent_keys() {
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(prefs.clone());
+        let face: &dyn Fn(&str) -> String = &face_of_test;
+        let e = env(&prefs, &look, face);
+        let page = build_terminal(&e);
+        let r = the_row(&page, "right-click-reports");
+        assert_eq!(r.control, Control::Switch { on: false });
+        assert!(
+            r.sub.split_whitespace().count() <= 8,
+            "plain, at most eight words"
+        );
+        crate::term_prefs::set_right_click_reports(&prefs, true);
+        let page = build_terminal(&e);
+        assert_eq!(
+            the_row(&page, "right-click-reports").control,
+            Control::Switch { on: true }
+        );
     }
 
     #[test]

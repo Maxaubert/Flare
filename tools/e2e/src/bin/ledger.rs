@@ -15,7 +15,7 @@ const PT: &[(&str, u32)] = &[
     ("cwdLabel", 3),
     ("indicator", 12),
     ("attention", 25),
-    ("agentHooks", 43),
+    ("agentHooks", 48),
     ("agentDiag", 12),
     ("theme", 8),
     ("newTabFolder", 6),
@@ -388,10 +388,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pt_counts_are_the_76_scenarios_and_their_1115_calls() {
+    fn the_pt_counts_are_the_76_scenarios_and_their_1120_calls() {
         // 74 scenarios and 1094 calls at v0.55.6, plus dictateAnywhere (9) and dictateTwoCopies (10) at e5848cb, plus two pathLinks checks (PT #250) at a168a12.
         assert_eq!(PT.len(), 76);
-        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1115);
+        assert_eq!(PT.iter().map(|(_, n)| n).sum::<u32>(), 1120);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
-//! of the 43 rows; within each section the order follows the tables.
+//! of the 44 rows; within each section the order follows the tables.
 
 /// What control a row draws. `Registry` is the Explorer verb (read back from Windows, M9);
 /// `Info` is a row that stores nothing (the version).
@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 15] = [
+pub const APP_OPTIONS: [RowDef; 16] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -569,6 +569,19 @@ pub const APP_OPTIONS: [RowDef; 15] = [
         only_nvidia: false,
     },
     RowDef {
+        id: "right-click-reports",
+        label: "Send right clicks to programs",
+        sub: "Off keeps right clicks for the menu.",
+        section: "keys",
+        page: "terminal",
+        icon: "key",
+        keywords: "right click mouse paste menu context claude codex agent clicks program mouse mode",
+        keys: &["flare.window.rightClickReports"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
         id: "open-previews",
         label: "Open previews in Flare",
         sub: "Pictures and text open beside the terminal.",
@@ -635,8 +648,8 @@ pub const APP_OPTIONS: [RowDef; 15] = [
     },
 ];
 
-/// The 39 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 43] = [
+/// The 44 row ids in draw order (Appendix C, the `#` column).
+pub const ROW_ORDER: [&str; 44] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -650,6 +663,7 @@ pub const ROW_ORDER: [&str; 43] = [
     "explorer-verb",
     "agent-keys",
     "agent-guard",
+    "right-click-reports",
     "open-previews",
     "agent-eval",
     "app-network",
@@ -744,14 +758,14 @@ mod tests {
     #[test]
     fn the_tables_name_the_43_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 43);
+        assert_eq!(ids.len(), 44);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 43);
+        assert_eq!(distinct.len(), 44);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -871,6 +885,7 @@ mod tests {
                 "explorer-verb=registry",
                 "agent-keys=flare.window.agentKeys",
                 "agent-guard=flare.window.agentGuard",
+                "right-click-reports=flare.window.rightClickReports",
                 "open-previews=flare.window.openPreviews",
                 "agent-eval=flare.web.agentEval",
                 "app-network=flare.web.appNetwork",
@@ -878,7 +893,7 @@ mod tests {
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 15);
+        assert_eq!(app.len(), 16);
     }
 
     #[test]

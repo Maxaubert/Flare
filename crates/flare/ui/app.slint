@@ -455,6 +455,7 @@ export component AppWindow inherits Window {
     in property <styled-text> dialog-body;
     in property <string> dialog-primary;
     in property <bool> dialog-danger;
+    in property <bool> dialog-by-key;
     in property <bool> tip-visible;
     in property <string> tip-text;
     in property <length> tip-x;
@@ -1221,6 +1222,7 @@ export component AppWindow inherits Window {
             body: root.dialog-body;
             primary-label: root.dialog-primary;
             danger: root.dialog-danger;
+            opened-by-key: root.dialog-by-key;
             cancel => { root.dialog-cancel(); }
             confirm => { root.dialog-confirm(); }
         }
