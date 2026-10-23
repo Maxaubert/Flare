@@ -4,8 +4,9 @@
 //! Flare needs them. The scanner runs over every chunk before `vte`, never alters the bytes, and
 //! reports where each sequence ended so the caller can feed `vte` up to that point, then act.
 
-/// An OSC 52 of 1 MB of text is about 1.4 MB of base64.
-pub const OSC_MAX_BYTES: usize = 1_500_000;
+/// The longest OSC the scanner keeps: an OSC 52 write at its cap (`OSC52_MAX` UTF-16 units,
+/// up to 3 UTF-8 bytes each, in base64: `max * 4` plus padding) and its `52;c;` head.
+pub const OSC_MAX_BYTES: usize = "52;c;".len() + crate::osc52::OSC52_MAX * 4 + 4;
 
 /// More collected CSI parameter bytes than this and the sequence is abandoned.
 const CSI_MAX_BYTES: usize = 32;
@@ -491,5 +492,17 @@ mod tests {
         assert_eq!(s.scan(&big), vec![]);
         assert_eq!(s.scan(b"\x18"), vec![]);
         assert!(s.osc.capacity() < 1024, "kept {} bytes", s.osc.capacity());
+    }
+
+    #[test]
+    fn an_osc52_write_at_its_cap_survives_the_scanner() {
+        // 3-byte characters at the cap: well past the old 1.5 MB limit once in base64.
+        let text = "\u{3042}".repeat(crate::osc52::OSC52_MAX);
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &text);
+        let mut seq = b"\x1b]52;c;".to_vec();
+        seq.extend_from_slice(b64.as_bytes());
+        seq.push(0x07);
+        let evs = Scanner::new().scan(&seq);
+        assert_eq!(evs.len(), 1, "the scanner dropped a legal write");
     }
 }

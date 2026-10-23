@@ -40,13 +40,13 @@ pub fn wheel_action(notches: i32, ctx: &WheelContext, col: usize, row: usize) ->
             let report = format!("\x1b[<{};{};{}M", button, col + 1, row + 1);
             return WheelAction::Bytes(report.repeat(count).into_bytes());
         }
-        let cx = col + 33;
-        let cy = row + 33;
-        if cx > 255 || cy > 255 {
+        let button = if up { 96u8 } else { 97u8 };
+        let mut one = vec![0x1b, b'[', b'M', button];
+        if crate::mouse_report::push_coord(&mut one, col + 33).is_none()
+            || crate::mouse_report::push_coord(&mut one, row + 33).is_none()
+        {
             return WheelAction::None;
         }
-        let button = if up { 96u8 } else { 97u8 };
-        let one = [0x1b, b'[', b'M', button, cx as u8, cy as u8];
         return WheelAction::Bytes(one.repeat(count));
     }
     if ctx.alt_screen {
@@ -148,7 +148,7 @@ mod tests {
             wheel_action(1, &x10, 0, 0),
             WheelAction::Bytes(vec![0x1b, b'[', b'M', 96, 33, 33])
         );
-        assert_eq!(wheel_action(1, &x10, 250, 0), WheelAction::None);
+        assert_eq!(wheel_action(1, &x10, 2015, 0), WheelAction::None);
     }
 
     #[test]
@@ -163,5 +163,17 @@ mod tests {
             wheel_action(1, &both, 4, 9),
             WheelAction::Bytes(b"\x1b[<64;5;10M".to_vec())
         );
+    }
+
+    #[test]
+    fn the_default_report_is_utf8_past_column_94() {
+        let c = WheelContext {
+            mouse: MouseTracking::Vt200,
+            ..ctx()
+        };
+        let WheelAction::Bytes(b) = wheel_action(1, &c, 99, 0) else {
+            panic!("bytes")
+        };
+        assert_eq!(b, "\x1b[M`\u{84}!".as_bytes());
     }
 }
