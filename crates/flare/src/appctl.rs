@@ -3915,9 +3915,9 @@ impl AppCtl {
         if !(on_strip || on_side) {
             // Below the title row and right of the sidebar: the terminal's (a typed, quoted path), unless the pointer
             // is over the side panel: a file dropped there is not meant for the shell on the left.
-            let over_panel = self
-                .app()
-                .is_some_and(|a| a.get_panel_shown() && cursor_css.0 >= a.get_grid_left() + a.get_panel_slot_x());
+            let over_panel = self.app().is_some_and(|a| {
+                a.get_panel_shown() && cursor_css.0 >= a.get_grid_left() + a.get_panel_slot_x()
+            });
             if cursor_css.1 >= BAR_H && !over_panel {
                 let front = self.front_tab();
                 {
@@ -4427,7 +4427,10 @@ impl AppCtl {
                         }
                     }
                     self.refresh();
-                } else if self.panels.show_text(&tab, WHY, Some("Cannot show this file")) {
+                } else if self
+                    .panels
+                    .show_text(&tab, WHY, Some("Cannot show this file"))
+                {
                     self.refresh();
                     self.panel_changed(&tab);
                 }
@@ -6801,7 +6804,9 @@ two",
         let target = f.ctl.borrow().panels.snap(&id).unwrap().path;
         f.ctl
             .borrow_mut()
-            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab: id.clone() })));
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused {
+                tab: id.clone(),
+            })));
         f.pump();
         f.h.advance(0);
         assert_eq!(f.h.comp.get_panel_kind(), 2, "still the text file");

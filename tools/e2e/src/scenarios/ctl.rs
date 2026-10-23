@@ -87,6 +87,7 @@ fn hello(pipe: &str, tab_token: Option<&str>) -> Result<Client<PipeEnd>, ClientE
             version: "1".into(),
             token: None,
             tab_token: tab_token.map(str::to_string),
+            no_events: false,
         },
         WAIT,
     )?;

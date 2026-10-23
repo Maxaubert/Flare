@@ -34,7 +34,9 @@ use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServ
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
-use slint::winit_030::winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use slint::winit_030::winit::event::{
+    ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::{EventResult, WinitWindowAccessor};

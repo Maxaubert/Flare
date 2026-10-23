@@ -1268,10 +1268,16 @@ mod tests {
     fn a_connection_that_says_no_events_is_sent_none() {
         let mut r = rig();
         r.hello(r#","tab_token":"tok1","events":false"#);
-        assert_eq!(r.shared.hub.publish("panel.changed", json!({}), Some("t1")), 0);
+        assert_eq!(
+            r.shared.hub.publish("panel.changed", json!({}), Some("t1")),
+            0
+        );
         assert_eq!(r.shared.hub.publish("x", json!({}), None), 0);
         let v = r.ask(r#"{"id":1,"method":"tabs.list","params":{}}"#);
-        assert_eq!(v["id"], 1, "the next line is the answer, no event came first");
+        assert_eq!(
+            v["id"], 1,
+            "the next line is the answer, no event came first"
+        );
         r.finish();
     }
 

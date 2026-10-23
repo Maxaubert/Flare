@@ -136,6 +136,7 @@ fn hello(pipe: &str, token: &str) -> Result<Client<PipeEnd>, ClientError> {
             version: "1".into(),
             token: None,
             tab_token: Some(token.to_string()),
+            no_events: false,
         },
         WAIT,
     )?;

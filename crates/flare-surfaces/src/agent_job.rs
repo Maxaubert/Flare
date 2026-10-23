@@ -2209,7 +2209,13 @@ mod tests {
             let _ = job.on_reply(cur, Ok("{}".into()), page(), 1, &mut Ids(&mut ids));
         }
         let cur = ids;
-        let out = job.on_reply(cur, Err("Target closed".into()), page(), 1, &mut Ids(&mut ids));
+        let out = job.on_reply(
+            cur,
+            Err("Target closed".into()),
+            page(),
+            1,
+            &mut Ids(&mut ids),
+        );
         assert!(matches!(out, Out::Done(Err(_))), "{out:?}");
         let rel = job.release_calls(&mut Ids(&mut ids));
         assert_eq!(rel.len(), 1, "{rel:?}");

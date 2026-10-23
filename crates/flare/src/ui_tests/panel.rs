@@ -776,9 +776,14 @@ fn the_page_fills_the_body_less_the_splitters_reach_at_every_scale() {
         );
         let page = web_box(&h);
         let inset = flare_surfaces::web::web_inset_px(f64::from(s));
-        assert_eq!(page.x, body.x + inset, "scale {s}: after the splitter's reach");
+        assert_eq!(
+            page.x,
+            body.x + inset,
+            "scale {s}: after the splitter's reach"
+        );
         // The splitter's whole grab zone lies left of the page: a press in it can only be the splitter's.
-        let splitter_right = ((h.comp.get_panel_splitter_x() + h.comp.get_panel_splitter_w()) * s).round() as i32;
+        let splitter_right =
+            ((h.comp.get_panel_splitter_x() + h.comp.get_panel_splitter_w()) * s).round() as i32;
         assert!(
             page.x >= splitter_right,
             "scale {s}: the page starts at {} under the grab zone that ends at {splitter_right}",

@@ -319,8 +319,10 @@ mod tests {
         let (s, c) = pair();
         let mut script = String::new();
         for i in 0..(EVENTS_KEPT + 50) {
-            script.push_str(&format!("{{\"event\":\"e\",\"params\":{{\"i\":{i}}}}}
-"));
+            script.push_str(&format!(
+                "{{\"event\":\"e\",\"params\":{{\"i\":{i}}}}}
+"
+            ));
         }
         script.push_str(r#"{"id":1,"result":{"v":1}}"#);
         serve_script(s, vec![script]);

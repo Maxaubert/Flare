@@ -1336,7 +1336,10 @@ fn back_over_a_same_document_history_entry_answers_at_once() {
         url: format!("{PAGE}#before"),
     });
     f.pump();
-    let v = rx.try_recv().expect("answered, not left to time out").unwrap();
+    let v = rx
+        .try_recv()
+        .expect("answered, not left to time out")
+        .unwrap();
     assert_eq!(v["url"], format!("{PAGE}#before").as_str());
     assert_eq!(v["loaded"], true);
 }

@@ -277,7 +277,11 @@ fn a_reset_puts_the_task_list_back_at_the_top() {
     assert_ne!(top.rgba, h.render().rgba, "it scrolled");
     h.comp.invoke_panel_convo_reset_scroll();
     h.advance(0);
-    assert_eq!(h.render().rgba, top.rgba, "another tab's list opens at its top");
+    assert_eq!(
+        h.render().rgba,
+        top.rgba,
+        "another tab's list opens at its top"
+    );
 }
 
 #[test]

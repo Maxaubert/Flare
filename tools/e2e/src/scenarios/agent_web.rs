@@ -776,6 +776,7 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
             version: "1".into(),
             token: None,
             tab_token: None,
+            no_events: false,
         },
         Duration::from_secs(10),
     )

@@ -873,7 +873,10 @@ fn a_navigation_the_host_cancelled_does_not_make_a_ready_page_unready() {
         json!({"name": "mod_notes_append_note", "input": {"text": "a"}}),
     );
     f.pump_until("the tool event", |_| !posts(&slot, &tab).is_empty());
-    let id = posts(&slot, &tab)[0]["callId"].as_str().unwrap().to_string();
+    let id = posts(&slot, &tab)[0]["callId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     page_says(
         &slot,
         &tab,
@@ -904,7 +907,14 @@ fn a_tool_call_whose_caller_gave_up_is_not_run_when_the_page_becomes_ready() {
         json!({"name": "mod_notes_append_note", "input": {"text": "late"}}),
     );
     f.pump_until("the call to be waiting", |f| {
-        f.ctl.borrow().mods.as_ref().unwrap().hub().pending_of("notes") == 1
+        f.ctl
+            .borrow()
+            .mods
+            .as_ref()
+            .unwrap()
+            .hub()
+            .pending_of("notes")
+            == 1
     });
     let id = f
         .ctl
