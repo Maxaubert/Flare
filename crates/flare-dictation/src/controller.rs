@@ -60,7 +60,7 @@ const NO_MODEL: &str = "Choose a model in Settings";
 const NO_MODEL_OUTSIDE: &str = "Choose a speech model in Settings";
 const NO_ENGINE: &str = "The speech engine is missing. Reinstall the app.";
 const ENGINE_STOPPED: &str = "The speech engine stopped. Try again.";
-const TAB_CLOSED: &str = "That tab has closed";
+const TAB_CLOSED: &str = "That tab has closed, copied";
 const HEARD_NOTHING: &str = "Heard nothing";
 const CANCELLED: &str = "Cancelled";
 
@@ -164,6 +164,8 @@ pub enum Effect {
         session: String,
         text: String,
     },
+    /// The words have nowhere to go (their tab closed): keep them on the clipboard.
+    Keep(String),
     /// Hand an outside recording's result to the route sink.
     Route(RouteResult),
     Cue(Cue),
@@ -546,6 +548,7 @@ impl Controller {
             }
             Target::Session(session) => {
                 if r.gone {
+                    fx.push(Effect::Keep(text));
                     self.say(fx, now, TAB_CLOSED);
                 } else {
                     // A trailing space, so the next dictation (or the next typed word) does not run into this
@@ -1126,7 +1129,10 @@ mod tests {
         h.ev(Event::TabGone(TAB.into()));
         let fx = h.heard(id, "words");
         assert!(pastes(&fx).is_empty());
-        assert_eq!(message(&h).as_deref(), Some("That tab has closed"));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Keep(t) if t == "words")));
+        assert_eq!(message(&h).as_deref(), Some("That tab has closed, copied"));
     }
 
     #[test]

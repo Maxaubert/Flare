@@ -343,7 +343,15 @@ finished transcript that ends unsent is copied to the clipboard and the widget n
 the 30 s timeout on the picker, a refused or failed checked send, a copy of the app that has closed. A picker that is
 dismissed, a new recording that replaces words still waiting, a newer text over an older one, and switching dictation
 off with words waiting copy them too, with no note. "Cancelled", "Heard nothing", a paste and a successful send copy
-nothing. A copy that fails keeps the old note. Native: `SvcEffect::CopyText` in `service.rs` (the clipboard write runs
+nothing. A copy that fails puts the plain note back only while the exact "copied" note is still showing; a silent copy that
+fails says "Words could not be copied" when nothing else is on screen. A paste into this copy's front tab with no shell
+in front (Settings, an empty window) goes on to the list and copies, never claiming "Typed into the tab in front"
+(`SvcEffect::PastePage` is answered with `Pasted`); words another copy routes here with no shell in front are copied by
+that copy (the link has no reply for a paste, so the service copy still says typed: a follow-up). An in-window
+recording whose tab closed copies the words (`Effect::Keep`, "That tab has closed, copied"), as does a paste that finds
+the tab gone. A send carries its words with its answer (`SvcEvent::Sent(decision, text)`), so two sends in flight never
+swap words; a send that cannot start answers No with its words; a refusal that lands after dictation was switched off
+still copies. The new-recording and switch-off paths overwrite the clipboard on purpose (owner to confirm). Native: `SvcEffect::CopyText` in `service.rs` (the clipboard write runs
 on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing_with_no_claude_session_says_so`,
 `esc_keeps_it_unsent`, `thirty_seconds_without_a_pick_says_not_sent`, `a_click_picks_a_row_and_a_refusal_says_why`,
 `a_tab_of_another_copy_with_no_service_is_not_sent`, `a_remote_send_that_is_refused_keeps_the_words`,
@@ -353,5 +361,11 @@ on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing
 `a_newer_text_never_loses_the_words_of_one_still_waiting`, `switching_off_with_words_waiting_keeps_them`,
 `a_note_with_the_copy_stays_under_the_cap`, `cancelled_heard_nothing_and_a_successful_send_or_paste_copy_nothing`
 (`service.rs`), `words_with_no_session_are_copied_and_the_note_says_so`, `a_failed_copy_puts_the_old_note_back` and
-`a_failed_copy_never_replaces_a_newer_face` (`dictation_ctl.rs`). Quitting the app while words wait is not covered: the
+`a_failed_copy_never_replaces_a_newer_face`, `a_failed_silent_copy_says_so_only_when_nothing_else_is_showing`,
+`a_route_to_this_copy_with_no_shell_in_front_keeps_the_words_and_never_claims_a_paste`,
+`words_routed_here_by_another_copy_with_no_shell_in_front_are_kept`,
+`a_refused_send_keeps_its_own_words_and_one_that_lands_after_switch_off_too` and
+`a_remote_send_with_no_machinery_answers_no_and_keeps_the_words` (`dictation_ctl.rs`), plus
+`a_paste_with_no_shell_in_front_goes_on_to_the_list_and_never_claims_it_typed` and
+`two_sends_in_flight_each_copy_their_own_words` (`service.rs`). Quitting the app while words wait is not covered: the
 process is ending.
