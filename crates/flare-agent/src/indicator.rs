@@ -185,8 +185,8 @@ pub struct Indicator {
     clock: AgentClock,
     active: Option<String>,
     focused: bool,
-    /// Finished/Failed marks raised on the tab in front while the window was away: held until a
-    /// tab is clicked (owner, 2026-10-21; PT `agentHold.ts`).
+    /// Finished/Failed marks raised on the tab in front while the window was away: held until the
+    /// tab in front changes (owner, 2026-10-21, narrowed 2026-10-23; PT `agentHold.ts`).
     held: HashSet<String>,
     prev_working: HashSet<String>,
     timers: Timers,
@@ -262,8 +262,10 @@ impl Indicator {
 
     /// The tab in front and whether the window has focus (PT: `looking`).
     ///
-    /// The tab in front changing releases a mark held on the tab left, as a click would; with the
-    /// window still away nothing was seen, so it stays as an ordinary background mark.
+    /// The tab in front CHANGING to a different tab releases a mark held on the tab left (a click,
+    /// a key, an overflow pick: whatever changed it; owner, 2026-10-23). Clicking the tab already in
+    /// front changes nothing. With the window still away nothing was seen, so the mark stays as an
+    /// ordinary background mark.
     pub fn set_looking(&mut self, now: u64, active: Option<&str>, focused: bool) {
         self.active = active.map(str::to_string);
         self.focused = focused;
@@ -278,15 +280,6 @@ impl Indicator {
             if focused {
                 self.release(&id, "tab looked at");
             }
-        }
-        self.reconcile(now);
-    }
-
-    /// A tab was clicked (this one or another): every held mark comes down, on the tab left too.
-    pub fn tab_clicked(&mut self, now: u64) {
-        let ids: Vec<String> = self.held.drain().collect();
-        for id in ids {
-            self.release(&id, "tab clicked");
         }
         self.reconcile(now);
     }
@@ -1263,36 +1256,69 @@ mod tests {
     }
 
     #[test]
-    fn a_held_failed_mark_stays_too() {
+    fn a_held_failed_mark_stays_until_the_front_tab_changes() {
         let mut h = H::new();
         h.ind.set_looking(0, Some("t1"), false);
         h.hook(100, "t1", HookState::Working);
         h.hook_k(200, "t1", HookState::Failed, Some("overloaded"));
         h.ind.set_looking(300, Some("t1"), true);
         assert!(has(h.ind.failed_ids(), "t1"));
-        h.ind.tab_clicked(400);
+        h.ind.set_looking(400, Some("t2"), true);
         assert!(!has(h.ind.failed_ids(), "t1"));
     }
 
     #[test]
-    fn a_tab_click_releases_a_held_mark_on_the_same_tab() {
+    fn a_click_on_the_same_tab_keeps_a_held_mark() {
+        // A click that changes nothing reaches the indicator as the same look again.
         let mut h = finished_away();
         h.ind.set_looking(300, Some("t1"), true);
-        h.ind.tab_clicked(400);
-        assert!(!has(h.ind.done_ids(), "t1"));
+        h.ind.set_looking(400, Some("t1"), true);
+        h.tick(10_000);
+        assert!(has(h.ind.done_ids(), "t1"));
     }
 
     #[test]
     fn a_click_on_another_tab_releases_the_mark_on_the_tab_left() {
         let mut h = finished_away();
         h.ind.set_looking(300, Some("t1"), true);
-        h.ind.tab_clicked(400);
         h.ind.set_looking(400, Some("t2"), true);
         assert!(!has(h.ind.done_ids(), "t1"), "no background mark lingers");
     }
 
     #[test]
-    fn the_front_tab_changing_with_focus_releases_it_like_a_click() {
+    fn a_keyboard_switch_releases_it_like_a_click() {
+        // The indicator only sees the front tab change, so a key and a click are one case.
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t1"), true);
+        h.ind.set_looking(400, Some("t3"), true);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn closing_another_tab_keeps_a_held_mark_but_forgetting_the_marked_one_drops_it() {
+        let mut h = finished_away();
+        h.ind.set_looking(300, Some("t1"), true);
+        h.ind.forget("t2");
+        h.tick(500);
+        assert!(has(h.ind.done_ids(), "t1"), "another tab closing keeps it");
+        h.ind.forget("t1");
+        h.tick(600);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_background_mark_still_clears_when_its_tab_is_visited_focused() {
+        let mut h = H::new();
+        h.ind.set_looking(0, Some("t2"), true);
+        h.hook(100, "t1", HookState::Working);
+        h.hook(200, "t1", HookState::Done);
+        assert!(has(h.ind.done_ids(), "t1"));
+        h.ind.set_looking(300, Some("t1"), true);
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn the_front_tab_changing_with_focus_releases_it() {
         let mut h = finished_away();
         h.ind.set_looking(300, Some("t1"), true);
         h.ind.set_looking(400, Some("t2"), true);
@@ -1331,7 +1357,7 @@ mod tests {
         h.ind.set_looking(0, Some("t1"), false);
         h.hook(100, "t1", HookState::Working);
         h.hook(200, "t1", HookState::Question);
-        h.ind.tab_clicked(300);
+        h.ind.set_looking(300, Some("t2"), true);
         assert!(has(h.ind.question_ids(), "t1"));
     }
 

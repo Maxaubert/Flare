@@ -659,9 +659,11 @@ fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
 
     // FINISHED ON THE TAB IN FRONT WHILE AWAY, THEN BACK (owner, 2026-10-14, reversed 2026-10-21:
     // "it should keep that completed icon until you click a new tab"): away, the finish is marked
-    // and the badge counts it; coming back (focus, the pointer moving) leaves both up, and a click
-    // on a tab takes them down, whichever tab it is.
+    // and the badge counts it; coming back (focus, the pointer moving) leaves both up, a click on
+    // the same tab leaves them, and a click on another tab takes them down (narrowed 2026-10-23).
     for other in [false, true] {
+        // Tab 0 in front each round (the last round ended on tab 1).
+        look(app, 0);
         at(app, 0, &say("working"));
         soft(8_000, &mut || state(app, 0) == "working");
         let _ = app.session.call(&Request::Focus { on: false });
@@ -710,17 +712,27 @@ fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
             b == "1 tab needs a look",
             format!("and the badge with it ({b})"),
         );
-        tab_click(app, usize::from(other));
-        let down = ctx.until("a tab click to take the mark down", 4_000, &mut || {
-            state(app, 0) == "none"
-        });
+        if !other {
+            // A click on the tab already in front changes nothing: the mark stays up (owner, 2026-10-23).
+            tab_click(app, 0);
+            let left = ctx.poll(1_200, &mut || {
+                state(app, 0) != "finished" || badge(app) != "1 tab needs a look"
+            });
+            ctx.ok(
+                !left && state(app, 0) == "finished",
+                "a click on the tab already in front leaves the mark and the badge up",
+            );
+        }
+        // Another tab in front takes it down, off the tab left too.
+        tab_click(app, 1);
+        let down = ctx.until(
+            "a click on another tab to take the mark down",
+            4_000,
+            &mut || state(app, 0) == "none",
+        );
         ctx.ok(
             down,
-            if other {
-                "a click on another tab takes it down, off the tab left too"
-            } else {
-                "a click on the same tab takes it down"
-            },
+            "a click on another tab takes it down, off the tab left too",
         );
         let clear = ctx.until("the badge to go", 4_000, &mut || badge(app).is_empty());
         let b = badge(app);
@@ -757,14 +769,17 @@ fn hooks_d(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let left = ctx.poll(1_200, &mut || state(app, 0) != "failed");
     // PT: run.mjs:941
     ctx.ok(!left, "back, the Failed mark stays up");
-    tab_click(app, 0);
+    tab_click(app, 1);
     let down = ctx.until(
-        "a tab click to take the Failed mark down",
+        "another tab's click to take the Failed mark down",
         4_000,
         &mut || state(app, 0) == "none",
     );
     // PT: run.mjs:943
-    ctx.ok(down, "and a tab click takes the Failed mark down");
+    ctx.ok(
+        down,
+        "and a click on another tab takes the Failed mark down",
+    );
     Ok(())
 }
 

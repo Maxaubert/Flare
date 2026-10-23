@@ -2116,8 +2116,8 @@ impl AppCtl {
         match release {
             Release::Pick => {
                 if let Some(id) = pressed {
-                    self.tab_clicked();
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => {
@@ -2159,8 +2159,8 @@ impl AppCtl {
         match release {
             Release::Pick => {
                 if let Some(id) = pressed {
-                    self.tab_clicked();
                     self.model.pick(&id);
+                    self.tab_picked();
                 }
             }
             Release::Drop { id, slot } => self.model.reorder(&id, slot),
@@ -2401,8 +2401,8 @@ impl AppCtl {
 
     fn overflow_picked(&mut self, id: &str) {
         self.close_overflow_quietly();
-        self.tab_clicked();
         self.model.pick(id);
+        self.tab_picked();
         self.refresh();
         self.focus_terminal();
     }
@@ -3008,10 +3008,11 @@ impl AppCtl {
 
     // ---- pointer and files ------------------------------------------------------------------------------------------
 
-    /// A click on a tab (strip, sidebar row or overflow list): a Finished/Failed mark held since the
-    /// window was away comes down, on the tab left too (owner, 2026-10-21).
-    fn tab_clicked(&mut self) {
-        self.hub.tab_clicked();
+    /// A tab was picked (strip, sidebar row or overflow list): the front tab is read at once, so a
+    /// Finished/Failed mark held since the window was away comes down if the pick CHANGED the tab in
+    /// front (the tab left loses it), and stays if it was the tab already in front (owner, 2026-10-23).
+    fn tab_picked(&mut self) {
+        self.sync_looking();
         if self.hub.take_changed() {
             self.sync_model_agents();
         }
@@ -5740,23 +5741,50 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_tab_click_takes_a_held_mark_down_on_the_tab_left_too() {
-        let (f, ids) = finished_away();
-        f.ctl.borrow_mut().on_focus(true);
-        f.ctl.borrow_mut().overflow_picked(&ids[1]);
-        assert!(
-            !f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]),
-            "no background mark lingers"
-        );
+    fn held(f: &Fx, id: &str) -> bool {
+        f.ctl
+            .borrow()
+            .hub
+            .indicator()
+            .done_ids()
+            .contains(&id.to_string())
     }
 
     #[test]
-    fn a_click_on_the_same_tab_takes_a_held_mark_down() {
+    fn a_pick_of_another_tab_takes_a_held_mark_down_on_the_tab_left() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        assert!(held(&f, &ids[0]), "coming back keeps it");
+        f.ctl.borrow_mut().overflow_picked(&ids[1]);
+        assert!(!held(&f, &ids[0]), "no background mark lingers");
+    }
+
+    #[test]
+    fn a_pick_of_the_same_tab_keeps_a_held_mark() {
         let (f, ids) = finished_away();
         f.ctl.borrow_mut().on_focus(true);
         f.ctl.borrow_mut().overflow_picked(&ids[0]);
-        assert!(!f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0]));
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn a_switch_with_no_click_takes_a_held_mark_down() {
+        // A key or a wheel moves the front tab with no pick call: the refresh reads it.
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().pick(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(!held(&f, &ids[0]));
+    }
+
+    #[test]
+    fn closing_another_tab_keeps_a_held_mark() {
+        let (f, ids) = finished_away();
+        f.ctl.borrow_mut().on_focus(true);
+        f.ctl.borrow_mut().model_mut().close(&ids[1]);
+        f.ctl.borrow_mut().refresh();
+        assert!(held(&f, &ids[0]));
     }
 
     // ---- command help (Task 43) ----
