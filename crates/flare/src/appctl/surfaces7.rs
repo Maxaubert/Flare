@@ -271,11 +271,24 @@ impl AppCtl {
         }
         let front = self.model.active_shell()?.id.clone();
         let chip = self.s7.dev.shown(&front)?.clone();
-        // The panel already shows it: nothing to offer.
-        if self.panels.web_target(&front).as_deref() == Some(chip.url.as_str()) {
+        // The panel already shows that server (on any page of it, after the person followed a link inside the app):
+        // nothing to offer, and a click must never send it back to the origin.
+        let shows = self
+            .panels
+            .web_target(&front)
+            .and_then(|t| dev_server::parse_local(&t))
+            .is_some_and(|s| s.url == chip.url);
+        if shows {
             return None;
         }
         Some(chip)
+    }
+
+    /// Moves the panel's page inside its server, as following a link does (tests).
+    #[cfg(test)]
+    pub(crate) fn follow_link_in_panel(&mut self, tab: &str, url: &str) {
+        self.panels.set_web_url(tab, url);
+        self.sync_chip();
     }
 
     /// The chip was clicked. The address is checked once more here (the chip may only ever open a local one), and the
@@ -322,7 +335,9 @@ impl AppCtl {
     /// The look made for a click came back. It also feeds the chip (a foreign holder takes it at once). The page opens
     /// only for an in-tree answer about the SAME chip, still on the tab in front.
     pub(super) fn on_dev_click_look(&mut self, tab: &str, token: u64, look: PortLook) {
-        self.on_dev_look(tab, token, look);
+        // Apart from the periodic looks: only a foreign holder acts on the chip (see `on_click_check`).
+        self.s7.dev.on_click_check(tab, token, look);
+        self.sync_chip();
         if look != PortLook::InTree || self.s7.dev.token(tab) != Some(token) {
             return;
         }

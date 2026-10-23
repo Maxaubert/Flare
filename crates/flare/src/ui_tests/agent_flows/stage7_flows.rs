@@ -165,6 +165,29 @@ fn clicking_the_chip_opens_the_web_panel_at_that_address() {
 }
 
 #[test]
+fn the_chip_stays_away_while_the_panel_shows_any_page_of_that_server() {
+    let f = Fx::new();
+    let ports = listening(&f);
+    let id = f.tabs(&["C:\\a"]).remove(0);
+    f.visit(0);
+    ports.lock().unwrap().push(5173);
+    say_url(&f, "C:\\a", "http://localhost:5173/");
+    wait_for(&f, "the chip", |f| label(f) == "localhost:5173");
+    f.h.comp.invoke_preview_chip_clicked();
+    wait_for(&f, "the panel", |f| {
+        f.ctl.borrow().panel_snap(&id).is_some_and(|s| s.open)
+    });
+    assert_eq!(label(&f), "");
+    // The person follows a link inside the app: the panel is on /settings, and the chip does not come back (a
+    // click on it would send the page back to the origin and lose the place).
+    f.ctl
+        .borrow_mut()
+        .follow_link_in_panel(&id, "http://localhost:5173/settings");
+    f.pump();
+    assert_eq!(label(&f), "", "the panel still shows that server");
+}
+
+#[test]
 fn a_chip_for_a_bare_host_opens_the_normal_form() {
     let f = Fx::new();
     let ports = listening(&f);
