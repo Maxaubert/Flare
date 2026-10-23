@@ -528,8 +528,18 @@ impl Emulator {
             return vec![self.row_text(top)];
         };
         let start = (last - rows.max(1) as i32 + 1).max(top);
+        // A rule row of the prompt box keeps its plain text: an ANSI-only theme draws it in grey or dim,
+        // and blanking it would hide the box the draft check looks for.
         (start..=last)
-            .map(|l| self.row_text_with(l, true))
+            .map(|l| {
+                let plain = self.row_text(l);
+                let t = plain.trim();
+                if t.chars().count() >= 20 && t.chars().all(|c| c == '\u{2500}') {
+                    plain
+                } else {
+                    self.row_text_with(l, true)
+                }
+            })
             .collect()
     }
 
@@ -2014,6 +2024,36 @@ mod tests {
         // typed text before a dim tail still counts
         let e = screen("\u{276f} half\x1b[2m a suggestion\x1b[0m");
         assert!(draft(&e));
+    }
+
+    /// An ANSI-only theme draws the box rules in bright black or dim: the box must still be found (R3).
+    #[test]
+    fn a_grey_or_dim_rule_still_shows_a_draft_in_the_box() {
+        let rule = "\u{2500}".repeat(30);
+        for paint in ["\x1b[90m", "\x1b[2m", "\x1b[38;5;8m"] {
+            let mut e = Emulator::new(60, 8);
+            e.feed(
+                format!(
+                    "done\r\n{paint}{rule}\x1b[0m\r\n\u{276f} fix it\r\n{paint}{rule}\x1b[0m\r\n  auto"
+                )
+                .as_bytes(),
+            );
+            assert!(
+                flare_agent::question::prompt_has_draft(&e.typed_tail(16)),
+                "{paint:?}"
+            );
+            let mut e = Emulator::new(60, 8);
+            e.feed(
+                format!(
+                    "done\r\n{paint}{rule}\x1b[0m\r\n\u{276f} \x1b[2mTry x\x1b[0m\r\n{paint}{rule}\x1b[0m\r\n  auto"
+                )
+                .as_bytes(),
+            );
+            assert!(
+                !flare_agent::question::prompt_has_draft(&e.typed_tail(16)),
+                "{paint:?} empty"
+            );
+        }
     }
 
     #[test]

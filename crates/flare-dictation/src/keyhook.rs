@@ -127,7 +127,16 @@ fn is_alt(vk: u16) -> bool {
 
 /// A Ctrl, Alt (AltGr is Ctrl+Alt), Shift or Win the binding does not name is physically down: the key
 /// is then part of a chord or a typed character in another app.
-fn foreign_modifier_down(keys: &HashSet<u16>, is_down: &dyn Fn(u16) -> bool) -> bool {
+///
+/// `altgr_ctrl_ok` excuses the Ctrl the system injects around a bound Right Alt, and only while that Alt
+/// is really held (`alt_held`): it is for Esc alone. A picker digit keeps counting Ctrl as foreign, so
+/// Ctrl+2 in a browser and AltGr+2 ('@') stay the app's.
+fn foreign_modifier_down(
+    keys: &HashSet<u16>,
+    is_down: &dyn Fn(u16) -> bool,
+    altgr_ctrl_ok: bool,
+    alt_held: bool,
+) -> bool {
     [
         (VK_CTRL, FAMILIES[0]),
         (VK_SHIFT, FAMILIES[1]),
@@ -138,8 +147,10 @@ fn foreign_modifier_down(keys: &HashSet<u16>, is_down: &dyn Fn(u16) -> bool) -> 
     .any(|(generic, family)| {
         // AltGr layouts: the system injects a Left Ctrl around every Right Alt, so a binding that names
         // Right Alt (or Alt in general) does not count Ctrl as foreign (NEW-C).
-        let altgr_ctrl =
-            *generic == VK_CTRL && (keys.contains(&VK_RMENU) || keys.contains(&VK_MENU));
+        let altgr_ctrl = altgr_ctrl_ok
+            && alt_held
+            && *generic == VK_CTRL
+            && (keys.contains(&VK_RMENU) || keys.contains(&VK_MENU));
         !altgr_ctrl
             && !family.iter().any(|k| keys.contains(k))
             && (is_down(*generic) || (*generic == VK_LWIN && is_down(VK_RWIN)))
@@ -260,14 +271,15 @@ pub fn decide_with(
     }
     // A modifier the binding does not name, physically down: the key is part of a chord or a typed
     // character (AltGr+2 is '@') in whatever app is in front, not the picker's.
-    let foreign = || foreign_modifier_down(keys, is_down);
+    let alt_held = s.down.iter().any(|k| matches!(*k, VK_RMENU | VK_MENU));
+    let foreign = |for_esc: bool| foreign_modifier_down(keys, is_down, for_esc, alt_held);
     if down {
-        if pick && is_digit_key(vk) && !foreign() {
+        if pick && is_digit_key(vk) && !foreign(false) {
             let n = if vk >= 0x61 { vk - 0x60 } else { vk - 0x30 };
             s.swallowed.insert(vk);
             return (Some(HookEvent::Digit(n as u8)), true, send_mask);
         }
-        if (pick || rec) && vk == VK_ESC && !foreign() {
+        if (pick || rec) && vk == VK_ESC && !foreign(true) {
             s.swallowed.insert(vk);
             return (Some(HookEvent::Esc), true, send_mask);
         }
@@ -276,7 +288,10 @@ pub fn decide_with(
         }
     } else {
         let was = s.swallowed.remove(&vk);
-        if was || ((pick && is_digit_key(vk)) || ((pick || rec) && vk == VK_ESC)) && !foreign() {
+        if was
+            || ((pick && is_digit_key(vk) && !foreign(false))
+                || ((pick || rec) && vk == VK_ESC && !foreign(true)))
+        {
             return (None, true, send_mask);
         }
     }
@@ -970,6 +985,28 @@ mod tests {
         decide(0xa4, true, &mut s, &k, false, false);
         let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(false, true), &ctrl);
         assert_eq!((e, swallow), (Some(HookEvent::Other), false));
+    }
+
+    /// R1: the AltGr excuse is for Esc while the Alt is held, never for picker digits.
+    #[test]
+    fn a_picker_digit_with_ctrl_is_the_apps_even_on_a_right_alt_binding() {
+        let k = keys(&[RALT]);
+        // Binding released, picker open, a real Ctrl+2 (browser tab switch).
+        let ctrl = |vk| vk == 0x11;
+        let mut s = HookState::default();
+        let (e, swallow, _) = decide_with(0x32, true, &mut s, &k, flags(true, false), &ctrl);
+        assert_eq!((e, swallow), (None, false));
+        // AltGr+2 ('@'): Right Alt held with its injected Ctrl.
+        let altgr = |vk| vk == 0x11 || vk == 0x12;
+        let mut s = HookState::default();
+        decide(RALT, true, &mut s, &k, false, false);
+        let (e, swallow, _) = decide_with(0x32, true, &mut s, &k, flags(true, false), &altgr);
+        assert!(!matches!(e, Some(HookEvent::Digit(_))), "{e:?}");
+        assert!(!swallow);
+        // Esc with a Ctrl down and the Alt NOT held is the app's.
+        let mut s = HookState::default();
+        let (e, swallow, _) = decide_with(0x1b, true, &mut s, &k, flags(true, false), &ctrl);
+        assert_eq!((e, swallow), (None, false));
     }
 
     #[test]

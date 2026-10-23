@@ -127,6 +127,8 @@ impl LinkScanner {
         let mut next: HashMap<usize, (u64, Vec<LinkMark>)> = HashMap::new();
         let mut y = first;
         let mut floor = 0;
+        // Where the mark the last piece left for this one starts (it touched that piece's bottom edge).
+        let mut carry: Option<(usize, usize)> = None;
         while y <= last {
             // Across rows a program broke by hand too (`cells::by_hand`): a path it cut at the
             // edge is read whole, and each row keeps its own piece of the mark.
@@ -136,6 +138,7 @@ impl LinkScanner {
             let links = line_links(&ll, cols, ctx);
             let blank = ll.text_end == 0 && links.iter().all(Option::is_none);
             if blank {
+                carry = None;
                 self.waiting.remove(&ll.first);
             } else {
                 let key = line_key(&ll, cols, &links, ctx);
@@ -153,21 +156,42 @@ impl LinkScanner {
                 };
                 // A piece cut from a longer line: a mark touching the cut edge is only half a link, left to
                 // the piece that has its other half; a mark wholly in the overlap was the last piece's.
+                // A mark the last piece dropped at ITS bottom edge is this piece's, even wholly above `y`.
+                let owed = carry;
                 out.extend(
                     marks
                         .iter()
                         .filter(|m| !(ll.cut_top && touches_top(m, &ll)))
                         .filter(|m| !(ll.cut_bottom && touches_bottom(m, &ll, cols)))
-                        .filter(|m| m.pieces.iter().any(|p| p.row >= y))
+                        .filter(|m| {
+                            m.pieces.iter().any(|p| p.row >= y)
+                                || owed.is_some_and(|c| (m.pieces[0].row, m.pieces[0].col) >= c)
+                        })
                         .cloned(),
                 );
+                // The start of the first mark this piece leaves for the next (touching its bottom edge).
+                carry = if ll.cut_bottom {
+                    marks
+                        .iter()
+                        .filter(|m| touches_bottom(m, &ll, cols))
+                        .map(|m| (m.pieces[0].row, m.pieces[0].col))
+                        .min()
+                } else {
+                    None
+                };
                 next.insert(ll.first, (key, marks));
             }
             y = row_end + 1;
             // A line cut at the window's bottom goes on in the next piece, which starts a few rows back
             // so a link straddling the cut is read whole in it.
+            // The next piece starts a row above the mark left at the bottom edge, if that is further back, so
+            // a link longer than the overlap is read whole.
             floor = if ll.cut_bottom {
-                y.saturating_sub(CUT_OVERLAP_ROWS).max(ll.first + 1)
+                let mut back = y.saturating_sub(CUT_OVERLAP_ROWS);
+                if let Some((row, _)) = carry {
+                    back = back.min(row.saturating_sub(1));
+                }
+                back.max(ll.first + 1)
             } else {
                 y
             };
@@ -667,6 +691,50 @@ mod tests {
         assert_eq!(webs.len(), 1, "{webs:?}");
         assert_eq!(webs[0].target, LinkTarget::Web("https://a.io/xyz".into()));
         assert_eq!(webs[0].pieces.len(), 2);
+    }
+
+    /// R2: a link longer than the overlap, and one ending exactly at the cut column, are marks too.
+    #[test]
+    fn a_link_longer_than_the_overlap_or_ending_at_the_cut_column_is_kept() {
+        let mut h = H::new();
+        let filler = "aaaaaaaaaaaaaaaaaaa ";
+        let mk = || -> Vec<(&str, bool)> {
+            let mut rows: Vec<(&str, bool)> = (0..200).map(|_| (filler, true)).collect();
+            rows[0].1 = false;
+            rows
+        };
+        // Nine rows long, straddling the cut after row 24.
+        let mut rows = mk();
+        rows[20] = ("aaaaa https://a.io/x", true);
+        for r in rows.iter_mut().take(28).skip(21) {
+            *r = ("xxxxxxxxxxxxxxxxxxxx", true);
+        }
+        rows[28] = ("xxxx aaaaaaaaaaaaaaa", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        let LinkTarget::Web(u) = &webs[0].target else {
+            unreachable!()
+        };
+        assert_eq!(u.len(), "https://a.io/x".len() + 7 * 20 + 4, "{u}");
+        assert_eq!(webs[0].pieces.len(), 9);
+        // Ending on the last column of the last row of the first piece.
+        let mut h = H::new();
+        let mut rows = mk();
+        rows[24] = ("aaaa https://a.io/xy", true);
+        rows[25] = (" aaaaaaaaaaaaaaaaaaa", true);
+        let b = buf(&rows);
+        let m = h.scan(&b, 20, 0, 100);
+        let webs: Vec<&LinkMark> = m
+            .iter()
+            .filter(|k| matches!(k.target, LinkTarget::Web(_)))
+            .collect();
+        assert_eq!(webs.len(), 1, "{webs:?}");
+        assert_eq!(webs[0].target, LinkTarget::Web("https://a.io/xy".into()));
     }
 
     #[test]
