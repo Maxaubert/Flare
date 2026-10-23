@@ -37,6 +37,7 @@ pub mod settings_d;
 pub mod strip;
 pub mod update;
 pub mod vertical;
+pub mod web;
 
 /// What a probe may look at. A probe is read-only: it never changes the controller or the window.
 pub struct ProbeCtx<'a> {
@@ -115,4 +116,5 @@ pub fn register_all(r: &mut ProbeRegistry) {
     strip::register(r);
     update::register(r);
     vertical::register(r);
+    web::register(r);
 }

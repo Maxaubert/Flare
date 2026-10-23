@@ -17,7 +17,8 @@ Test mapping: [docs/test-port.md](docs/test-port.md).
 - Links: web links and OSC 8 links, and existing paths, painted and opened by a left click through an allowlist.
 - A terminal right-click menu that fits what was clicked.
 - Panels: a click on a path to a picture or a text file shows it beside the terminal, per tab, behind a draggable splitter (fit, click for 1:1, scroll, a checkerboard under transparency). Ctrl+Shift+P shows or hides it and Ctrl+Shift+O moves the keys; Settings > Terminal > Links turns it off.
-- Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
+- Agent tools: Claude in a Flare tab can show an image, a file or some text in that tab's panel (`show_image`, `show_file`, `show_text`, `open_page`, `close_panel`) through a local, per-user, per-tab control channel and the bundled `flare-mcp.exe`; no setup, nothing leaves the PC. The contract is `docs/surfaces/protocol.md`.
+- Web panel: a real browser beside the terminal (Microsoft Edge WebView2, already on Windows 11), per tab, with an address bar, back, forward and reload, the page title in the header, local video at full speed and the same splitter. It hides behind Flare's own menus and dialogs (a still of the page stays in its place), the page gets its keys with Ctrl+Shift+O and gives them back with a second Escape, a page cannot open a window or ask for a permission, a download waits for your yes before anything is saved, and only http and https addresses open. Claude opens a page with `open_page`. Without the runtime the panel shows the download link and nothing else changes.
 
 Details and the tests that hold each one: [docs/features.md](docs/features.md).
 
@@ -58,7 +59,9 @@ Each dependency is listed here with its reason, and has an entry in `THIRD-PARTY
 - `cosmic-text`: text shaping and layout for the glyph rasteriser (brings in `swash` for glyph bitmaps).
 - `unicode-width`: the display width of each character, so wide cells take two columns.
 - `png`: writes the `--screenshot` image.
-- `image` 0.25.10 (MIT OR Apache-2.0; default features off, only png, jpeg, gif, bmp, webp and ico): decodes the pictures a panel shows, on a worker thread (Surfaces stage 1). `png` and `jpeg` were already in the build through Slint; the others add `gif` and its small helpers.
+- `image` 0.25.10 (MIT OR Apache-2.0; default features off, only png, jpeg, gif, bmp, webp and ico): decodes the pictures a panel shows and, since Surfaces stage 3, the still of a web page (a PNG) that stands in for the page while a menu is open, on a worker thread (Surfaces stage 1). `png` and `jpeg` were already in the build through Slint; the others add `gif` and its small helpers.
+- `webview2-com` 0.39.1 (MIT; with its `-sys` and `-macros` crates; released 2026-03-11): the COM bindings to WebView2, the browser engine of the web panel (Surfaces stage 3). The `-sys` crate links Microsoft's static loader (`WebView2LoaderStatic.lib`, BSD 3-Clause, listed under "Bundled binaries" in the notices), so no `WebView2Loader.dll` ships. Flare never installs or updates the runtime; Windows 11 has it, and without it the panel shows a download link. It uses the `windows` crate already in the build (`=0.62.2`).
+- `url` 2.5.8 is now also a direct dependency of `flare-surfaces`: the web panel's address checks (scheme, host, no login in the address).
 - `pollster`: blocks on wgpu's async setup from synchronous startup code.
 - `bytemuck`: casts glyph and vertex data to bytes for GPU upload.
 - `log`: the logging facade used across the crates.

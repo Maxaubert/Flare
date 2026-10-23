@@ -251,6 +251,159 @@ component TextView inherits Rectangle {
     }
 }
 
+
+// One of the browser bar's buttons: a 24 px square with a 12 px glyph, dimmed when it cannot act.
+component WebButton inherits Rectangle {
+    in property <string> path;
+    in property <string> label;
+    in property <bool> live: true;
+    callback activated();
+    width: Px.snap(24px);
+    height: Px.snap(24px);
+    border-radius: Theme.radius-button;
+    background: root.live && ta.has-hover ? Theme.hover : transparent;
+    opacity: root.live ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if (root.live) { root.activated(); } }
+    Path {
+        x: (parent.width - 12px) / 2 - self.stroke-width / 2;
+        y: (parent.height - 12px) / 2 - self.stroke-width / 2;
+        width: 12px + self.stroke-width;
+        height: 12px + self.stroke-width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.path;
+        fill: transparent;
+        stroke: root.live && ta.has-hover ? Theme.text : Theme.icon;
+        stroke-width: 2.2 * 12px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+    ta := TouchArea {
+        enabled: root.live;
+        clicked => { root.activated(); }
+    }
+}
+
+// The browser bar of a web panel: back, forward, reload (stop while a page loads) and the address.
+// Enter opens what is typed, Escape puts the address of the page back and hands the keys to the terminal.
+component WebBar inherits Rectangle {
+    in property <string> url;
+    in property <bool> loading;
+    in property <bool> can-back;
+    in property <bool> can-forward;
+    in-out property <string> draft;
+    out property <bool> input-has-focus: input.has-focus;
+    out property <length> field-x: field.absolute-position.x;
+    out property <length> field-y: field.absolute-position.y;
+    out property <length> field-w: field.width;
+    out property <length> field-h: field.height;
+    callback back();
+    callback forward();
+    callback reload();
+    callback stop();
+    callback submit(string);
+    callback escape();
+    public function focus-address() { input.focus(); input.select-all(); }
+
+    // The field shows the address of the page unless it is being typed in.
+    changed url => {
+        if (!input.has-focus) {
+            root.draft = root.url;
+        }
+    }
+    init => { root.draft = root.url; }
+
+    background: Theme.tabs;
+    WebButton {
+        x: Px.snap(8px);
+        y: (parent.height - self.height) / 2;
+        path: Glyphs.chevron-left;
+        label: "Back";
+        live: root.can-back;
+        activated => { root.back(); }
+    }
+    WebButton {
+        x: Px.snap(8px + 24px + 2px);
+        y: (parent.height - self.height) / 2;
+        path: Glyphs.chevron-right;
+        label: "Forward";
+        live: root.can-forward;
+        activated => { root.forward(); }
+    }
+    WebButton {
+        x: Px.snap(8px + 2 * (24px + 2px));
+        y: (parent.height - self.height) / 2;
+        path: root.loading ? Glyphs.close : Glyphs.reload;
+        label: root.loading ? "Stop loading" : "Reload";
+        activated => { if (root.loading) { root.stop(); } else { root.reload(); } }
+    }
+    field := Rectangle {
+        x: Px.snap(8px + 3 * (24px + 2px) + 4px);
+        y: (parent.height - self.height) / 2;
+        width: parent.width - self.x - Px.snap(8px);
+        height: Px.snap(24px);
+        background: Theme.ground;
+        border-radius: Theme.radius-sm;
+        border-width: Px.hair();
+        border-color: input.has-focus ? Theme.dim : Theme.divider;
+        clip: true;
+        FocusScope {
+            x: Px.snap(8px);
+            width: parent.width - Px.snap(16px);
+            height: parent.height;
+            capture-key-pressed(event) => {
+                if (event.text == Key.Return) {
+                    root.submit(input.text);
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    root.draft = root.url;
+                    root.escape();
+                    return accept;
+                }
+                reject
+            }
+            input := TextInput {
+                width: parent.width;
+                height: parent.height;
+                text <=> root.draft;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: Theme.text;
+                vertical-alignment: center;
+                single-line: true;
+                accessible-role: text-input;
+                accessible-label: "Address";
+                changed has-focus => {
+                    if (self.has-focus) {
+                        self.select-all();
+                    } else {
+                        root.draft = root.url;
+                    }
+                }
+            }
+            if input.text == "" : Text {
+                width: parent.width;
+                height: parent.height;
+                text: "Type an address";
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                color: Theme.dim2;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - Px.hair();
+        width: parent.width;
+        height: Px.hair();
+        background: Theme.divider;
+    }
+}
+
 // What the slot shows while there is no picture or text: a note in the middle (reading, or why not).
 component PanelNote inherits Rectangle {
     in property <string> text;
@@ -271,7 +424,7 @@ component PanelNote inherits Rectangle {
 export component PanelSlot inherits Rectangle {
     // The slot is drawn only while open. Everything else is set by app.slint from the controller.
     in property <bool> open;
-    // 0 nothing yet (a note), 1 image, 2 text.
+    // 0 nothing yet (a note), 1 image, 2 text, 3 a web page (the browser's own window covers the box).
     in property <int> kind;
     in property <string> title;
     in property <string> sub;
@@ -283,6 +436,31 @@ export component PanelSlot inherits Rectangle {
     in property <[string]> lines;
     in property <int> max-cols;
     in property <string> foot;
+    // A web page (kind 3): the bar, and the still drawn while an overlay hides the browser window.
+    in property <string> web-url;
+    in property <bool> web-loading;
+    in property <bool> web-can-back;
+    in property <bool> web-can-forward;
+    in property <image> web-still;
+    in property <bool> web-has-still;
+    in property <bool> web-missing-runtime;
+    // The bar is part of the head of a web panel (the page starts under it).
+    out property <length> bar-h: root.kind == 3 ? Px.snap(32px) : 0px;
+    out property <length> web-x: web-box.absolute-position.x;
+    out property <length> web-y: web-box.absolute-position.y;
+    out property <length> web-w: web-box.width;
+    out property <length> web-h: web-box.height;
+    out property <bool> web-input-focused: root.open && web-bar.input-has-focus;
+    out property <length> web-field-x: web-bar.field-x;
+    out property <length> web-field-w: web-bar.field-w;
+    out property <string> web-draft: web-bar.draft;
+    callback web-back();
+    callback web-forward();
+    callback web-reload();
+    callback web-stop();
+    callback web-submit(string);
+    callback web-download();
+    public function focus-address() { web-bar.focus-address(); }
 
     // The panel's own pieces in the window, for ui.rect and the tests.
     out property <length> header-h: Px.snap(32px);
@@ -398,12 +576,44 @@ export component PanelSlot inherits Rectangle {
                 background: Theme.divider;
             }
         }
-        body := Rectangle {
+        web-bar := WebBar {
             x: 0px;
             y: root.header-h;
             width: parent.width;
-            height: parent.height - root.header-h;
+            height: root.bar-h;
+            visible: root.kind == 3;
+            url: root.web-url;
+            loading: root.web-loading;
+            can-back: root.web-can-back;
+            can-forward: root.web-can-forward;
+            back => { root.web-back(); }
+            forward => { root.web-forward(); }
+            reload => { root.web-reload(); }
+            stop => { root.web-stop(); }
+            submit(text) => { root.web-submit(text); }
+            escape => { root.escape(); }
+        }
+        body := Rectangle {
+            x: 0px;
+            y: root.header-h + root.bar-h;
+            width: parent.width;
+            height: parent.height - root.header-h - root.bar-h;
             clip: true;
+            // Where the browser window sits: the body less the hairline of the slot. While an overlay
+            // hides the window, a still of its last frame is drawn here instead.
+            web-box := Rectangle {
+                x: Px.hair();
+                width: parent.width - Px.hair();
+                height: parent.height;
+                visible: root.kind == 3;
+                background: root.web-has-still ? Theme.ground : transparent;
+                if root.web-has-still: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.web-still;
+                    image-fit: fill;
+                }
+            }
             img := ImageView {
                 width: parent.width;
                 height: parent.height;
@@ -427,6 +637,32 @@ export component PanelSlot inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 text: root.note;
+            }
+            if root.web-missing-runtime && root.kind == 3: Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: parent.height / 2 + Px.snap(56px);
+                width: Px.snap(190px);
+                height: Px.snap(28px);
+                border-radius: Theme.radius-button;
+                background: dl-ta.has-hover ? Theme.hover : transparent;
+                border-width: Px.hair();
+                border-color: Theme.divider;
+                accessible-role: button;
+                accessible-label: "Open the download page";
+                accessible-action-default => { root.web-download(); }
+                Text {
+                    width: parent.width;
+                    height: parent.height;
+                    text: "Open the download page";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    color: Theme.text;
+                }
+                dl-ta := TouchArea {
+                    clicked => { root.web-download(); }
+                }
             }
         }
         // The slot's left edge: a hairline, the splitter's visible part.

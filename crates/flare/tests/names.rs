@@ -669,6 +669,10 @@ const E2E_SEAMS: &[&str] = &[
     "FLARE_E2E_DICT_PIPE",
     "FLARE_E2E_DICT_KEY",
     "FLARE_E2E_FETCH",
+    // Surfaces stage 3 (the web panel): a folder of local pages served as https://flare-test.local/, and a
+    // pretend missing WebView2 Runtime (tools/e2e web.rs; window.rs reads them through ship_ctl::e2e_var).
+    "FLARE_E2E_WEB_ROOT",
+    "FLARE_E2E_WEBVIEW_RUNTIME",
 ];
 
 /// Every `FLARE_E2E_<NAME>` literal in the text.

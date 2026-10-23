@@ -70,6 +70,21 @@ impl TabPanels {
         true
     }
 
+    /// Changes what the tab's panel points at without opening, closing or moving it (a web page the
+    /// user navigated). False when the tab has no panel or the target is unusable.
+    pub fn set_target(&mut self, tab: &str, target: &str) -> bool {
+        let Some(target) = clean_target(target) else {
+            return false;
+        };
+        match self.by_tab.get_mut(tab) {
+            Some(p) => {
+                p.target = target;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Closes the tab's panel (what it showed stays for the toggle chord). False when there was
     /// nothing open.
     pub fn close(&mut self, tab: &str) -> bool {
@@ -158,6 +173,21 @@ mod tests {
         p.show("t1", PanelKind::Text, "b.txt");
         assert_eq!(p.get("t1").and_then(|x| x.width), Some(0.3));
         assert_eq!(p.get("t1").map(|x| x.kind.clone()), Some(PanelKind::Text));
+    }
+
+    #[test]
+    fn set_target_follows_a_page_without_reopening_it() {
+        let mut p = TabPanels::default();
+        p.show("t1", PanelKind::Web, "https://a.example/");
+        p.set_width("t1", 0.3);
+        assert!(p.set_target("t1", "https://b.example/"));
+        let t = p.get("t1").unwrap();
+        assert_eq!(
+            (t.target.as_str(), t.open, t.width),
+            ("https://b.example/", true, Some(0.3))
+        );
+        assert!(!p.set_target("t1", ""));
+        assert!(!p.set_target("nope", "https://c.example/"));
     }
 
     #[test]

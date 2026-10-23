@@ -6,14 +6,14 @@ implement it from this file alone. The Rust reference is `crates/flare-ctl` (typ
 the connection state machine, the client) and `crates/flare-mcp` (a client). Where this file and the
 code disagree, that is a bug in one of them: fix both in the same commit.
 
-Status of the methods in Flare (stage 2 is done): the framework (transport, hello, grants, errors,
+Status of the methods in Flare (stage 3 is done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
-implements `hello`, `tabs.list`, `panel.close`, `panel.state` and `view.image|file|text`; `panel.open`
-answers (`unavailable` for `web`, `bad_params` for anything else) but is not listed in `capabilities`.
-`browser.*` lands with the web panel (stage 3) and the agent driving it (stage 4), `convo.state` with the
-conversation reader (stage 6), `tools.respond` with mods (stage 8); until then each answers
-`unavailable`. Each method below says which stage owns its behaviour; the names, params and grants are
-fixed now.
+implements `hello`, `tabs.list`, `panel.open` (kind `web`), `panel.close`, `panel.state`,
+`view.image|file|text`, `browser.open` and `browser.navigate`. The agent's hands on the page
+(`browser.look|click|type|press|scroll|wait|eval`) land in stage 4, `convo.state` with the conversation
+reader (stage 6), `tools.respond` with mods (stage 8); until then each answers `unavailable` and is not
+listed in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
+grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -209,6 +209,8 @@ before it sends it, and its tool text says so; a client that wants the tab's fol
 is, from its own connection.
 
 `PanelInfo` is `{"kind": "image"|"text"|"web"|..., "title": string, "path"?: string, "url"?: string}`.
+A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
+`title` is the page's title, else the address's host.
 
 ### hello
 
@@ -245,11 +247,11 @@ tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open
 
-Params: `kind` (string, required; v1 accepts `"web"`), `url` (string, optional, http or https).
-Opens the tab's panel (replacing an open one). For images, files and text use `view.*`.
-Result: `{"panel": PanelInfo}`. Errors: `no_tab`, `bad_params` (no kind, or a kind other than `web`),
-`unavailable` (`web` is not built yet, or there is no WebView2 runtime). In Flare today `web` always
-answers `unavailable`; stage 3 builds it.
+Params: `kind` (string, required; v1 accepts `"web"`), `url` (string, optional; without it the panel opens
+`about:blank`). Opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with
+the same address (below), including the wait for the page to load and its result. For images, files and text
+use `view.*`. Errors: `no_tab`, `bad_params` (no kind, a kind other than `web`, or an address `browser.open`
+refuses), `unavailable` (there is no WebView2 runtime), `timeout`. Stage 3.
 
 ### panel.close
 
@@ -303,16 +305,16 @@ in memory for this run: it is **not** written to `panels.json` and is not restor
 `{"panel": PanelInfo}` with no `path`. Errors: `bad_params` (no text, not a string, over 4 MB, a title
 or language that is not a string), `no_tab`, `unavailable`, `timeout`. Stage 2.
 
-### browser.* (stage 3 for the panel, stage 4 for the agent driving it)
+### browser.* (stage 3 for opening and navigating, stage 4 for the agent driving the page)
 
 All act on the tab's web panel and take up to 60 s. They answer `unavailable` when no web panel is open
-(except `browser.open`, which opens it) or no WebView2 runtime is installed. While one runs the panel
-shows a ribbon that the agent is using the page; the user can take over at any time.
+(except `browser.open`, which opens it) or no WebView2 runtime is installed. While one of the stage 4 calls
+runs the panel shows a ribbon that the agent is using the page; the user can take over at any time.
 
 | Method | Params | Result |
 |---|---|---|
-| `browser.open` | `url` | `{"panel": PanelInfo, "url": string, "title": string}` |
-| `browser.navigate` | `url`, or `action`: `back`, `forward`, `reload` | `{"url", "title"}` |
+| `browser.open` | `url` | `{"panel": PanelInfo, "url": string, "title": string, "loaded": bool, "status"?: string}` |
+| `browser.navigate` | `url`, or `action`: `back`, `forward`, `reload` | `{"panel", "url", "title", "loaded", "status"?}` |
 | `browser.look` | none | `{"url", "title", "image": {"mime": "image/png", "data": base64, "width", "height"}, "elements": [Element]}` |
 | `browser.click` | `ref`, or `x` and `y` (page pixels) | `{}` |
 | `browser.type` | `text`, `ref` (optional; focuses it first) | `{}` |
@@ -322,9 +324,37 @@ shows a ribbon that the agent is using the page; the user can take over at any t
 | `browser.eval` | `expression` | `{"value": any}` (grant-gated, S4) |
 
 `Element` is `{"ref": string, "role": string, "name": string, "rect": [x, y, w, h]}`; `ref`s are valid
-until the next `browser.look` or navigation, and a stale one answers `not_found`. Only `http` and
-`https` URLs open (and `about:blank`); `file:`, `javascript:` and custom schemes answer `bad_params`.
-The web panel never uses the user's own browser profile (S4).
+until the next `browser.look` or navigation, and a stale one answers `not_found`. The web panel never uses
+the user's own browser profile (S4).
+
+**Addresses (stage 3, implemented).** `url` is vetted by the app before the window hears of it (the function
+is `flare_surfaces::web::normalize_url`; a port keeps its tests): trimmed; no space or control character; at
+most 2048 characters; text with no scheme gets `https://` (and `http://` for `localhost`, `127.0.0.1` and
+`[::1]`, which have no certificate), and `host:port` is a host, not a scheme; only `http`, `https` and exactly
+`about:blank` pass; a host is required; a login in the address (`user:pass@host`) is refused, because it is
+how an address is made to read as another site. Everything else (`file:`, `javascript:`, `data:`, `blob:`,
+`ftp:`, `chrome:`, `edge:`, `mailto:`, `ms-settings:`, `view-source:`, any custom scheme) answers `bad_params`.
+The same set decides a navigation the page starts itself (a link, a redirect, a script): anything else is
+cancelled and the header says "Not opened here".
+
+**`browser.open` and `browser.navigate` answer when the page has loaded**, not when the request was
+accepted. The app binds the call to the first navigation the browser starts after the call (a redirect
+rebinds it to the last) and answers on that navigation's completion with `loaded` true, or with `loaded`
+false and a `status` (WebView2's error status as a number) when it failed; a load that finishes before the
+call's own navigation began, or one that is not it, is not the answer: the first navigation that counts is the one for the address
+the call sent the page to (compared as an address, so the host's case and a default port do not matter; a fragment does not), and
+only after it is bound does a redirect rebind it. A `navigate` to the current page plus a `#fragment` raises no navigation; it is
+answered (`loaded` true) when the page's address becomes exactly that. The wait is at most 30 s in Flare
+(inside the 60 s of the channel) and ends in `timeout`; a call that was answered `timeout` never changes the
+page later. A second call on the same tab while one waits replaces it: the first is answered `unavailable`
+("another call sent the page somewhere else"). `browser.navigate` with `back` or `forward` answers
+`unavailable` ("there is no earlier page" / "no later page") when the page has no such history, and
+`unavailable` when the tab has no web panel open ("`browser.open` opens one"); exactly one of `url` and
+`action` is allowed (`bad_params` otherwise, also for an action other than the three). For a tab that is
+**behind**, the panel is stored and the call answers at once with `loaded` false and the stored address; the
+browser is made when the tab comes to the front, and nothing switches tabs. No WebView2 Runtime: `unavailable`
+with the download link in the message (the panel shows it too). `panel.changed` follows every address the
+page moves to.
 
 ### convo.state (stage 6, reserved)
 
@@ -377,7 +407,7 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 
 | Event | Params | When |
 |---|---|---|
-| `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*` or `panel.close` call, a click on a path, the close button or the toggle chord |
+| `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*`, `browser.*`, `panel.open` or `panel.close` call, a click on a path, the close button, the toggle chord, or a web panel moving to another address (its `url` in `PanelInfo`) |
 | `tabs.changed` | `{}` | a tab was added, removed or retitled (**reserved**: Flare does not send it yet) |
 
 ## 8. Versioning
@@ -402,9 +432,12 @@ calls:
 | `show_image` | `path` | `view.image` |
 | `show_file` | `path` | `view.file` |
 | `show_text` | `text` (non-empty), `title` (optional) | `view.text` |
+| `open_page` | `url` (non-empty) | `browser.open` |
 | `close_panel` | none | `panel.close` |
 
-(`show_diagram`, `show_html`, `open_page` follow in stage 5, `browser_*` in stages 3 and 4.) A tool
+(`show_diagram` and `show_html` follow in stage 5, the `browser_*` tools in stage 4.) `open_page` answers with
+the final address and the page's title (cleaned to one line, like a refusal's words, because a web page wrote
+it) and says so when the page did not finish loading. A tool
 call waits for the method's own timeout plus 5 s (`call_wait`), not a fixed 20 s, so a 60 s
 `browser.wait` is not given up on early; 20 s bounds only connecting and `hello`. Results are MCP
 content: text, and image content (`{"type":"image","data","mimeType"}`) reserved for `browser_look`.
@@ -420,7 +453,7 @@ speaks this protocol.
 
 The `flare-status` plugin (`crates/flare-agent/claude-plugin`, handed to Claude Code through
 `CLAUDE_CODE_PLUGIN_DIRS` in every Flare shell) declares the server in its `plugin.json`, so Claude in a
-Flare tab has the four tools with no setup. The shipped `plugin.json` is a **template** (like
+Flare tab has the five tools with no setup. The shipped `plugin.json` is a **template** (like
 `hooks.json`): its server's `command` is `@@FLARE_MCP_EXE@@`, and the install step writes the absolute path of
 `flare-mcp.exe` beside the running app into the installed copy:
 

@@ -1075,6 +1075,13 @@ pub fn run_window(
             SAVE_DELAY,
         ));
         rc.borrow_mut().set_panel_store(Arc::clone(&panels_store));
+        // The web panel's browser is made by the first web panel, never before.
+        rc.borrow_mut()
+            .set_web_factory(crate::web_ctl::production_factory(
+                app.as_weak(),
+                args.user_data_dir.clone(),
+                inst.profile.dir.clone(),
+            ));
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));

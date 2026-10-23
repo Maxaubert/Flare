@@ -157,6 +157,18 @@ pub fn tools() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "open_page",
+            description: "Open a web page (http or https) in a browser panel beside this terminal tab in Flare, so the user can see it without leaving the terminal. Videos play in it. Use it for a local dev server (http://localhost:3000), documentation or anything the user should look at. Replaces what the panel showed. Returns once the page has loaded.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The address to open: http or https (text with no scheme gets https://, or http:// for localhost)."}
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
             name: "close_panel",
             description: "Close the panel Flare shows beside this terminal tab, if one is open.",
             schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
@@ -244,6 +256,32 @@ pub fn call_tool(
                 .call(Method::ViewText, params)
                 .map(|_| ToolResult::text("Showing the text in Flare."))
         }
+        "open_page" => {
+            let url = match args.get("url") {
+                Some(Value::String(u)) if !u.trim().is_empty() => u.trim().to_string(),
+                _ => return Some(ToolResult::error("url is required: a non-empty string.")),
+            };
+            channel
+                .call(Method::BrowserOpen, json!({"url": url}))
+                .map(|v| {
+                    // The title and the address came from a web page and over a pipe: cleaned like any
+                    // other words that reach the model.
+                    let shown = clean_message(v.get("url").and_then(Value::as_str).unwrap_or(&url));
+                    let title = clean_message(v.get("title").and_then(Value::as_str).unwrap_or(""));
+                    let named = if title.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (\"{title}\")")
+                    };
+                    if v.get("loaded").and_then(Value::as_bool) == Some(false) {
+                        ToolResult::text(format!(
+                            "Opened {shown}{named} in Flare, but the page did not finish loading."
+                        ))
+                    } else {
+                        ToolResult::text(format!("Opened {shown}{named} in Flare."))
+                    }
+                })
+        }
         "close_panel" => channel.call(Method::PanelClose, json!({})).map(|v| {
             match v.get("closed").and_then(Value::as_bool) {
                 Some(false) => ToolResult::text("No panel was open."),
@@ -301,7 +339,7 @@ pub fn handle_message(msg: &Value, channel: &mut dyn Channel) -> Option<Value> {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Tools to show images, files and text in a panel beside the Flare terminal tab this agent runs in."
+                    "instructions": "Tools to show images, files, text and web pages in a panel beside the Flare terminal tab this agent runs in."
                 }),
             )
         }
@@ -578,13 +616,19 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_the_four_tools_with_object_schemas() {
+    fn tools_list_has_the_five_tools_with_object_schemas() {
         let r = handle_message(&req(1, "tools/list", json!({})), &mut Fake::default()).unwrap();
         let list = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = list.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
-            ["show_image", "show_file", "show_text", "close_panel"]
+            [
+                "show_image",
+                "show_file",
+                "show_text",
+                "open_page",
+                "close_panel"
+            ]
         );
         for t in list {
             assert!(!t["description"].as_str().unwrap().is_empty());
@@ -592,7 +636,8 @@ mod tests {
         }
         assert_eq!(list[0]["inputSchema"]["required"], json!(["path"]));
         assert_eq!(list[2]["inputSchema"]["required"], json!(["text"]));
-        assert_eq!(list[3]["inputSchema"]["properties"], json!({}));
+        assert_eq!(list[3]["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(list[4]["inputSchema"]["properties"], json!({}));
     }
 
     #[test]
@@ -647,6 +692,85 @@ mod tests {
             assert_eq!(r["result"]["isError"], true, "{bad}");
             assert!(ch.calls.is_empty());
         }
+    }
+
+    #[test]
+    fn open_page_routes_to_browser_open_and_reports_what_loaded() {
+        let mut ch = Fake {
+            answer: Some(Ok(json!({"url": "http://localhost:3000/", "title": "My
+app", "loaded": true}))),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "open_page", "arguments": {"url": " localhost:3000 "}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(
+            ch.calls,
+            vec![(Method::BrowserOpen, json!({"url": "localhost:3000"}))]
+        );
+        assert_eq!(r["result"]["isError"], false);
+        // The page's title is one clean line.
+        assert_eq!(
+            text_of(&r),
+            "Opened http://localhost:3000/ (\"My app\") in Flare."
+        );
+        let mut ch = Fake {
+            answer: Some(Ok(json!({"url": "https://a.example/", "loaded": false}))),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "open_page", "arguments": {"url": "https://a.example"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert!(text_of(&r).contains("did not finish loading"));
+        assert_eq!(r["result"]["isError"], false);
+    }
+
+    #[test]
+    fn open_page_needs_a_url_and_a_refusal_reaches_the_model() {
+        for bad in [json!({}), json!({"url": ""}), json!({"url": 4})] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    1,
+                    "tools/call",
+                    json!({"name": "open_page", "arguments": bad}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{bad}");
+            assert!(ch.calls.is_empty());
+        }
+        let mut ch = Fake {
+            answer: Some(Err(ChannelError::Remote {
+                code: "bad_params".into(),
+                message: "that is not an address to open: only http, https and about:blank addresses open here".into(),
+            })),
+            ..Fake::default()
+        };
+        let r = handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "open_page", "arguments": {"url": "file:///C:/x"}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        assert!(text_of(&r).contains("only http, https"));
     }
 
     #[test]

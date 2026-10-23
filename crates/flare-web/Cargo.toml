@@ -1,0 +1,16 @@
+[package]
+name = "flare-web"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+flare-surfaces = { path = "../flare-surfaces" }
+webview2-com.workspace = true
+windows.workspace = true
+windows-sys.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

@@ -34,6 +34,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("flare/src/dictation_ctl.rs", "Dictation"),
     // The e2e's explicit fetch step names the sample recording it may download for the dictation scenarios.
     ("e2e/src/fixtures.rs", "Dictation"),
+    // The web panel: the address rules (a bare host gets https, a local one http: strings, no request), the
+    // Runtime's download page (opened only on a click) and the e2e's local test host and refusal cases.
+    ("flare-surfaces/src/web.rs", "Web panel"),
+    ("flare/src/web_ctl.rs", "Web panel"),
+    ("e2e/src/scenarios/web.rs", "Web panel"),
 ];
 
 /// Tokens that mark a line as possibly reaching the network.

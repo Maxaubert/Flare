@@ -1,4 +1,4 @@
-//! The kinds of panel. `image` and `text` are built; the rest are named now so the store can keep
+//! The kinds of panel. `image`, `text` and `web` are built; the rest are named now so the store can keep
 //! them and later stages only add a viewer.
 
 /// The longest mod id (a folder name under the mods folder).
@@ -56,10 +56,10 @@ impl PanelKind {
         !matches!(self, PanelKind::Web | PanelKind::Mod(_))
     }
 
-    /// True for the kinds this stage can draw. A stored panel of another kind is kept in the file
+    /// True for the kinds this build can draw. A stored panel of another kind is kept in the file
     /// but not shown until a later stage builds its viewer.
     pub fn is_built(&self) -> bool {
-        matches!(self, PanelKind::Image | PanelKind::Text)
+        matches!(self, PanelKind::Image | PanelKind::Text | PanelKind::Web)
     }
 }
 
@@ -111,9 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn only_image_and_text_are_built_and_web_and_mods_are_not_native() {
+    fn image_text_and_web_are_built_and_web_and_mods_are_not_native() {
         assert!(PanelKind::Image.is_built() && PanelKind::Text.is_built());
-        assert!(!PanelKind::Web.is_built() && !PanelKind::Board.is_built());
+        assert!(PanelKind::Web.is_built());
+        assert!(!PanelKind::Board.is_built() && !PanelKind::Changes.is_built());
         assert!(PanelKind::Changes.is_native() && !PanelKind::Web.is_native());
         assert!(!PanelKind::Mod("x".into()).is_native());
     }

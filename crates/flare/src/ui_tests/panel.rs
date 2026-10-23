@@ -697,3 +697,260 @@ fn the_panel_files_use_no_animation_and_no_timer() {
     );
     assert!(!src.contains("Timer"));
 }
+
+// ---- the web panel (Surfaces stage 3) ----
+
+fn open_web(h: &Harness<AppWindow>) {
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_kind(3);
+    h.comp.set_panel_web_url("https://a.example/".into());
+    h.advance(0);
+}
+
+/// The browser window's rectangle as the window lays it out, in device pixels.
+fn web_box(h: &Harness<AppWindow>) -> flare_surfaces::web::PhysRect {
+    flare_surfaces::web::phys_rect(
+        h.comp.get_panel_web_x(),
+        h.comp.get_panel_web_y(),
+        h.comp.get_panel_web_w(),
+        h.comp.get_panel_web_h(),
+        h.comp.get_scale(),
+    )
+}
+
+#[test]
+fn the_browser_bar_is_part_of_a_web_panels_head_and_of_nothing_else() {
+    for s in SCALES {
+        let h = window(s);
+        open_note(&h);
+        assert_eq!(
+            h.comp.get_panel_bar_h(),
+            0.0,
+            "scale {s}: a note has no bar"
+        );
+        open_picture(&h, 40, 30, [1, 2, 3, 255], false);
+        assert_eq!(h.comp.get_panel_bar_h(), 0.0, "scale {s}: nor a picture");
+        open_web(&h);
+        let bar = h.comp.get_panel_bar_h();
+        assert!(bar > 0.0, "scale {s}");
+        assert!(
+            ((bar * s) - (bar * s).round()).abs() < 0.01,
+            "scale {s}: on whole device pixels"
+        );
+        // The body, and so the page, starts under the header and the bar.
+        let top = h.comp.get_panel_slot_top();
+        let want = top + h.comp.get_panel_header_h() + bar;
+        assert!((h.comp.get_panel_body_y() - want).abs() < 0.01, "scale {s}");
+    }
+}
+
+#[test]
+fn the_page_fills_the_body_less_the_slots_hairline_at_every_scale() {
+    for s in SCALES {
+        let h = window(s);
+        open_web(&h);
+        let body = flare_surfaces::web::phys_rect(
+            h.comp.get_panel_body_x(),
+            h.comp.get_panel_body_y(),
+            h.comp.get_panel_body_w(),
+            h.comp.get_panel_body_h(),
+            s,
+        );
+        let page = web_box(&h);
+        let hair = flare_surfaces::web::hair_px(f64::from(s));
+        assert_eq!(page.x, body.x + hair, "scale {s}: after the hairline");
+        assert_eq!(page.right(), body.right(), "scale {s}");
+        assert_eq!(
+            (page.y, page.bottom()),
+            (body.y, body.bottom()),
+            "scale {s}"
+        );
+        // And it ends on the window's own right and bottom edge.
+        assert_eq!(page.right(), (W as f32 * s).round() as i32, "scale {s}");
+        assert_eq!(page.bottom(), (H as f32 * s).round() as i32, "scale {s}");
+    }
+}
+
+#[test]
+fn the_page_rectangle_equals_the_layout_maths_at_every_scale_width_and_share() {
+    for s in SCALES {
+        for css_w in [700u32, 1000, 1400, 1920] {
+            for share in [None, Some(0.2f32), Some(0.55)] {
+                let h = window_at(s, css_w);
+                open_web(&h);
+                h.comp.set_panel_share(share.unwrap_or(0.0));
+                h.advance(0);
+                let k = |v: f32| (v * s).round() as i32;
+                let want = flare_surfaces::web::web_rect(
+                    k(h.comp.get_page_left()),
+                    k(h.comp.get_panel_slot_top()),
+                    k(h.comp.get_page_w()),
+                    k(h.comp.get_panel_slot_h()),
+                    f64::from(s),
+                    share,
+                    k(h.comp.get_panel_header_h() + h.comp.get_panel_bar_h()),
+                )
+                .expect("room for a slot");
+                let got = web_box(&h);
+                let at = format!("scale {s}, {css_w} css px, share {share:?}: {got:?} vs {want:?}");
+                assert!(
+                    (got.x - want.x).abs() <= 1
+                        && (got.y - want.y).abs() <= 1
+                        && (got.w - want.w).abs() <= 1
+                        && (got.h - want.h).abs() <= 1,
+                    "{at}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_page_follows_the_splitter_while_it_moves() {
+    let h = window(1.0);
+    open_web(&h);
+    let before = web_box(&h);
+    let (x, y) = splitter_point(&h);
+    h.move_to(x, y);
+    h.press(x, y, PointerEventButton::Left);
+    h.move_to(x - 120.0, y);
+    h.advance(0);
+    // While the pointer is down the page is already where the slot is drawn.
+    let after = web_box(&h);
+    assert!(after.w > before.w + 100, "{before:?} {after:?}");
+    assert_eq!(after.right(), before.right(), "the right edge stays");
+    h.release(x - 120.0, y, PointerEventButton::Left);
+}
+
+#[test]
+fn the_still_is_drawn_in_the_page_box_and_only_while_it_is_set() {
+    let h = window(1.0);
+    open_web(&h);
+    let page = web_box(&h);
+    assert!(!h.comp.get_panel_web_has_still());
+    h.comp
+        .set_panel_web_still(solid(page.w as u32, page.h as u32, [250, 10, 10, 255]));
+    h.comp.set_panel_web_has_still(true);
+    let frame = h.render();
+    let (cx, cy) = (page.x + page.w / 2, page.y + page.h / 2);
+    assert!(
+        Frame::near(frame.px(cx as u32, cy as u32), [250, 10, 10, 255], 4),
+        "the still fills the page box"
+    );
+    // Outside the box (the header) it is not.
+    let header_px = frame.px((page.x + page.w / 2) as u32, (page.y - 50).max(2) as u32);
+    assert!(!Frame::near(header_px, [250, 10, 10, 255], 4));
+    h.comp.set_panel_web_has_still(false);
+    h.comp.set_panel_web_still(Image::default());
+    let frame = h.render();
+    assert!(!Frame::near(
+        frame.px(cx as u32, cy as u32),
+        [250, 10, 10, 255],
+        4
+    ));
+}
+
+#[test]
+fn the_address_field_shows_the_page_and_enter_and_escape_do_their_part() {
+    let h = window(1.0);
+    h.activate();
+    let submitted = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let escaped = Rc::new(Cell::new(0u32));
+    {
+        let s = submitted.clone();
+        h.comp
+            .on_panel_web_submit(move |t| s.borrow_mut().push(t.to_string()));
+        let e = escaped.clone();
+        h.comp.on_panel_escape(move || e.set(e.get() + 1));
+    }
+    open_web(&h);
+    assert_eq!(h.comp.get_panel_web_draft().as_str(), "https://a.example/");
+    // The page moves on while the field is not being typed in: the field follows.
+    h.comp.set_panel_web_url("https://b.example/".into());
+    h.advance(0);
+    assert_eq!(h.comp.get_panel_web_draft().as_str(), "https://b.example/");
+    // Typing replaces the selected address; Enter sends what is there.
+    h.comp.invoke_focus_address();
+    h.advance(0);
+    assert!(h.comp.get_panel_web_input_focused());
+    assert!(
+        h.comp.get_find_input_focused(),
+        "the keys are Slint's while the field has them"
+    );
+    h.key_text("c.example");
+    h.key_text(&key(Key::Return));
+    assert_eq!(submitted.borrow().as_slice(), ["c.example"]);
+    // The page moving on does not overwrite what is being typed.
+    h.key_text("x");
+    h.comp.set_panel_web_url("https://d.example/".into());
+    h.advance(0);
+    assert!(h.comp.get_panel_web_draft().contains('x'));
+    // Escape puts the address of the page back and hands the keys on.
+    h.key_text(&key(Key::Escape));
+    assert_eq!(escaped.get(), 1);
+    assert_eq!(h.comp.get_panel_web_draft().as_str(), "https://d.example/");
+}
+
+#[test]
+fn the_bar_buttons_call_back_and_a_dead_one_does_not() {
+    let h = window(1.0);
+    open_web(&h);
+    let calls = Rc::new(std::cell::RefCell::new(Vec::<&'static str>::new()));
+    {
+        let c = calls.clone();
+        h.comp
+            .on_panel_web_back(move || c.borrow_mut().push("back"));
+        let c = calls.clone();
+        h.comp
+            .on_panel_web_forward(move || c.borrow_mut().push("forward"));
+        let c = calls.clone();
+        h.comp
+            .on_panel_web_reload(move || c.borrow_mut().push("reload"));
+        let c = calls.clone();
+        h.comp
+            .on_panel_web_stop(move || c.borrow_mut().push("stop"));
+    }
+    let top = h.comp.get_panel_slot_top() + h.comp.get_panel_header_h();
+    let left = h.comp.get_page_left() + h.comp.get_panel_slot_x();
+    let button = |i: f32| (left + 8.0 + 12.0 + i * 26.0, top + 16.0);
+    // Back and forward are dimmed and do nothing until the page has a history.
+    h.click(button(0.0).0, button(0.0).1);
+    h.click(button(1.0).0, button(1.0).1);
+    assert!(calls.borrow().is_empty());
+    h.comp.set_panel_web_can_back(true);
+    h.comp.set_panel_web_can_forward(true);
+    h.advance(0);
+    h.click(button(0.0).0, button(0.0).1);
+    h.click(button(1.0).0, button(1.0).1);
+    h.click(button(2.0).0, button(2.0).1);
+    // While a page loads the third button stops it.
+    h.comp.set_panel_web_loading(true);
+    h.advance(0);
+    h.click(button(2.0).0, button(2.0).1);
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["back", "forward", "reload", "stop"]
+    );
+}
+
+#[test]
+fn the_download_button_shows_only_for_a_missing_runtime() {
+    let h = window(1.0);
+    open_web(&h);
+    h.comp.set_panel_note("No runtime".into());
+    let hits = Rc::new(Cell::new(0u32));
+    {
+        let c = hits.clone();
+        h.comp.on_panel_web_download(move || c.set(c.get() + 1));
+    }
+    let body_x = h.comp.get_panel_body_x();
+    let body_y = h.comp.get_panel_body_y();
+    let (bw, bh) = (h.comp.get_panel_body_w(), h.comp.get_panel_body_h());
+    let at = (body_x + bw / 2.0, body_y + bh / 2.0 + 70.0);
+    h.click(at.0, at.1);
+    assert_eq!(hits.get(), 0, "no button without the flag");
+    h.comp.set_panel_web_missing_runtime(true);
+    h.advance(0);
+    h.click(at.0, at.1);
+    assert_eq!(hits.get(), 1);
+}

@@ -295,6 +295,51 @@ fn panel_close_glyph_draws_at_full_size_at_every_scale() {
     }
 }
 
+// --- The web panel's bar buttons (WebButton, panel.slint): a 24 px button with a 12 px glyph, 2 px apart, 8 px in from the slot. ---
+
+const CHEVRON_LEFT: &str = "M15 6l-6 6 6 6";
+const CHEVRON_RIGHT: &str = "M9 6l6 6-6 6";
+const RELOAD: &str = "M19 12a7 7 0 1 1-2.05-4.95M19 5v4.5h-4.5";
+
+fn draw_web_button(s: f32, which: u8, loading: bool) -> Drawn {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_kind(3);
+    h.comp.set_panel_web_can_back(true);
+    h.comp.set_panel_web_can_forward(true);
+    h.comp.set_panel_web_loading(loading);
+    h.advance(0);
+    let f = h.render();
+    let left = h.comp.get_page_left() + h.comp.get_panel_slot_x();
+    let cx = left + 8.0 + 12.0 + f32::from(which) * 26.0;
+    let cy = h.comp.get_panel_slot_top() + h.comp.get_panel_header_h() + 16.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    let path = match (which, loading) {
+        (0, _) => CHEVRON_LEFT,
+        (1, _) => CHEVRON_RIGHT,
+        (_, true) => CLOSE,
+        _ => RELOAD,
+    };
+    (
+        got,
+        expected_extent_px(path, 12.0, 24.0, 2.2 * 12.0 / 24.0, s),
+    )
+}
+
+#[test]
+fn web_bar_glyphs_draw_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("web back", s, draw_web_button(s, 0, false));
+        assert_size("web forward", s, draw_web_button(s, 1, false));
+        assert_size("web reload", s, draw_web_button(s, 2, false));
+        assert_size("web stop", s, draw_web_button(s, 2, true));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
@@ -311,7 +356,7 @@ const SIZED: [(&str, usize); 11] = [
     ("update.slint", 1),
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
-    ("panel.slint", 1),
+    ("panel.slint", 2),
 ];
 
 /// The hairline rules: straight rules or the sidebar's corner arcs, not glyphs, with no size test.
