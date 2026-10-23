@@ -67,6 +67,12 @@ pub fn names_agent(title: &str, agent: AgentKind) -> bool {
     t.rsplit(['\\', '/']).next() == Some(exe.as_str())
 }
 
+/// The title the agent itself sets once it runs (Claude Code's `<mark> Claude Code`), which is not
+/// its program name. Only Claude Code has one that is certain.
+fn is_agent_title(title: &str, agent: AgentKind) -> bool {
+    agent == AgentKind::Claude && title.to_lowercase().contains("claude code")
+}
+
 /// The OSC 0 or 2 title scanner: ended by BEL or ST, matched on raw bytes so a split UTF-8
 /// sequence before it cannot move the offset.
 fn title_re() -> &'static Regex {
@@ -94,6 +100,13 @@ pub fn on_chunk(s: &RevealState, data: &[u8], now: u64) -> (RevealState, Option<
             if names_agent(&title, state.agent) {
                 clear_at = Some(whole.start());
                 state.cleared = true;
+            } else if is_agent_title(&title, state.agent) {
+                // The bare name was never seen whole (a title cut across two reads of the pty): the
+                // agent's own title is the next best mark. It comes before the agent's first
+                // paint, so the shell's words are cleared in time, and the agent is drawing now.
+                clear_at = Some(whole.start());
+                state.cleared = true;
+                state.settle_at = Some(now + SETTLE_MS);
             }
             continue;
         }
@@ -158,6 +171,21 @@ mod tests {
         let (s, _) = on_chunk(&start, &chunk, 3600);
         assert!(s.cleared);
         s
+    }
+
+    #[test]
+    fn a_bare_name_cut_across_two_reads_still_clears_and_settles_on_the_agents_title() {
+        let start = start_reveal(AgentKind::Claude, 0);
+        // The bare name is split by the batching: no read holds it whole.
+        let (s, at) = on_chunk(&start, b"PS C:\\work> \x1b]0;clau", 3600);
+        assert_eq!((s.cleared, at), (false, None));
+        let mut second = b"de\x1b\\".to_vec();
+        let agent_title_at = second.len();
+        second.extend(title("\u{2733} Claude Code", false));
+        let (s, at) = on_chunk(&s, &second, 5400);
+        assert!(s.cleared, "the agent's own title starts the clear");
+        assert_eq!(at, Some(agent_title_at));
+        assert_eq!(s.settle_at, Some(5400 + SETTLE_MS), "and the settle, not the ceiling");
     }
 
     #[test]
