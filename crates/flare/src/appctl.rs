@@ -368,6 +368,8 @@ pub struct AppCtl {
     /// Agents that are mid-answer: tab id to the clock time they started (M6 fills this).
     working: HashMap<String, u64>,
     ended: bool,
+    /// Stops the hand-off server (set by the window); run once at the start of the end of life.
+    handoff_stop: Option<Rc<dyn Fn()>>,
     /// The grid's face and size (Task 27); set by the window after the controller is made.
     font: Option<FontCtl>,
     /// The terminal's input controller: selection, copy, paste, find, links and the menu (M5).
@@ -738,6 +740,7 @@ impl AppCtl {
             last_saved: None,
             working: HashMap::new(),
             ended: false,
+            handoff_stop: None,
             font: None,
             term,
             term_due: None,
@@ -3169,6 +3172,11 @@ impl AppCtl {
         }
     }
 
+    /// The window hands over what stops the hand-off server at the end of life.
+    pub fn set_handoff_stop(&mut self, stop: Rc<dyn Fn()>) {
+        self.handoff_stop = Some(stop);
+    }
+
     /// The window hands over the font controller; the face and size in force apply at once.
     pub fn set_font_ctl(&mut self, f: FontCtl) {
         self.font = Some(f);
@@ -3314,6 +3322,11 @@ impl AppCtl {
             return;
         }
         self.ended = true;
+        // Stop listening before anything slow: a launch that connects while the shells are killed
+        // and waited for would get its folders acknowledged and then dropped.
+        if let Some(stop) = self.handoff_stop.take() {
+            stop();
+        }
         // Dictation first (parity 834): the engine's children, the link and the key hook stop before the shells are
         // killed and waited for, so a picker never keeps swallowing digits while the window is already hidden.
         crate::dictation_ctl::stop_all();
@@ -4437,6 +4450,21 @@ mod tests {
         f.ctl.borrow_mut().on_msg(UiMsg::FolderResolved(dir));
         assert_eq!(f.rows(), 0);
         assert_eq!(f.log.borrow().raised, 0);
+    }
+
+    #[test]
+    fn the_end_of_life_stops_the_handoff_server_before_anything_slow() {
+        let f = fx();
+        f.start_restore_and_wait();
+        let stops = Rc::new(Cell::new(0));
+        let s = stops.clone();
+        f.ctl
+            .borrow_mut()
+            .set_handoff_stop(Rc::new(move || s.set(s.get() + 1)));
+        f.ctl.borrow_mut().end();
+        assert_eq!(stops.get(), 1, "a late launch must find no pipe");
+        f.ctl.borrow_mut().end();
+        assert_eq!(stops.get(), 1, "once");
     }
 
     #[test]

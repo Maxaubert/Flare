@@ -72,7 +72,9 @@ pub struct Instance {
     /// The hand-off server, started by `main` right after the lock, BEFORE the backend and the
     /// window: a second launch that starts while this one is still creating its window must
     /// find the pipe within its wait. Declared before `_guard`, so it stops first.
-    pub server: Option<PipeServer>,
+    /// Shared with the controller, which stops it at the start of the end of life: a hand-off
+    /// that lands while the shells are being killed would be written, acknowledged and dropped.
+    pub server: Rc<RefCell<Option<PipeServer>>>,
     /// Where the server's hand-offs wait until the controller exists.
     pub sink: HandoffSink,
     /// Held only so the lock lasts as long as the run.
@@ -95,7 +97,7 @@ impl Instance {
         };
         Self {
             profile,
-            server,
+            server: Rc::new(RefCell::new(server)),
             sink,
             _guard: guard,
         }
@@ -1122,6 +1124,17 @@ pub fn run_window(
                 b
             }));
         }
+        {
+            // The end of life stops listening first, so a late launch finds no pipe, waits for
+            // the lock and becomes the first instance (rule 32: every argv path is taken).
+            let slot = inst.server.clone();
+            rc.borrow_mut().set_handoff_stop(Rc::new(move || {
+                let s = slot.borrow_mut().take();
+                if let Some(s) = s {
+                    s.stop();
+                }
+            }));
+        }
         ctl = Some(rc);
     }
 
@@ -1424,7 +1437,8 @@ pub fn run_window(
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();
     let mut instance = instance;
-    if let Some(s) = instance.as_mut().and_then(|i| i.server.take()) {
+    let server = instance.as_mut().and_then(|i| i.server.borrow_mut().take());
+    if let Some(s) = server {
         s.stop();
     }
     if let Some(w) = session_end {
