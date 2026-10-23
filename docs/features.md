@@ -736,3 +736,26 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   front, and a real dictation at 225%.
 - **Numbers** (engine start, a Base pass, a Parakeet host pass) are measured by Task 37 on the full e2e run. They are
   not measured at this commit, so this entry gives none yet.
+
+## The close question wears the accent, and a right-click never reaches a program (2026-10-22)
+
+- **The close question's confirm is the solid accent, never red** (owner, 2026-10-22: "this button is miscolored it
+  should be just orange on my theme but its orange and red for some reason"). Flare drew "Close tab" with the danger
+  fill (`#b4353f`) and an accent ring; Prism Terminal (0.58.3, main 60b6a4a) gives its choices no `danger`, so the
+  confirm is `bg-[var(--p-accent)]` with `--p-on-accent` text. Text, sizes and button order already matched. Held by
+  `a_tab_hosting_an_agent_asks_naming_it_and_working_for` (appctl: no danger fill) and
+  `the_primary_wears_the_accent_or_the_danger_fill` (the component keeps the unused `danger` for a future host).
+- **The focus ring is `:focus-visible`: it shows only after the keyboard.** Every PT dialog button carries
+  `focus-visible:ring-2 ring-accent-hi`; Chromium rings a programmatically focused button only when the last input was
+  a key. So a question opened by a click rests with no ring, one opened by Ctrl+W has it, and Tab or Enter inside
+  brings it. Flare's close question, update window and theme-switch question follow it (`by-key` in `dialog.slint`,
+  `update.slint`, `settings/wall.slint`). Held by `the_ring_shows_only_after_the_keyboard` and
+  `a_dialog_opened_by_a_chord_shows_the_ring_from_the_start`.
+- **A right-click always opens Flare's menu and sends nothing to the program** (owner, 2026-10-22: "right click pastes
+  in the terminal, it shouldn't ... right click should just open the menu not paste in the input"). Flare never pasted
+  by itself: in a mouse-reporting program (Claude Code) it forwarded the right press and release as `CSI < 2 ; x ; y`
+  while also opening the menu, and the program pasted. Now the press is kept back in every mode. The old behaviour is
+  the opt-in Settings > Terminal > Keys row "Send right clicks to programs" (`flare.window.rightClickReports`, off by
+  default). Held by `a_right_click_in_mouse_mode_opens_the_menu_and_sends_nothing`,
+  `with_the_setting_on_a_right_press_is_reported_unless_a_selection_stands` (term_ui.rs) and
+  `right_clicks_to_programs_is_off_by_default_beside_the_agent_keys` (flare-settings).

@@ -7,7 +7,7 @@
 //! (D5). Only the See-through row's subtext breaks the eight-word rule, on purpose (O8).
 //!
 //! Every row carries the storage keys its module reads and writes. `ROW_ORDER` is the draw order
-//! of the 39 rows; within each section the order follows the tables.
+//! of the 41 rows; within each section the order follows the tables.
 
 /// What control a row draws. `Registry` is the Explorer verb (read back from Windows, M9);
 /// `Info` is a row that stores nothing (the version).
@@ -433,7 +433,7 @@ pub const DIAGNOSTICS_OPTIONS: [RowDef; 3] = [
 ];
 
 /// This app's own rows, in draw order (section by section, as the pages draw them).
-pub const APP_OPTIONS: [RowDef; 12] = [
+pub const APP_OPTIONS: [RowDef; 13] = [
     RowDef {
         id: "tab-layout",
         label: "Tab position",
@@ -569,6 +569,19 @@ pub const APP_OPTIONS: [RowDef; 12] = [
         only_nvidia: false,
     },
     RowDef {
+        id: "right-click-reports",
+        label: "Send right clicks to programs",
+        sub: "Off keeps right clicks for the menu.",
+        section: "keys",
+        page: "terminal",
+        icon: "key",
+        keywords: "right click mouse paste menu context claude codex agent clicks program mouse mode",
+        keys: &["flare.window.rightClickReports"],
+        kind: RowKind::Switch,
+        source: Source::App,
+        only_nvidia: false,
+    },
+    RowDef {
         id: "taskbar-badge",
         label: "Count marked tabs on the taskbar",
         sub: "A number on the taskbar button.",
@@ -596,8 +609,8 @@ pub const APP_OPTIONS: [RowDef; 12] = [
     },
 ];
 
-/// The 39 row ids in draw order (Appendix C, the `#` column).
-pub const ROW_ORDER: [&str; 40] = [
+/// The 41 row ids in draw order (Appendix C, the `#` column).
+pub const ROW_ORDER: [&str; 41] = [
     "tab-layout",
     "tab-switch",
     "window-edges",
@@ -611,6 +624,7 @@ pub const ROW_ORDER: [&str; 40] = [
     "explorer-verb",
     "agent-keys",
     "agent-guard",
+    "right-click-reports",
     "term-font-family",
     "term-font",
     "help-enabled",
@@ -700,16 +714,16 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_name_the_40_rows_in_row_order() {
+    fn the_tables_name_the_41_rows_in_row_order() {
         let ids: Vec<&str> = table_order().iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 40);
+        assert_eq!(ids.len(), 41);
         let mut sorted_tables = ids.clone();
         sorted_tables.sort_unstable();
         let mut sorted_order: Vec<&str> = ROW_ORDER.to_vec();
         sorted_order.sort_unstable();
         assert_eq!(sorted_tables, sorted_order);
         let distinct: BTreeSet<&str> = ROW_ORDER.iter().copied().collect();
-        assert_eq!(distinct.len(), 40);
+        assert_eq!(distinct.len(), 41);
         let drawn: Vec<&str> = all_rows().map(|r| r.id).collect();
         assert_eq!(drawn, ROW_ORDER.to_vec());
     }
@@ -829,11 +843,12 @@ mod tests {
                 "explorer-verb=registry",
                 "agent-keys=flare.window.agentKeys",
                 "agent-guard=flare.window.agentGuard",
+                "right-click-reports=flare.window.rightClickReports",
                 "taskbar-badge=flare.window.taskbarBadge",
                 "app-version=",
             ]
         );
-        assert_eq!(app.len(), 12);
+        assert_eq!(app.len(), 13);
     }
 
     #[test]

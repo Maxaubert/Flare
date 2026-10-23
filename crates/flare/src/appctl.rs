@@ -440,6 +440,8 @@ pub struct AppCtl {
     update_agreed: Arc<AtomicBool>,
     /// The update window was put away for a close question: it comes back when that is cancelled.
     update_stepped_aside: bool,
+    /// The next close question was opened by a chord (the ring shows from the start).
+    ask_by_key: bool,
     /// The tab in front when the last `tab-switch` crumb was said.
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
@@ -775,6 +777,7 @@ impl AppCtl {
             install_cb: None,
             update_agreed: Arc::new(AtomicBool::new(false)),
             update_stepped_aside: false,
+            ask_by_key: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
         };
@@ -1134,6 +1137,10 @@ impl AppCtl {
             home: deps.home.clone(),
             dbl: deps.term.dbl,
             stat: Arc::clone(&deps.term.stat),
+            right_click_reports: {
+                let prefs = deps.prefs.clone();
+                Rc::new(move || flare_settings::term_prefs::right_click_reports(&prefs))
+            },
         })
     }
 
@@ -3359,7 +3366,9 @@ impl AppCtl {
                     app.set_dialog_title(v.title.into());
                     app.set_dialog_body(body);
                     app.set_dialog_primary(v.primary.into());
-                    app.set_dialog_danger(true);
+                    // PT's close question never uses the danger fill: the confirm is the solid accent.
+                    app.set_dialog_danger(false);
+                    app.set_dialog_by_key(std::mem::take(&mut self.ask_by_key));
                     app.set_dialog_open(true);
                 }
                 None => app.set_dialog_open(false),
@@ -3624,7 +3633,10 @@ impl ChordTarget for Target<'_> {
 
     fn close_tab(&mut self) {
         if let Some(id) = self.0.front_id() {
+            // A chord opened it: the focus ring shows from the start, as :focus-visible does after a key.
+            self.0.ask_by_key = true;
             self.0.request_close(&id);
+            self.0.ask_by_key = false;
         }
     }
 
@@ -5539,6 +5551,9 @@ mod tests {
             f.h.comp.get_dialog_title().as_str(),
             "Close the tab and end the agent?"
         );
+        // PT's confirm is the solid accent, never the danger fill; a click opened it, so no ring.
+        assert!(!f.h.comp.get_dialog_danger(), "no danger fill");
+        assert!(!f.h.comp.get_dialog_by_key(), "opened by a click");
         let body = {
             let c = f.ctl.borrow();
             ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body

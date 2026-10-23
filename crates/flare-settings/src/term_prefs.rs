@@ -2,12 +2,14 @@
 //! rest of the terminal settings.
 //!
 //! Keys `flare.term.shell` (the shell id; unset until chosen) and `flare.window.agentKeys` (a bool,
-//! default ON: the agent hotkeys of the chord table are the app's while it is on).
+//! default ON: the agent hotkeys of the chord table are the app's while it is on), and
+//! `flare.window.rightClickReports` (a bool, default OFF: a right press reaches a mouse-reporting program).
 
 use crate::kv::{PrefStore, Subscription, bool_pref_get, bool_pref_set};
 
 const SHELL_KEY: &str = "flare.term.shell";
 const AGENT_KEYS: &str = "flare.window.agentKeys";
+const RIGHT_CLICK_REPORTS: &str = "flare.window.rightClickReports";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -20,6 +22,16 @@ pub fn agent_keys(s: &PrefStore) -> bool {
 
 pub fn set_agent_keys(s: &PrefStore, on: bool) {
     bool_pref_set(s, AGENT_KEYS, on);
+}
+
+/// Send right-clicks to programs that read the mouse (default OFF, 2026-10-22): a right-click opens
+/// Flare's menu and sends nothing, so a program (Claude Code) never pastes on it.
+pub fn right_click_reports(s: &PrefStore) -> bool {
+    bool_pref_get(s, RIGHT_CLICK_REPORTS, false)
+}
+
+pub fn set_right_click_reports(s: &PrefStore, on: bool) {
+    bool_pref_set(s, RIGHT_CLICK_REPORTS, on);
 }
 
 /// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
