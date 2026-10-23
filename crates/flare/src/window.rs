@@ -34,7 +34,7 @@ use flare_win::single_instance::{Handoff, InstanceGuard, InstanceNames, PipeServ
 use flare_win::window_state::{Area, MIN_WINDOW, Observed, WindowState, WindowStateStore};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::winit::dpi::{PhysicalPosition, PhysicalSize};
-use slint::winit_030::winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
+use slint::winit_030::winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use slint::winit_030::winit::keyboard::ModifiersState;
 use slint::winit_030::winit::window::WindowLevel;
 use slint::winit_030::{EventResult, WinitWindowAccessor};
@@ -1954,6 +1954,30 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
         }),
     )));
 
+    // The pointer left the window: hover ends, and a collapsed sidebar starts watching the edge.
+    let leave_held = Rc::new(Cell::new(false));
+    let pointer_left: Rc<dyn Fn()> = {
+        let ctl = ctl.clone();
+        let weak = app.as_weak();
+        let edge = edge.clone();
+        let edge_timer = edge_timer.clone();
+        Rc::new(move || {
+            if let Some(rc) = ctl.upgrade()
+                && let Ok(mut c) = rc.try_borrow_mut()
+            {
+                c.on_cursor_left();
+            }
+            if weak.upgrade().is_some_and(|a| a.get_sidebar_collapsed()) {
+                edge.borrow_mut().set(true);
+                let edge = edge.clone();
+                edge_timer.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_millis(flare_win::edge_watch::EDGE_EVERY_MS),
+                    move || edge.borrow_mut().tick(),
+                );
+            }
+        })
+    };
     // untimed: winit events arrive per pixel, so the handler keeps its own cheap path
     app.window().on_winit_window_event(move |window, event| {
         let with_ctl = |f: &mut dyn FnMut(&mut AppCtl)| {
@@ -1997,16 +2021,13 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::CursorLeft { .. } => {
-                with_ctl(&mut |c| c.on_cursor_left());
-                if weak.upgrade().is_some_and(|a| a.get_sidebar_collapsed()) {
-                    edge.borrow_mut().set(true);
-                    let edge = edge.clone();
-                    edge_timer.start(
-                        slint::TimerMode::Repeated,
-                        Duration::from_millis(flare_win::edge_watch::EDGE_EVERY_MS),
-                        move || edge.borrow_mut().tick(),
-                    );
+                // A splitter drag keeps tracking under the OS capture, as every native one does: the
+                // pointer past the window's edge is still the drag's, and the release settles it (rule 219).
+                if hold_cursor_left(weak.upgrade().is_some_and(|a| a.get_panel_splitting())) {
+                    leave_held.set(true);
+                    return EventResult::PreventDefault;
                 }
+                pointer_left();
                 EventResult::Propagate
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -2021,6 +2042,29 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
             } => {
                 reapply.borrow_mut().user_acted();
                 with_ctl(&mut |c| c.on_pointer_down());
+                EventResult::Propagate
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // The left button up ends a splitter drag wherever the pointer is, before Slint sees it:
+                // Slint drops its grab on any button's release, so this is the drag's one sure end.
+                if let Some(a) = weak.upgrade() {
+                    a.invoke_end_splitter();
+                }
+                // A leave held back during the drag is owed now, once Slint has the release.
+                if leave_held.replace(false) {
+                    let (weak, pointer_left) = (weak.clone(), pointer_left.clone());
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(a) = weak.upgrade() {
+                            a.window()
+                                .dispatch_event(slint::platform::WindowEvent::PointerExited);
+                        }
+                        pointer_left();
+                    });
+                }
                 EventResult::Propagate
             }
             WindowEvent::HoveredFile(_) => {
@@ -2458,5 +2502,22 @@ mod tests {
             key_outcome_to_filter(KeyOutcome::Slint),
             (FilterAction::Propagate, false)
         );
+    }
+}
+
+/// Whether a `CursorLeft` is held back from Slint: while a splitter drag runs the pointer is captured,
+/// so leaving the client area does not end the drag.
+pub(crate) fn hold_cursor_left(splitting: bool) -> bool {
+    splitting
+}
+
+#[cfg(test)]
+mod cursor_left_tests {
+    use super::hold_cursor_left;
+
+    #[test]
+    fn a_pointer_leaving_the_window_is_held_back_only_while_a_splitter_drag_runs() {
+        assert!(hold_cursor_left(true));
+        assert!(!hold_cursor_left(false));
     }
 }

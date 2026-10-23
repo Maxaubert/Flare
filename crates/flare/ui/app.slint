@@ -349,6 +349,13 @@ export component AppWindow inherits Window {
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }
+    // The splitter drag ends: the share dragged so far is kept (the pointer's left button went up, or the grab was cancelled).
+    public function end-splitter() {
+        if (root.panel-splitting) {
+            root.panel-splitting = false;
+            root.panel-splitter-released(root.panel-drag-w / max(page.width, 1px));
+        }
+    }
     callback panel-close();
     callback panel-escape();
     callback panel-pressed();
@@ -956,9 +963,8 @@ export component AppWindow inherits Window {
                                     splitter.start-pointer = splitter.absolute-position.x + self.mouse-x;
                                     root.panel-drag-w = root.panel-slot-w;
                                     root.panel-splitting = true;
-                                } else if (root.panel-splitting && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
-                                    root.panel-splitting = false;
-                                    root.panel-splitter-released(root.panel-drag-w / max(page.width, 1px));
+                                } else if (root.panel-splitting && ((e.kind == PointerEventKind.up && e.button == PointerEventButton.left) || e.kind == PointerEventKind.cancel)) {
+                                    root.end-splitter();
                                 }
                             }
                             moved => {
