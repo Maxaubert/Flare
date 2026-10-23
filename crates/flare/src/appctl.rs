@@ -146,9 +146,28 @@ pub enum UiMsg {
     /// The window lost the keyboard while it was still the foreground window: asks again once the
     /// switch has settled (it may be the keyboard moving into the page, or a real switch to another app).
     FocusLostCheck,
+    /// A worker looked whether anything listens on a local port a tab printed (Surfaces stage 7).
+    DevLook {
+        tab: String,
+        token: u64,
+        look: flare_surfaces::devpreview::PortLook,
+    },
+    /// The look made when the chip was clicked (the page opens only when it finds the tab's own server).
+    DevClickLook {
+        tab: String,
+        token: u64,
+        look: flare_surfaces::devpreview::PortLook,
+    },
+    /// The person clicked a notification about this tab.
+    ToastClicked(String),
+    /// Windows would not take a notification.
+    ToastFailed,
 }
 
+mod surfaces7;
 mod web_glue;
+
+pub use surfaces7::install as install_surfaces7;
 
 /// Publishes a control channel event: name, params, and the tab it is about (its connections only).
 pub type CtlEvents = Arc<dyn Fn(&str, serde_json::Value, Option<&str>) + Send + Sync>;
@@ -476,6 +495,8 @@ pub struct AppCtl {
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
+    /// The Preview chip, the agent board and the question notifications (Surfaces stage 7).
+    s7: surfaces7::Surf7,
     /// The tabs' panels (Surfaces stage 1).
     panels: PanelCtl,
     /// The conversation panels' transcript trackers (Surfaces stage 6; none run while no such panel is open).
@@ -832,6 +853,7 @@ impl AppCtl {
             ask_by_key: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
+            s7: surfaces7::Surf7::new(),
             panels,
             convo,
             web,
@@ -1168,6 +1190,10 @@ impl AppCtl {
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
             .convo_toggle(key.as_str()));
+        bind!(app, rc, on_panel_board_pick, |c, tab: SharedString| c
+            .board_pick(tab.as_str()));
+        bind!(app, rc, on_preview_chip_clicked, |c| c
+            .preview_chip_clicked());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
         bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
             .panel_splitter_released(share));
@@ -1500,6 +1526,7 @@ impl AppCtl {
 
         // The panel of the tab in front, and the previews switch the terminal reads.
         self.sync_panels(&app);
+        self.notify_update();
         self.term
             .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
 
@@ -1650,6 +1677,8 @@ impl AppCtl {
             self.sync_model_agents();
             self.refresh();
         }
+        // Looking away from a question (or back at it) is the notifier's business.
+        self.notify_update();
     }
 
     /// The resume skeleton: shown while the tab in front resumes (or is a placeholder for an
@@ -1768,6 +1797,7 @@ impl AppCtl {
     /// first, so a change made by the refresh itself is heard again).
     pub fn on_prefs_changed(&mut self) {
         self.prefs_dirty.store(false, Ordering::SeqCst);
+        self.dev_settings_changed();
         self.refresh();
     }
 
@@ -1793,6 +1823,7 @@ impl AppCtl {
         let now = self.now();
         self.clock.pause.borrow_mut().set_minimized(minimised, now);
         self.update_clock();
+        self.sync_chip();
     }
 
     /// Whether a minimised window holds the marks (what `marks.state` reports as `paused`).
@@ -2184,6 +2215,8 @@ impl AppCtl {
         self.term.tab_closed(id);
         self.panels.forget(id);
         self.convo.forget(id);
+        self.dev_forget(id);
+        self.s7.notifier.forget(id);
         self.web.close_tab(id);
         self.refresh();
     }
@@ -2427,8 +2460,11 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
-            MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
-                // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
+            MenuKind::Term { tab }
+                if self.convo_menu_picked(tab, &row.label)
+                    || self.board_menu_picked(tab, &row.label) =>
+            {
+                // One of the conversation or board rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
             }
             MenuKind::Term { .. } => {
@@ -2731,6 +2767,7 @@ impl AppCtl {
             return;
         }
         rows.extend(self.convo_menu_rows(&at.tab));
+        rows.extend(self.board_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
             .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
@@ -2853,6 +2890,8 @@ impl AppCtl {
             .as_deref()
             .and_then(|t| self.panels.open_convo_kind(t).map(|k| (t, k)));
         self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
+        self.sync_board(app);
+        self.sync_chip();
         self.prune_downloads();
         let had = self.panel_focus_seen;
         self.panel_focus_seen = app.get_panel_has_focus();
@@ -3474,6 +3513,7 @@ impl AppCtl {
             term,
             self.hub.next_due(),
             self.skeleton_due(),
+            self.surf7_next_due(),
             reveal,
         ]
         .into_iter()
@@ -3528,6 +3568,7 @@ impl AppCtl {
         }
         self.tip_tick(now);
         self.term_tick();
+        self.surf7_tick(now);
         // The agent: its deadlines, and every resuming tab's reveal clock (a key, an exit or a
         // failed spawn reveal through the handle itself).
         self.hub.tick();
@@ -4186,6 +4227,10 @@ impl AppCtl {
                 }
             }
             UiMsg::Convo(ConvoMsgBox(m)) => self.on_convo_msg(m),
+            UiMsg::DevLook { tab, token, look } => self.on_dev_look(&tab, token, look),
+            UiMsg::DevClickLook { tab, token, look } => self.on_dev_click_look(&tab, token, look),
+            UiMsg::ToastClicked(tab) => self.on_toast_clicked(&tab),
+            UiMsg::ToastFailed => self.on_toast_failed(),
             UiMsg::Web(WebMsgBox(m)) => {
                 if let Some(app) = self.app() {
                     // A DevTools answer or a timer turn changes the window's properties only when a
@@ -4286,10 +4331,13 @@ impl AppCtl {
                         changed = true;
                     }
                 }
+                HostEvent::Output { id } => self.dev_read(&id),
                 HostEvent::Exited { id, .. } => {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
+                    self.dev_forget(&id);
+                    self.s7.notifier.forget(&id);
                     self.term.tab_closed(&id);
                     if self.model.close(&id) {
                         changed = true;
@@ -4417,6 +4465,10 @@ impl ChordTarget for Target<'_> {
 
     fn focus_panel(&mut self) {
         self.0.move_panel_focus();
+    }
+
+    fn toggle_board(&mut self) {
+        self.0.toggle_board();
     }
 }
 
@@ -6114,7 +6166,7 @@ mod tests {
         let file = f.dir.path().join("panels.json");
         std::fs::write(
             &file,
-            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"board","target":"x"}}]}"#,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"mod:notes","target":"x"}}]}"#,
         )
         .unwrap(); // sync-ok: test code only
         f.ctl
@@ -6695,7 +6747,7 @@ mod tests {
         let file = f.dir.path().join("panels.json");
         std::fs::write(
             &file,
-            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"board","target":"x"}}]}"#,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"mod:notes","target":"x"}}]}"#,
         )
         .unwrap(); // sync-ok: test code only
         let store = Arc::new(flare_surfaces::store::PanelStore::new(
@@ -6710,7 +6762,7 @@ mod tests {
         let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
         assert_eq!(
             back[0].panel.as_ref().map(|p| p.kind.name()),
-            Some("board".to_string())
+            Some("mod:notes".to_string())
         );
     }
 

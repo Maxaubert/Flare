@@ -1,5 +1,5 @@
-//! The kinds of panel. `image`, `text`, `web`, `changes` and `tasks` are built; the rest are named now so the store
-//! can keep them and later stages only add a viewer.
+//! The kinds of panel. `image`, `text`, `web`, `changes`, `tasks` and `board` are built; the rest are named now so the
+//! store can keep them and later stages only add a viewer.
 
 /// The longest mod id (a folder name under the mods folder).
 const MOD_ID_MAX: usize = 64;
@@ -66,6 +66,7 @@ impl PanelKind {
                 | PanelKind::Web
                 | PanelKind::Changes
                 | PanelKind::Tasks
+                | PanelKind::Board
         )
     }
 
@@ -81,6 +82,20 @@ impl PanelKind {
             PanelKind::Changes => Some("changes"),
             PanelKind::Tasks => Some("tasks"),
             _ => None,
+        }
+    }
+
+    /// True for the agent board (stage 7): it reads no file and no transcript, its rows come from the agent hub,
+    /// and its target is only the kind's own name.
+    pub fn is_board(&self) -> bool {
+        matches!(self, PanelKind::Board)
+    }
+
+    /// The target a panel that shows no file stores: the conversation panels' and the board's own names.
+    pub fn fixed_target(&self) -> Option<&'static str> {
+        match self {
+            PanelKind::Board => Some("board"),
+            other => other.convo_target(),
         }
     }
 }
@@ -137,7 +152,12 @@ mod tests {
         assert!(PanelKind::Image.is_built() && PanelKind::Text.is_built());
         assert!(PanelKind::Web.is_built());
         assert!(PanelKind::Changes.is_built() && PanelKind::Tasks.is_built());
-        assert!(!PanelKind::Board.is_built());
+        assert!(PanelKind::Board.is_built() && PanelKind::Board.is_native());
+        assert!(!PanelKind::Mod("x".into()).is_built());
+        assert!(PanelKind::Board.is_board() && !PanelKind::Tasks.is_board());
+        assert_eq!(PanelKind::Board.fixed_target(), Some("board"));
+        assert_eq!(PanelKind::Tasks.fixed_target(), Some("tasks"));
+        assert_eq!(PanelKind::Web.fixed_target(), None);
         assert!(PanelKind::Changes.is_native() && !PanelKind::Web.is_native());
         assert!(PanelKind::Changes.is_convo() && PanelKind::Tasks.is_convo());
         assert!(!PanelKind::Text.is_convo() && !PanelKind::Board.is_convo());

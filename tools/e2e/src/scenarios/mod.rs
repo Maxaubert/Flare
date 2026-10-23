@@ -5,6 +5,7 @@ pub mod agent_launch;
 pub mod agent_misc;
 pub mod agent_web;
 pub mod anywhere;
+pub mod board;
 pub mod chrome;
 pub mod closeask;
 pub mod convo;
@@ -601,6 +602,24 @@ pub const ALL: &[Scenario] = &[
         group: "web",
         run: mini_app::mcp_diagram,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "devPreview",
+        group: "board",
+        run: board::dev_preview,
+        limit_secs: 480,
+    },
+    Scenario {
+        name: "agentBoard",
+        group: "board",
+        run: board::agent_board,
+        limit_secs: 420,
+    },
+    Scenario {
+        name: "questionToast",
+        group: "board",
+        run: board::question_toast,
+        limit_secs: 300,
     },
 ];
 

@@ -37,6 +37,7 @@ use crate::tab_host::TabHost;
 use crate::ui_harness::{Frame, Harness, SCALES};
 use crate::{AppWindow, MarkMotion, TabRow};
 
+mod board_flows;
 mod convo_flows;
 
 type Queue = Arc<Mutex<VecDeque<UiMsg>>>;

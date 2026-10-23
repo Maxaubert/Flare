@@ -13,6 +13,7 @@ const RIGHT_CLICK_REPORTS: &str = "flare.window.rightClickReports";
 const OPEN_PREVIEWS: &str = "flare.window.openPreviews";
 const AGENT_EVAL: &str = "flare.web.agentEval";
 const APP_NETWORK: &str = "flare.web.appNetwork";
+const DEV_PREVIEW: &str = "flare.window.devPreview";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -66,6 +67,16 @@ pub fn app_network(s: &PrefStore) -> bool {
 
 pub fn set_app_network(s: &PrefStore, on: bool) {
     bool_pref_set(s, APP_NETWORK, on);
+}
+
+/// Offer previews of local servers (Surfaces stage 7): a tab whose output names a local dev server gets a
+/// "Preview" chip that opens it in the web panel. Default ON; only a stored "0" is off.
+pub fn dev_preview(s: &PrefStore) -> bool {
+    bool_pref_get(s, DEV_PREVIEW, true)
+}
+
+pub fn set_dev_preview(s: &PrefStore, on: bool) {
+    bool_pref_set(s, DEV_PREVIEW, on);
 }
 
 /// Stores the shell id; an empty id removes the key, so the saved shell reads as None again.
@@ -129,6 +140,19 @@ mod tests {
         assert!(open_previews(&s));
         s.set("flare.window.openPreviews", "junk");
         assert!(open_previews(&s), "an unknown value reads as the default");
+    }
+
+    #[test]
+    fn local_server_previews_are_on_until_a_stored_zero() {
+        let s = PrefStore::memory();
+        assert!(dev_preview(&s));
+        set_dev_preview(&s, false);
+        assert!(!dev_preview(&s));
+        assert_eq!(s.get("flare.window.devPreview").as_deref(), Some("0"));
+        set_dev_preview(&s, true);
+        assert!(dev_preview(&s));
+        s.set("flare.window.devPreview", "junk");
+        assert!(dev_preview(&s), "an unknown value reads as the default");
     }
 
     #[test]

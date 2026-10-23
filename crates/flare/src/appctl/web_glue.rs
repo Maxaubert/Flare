@@ -353,7 +353,11 @@ impl AppCtl {
     }
 
     /// Shows the page in the tab's panel. The bool: a browser is up for the tab, so the call waits.
-    fn browser_open(&mut self, tab: &str, url: &str) -> Result<(String, bool), CtlError> {
+    pub(super) fn browser_open(
+        &mut self,
+        tab: &str,
+        url: &str,
+    ) -> Result<(String, bool), CtlError> {
         if !self.is_shell_tab(tab) {
             return Err(CtlError::new(code::NO_TAB, "that tab is closed"));
         }

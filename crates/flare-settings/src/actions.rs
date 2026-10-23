@@ -191,6 +191,8 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "open-previews" => term_prefs::set_open_previews(p, on),
         "agent-eval" => term_prefs::set_agent_eval(p, on),
         "app-network" => term_prefs::set_app_network(p, on),
+        "dev-preview" => term_prefs::set_dev_preview(p, on),
+        "notify-ask" => agent_prefs::set_notify_ask_on(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         _ => {}
     }

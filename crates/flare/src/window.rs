@@ -1109,6 +1109,8 @@ pub fn run_window(
                 args.user_data_dir.clone(),
                 inst.profile.dir.clone(),
             ));
+        // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
+        crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));

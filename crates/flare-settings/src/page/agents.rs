@@ -10,7 +10,7 @@ use super::{
 };
 use crate::agent_prefs::{
     agent_done_on, agent_failed_on, agent_hooks_on, agent_question_on, agent_rainbow,
-    taskbar_badge_on,
+    notify_ask_on, taskbar_badge_on,
 };
 use crate::look::{AgentColourState, AgentIndicator};
 use crate::rows::{RowDef, row};
@@ -39,6 +39,7 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             marks_section(env),
             claude_section(env),
             colours_section(env),
+            notify_section(env),
         ],
     }
 }
@@ -89,6 +90,17 @@ fn claude_section(env: &PageEnv<'_>) -> SectionModel {
         vec![BlockModel::Row(switch_row(
             def("agent-hooks"),
             agent_hooks_on(env.prefs),
+        ))],
+    )
+}
+
+/// The Notifications section (Surfaces stage 7): the switch for the Windows notification of a question.
+fn notify_section(env: &PageEnv<'_>) -> SectionModel {
+    section(
+        "notify",
+        vec![BlockModel::Row(switch_row(
+            def("notify-ask"),
+            notify_ask_on(env.prefs),
         ))],
     )
 }
@@ -212,7 +224,7 @@ mod tests {
         fresh(|env| {
             let page = build(env);
             let ids: Vec<&str> = page.sections.iter().map(|s| s.id).collect();
-            assert_eq!(ids, ["marks", "claude", "colours"]);
+            assert_eq!(ids, ["marks", "claude", "colours", "notify"]);
             assert_eq!(
                 all_row_ids(&page),
                 [
@@ -226,6 +238,7 @@ mod tests {
                     "agent-color",
                     "agent-done-color",
                     "agent-question-color",
+                    "notify-ask",
                 ]
             );
         });
@@ -279,13 +292,14 @@ mod tests {
 
     #[test]
     fn every_switch_reads_on_unless_stored_zero() {
-        const SWITCHES: [&str; 6] = [
+        const SWITCHES: [&str; 7] = [
             "agent-done-on",
             "agent-rainbow",
             "agent-question-on",
             "agent-failed-on",
             "agent-hooks",
             "taskbar-badge",
+            "notify-ask",
         ];
         for id in SWITCHES {
             let key = def(id).keys[0];

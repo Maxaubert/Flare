@@ -180,6 +180,11 @@ pub enum Request {
     WebZoom {
         factor: f64,
     },
+    /// Surfaces stage 7: stands in for the person's click on a notification (the e2e never clicks a real one):
+    /// the window comes up and the tab it was about comes to the front.
+    ToastClick {
+        tab: String,
+    },
 }
 
 /// The routed result of one dictation (M8): the heard text, or a message for the user.
@@ -409,6 +414,7 @@ mod tests {
                 png_b64: None,
             },
             Request::Quit { force: false },
+            Request::ToastClick { tab: "t-3".into() },
         ]
     }
 
