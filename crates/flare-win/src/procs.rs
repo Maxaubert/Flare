@@ -25,6 +25,25 @@ pub const CMD_CAP: usize = 32 * 1024;
 
 /// Pure: the descendants of `roots` in a (pid, ppid) list, cycle-safe, roots excluded.
 pub fn descendants(rows: &[(u32, u32)], roots: &[u32]) -> Vec<u32> {
+    descendants_where(rows, roots, &|_, _| true)
+}
+
+/// Pure: whether a process may be the child of the parent it names. A process keeps its dead
+/// parent's id, and Windows reuses ids: a child created BEFORE its listed parent only carries a
+/// recycled number. An unreadable creation time proves nothing, so that edge stands.
+pub fn born_after(parent: Option<u64>, child: Option<u64>) -> bool {
+    match (parent, child) {
+        (Some(p), Some(c)) => c >= p,
+        _ => true,
+    }
+}
+
+/// `descendants` over the edges `edge(parent, child)` accepts.
+pub fn descendants_where(
+    rows: &[(u32, u32)],
+    roots: &[u32],
+    edge: &dyn Fn(u32, u32) -> bool,
+) -> Vec<u32> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
     for &(pid, ppid) in rows {
         children.entry(ppid).or_default().push(pid);
@@ -38,6 +57,9 @@ pub fn descendants(rows: &[(u32, u32)], roots: &[u32]) -> Vec<u32> {
         i += 1;
         if let Some(kids) = children.get(&p) {
             for &k in kids {
+                if !edge(p, k) {
+                    continue;
+                }
                 if seen.insert(k) {
                     out.push(k);
                     queue.push(k);
@@ -117,6 +139,27 @@ fn command_line(pid: u32) -> String {
     out
 }
 
+/// When the process was created (FILETIME ticks); None when it cannot be opened or read.
+fn creation_time(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    // SAFETY: plain values in; a null handle means failure and is checked.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return None;
+    }
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut cr, mut ex, mut kr, mut us) = (zero, zero, zero, zero);
+    // SAFETY: `h` is a live handle; the four out structs are live.
+    let ok = unsafe { GetProcessTimes(h, &mut cr, &mut ex, &mut kr, &mut us) } != 0;
+    // SAFETY: `h` came from a successful OpenProcess and is closed once.
+    unsafe { CloseHandle(h) };
+    ok.then(|| (u64::from(cr.dwHighDateTime) << 32) | u64::from(cr.dwLowDateTime))
+}
+
 /// BLOCKING (the poll's worker). Every process as (pid, ppid); `cmd` is read ONLY for descendants of
 /// `roots` and kept only when `wanted(&cmd)` says so. None when the snapshot itself fails or is empty.
 pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Option<Vec<ProcEntry>> {
@@ -141,7 +184,19 @@ pub fn snapshot_processes(roots: &[u32], wanted: &dyn Fn(&str) -> bool) -> Optio
     if rows.is_empty() {
         return None;
     }
-    let want: HashSet<u32> = descendants(&rows, roots).into_iter().collect();
+    // Each process's creation time is read once, and only for processes on an edge the walk tries.
+    let times = std::cell::RefCell::new(HashMap::<u32, Option<u64>>::new());
+    let created = |pid: u32| {
+        *times
+            .borrow_mut()
+            .entry(pid)
+            .or_insert_with(|| creation_time(pid))
+    };
+    let want: HashSet<u32> = descendants_where(&rows, roots, &|parent, child| {
+        born_after(created(parent), created(child))
+    })
+    .into_iter()
+    .collect();
     Some(
         rows.into_iter()
             .map(|(pid, ppid)| {
@@ -170,6 +225,26 @@ mod tests {
         assert!(descendants(&rows, &[40]).is_empty());
         assert_eq!(descendants(&rows, &[5]), vec![6]);
         assert!(descendants(&rows, &[999]).is_empty());
+    }
+
+    #[test]
+    fn a_process_older_than_its_listed_parent_is_not_its_child() {
+        // 30 (an agent started long ago) lists 20 as its parent, but 20's number was reused by a
+        // newer process under shell 10: 30 is an orphan, not a descendant of the tab.
+        let rows = [(20, 10), (30, 20), (40, 20)];
+        let time = |pid: u32| match pid {
+            10 => Some(100),
+            20 => Some(500),
+            30 => Some(50),
+            40 => Some(600),
+            _ => None,
+        };
+        let mut d = descendants_where(&rows, &[10], &|p, c| born_after(time(p), time(c)));
+        d.sort();
+        assert_eq!(d, vec![20, 40]);
+        // An unreadable time keeps the edge.
+        assert!(born_after(None, Some(1)) && born_after(Some(1), None));
+        assert!(born_after(Some(5), Some(5)));
     }
 
     #[test]

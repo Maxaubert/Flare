@@ -106,7 +106,11 @@ mod tests {
         let cfg = tmp.path().join("moved");
         let moved = cfg.join("projects").join("C--w");
         fs::create_dir_all(&moved).expect("moved");
-        fs::write(moved.join("0f0e0d0c-2222-4333-8444-955566667777.jsonl"), CLI_HEAD).expect("m");
+        fs::write(
+            moved.join("0f0e0d0c-2222-4333-8444-955566667777.jsonl"),
+            CLI_HEAD,
+        )
+        .expect("m");
         let lookup = ClaudeSessionLookup::new(Some(tmp.path().to_path_buf()))
             .with_config_dir(Some(cfg.into_os_string()));
         assert_eq!(
