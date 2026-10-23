@@ -316,6 +316,13 @@ impl AgentHub {
         }
     }
 
+    /// True for a tab whose shell hides its processes from the poll (a WSL distro).
+    fn poll_blind(&self, tab: &str) -> bool {
+        (self.deps.handle)(tab)
+            .and_then(|h| h.shell_id())
+            .is_some_and(|s| s.to_ascii_lowercase().starts_with("wsl"))
+    }
+
     fn run_effects(&self, effects: Vec<Effect>) {
         for e in effects {
             match e {
@@ -323,7 +330,11 @@ impl AgentHub {
                     if let Some(p) = &self.poll {
                         // The poll sends only answers that changed: a tab it already reported "no agent"
                         // would never hear it was wrong without being asked about by name.
-                        p.again(&tab);
+                        // A WSL tab is the exception: the poll cannot see an agent inside it (arm.rs keeps a
+                        // titled agent there for the same reason), so its "no" must not undo a real claim.
+                        if !self.poll_blind(&tab) {
+                            p.again(&tab);
+                        }
                         p.look_now();
                     }
                 }
@@ -892,10 +903,40 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
+            Self::build(false)
+        }
+
+        /// The saved shell is a WSL distro.
+        fn new_with_wsl() -> Self {
+            Self::build(true)
+        }
+
+        fn build(wsl: bool) -> Self {
             let sp = FakeSpawner::new();
             let prefs = PrefStore::memory();
+            if wsl {
+                prefs.set("flare.term.shell", "wsl-Ubuntu");
+            }
             let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            let mut host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker, None);
+            let shells = if wsl {
+                FakeShells::with(vec![
+                    flare_shells::list::ShellDef {
+                        id: "pwsh".into(),
+                        name: "PowerShell 7".into(),
+                        exe: "pwsh.exe".into(),
+                        args: Vec::new(),
+                    },
+                    flare_shells::list::ShellDef {
+                        id: "wsl-Ubuntu".into(),
+                        name: "Ubuntu".into(),
+                        exe: "wsl.exe".into(),
+                        args: Vec::new(),
+                    },
+                ])
+            } else {
+                FakeShells::new()
+            };
+            let mut host = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
             host.set_dims(200, 60, None);
             let mgr = host.manager();
             let host = Rc::new(RefCell::new(host));
@@ -1267,6 +1308,28 @@ mod tests {
         assert!(!r.hub.agent_here("a"));
         assert!(r.hub.indicator().question_ids().is_empty());
         assert!(r.hub.indicator().working_ids().is_empty());
+    }
+
+    #[test]
+    fn a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it() {
+        let mut r = Rig::new_with_wsl();
+        r.open("a", None);
+        wait("the shell id", || {
+            r.host
+                .borrow()
+                .handle("a")
+                .and_then(|h| h.shell_id())
+                .is_some()
+        });
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        r.rec.agains.borrow_mut().clear();
+        let looks = r.rec.looks.get();
+        r.print("a", &osc("question"));
+        assert!(r.rec.agains.borrow().is_empty(), "no forced no for WSL");
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        assert!(r.hub.agent_here("a"));
+        assert!(!r.hub.indicator().question_ids().is_empty());
     }
 
     #[test]

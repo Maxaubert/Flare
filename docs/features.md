@@ -345,9 +345,11 @@ are added as milestones land.
   process poll has looked. Each such claim asks the poll to look at that tab once, and the answer is sent even
   when unchanged, so a tab with no agent loses the false Claude icon and Question. The owner chose "yes, one
   check per claim" and does not want scheduled checking scripts: no new timer or polling loop. Held by
-  `a_claim_with_no_agent_is_taken_back_by_the_one_look_it_asked_for`,
   `a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back` and the e2e agentHooks (which runs
-  a real stand-in `claude.exe`, plus a cat'ed OSC 777 capture in a plain shell).
+  a real stand-in `claude.exe`, plus a cat'ed OSC 777 capture in a plain shell). A WSL tab is the exception: the
+  poll cannot see an agent inside it, so no one asks it about that tab and the claim stays (as `arm.rs` keeps a
+  titled agent there). Held by `a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it`. ssh in a
+  Windows shell is not covered yet.
 - **Finished at turn end (2026-10-23).** Claude's `· N shell(s)` count in the footer alone is no longer
   background work: at Stop a tab whose only sign is that count (a run_in_background dev server) is Finished,
   and closing it follows the normal rule for an idle agent. A workflow's progress row and Claude's own

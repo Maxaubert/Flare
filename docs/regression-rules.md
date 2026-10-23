@@ -371,8 +371,10 @@ also calls `PollWorker::again(tab)`: that tab's next answer is sent even if unch
 claim back. One check per claim (a second claim inside the 15 s gap asks for nothing), and no new timer or polling loop
 (owner, 2026-10-23: no scheduled checking scripts). An e2e that sends hooks needs a REAL agent process the poll
 recognises (agentHooks runs a copy of PowerShell named `claude.exe` in the tab), or the forced answer rightly clears
-its Working. Native: `indicator.rs` `Effect::AskLook { tab }`, `agent_hub.rs` `run_effects`. Held by
-`a_claim_with_no_agent_is_taken_back_by_the_one_look_it_asked_for`, `a_claim_with_an_agent_is_kept_by_the_look`,
+its Working. A tab the poll cannot see into (a WSL distro) is never asked about: its claim stays, as `arm.rs` keeps a
+titled agent there (`a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it`; ssh from a Windows shell is not
+covered yet). Native: `indicator.rs` `Effect::AskLook { tab }`, `agent_hub.rs` `run_effects`. Held by
+`a_claim_with_an_agent_is_kept_by_the_look`,
 `a_second_claim_inside_the_gap_asks_for_no_second_look`,
 `a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back` and the e2e agentHooks check on a cat'ed
 capture. Source: PT general review #47 (owner, 2026-10-23, "one check per claim").
