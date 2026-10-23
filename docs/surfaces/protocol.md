@@ -685,6 +685,8 @@ When that file is not beside the app (a development build, a package without it)
 left out, so Claude Code has nothing to fail on and the status hooks in the same plugin are unaffected.
 Nothing relies on Claude Code expanding `${VAR}` in a manifest. The tab's secret, the pipe and the server's
 process id reach the server through Claude Code's own environment (a stdio server inherits it); they are never
-in `args` and never in the manifest. The installed plugin copy (`%LOCALAPPDATA%\Flare\claude-plugin`)
+in `args` and never in the manifest. The installed plugin copy (`%LOCALAPPDATA%\Flare\claude-plugin-<tag>`, the tag naming the folder the exe is in, so a dev or worktree build never rewrites the installed Flare's copy)
 is refreshed from the template at every start, so a new manifest reaches existing installs and a program that
 appears later is written in.
+
+The connection a `flare-mcp` call uses says `events: false` in its `hello` (optional, default true): the server sends it no events, so a pipe nobody reads while no call runs can never fill and block the server's worker or a large request. Only the watcher's own connection takes events.
