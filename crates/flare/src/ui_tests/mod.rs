@@ -14,6 +14,7 @@ mod marks;
 mod menus;
 mod motion;
 mod overlay_order;
+mod panel;
 mod scrollbar;
 mod settings_about;
 mod settings_colour;

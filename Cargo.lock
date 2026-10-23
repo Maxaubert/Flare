@@ -1590,6 +1590,7 @@ dependencies = [
  "flare-render",
  "flare-settings",
  "flare-shells",
+ "flare-surfaces",
  "flare-tabs",
  "flare-term",
  "flare-theme",
@@ -1727,6 +1728,17 @@ name = "flare-shells"
 version = "0.1.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "flare-surfaces"
+version = "0.1.0"
+dependencies = [
+ "flare-settings",
+ "image",
+ "log",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2899,6 +2911,9 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png",

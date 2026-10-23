@@ -759,3 +759,76 @@ tag `v<version>` with no in-place replacement (D15), and the placeholder icon (D
   default). Held by `a_right_click_in_mouse_mode_opens_the_menu_and_sends_nothing`,
   `with_the_setting_on_a_right_press_is_reported_unless_a_selection_stands` (term_ui.rs) and
   `right_clicks_to_programs_is_off_by_default_beside_the_agent_keys` (flare-settings).
+
+## Panels (Surfaces stage 1), 2026-10-21
+
+Plan: `docs/superpowers/plans/2026-10-21-surfaces.md`, stage 1. Decisions and holes: `docs/surfaces/decisions.md` and
+`docs/surfaces/lessons.md` (the notes for the Prism Terminal port).
+
+- **A tab can show a panel beside its terminal.** One panel per tab, right of the grid, behind a draggable splitter
+  and under a 32 px header (file name, size, close). The panel holds a picture or a text file. The terminal refits
+  once, when the splitter is let go (rule 24); the slot's width is a share of the page kept per tab and stored in
+  `panels.json` (rules 36, 40, 41). Layout numbers: 40 percent by default, at least 240 css px, the terminal keeps 320,
+  at most 70 percent, none under 120 css px of room. Held by `the_slot_matches_the_layout_maths_at_every_scale_width_and_share`
+  (all eight scales, five widths, four shares), `the_splitter_follows_the_pointer_clamps_and_the_grid_waits_for_the_release`
+  (the grid does not fit while dragging and fits exactly once after), `the_slot_edges_sit_on_whole_device_pixels`, the
+  unit tests of `flare-surfaces` `layout.rs` at 100, 150, 225 and 300 percent, and the e2e `panelImage`.
+- **A left click on a path link to a picture or a text file opens it in the tab's panel.** The backend resolves the path
+  again (rule 13); the file must be on the click allowlist as named and as the file system names it, and both names must be
+  of the same previewable kind. Pictures: png, jpg, jpeg, gif, bmp, webp, ico. Text: the types in `preview::TEXT_EXTS`.
+  Folders, documents, svg, and every script keep today's behaviour (a script is revealed, never opened or shown; rule 14).
+  Held by `a_click_on_a_text_file_shows_it_in_the_panel_and_hands_nothing_to_windows`,
+  `a_click_on_a_picture_shows_it_with_its_size`, `a_script_a_document_and_a_folder_never_open_a_panel`,
+  `a_picture_named_like_one_that_is_a_script_is_not_shown`, `a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed`,
+  `a_link_that_changes_kind_shows_nothing` and `only_a_local_file_of_the_right_kind_is_loadable`.
+- **Setting "Open previews in Flare"** (Settings > Terminal > Links, `flare.window.openPreviews`, default on). Off: the click goes
+  to Windows as before. The right-click menu's Open always does. Held by
+  `with_previews_off_a_text_file_goes_to_windows_and_turning_them_on_again_shows_it`, `previews_are_on_until_a_stored_zero` and
+  `the_previews_row_is_a_switch_that_is_on_until_turned_off`.
+- **The picture viewer** fits the slot without enlarging, keeps its shape, and a click shows one image pixel per device
+  pixel with scrolling (a second click fits it again); a picture with any transparency sits on a checkerboard. Decoded on a
+  worker: 64 MB, 100 megapixels, a side over 8192 px scaled down. **The text viewer** is monospace and read-only with a
+  line-number gutter and only the rows in view built; the first 4 MB; an unreadable or binary file shows its reason, never a
+  blank. Held by `a_big_picture_fits_the_slot_and_a_click_shows_it_at_one_pixel_to_one_pixel`,
+  `a_small_picture_is_shown_as_it_is_and_a_click_changes_nothing`,
+  `a_picture_with_alpha_sits_on_a_checkerboard_and_an_opaque_one_does_not`, `a_big_file_draws_only_the_rows_in_view`,
+  `the_arrow_keys_the_page_keys_and_home_and_end_scroll_the_text`, `a_picture_that_is_not_one_answers_with_a_reason_in_the_panel`,
+  `panel_close_glyph_draws_at_full_size_at_every_scale`, and the `preview.rs` unit tests (caps, NUL, bad UTF-8, long lines).
+- **Two chords, in the one table (rule 7):** Ctrl+Shift+P shows or hides the panel, Ctrl+Shift+O moves the keys between the
+  terminal and the panel (Esc also returns them). Both are always the app's (with no panel they do nothing and the shell does not
+  hear them), and a panel never takes the keys by itself. Held by `the_panel_chords_are_host_chords_and_plain_ctrl_p_and_o_stay_the_shells`,
+  `the_close_button_and_the_toggle_chord_close_and_bring_the_panel_back`,
+  `the_focus_chord_moves_the_keys_both_ways_and_escape_gives_them_back`,
+  `the_keys_return_to_the_terminal_when_the_panel_they_were_in_closes` and `the_panel_chords_are_always_taken_so_the_shell_never_hears_them`.
+- **Per tab, stored, and free while closed.** Each tab has its own panel and share; only the front tab's is loaded; a closed
+  panel holds no picture and no rows; closing a tab forgets its panel; a session that never opens a panel writes no file and
+  starts no thread. A restored tab takes its panel by folder and place. A stored panel whose target is a network path, a
+  script, or of another kind is dropped; a kind this build cannot draw yet is kept in the file and not shown. Held by
+  `each_tab_has_its_own_panel_and_the_front_tab_decides_what_shows`, `closing_a_tab_forgets_its_panel`,
+  `the_splitter_release_stores_the_share_for_that_tab_only`, `a_panel_comes_back_with_its_tab_and_a_closed_one_stays_closed`,
+  `a_stored_panel_whose_target_is_not_a_local_file_of_its_kind_is_dropped`,
+  `a_panel_of_a_kind_this_stage_cannot_draw_is_kept_in_the_file_and_not_shown`,
+  `a_session_that_never_opens_a_panel_writes_no_file_and_starts_no_writer`,
+  `an_answer_for_a_file_no_longer_on_show_is_dropped` and the `store.rs` unit tests (damaged files, unknown kinds, widths).
+- **One property says an overlay is open.** `overlay-open` is true while any of the 15 overlays is (menu, tab list, dialog,
+  update window and notice, Settings page, its dropdown, theme editor and questions, colour picker, Command help, find bar,
+  the F12 card, a tab being dragged).
+  Native panels ignore it; stage 3's web panel hides while it is true. Held by
+  `every_overlay_turns_overlay_open_on_and_off_again` (no catch-all arm: a new overlay fails to compile until counted) and
+  `overlay_open_is_read_only_for_rust_and_computed_in_the_window_file`.
+- **Reviewed and tightened (2026-10-21).** `panels.json` is flushed at logoff, shutdown and quit with the other stores; a click on
+  the file already on show reads it again (a rewritten log, a file that failed and now exists); one picture decodes at a time and a
+  decode the user has left stops; every load, a restored one included, is vetted like a click; UTF-16 files with a BOM are text; the
+  foot names the cap that cut a file and the header shows its real size; the chord leaves a panel of a kind not drawn yet alone.
+  Held by `a_session_end_flushes_the_panels_file_too`, `a_click_on_the_file_already_shown_reads_it_again`,
+  `a_file_that_was_missing_shows_when_it_exists_and_is_clicked_again`, `a_restored_target_that_fails_the_clicks_checks_is_not_read`,
+  `a_utf16_file_with_a_bom_is_text`, `a_file_with_many_lines_is_cut_by_lines_not_bytes`, `a_stale_decode_is_abandoned`,
+  `the_keys_return_to_the_terminal_when_the_tab_changes_or_the_close_button_is_pressed`,
+  `a_display_scaling_change_with_the_panel_open_keeps_the_layout_and_the_one_to_one_zoom`,
+  `every_previewable_type_is_on_the_click_allowlist` and `the_panel_chord_does_nothing_for_a_kind_this_build_cannot_draw`.
+- **End to end:** `panelImage` (100 and 225 percent) prints a picture and a text path, clicks them, and checks the slot against
+  the layout maths, the painted pixels, the 1:1 zoom, both chords, the splitter, an overlay, the close button and that the
+  terminal refits and answers. The `panel.state` probe and the `ui.rect` names `panel`, `splitter`, `panel-body`, `panel-image`
+  and `panel-close` are for it.
+- **Not built in this stage:** web, changes, tasks, board and mod panels (later stages); selecting or copying text in the text
+  viewer; wrapping long lines; animated GIFs; svg; more than one panel per tab.

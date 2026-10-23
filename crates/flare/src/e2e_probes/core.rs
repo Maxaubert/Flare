@@ -491,6 +491,9 @@ fn ui_rect(ctx: &ProbeCtx, arg: &Value) -> Result<Value, String> {
             k,
         )),
         "scrollbar" => Err("ui.rect scrollbar: the shell has no history to scroll".into()),
+        "panel" | "splitter" | "panel-body" | "panel-image" | "panel-close" => {
+            super::panel::rects(ctx, name)
+        }
         "strip" | "mark" => Err(not_exported(name)),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }

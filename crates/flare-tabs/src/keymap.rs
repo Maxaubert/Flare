@@ -21,10 +21,14 @@ pub enum ChordId {
     AgentGuard,
     /// Alt+Space: the system menu of the frameless window.
     SystemMenu,
+    /// Ctrl+Shift+P: shows or hides the tab's panel (Surfaces stage 1).
+    Panel,
+    /// Ctrl+Shift+O: moves the keys between the terminal and the panel.
+    PanelFocus,
 }
 
 /// Every chord, in search order.
-pub const ORDER: [ChordId; 12] = [
+pub const ORDER: [ChordId; 14] = [
     ChordId::Help,
     ChordId::Fullscreen,
     ChordId::NextTab,
@@ -37,6 +41,8 @@ pub const ORDER: [ChordId; 12] = [
     ChordId::Find,
     ChordId::AgentGuard,
     ChordId::SystemMenu,
+    ChordId::Panel,
+    ChordId::PanelFocus,
 ];
 
 /// What the chords depend on, handed in by the window (never read here).
@@ -174,6 +180,14 @@ fn system_menu_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
         && (e.key == " " || e.key == "Space" || e.code == "Space")
 }
 
+fn panel_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
+    ctrl(e) && e.shift && letter(e, 'p')
+}
+
+fn panel_focus_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
+    ctrl(e) && e.shift && letter(e, 'o')
+}
+
 static HELP: ChordDef = ChordDef {
     label: "F1",
     shell_too: false,
@@ -276,6 +290,22 @@ static SYSTEM_MENU: ChordDef = ChordDef {
     agent: None,
 };
 
+static PANEL: ChordDef = ChordDef {
+    label: "Ctrl+Shift+P",
+    shell_too: false,
+    under_modal: UnderModal::Swallow,
+    matches: panel_matches,
+    agent: None,
+};
+
+static PANEL_FOCUS: ChordDef = ChordDef {
+    label: "Ctrl+Shift+O",
+    shell_too: false,
+    under_modal: UnderModal::Swallow,
+    matches: panel_focus_matches,
+    agent: None,
+};
+
 /// The definition of one chord.
 pub fn chord(id: ChordId) -> &'static ChordDef {
     match id {
@@ -291,6 +321,8 @@ pub fn chord(id: ChordId) -> &'static ChordDef {
         ChordId::Find => &FIND,
         ChordId::AgentGuard => &AGENT_GUARD,
         ChordId::SystemMenu => &SYSTEM_MENU,
+        ChordId::Panel => &PANEL,
+        ChordId::PanelFocus => &PANEL_FOCUS,
     }
 }
 
@@ -452,6 +484,33 @@ mod tests {
         assert_eq!(chord_of(&KeyEvent::new(" ", "Space"), &c), None);
         assert_eq!(
             chord_of(&KeyEvent::new(" ", "Space").alt().ctrl(), &c),
+            None
+        );
+    }
+
+    #[test]
+    fn the_panel_chords_are_host_chords_and_plain_ctrl_p_and_o_stay_the_shells() {
+        let c = on();
+        let p = KeyEvent::new("P", "KeyP").ctrl().shift();
+        let o = KeyEvent::new("o", "KeyO").ctrl().shift();
+        assert_eq!(chord_of(&p, &c), Some(ChordId::Panel));
+        assert_eq!(chord_of(&o, &c), Some(ChordId::PanelFocus));
+        assert!(app_owns_key(&p, &c) && app_owns_key(&o, &c));
+        // The physical key counts when a layout moves the letter (rule 11).
+        assert_eq!(
+            chord_of(&KeyEvent::new("\u{437}", "KeyP").ctrl().shift(), &c),
+            Some(ChordId::Panel)
+        );
+        for plain in [
+            KeyEvent::new("p", "KeyP").ctrl(),
+            KeyEvent::new("o", "KeyO").ctrl(),
+        ] {
+            assert_eq!(chord_of(&plain, &c), None);
+            assert!(!app_owns_key(&plain, &c));
+        }
+        // With Alt too (AltGr on some layouts) the key is the shell's.
+        assert_eq!(
+            chord_of(&KeyEvent::new("P", "KeyP").ctrl().shift().alt(), &c),
             None
         );
     }

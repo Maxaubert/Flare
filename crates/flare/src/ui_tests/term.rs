@@ -1635,12 +1635,12 @@ mod flow {
         let w = Wx::with(
             1.0,
             Opts {
-                files: vec!["a.txt", "b.bat", "folder/"],
+                files: vec!["a.pdf", "b.bat", "folder/"],
                 ..Opts::default()
             },
         );
-        // a.txt 0..5, b.bat 6..11, missing.txt 12..23, folder\ 24..31
-        w.feed("a.txt b.bat missing.txt folder\\");
+        // a.pdf 0..5, b.bat 6..11, missing.txt 12..23, folder\ 24..31
+        w.feed("a.pdf b.bat missing.txt folder\\");
         let f = light_paths(&w, 0..5);
         for _ in 0..4 {
             w.step(50);
@@ -1650,7 +1650,7 @@ mod flow {
         assert!(w.inked(&f2, 0, 6..11) > 0, "b.bat exists");
         assert!(w.inked(&f2, 0, 24..31) > 0, "a folder is a link too");
         assert_eq!(w.inked(&f2, 0, 12..23), 0, "a missing name is not");
-        let a = w.work().join("a.txt").to_string_lossy().into_owned();
+        let a = w.work().join("a.pdf").to_string_lossy().into_owned();
         let b = w.work().join("b.bat").to_string_lossy().into_owned();
         w.click(2, 0);
         w.pump_until("the open", |w| !w.records().is_empty());

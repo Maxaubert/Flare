@@ -18,6 +18,7 @@ pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
 mod marks_px;
+pub mod panel;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -523,6 +524,12 @@ pub const ALL: &[Scenario] = &[
         group: "settings_d",
         run: settings_live::vertical_start,
         limit_secs: 120,
+    },
+    Scenario {
+        name: "panelImage",
+        group: "panel",
+        run: panel::panel_image,
+        limit_secs: 240,
     },
 ];
 

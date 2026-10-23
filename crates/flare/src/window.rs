@@ -371,6 +371,27 @@ pub enum HandlePoll {
     GiveUp,
 }
 
+/// The debounced stores a run keeps: tabs, window, prefs and panels.
+type Stores = (
+    Arc<TabsStore>,
+    Arc<WindowStateStore>,
+    PrefStore,
+    Arc<flare_surfaces::store::PanelStore>,
+);
+
+/// Every debounced store written now: the logoff closure and the end of `run`.
+fn flush_stores(
+    tabs: &TabsStore,
+    window: &WindowStateStore,
+    prefs: &PrefStore,
+    panels: &flare_surfaces::store::PanelStore,
+) {
+    window.flush();
+    tabs.flush();
+    prefs.flush();
+    panels.flush();
+}
+
 /// Pure: the decision of look number `polls` (counted from 0) given what `hwnd_of` answered.
 pub fn poll_handle(polls: u32, max: u32, hwnd: Option<isize>) -> HandlePoll {
     match hwnd {
@@ -819,7 +840,7 @@ pub fn run_window(
         Arc<flare_update::engine::Engine>,
         Option<flare_update::types::Offer>,
     )> = None;
-    let mut stores: Option<(Arc<TabsStore>, Arc<WindowStateStore>, PrefStore)> = None;
+    let mut stores: Option<Stores> = None;
     if let (false, Some(inst)) = (sample, instance.as_ref()) {
         let post = make_post();
         let prefs = PrefStore::new(Arc::new(FileBackend::open(
@@ -1001,6 +1022,12 @@ pub fn run_window(
             },
         };
         let rc = AppCtl::new(&app, deps);
+        // The panels' file is read here, at start, before the restore gives the tabs their panels.
+        let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
+            inst.profile.panels_file(),
+            SAVE_DELAY,
+        ));
+        rc.borrow_mut().set_panel_store(Arc::clone(&panels_store));
         // The sidebar's slide reads the curve at each frame's own moment, to the fraction of a ms.
         rc.borrow_mut()
             .set_frame_clock(Rc::new(crate::ui_clock::monotonic_ms_f64));
@@ -1069,10 +1096,9 @@ pub fn run_window(
                 let tabs = Arc::clone(&tabs_store);
                 let window = Arc::clone(&window_store);
                 let prefs = prefs.clone();
+                let panels = Arc::clone(&panels_store);
                 move || {
-                    window.flush();
-                    tabs.flush();
-                    prefs.flush();
+                    flush_stores(&tabs, &window, &prefs, &panels);
                     // The log says so last, and is on the disk before the OS ends us.
                     crate::diag_ctl::session_end();
                 }
@@ -1093,7 +1119,7 @@ pub fn run_window(
         );
         // A font setting changed: the controller's own look listener (`LookChanged`) has the grid
         // wear the new face and size, Settings open or not.
-        stores = Some((tabs_store, window_store, prefs));
+        stores = Some((tabs_store, window_store, prefs, panels_store));
         crate::startup_trace::mark(crate::startup_trace::Phase::Profile);
         // The memory breakdown (F12 overlay, probe `memory.breakdown`) reads the grid host and each
         // tab's scrollback.
@@ -1276,7 +1302,7 @@ pub fn run_window(
     // the controller applies BEFORE the show. The window material needs a handle, so it joins after.
     let look_prefs = stores
         .as_ref()
-        .map_or_else(PrefStore::memory, |(_, _, p)| p.clone());
+        .map_or_else(PrefStore::memory, |(_, _, p, _)| p.clone());
     let look = {
         let ctl = LookCtl::new(
             &app,
@@ -1410,10 +1436,8 @@ pub fn run_window(
     {
         c.end();
     }
-    if let Some((tabs, window, prefs)) = &stores {
-        window.flush();
-        tabs.flush();
-        prefs.flush();
+    if let Some((tabs, window, prefs, panels)) = &stores {
+        flush_stores(tabs, window, prefs, panels);
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();
@@ -2002,6 +2026,28 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_end_flushes_the_panels_file_too() {
+        // Rule 36: a panel change still inside its debounce must be on the disk at logoff.
+        let dir = tempfile::tempdir().unwrap();
+        let long = Duration::from_secs(60);
+        let tabs = TabsStore::new(dir.path().join("tabs.json"), long);
+        let window = WindowStateStore::new(dir.path().join("window.json"), long);
+        let prefs = PrefStore::memory();
+        let file = dir.path().join("panels.json");
+        let panels = Arc::new(flare_surfaces::store::PanelStore::new(&file, long));
+        panels.save(&[flare_surfaces::store::SavedTabPanel {
+            cwd: "C:/a".into(),
+            panel: flare_surfaces::state::TabPanel::new(
+                flare_surfaces::PanelKind::Text,
+                "C:/a/n.txt",
+            ),
+        }]);
+        assert!(!file.exists(), "inside the debounce nothing is written yet");
+        flush_stores(&tabs, &window, &prefs, &panels);
+        assert!(file.exists());
+    }
 
     #[test]
     fn the_e2e_window_is_parked_when_its_handle_appears_not_before() {

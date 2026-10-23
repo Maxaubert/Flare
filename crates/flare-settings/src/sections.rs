@@ -25,6 +25,7 @@ pub const APP_SECTIONS: &[(&str, &str)] = &[
     ("window", "Window"),
     ("opening", "Opening terminals"),
     ("keys", "Keys"),
+    ("links", "Links"),
     ("about", ""),
 ];
 

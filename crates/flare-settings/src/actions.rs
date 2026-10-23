@@ -188,6 +188,7 @@ fn switch(ctx: &Ctx, row: &str, on: bool) -> Vec<Effect> {
         "agent-guard" => agent_prefs::set_agent_guard(p, on),
         "agent-keys" => term_prefs::set_agent_keys(p, on),
         "right-click-reports" => term_prefs::set_right_click_reports(p, on),
+        "open-previews" => term_prefs::set_open_previews(p, on),
         "help-enabled" => help_prefs::set_help_enabled(p, on),
         _ => {}
     }

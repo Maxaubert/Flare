@@ -19,7 +19,8 @@ import { SelectMenu } from "settings/select.slint";
 import { ColourPopover } from "settings/colour.slint";
 import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
-import { HelpPanel } from "settings/help_panel.slint";
+import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
+import { PanelSlot } from "panel.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
 export { Theme, Px, Motion, SettingsFixed } from "theme.slint";
@@ -238,6 +239,76 @@ export component AppWindow inherits Window {
     // The resume skeleton over the front agent tab while its conversation resumes (M6).
     in property <bool> skeleton-shown: false;
     in property <bool> skeleton-leaving: false;
+    // ---- the panel slot (Surfaces stage 1) ----
+    // The front tab has an open panel. The slot shows only on a shell tab with room for it.
+    in property <bool> panel-open;
+    // What it shows: 0 a note, 1 an image, 2 a text file.
+    in property <int> panel-kind;
+    in property <string> panel-title;
+    in property <string> panel-sub;
+    in property <string> panel-note;
+    in property <image> panel-picture;
+    in property <image> panel-checker;
+    in property <bool> panel-alpha;
+    in-out property <bool> panel-actual;
+    in property <[string]> panel-lines;
+    in property <int> panel-max-cols;
+    in property <string> panel-foot;
+    // The tab share of the page (0: not set, the default applies). The limits are the layout
+    // maths of flare-surfaces, handed over once (`layout::MIN_SLOT` and the others).
+    in property <float> panel-share: 0;
+    in property <length> panel-min-slot: 240px;
+    in property <length> panel-min-grid: 320px;
+    in property <length> panel-usable-min: 120px;
+    in property <float> panel-max-share: 0.7;
+    in property <float> panel-default-share: 0.4;
+    property <length> panel-slot-max: max(0px, min(page.width * root.panel-max-share, page.width - root.panel-min-grid));
+    property <length> panel-slot-min: min(root.panel-min-slot, root.panel-slot-max);
+    // The page has room for a slot at all.
+    out property <bool> panel-fits: root.panel-slot-max >= root.panel-usable-min;
+    // The slot is on the screen: open, on a shell tab, with room.
+    out property <bool> panel-shown: root.panel-open && root.front-kind == 0 && root.panel-fits;
+    // The slot settled width (the grid takes the rest) and what is drawn while the splitter moves.
+    out property <length> panel-slot-w: !root.panel-shown ? 0px : Px.snap(min(max(page.width * ((root.panel-share > 0 && root.panel-share < 1) ? root.panel-share : root.panel-default-share), root.panel-slot-min), root.panel-slot-max));
+    in-out property <bool> panel-splitting: false;
+    in-out property <length> panel-drag-w: 0px;
+    out property <length> panel-visible-w: root.panel-splitting ? root.panel-drag-w : root.panel-slot-w;
+    out property <length> panel-slot-x: page.width - root.panel-visible-w;
+    out property <length> panel-slot-top: panel-slot.absolute-position.y;
+    out property <length> panel-slot-h: panel-slot.height;
+    out property <length> panel-splitter-x: splitter.absolute-position.x;
+    out property <length> panel-splitter-w: splitter.width;
+    out property <length> panel-header-h: panel-slot.header-h;
+    out property <length> panel-body-x: panel-slot.body-x;
+    out property <length> panel-body-y: panel-slot.body-y;
+    out property <length> panel-body-w: panel-slot.body-w;
+    out property <length> panel-body-h: panel-slot.body-h;
+    out property <length> panel-image-x: panel-slot.image-x;
+    out property <length> panel-image-y: panel-slot.image-y;
+    out property <length> panel-image-w: panel-slot.image-w;
+    out property <length> panel-image-h: panel-slot.image-h;
+    out property <bool> panel-image-zoomed: panel-slot.image-zoomed;
+    out property <bool> panel-image-can-zoom: panel-slot.image-can-zoom;
+    out property <length> panel-gutter-w: panel-slot.text-gutter-w;
+    out property <int> panel-first-line: panel-slot.text-first-line;
+    // The panel has the keys; the window leaves the non-chord keys to it.
+    out property <bool> panel-has-focus: panel-slot.has-focus;
+    public function focus-panel() { panel-slot.focus-panel(); }
+    callback panel-close();
+    callback panel-escape();
+    callback panel-pressed();
+    // The splitter was let go: the slot share of the page.
+    callback panel-splitter-released(float);
+    // The page (right of the sidebar) in the window, for the probes and the layout tests.
+    out property <length> page-w: page.width;
+    out property <length> page-left: page.absolute-position.x;
+    // The grid width: the page less the slot (held while the sidebar slides).
+    property <length> grid-w: root.grid-frozen-width > 0px ? root.grid-frozen-width : page.width - root.panel-slot-w;
+    // True while any Flare overlay is open. A web panel (stage 3) is a child window and paints
+    // above Slint, so it hides while this is true. `flare_surfaces::overlay::Overlay::ALL` names the
+    // terms; a test opens each one and a scan counts the terms.
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying;
+
     // ---- tabs ----
     in property <[TabRow]> tab-rows;
     in property <StripGeom> strip-geom;
@@ -659,7 +730,7 @@ export component AppWindow inherits Window {
                     grid-box := Rectangle {
                         x: 0px;
                         y: 0px;
-                        width: root.grid-frozen-width > 0px ? root.grid-frozen-width : parent.width;
+                        width: root.grid-w;
                         height: parent.height;
                         clip: true;
                         visible: root.front-kind == 0;
@@ -711,6 +782,60 @@ export component AppWindow inherits Window {
                             level: root.dict-level;
                         }
                     }
+                    // The panel slot and its splitter (Surfaces stage 1), right of the grid. Declared before
+                    // the help panel and the find bar, so those stay over it.
+                    panel-slot := PanelSlot {
+                        x: root.panel-slot-x;
+                        y: 0px;
+                        width: root.panel-visible-w;
+                        height: parent.height;
+                        open: root.panel-shown;
+                        kind: root.panel-kind;
+                        title: root.panel-title;
+                        sub: root.panel-sub;
+                        note: root.panel-note;
+                        picture: root.panel-picture;
+                        checker: root.panel-checker;
+                        has-alpha: root.panel-alpha;
+                        actual <=> root.panel-actual;
+                        lines: root.panel-lines;
+                        max-cols: root.panel-max-cols;
+                        foot: root.panel-foot;
+                        close => { root.panel-close(); }
+                        escape => { root.panel-escape(); }
+                        pressed => { root.focus-panel(); root.panel-pressed(); }
+                    }
+                    // The splitter: 8 px of hit area centred on the slot left edge. While it moves, the slot
+                    // follows the pointer and the grid keeps its width; one fit follows the release (rule 24).
+                    splitter := Rectangle {
+                        property <length> start-slot;
+                        property <length> start-pointer;
+                        x: Px.snap(root.panel-slot-x - self.width / 2);
+                        y: 0px;
+                        width: Px.snap(8px);
+                        height: parent.height;
+                        visible: root.panel-shown;
+                        background: transparent;
+                        splitter-ta := TouchArea {
+                            mouse-cursor: MouseCursor.col-resize;
+                            pointer-event(e) => {
+                                if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                                    splitter.start-slot = root.panel-slot-w;
+                                    splitter.start-pointer = splitter.absolute-position.x + self.mouse-x;
+                                    root.panel-drag-w = root.panel-slot-w;
+                                    root.panel-splitting = true;
+                                } else if (root.panel-splitting && (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel)) {
+                                    root.panel-splitting = false;
+                                    root.panel-splitter-released(root.panel-drag-w / max(page.width, 1px));
+                                }
+                            }
+                            moved => {
+                                if (root.panel-splitting) {
+                                    root.panel-drag-w = Px.snap(min(max(splitter.start-slot + (splitter.start-pointer - (splitter.absolute-position.x + self.mouse-x)), root.panel-slot-min), root.panel-slot-max));
+                                }
+                            }
+                        }
+                    }
                     settings-view := SettingsView {
                         visible: root.front-kind == 1;
                         x: 0px;
@@ -750,7 +875,7 @@ export component AppWindow inherits Window {
                     find := FindBar {
                         x: 0px;
                         y: 0px;
-                        width: root.grid-frozen-width > 0px ? root.grid-frozen-width : parent.width;
+                        width: root.grid-w;
                         height: parent.height;
                         z: 2;
                         visible: root.front-kind == 0;

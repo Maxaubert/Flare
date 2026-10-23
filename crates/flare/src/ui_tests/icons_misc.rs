@@ -265,12 +265,42 @@ fn update_chip_arrow_draws_at_full_size_at_every_scale() {
     }
 }
 
+// --- The panel's close button (PanelClose, panel.slint): a 20 px button with a 10 px glyph, 8 px in from the slot. ---
+
+fn draw_panel_close(s: f32) -> Drawn {
+    let h = Harness::new(s, 1000, 640, || {
+        AppWindow::new().expect("the window builds")
+    });
+    crate::appctl::AppCtl::push_panel_limits(&h.comp);
+    h.comp.set_panel_open(true);
+    h.comp.set_panel_note("x".into());
+    h.advance(0);
+    let f = h.render();
+    let slot_right =
+        h.comp.get_page_left() + h.comp.get_panel_slot_x() + h.comp.get_panel_visible_w();
+    let cx = slot_right - 8.0 - 10.0;
+    let cy = h.comp.get_grid_top() + h.comp.get_panel_header_h() / 2.0;
+    let r = region_around(&f, cx * s, cy * s, 8.0 * s);
+    let got = drawn(&f, r, ICON);
+    (
+        got,
+        expected_extent_px(CLOSE, 10.0, 24.0, 2.2 * 10.0 / 24.0, s),
+    )
+}
+
+#[test]
+fn panel_close_glyph_draws_at_full_size_at_every_scale() {
+    for s in SCALES {
+        assert_size("panel close", s, draw_panel_close(s));
+    }
+}
+
 // --- The scan: every stroked path in the top-level ui files is either a hairline rule or a glyph with a size test. ---
 
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 10] = [
+const SIZED: [(&str, usize); 11] = [
     ("tabs.slint", 5),
     ("tabmark.slint", 7),
     ("sidebar.slint", 3),
@@ -281,6 +311,7 @@ const SIZED: [(&str, usize); 10] = [
     ("update.slint", 1),
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
+    ("panel.slint", 1),
 ];
 
 /// The hairline rules: straight rules or the sidebar's corner arcs, not glyphs, with no size test.

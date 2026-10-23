@@ -81,6 +81,7 @@ use crate::menus_ui::{
     MenuKind, MenuRowData, OverflowRowData, TipHost, glyph_path, overflow_rows, plus_menu_rows,
     tab_menu_rows, toggle_pin_in_menu,
 };
+use crate::panel_ctl::{PanelCtl, PanelMsgBox};
 use crate::settings_ctl::{SettingsCtl, SettingsMsg};
 use crate::side_slide::{SideSlide, SlideAim};
 use crate::sidebar_ui::{SidebarCtl, SidebarEvent};
@@ -129,6 +130,8 @@ pub enum UiMsg {
     Help,
     /// A worker's answer or a timer for the update controller (M9 Task 30).
     Update(UpdateMsg),
+    /// A worker's answer for the panel controller (Surfaces stage 1): a picture or a text file read.
+    Panel(PanelMsgBox),
 }
 
 /// A `TermMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never the
@@ -142,6 +145,7 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::Copied(_) => "TermMsg::Copied",
             TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
+            TermMsg::Preview { .. } => "TermMsg::Preview",
         })
     }
 }
@@ -446,6 +450,10 @@ pub struct AppCtl {
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
+    /// The tabs' panels (Surfaces stage 1).
+    panels: PanelCtl,
+    /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
+    panel_focus_seen: bool,
 }
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
@@ -686,6 +694,7 @@ impl AppCtl {
         };
         let prefs_dirty = Arc::new(AtomicBool::new(false));
         let prefs_subs = Self::listen_to_rows(&prefs, &deps.post, &prefs_dirty);
+        let panels = PanelCtl::new(Arc::clone(&deps.post));
         Self::push_rainbow(app, &marks);
         let frame_clock: Rc<dyn Fn() -> f64> = {
             let clock = Rc::clone(&deps.clock);
@@ -780,9 +789,12 @@ impl AppCtl {
             ask_by_key: false,
             crumbed_front: None,
             spawn_marks: HashMap::new(),
+            panels,
+            panel_focus_seen: false,
         };
         let rc = Rc::new(RefCell::new(ctl));
         rc.borrow_mut().me = Rc::downgrade(&rc);
+        Self::push_panel_limits(app);
         Self::bind_callbacks(app, &rc);
         Self::make_help(app, &rc);
         rc.borrow_mut().refresh();
@@ -1100,6 +1112,11 @@ impl AppCtl {
         bind!(app, rc, on_find_next, |c| c.term_find_step(true));
         bind!(app, rc, on_find_prev, |c| c.term_find_step(false));
         bind!(app, rc, on_find_close, |c| c.term_find_close());
+        bind!(app, rc, on_panel_close, |c| c.close_front_panel());
+        bind!(app, rc, on_panel_escape, |c| c.panel_escape());
+        bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
+        bind!(app, rc, on_panel_splitter_released, |c, share: f32| c
+            .panel_splitter_released(share));
     }
 
     /// The terminal controller over this window: its closures reach the window only through a weak
@@ -1411,12 +1428,21 @@ impl AppCtl {
             self.apply_font();
         }
 
+        // The panel of the tab in front, and the previews switch the terminal reads.
+        self.sync_panels(&app);
+        self.term
+            .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
+
         // Rule 37: nothing is written before the restore answered.
         if let Some(s) = self.model.saved_if_restored()
             && self.last_saved.as_ref() != Some(&s)
         {
             self.deps.tabs_store.save(&s);
             self.last_saved = Some(s);
+        }
+        if self.model.restore_done() {
+            let tabs = self.shell_tabs();
+            self.panels.persist(&tabs);
         }
 
         self.push_term();
@@ -1879,6 +1905,7 @@ impl AppCtl {
     fn restored(&mut self, mut plan: Restored) {
         with_launch_folders(&mut plan, &self.deps.launch_folders);
         let spawns = self.model.settle(&plan);
+        self.restore_panels();
         let now = self.now();
         for s in spawns {
             self.deps.host.spawn(&s.id, &s.cwd, s.resume.as_deref());
@@ -2085,6 +2112,7 @@ impl AppCtl {
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
+        self.panels.forget(id);
         self.refresh();
     }
 
@@ -2699,6 +2727,138 @@ impl AppCtl {
         }
     }
 
+    // ---- the panels (Surfaces stage 1) --------------------------------------------------------------
+
+    /// The shell tabs as (id, folder), in the strip's order: what the panels are stored against.
+    fn shell_tabs(&self) -> Vec<(String, String)> {
+        flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .map(|t| (t.id.clone(), t.cwd.clone()))
+            .collect()
+    }
+
+    /// The limits of the slot, from the layout maths, handed to the window once. The `.slint` file
+    /// evaluates the same formulas in logical pixels; a test pins the two to each other.
+    pub(crate) fn push_panel_limits(app: &AppWindow) {
+        use flare_surfaces::layout as l;
+        app.set_panel_min_slot(l::MIN_SLOT as f32);
+        app.set_panel_min_grid(l::MIN_GRID as f32);
+        app.set_panel_usable_min(l::USABLE_MIN as f32);
+        app.set_panel_max_share(l::MAX_SHARE as f32);
+        app.set_panel_default_share(l::DEFAULT_SHARE);
+    }
+
+    /// How many tabs have a panel open (the `panel.state` probe).
+    pub fn open_panels(&self) -> usize {
+        self.panels.open_count()
+    }
+
+    /// Hands the panels the store (startup, before the restore).
+    pub fn set_panel_store(&mut self, store: Arc<flare_surfaces::store::PanelStore>) {
+        self.panels.set_store(store);
+    }
+
+    /// The restore made the tabs: each takes the panel its folder and place name.
+    fn restore_panels(&mut self) {
+        let tabs = self.shell_tabs();
+        self.panels.restore(&tabs);
+    }
+
+    /// The window shows the front tab's panel; the keys go back to the terminal when the panel that
+    /// had them goes away.
+    fn sync_panels(&mut self, app: &AppWindow) {
+        let front = self.model.active_shell().map(|t| t.id.clone());
+        self.panels.sync(app, front.as_deref());
+        let had = self.panel_focus_seen;
+        self.panel_focus_seen = app.get_panel_has_focus();
+        if had && !app.get_panel_shown() {
+            self.panel_focus_seen = false;
+            app.invoke_focus_terminal();
+        }
+    }
+
+    /// A click on a path that is a picture or a text file: the backend resolved it and a worker
+    /// said what it may be shown as. The panel opens on that tab; the keys stay where they are.
+    fn show_preview(&mut self, tab: &str, kind: flare_surfaces::PanelKind, abs: &str) {
+        let is_shell = flare_tabs::tabs::shell_tabs(&self.model.state)
+            .iter()
+            .any(|t| t.id == tab);
+        if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
+            return;
+        }
+        if self.panels.show(tab, kind, abs) {
+            self.refresh();
+        }
+    }
+
+    /// The panel's close button, and the toggle chord when it is open.
+    fn close_front_panel(&mut self) {
+        let Some(id) = self.front_id() else { return };
+        if self.panels.close(&id) {
+            self.refresh();
+            self.focus_terminal();
+        }
+    }
+
+    /// Ctrl+Shift+P: closes the front tab's panel, or brings back what it last showed. False when
+    /// there is neither, so the key is not taken.
+    fn toggle_front_panel(&mut self) -> bool {
+        let Some(id) = self.front_id() else {
+            return false;
+        };
+        // A kind this build cannot draw (restored from the file) is kept as stored, and the chord
+        // does not flip it: nothing would appear or go.
+        if !self.panels.has_built(&id) {
+            return false;
+        }
+        let changed = if self.panels.is_open(&id) {
+            self.panels.close(&id)
+        } else {
+            self.panels.reopen(&id)
+        };
+        if changed {
+            self.refresh();
+            if !self.panels.is_open(&id) {
+                self.focus_terminal();
+            }
+        }
+        changed
+    }
+
+    /// Ctrl+Shift+O: the keys move between the terminal and the panel. False when no panel shows.
+    fn move_panel_focus(&mut self) -> bool {
+        let Some(app) = self.app() else { return false };
+        if !app.get_panel_shown() {
+            return false;
+        }
+        if app.get_panel_has_focus() {
+            self.panel_focus_seen = false;
+            self.focus_terminal();
+        } else {
+            self.panel_focus_seen = true;
+            app.invoke_focus_panel();
+        }
+        true
+    }
+
+    /// Esc in the panel: the keys go back to the terminal.
+    fn panel_escape(&mut self) {
+        self.panel_focus_seen = false;
+        self.focus_terminal();
+    }
+
+    /// The splitter was let go: the slot's share of the page is the tab's from now on, and the grid
+    /// fits once at its new width.
+    fn panel_splitter_released(&mut self, share: f32) {
+        let Some(id) = self.front_id() else { return };
+        if self.panels.set_share(&id, share) {
+            if let Some(app) = self.app() {
+                app.set_panel_share(share);
+            }
+            self.refresh();
+        }
+    }
+
     // ---- the sidebar's slide (audit V3) ---------------------------------------------------------------------
 
     /// The window's precise frame clock (fractional ms, the clock `ui_clock` counts on); the tests keep
@@ -2979,9 +3139,11 @@ impl AppCtl {
                 // The Settings page has no shell, and its own fields (the find field, a colour code,
                 // the popover's Escape) are Slint's: a key that is no chord goes to Slint there.
                 if self.view.front_kind == 1
-                    || self
-                        .app()
-                        .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+                    || self.app().is_some_and(|a| {
+                        a.get_chrome_has_focus()
+                            || a.get_find_input_focused()
+                            || a.get_panel_has_focus()
+                    })
                 {
                     KeyOutcome::Slint
                 } else if shell_in_front {
@@ -3322,6 +3484,11 @@ impl AppCtl {
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
         }
+        if self.model.restore_done() {
+            let tabs = self.shell_tabs();
+            self.panels.persist(&tabs);
+        }
+        self.panels.flush();
         self.prefs.flush();
         (self.deps.hide)();
         end_of_life(
@@ -3479,6 +3646,14 @@ impl AppCtl {
                 {
                     h.on_pref_change();
                 }
+            }
+            UiMsg::Panel(PanelMsgBox(m)) => {
+                if let Some(app) = self.app() {
+                    self.panels.on_msg(&app, m);
+                }
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
+                self.show_preview(&tab, kind, &abs);
             }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
@@ -3646,6 +3821,14 @@ impl ChordTarget for Target<'_> {
 
     fn open_system_menu(&mut self) {
         self.0.open_system_menu();
+    }
+
+    fn toggle_panel(&mut self) {
+        self.0.toggle_front_panel();
+    }
+
+    fn focus_panel(&mut self) {
+        self.0.move_panel_focus();
     }
 }
 
@@ -4909,6 +5092,9 @@ mod tests {
     #[test]
     fn a_path_click_opens_through_the_openers_port() {
         let (f, h, _) = live(Opts::default());
+        // With previews off a text file goes to Windows as it always did.
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
         let file = f.dir.path().join("a.txt");
         std::fs::write(&file, "x").unwrap(); // sync-ok: test code only, never the app
         let dir = f.dir.path().to_string_lossy().into_owned();
@@ -4931,6 +5117,629 @@ mod tests {
         }
         let want = file.to_string_lossy().into_owned();
         assert_eq!(f.openers.records(), [OpenedRecord::Open(want)]);
+    }
+
+    // ---- the panels (Surfaces stage 1) --------------------------------------------------------
+
+    /// Feeds `word` on its own row, lets the path questions settle, and left-clicks it. `row` is
+    /// the row the word lands on (the rows before it were fed by earlier calls).
+    fn click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(0, 0, cell_css(1, row, false));
+        f.ptr(1, 0, cell_css(1, row, false));
+    }
+
+    fn write_png(path: &Path, w: u32, h: u32) {
+        let file = std::fs::File::create(path).unwrap(); // sync-ok: test code only, never the app
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut wr = enc.write_header().unwrap();
+        let px: Vec<u8> = (0..w * h).flat_map(|_| [200u8, 100, 50, 255]).collect();
+        wr.write_image_data(&px).unwrap();
+    }
+
+    fn shift_ctrl(key: &str, code: &str) -> KeyEvent {
+        KeyEvent::new(key, code).ctrl().shift()
+    }
+
+    fn rows_in_panel(f: &Fx) -> usize {
+        use slint::Model;
+        f.h.comp.get_panel_lines().row_count()
+    }
+
+    #[test]
+    fn a_click_on_a_text_file_shows_it_in_the_panel_and_hands_nothing_to_windows() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "one\ntwo\nthree").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "a.txt", 0);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(f.h.comp.get_panel_open());
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "a.txt");
+        assert_eq!(f.h.comp.get_panel_sub().as_str(), "3 lines, 13 B");
+        assert_eq!(rows_in_panel(&f), 3);
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+        // The click left the keys in the terminal.
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn a_click_on_a_picture_shows_it_with_its_size() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        write_png(&f.dir.path().join("p.png"), 40, 30);
+        click_word(&f, &h, &dir, "p.png", 0);
+        f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "p.png");
+        assert_eq!(f.h.comp.get_panel_sub().as_str(), "40 x 30");
+        let size = f.h.comp.get_panel_picture().size();
+        assert_eq!((size.width, size.height), (40, 30));
+        assert!(
+            !f.h.comp.get_panel_alpha(),
+            "an opaque picture needs no board"
+        );
+        assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_picture_that_is_not_one_answers_with_a_reason_in_the_panel() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("bad.png"), b"not a picture").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "bad.png", 0);
+        f.pump_until("the reason", |f| {
+            !f.h.comp.get_panel_note().is_empty()
+                && f.h.comp.get_panel_note().as_str() != "Opening\u{2026}"
+        });
+        assert_eq!(f.h.comp.get_panel_kind(), 0);
+        assert!(
+            f.h.comp
+                .get_panel_note()
+                .contains("cannot read this picture")
+        );
+    }
+
+    #[test]
+    fn a_script_a_document_and_a_folder_never_open_a_panel() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::write(f.dir.path().join("d.pdf"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "run.bat", 0);
+        click_word(&f, &h, &dir, "d.pdf", 1);
+        click_word(&f, &h, &dir, "sub/", 2);
+        let t = Instant::now();
+        while f.openers.records().len() < 3 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        f.pump();
+        let want = |n: &str| f.dir.path().join(n).to_string_lossy().into_owned();
+        let rec = f.openers.records();
+        assert!(
+            rec.contains(&OpenedRecord::Reveal(want("run.bat"))),
+            "{rec:?}"
+        );
+        assert!(rec.contains(&OpenedRecord::Open(want("d.pdf"))), "{rec:?}");
+        assert!(
+            rec.iter().any(
+                |r| matches!(r, OpenedRecord::Folder(p) if p.trim_end_matches('\\') == want("sub"))
+            ),
+            "{rec:?}"
+        );
+        assert!(!rec.contains(&OpenedRecord::Open(want("run.bat"))));
+        assert!(
+            !f.h.comp.get_panel_open(),
+            "none of them is shown in a panel"
+        );
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn a_picture_named_like_one_that_is_a_script_is_not_shown() {
+        // A name that says png but a file that is not on the allowlist as the system names it
+        // cannot be made without a link; the extension check on the clicked name alone is the
+        // part a plain file can exercise: a .png.exe is a program, not a picture.
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("pic.png.exe"), "x").unwrap(); // sync-ok: test code only
+        click_word(&f, &h, &dir, "pic.png.exe", 0);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let want = f
+            .dir
+            .path()
+            .join("pic.png.exe")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(f.openers.records(), [OpenedRecord::Reveal(want)]);
+        assert!(!f.h.comp.get_panel_open());
+    }
+
+    #[test]
+    fn with_previews_off_a_text_file_goes_to_windows_and_turning_them_on_again_shows_it() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "x").unwrap(); // sync-ok: test code only
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        click_word(&f, &h, &dir, "a.txt", 0);
+        let t = Instant::now();
+        while f.openers.records().is_empty() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(f.openers.records().len(), 1);
+        assert!(!f.h.comp.get_panel_open());
+        f.prefs.set("flare.window.openPreviews", "1");
+        f.pump();
+        click_word(&f, &h, &dir, "a.txt", 1);
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(
+            f.openers.records().len(),
+            1,
+            "the second click opened nothing in Windows"
+        );
+    }
+
+    /// Shows a text file in the front tab's panel, as a resolved click does.
+    fn show_text(f: &Fx, name: &str, body: &str) -> String {
+        let path = f.dir.path().join(name);
+        std::fs::write(&path, body).unwrap(); // sync-ok: test code only
+        let abs = path.to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        abs
+    }
+
+    #[test]
+    fn each_tab_has_its_own_panel_and_the_front_tab_decides_what_shows() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "one.txt", "1");
+        f.pump_until("the first panel", |f| f.h.comp.get_panel_kind() == 2);
+        // A second tab has none.
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+        assert!(!f.h.comp.get_panel_open(), "the new tab has no panel");
+        assert_eq!(f.h.comp.get_panel_kind(), 0);
+        assert_eq!(
+            rows_in_panel(&f),
+            0,
+            "nothing is kept on show for a tab behind"
+        );
+        // Back to the first: its panel reads its file again.
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel back", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "one.txt");
+    }
+
+    #[test]
+    fn closing_a_tab_forgets_its_panel() {
+        let (f, _h, _) = live(Opts::default());
+        let b = f.ctl.borrow_mut().open_folder("C:\\b");
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        f.ctl.borrow_mut().request_close(&b);
+        f.pump();
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(rows_in_panel(&f), 0);
+    }
+
+    #[test]
+    fn the_close_button_and_the_toggle_chord_close_and_bring_the_panel_back() {
+        let (f, _h, _) = live(Opts::default());
+        // Nothing to toggle: the chord is still the app's, so the shell never hears it.
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_open());
+        show_text(&f, "a.txt", "a\nb");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(rows_in_panel(&f), 0, "a closed panel holds no rows");
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.pump_until("the panel again", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 2);
+        f.h.comp.invoke_panel_close();
+        assert!(!f.h.comp.get_panel_open());
+        assert_eq!(f.ctl.borrow().open_panels(), 0);
+    }
+
+    #[test]
+    fn the_focus_chord_moves_the_keys_both_ways_and_escape_gives_them_back() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        // No panel: nothing moves, and the shell does not hear it.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        assert!(!f.h.comp.get_panel_has_focus());
+        show_text(&f, "a.txt", "a\nb\nc");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // A plain key now goes to Slint, not the shell.
+        assert_eq!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // The chord again: the terminal has them.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // Escape in the panel does the same.
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        f.h.key_text(&String::from(char::from(slint::platform::Key::Escape)));
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_panel_they_were_in_closes() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        // Bringing the panel back does not hand it the keys again.
+        assert_eq!(f.key(shift_ctrl("P", "KeyP")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+    }
+
+    #[test]
+    fn the_keys_return_to_the_terminal_when_the_tab_changes_or_the_close_button_is_pressed() {
+        let (f, _h, _) = live(Opts::default());
+        f.h.activate();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        // A tab with no panel comes to the front: the keys are the terminal's again.
+        let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+        f.ctl.borrow_mut().refresh();
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_shown());
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+        // The same through the close button.
+        show_text(&f, "c.txt", "c");
+        f.pump_until("the panel on the new tab", |f| {
+            f.h.comp.get_panel_kind() == 2
+        });
+        assert_eq!(f.key(shift_ctrl("O", "KeyO")), KeyOutcome::Consumed);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_has_focus());
+        f.h.comp.invoke_panel_close();
+        f.h.advance(0);
+        assert!(!f.h.comp.get_panel_has_focus());
+        assert_ne!(f.key(KeyEvent::new("j", "KeyJ")), KeyOutcome::Slint);
+    }
+
+    #[test]
+    fn a_click_on_the_file_already_shown_reads_it_again() {
+        let (f, _h, _) = live(Opts::default());
+        let abs = show_text(&f, "a.txt", "one");
+        f.pump_until("the first read", |f| rows_in_panel(f) == 1);
+        // The agent rewrites the file; the next click shows what it says now.
+        std::fs::write(&abs, "one\ntwo\nthree").unwrap(); // sync-ok: test code only
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the second read", |f| rows_in_panel(f) == 3);
+    }
+
+    #[test]
+    fn a_file_that_was_missing_shows_when_it_exists_and_is_clicked_again() {
+        let (f, _h, _) = live(Opts::default());
+        let path = f.dir.path().join("later.txt");
+        let abs = path.to_string_lossy().into_owned();
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the reason", |f| {
+            f.h.comp.get_panel_note().as_str() == "The file is gone."
+        });
+        std::fs::write(&path, "now\nhere").unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .show_preview(&id, flare_surfaces::PanelKind::Text, &abs);
+        f.pump_until("the content", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 2);
+    }
+
+    #[test]
+    fn a_restored_target_that_fails_the_clicks_checks_is_not_read() {
+        // A folder named like a text file passes the string checks; the click's checks refuse it.
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let folder = f.dir.path().join("dir.txt");
+        std::fs::create_dir(&folder).unwrap(); // sync-ok: test code only
+        let file = f.dir.path().join("panels.json");
+        let raw = format!(
+            r#"{{"version":1,"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"text","target":{}}}}}]}}"#,
+            serde_json::Value::String(folder.to_string_lossy().into_owned())
+        );
+        std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &file,
+                Duration::from_millis(30),
+            )));
+        f.start_restore_and_wait();
+        f.pump_until("the refusal", |f| {
+            f.h.comp.get_panel_open() && f.h.comp.get_panel_note().as_str().contains("not allowed")
+        });
+        assert_eq!(rows_in_panel(&f), 0);
+    }
+
+    #[test]
+    fn every_previewable_type_is_on_the_click_allowlist() {
+        // A type dropped from the allowlist would silently stop previewing.
+        for ext in flare_surfaces::preview::TEXT_EXTS
+            .iter()
+            .chain(flare_surfaces::preview::IMAGE_EXTS.iter())
+        {
+            assert!(
+                flare_term::path_open::may_open(&format!("C:\\a\\x.{ext}")),
+                "{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_chord_does_nothing_for_a_kind_this_build_cannot_draw() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"web","target":"https://example.com/"}}]}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        f.ctl
+            .borrow_mut()
+            .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                &file,
+                Duration::from_millis(30),
+            )));
+        f.start_restore_and_wait();
+        assert_eq!(f.ctl.borrow().open_panels(), 1, "it is open as stored");
+        assert!(!f.ctl.borrow_mut().toggle_front_panel());
+        assert_eq!(f.ctl.borrow().open_panels(), 1, "and the chord left it so");
+    }
+
+    #[test]
+    fn the_splitter_release_stores_the_share_for_that_tab_only() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "a");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(
+            f.h.comp.get_panel_share(),
+            0.0,
+            "not set until the splitter moves"
+        );
+        f.h.comp.invoke_panel_splitter_released(0.31);
+        assert!((f.h.comp.get_panel_share() - 0.31).abs() < 1e-6);
+        // Another tab with a panel starts at the default.
+        let _b = f.ctl.borrow_mut().open_folder("C:\\b");
+        show_text(&f, "b.txt", "b");
+        f.pump_until("the second panel", |f| {
+            f.h.comp.get_panel_title().as_str() == "b.txt" && f.h.comp.get_panel_kind() == 2
+        });
+        assert_eq!(f.h.comp.get_panel_share(), 0.0);
+        f.ctl.borrow_mut().model_mut().pick(&a);
+        f.ctl.borrow_mut().refresh();
+        assert!(
+            (f.h.comp.get_panel_share() - 0.31).abs() < 1e-6,
+            "the first tab kept its own"
+        );
+        // A nonsense share is refused.
+        f.h.comp.invoke_panel_splitter_released(7.0);
+        assert!((f.h.comp.get_panel_share() - 0.31).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_answer_for_a_file_no_longer_on_show_is_dropped() {
+        use crate::panel_ctl::{PanelMsg, PanelMsgBox};
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "a.txt", "real");
+        f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
+        let stale = || crate::panel_ctl::TextRows {
+            rows: vec!["stale".into(), "stale".into()],
+            cols: 5,
+            bytes: 12,
+            foot: String::new(),
+        };
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Text {
+                generation: 12345,
+                tab: id.clone(),
+                result: Ok(stale()),
+            })));
+        assert_eq!(rows_in_panel(&f), 1, "the old generation changed nothing");
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Text {
+                generation: 1,
+                tab: "t-other".into(),
+                result: Ok(stale()),
+            })));
+        assert_eq!(rows_in_panel(&f), 1, "another tab's answer changed nothing");
+    }
+
+    #[test]
+    fn a_new_click_replaces_the_panel_and_a_late_answer_of_the_old_one_is_dropped() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "one.txt", "one");
+        show_text(&f, "two.txt", "two\ntwo");
+        f.pump_until("the second file", |f| {
+            f.h.comp.get_panel_title().as_str() == "two.txt" && f.h.comp.get_panel_kind() == 2
+        });
+        // Both workers have answered by now; the first's answer, whenever it came, did not win.
+        f.pump();
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "two.txt");
+        assert_eq!(rows_in_panel(&f), 2);
+    }
+
+    #[test]
+    fn a_panel_comes_back_with_its_tab_and_a_closed_one_stays_closed() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None), ("C:\\b", None)],
+            ..Opts::default()
+        });
+        let note = f.dir.path().join("note.txt");
+        std::fs::write(&note, "kept\nlines").unwrap(); // sync-ok: test code only
+        let target = note.to_string_lossy().into_owned();
+        let panel = |open: bool, width: Option<f32>| flare_surfaces::TabPanel {
+            kind: flare_surfaces::PanelKind::Text,
+            target: target.clone(),
+            open,
+            width,
+        };
+        let file = f.dir.path().join("panels.json");
+        let saved = [
+            flare_surfaces::store::SavedTabPanel {
+                cwd: "C:\\a".into(),
+                panel: Some(panel(true, Some(0.3))),
+            },
+            flare_surfaces::store::SavedTabPanel {
+                cwd: "C:\\b".into(),
+                panel: Some(panel(false, None)),
+            },
+        ];
+        std::fs::write(&file, flare_surfaces::store::panels_json(&saved)).unwrap(); // sync-ok: test code only
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.start_restore_and_wait();
+        // The strip restores with the first tab in front: its panel is open at its width.
+        f.pump_until("the restored panel", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "note.txt");
+        assert!((f.h.comp.get_panel_share() - 0.3).abs() < 1e-6);
+        assert_eq!(rows_in_panel(&f), 2);
+        // The second tab's panel was closed when saved: it is still closed.
+        assert_eq!(f.ctl.borrow().open_panels(), 1);
+        // A change is written: close the first, and the file says so.
+        f.ctl.borrow_mut().close_front_panel();
+        store.flush();
+        let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].panel.as_ref().map(|p| p.open), Some(false));
+        assert_eq!(back[0].panel.as_ref().and_then(|p| p.width), Some(0.3));
+    }
+
+    #[test]
+    fn a_stored_panel_whose_target_is_not_a_local_file_of_its_kind_is_dropped() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        // A network path (it would make Windows reach out), and a script named as a picture's kind.
+        for target in [r"\\server\share\p.png", r"C:\x\run.bat", "relative.png"] {
+            let raw = format!(
+                r#"{{"version":1,"tabs":[{{"cwd":"C:\\a","panel":{{"kind":"image","target":{}}}}}]}}"#,
+                serde_json::Value::String(target.into())
+            );
+            std::fs::write(&file, raw).unwrap(); // sync-ok: test code only
+            let g = fx_with(Opts {
+                saved: vec![("C:\\a", None)],
+                ..Opts::default()
+            });
+            let gfile = g.dir.path().join("panels.json");
+            std::fs::copy(&file, &gfile).unwrap(); // sync-ok: test code only
+            g.ctl
+                .borrow_mut()
+                .set_panel_store(Arc::new(flare_surfaces::store::PanelStore::new(
+                    &gfile,
+                    Duration::from_millis(30),
+                )));
+            g.start_restore_and_wait();
+            assert_eq!(g.ctl.borrow().open_panels(), 0, "{target}");
+            assert!(!g.h.comp.get_panel_open(), "{target}");
+        }
+    }
+
+    #[test]
+    fn a_panel_of_a_kind_this_stage_cannot_draw_is_kept_in_the_file_and_not_shown() {
+        let f = fx_with(Opts {
+            saved: vec![("C:\\a", None)],
+            ..Opts::default()
+        });
+        let file = f.dir.path().join("panels.json");
+        std::fs::write(
+            &file,
+            r#"{"version":1,"tabs":[{"cwd":"C:\\a","panel":{"kind":"web","target":"https://example.com/"}}]}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.start_restore_and_wait();
+        f.pump();
+        assert!(!f.h.comp.get_panel_open(), "no viewer for it yet");
+        store.flush();
+        let back = flare_surfaces::store::PanelStore::new(&file, Duration::from_millis(30)).load();
+        assert_eq!(
+            back[0].panel.as_ref().map(|p| p.kind.name()),
+            Some("web".to_string())
+        );
+    }
+
+    #[test]
+    fn a_session_that_never_opens_a_panel_writes_no_file_and_starts_no_writer() {
+        let (f, _h, _) = live(Opts::default());
+        let file = f.dir.path().join("panels.json");
+        let store = Arc::new(flare_surfaces::store::PanelStore::new(
+            &file,
+            Duration::from_millis(30),
+        ));
+        f.ctl.borrow_mut().set_panel_store(store.clone());
+        f.ctl.borrow_mut().refresh();
+        f.ctl.borrow_mut().open_folder("C:\\b");
+        f.pump();
+        store.flush();
+        assert!(!file.exists());
+        assert!(!store.started());
     }
 
     #[test]
