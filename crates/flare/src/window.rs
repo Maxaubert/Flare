@@ -2021,6 +2021,8 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 EventResult::Propagate
             }
             WindowEvent::CursorEntered { .. } => {
+                // The pointer is back: a leave held back during a drag is no longer owed.
+                leave_held.set(false);
                 edge_timer.stop();
                 edge.borrow_mut().set(false);
                 EventResult::Propagate
@@ -2028,7 +2030,7 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
             WindowEvent::CursorLeft { .. } => {
                 // A splitter drag keeps tracking under the OS capture, as every native one does: the
                 // pointer past the window's edge is still the drag's, and the release settles it (rule 219).
-                if hold_cursor_left(weak.upgrade().is_some_and(|a| a.get_panel_splitting())) {
+                if weak.upgrade().is_some_and(|a| a.get_panel_splitting()) {
                     leave_held.set(true);
                     return EventResult::PreventDefault;
                 }
@@ -2040,6 +2042,14 @@ fn install_window_filter(app: &AppWindow, st: FilterState) -> Rc<KeyPath> {
                 let (x, y) = ((position.x / scale) as f32, (position.y / scale) as f32);
                 with_ctl(&mut |c| c.on_cursor(x, y));
                 EventResult::Propagate
+            }
+            // Slint's TouchArea drops its grab on ANY button's release, so another button's press or
+            // release mid-drag never reaches it: the drag would freeze.
+            WindowEvent::MouseInput { button, .. }
+                if !matches!(button, MouseButton::Left)
+                    && weak.upgrade().is_some_and(|a| a.get_panel_splitting()) =>
+            {
+                EventResult::PreventDefault
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2507,22 +2517,5 @@ mod tests {
             key_outcome_to_filter(KeyOutcome::Slint),
             (FilterAction::Propagate, false)
         );
-    }
-}
-
-/// Whether a `CursorLeft` is held back from Slint: while a splitter drag runs the pointer is captured,
-/// so leaving the client area does not end the drag.
-pub(crate) fn hold_cursor_left(splitting: bool) -> bool {
-    splitting
-}
-
-#[cfg(test)]
-mod cursor_left_tests {
-    use super::hold_cursor_left;
-
-    #[test]
-    fn a_pointer_leaving_the_window_is_held_back_only_while_a_splitter_drag_runs() {
-        assert!(hold_cursor_left(true));
-        assert!(!hold_cursor_left(false));
     }
 }

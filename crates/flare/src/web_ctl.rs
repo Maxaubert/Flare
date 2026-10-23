@@ -157,6 +157,9 @@ struct Pending {
     /// A diagram: once the page has loaded, the page is asked whether the drawing worked, and the call
     /// is answered with that.
     diagram: bool,
+    /// The address the page was on when the call began: a same-document entry answers a call with no
+    /// address only when it moved the page off this one.
+    from: String,
 }
 
 /// A diagram page that has loaded: its tab, the call waiting and what the load said.
@@ -242,9 +245,15 @@ fn flush_button_edges() {
 /// (a held Shift or Ctrl is not typing; the key pressed with it is).
 const TYPING_KEYS: std::ops::RangeInclusive<u8> = 0x08..=0xFE;
 
+/// Tab and Escape hand the keyboard back, the F-keys, the media and browser keys and the IME packet are
+/// not text either; none of them is the person typing at the page.
 fn is_typing_key(vk: u8) -> bool {
     TYPING_KEYS.contains(&vk)
-        && !matches!(vk, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5 | 0x14 | 0x90 | 0x91)
+        && !matches!(
+            vk,
+            0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5 | 0x14 | 0x90 | 0x91
+                | 0x09 | 0x1B | 0x70..=0x87 | 0xA6..=0xB7 | 0xE7
+        )
 }
 
 /// Was a real key pressed (down now, or since the last look)? WebView2 hands the host only chords and
@@ -252,10 +261,18 @@ fn is_typing_key(vk: u8) -> bool {
 /// The agent's own keys are browser events and press nothing.
 fn real_key_pressed() -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    // SAFETY: a plain read of a key state.
-    TYPING_KEYS
-        .filter(|vk| is_typing_key(*vk))
-        .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8001 != 0)
+    let down = |vk: u8| {
+        // SAFETY: a plain read of a key state.
+        (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8000 != 0
+    };
+    // A chord with Alt or Win (Alt+Tab, a panel chord) is the shell's, not typing.
+    if down(0x12) || down(0x5B) || down(0x5C) {
+        return false;
+    }
+    TYPING_KEYS.filter(|vk| is_typing_key(*vk)).any(|vk| {
+        // SAFETY: a plain read of a key state.
+        (unsafe { GetAsyncKeyState(i32::from(vk)) } as u16) & 0x8001 != 0
+    })
 }
 
 /// Is a real mouse button down, or was one pressed since the last look, with the pointer over `r`
@@ -1061,6 +1078,7 @@ impl WebCtl {
             url: url.to_string(),
             nav: None,
             diagram,
+            from: t.url.clone(),
         };
         if let Some(old) = t.pending.replace(pending) {
             let _ = old.reply.send(Err(CtlError::new(
@@ -1664,7 +1682,12 @@ impl WebCtl {
                     // (a `#fragment` of the page it is on) is answered here, and so is a back, forward or reload
                     // (no address) that stepped through the history inside one document.
                     let wanted = t.pending.as_ref().is_some_and(|p| {
-                        p.nav.is_none() && (p.url.is_empty() || url_matches(&p.url, &url, true))
+                        p.nav.is_none()
+                            && if p.url.is_empty() {
+                                !url_matches(&p.from, &url, true)
+                            } else {
+                                url_matches(&p.url, &url, true)
+                            }
                     });
                     if wanted {
                         let p = t.pending.take().expect("checked just above");
@@ -2258,11 +2281,12 @@ mod typing_tests {
 
     #[test]
     fn letters_digits_space_enter_and_arrows_are_typing_and_buttons_and_modifiers_alone_are_not() {
-        for vk in [b'A', b'Z', b'0', b'9', 0x20, 0x0D, 0x25, 0x08, 0x70, 0xBA] {
+        for vk in [b'A', b'Z', b'0', b'9', 0x20, 0x0D, 0x25, 0x08, 0xBA] {
             assert!(is_typing_key(vk), "{vk:#x}");
         }
         for vk in [
-            0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0xA0, 0xA2, 0xA4, 0x14,
+            0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0xA0, 0xA2, 0xA4, 0x14, 0x09, 0x1B, 0x70,
+            0x87, 0xAD, 0xB3, 0xE7,
         ] {
             assert!(!is_typing_key(vk), "{vk:#x}");
         }

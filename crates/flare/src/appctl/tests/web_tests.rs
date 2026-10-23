@@ -1345,6 +1345,41 @@ fn back_over_a_same_document_history_entry_answers_at_once() {
 }
 
 #[test]
+fn a_pages_own_replace_state_does_not_answer_a_back_that_has_not_happened() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::Loaded {
+        tab: id.clone(),
+        url: PAGE.into(),
+        ok: true,
+        status: String::new(),
+        nav: 1,
+    });
+    fake(&slot).say(WebEvent::History {
+        tab: id.clone(),
+        can_back: true,
+        can_forward: false,
+    });
+    f.pump();
+    let rx = ask(
+        &f,
+        CtlOp::BrowserNavigate {
+            tab: id.clone(),
+            to: NavTo::Back,
+        },
+        Duration::from_secs(5),
+    );
+    // The page rewrites its own address (same url) before the history step: not the call's answer.
+    fake(&slot).say(WebEvent::SameDocument {
+        tab: id,
+        url: PAGE.into(),
+    });
+    f.pump();
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
 fn a_stale_load_in_the_queue_does_not_become_the_calls_navigation() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);

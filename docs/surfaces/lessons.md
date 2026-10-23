@@ -757,3 +757,9 @@ A review by many agents (flag, verify, then fix) of the newest Surfaces work: th
 - A real key typed into a web page while an agent call waits (the tick reads `GetAsyncKeyState`, which the tests cannot press).
 - Moving the window with a `<select>` open on the page, and the IME's candidate window after a move.
 - A WebView2 renderer killed from Task Manager, then Reload and an address typed.
+
+## Round 10 recheck
+
+- A held-back `CursorLeft` needs its undo in `CursorEntered`, or a drag that goes out and back in still owes a fake leave at the release.
+- Slint's TouchArea drops its grab on ANY button's release: the hook swallows other buttons' press and release while a splitter drag runs.
+- A key that is not text (Tab, Escape, F-keys, media keys, a chord with Alt or Win) is not "the person typing at the page"; a same-document entry answers an address-less call only when it moved the page off the address the call began on.
