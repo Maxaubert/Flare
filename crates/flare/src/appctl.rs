@@ -2223,12 +2223,18 @@ impl AppCtl {
         self.working.remove(id);
         self.model.close(id);
         self.term.tab_closed(id);
+        self.forget_tab_surfaces(id);
+        self.refresh();
+    }
+
+    /// Everything the Surfaces keep for a tab that is gone: its panel (and mini-app), its tracker,
+    /// its dev chip, its notifier row and its browser. One list for a close and for a shell that exited.
+    fn forget_tab_surfaces(&mut self, id: &str) {
         self.panels.forget(id);
         self.convo.forget(id);
         self.dev_forget(id);
         self.s7.notifier.forget(id);
         self.web.close_tab(id);
-        self.refresh();
     }
 
     fn toggle_settings(&mut self) {
@@ -4420,9 +4426,8 @@ impl AppCtl {
                     self.note_close(&id);
                     self.deps.host.kill(&id);
                     self.working.remove(&id);
-                    self.dev_forget(&id);
-                    self.s7.notifier.forget(&id);
                     self.term.tab_closed(&id);
+                    self.forget_tab_surfaces(&id);
                     if self.model.close(&id) {
                         changed = true;
                     }

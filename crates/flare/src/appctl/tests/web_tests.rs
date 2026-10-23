@@ -2296,3 +2296,25 @@ fn a_mini_app_is_never_stored_and_a_stored_app_address_is_dropped_on_restore() {
     assert_eq!(g.ctl.borrow().open_panels(), 0);
     assert!(slot.borrow().is_none(), "no browser for a dead app");
 }
+
+#[test]
+fn a_shell_that_exits_takes_its_web_panel_and_browser_with_it() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.wait_made(r"C:\b");
+    f.pump();
+    assert_eq!(f.ctl.borrow().front_id().as_deref(), Some(b.as_str()));
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(id, b);
+    assert_eq!(f.ctl.borrow().web_controllers(), 1);
+    // The person types `exit`: the tab goes unasked, and so must everything held for it.
+    f.made_with(r"C:\b")[0].exit(0);
+    f.pump_until("the tab to close", |f| f.rows() == 1);
+    f.h.advance(0);
+    assert_eq!(f.ctl.borrow().open_panels(), 0, "the panel entry is gone");
+    assert_eq!(f.ctl.borrow().web_controllers(), 0, "so is its browser");
+    assert!(fake(&slot).calls().contains(&Call::Close(b)));
+}
