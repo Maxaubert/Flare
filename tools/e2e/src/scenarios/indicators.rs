@@ -28,6 +28,7 @@ use super::strip::{
 };
 use crate::ctx::{shot_file, App, Ctx, Launch};
 use crate::pixels::Rgb;
+use crate::standins::agent_proc;
 use crate::world::{prompt_timeout, wait_for_prompt, Shell};
 
 /// The title PT types for an idle Claude (a black four-pointed star, then the name).
@@ -137,6 +138,18 @@ fn type_line(app: &mut App, line: &str) {
 fn at(app: &mut App, i: usize, line: &str) {
     click_tab(app, i);
     type_line(app, line);
+}
+
+/// A real agent process in tab `i` (review #47): a title or a hook is a claim, and one look takes it back
+/// when no agent runs in the tab. Leaves the tab inside the stand-in.
+fn stand_in(ctx: &mut Ctx, app: &mut App, i: usize) {
+    match agent_proc::command(&app.profile) {
+        Ok(cmd) => {
+            at(app, i, &cmd);
+            hold(ctx, agent_proc::SETTLE_MS);
+        }
+        Err(e) => println!("  note  the stand-in agent could not be made ({e})"),
+    }
 }
 
 /// Waits until tab `i` shows `want` (`agent.state`), up to `ms`.
@@ -340,6 +353,9 @@ pub fn indicator(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = open(ctx, vec![folder(&root, "alpha"), folder(&root, "beta")])?;
     let two = ctx.until("two tabs", 10000, &mut || tabs_of(&mut app).len() == 2);
     ctx.ok(two, "two launch folders, two tabs");
+    for i in 0..2 {
+        stand_in(ctx, &mut app, i);
+    }
     let front = front_index(&mut app);
     // Idle first: a spinner before the agent's first rest is it starting up, not working.
     type_line(&mut app, IDLE);
@@ -459,7 +475,10 @@ pub fn attention(ctx: &mut Ctx) -> Result<(), String> {
     // component.
     ctx.skip("tab name centring is a font fact (ui_tests::strip holds it on the component)");
 
-    // Three Claudes side by side, all working.
+    // Three Claudes side by side, all working (each a real agent process, so no claim is taken back).
+    for i in 0..4 {
+        stand_in(ctx, &mut app, i);
+    }
     for i in 0..3 {
         click_tab(&mut app, i);
         type_line(&mut app, IDLE);

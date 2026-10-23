@@ -66,8 +66,10 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// The glue calls `PollWorker::look_now()`.
-    AskLook,
+    /// The glue calls `PollWorker::again(tab)` (that tab's next answer is sent, changed or not: a claim
+    /// by a hook or a title about a tab the poll once answered "no agent" gets its correction) and then
+    /// `PollWorker::look_now()`.
+    AskLook { tab: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -443,7 +445,9 @@ impl Indicator {
             return;
         }
         self.look_asked.insert(tab.to_string(), now);
-        effects.push(Effect::AskLook);
+        effects.push(Effect::AskLook {
+            tab: tab.to_string(),
+        });
     }
 
     fn on_poll(&mut self, now: u64, tab: &str, present: bool, kind: Option<DetectedAgent>) {
@@ -1093,6 +1097,159 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_claim_asks_the_poll_about_that_tab_by_name() {
+        let mut h = H::new();
+        let fx = h.ev(
+            0,
+            Event::Signal {
+                tab: "t9".into(),
+                signal: AgentSignal {
+                    state: HookState::Working,
+                    kind: None,
+                    session: None,
+                },
+            },
+        );
+        // The poll sends only changed answers: without the name, a tab it already reported "no agent"
+        // would keep the claim (a Claude icon, a Question) until the tab closed.
+        assert_eq!(fx, vec![Effect::AskLook { tab: "t9".into() }]);
+    }
+
+    #[test]
+    fn a_claim_with_no_agent_is_taken_back_by_the_one_look_it_asked_for() {
+        let mut h = H::fronted();
+        // The poll had already reported the tab "no agent"; then a stray OSC 777 question claims it.
+        h.poll(0, "t1", false, None);
+        let fx = h.ev(
+            10,
+            Event::Signal {
+                tab: "t1".into(),
+                signal: AgentSignal {
+                    state: HookState::Question,
+                    kind: None,
+                    session: None,
+                },
+            },
+        );
+        assert_eq!(fx, vec![Effect::AskLook { tab: "t1".into() }]);
+        assert!(h.ind.is_hooked("t1"));
+        assert!(has(h.ind.question_ids(), "t1"));
+        // That one look answers "no agent": the claim goes.
+        h.poll(20, "t1", false, None);
+        assert!(!h.ind.is_hooked("t1"));
+        assert!(!has(h.ind.agent_ids(), "t1"));
+        assert!(!has(h.ind.question_ids(), "t1"));
+    }
+
+    fn rule() -> String {
+        "\u{2500}".repeat(40)
+    }
+
+    #[test]
+    fn a_stop_with_only_the_footer_shell_count_raises_finished() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        h.hook(10, "t1", HookState::Working);
+        // A run_in_background dev server: the footer says "1 shell", Claude's summary line has no count.
+        h.scr.set(
+            "t1",
+            vec![
+                "\u{273b} Churned for 8s".into(),
+                rule(),
+                "\u{276f}".into(),
+                rule(),
+                "  auto mode on \u{b7} 1 shell".into(),
+            ],
+        );
+        h.hook(20, "t1", HookState::Done);
+        h.tick(5_000);
+        assert!(!has(h.ind.working_ids(), "t1"));
+        assert!(has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_stop_with_a_workflow_progress_row_stays_working() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        h.hook(10, "t1", HookState::Working);
+        h.scr.set(
+            "t1",
+            vec![
+                "\u{273b} Churned for 8s".into(),
+                rule(),
+                "\u{276f}".into(),
+                rule(),
+                "  auto mode on".into(),
+                "  \u{25cb} source-sweep  7/8 \u{b7} 11m03s".into(),
+            ],
+        );
+        h.hook(20, "t1", HookState::Done);
+        h.tick(5_000);
+        assert!(has(h.ind.working_ids(), "t1"));
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_stop_with_claudes_own_still_running_summary_stays_working() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        h.hook(10, "t1", HookState::Working);
+        h.scr.set(
+            "t1",
+            vec![
+                "\u{273b} Churned for 8s \u{b7} 1 shell still running".into(),
+                rule(),
+                "\u{276f}".into(),
+                rule(),
+                "  auto mode on \u{b7} 1 shell".into(),
+            ],
+        );
+        h.hook(20, "t1", HookState::Done);
+        h.tick(5_000);
+        assert!(has(h.ind.working_ids(), "t1"));
+        assert!(!has(h.ind.done_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_claim_with_an_agent_is_kept_by_the_look() {
+        let mut h = H::fronted();
+        h.hook(0, "t1", HookState::Working);
+        h.poll(10, "t1", true, Some(DetectedAgent::Claude));
+        assert!(h.ind.is_hooked("t1"));
+        assert!(has(h.ind.agent_ids(), "t1"));
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_second_claim_inside_the_gap_asks_for_no_second_look() {
+        let mut h = H::new();
+        let first = h.ev(
+            0,
+            Event::Signal {
+                tab: "t1".into(),
+                signal: AgentSignal {
+                    state: HookState::Working,
+                    kind: None,
+                    session: None,
+                },
+            },
+        );
+        assert_eq!(first.len(), 1);
+        let again = h.ev(
+            500,
+            Event::Signal {
+                tab: "t1".into(),
+                signal: AgentSignal {
+                    state: HookState::Question,
+                    kind: None,
+                    session: None,
+                },
+            },
+        );
+        assert!(again.is_empty(), "no extra look inside the gap: {again:?}");
+    }
+
+    #[test]
     fn a_poll_landing_mid_turn_keeps_the_working_a_hook_set_and_raises_no_finished() {
         let mut h = H::new();
         h.hook(0, "t1", HookState::Working);
@@ -1125,13 +1282,16 @@ mod tests {
     #[test]
     fn a_claude_title_is_the_agent_present_ahead_of_the_poll_and_asks_a_look() {
         let mut h = H::new();
-        assert_eq!(h.title(0, "t1", "◐ Claude Code"), vec![Effect::AskLook]);
+        assert_eq!(
+            h.title(0, "t1", "◐ Claude Code"),
+            vec![Effect::AskLook { tab: "t1".into() }]
+        );
         assert!(has(h.ind.agent_ids(), "t1"));
         assert_eq!(h.ind.agent_kind("t1"), Some(DetectedAgent::Claude));
         assert!(h.title(1000, "t1", "◐ Claude Code").is_empty());
         assert_eq!(
             h.title(15_000, "t1", "◐ Claude Code"),
-            vec![Effect::AskLook]
+            vec![Effect::AskLook { tab: "t1".into() }]
         );
         h.poll(16_000, "t1", true, Some(DetectedAgent::Claude));
         assert!(h.title(40_000, "t1", "◐ Claude Code").is_empty());
@@ -1144,7 +1304,7 @@ mod tests {
         // The poll already reported the tab, yet Claude's title says the agent changed.
         assert_eq!(
             h.title(1000, "t1", "\u{25d0} Claude Code"),
-            vec![Effect::AskLook]
+            vec![Effect::AskLook { tab: "t1".into() }]
         );
         // The poll's next answer names the new kind.
         h.poll(1500, "t1", true, Some(DetectedAgent::Claude));

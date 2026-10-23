@@ -15,6 +15,7 @@ use flare_e2e_proto::{PointerAction, Request};
 use serde_json::{json, Value};
 
 use crate::ctx::{App, Ctx, Launch};
+use crate::standins::agent_proc;
 use crate::standins::hooklines::hook_line;
 use crate::until::{wait_on, SystemClock};
 use crate::world::{prompt_timeout, wait_for_agent_verdict, wait_for_prompt, Shell};
@@ -504,6 +505,8 @@ fn agent_diag_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     let second = tab_id(app, 1).ok_or("tab 1 has no id")?;
     wait_for_agent_verdict(app, &first, VERDICT);
     wait_for_agent_verdict(app, &second, VERDICT);
+    // A real agent process in tab 0 (review #47): its hooks are a genuine agent's, not a claim.
+    stand_in(ctx, app, 0)?;
     blur(app);
     let logs = app.profile.join("logs");
 
@@ -615,7 +618,18 @@ fn agent_diag_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-/// PT: run.mjs:3005-3032. A Stop with "1 shell" in the footer stays Working; without it the work is over.
+/// A real agent process in tab `i` (review #47): its hooks are a genuine agent's, not a claim a look
+/// takes back. Leaves the tab inside the stand-in.
+fn stand_in(ctx: &mut Ctx, app: &mut App, i: usize) -> Result<(), String> {
+    let cmd = agent_proc::command(&app.profile)?;
+    at(app, i, &cmd);
+    pause(ctx, agent_proc::SETTLE_MS);
+    Ok(())
+}
+
+/// PT: run.mjs:3005-3032, changed by the owner's 2026-10-23 decision (review #45, "Finished at turn end"):
+/// a Stop with only "1 shell" in the footer (a run_in_background dev server) is Finished; a workflow's
+/// progress row, or Claude's own "still running" summary, keeps the tab Working until it goes.
 pub fn background_work(ctx: &mut Ctx) -> Result<(), String> {
     let mut app = open_two(ctx)?;
     let result = background_work_body(ctx, &mut app);
@@ -623,11 +637,19 @@ pub fn background_work(ctx: &mut Ctx) -> Result<(), String> {
     result
 }
 
+/// The footer with a workflow's progress row under the mode line (PT's `7/8 · 11m03s`), as PowerShell.
+fn workflow_footer_line() -> String {
+    "$r = [string]::new([char]0x2500, 40); Clear-Host; Write-Host $r; Write-Host ([char]0x276F); Write-Host $r; Write-Host '  auto mode on'; Write-Host ('  source-sweep  7/8 ' + [char]0x00B7 + ' 11m03s')"
+        .to_string()
+}
+
 fn background_work_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     for i in 0..2 {
         let id = tab_id(app, i).ok_or("a tab has no id")?;
         wait_for_agent_verdict(app, &id, VERDICT);
     }
+    // 1. A dev server's footer count alone: the Stop is the finish. Tab 1 runs a real agent process.
+    stand_in(ctx, app, 1)?;
     tab_click(app, 1);
     let id = tab_id(app, 1).ok_or("tab 1 has no id")?;
     type_line(
@@ -642,21 +664,45 @@ fn background_work_body(ctx: &mut Ctx, app: &mut App) -> Result<(), String> {
     );
     let lit = ctx.until("tab 1 working", 8_000, &mut || state(app, 1) == "working");
     ctx.ok(lit, "a working hook lights the tab");
+    tab_click(app, 0);
+    let fin = ctx.until("tab 1 finished", 10_000, &mut || {
+        state(app, 1) == "finished"
+    });
+    let s = state(app, 1);
+    ctx.ok(
+        fin,
+        format!("a Stop with only \"1 shell\" in the footer is Finished, not Working ({s})"),
+    );
+    tab_click(app, 1);
+    soft(4_000, &mut || state(app, 1) == "none");
+
+    // 2. A workflow's progress row: the tab stays Working until the row goes.
+    type_line(
+        app,
+        &id,
+        &format!(
+            "{}; Start-Sleep -Milliseconds 400; {}; {}",
+            say("working"),
+            workflow_footer_line(),
+            say("done")
+        ),
+    );
+    let lit = ctx.until("tab 1 working again", 8_000, &mut || {
+        state(app, 1) == "working"
+    });
+    ctx.ok(lit, "a working hook lights the tab again");
     pause(ctx, 5_500); // past the 1.5 s settle and a 3 s re-read
     let s = state(app, 1);
     ctx.ok(
         s == "working",
-        format!("a Stop with \"1 shell\" in the footer stays Working ({s})"),
+        format!("a Stop with a workflow's progress row stays Working ({s})"),
     );
     type_line(app, &id, &footer_line(""));
     let over = ctx.until("tab 1 not working", 8_000, &mut || {
         state(app, 1) != "working"
     });
     let s = state(app, 1);
-    ctx.ok(
-        over,
-        format!("the footer without it: the work is over ({s})"),
-    );
+    ctx.ok(over, format!("the row gone: the work is over ({s})"));
     Ok(())
 }
 

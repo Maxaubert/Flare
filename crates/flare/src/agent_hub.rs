@@ -316,11 +316,25 @@ impl AgentHub {
         }
     }
 
+    /// True for a tab whose shell hides its processes from the poll (a WSL distro).
+    fn poll_blind(&self, tab: &str) -> bool {
+        (self.deps.handle)(tab)
+            .and_then(|h| h.shell_id())
+            .is_some_and(|s| s.to_ascii_lowercase().starts_with("wsl"))
+    }
+
     fn run_effects(&self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::AskLook => {
+                Effect::AskLook { tab } => {
                     if let Some(p) = &self.poll {
+                        // The poll sends only answers that changed: a tab it already reported "no agent"
+                        // would never hear it was wrong without being asked about by name.
+                        // A WSL tab is the exception: the poll cannot see an agent inside it (arm.rs keeps a
+                        // titled agent there for the same reason), so its "no" must not undo a real claim.
+                        if !self.poll_blind(&tab) {
+                            p.again(&tab);
+                        }
                         p.look_now();
                     }
                 }
@@ -909,10 +923,40 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
+            Self::build(false)
+        }
+
+        /// The saved shell is a WSL distro.
+        fn new_with_wsl() -> Self {
+            Self::build(true)
+        }
+
+        fn build(wsl: bool) -> Self {
             let sp = FakeSpawner::new();
             let prefs = PrefStore::memory();
+            if wsl {
+                prefs.set("flare.term.shell", "wsl-Ubuntu");
+            }
             let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            let mut host = TabHost::new(sp.clone(), FakeShells::new(), prefs.clone(), waker, None);
+            let shells = if wsl {
+                FakeShells::with(vec![
+                    flare_shells::list::ShellDef {
+                        id: "pwsh".into(),
+                        name: "PowerShell 7".into(),
+                        exe: "pwsh.exe".into(),
+                        args: Vec::new(),
+                    },
+                    flare_shells::list::ShellDef {
+                        id: "wsl-Ubuntu".into(),
+                        name: "Ubuntu".into(),
+                        exe: "wsl.exe".into(),
+                        args: Vec::new(),
+                    },
+                ])
+            } else {
+                FakeShells::new()
+            };
+            let mut host = TabHost::new(sp.clone(), shells, prefs.clone(), waker, None);
             host.set_dims(200, 60, None);
             let mgr = host.manager();
             let host = Rc::new(RefCell::new(host));
@@ -1263,6 +1307,52 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        // The poll already said "no agent" for this tab; a stray hook line then claims it.
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        r.rec.agains.borrow_mut().clear();
+        let looks = r.rec.looks.get();
+        r.print("a", &osc("question"));
+        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        // A second claim inside the gap asks for nothing more.
+        r.print("a", &osc("working"));
+        assert_eq!(r.rec.agains.borrow().len(), 1);
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        // The one look answers "no agent" (forced, so it is sent though unchanged): the claim goes.
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        assert!(!r.hub.agent_here("a"));
+        assert!(r.hub.indicator().question_ids().is_empty());
+        assert!(r.hub.indicator().working_ids().is_empty());
+    }
+
+    #[test]
+    fn a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it() {
+        let mut r = Rig::new_with_wsl();
+        r.open("a", None);
+        wait("the shell id", || {
+            r.host
+                .borrow()
+                .handle("a")
+                .and_then(|h| h.shell_id())
+                .is_some()
+        });
+        r.hub.queue_poll_answer("a", false, None);
+        r.hub.drain_poll();
+        r.rec.agains.borrow_mut().clear();
+        let looks = r.rec.looks.get();
+        r.print("a", &osc("question"));
+        assert!(r.rec.agains.borrow().is_empty(), "no forced no for WSL");
+        assert_eq!(r.rec.looks.get(), looks + 1);
+        assert!(r.hub.agent_here("a"));
+        assert!(!r.hub.indicator().question_ids().is_empty());
+    }
+
+    #[test]
     fn the_poll_arms_and_disarms_the_keys() {
         let mut r = Rig::new();
         r.open("a", None);
@@ -1303,7 +1393,11 @@ mod tests {
         r.title("a", "");
         assert_eq!(r.hub.armed("a"), None);
         assert_eq!(*r.off.borrow(), vec!["a".to_string()]);
-        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
+        // Asked about by name twice: once when the title claimed the tab (review #47), once when it left.
+        assert_eq!(
+            *r.rec.agains.borrow(),
+            vec!["a".to_string(), "a".to_string()]
+        );
     }
 
     #[test]

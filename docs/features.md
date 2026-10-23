@@ -374,6 +374,22 @@ are added as milestones land.
 - **Keep agent sessions open (2026-10-16).** With an agent in the front tab Ctrl+D never reaches it, and
   Ctrl+C is taken unless the agent works or a selection is held. Never in a plain shell. Held by
   `keep_agent_sessions_open`.
+- **One check per claim (2026-10-23).** A hook line or a Claude title can mark a tab as an agent before the
+  process poll has looked. Each such claim asks the poll to look at that tab once, and the answer is sent even
+  when unchanged, so a tab with no agent loses the false Claude icon and Question. The owner chose "yes, one
+  check per claim" and does not want scheduled checking scripts: no new timer or polling loop. Held by
+  `a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back` and the e2e agentHooks (which runs
+  a real stand-in `claude.exe`, plus a cat'ed OSC 777 capture in a plain shell). A WSL tab is the exception: the
+  poll cannot see an agent inside it, so no one asks it about that tab and the claim stays (as `arm.rs` keeps a
+  titled agent there). Held by `a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it`. ssh in a
+  Windows shell is not covered yet.
+- **Finished at turn end (2026-10-23).** Claude's `· N shell(s)` count in the footer alone is no longer
+  background work: at Stop a tab whose only sign is that count (a run_in_background dev server) is Finished,
+  and closing it follows the normal rule for an idle agent. A workflow's progress row and Claude's own
+  `· N shells still running` summary still keep it Working. This supersedes the 2026-10-16 background rule
+  where it counted footer shells. Held by `a_dev_server_in_the_footer_alone_is_not_work`,
+  `a_stop_with_only_the_footer_shell_count_raises_finished`, `a_stop_with_a_workflow_progress_row_stays_working`
+  and the e2e backgroundWork.
 - **The rainbow finish (2026-10-10).** A finished mark may flow through the seven rainbow stops, one tab
   in eight seconds; reduced motion and a minimised window stop it. Held by
   `the_rainbow_line_flows_one_tab_in_eight_seconds` and `animation_effects_off_stills_every_mark`.

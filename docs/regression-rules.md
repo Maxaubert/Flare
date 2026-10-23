@@ -591,3 +591,29 @@ on a worker through `DictHost::copy_text`, `dictation_ctl.rs`). Held by `nothing
 `a_paste_with_no_shell_in_front_goes_on_to_the_list_and_never_claims_it_typed` and
 `two_sends_in_flight_each_copy_their_own_words` (`service.rs`). Quitting the app while words wait is not covered: the
 process is ending.
+
+## Agent claims and background work
+
+225. **A claim is checked once, never on a timer.** An OSC 777 `flare-agent` signal or a Claude title can mark a tab
+before the process poll has seen an agent there. The poll sends only changed answers, so a tab it already reported "no
+agent" would keep a false claim (a Claude icon, a Question) until the tab closed. Each claim that asks the poll to look
+also calls `PollWorker::again(tab)`: that tab's next answer is sent even if unchanged, and a "no agent" answer takes the
+claim back. One check per claim (a second claim inside the 15 s gap asks for nothing), and no new timer or polling loop
+(owner, 2026-10-23: no scheduled checking scripts). An e2e that sends hooks needs a REAL agent process the poll
+recognises (agentHooks runs a copy of PowerShell named `claude.exe` in the tab), or the forced answer rightly clears
+its Working. A tab the poll cannot see into (a WSL distro) is never asked about: its claim stays, as `arm.rs` keeps a
+titled agent there (`a_wsl_tab_keeps_its_claim_because_no_one_asks_the_poll_about_it`; ssh from a Windows shell is not
+covered yet). Native: `indicator.rs` `Effect::AskLook { tab }`, `agent_hub.rs` `run_effects`. Held by
+`a_claim_with_an_agent_is_kept_by_the_look`,
+`a_second_claim_inside_the_gap_asks_for_no_second_look`,
+`a_hook_claim_asks_one_look_by_name_and_a_no_agent_answer_takes_it_back` and the e2e agentHooks check on a cat'ed
+capture. Source: PT general review #47 (owner, 2026-10-23, "one check per claim").
+226. **A footer shell count is not background work; a Stop with only that is Finished.** Claude's `· N shell(s)` after
+the mode line (a run_in_background dev server can sit there for hours) no longer holds a tab Working at Stop: the turn
+raises Finished and the close question follows the normal rule for an idle agent. Still Working: a workflow's progress
+row (`7/8 · 11m03s`) and Claude's own `· N shells still running` summary line above the prompt box, which it writes while
+it actually waits. Supersedes the footer-count line of the earlier background rule (PT `agentBackground.ts`, parity.md).
+Native: `background.rs` (`looks_like_background_work`). Held by `a_dev_server_in_the_footer_alone_is_not_work`,
+`a_stop_with_only_the_footer_shell_count_raises_finished`, `a_stop_with_a_workflow_progress_row_stays_working`,
+`a_stop_with_claudes_own_still_running_summary_stays_working` and the e2e backgroundWork. Source: PT general review
+#45 (owner, 2026-10-23, "Finished at turn end").
