@@ -18,11 +18,39 @@ pub fn utf16_with_nul(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Puts `text` on the clipboard as Unicode text. Opening the clipboard can fail while another
-/// program holds it, so it is retried five times, 20 ms apart.
+/// A movable global block holding `wide` (already zero-terminated), or why it could not be made.
+/// `size` is the block's byte size (the text's, except in the test that asks for an impossible one).
+fn alloc_text_block(wide: &[u16], size: usize) -> Result<*mut core::ffi::c_void, String> {
+    let bytes = wide.len() * std::mem::size_of::<u16>();
+    // SAFETY: the block is ours until SetClipboardData takes it or the caller frees it; every
+    // handle is checked for null before it is used; the copy stays inside both buffers.
+    unsafe {
+        let block = GlobalAlloc(GMEM_MOVEABLE, size);
+        if block.is_null() {
+            return Err("could not allocate clipboard memory".to_string());
+        }
+        let target = GlobalLock(block);
+        if target.is_null() {
+            GlobalFree(block);
+            return Err("could not lock clipboard memory".to_string());
+        }
+        ptr::copy_nonoverlapping(
+            wide.as_ptr().cast::<u8>(),
+            target.cast::<u8>(),
+            bytes.min(size),
+        );
+        GlobalUnlock(block);
+        Ok(block)
+    }
+}
+
+/// Puts `text` on the clipboard as Unicode text. The block is made BEFORE the clipboard is
+/// touched, so a failed allocation never wipes what the user already copied. Opening the
+/// clipboard can fail while another program holds it, so it is retried five times, 20 ms apart.
 pub fn set_text(text: &str) -> Result<(), String> {
     let wide = utf16_with_nul(text);
     let bytes = wide.len() * std::mem::size_of::<u16>();
+    let block = alloc_text_block(&wide, bytes)?;
 
     let mut opened = false;
     for attempt in 0..5 {
@@ -36,32 +64,20 @@ pub fn set_text(text: &str) -> Result<(), String> {
         }
     }
     if !opened {
+        // SAFETY: the block was never handed over; it is ours to free.
+        unsafe { GlobalFree(block) };
         return Err("the clipboard is busy".to_string());
     }
 
-    // SAFETY: the clipboard is open on this thread (opened above), and every handle used below
-    // is checked for null before it is read; the memory block is ours until SetClipboardData
-    // takes it, and it is freed here when that call fails.
+    // SAFETY: the clipboard is open on this thread (opened above); the block is ours until
+    // SetClipboardData takes it, and it is freed here when that call fails.
     let result = unsafe {
         EmptyClipboard();
-        let block = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if block.is_null() {
-            Err("could not allocate clipboard memory".to_string())
+        if SetClipboardData(CF_UNICODETEXT, block).is_null() {
+            GlobalFree(block);
+            Err("the clipboard refused the text".to_string())
         } else {
-            let target = GlobalLock(block);
-            if target.is_null() {
-                GlobalFree(block);
-                Err("could not lock clipboard memory".to_string())
-            } else {
-                ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(), target.cast::<u8>(), bytes);
-                GlobalUnlock(block);
-                if SetClipboardData(CF_UNICODETEXT, block).is_null() {
-                    GlobalFree(block);
-                    Err("the clipboard refused the text".to_string())
-                } else {
-                    Ok(())
-                }
-            }
+            Ok(())
         }
     };
     // SAFETY: the clipboard was opened on this thread above and is closed exactly once here.
@@ -74,6 +90,16 @@ pub fn set_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_block_is_made_before_the_clipboard_is_touched_and_can_fail_alone() {
+        let wide = utf16_with_nul("kept");
+        let ok = alloc_text_block(&wide, wide.len() * 2).expect("a small block");
+        // SAFETY: made just above, never handed to the clipboard.
+        unsafe { GlobalFree(ok) };
+        // An impossible size fails here, with no clipboard call anywhere near it.
+        assert!(alloc_text_block(&wide, usize::MAX / 2).is_err());
+    }
 
     #[test]
     fn utf16_has_a_terminating_zero_and_surrogates() {

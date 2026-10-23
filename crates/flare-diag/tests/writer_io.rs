@@ -183,6 +183,58 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
 }
 
 #[test]
+fn a_blocked_rotation_that_retries_never_costs_an_older_generation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    // Four generations of history already exist.
+    let dir = tmp.path().join("logs");
+    for n in 1..=4 {
+        fs::write(dir.join(format!("diag.jsonl.{n}")), format!("gen{n}")).unwrap();
+    }
+    // Something holds the live file: it cannot be renamed.
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(live(tmp.path()))
+        .unwrap();
+    for round in 0..5u64 {
+        up.fetch_add(30_001, Ordering::SeqCst);
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+        for n in 1..=4 {
+            assert_eq!(
+                fs::read_to_string(dir.join(format!("diag.jsonl.{n}"))).unwrap(),
+                format!("gen{n}"),
+                "generation {n} was lost on retry {round}"
+            );
+        }
+    }
+    drop(held);
+}
+
+#[test]
+fn a_refused_verbose_write_leaves_the_switch_as_it_was() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A folder where the state file should be: the atomic write is refused.
+    fs::create_dir(tmp.path().join("diag.json")).unwrap();
+    let log = DiagLog::start(opts(tmp.path()));
+    assert!(!log.verbose());
+    log.set_verbose(true);
+    assert!(
+        !log.verbose(),
+        "the page must not claim a switch that was not stored"
+    );
+}
+
+#[test]
 fn a_write_never_does_io_on_the_calling_thread() {
     // Review fix: this was a 100 ms stopwatch over 10,000 writes, which failed under the full
     // parallel suite. The rule is checked directly now: every file append records its thread, and

@@ -254,10 +254,15 @@ impl DiagLog {
     /// Remembers the switch in the state file (atomically) and logs a `verbose {on}` line.
     pub fn set_verbose(&self, on: bool) {
         guarded(|| {
-            if self.inner.null || self.inner.verbose.swap(on, Ordering::SeqCst) == on {
+            if self.inner.null || self.inner.verbose.load(Ordering::SeqCst) == on {
                 return;
             }
-            self.inner.save_verbose(on);
+            // The flag flips only once it is stored: a refused write leaves it as it was, so the
+            // page never shows a state the next launch will not have.
+            if !self.inner.save_verbose(on) {
+                return;
+            }
+            self.inner.verbose.store(on, Ordering::SeqCst);
             let mut f = Map::new();
             f.insert("on".into(), Value::Bool(on));
             self.write("main", "verbose", f);
@@ -478,7 +483,17 @@ impl Inner {
             return;
         }
         let numbered = |n: u32| PathBuf::from(format!("{}.{n}", self.file.display()));
+        let parked = PathBuf::from(format!("{}.rotating", self.file.display()));
         let result = (|| -> io::Result<()> {
+            // The live file moves first, to a temporary name: when something holds it (a tail
+            // tool, a scanner) this fails before any history is touched, so a blocked rotation
+            // that retries never costs an older generation.
+            match fs::rename(&self.file, &parked) {
+                // sync-ok: writer thread rotation
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(e),
+            }
             match fs::remove_file(numbered(DIAG_KEEP)) {
                 // sync-ok: rotation runs on the writer thread or a quit flush
                 Ok(()) => {}
@@ -489,12 +504,7 @@ impl Inner {
                 // that one may not exist yet
                 let _ = fs::rename(numbered(n), numbered(n + 1)); // sync-ok: writer thread rotation
             }
-            match fs::rename(&self.file, numbered(1)) {
-                // sync-ok: writer thread rotation
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e),
-            }
+            fs::rename(&parked, numbered(1)) // sync-ok: writer thread rotation
         })();
         match result {
             Ok(()) => io.size = 0,
@@ -505,7 +515,8 @@ impl Inner {
         }
     }
 
-    fn save_verbose(&self, on: bool) {
+    /// True when the switch is on disk.
+    fn save_verbose(&self, on: bool) -> bool {
         let attempt = || -> io::Result<()> {
             if let Some(parent) = self.state_file.parent() {
                 fs::create_dir_all(parent)?; // sync-ok: a Settings click, rare
@@ -519,7 +530,9 @@ impl Inner {
         };
         if let Err(e) = attempt() {
             self.fail(&e.to_string());
+            return false;
         }
+        true
     }
 }
 
