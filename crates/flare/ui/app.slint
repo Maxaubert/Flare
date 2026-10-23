@@ -456,9 +456,11 @@ export component AppWindow inherits Window {
     callback menu-picked(int);
     callback menu-trailing(int);
     callback menu-dismissed();
+    callback menu-outside-right(length, length);
     callback overflow-picked(string);
     callback overflow-row-menu(string, length, length);
     callback overflow-dismissed();
+    callback overflow-outside-right(length, length);
     callback overflow-accepted();
     callback overflow-query-edited(string);
     callback dialog-cancel();
@@ -905,6 +907,7 @@ export component AppWindow inherits Window {
             picked(i) => { root.menu-picked(i); }
             trailing(i) => { root.menu-trailing(i); }
             dismissed => { root.menu-dismissed(); }
+            outside-right(x, y) => { root.menu-outside-right(x, y); }
         }
         ov := OverflowList {
             x: 0px;
@@ -918,6 +921,7 @@ export component AppWindow inherits Window {
             picked(id) => { root.overflow-picked(id); }
             row-menu(id, x, y) => { root.overflow-row-menu(id, x, y); }
             dismissed => { root.overflow-dismissed(); }
+            outside-right(x, y) => { root.overflow-outside-right(x, y); }
             accepted => { root.overflow-accepted(); }
             query-edited(q) => { root.overflow-query-edited(q); }
         }

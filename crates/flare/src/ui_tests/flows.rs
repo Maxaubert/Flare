@@ -1229,6 +1229,53 @@ fn plus_opens_at_once_in_the_chosen_folder_and_does_not_ask_again() {
 }
 
 #[test]
+fn a_right_click_outside_an_open_menu_opens_the_menu_of_the_tab_under_it() {
+    for s in [1.0_f32, 2.25] {
+        let f = Fx::new(Opts::default().saved(&[r"C:\a", r"C:\b", r"C:\c"]).scale(s));
+        f.restore();
+        // A is the last tab: its menu hangs right and down, away from tab B on its left.
+        let (ax, ay) = f.tab_center(2);
+        let (bx, by) = f.tab_center(0);
+        f.h.right_click(ax, ay);
+        f.h.advance(0);
+        assert!(f.h.comp.get_menu_open(), "scale {s}");
+        assert!((f.h.comp.get_menu_x() - ax).abs() < 1.0, "scale {s}");
+        // Another tab: the one click closes menu A and opens tab B's, hung at the new point.
+        f.h.right_click(bx, by);
+        f.pump();
+        assert!(
+            f.h.comp.get_menu_open(),
+            "scale {s}: reopened, not toggled shut"
+        );
+        assert!((f.h.comp.get_menu_x() - bx).abs() < 1.0, "scale {s}");
+        // The menu belongs to tab B: its folder is what Copy folder path would copy.
+        let rows = f.h.comp.get_menu_rows();
+        assert_eq!(
+            rows.row_data(1).unwrap().label,
+            "Copy folder path",
+            "scale {s}"
+        );
+        // The + button is a different surface with its own menu: the places list.
+        let (px, py) = f.plus_center();
+        f.h.right_click(px, py);
+        f.pump();
+        assert!(f.h.comp.get_menu_open(), "scale {s}");
+        assert!((f.h.comp.get_menu_x() - px).abs() < 1.0, "scale {s}");
+        assert_ne!(
+            f.h.comp.get_menu_rows().row_data(0).unwrap().label,
+            "Close tab",
+            "scale {s}: the + menu, not a tab menu"
+        );
+        // A left press outside only closes.
+        let (cx, cy) = f.tab_center(2);
+        f.h.click(cx, cy);
+        f.pump();
+        assert!(!f.h.comp.get_menu_open(), "scale {s}");
+        assert_eq!(f.front_cwd(), r"C:\a", "scale {s}: it picked no tab");
+    }
+}
+
+#[test]
 fn exit_ends_its_tab_and_ctrl_w_closes_the_front() {
     let f = Fx::new(Opts::default().saved(&["C:\\a", "C:\\b"]));
     f.restore();

@@ -265,6 +265,57 @@ fn a_press_outside_or_escape_dismisses() {
 }
 
 #[test]
+fn a_right_click_outside_reports_its_point_and_a_left_press_only_closes() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, vec![row("One"), row("Two")], 100.0, 100.0);
+        // A right click outside: its point goes out, and the scrim itself closes nothing (the app does).
+        h.right_click(300.0, 50.0);
+        assert_eq!(h.comp.get_menu_outside_rights(), 1, "scale {scale}");
+        assert!(
+            (h.comp.get_menu_outside_x() - 300.0).abs() < 0.01,
+            "scale {scale}"
+        );
+        assert!(
+            (h.comp.get_menu_outside_y() - 50.0).abs() < 0.01,
+            "scale {scale}"
+        );
+        assert_eq!(h.comp.get_menu_dismissed(), 0, "scale {scale}");
+        // The same spot again reports again: it is never a toggle.
+        h.right_click(300.0, 50.0);
+        assert_eq!(h.comp.get_menu_outside_rights(), 2, "scale {scale}");
+        // A right click inside the panel is unchanged: nothing reported, nothing closed.
+        let (px, py) = (h.comp.get_panel_x(), h.comp.get_panel_y());
+        h.right_click(px + 20.0, py + 14.0);
+        assert_eq!(h.comp.get_menu_outside_rights(), 2, "scale {scale}");
+        assert_eq!(h.comp.get_menu_dismissed(), 0, "scale {scale}");
+        assert!(h.comp.get_menu_open(), "scale {scale}");
+        assert_eq!(h.comp.get_picked_index(), -1, "scale {scale}");
+        // The spot the menu hangs from is the panel's corner: a right click there is the same click again.
+        h.right_click(px + 1.0, py + 1.0);
+        assert_eq!(h.comp.get_menu_outside_rights(), 3, "scale {scale}");
+        // A left press outside only closes.
+        h.click(300.0, 50.0);
+        assert_eq!(h.comp.get_menu_dismissed(), 1, "scale {scale}");
+        assert_eq!(h.comp.get_menu_outside_rights(), 3, "scale {scale}");
+    }
+}
+
+#[test]
+fn the_overflow_list_hands_on_a_right_click_outside_too() {
+    let h = harness(1.0);
+    open_list(&h, vec![orow("a", false), orow("b", false)]);
+    h.right_click(5.0, 250.0);
+    assert_eq!(h.comp.get_ov_outside_rights(), 1);
+    assert!((h.comp.get_ov_outside_x() - 5.0).abs() < 0.01);
+    assert!((h.comp.get_ov_outside_y() - 250.0).abs() < 0.01);
+    assert_eq!(h.comp.get_ov_dismissed(), 0);
+    h.click(5.0, 250.0);
+    assert_eq!(h.comp.get_ov_dismissed(), 1);
+    assert_eq!(h.comp.get_ov_outside_rights(), 1);
+}
+
+#[test]
 fn the_overflow_list_opens_under_the_anchor_and_focuses_the_field() {
     let h = harness(1.0);
     // a wider window so the clamp does not hide the rule: anchor-right 900 needs 900 css px

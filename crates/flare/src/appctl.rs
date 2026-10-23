@@ -1021,6 +1021,10 @@ impl AppCtl {
         bind!(app, rc, on_menu_picked, |c, i: i32| c.menu_picked(i));
         bind!(app, rc, on_menu_trailing, |c, i: i32| c.menu_trailing(i));
         bind!(app, rc, on_menu_dismissed, |c| c.close_menu());
+        bind!(app, rc, on_menu_outside_right, |c, x: f32, y: f32| c
+            .outside_right_click(x, y));
+        bind!(app, rc, on_overflow_outside_right, |c, x: f32, y: f32| c
+            .outside_right_click(x, y));
         bind!(app, rc, on_overflow_picked, |c, id: SharedString| c
             .overflow_picked(&id));
         bind!(
@@ -2297,6 +2301,29 @@ impl AppCtl {
     fn close_menu(&mut self) {
         self.close_menu_quietly();
         self.refresh();
+    }
+
+    /// A right-click released outside an open menu or the +N list: both close, and the same
+    /// right-click is handed to whatever is under the point, so one click closes this menu and
+    /// opens the next (a scrim swallows the press, so the surface beneath never saw it). The
+    /// hand-over is Slint's own event path (`Window::dispatch_event`), no OS input, so every
+    /// surface decides what a right-click means exactly as for a real one (the terminal's
+    /// "send right clicks to programs" included). It runs from a zero timer: the real release is
+    /// still being delivered to the scrim, and the controller is borrowed for it.
+    fn outside_right_click(&mut self, x: f32, y: f32) {
+        self.close_menu_quietly();
+        self.close_overflow_quietly();
+        self.refresh();
+        let weak = self.weak.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            let Some(app) = weak.upgrade() else { return };
+            let position = slint::LogicalPosition::new(x, y);
+            let win = app.window();
+            let button = slint::platform::PointerEventButton::Right;
+            win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+            win.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            win.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        });
     }
 
     fn menu_picked(&mut self, i: i32) {
