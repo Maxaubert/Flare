@@ -416,7 +416,7 @@ impl TermHandle {
         if cols < 2 || rows < 1 {
             return;
         }
-        self.sh.mgr.flush_output(&self.sh.id);
+        self.sh.mgr.flush_output_nowait(&self.sh.id);
         self.emu.lock().resize(cols, rows);
         self.sh.mgr.resize(&self.sh.id, cols, rows);
         self.sh.dirty.store(true, Ordering::SeqCst);

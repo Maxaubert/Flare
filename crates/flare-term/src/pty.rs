@@ -210,16 +210,27 @@ struct ProcInfo {
     created: Option<u64>,
     /// The image is GUI-subsystem: a window app, not a console client.
     gui: bool,
+    /// The console host process the process is attached to (flags masked off); None when it
+    /// cannot be read. A program the user opened in its own console window has another host.
+    console: Option<usize>,
 }
 
 /// Pure: the processes below `root` that closing the tab may end. A GUI-subsystem process is an app the
 /// user started from the shell (Notepad, Excel, Chrome): it is spared, with everything under it. A process
 /// created before its listed parent only carries a recycled parent id (the real parent died and the number
-/// was reused): it is spared too, and so is one whose creation time cannot be read (audit H1, L1).
+/// was reused): it is spared too, and so is one whose creation time cannot be read (audit H1, L1). A
+/// console process attached to another console host than the shell's (`start cmd /k npm run dev`, a
+/// window of its own) does not hold this tab's pseudo console, and is spared like Prism Terminal does.
 fn kill_set(rows: &[(u32, u32)], root: u32, info: &dyn Fn(u32) -> ProcInfo) -> Vec<u32> {
+    let root_console = info(root).console;
     walk(rows, root, &|parent, child| {
         let c = info(child);
         if c.gui {
+            return false;
+        }
+        if let (Some(mine), Some(theirs)) = (root_console, c.console)
+            && mine != theirs
+        {
             return false;
         }
         match (info(parent).created, c.created) {
@@ -259,6 +270,7 @@ fn proc_info(pid: u32) -> ProcInfo {
     let none = ProcInfo {
         created: None,
         gui: false,
+        console: None,
     };
     // SAFETY: plain values in; a null handle means failure and is checked.
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -276,6 +288,21 @@ fn proc_info(pid: u32) -> ProcInfo {
     let mut len = buf.len() as u32;
     // SAFETY: `buf` holds `len` units and `len` is updated to the count written.
     let named = unsafe { QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) } != 0;
+    // ProcessConsoleHostProcess (49): the pid of the process's console host, with flags in the
+    // two low bits.
+    let mut host: usize = 0;
+    let mut got: u32 = 0;
+    // SAFETY: `host` is a live usize of the size given; `got` is a live out value.
+    let st = unsafe {
+        windows_sys::Wdk::System::Threading::NtQueryInformationProcess(
+            h,
+            49,
+            std::ptr::addr_of_mut!(host).cast(),
+            std::mem::size_of::<usize>() as u32,
+            &mut got,
+        )
+    };
+    let console = (st >= 0 && host != 0).then_some(host & !3);
     // SAFETY: `h` is ours and closed once.
     unsafe { CloseHandle(h) };
     let gui = named
@@ -286,6 +313,7 @@ fn proc_info(pid: u32) -> ProcInfo {
     ProcInfo {
         created: ok.then(|| (u64::from(cr.dwHighDateTime) << 32) | u64::from(cr.dwLowDateTime)),
         gui,
+        console,
     }
 }
 
@@ -435,12 +463,29 @@ mod tests {
                 .map(|r| ProcInfo {
                     created: Some(r.1),
                     gui: r.2,
+                    console: Some(7),
                 })
                 .unwrap_or(ProcInfo {
                     created: None,
                     gui: false,
+                    console: None,
                 })
         }
+    }
+
+    #[test]
+    fn a_console_window_of_its_own_is_spared() {
+        // shell 10 (console host 7) -> `start cmd /k` 20 (its own host 8) -> node 30 (host 8);
+        // shell 10 -> ping 40 (host 7).
+        let rows = [(20, 10), (30, 20), (40, 10)];
+        let info = |pid: u32| ProcInfo {
+            created: Some(100 + u64::from(pid)),
+            gui: false,
+            console: Some(if pid == 20 || pid == 30 { 8 } else { 7 }),
+        };
+        let mut k = kill_set(&rows, 10, &info);
+        k.sort();
+        assert_eq!(k, vec![40]);
     }
 
     #[test]
