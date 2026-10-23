@@ -269,6 +269,9 @@ export component UpdateWindow inherits Rectangle {
     // The focused button: 0 Cancel, 1 Install, -1 the box itself (while running).
     out property <int> focus-idx: 1;
     out property <bool> chrome-has-focus: fs.has-focus;
+    // :focus-visible: the ring shows only after the keyboard (Tab or Enter inside); a click leaves it off.
+    out property <bool> ring-shown: root.by-key;
+    property <bool> by-key;
     out property <length> box-x: box.x;
     out property <length> box-y: box.y;
     out property <length> box-w: box.width;
@@ -331,6 +334,7 @@ export component UpdateWindow inherits Rectangle {
     height: 100%;
     changed open => {
         if root.open {
+            root.by-key = false;
             root.land();
         }
     }
@@ -367,6 +371,7 @@ export component UpdateWindow inherits Rectangle {
                 return accept;
             }
             if e.text == Key.Return {
+                root.by-key = true;
                 if root.focus-idx == 0 && root.cancel-enabled {
                     root.press-cancel();
                 } else if root.focus-idx == 1 && root.install-enabled {
@@ -375,6 +380,7 @@ export component UpdateWindow inherits Rectangle {
                 return accept;
             }
             if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta {
+                root.by-key = true;
                 root.step(e.text == Key.Backtab || e.modifiers.shift);
                 return accept;
             }
@@ -552,7 +558,7 @@ export component UpdateWindow inherits Rectangle {
                     cancel-btn := DialogButton {
                         label: root.cancel-label;
                         enabled: root.cancel-enabled;
-                        ringed: root.focus-idx == 0;
+                        ringed: root.by-key && root.focus-idx == 0;
                         clicked => { root.press-cancel(); }
                     }
                 }
@@ -560,7 +566,7 @@ export component UpdateWindow inherits Rectangle {
                     label: "Install";
                     is-primary: true;
                     enabled: root.install-enabled;
-                    ringed: root.focus-idx == 1;
+                    ringed: root.by-key && root.focus-idx == 1;
                     clicked => { root.install(); }
                 }
             }

@@ -93,6 +93,9 @@ pub struct TermDeps {
     pub dbl: DoubleClick,
     /// The stat behind the path-link questions, wrapped once in a metered `StatGate`.
     pub stat: Arc<dyn StatFn>,
+    /// The opt-in "Send right-clicks to programs" setting, read on every right press. Off (the
+    /// default): a right-click opens Flare's menu and sends nothing to the program.
+    pub right_click_reports: Rc<dyn Fn() -> bool>,
 }
 
 /// The front tab as M3's tab model keeps it. `cwd` is the tab's LOCAL folder after
@@ -635,7 +638,7 @@ impl TermUi {
             }
             2 => {
                 let has = tab.handle.with_emu_quiet(|em| em.has_selection());
-                if mouse_owned && !has {
+                if mouse_owned && !has && (self.deps.right_click_reports)() {
                     self.reported_right = true;
                     self.report(
                         tab,
@@ -1462,6 +1465,7 @@ mod tests {
         clock: Rc<Cell<u64>>,
         cursors: Rc<RefCell<Vec<CursorKind>>>,
         agent: Rc<TestAgent>,
+        rcr: Rc<Cell<bool>>,
         g: GridGeom,
         cwd: Option<String>,
         _sp: Arc<FakeSpawner>,
@@ -1513,6 +1517,7 @@ mod tests {
             let clock = Rc::new(Cell::new(0u64));
             let cursors = Rc::new(RefCell::new(Vec::new()));
             let agent = Rc::new(TestAgent(Cell::new(None)));
+            let rcr = Rc::new(Cell::new(false));
             let deps = TermDeps {
                 clipboard: port,
                 openers: openers.clone(),
@@ -1537,6 +1542,10 @@ mod tests {
                 home: std::env::temp_dir().to_string_lossy().to_string(),
                 dbl: FALLBACK,
                 stat: Arc::new(FsStat),
+                right_click_reports: {
+                    let f = Rc::clone(&rcr);
+                    Rc::new(move || f.get())
+                },
             };
             let metrics = cell_metrics(&FakeGlyphs::new(8, 16).font_units(), scale);
             let mut rig = Rig {
@@ -1550,6 +1559,7 @@ mod tests {
                 clock,
                 cursors,
                 agent,
+                rcr,
                 g: GridGeom {
                     metrics,
                     scale,
@@ -2293,13 +2303,35 @@ mod tests {
     }
 
     #[test]
-    fn a_right_press_in_mouse_mode_is_reported_unless_a_selection_stands() {
+    fn a_right_click_in_mouse_mode_opens_the_menu_and_sends_nothing() {
         let mut r = Rig::new(1.0);
         r.feed("hello world");
         r.feed(MOUSE_ON);
         let out = r.right_click(2, 0);
         assert!(out.open_menu.is_some());
-        let want = b"\x1b[<2;3;1M\x1b[<2;3;1m";
+        thread::sleep(Duration::from_millis(40));
+        assert!(r.written().is_empty(), "nothing reaches the program");
+        // The same with a selection standing.
+        let a = r.css(0, 0, false);
+        let b = r.css(5, 0, false);
+        r.ptr_at(0, 0, a, true, false);
+        r.ptr_at(2, 0, b, true, false);
+        r.ptr_at(1, 0, b, true, false);
+        let out = r.right_click(2, 0);
+        assert!(out.open_menu.is_some());
+        thread::sleep(Duration::from_millis(40));
+        assert!(r.written().is_empty());
+    }
+
+    #[test]
+    fn with_the_setting_on_a_right_press_is_reported_unless_a_selection_stands() {
+        let mut r = Rig::new(1.0);
+        r.rcr.set(true);
+        r.feed("hello world");
+        r.feed(MOUSE_ON);
+        let out = r.right_click(2, 0);
+        assert!(out.open_menu.is_some());
+        let want = b"[<2;3;1M[<2;3;1m";
         assert_eq!(r.wait_written(want.len()), want);
         // A standing selection (made with shift) keeps the press from the program.
         let a = r.css(0, 0, false);
