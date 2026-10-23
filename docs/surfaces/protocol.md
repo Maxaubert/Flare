@@ -8,7 +8,7 @@ code disagree, that is a bug in one of them: fix both in the same commit.
 
 Status of the methods in Flare (stages 4 to 8 are done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
-implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes`, `tasks` and `board`), `panel.close`, `panel.state`,
+implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks`), `panel.close`, `panel.state`,
 `view.image|file|text|html|diagram`, `browser.open`, `browser.navigate`, the agent's hands on the page
 (`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
 (`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
@@ -215,8 +215,8 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"board"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
-(`changes` and `tasks`, stage 6, and `board`, stage 7, have neither a `path` nor a `url`).
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
+(`changes` and `tasks`, stage 6, have neither a `path` nor a `url`).
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
 `title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
 neither `path` nor `url` (its address is Flare's own and means nothing to a client), its `title` is the one the
@@ -257,7 +257,7 @@ tab strip shows, `active` is "in front". Stage 2.
 
 ### panel.open
 
-Params: `kind` (string, required; `"web"`, `"changes"`, `"tasks"` or `"board"`), `url` (string, optional, `web` only;
+Params: `kind` (string, required; `"web"`, `"changes"` or `"tasks"`), `url` (string, optional, `web` only;
 without it the panel opens `about:blank`).
 
 - `web` opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with the same
@@ -273,17 +273,10 @@ without it the panel opens `about:blank`).
   `tasks`, `title` `Changes` or `Tasks`, no `path`). The panel replaces whatever the tab showed; a tab that is behind
   keeps it stored and is not switched to. Opening one is what makes Flare read the tab's transcript (see
   `convo.state`).
-- `board` (stage 7) opens the agent board in the tab's panel: one row for every tab that has an agent, with its state
-  (`working`, `question`, `finished`, `failed`, `idle`), how long it has been in it, the folder and, for a question, what it
-  asks; a click on a row goes to that tab. It is native and has no file or address behind it, so `url`, `path` and `text`
-  are refused (`bad_params`) as for `changes`. The call answers at once with `{"panel": PanelInfo}` (`kind` `board`, `title`
-  `Agents`, no `path`). The board lists EVERY tab (it is the person's view, drawn in the caller's tab); the caller gets
-  nothing back about the other tabs, and no method returns the rows. Its rows come from the agent hub the window already
-  holds, so it reads no disk and starts no timer while it is closed. The person's own keys are Ctrl+Shift+A and a row in the
-  terminal's right-click menu.
+- `board` (stage 7) was removed on 2026-10-22 with the agent board: it is an unknown kind, `bad_params`.
 
 For images, files and text use `view.*`. Errors: `no_tab`, `bad_params` (no kind, another kind, `url`, `path` or
-`text` with `changes`, `tasks` or `board`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
+`text` with `changes` or `tasks`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
 runtime), `timeout`.
 
 ### panel.close

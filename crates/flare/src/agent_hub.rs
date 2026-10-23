@@ -28,7 +28,6 @@ use flare_agent::tab_look::Switches;
 use flare_diag::agent_diag::{AgentDiag, DiagSink, MarkSets};
 use flare_dictation::route::SendTab;
 use flare_settings::kv::PrefStore;
-use flare_surfaces::board::{BoardAgent, BoardEntry, BoardState};
 use flare_term::handle::TermHandle;
 use flare_term::session::SessionManager;
 use std::cell::RefCell;
@@ -213,8 +212,6 @@ pub struct AgentHub {
     sessions: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
-    /// Where each agent tab's board state began: the state and the hub's clock then (Surfaces stage 7).
-    since: HashMap<String, (BoardState, u64)>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -236,7 +233,6 @@ impl AgentHub {
             folders: HashMap::new(),
             sessions: HashMap::new(),
             polled: HashSet::new(),
-            since: HashMap::new(),
             diag,
             poll: None,
             tx,
@@ -365,71 +361,7 @@ impl AgentHub {
             self.diag
                 .log_marks(&sets, &|id| ind.agent_kind(id).map(kind_word), now);
             self.changed = true;
-            self.note_board_states(now);
         }
-    }
-
-    /// Remembers when each agent tab entered the state it is in, for the agent board. Called when the marks or an agent
-    /// kind changed, so it costs nothing while they hold still.
-    fn note_board_states(&mut self, now: u64) {
-        let agents: Vec<String> = self.ind.agent_ids().iter().cloned().collect();
-        self.since.retain(|t, _| agents.contains(t));
-        for tab in agents {
-            let state = self.board_state(&tab);
-            match self.since.get(&tab) {
-                Some((s, _)) if *s == state => {}
-                _ => {
-                    self.since.insert(tab, (state, now));
-                }
-            }
-        }
-    }
-
-    /// What the board says the tab's agent is doing. Meaningful only for a tab with an agent.
-    pub fn board_state(&self, tab: &str) -> BoardState {
-        match tab_state(&self.ind, tab) {
-            Some("question") => BoardState::Question,
-            Some("failed") => BoardState::Failed,
-            Some("working") => BoardState::Working,
-            Some("done") => BoardState::Finished,
-            _ => BoardState::Idle,
-        }
-    }
-
-    /// One line of the agent board for the tab: its agent, state, how long it has been in it and what it asks. None for
-    /// a tab with no agent.
-    pub fn board_entry(&self, tab: &str) -> Option<BoardEntry> {
-        if !self.agent_here(tab) {
-            return None;
-        }
-        let state = self.board_state(tab);
-        let now = self.now();
-        let in_state_ms = match state {
-            // The working clock the tab strip's timers use, when it has one.
-            BoardState::Working => self
-                .working_for(tab)
-                .or_else(|| self.since.get(tab).map(|(_, at)| now.saturating_sub(*at))),
-            _ => self
-                .since
-                .get(tab)
-                .filter(|(s, _)| *s == state)
-                .map(|(_, at)| now.saturating_sub(*at)),
-        };
-        Some(BoardEntry {
-            agent: match self.ind.agent_kind(tab) {
-                Some(DetectedAgent::Claude) => BoardAgent::Claude,
-                Some(DetectedAgent::Codex) => BoardAgent::Codex,
-                _ => BoardAgent::Other,
-            },
-            state,
-            in_state_ms,
-            question: (state == BoardState::Question)
-                .then(|| self.question_text(tab))
-                .flatten(),
-            failed_kind: (state == BoardState::Failed)
-                .then(|| self.ind.failed_kind(tab).map(str::to_string))
-                .flatten(),
-        })
     }
 
     /// The text of the question the tab's agent shows on screen, when the widget is up and the screen was read.
@@ -570,7 +502,6 @@ impl AgentHub {
         self.folders.remove(tab);
         self.sessions.remove(tab);
         self.polled.remove(tab);
-        self.since.remove(tab);
         self.diag.forget(tab, now);
         self.settle(now);
     }

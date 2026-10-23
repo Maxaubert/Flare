@@ -23,6 +23,10 @@ pub const GLYPH_LINK: &str = "menu-link";
 pub const GLYPH_FOLDER: &str = "menu-folder";
 pub const GLYPH_FIND: &str = "menu-find";
 pub const GLYPH_HELP: &str = "menu-help";
+/// The Surfaces rows: a side pane, a diff page and a checklist.
+pub const GLYPH_PANEL: &str = "menu-panel";
+pub const GLYPH_CHANGES: &str = "menu-changes";
+pub const GLYPH_TASKS: &str = "menu-tasks";
 
 /// The SVG path of a glyph name (24-unit viewbox), as `ui/glyphs.slint` holds it.
 pub fn glyph_path(name: &str) -> &'static str {
@@ -41,6 +45,15 @@ pub fn glyph_path(name: &str) -> &'static str {
         GLYPH_HELP => {
             "M12 3.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4zM9.6 9.4a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1-1.3 1.9M12 16.6v.01"
         }
+        GLYPH_PANEL => {
+            "M4.5 5h15a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM14.5 5v14"
+        }
+        GLYPH_CHANGES => {
+            "M6 3.5h12a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM12 7.5v5M9.5 10h5M9.5 16h5"
+        }
+        GLYPH_TASKS => {
+            "M4 6.5l1.7 1.7L9 4.8M12 7h8M4 12.5l1.7 1.7L9 11M12 13h8M4 18.5l1.7 1.7L9 17M12 19h8"
+        }
         _ => "",
     }
 }
@@ -56,6 +69,8 @@ pub struct MenuRowData {
     pub trailing_icon: Option<&'static str>,
     pub trailing_filled: bool,
     pub trailing_tip: String,
+    /// Starts a new group: a wider gap and a rule above the row (the Surfaces rows of the terminal menu).
+    pub group: bool,
 }
 
 impl MenuRowData {
@@ -69,6 +84,7 @@ impl MenuRowData {
             trailing_icon: None,
             trailing_filled: false,
             trailing_tip: String::new(),
+            group: false,
         }
     }
 }
@@ -342,6 +358,9 @@ mod tests {
             GLYPH_FOLDER,
             GLYPH_FIND,
             GLYPH_HELP,
+            GLYPH_PANEL,
+            GLYPH_CHANGES,
+            GLYPH_TASKS,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(

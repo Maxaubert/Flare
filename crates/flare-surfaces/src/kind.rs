@@ -1,4 +1,4 @@
-//! The kinds of panel. `image`, `text`, `web`, `changes`, `tasks` and `board` are built; the rest are named now so the
+//! The kinds of panel. `image`, `text`, `web`, `changes`, and `tasks` are built; the rest are named now so the
 //! store can keep them and later stages only add a viewer.
 
 /// The longest mod id (a folder name under the mods folder).
@@ -12,7 +12,6 @@ pub enum PanelKind {
     Web,
     Changes,
     Tasks,
-    Board,
     /// A panel a mod provides: `mod:<id>`.
     Mod(String),
 }
@@ -26,7 +25,6 @@ impl PanelKind {
             PanelKind::Web => "web".into(),
             PanelKind::Changes => "changes".into(),
             PanelKind::Tasks => "tasks".into(),
-            PanelKind::Board => "board".into(),
             PanelKind::Mod(id) => format!("mod:{id}"),
         }
     }
@@ -40,7 +38,6 @@ impl PanelKind {
             "web" => PanelKind::Web,
             "changes" => PanelKind::Changes,
             "tasks" => PanelKind::Tasks,
-            "board" => PanelKind::Board,
             other => {
                 let id = other.strip_prefix("mod:")?;
                 if !valid_mod_id(id) {
@@ -66,7 +63,6 @@ impl PanelKind {
                 | PanelKind::Web
                 | PanelKind::Changes
                 | PanelKind::Tasks
-                | PanelKind::Board
         )
     }
 
@@ -85,18 +81,9 @@ impl PanelKind {
         }
     }
 
-    /// True for the agent board (stage 7): it reads no file and no transcript, its rows come from the agent hub,
-    /// and its target is only the kind's own name.
-    pub fn is_board(&self) -> bool {
-        matches!(self, PanelKind::Board)
-    }
-
-    /// The target a panel that shows no file stores: the conversation panels' and the board's own names.
+    /// The target a panel that shows no file stores: the conversation panels' own names.
     pub fn fixed_target(&self) -> Option<&'static str> {
-        match self {
-            PanelKind::Board => Some("board"),
-            other => other.convo_target(),
-        }
+        self.convo_target()
     }
 }
 
@@ -121,7 +108,6 @@ mod tests {
             PanelKind::Web,
             PanelKind::Changes,
             PanelKind::Tasks,
-            PanelKind::Board,
             PanelKind::Mod("notes".into()),
         ];
         for k in all {
@@ -135,6 +121,8 @@ mod tests {
             "",
             "Image",
             "video",
+            // The agent board was removed (2026-10-22): a stored one reads as unknown and is dropped.
+            "board",
             "mod",
             "mod:",
             "mod:Bad Id",
@@ -152,15 +140,12 @@ mod tests {
         assert!(PanelKind::Image.is_built() && PanelKind::Text.is_built());
         assert!(PanelKind::Web.is_built());
         assert!(PanelKind::Changes.is_built() && PanelKind::Tasks.is_built());
-        assert!(PanelKind::Board.is_built() && PanelKind::Board.is_native());
         assert!(!PanelKind::Mod("x".into()).is_built());
-        assert!(PanelKind::Board.is_board() && !PanelKind::Tasks.is_board());
-        assert_eq!(PanelKind::Board.fixed_target(), Some("board"));
         assert_eq!(PanelKind::Tasks.fixed_target(), Some("tasks"));
         assert_eq!(PanelKind::Web.fixed_target(), None);
         assert!(PanelKind::Changes.is_native() && !PanelKind::Web.is_native());
         assert!(PanelKind::Changes.is_convo() && PanelKind::Tasks.is_convo());
-        assert!(!PanelKind::Text.is_convo() && !PanelKind::Board.is_convo());
+        assert!(!PanelKind::Text.is_convo());
         assert_eq!(PanelKind::Changes.convo_target(), Some("changes"));
         assert_eq!(PanelKind::Tasks.convo_target(), Some("tasks"));
         assert_eq!(PanelKind::Web.convo_target(), None);

@@ -14,6 +14,7 @@ const OPEN_PREVIEWS: &str = "flare.window.openPreviews";
 const AGENT_EVAL: &str = "flare.web.agentEval";
 const APP_NETWORK: &str = "flare.web.appNetwork";
 const DEV_PREVIEW: &str = "flare.window.devPreview";
+const WRAP_PREVIEWS: &str = "flare.window.wrapPreviews";
 
 /// The shell the user chose. None until chosen; an empty stored value reads as None too.
 pub fn saved_shell_id(s: &PrefStore) -> Option<String> {
@@ -46,6 +47,17 @@ pub fn open_previews(s: &PrefStore) -> bool {
 
 pub fn set_open_previews(s: &PrefStore, on: bool) {
     bool_pref_set(s, OPEN_PREVIEWS, on);
+}
+
+/// Wrap long lines in previews (Surfaces, 2026-10-22): the text panel continues a long line on the next row
+/// instead of running off the right edge. Default ON; only a stored "0" is off. The panel header has a button
+/// for it too; both write this one key.
+pub fn wrap_previews(s: &PrefStore) -> bool {
+    bool_pref_get(s, WRAP_PREVIEWS, true)
+}
+
+pub fn set_wrap_previews(s: &PrefStore, on: bool) {
+    bool_pref_set(s, WRAP_PREVIEWS, on);
 }
 
 /// Let agents run scripts in pages (Surfaces stage 4): `browser.eval` for the agent. Default OFF; only a
@@ -140,6 +152,19 @@ mod tests {
         assert!(open_previews(&s));
         s.set("flare.window.openPreviews", "junk");
         assert!(open_previews(&s), "an unknown value reads as the default");
+    }
+
+    #[test]
+    fn wrapping_previews_is_on_until_a_stored_zero() {
+        let s = PrefStore::memory();
+        assert!(wrap_previews(&s));
+        set_wrap_previews(&s, false);
+        assert!(!wrap_previews(&s));
+        assert_eq!(s.get("flare.window.wrapPreviews").as_deref(), Some("0"));
+        set_wrap_previews(&s, true);
+        assert!(wrap_previews(&s));
+        s.set("flare.window.wrapPreviews", "junk");
+        assert!(wrap_previews(&s), "an unknown value reads as the default");
     }
 
     #[test]

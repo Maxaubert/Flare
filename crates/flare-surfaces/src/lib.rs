@@ -13,7 +13,6 @@
 pub mod agent_job;
 pub mod agent_web;
 pub mod app;
-pub mod board;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;
@@ -24,6 +23,7 @@ pub mod preview;
 pub mod state;
 pub mod store;
 pub mod web;
+pub mod wrap;
 
 pub use kind::PanelKind;
 pub use state::{TabPanel, TabPanels};

@@ -194,6 +194,7 @@ impl std::fmt::Debug for TermMsgBox {
             TermMsg::BigCopied(..) => "TermMsg::BigCopied",
             TermMsg::PathAnswer(..) => "TermMsg::PathAnswer",
             TermMsg::Preview { .. } => "TermMsg::Preview",
+            TermMsg::PreviewRefused { .. } => "TermMsg::PreviewRefused",
         })
     }
 }
@@ -398,6 +399,9 @@ pub struct AppCtl {
     bounds: NormalBounds,
     maximised: bool,
     grid_dims: (usize, usize),
+    /// How many times the window told the controller the grid area changed (the e2e holds that a splitter drag
+    /// makes none and its release one).
+    grid_fits: u64,
     scale: f64,
     timer: slint::Timer,
     timer_on: bool,
@@ -498,7 +502,7 @@ pub struct AppCtl {
     crumbed_front: Option<String>,
     /// When each tab's shell was asked for, its folder and whether it resumes: the `shell-*` crumbs.
     spawn_marks: HashMap<String, (std::time::Instant, String, bool)>,
-    /// The Preview chip, the agent board and the question notifications (Surfaces stage 7).
+    /// The Preview chip and the question notifications (Surfaces stage 7).
     s7: surfaces7::Surf7,
     /// Mods (Surfaces stage 8): none until the window hands over the hub.
     mods: Option<crate::mods_ctl::ModCtl>,
@@ -512,16 +516,20 @@ pub struct AppCtl {
     downloads: crate::download_ask::DownloadQueue,
     /// The panel had the keys at the last look, so they go back to the terminal when it goes away.
     panel_focus_seen: bool,
+    /// The tab that was in front at the last panel sync: another one letting go of a splitter drag.
+    panel_front_seen: Option<String>,
     /// Where control channel events go (None: no channel, in tests and headless runs).
     ctl_events: Option<CtlEvents>,
     ctl_info: Option<CtlInfo>,
 }
 
-/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6).
-const CONVO_SHOW_CHANGES: &str = "Show changes";
-const CONVO_HIDE_CHANGES: &str = "Hide changes";
-const CONVO_SHOW_TASKS: &str = "Show tasks";
-const CONVO_HIDE_TASKS: &str = "Hide tasks";
+/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
+/// owner needs no explanation). The rows show only on a tab that is Claude (a session or the detection), so
+/// they always name Claude. "Hide ..." is the same words while the panel is open.
+const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
+const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
+const CONVO_SHOW_TASKS: &str = "Show task list";
+const CONVO_HIDE_TASKS: &str = "Hide task list";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -666,6 +674,7 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_filled: r.trailing_filled,
         trailing_tip: r.trailing_tip.as_str().into(),
         keep_open: false,
+        group: r.group,
         flyout: false,
         flyout_pick: false,
         parent: -1,
@@ -789,6 +798,7 @@ impl AppCtl {
             bounds: NormalBounds::new(),
             maximised: false,
             grid_dims: (80, 24),
+            grid_fits: 0,
             scale: 1.0,
             timer: slint::Timer::default(),
             timer_on: false,
@@ -864,6 +874,7 @@ impl AppCtl {
             web,
             downloads: crate::download_ask::DownloadQueue::default(),
             panel_focus_seen: false,
+            panel_front_seen: None,
             ctl_events: None,
             ctl_info: None,
             mods: None,
@@ -1196,8 +1207,9 @@ impl AppCtl {
             .convo_open(path.as_str()));
         bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
             .convo_toggle(key.as_str()));
-        bind!(app, rc, on_panel_board_pick, |c, tab: SharedString| c
-            .board_pick(tab.as_str()));
+        bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
+        bind!(app, rc, on_panel_wrap_cols_changed, |c| c
+            .panel_wrap_cols_changed());
         bind!(app, rc, on_preview_chip_clicked, |c| c
             .preview_chip_clicked());
         bind!(app, rc, on_panel_pressed, |c| c.panel_focus_seen = true);
@@ -2466,11 +2478,8 @@ impl AppCtl {
                 "Copy folder path" => (self.deps.clipboard)(cwd),
                 _ => {}
             },
-            MenuKind::Term { tab }
-                if self.convo_menu_picked(tab, &row.label)
-                    || self.board_menu_picked(tab, &row.label) =>
-            {
-                // One of the conversation or board rows: the terminal's own menu state is let go, nothing else happens.
+            MenuKind::Term { tab } if self.convo_menu_picked(tab, &row.label) => {
+                // One of the conversation rows: the terminal's own menu state is let go, nothing else happens.
                 self.term.on_menu_pick(None, usize::MAX);
             }
             MenuKind::Term { .. } => {
@@ -2773,7 +2782,6 @@ impl AppCtl {
             return;
         }
         rows.extend(self.convo_menu_rows(&at.tab));
-        rows.extend(self.board_menu_rows(&at.tab));
         let (gx, gy) = self
             .app()
             .map_or((0.0, 0.0), |a| (a.get_grid_left(), a.get_grid_top()));
@@ -2888,6 +2896,14 @@ impl AppCtl {
     /// had them goes away.
     fn sync_panels(&mut self, app: &AppWindow) {
         let front = self.model.active_shell().map(|t| t.id.clone());
+        // Another tab came to the front (a chord) while the splitter was held: that tab's slot may be on show, so
+        // `panel-shown` never dropped, but the drag was for the old one. Let go before its panel is pushed.
+        if self.panel_front_seen != front {
+            self.panel_front_seen.clone_from(&front);
+            app.set_panel_splitting(false);
+        }
+        self.panels
+            .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
@@ -2896,7 +2912,6 @@ impl AppCtl {
             .as_deref()
             .and_then(|t| self.panels.open_convo_kind(t).map(|k| (t, k)));
         self.convo.push(app, kind.as_ref().map(|(t, k)| (*t, k)));
-        self.sync_board(app);
         self.sync_chip();
         self.sync_mods();
         self.prune_downloads();
@@ -3039,7 +3054,7 @@ impl AppCtl {
             return Vec::new();
         }
         let open = self.panels.open_convo_kind(tab);
-        let row = |label: &str, icon: &'static str| {
+        let row = |label: &str, icon: &'static str, group: bool| {
             (
                 MenuRowData {
                     label: label.to_string(),
@@ -3050,26 +3065,29 @@ impl AppCtl {
                     trailing_icon: None,
                     trailing_filled: false,
                     trailing_tip: String::new(),
+                    group,
                 },
                 String::new(),
             )
         };
+        let changes_open = open == Some(flare_surfaces::PanelKind::Changes);
+        // The gate above proves it is Claude (a session, or the detection), so the row always names Claude.
+        let changes = if changes_open {
+            CONVO_HIDE_CHANGES
+        } else {
+            CONVO_SHOW_CHANGES
+        };
         vec![
-            row(
-                if open == Some(flare_surfaces::PanelKind::Changes) {
-                    CONVO_HIDE_CHANGES
-                } else {
-                    CONVO_SHOW_CHANGES
-                },
-                crate::menus_ui::GLYPH_OPEN,
-            ),
+            // Their own group, after a rule: they are about the agent, not the terminal.
+            row(changes, crate::menus_ui::GLYPH_CHANGES, true),
             row(
                 if open == Some(flare_surfaces::PanelKind::Tasks) {
                     CONVO_HIDE_TASKS
                 } else {
                     CONVO_SHOW_TASKS
                 },
-                crate::menus_ui::GLYPH_FIND,
+                crate::menus_ui::GLYPH_TASKS,
+                false,
             ),
         ]
     }
@@ -3111,6 +3129,20 @@ impl AppCtl {
             .iter()
             .any(|t| t.id == tab);
         if !is_shell || !flare_settings::term_prefs::open_previews(&self.prefs) {
+            return;
+        }
+        self.show_preview_asked(tab, kind, abs);
+    }
+
+    /// The person asked for it (the menu's "Show in side panel"): the same panel, whatever "Open previews in Flare"
+    /// says about plain clicks.
+    pub(crate) fn show_preview_asked(
+        &mut self,
+        tab: &str,
+        kind: flare_surfaces::PanelKind,
+        abs: &str,
+    ) {
+        if !self.is_shell_tab(tab) {
             return;
         }
         if self.panels.show(tab, kind, abs) {
@@ -3374,6 +3406,31 @@ impl AppCtl {
             app.invoke_focus_panel();
         }
         true
+    }
+
+    /// How many grid fits the window reported (the e2e probe reads it).
+    pub(crate) fn grid_fit_count(&self) -> u64 {
+        self.grid_fits
+    }
+
+    /// How many wraps the panel made (the e2e probe and the tests read it).
+    pub(crate) fn panel_wrap_count(&self) -> u64 {
+        self.panels.wrap_count()
+    }
+
+    /// The header's wrap button: flips "Wrap long lines in previews" (the one setting the Settings page shows too).
+    fn panel_wrap_toggled(&mut self) {
+        let on = flare_settings::term_prefs::wrap_previews(&self.prefs);
+        flare_settings::term_prefs::set_wrap_previews(&self.prefs, !on);
+        self.refresh();
+    }
+
+    /// The text view holds a different number of columns now. A splitter drag changes it at every step, so nothing
+    /// happens until the release (`settle_wrap` checks); the release's refresh settles it.
+    fn panel_wrap_cols_changed(&mut self) {
+        if let Some(app) = self.app() {
+            self.panels.settle_wrap(&app);
+        }
     }
 
     /// Esc in the panel: the keys go back to the terminal.
@@ -3861,6 +3918,7 @@ impl AppCtl {
     /// The grid area changed (Task 30b's `grid-resized`, after the grid host resized): tabs born
     /// from now on start at this size and the front tab follows.
     pub fn on_grid_dims(&mut self, cols: usize, rows: usize) {
+        self.grid_fits += 1;
         self.grid_dims = (cols, rows);
         let front = self.front_id();
         self.deps.host.set_dims(cols, rows, front.as_deref());
@@ -4295,8 +4353,30 @@ impl AppCtl {
                     }
                 }
             }
-            UiMsg::Term(TermMsgBox(TermMsg::Preview { tab, kind, abs })) => {
-                self.show_preview(&tab, kind, &abs);
+            UiMsg::Term(TermMsgBox(TermMsg::Preview {
+                tab,
+                kind,
+                abs,
+                asked,
+            })) => {
+                if asked {
+                    self.show_preview_asked(&tab, kind, &abs);
+                } else {
+                    self.show_preview(&tab, kind, &abs);
+                }
+            }
+            UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab })) => {
+                // The person picked "Show in side panel" and the file is no longer showable: say so, in the panel.
+                if self.is_shell_tab(&tab)
+                    && self.panels.show_text(
+                        &tab,
+                        "This file cannot be shown here. It may have changed or been removed since the menu opened.",
+                        Some("Cannot show this file"),
+                    )
+                {
+                    self.refresh();
+                    self.panel_changed(&tab);
+                }
             }
             UiMsg::Term(TermMsgBox(m)) => {
                 let front = self.front_tab();
@@ -4480,10 +4560,6 @@ impl ChordTarget for Target<'_> {
     fn focus_panel(&mut self) {
         self.0.move_panel_focus();
     }
-
-    fn toggle_board(&mut self) {
-        self.0.toggle_board();
-    }
 }
 
 /// How many times the system menu was asked for (the `--e2e` hook reads it; a pointer event
@@ -4524,6 +4600,7 @@ impl AppCtl {
 #[cfg(test)]
 mod tests {
     mod mods_tests;
+    mod splitter_tests;
     mod web_tests;
     use super::*;
     use crate::openers::{OpenedRecord, RecordingOpeners};
@@ -5795,6 +5872,105 @@ mod tests {
         f.ptr(1, 0, cell_css(1, row, false));
     }
 
+    /// Like [`click_word`] with the right button: opens the terminal's menu on the word.
+    fn right_click_word(f: &Fx, h: &TermHandle, dir: &str, word: &str, row: usize) {
+        let id = f.ctl.borrow().front_id().unwrap();
+        f.ctl.borrow_mut().model_mut().set_cwd(&id, dir);
+        feed(h, &format!("{word}\r\n"));
+        for _ in 0..8 {
+            f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+            f.clock.set(f.clock.get() + 60);
+            f.ctl.borrow_mut().tick();
+            std::thread::sleep(Duration::from_millis(30));
+            f.pump();
+        }
+        f.ctl.borrow().decor_inputs().borrow_mut().decor(h);
+        f.ptr(0, 2, cell_css(1, row, false));
+        f.ptr(1, 2, cell_css(1, row, false));
+    }
+
+    fn menu_labels(f: &Fx) -> Vec<String> {
+        use slint::Model;
+        f.h.comp
+            .get_menu_rows()
+            .iter()
+            .map(|r| r.label.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_text_file_menu_opens_the_preview_and_opens_nothing_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(
+            f.dir.path().join("a.txt"),
+            "one
+two",
+        )
+        .unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        assert!(f.h.comp.get_menu_open());
+        let labels = menu_labels(&f);
+        assert_eq!(
+            labels[..3],
+            ["Open", "Show in side panel", "Show in Explorer"],
+            "{labels:?}"
+        );
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .unwrap();
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "a.txt");
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+        assert!(
+            !f.h.comp.get_panel_has_focus(),
+            "the keys stay in the terminal"
+        );
+    }
+
+    #[test]
+    fn show_in_side_panel_works_even_when_plain_clicks_open_files_in_windows() {
+        let (f, h, _) = live(Opts::default());
+        f.prefs.set("flare.window.openPreviews", "0");
+        f.pump();
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        std::fs::write(f.dir.path().join("a.txt"), "one").unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "a.txt", 0);
+        let labels = menu_labels(&f);
+        let i = labels
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("an explicit ask is offered whatever the click setting says");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(f.openers.records().is_empty(), "{:?}", f.openers.records());
+    }
+
+    #[test]
+    fn show_in_side_panel_on_a_picture_menu_and_never_for_a_script_or_a_folder() {
+        let (f, h, _) = live(Opts::default());
+        let dir = f.dir.path().to_string_lossy().into_owned();
+        write_png(&f.dir.path().join("p.png"), 20, 10);
+        std::fs::write(f.dir.path().join("run.bat"), "x").unwrap(); // sync-ok: test code only
+        std::fs::create_dir(f.dir.path().join("sub")).unwrap(); // sync-ok: test code only
+        right_click_word(&f, &h, &dir, "p.png", 0);
+        let i = menu_labels(&f)
+            .iter()
+            .position(|l| l == "Show in side panel")
+            .expect("a picture offers it");
+        f.h.comp.invoke_menu_picked(i as i32);
+        f.pump_until("the picture", |f| f.h.comp.get_panel_kind() == 1);
+        // A script and a folder do not.
+        right_click_word(&f, &h, &dir, "run.bat", 1);
+        assert!(f.h.comp.get_menu_open());
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
+        f.h.comp.invoke_menu_dismissed();
+        right_click_word(&f, &h, &dir, "sub/", 2);
+        assert!(!menu_labels(&f).contains(&"Show in side panel".to_string()));
+    }
+
     fn write_png(path: &Path, w: u32, h: u32) {
         let file = std::fs::File::create(path).unwrap(); // sync-ok: test code only, never the app
         let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
@@ -6196,6 +6372,296 @@ mod tests {
         assert_eq!(f.ctl.borrow().open_panels(), 1, "and the chord left it so");
     }
 
+    // ---- wrapping a text preview (2026-10-22) ----------------------------------------------------
+
+    fn long_body() -> String {
+        format!("short one\n{}\nshort two\n", "word ".repeat(100).trim_end())
+    }
+
+    fn nums_in_panel(f: &Fx) -> Vec<i32> {
+        use slint::Model;
+        f.h.comp.get_panel_line_nums().iter().collect()
+    }
+
+    #[test]
+    fn a_long_line_wraps_by_default_and_the_header_button_turns_it_off_and_on() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let wrapped = rows_in_panel(&f);
+        assert!(wrapped > 3, "the long line took several rows ({wrapped})");
+        assert!(f.h.comp.get_panel_wrapped());
+        assert!(f.h.comp.get_panel_wrap_on());
+        let nums = nums_in_panel(&f);
+        assert_eq!(nums.len(), wrapped);
+        assert_eq!(nums[0], 1);
+        assert_eq!(
+            *nums.last().unwrap(),
+            3,
+            "the last line keeps its own number"
+        );
+        assert_eq!(
+            nums.iter().filter(|n| **n > 0).count(),
+            3,
+            "three lines, three numbers"
+        );
+        assert!(
+            f.h.comp.get_panel_sub().as_str().starts_with("3 lines"),
+            "the header counts lines, not rows"
+        );
+        // The button turns it off: the rows are the lines again, and the setting says so.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(!flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), 3);
+        assert!(!f.h.comp.get_panel_wrapped());
+        assert!(!f.h.comp.get_panel_wrap_on());
+        assert!(nums_in_panel(&f).is_empty());
+        // And on again.
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        assert!(flare_settings::term_prefs::wrap_previews(&f.prefs));
+        assert_eq!(rows_in_panel(&f), wrapped);
+        assert!(f.h.comp.get_panel_wrapped());
+    }
+
+    #[test]
+    fn with_the_setting_off_a_file_opens_unwrapped_and_the_settings_switch_flips_it_too() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(rows_in_panel(&f), 3, "three lines, three rows");
+        assert!(!f.h.comp.get_panel_wrapped());
+        // The Settings page writes the same key; the panel follows it.
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, true);
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert!(rows_in_panel(&f) > 3);
+    }
+
+    #[test]
+    fn a_splitter_drag_wraps_nothing_and_its_release_wraps_once() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let rows0 = rows_in_panel(&f);
+        let cols0 = f.h.comp.get_panel_wrap_cols();
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+        let y = f.h.comp.get_grid_top() + 200.0;
+        f.h.move_to(x, y);
+        f.h.press(x, y, slint::platform::PointerEventButton::Left);
+        // Many steps, narrower and wider: the width changes at every one, the rows do not.
+        for k in 1..=40 {
+            let dx = if k % 2 == 0 {
+                3.0 * k as f32
+            } else {
+                -2.0 * k as f32
+            };
+            f.h.move_to(x + dx, y);
+            f.h.advance(0);
+            f.pump();
+            assert_eq!(
+                f.ctl.borrow().panels.wrap_count(),
+                runs0,
+                "step {k}: a drag step wraps nothing"
+            );
+        }
+        // Settle on a clearly wider slot, then let go.
+        f.h.move_to(x - 200.0, y);
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_panel_wrap_cols() > cols0,
+            "the view holds more columns while dragged"
+        );
+        assert_eq!(
+            rows_in_panel(&f),
+            rows0,
+            "but the rows are still the old ones"
+        );
+        f.h.release(x - 200.0, y, slint::platform::PointerEventButton::Left);
+        f.pump();
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs0 + 1,
+            "the release wraps once"
+        );
+        assert!(
+            rows_in_panel(&f) < rows0,
+            "wider, fewer rows ({} against {rows0})",
+            rows_in_panel(&f)
+        );
+        // Nothing more happens by itself.
+        f.pump();
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(f.ctl.borrow().panels.wrap_count(), runs0 + 1);
+    }
+
+    /// A file of 300 long lines, each wrapping to several rows.
+    fn many_long_lines() -> String {
+        (0..300)
+            .map(|i| format!("line {i} {}\n", "word ".repeat(40).trim_end()))
+            .collect()
+    }
+
+    /// The number of the line at the top of the text view (the nearest numbered row at or above the first).
+    fn top_line_number(f: &Fx) -> i32 {
+        let nums = nums_in_panel(f);
+        let first = usize::try_from(f.h.comp.get_panel_first_line()).unwrap();
+        if nums.is_empty() {
+            return i32::try_from(first).unwrap() + 1;
+        }
+        (0..=first.min(nums.len() - 1))
+            .rev()
+            .map(|r| nums[r])
+            .find(|n| *n > 0)
+            .unwrap_or(1)
+    }
+
+    #[test]
+    fn a_rewrap_keeps_the_line_the_reader_was_on_at_the_top() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.ctl.borrow().front_id().unwrap();
+        show_text(&f, "many.txt", &many_long_lines());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        // Down to somewhere in the middle of the file.
+        f.h.comp.invoke_panel_scroll_by(0.0, -18.0 * 700.0);
+        f.h.advance(0);
+        let line = top_line_number(&f);
+        assert!(line > 100, "scrolled far into the file (line {line})");
+        let rows0 = rows_in_panel(&f);
+        // A much wider slot: fewer rows, other row offsets.
+        f.h.comp.invoke_panel_splitter_released(0.6);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(rows_in_panel(&f) < rows0, "the rows were made again");
+        assert_eq!(
+            top_line_number(&f),
+            line,
+            "the same line is still at the top after the re-wrap"
+        );
+        // And a narrower slot back: the same.
+        f.h.comp.invoke_panel_splitter_released(0.25);
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "and back again");
+        // Toggling wrap off keeps it too (the rows are the lines: row = line - 1).
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap off");
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert_eq!(top_line_number(&f), line, "wrap on");
+        // The view never sits past the end: the last row is still reachable.
+        let _ = a;
+        assert!(
+            f.h.comp.get_panel_text_scroll_y() <= 0.0,
+            "the viewport is inside the content"
+        );
+    }
+
+    #[test]
+    fn turning_wrap_on_brings_a_sideways_scrolled_view_back_to_the_left_edge() {
+        let (f, _h, _) = live(Opts::default());
+        flare_settings::term_prefs::set_wrap_previews(&f.prefs, false);
+        f.pump();
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        assert!(!f.h.comp.get_panel_wrapped());
+        f.h.comp.invoke_panel_scroll_by(-200.0, 0.0);
+        f.h.advance(0);
+        assert!(
+            f.h.comp.get_panel_text_scroll_x() < -50.0,
+            "scrolled right ({})",
+            f.h.comp.get_panel_text_scroll_x()
+        );
+        f.h.comp.invoke_panel_wrap_toggled();
+        f.pump();
+        f.h.advance(0);
+        f.h.advance(0);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.h.comp.get_panel_text_scroll_x(),
+            0.0,
+            "wrapped rows start at the gutter's edge again"
+        );
+    }
+
+    #[test]
+    fn settings_in_front_wraps_nothing_and_the_return_wraps_once() {
+        let (f, _h, _) = live(Opts::default());
+        show_text(&f, "long.txt", &long_body());
+        f.pump_until("the text", |f| f.h.comp.get_panel_kind() == 2);
+        let rows = rows_in_panel(&f);
+        let runs = f.ctl.borrow().panels.wrap_count();
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump();
+        f.h.advance(0);
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs,
+            "no wrap while a page is in front (the slot is off show)"
+        );
+        f.ctl.borrow_mut().toggle_settings();
+        f.pump_until("the text again", |f| f.h.comp.get_panel_kind() == 2);
+        f.h.advance(0);
+        assert_eq!(rows_in_panel(&f), rows);
+        assert!(f.h.comp.get_panel_wrapped());
+        assert_eq!(
+            f.ctl.borrow().panels.wrap_count(),
+            runs + 1,
+            "the return wraps the file once, not an unwrap and a wrap"
+        );
+    }
+
+    #[test]
+    fn a_refused_show_in_side_panel_tells_the_person_in_the_panel() {
+        let (f, _h, _) = live(Opts::default());
+        let id = f.ctl.borrow().front_id().unwrap();
+        assert!(!f.h.comp.get_panel_open());
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Term(TermMsgBox(TermMsg::PreviewRefused { tab: id })));
+        f.pump_until("the notice", |f| f.h.comp.get_panel_kind() == 2);
+        assert_eq!(f.h.comp.get_panel_title().as_str(), "Cannot show this file");
+        assert!(f.openers.records().is_empty());
+    }
+
+    #[test]
+    fn a_big_file_wraps_on_a_worker_and_a_stale_answer_changes_nothing() {
+        use crate::panel_ctl::{PanelMsg, PanelMsgBox};
+        let (f, _h, _) = live(Opts::default());
+        let body = format!("{}\n", "x".repeat(1500)).repeat(900);
+        show_text(&f, "big.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let rows = rows_in_panel(&f);
+        assert!(rows > 900, "{rows}");
+        // An answer for a wrap that is no longer the newest is dropped.
+        let id = f.ctl.borrow().front_id().unwrap();
+        let generation = f.ctl.borrow().panels.generation_for_test();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Panel(PanelMsgBox(PanelMsg::Wrapped {
+                generation,
+                tab: id,
+                seq: 0,
+                cols: 9,
+                rows: vec!["stale".into()],
+                nums: vec![1],
+            })));
+        assert_eq!(rows_in_panel(&f), rows);
+    }
+
     #[test]
     fn the_splitter_release_stores_the_share_for_that_tab_only() {
         let (f, _h, _) = live(Opts::default());
@@ -6235,7 +6701,7 @@ mod tests {
         show_text(&f, "a.txt", "real");
         f.pump_until("the panel", |f| f.h.comp.get_panel_kind() == 2);
         let stale = || crate::panel_ctl::TextRows {
-            rows: vec!["stale".into(), "stale".into()],
+            lines: Arc::new(vec!["stale".into(), "stale".into()]),
             cols: 5,
             bytes: 12,
             foot: String::new(),

@@ -100,6 +100,15 @@ pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
                 k,
             ))
         }
+        // The header's wrap button (a text file).
+        "panel-wrap" if a.get_panel_kind() == 2 => Ok(rect_json(
+            a.get_panel_wrap_button_x(),
+            a.get_panel_wrap_button_y(),
+            a.get_panel_wrap_button_w(),
+            a.get_panel_wrap_button_w(),
+            k,
+        )),
+        "panel-wrap" => Err("ui.rect panel-wrap: the panel shows no text".into()),
         _ => Err(format!("ui.rect: no such rectangle: {name}")),
     }
 }
@@ -184,6 +193,15 @@ fn panel_state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         "row0": slint::Model::row_data(&a.get_panel_lines(), 0).map(|r| r.to_string()),
         "first_line": a.get_panel_first_line(),
         "gutter_w": a.get_panel_gutter_w(),
+        // Wrapping (2026-10-22): the columns that fit, whether the rows are wrapped, the setting, and how many wraps ran.
+        "wrap_cols": a.get_panel_wrap_cols(),
+        "wrapped": a.get_panel_wrapped(),
+        "wrap_on": a.get_panel_wrap_on(),
+        "grid_fits": ctx.ctl.try_borrow().map_or(0, |c| c.grid_fit_count()),
+        "wrap_runs": ctx.ctl.try_borrow().map_or(0, |c| c.panel_wrap_count()),
+        "splitting": a.get_panel_splitting(),
+        "visible_w": a.get_panel_visible_w(),
+        "drag_w": a.get_panel_drag_w(),
         "page_phys_w": page_phys,
         "slot_phys_w": (a.get_panel_slot_w() * k).round() as i32,
         "grid_phys_w": a.get_grid_phys_width(),

@@ -22,7 +22,6 @@ import { DictAsk } from "settings/dictation.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
 import { ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
-import { BoardRowUi } from "board.slint";
 import { PreviewChip } from "devchip.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
@@ -42,7 +41,6 @@ export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoTaskRow, ConvoInk } from "convo.slint";
-export { BoardRowUi, BoardMetrics } from "board.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
@@ -285,11 +283,6 @@ export component AppWindow inherits Window {
     out property <length> preview-chip-w: preview-chip.width;
     out property <length> preview-chip-h: preview-chip.height;
     callback preview-chip-clicked();
-    // The agent board (stage 7): kind 6 of panel-kind.
-    in property <[BoardRowUi]> panel-board-rows;
-    out property <int> panel-board-row-count: panel-slot.board-row-count;
-    out property <length> panel-board-content-h: panel-slot.board-content-h;
-    callback panel-board-pick(string);
     // The tab share of the page (0: not set, the default applies). The limits are the layout
     // maths of flare-surfaces, handed over once (`layout::MIN_SLOT` and the others).
     in property <float> panel-share: 0;
@@ -327,6 +320,32 @@ export component AppWindow inherits Window {
     out property <bool> panel-image-can-zoom: panel-slot.image-can-zoom;
     out property <length> panel-gutter-w: panel-slot.text-gutter-w;
     out property <int> panel-first-line: panel-slot.text-first-line;
+    // Wrapping a text preview (2026-10-22): the columns that fit (the controller wraps to them once the width settles),
+    // the rows' line numbers (0 on a continuation row), whether the rows are wrapped now, the setting, and the file's
+    // line count for the gutter's width.
+    out property <int> panel-wrap-cols: panel-slot.text-wrap-cols;
+    in property <[int]> panel-line-nums;
+    in property <bool> panel-wrapped;
+    in property <int> panel-wrapped-cols;
+    out property <length> panel-text-content-w: panel-slot.text-content-w;
+    out property <length> panel-text-scroll-x: panel-slot.text-scroll-x;
+    out property <length> panel-text-scroll-y: panel-slot.text-scroll-y;
+    public function panel-scroll-to-row(row: int) { panel-slot.text-scroll-to-row(row); }
+    public function panel-scroll-by(dx: length, dy: length) { panel-slot.text-scroll-by(dx, dy); }
+    in property <bool> panel-wrap-on: true;
+    in property <int> panel-number-count;
+    out property <length> panel-wrap-button-x: panel-slot.wrap-button-x;
+    out property <length> panel-wrap-button-y: panel-slot.wrap-button-y;
+    out property <length> panel-wrap-button-w: panel-slot.wrap-button-w;
+    callback panel-wrap-toggled();
+    callback panel-wrap-cols-changed();
+    changed panel-wrap-cols => { root.panel-wrap-cols-changed(); }
+    // The slot went away while the splitter was held (a tab switched by key, the window too small, a page in front): the
+    // hidden touch area never hears the release, so the grab is let go here or the next time the slot shows it would
+    // still be drawn at the stale dragged width.
+    changed panel-shown => {
+        if (!root.panel-shown) { root.panel-splitting = false; }
+    }
     // The panel has the keys; the window leaves the non-chord keys to it.
     out property <bool> panel-has-focus: panel-slot.has-focus;
     public function focus-panel() { panel-slot.focus-panel(); }
@@ -886,6 +905,12 @@ export component AppWindow inherits Window {
                         lines: root.panel-lines;
                         max-cols: root.panel-max-cols;
                         foot: root.panel-foot;
+                        line-nums: root.panel-line-nums;
+                        wrapped: root.panel-wrapped;
+                        wrapped-cols: root.panel-wrapped-cols;
+                        wrap-on: root.panel-wrap-on;
+                        number-count: root.panel-number-count;
+                        wrap-toggled => { root.panel-wrap-toggled(); }
                         convo-files: root.panel-convo-files;
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;
@@ -894,8 +919,6 @@ export component AppWindow inherits Window {
                         convo-select(p) => { root.panel-convo-select(p); }
                         convo-open(p) => { root.panel-convo-open(p); }
                         convo-toggle(k) => { root.panel-convo-toggle(k); }
-                        board-rows: root.panel-board-rows;
-                        board-pick(t) => { root.panel-board-pick(t); }
                         web-url: root.panel-web-url;
                         web-app: root.panel-web-app;
                         web-loading: root.panel-web-loading;

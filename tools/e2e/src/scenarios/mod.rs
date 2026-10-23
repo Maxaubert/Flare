@@ -5,7 +5,6 @@ pub mod agent_launch;
 pub mod agent_misc;
 pub mod agent_web;
 pub mod anywhere;
-pub mod board;
 pub mod chrome;
 pub mod closeask;
 pub mod convo;
@@ -21,10 +20,12 @@ pub mod input_b;
 pub mod input_c;
 pub mod input_d;
 pub mod lifecycle;
+pub mod live_preview;
 mod marks_px;
 pub mod mini_app;
 pub mod mods;
 pub mod panel;
+pub mod panel_split;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -539,6 +540,12 @@ pub const ALL: &[Scenario] = &[
         limit_secs: 240,
     },
     Scenario {
+        name: "panelSplitter",
+        group: "panel",
+        run: panel_split::panel_splitter,
+        limit_secs: 420,
+    },
+    Scenario {
         name: "ctlChannel",
         group: "ctl",
         run: ctl::ctl_channel,
@@ -612,20 +619,14 @@ pub const ALL: &[Scenario] = &[
     },
     Scenario {
         name: "devPreview",
-        group: "board",
-        run: board::dev_preview,
+        group: "preview",
+        run: live_preview::dev_preview,
         limit_secs: 480,
     },
     Scenario {
-        name: "agentBoard",
-        group: "board",
-        run: board::agent_board,
-        limit_secs: 420,
-    },
-    Scenario {
         name: "questionToast",
-        group: "board",
-        run: board::question_toast,
+        group: "preview",
+        run: live_preview::question_toast,
         limit_secs: 300,
     },
 ];

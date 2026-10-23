@@ -1,4 +1,4 @@
-//! The probes of stage 7 (Surfaces): the Preview chip, the agent board and the question notifications.
+//! The probes of stage 7 (Surfaces): the Preview chip and the question notifications.
 //! Read-only, like every probe. The notification recorder is the seam that stands in for Windows' toast under
 //! `--e2e`: nothing reaches the desktop, and the scenario reads what would have been shown.
 
@@ -37,7 +37,7 @@ pub fn register(r: &mut ProbeRegistry) {
     r.add("notify.log", notify_log);
 }
 
-/// The chip, the board's rows and the counters of stage 7.
+/// The chip and the counters of stage 7.
 fn state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     let c = ctx
         .ctl
@@ -45,8 +45,6 @@ fn state(ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
         .map_err(|_| "surf7.state: the controller is busy".to_string())?;
     let mut v = c.surf7_probe();
     let a = ctx.app;
-    v["board_ui_rows"] = json!(a.get_panel_board_row_count());
-    v["board_content_h"] = json!(a.get_panel_board_content_h());
     v["panel_kind"] = json!(a.get_panel_kind());
     Ok(v)
 }
@@ -62,7 +60,7 @@ fn notify_log(_ctx: &ProbeCtx, _arg: &Value) -> Result<Value, String> {
     Ok(json!({ "toasts": rows }))
 }
 
-/// The chip and a row of the board, for `ui.rect`.
+/// The chip, for `ui.rect`.
 pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
     let a = ctx.app;
     let k = {
@@ -79,32 +77,6 @@ pub fn rects(ctx: &ProbeCtx, name: &str) -> Result<Value, String> {
                 a.get_preview_chip_y(),
                 a.get_preview_chip_w(),
                 a.get_preview_chip_h(),
-                k,
-            ))
-        }
-        n if n.starts_with("board-row-") => {
-            if !a.get_panel_shown() || a.get_panel_kind() != 6 {
-                return Err(format!("ui.rect {n}: the board is not showing"));
-            }
-            let i: usize = n["board-row-".len()..]
-                .parse()
-                .map_err(|_| format!("ui.rect {n}: not a row number"))?;
-            // The rows are 56 css px tall, and 92 when they carry a question (BoardMetrics).
-            let c = ctx
-                .ctl
-                .try_borrow()
-                .map_err(|_| "ui.rect: the controller is busy".to_string())?;
-            let rows = c.board_rows();
-            let row = rows
-                .get(i)
-                .ok_or_else(|| format!("ui.rect {n}: no such row"))?;
-            let h = |detail: &str| if detail.is_empty() { 56.0 } else { 92.0 };
-            let above: f32 = rows[..i].iter().map(|r| h(&r.detail)).sum();
-            Ok(rect_json(
-                a.get_panel_body_x(),
-                a.get_panel_body_y() + above,
-                a.get_panel_body_w(),
-                h(&row.detail),
                 k,
             ))
         }

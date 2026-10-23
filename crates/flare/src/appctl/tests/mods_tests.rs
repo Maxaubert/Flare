@@ -445,7 +445,7 @@ fn a_page_may_open_only_its_own_panel_not_another_kind() {
     let w = world(&f, |r| mod_with(r, "plain", &["panel", "tools"]));
     turn(&f, "plain", true);
     let tab = page_up(&f, &w, &slot, "plain");
-    let kinds = ["web", "changes", "tasks", "board", "mod:other"];
+    let kinds = ["web", "changes", "tasks", "mod:other"];
     for (i, k) in kinds.iter().enumerate() {
         page_says(
             &slot,

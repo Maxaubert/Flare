@@ -25,12 +25,10 @@ pub enum ChordId {
     Panel,
     /// Ctrl+Shift+O: moves the keys between the terminal and the panel.
     PanelFocus,
-    /// Ctrl+Shift+A: shows or hides the agent board in the tab's panel (Surfaces stage 7).
-    Board,
 }
 
 /// Every chord, in search order.
-pub const ORDER: [ChordId; 15] = [
+pub const ORDER: [ChordId; 14] = [
     ChordId::Help,
     ChordId::Fullscreen,
     ChordId::NextTab,
@@ -45,7 +43,6 @@ pub const ORDER: [ChordId; 15] = [
     ChordId::SystemMenu,
     ChordId::Panel,
     ChordId::PanelFocus,
-    ChordId::Board,
 ];
 
 /// What the chords depend on, handed in by the window (never read here).
@@ -301,18 +298,6 @@ static PANEL: ChordDef = ChordDef {
     agent: None,
 };
 
-fn board_matches(e: &KeyEvent, _c: &KeyContext) -> bool {
-    ctrl(e) && e.shift && letter(e, 'a')
-}
-
-static BOARD: ChordDef = ChordDef {
-    label: "Ctrl+Shift+A",
-    shell_too: false,
-    under_modal: UnderModal::Swallow,
-    matches: board_matches,
-    agent: None,
-};
-
 static PANEL_FOCUS: ChordDef = ChordDef {
     label: "Ctrl+Shift+O",
     shell_too: false,
@@ -338,7 +323,6 @@ pub fn chord(id: ChordId) -> &'static ChordDef {
         ChordId::SystemMenu => &SYSTEM_MENU,
         ChordId::Panel => &PANEL,
         ChordId::PanelFocus => &PANEL_FOCUS,
-        ChordId::Board => &BOARD,
     }
 }
 
@@ -532,27 +516,20 @@ mod tests {
     }
 
     #[test]
-    fn the_board_chord_is_ctrl_shift_a_and_plain_ctrl_a_stays_the_shells() {
+    fn ctrl_shift_a_is_the_shells_again_since_the_agent_board_was_removed() {
+        // The agent board (and its Ctrl+Shift+A) was removed on 2026-10-22; the key reaches the shell.
         let c = on();
-        let a = KeyEvent::new("A", "KeyA").ctrl().shift();
-        assert_eq!(chord_of(&a, &c), Some(ChordId::Board));
-        assert!(app_owns_key(&a, &c));
-        // The physical key counts when a layout moves the letter (rule 11).
-        assert_eq!(
-            chord_of(&KeyEvent::new("\u{444}", "KeyA").ctrl().shift(), &c),
-            Some(ChordId::Board)
-        );
-        // Readline's beginning-of-line, and Alt-held (AltGr) forms, are the shell's.
-        for shells in [
+        for k in [
+            KeyEvent::new("A", "KeyA").ctrl().shift(),
             KeyEvent::new("a", "KeyA").ctrl(),
-            KeyEvent::new("A", "KeyA").ctrl().shift().alt(),
-            KeyEvent::new("A", "KeyA").shift(),
         ] {
-            assert_eq!(chord_of(&shells, &c), None);
-            assert!(!app_owns_key(&shells, &c));
+            assert_eq!(chord_of(&k, &c), None);
+            assert!(!app_owns_key(&k, &c));
         }
-        assert_eq!(key_label(ChordId::Board, false), "Ctrl+Shift+A");
-        assert_eq!(key_label(ChordId::Board, true), "Ctrl+Shift+A");
+        assert!(
+            ORDER.iter().all(|id| chord(*id).label != "Ctrl+Shift+A"),
+            "no chord answers to Ctrl+Shift+A"
+        );
     }
 
     #[test]

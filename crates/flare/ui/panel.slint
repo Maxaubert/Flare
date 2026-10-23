@@ -8,7 +8,6 @@
 import { Theme, Px, SettingsFixed } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { ChangesView, TasksView, ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
-import { BoardView, BoardRowUi } from "board.slint";
 
 // The header's close button: 20 px, the glyph 10 px, as the tab strip's close.
 component PanelClose inherits Rectangle {
@@ -149,6 +148,14 @@ component TextView inherits Rectangle {
     in property <[string]> lines;
     in property <int> max-cols;
     in property <string> foot;   // "" or a note under the text (the file was cut)
+    // Wrapped rows: the line number of each row (0 on a continuation row); empty when the rows are the lines.
+    in property <[int]> nums;
+    // The rows are wrapped to the width (no horizontal scroll), and how many lines the file has.
+    in property <bool> wrapped;
+    // The columns the shown rows were wrapped to (0 while unwrapped). While a splitter drag narrows the slot the rows
+    // keep these columns, so the view stays as wide as they need (a temporary sideways scroll) instead of cutting them.
+    in property <int> wrapped-cols;
+    in property <int> number-count;
     callback pressed();
 
     out property <length> row-h: Px.snap(18px);
@@ -157,11 +164,18 @@ component TextView inherits Rectangle {
     out property <int> line-count: root.lines.length;
     out property <length> content-h: root.line-count * root.row-h;
     out property <length> char-w: probe.preferred-width;
-    property <int> digits: root.line-count >= 100000 ? 6 : (root.line-count >= 10000 ? 5 : (root.line-count >= 1000 ? 4 : 3));
+    property <int> numbered: root.number-count > 0 ? root.number-count : root.line-count;
+    property <int> digits: root.numbered >= 100000 ? 6 : (root.numbered >= 10000 ? 5 : (root.numbered >= 1000 ? 4 : 3));
     out property <length> gutter-w: Px.snap(root.digits * root.char-w + 20px);
+    // The columns that fit beside the gutter, for the controller to wrap to. The thumb's strip and a little air are
+    // kept clear so a full row never runs under the scrollbar.
+    out property <int> wrap-cols: root.char-w <= 0px ? 0 : max(8, floor((root.width - root.gutter-w - Px.snap(16px)) / root.char-w));
     property <int> first: max(0, floor(-flick.content-y / root.row-h + 0.01));
     property <int> count: ceil(root.view-h / root.row-h) + 2;
     out property <int> first-line: root.first;
+    out property <length> content-w: flick.content-width;
+    out property <length> scroll-x: flick.content-x;
+    out property <length> scroll-y: flick.content-y;
 
     public function scroll-by(dx: length, dy: length) {
         flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x + dx));
@@ -169,6 +183,21 @@ component TextView inherits Rectangle {
     }
     public function scroll-to(top: bool) {
         flick.content-y = top ? 0px : min(0px, root.view-h - flick.content-height);
+    }
+    // Puts `row` at the top (kept inside the content), for a re-wrap that keeps the reader's line.
+    public function scroll-to-row(row: int) {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, -row * root.row-h));
+    }
+    // Wrapping flips: every row starts at the left edge again.
+    changed wrapped => {
+        flick.content-x = 0px;
+    }
+    // The rows were re-made at another width: the viewport stays inside the new content.
+    changed wrapped-cols => {
+        flick.content-x = min(0px, max(root.width - flick.content-width, flick.content-x));
+    }
+    changed line-count => {
+        flick.content-y = min(0px, max(root.view-h - flick.content-height, flick.content-y));
     }
 
     clip: true;
@@ -182,7 +211,7 @@ component TextView inherits Rectangle {
     flick := Flickable {
         width: root.width;
         height: root.view-h;
-        content-width: max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
+        content-width: root.wrapped ? max(root.width, root.gutter-w + root.wrapped-cols * root.char-w + Px.snap(16px)) : max(root.width, root.gutter-w + (root.max-cols + 2) * root.char-w);
         content-height: max(root.content-h, root.view-h);
         for k in root.count: Rectangle {
             property <int> n: root.first + k;
@@ -196,7 +225,7 @@ component TextView inherits Rectangle {
                 height: parent.height;
                 horizontal-alignment: right;
                 vertical-alignment: center;
-                text: parent.n + 1;
+                text: root.nums.length == 0 ? "" + (parent.n + 1) : (parent.n < root.nums.length && root.nums[parent.n] > 0 ? "" + root.nums[parent.n] : "");
                 font-family: SettingsFixed.font-mono;
                 font-size: 12px;
                 color: Theme.dim2;
@@ -259,11 +288,13 @@ component WebButton inherits Rectangle {
     in property <string> path;
     in property <string> label;
     in property <bool> live: true;
+    // A toggle that is on (the header's wrap button): a resting fill and the full ink.
+    in property <bool> on: false;
     callback activated();
     width: Px.snap(24px);
     height: Px.snap(24px);
     border-radius: Theme.radius-button;
-    background: root.live && ta.has-hover ? Theme.hover : transparent;
+    background: root.live && ta.has-hover ? (root.on ? Theme.hover-hi : Theme.hover) : (root.on ? Theme.hover : transparent);
     opacity: root.live ? 1 : 0.4;
     accessible-role: button;
     accessible-label: root.label;
@@ -277,7 +308,7 @@ component WebButton inherits Rectangle {
         viewbox-height: 24;
         commands: root.path;
         fill: transparent;
-        stroke: root.live && ta.has-hover ? Theme.text : Theme.icon;
+        stroke: root.live && (ta.has-hover || root.on) ? Theme.text : Theme.icon;
         stroke-width: 2.2 * 12px / 24;
         stroke-line-cap: round;
         stroke-line-join: round;
@@ -427,7 +458,7 @@ export component PanelSlot inherits Rectangle {
     // The slot is drawn only while open. Everything else is set by app.slint from the controller.
     in property <bool> open;
     // 0 nothing yet (a note), 1 image, 2 text, 3 a web page (the browser's own window covers the box),
-    // 4 the Changes of the conversation, 5 its Tasks (stage 6), 6 the agent board (stage 7).
+    // 4 the Changes of the conversation, 5 its Tasks (stage 6).
     in property <int> kind;
     in property <string> title;
     in property <string> sub;
@@ -456,11 +487,6 @@ export component PanelSlot inherits Rectangle {
     callback convo-select(string);
     callback convo-open(string);
     callback convo-toggle(string);
-    // The agent board (kind 6): a row for every tab with an agent.
-    in property <[BoardRowUi]> board-rows;
-    out property <int> board-row-count: board.row-count;
-    out property <length> board-content-h: board.content-h;
-    callback board-pick(string);
     // A web page (kind 3): the bar, and the still drawn while an overlay hides the browser window.
     in property <string> web-url;
     // A mini-app: no bar (the address is Flare's own and the page cannot navigate).
@@ -508,9 +534,27 @@ export component PanelSlot inherits Rectangle {
     out property <bool> image-can-zoom: img.can-zoom;
     out property <length> text-gutter-w: txt.gutter-w;
     out property <int> text-first-line: txt.first-line;
+    out property <int> text-wrap-cols: txt.wrap-cols;
+    out property <length> text-content-w: txt.content-w;
+    out property <length> text-scroll-x: txt.scroll-x;
+    out property <length> text-scroll-y: txt.scroll-y;
+    public function text-scroll-to-row(row: int) { txt.scroll-to-row(row); }
+    public function text-scroll-by(dx: length, dy: length) { txt.scroll-by(dx, dy); }
+    out property <length> wrap-button-x: wrap-btn.absolute-position.x;
+    out property <length> wrap-button-y: wrap-btn.absolute-position.y;
+    out property <length> wrap-button-w: wrap-btn.width;
     // The slot holds the keys (the controller moves them here on a click or the focus chord).
     out property <bool> has-focus: root.open && keys.has-focus;
 
+    // The header's wrap button (a text file): the setting, and a press to flip it. `wrapped` says the rows are wrapped now.
+    in property <bool> wrap-on;
+    in property <bool> wrapped;
+    in property <int> wrapped-cols;
+    in property <[int]> line-nums;
+    in property <int> number-count;
+    // The room the wrap button takes in the header (a text file only).
+    property <length> head-extra: root.kind == 2 ? Px.snap(28px) : 0px;
+    callback wrap-toggled();
     callback close();
     callback escape();
     callback pressed();
@@ -559,14 +603,6 @@ export component PanelSlot inherits Rectangle {
                 if (event.text == Key.Home) { tasks.scroll-to(true); return accept; }
                 if (event.text == Key.End) { tasks.scroll-to(false); return accept; }
             }
-            if (root.kind == 6) {
-                if (event.text == Key.UpArrow) { board.scroll-by(Px.snap(24px)); return accept; }
-                if (event.text == Key.DownArrow) { board.scroll-by(-Px.snap(24px)); return accept; }
-                if (event.text == Key.PageUp) { board.scroll-by(root.body-h - Px.snap(24px)); return accept; }
-                if (event.text == Key.PageDown) { board.scroll-by(-(root.body-h - Px.snap(24px))); return accept; }
-                if (event.text == Key.Home) { board.scroll-to(true); return accept; }
-                if (event.text == Key.End) { board.scroll-to(false); return accept; }
-            }
             if (root.kind == 1) {
                 if (event.text == Key.UpArrow) { img.scroll-by(0px, Px.snap(24px)); return accept; }
                 if (event.text == Key.DownArrow) { img.scroll-by(0px, -Px.snap(24px)); return accept; }
@@ -603,7 +639,7 @@ export component PanelSlot inherits Rectangle {
             background: Theme.tabs;
             Text {
                 x: Px.snap(12px);
-                width: parent.width - Px.snap(12px) - Px.snap(8px) - close-btn.width - Px.snap(8px) - (root.sub == "" ? 0px : Px.snap(sub-text.preferred-width + 10px));
+                width: parent.width - Px.snap(12px) - Px.snap(8px) - close-btn.width - Px.snap(8px) - root.head-extra - (root.sub == "" ? 0px : Px.snap(sub-text.preferred-width + 10px));
                 height: parent.height;
                 vertical-alignment: center;
                 text: root.title;
@@ -614,7 +650,7 @@ export component PanelSlot inherits Rectangle {
                 overflow: elide;
             }
             sub-text := Text {
-                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(8px) - self.preferred-width;
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(8px) - root.head-extra - self.preferred-width;
                 height: parent.height;
                 vertical-alignment: center;
                 visible: root.sub != "";
@@ -657,6 +693,16 @@ export component PanelSlot inherits Rectangle {
                     color: Theme.accent-hi;
                     overflow: elide;
                 }
+            }
+            // The wrap button sits left of the close button, on a text file only.
+            wrap-btn := WebButton {
+                x: parent.width - close-btn.width - Px.snap(8px) - Px.snap(4px) - self.width;
+                y: (parent.height - self.height) / 2;
+                visible: root.kind == 2;
+                path: Glyphs.wrap;
+                label: root.wrap-on ? "Wrap long lines: on" : "Wrap long lines: off";
+                on: root.wrap-on;
+                activated => { root.wrap-toggled(); }
             }
             close-btn := PanelClose {
                 x: parent.width - self.width - Px.snap(8px);
@@ -725,6 +771,10 @@ export component PanelSlot inherits Rectangle {
                 lines: root.lines;
                 max-cols: root.max-cols;
                 foot: root.foot;
+                nums: root.line-nums;
+                wrapped: root.wrapped;
+                wrapped-cols: root.wrapped-cols;
+                number-count: root.number-count;
                 pressed => { root.pressed(); }
             }
             changes := ChangesView {
@@ -745,14 +795,6 @@ export component PanelSlot inherits Rectangle {
                 visible: root.kind == 5;
                 rows: root.convo-tasks;
                 toggle(k) => { root.convo-toggle(k); }
-                pressed => { root.pressed(); }
-            }
-            board := BoardView {
-                width: parent.width;
-                height: parent.height;
-                visible: root.kind == 6;
-                rows: root.board-rows;
-                pick(t) => { root.board-pick(t); }
                 pressed => { root.pressed(); }
             }
             if root.note != "": PanelNote {
