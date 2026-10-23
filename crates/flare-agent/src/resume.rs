@@ -90,6 +90,19 @@ fn head_of(path: &Path) -> String {
 
 /// The id and modified time of each transcript that can be stat-ed, PARALLEL at a time.
 fn stat_all(dir: &Path, names: &[String]) -> Vec<(String, SystemTime)> {
+    stat_all_with(names, &|name| {
+        std::fs::metadata(dir.join(name)) // sync-ok: runs on a worker (the restore thread)
+            .ok()?
+            .modified()
+            .ok()
+    })
+}
+
+/// `stat_all` with the stat made explicit, so a test can count how many run at once.
+fn stat_all_with(
+    names: &[String],
+    stat: &(dyn Fn(&str) -> Option<SystemTime> + Sync),
+) -> Vec<(String, SystemTime)> {
     let next = AtomicUsize::new(0);
     let workers = PARALLEL.min(names.len());
     std::thread::scope(|s| {
@@ -100,11 +113,7 @@ fn stat_all(dir: &Path, names: &[String]) -> Vec<(String, SystemTime)> {
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(name) = names.get(i) else { break };
-                        let stat = std::fs::metadata(dir.join(name)); // sync-ok: runs on a worker (the restore thread)
-                        let Ok(meta) = stat else {
-                            continue;
-                        };
-                        let Ok(modified) = meta.modified() else {
+                        let Some(modified) = stat(name) else {
                             continue;
                         };
                         let id = name.strip_suffix(".jsonl").unwrap_or(name).to_string();
@@ -125,7 +134,12 @@ fn stat_all(dir: &Path, names: &[String]) -> Vec<(String, SystemTime)> {
 /// BLOCKING (a worker thread): the interactive session ids recorded for `cwd`, newest first, at
 /// most `WANT`, from `<home>\.claude\projects\<encode_cwd>\*.jsonl`. Empty on any error.
 pub fn claude_sessions(cwd: &str, home: &Path) -> Vec<String> {
-    let dir = home.join(".claude").join("projects").join(encode_cwd(cwd));
+    claude_sessions_in(&home.join(".claude"), cwd)
+}
+
+/// `claude_sessions` over a transcript store root (`<root>\projects\<encode_cwd>\*.jsonl`).
+pub fn claude_sessions_in(root: &Path, cwd: &str) -> Vec<String> {
+    let dir = root.join("projects").join(encode_cwd(cwd));
     let listed = std::fs::read_dir(&dir); // sync-ok: runs on a worker (the restore thread)
     let Ok(listing) = listed else {
         return Vec::new();
@@ -169,6 +183,15 @@ pub fn claude_sessions(cwd: &str, home: &Path) -> Vec<String> {
     out
 }
 
+/// Where Claude keeps its store: `CLAUDE_CONFIG_DIR` when that is set and not empty, else
+/// `<home>\.claude`. `config_dir` is the variable's value.
+pub fn store_root(home: &Path, config_dir: Option<&std::ffi::OsStr>) -> PathBuf {
+    match config_dir {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => home.join(".claude"),
+    }
+}
+
 /// The home Claude uses: `USERPROFILE`, else None.
 pub fn claude_home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE").map(PathBuf::from)
@@ -184,6 +207,28 @@ mod tests {
     const SDK_HEAD: &str = "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"timestamp\":\"2026-09-28T18:02:10.114Z\",\"content\":\"Review this change for security vulnerabilities.\"}\n{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"entrypoint\":\"sdk-py\",\"type\":\"user\"}\n";
 
     const ID: &str = "3f2a9c1e-77aa-4c0d-9b1e-0a1b2c3d4e5f";
+
+    #[test]
+    fn claude_config_dir_moves_the_store() {
+        let home = Path::new("C:/Users/me");
+        assert_eq!(store_root(home, None), home.join(".claude"));
+        assert_eq!(
+            store_root(home, Some(std::ffi::OsStr::new(""))),
+            home.join(".claude")
+        );
+        assert_eq!(
+            store_root(home, Some(std::ffi::OsStr::new("D:/claude-config"))),
+            PathBuf::from("D:/claude-config")
+        );
+        // A store somewhere else is read, and the one under home is not.
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let dir = cfg.join("projects").join(encode_cwd("C:\\w"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{ID}.jsonl")), CLI_HEAD).unwrap();
+        assert_eq!(claude_sessions_in(&cfg, "C:\\w"), vec![ID.to_string()]);
+        assert!(claude_sessions("C:\\w", tmp.path()).is_empty());
+    }
 
     #[test]
     fn accepts_a_session_id_and_the_codex_marker_refuses_a_command() {
@@ -314,6 +359,20 @@ mod tests {
     fn sixteen_at_a_time_is_the_walk_width() {
         // The restore reads the stats and the heads sixteen at a time, on its worker thread.
         assert_eq!(PARALLEL, 16);
+        // Over many more files than that, the stats really run in parallel and never beyond it.
+        let names: Vec<String> = (0..200).map(|i| format!("{i}.jsonl")).collect();
+        let now = AtomicUsize::new(0);
+        let max = AtomicUsize::new(0);
+        let found = stat_all_with(&names, &|_| {
+            let c = now.fetch_add(1, Ordering::SeqCst) + 1;
+            max.fetch_max(c, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            now.fetch_sub(1, Ordering::SeqCst);
+            Some(UNIX_EPOCH)
+        });
+        assert_eq!(found.len(), 200);
+        let m = max.load(Ordering::SeqCst);
+        assert!(m > 1 && m <= PARALLEL, "{m} stats at once");
     }
 
     #[test]

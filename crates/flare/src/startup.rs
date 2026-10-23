@@ -502,7 +502,12 @@ pub fn session_lookup(
     e2e_on: bool,
     seam: Option<&str>,
 ) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
-    session_lookup_at(e2e_on, seam, flare_agent::resume::claude_home())
+    session_lookup_with(
+        e2e_on,
+        seam,
+        flare_agent::resume::claude_home(),
+        std::env::var_os("CLAUDE_CONFIG_DIR"),
+    )
 }
 
 /// `session_lookup` over a given home folder (the seam for the test).
@@ -511,10 +516,22 @@ pub fn session_lookup_at(
     seam: Option<&str>,
     home: Option<std::path::PathBuf>,
 ) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
+    session_lookup_with(e2e_on, seam, home, None)
+}
+
+/// `session_lookup_at` with the store Claude was told to use (`CLAUDE_CONFIG_DIR`).
+pub fn session_lookup_with(
+    e2e_on: bool,
+    seam: Option<&str>,
+    home: Option<std::path::PathBuf>,
+    config_dir: Option<std::ffi::OsString>,
+) -> std::sync::Arc<dyn flare_tabs::restore::SessionLookup> {
     if e2e_on && seam != Some("1") {
         std::sync::Arc::new(flare_tabs::restore::NoSessions)
     } else {
-        std::sync::Arc::new(crate::sessions::ClaudeSessionLookup::new(home))
+        std::sync::Arc::new(
+            crate::sessions::ClaudeSessionLookup::new(home).with_config_dir(config_dir),
+        )
     }
 }
 
