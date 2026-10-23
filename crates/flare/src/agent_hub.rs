@@ -1327,7 +1327,10 @@ mod tests {
         r.hub.drain_poll();
         r.advance(3_000);
         let ind = r.hub.indicator();
-        assert!(!ind.working_ids().contains("a"), "a startup paint is not work");
+        assert!(
+            !ind.working_ids().contains("a"),
+            "a startup paint is not work"
+        );
         assert!(ind.done_ids().is_empty(), "nothing finished");
         assert!(ind.question_ids().is_empty());
         assert!(ind.failed_ids().is_empty());

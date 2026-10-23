@@ -185,7 +185,11 @@ mod tests {
         let (s, at) = on_chunk(&s, &second, 5400);
         assert!(s.cleared, "the agent's own title starts the clear");
         assert_eq!(at, Some(agent_title_at));
-        assert_eq!(s.settle_at, Some(5400 + SETTLE_MS), "and the settle, not the ceiling");
+        assert_eq!(
+            s.settle_at,
+            Some(5400 + SETTLE_MS),
+            "and the settle, not the ceiling"
+        );
     }
 
     #[test]

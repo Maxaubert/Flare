@@ -2923,7 +2923,12 @@ impl AppCtl {
             agent_guard: agent_guard(&self.prefs),
             agent_here: front.is_some_and(|f| self.hub.agent_here(f)),
             agent_working: front.is_some_and(|f| self.hub.working(f)),
-            agent_selecting: self.term.program_selecting(),
+            // A selection the program made itself, or Flare's own selection in the grid: Ctrl+C
+            // copies it (rule 50), the guard leaves the key alone.
+            agent_selecting: self.term.program_selecting()
+                || self
+                    .front_tab()
+                    .is_some_and(|f| self.term.has_selection(&f.info())),
         }
     }
 
@@ -2945,7 +2950,15 @@ impl AppCtl {
             self.close_menu();
             return KeyOutcome::Consumed;
         }
-        let ctx = self.key_context();
+        let mut ctx = self.key_context();
+        // A text field of the window (the find bar, the sidebar find box, the help search) has the
+        // keys: Ctrl+C and Ctrl+D there are the field's, never the agent guard's.
+        if self
+            .app()
+            .is_some_and(|a| a.get_chrome_has_focus() || a.get_find_input_focused())
+        {
+            ctx.agent_guard = false;
+        }
         let d = chords::dispatch(ev, &ctx, &mut Target(self));
         let shell_in_front = self.front_handle().is_some();
         // Start-up trace: the first key that reaches a tab already showing a prompt row is the
@@ -5689,6 +5702,41 @@ mod tests {
         assert_eq!(f.key(c()), KeyOutcome::Pty, "Ctrl+C passes while working");
         flare_settings::agent_prefs::set_agent_guard(&f.prefs, false);
         assert_eq!(f.key(d()), KeyOutcome::Pty, "the guard off: both pass");
+    }
+
+    #[test]
+    fn ctrl_c_copies_a_grid_selection_over_an_idle_agent() {
+        let f = fx();
+        f.open_tabs(&["C:\\a"]);
+        let a = f.ctl.borrow().front_id().unwrap();
+        f.claude_in("C:\\a");
+        let c = || ctrl("c", "KeyC");
+        assert_eq!(
+            f.key(c()),
+            KeyOutcome::Consumed,
+            "no selection: taken while idle"
+        );
+        // Flare's own selection in the grid (the agent does not report the mouse).
+        let h = f.ctl.borrow().deps.host.handle(&a).unwrap();
+        h.with_emu(|e| {
+            e.feed(b"some output\r\n");
+            e.sel_apply(flare_term::sel_machine::SelOut::Set(
+                flare_term::sel_machine::SelSpec {
+                    block: false,
+                    start: flare_term::sel_machine::Anchor { row: 0, b: 0 },
+                    end: flare_term::sel_machine::Anchor { row: 0, b: 4 },
+                },
+            ));
+        });
+        assert!(h.with_emu_quiet(|e| e.has_selection()));
+        assert_eq!(
+            f.key(c()),
+            KeyOutcome::Consumed,
+            "Ctrl+C with a selection is the copy, not the guard"
+        );
+        f.pump_until("the copy", |f| {
+            f.clip.read_text().is_some_and(|t| !t.is_empty())
+        });
     }
 
     #[test]
