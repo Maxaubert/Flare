@@ -252,7 +252,26 @@ pub struct Inks {
     pub dim: slint::Color,
     pub accent: slint::Color,
     pub edge: slint::Color,
+    /// The warning glyph's ink, held to 3:1 on the ground.
+    pub warn: slint::Color,
 }
+
+/// A slint colour as `#rrggbb`.
+fn hex_of(c: slint::Color) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.red(), c.green(), c.blue())
+}
+
+/// The amber warning, moved until it reads on this ground (it was one fixed colour in every theme).
+fn warn_on(ground: slint::Color) -> slint::Color {
+    let held = flare_theme::ansi::ensure_contrast(WARN_AMBER, &hex_of(ground), 3.0);
+    match flare_render::color::Rgba::from_hex(&held) {
+        Some(c) => slint::Color::from_rgb_u8(c.r, c.g, c.b),
+        None => slint::Color::from_rgb_u8(0xf0, 0xb4, 0x5a),
+    }
+}
+
+/// PT's warning amber (overlay.css `.icon.warn`), the start of the walk to a readable ink.
+const WARN_AMBER: &str = "#f0b45a";
 
 /// The inks of the main window's theme now.
 pub fn inks_of(app: &crate::AppWindow) -> Inks {
@@ -263,6 +282,7 @@ pub fn inks_of(app: &crate::AppWindow) -> Inks {
         dim: t.get_dim(),
         accent: t.get_accent_hi(),
         edge: t.get_divider(),
+        warn: warn_on(t.get_tabs()),
     }
 }
 
@@ -697,6 +717,7 @@ impl Widget {
         self.comp.set_dim(i.dim);
         self.comp.set_accent(i.accent);
         self.comp.set_edge(i.edge);
+        self.comp.set_warn_ink(i.warn);
     }
 
     /// Sets the card to a face. A level or words update on the listening card changes those properties only.

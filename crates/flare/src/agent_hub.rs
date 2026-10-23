@@ -25,7 +25,7 @@ use flare_agent::reveal::agent_of_resume;
 use flare_agent::signal::{is_session_id, parse_agent_signal};
 use flare_agent::sonara::post_question_shown;
 use flare_agent::tab_look::Switches;
-use flare_diag::agent_diag::{AgentDiag, DiagSink, MarkSets};
+use flare_diag::agent_diag::{AgentDiag, DiagSink, DiagValue, MarkSets};
 use flare_dictation::route::SendTab;
 use flare_settings::kv::PrefStore;
 use flare_term::handle::TermHandle;
@@ -250,6 +250,7 @@ impl AgentHub {
     pub fn start_poll(&mut self, src: PollSource) {
         let tx = self.tx.clone();
         let wake = Arc::clone(&self.deps.wake);
+        let diag = Arc::clone(&self.deps.diag);
         let worker = PollWorker::start(
             Duration::from_millis(AGENT_POLL_MIN),
             move |_handle: PollHandle| {
@@ -262,7 +263,7 @@ impl AgentHub {
                     wake();
                 });
                 let deps = match src {
-                    PollSource::Real(mgr) => real_poll_deps(mgr),
+                    PollSource::Real(mgr) => real_poll_deps(mgr, diag),
                     PollSource::Fake(make) => make(),
                 };
                 (send, deps)
@@ -762,9 +763,16 @@ fn event_tab(ev: &HostEvent) -> Option<&str> {
     }
 }
 
+/// Milliseconds since the Unix epoch: the stamp a diag record carries.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 /// The poll's world over the real session manager and the native process snapshot. Built on the
 /// worker thread.
-fn real_poll_deps(mgr: Arc<SessionManager>) -> PollDeps {
+fn real_poll_deps(mgr: Arc<SessionManager>, diag: Arc<dyn DiagSink>) -> PollDeps {
     let started = Instant::now();
     let for_pids = Arc::clone(&mgr);
     let for_ticks = mgr;
@@ -785,8 +793,15 @@ fn real_poll_deps(mgr: Arc<SessionManager>) -> PollDeps {
             )
         }),
         now: Box::new(move || started.elapsed().as_millis() as u64),
-        failing: Some(Box::new(|| {
+        failing: Some(Box::new(move || {
             log::warn!("the agent poll's process query failed three times");
+            // The log reader's problems list shows it: stderr has no console in a GUI app, so without
+            // this record nothing could say why the agent marks went missing (review #103).
+            diag.record(
+                "agent-poll-failing",
+                &[("fails", DiagValue::Num(3))],
+                epoch_ms(),
+            );
         })),
     }
 }

@@ -43,6 +43,11 @@ pub const PICK_MS: u64 = 30_000;
 pub const SHOW_MS: u64 = 2200;
 /// A note stays this long (PT: SHOW_MS + 800).
 pub const NOTE_HIDE_MS: u64 = 3000;
+/// A warning stays this long: it says words were NOT sent or typed, and three seconds was too short to
+/// read it (review #93). The next press or the next face replaces it sooner.
+pub const WARN_HIDE_MS: u64 = 12_000;
+/// About how many characters of a note's message fit one line of the card.
+const NOTE_LINE_CHARS: usize = 34;
 /// The key feed's tick while a bare-modifier press is deciding (the hold time is up a little before it).
 pub const KEY_TICK_MS: u64 = 210;
 /// A hook that died is armed again after this long (N15; appHelper.ps1 HookLoop).
@@ -138,6 +143,15 @@ impl OverlayState {
                     }
                 }
                 196 + 48 * rows.len() as u32 + 30 * groups.len() as u32
+            }
+            // A note wraps (up to four lines) and the card grows with it.
+            OverlayState::Note { message, .. } => {
+                let lines = message
+                    .chars()
+                    .count()
+                    .div_ceil(NOTE_LINE_CHARS)
+                    .clamp(1, 4) as u32;
+                104 + 22 * (lines - 1)
             }
             _ => 104,
         }
@@ -677,6 +691,10 @@ impl Service {
                 if h == HookEvent::Ready {
                     self.become_service(fx);
                 } else {
+                    // The hook went (or never was ours): a key-up it will not deliver would leave the mic
+                    // open until the 300 s cap. What was recording is cancelled, the keys it held are
+                    // forgotten and a picker is closed (review #87).
+                    self.drop_recording(fx);
                     self.become_client(fx);
                     if h == HookEvent::Failed {
                         self.rearm(fx);
@@ -719,7 +737,11 @@ impl Service {
             tone,
         }));
         fx.push(SvcEffect::WidgetHide {
-            after_ms: NOTE_HIDE_MS,
+            after_ms: if tone == Tone::Warn {
+                WARN_HIDE_MS
+            } else {
+                NOTE_HIDE_MS
+            },
         });
     }
 
@@ -794,6 +816,23 @@ impl Service {
                 fx.push(SvcEffect::HookPick(true));
                 fx.push(SvcEffect::Widget(OverlayState::Pick { text, rows }));
             }
+        }
+    }
+
+    /// The hook is no longer ours: cancel what is recording, forget the held keys, end a pick.
+    fn drop_recording(&mut self, fx: &mut Vec<SvcEffect>) {
+        let live = self.outside || self.rec;
+        let picking = self.picking.is_some();
+        self.feed.reset();
+        self.clear_tick(fx);
+        self.end_pick(fx);
+        if live {
+            fx.push(SvcEffect::ToController(OutsideAction::Cancel));
+            self.rec = false;
+            self.busy_since = None;
+            self.note(fx, "Cancelled", Tone::Quiet);
+        } else if picking {
+            self.note(fx, "Not sent", Tone::Quiet);
         }
     }
 
@@ -1851,6 +1890,76 @@ mod tests {
             pick(vec![row(Some("A")), row(Some("A")), row(Some("B"))]).height(),
             196 + 144 + 60
         );
+    }
+
+    /// Review #93: a long note wraps and the card grows with it, and a warning stays longer than a note.
+    #[test]
+    fn a_long_note_grows_the_card_and_a_warning_is_held_longer() {
+        let note = |m: &str| OverlayState::Note {
+            message: m.into(),
+            tone: Tone::Warn,
+        };
+        assert_eq!(note("Not sent").height(), 104);
+        let long = "Not sent: Wind has unsent text in its prompt: send or clear it first";
+        assert!(
+            note(long).height() > 104,
+            "the card must grow for two lines"
+        );
+        assert!(
+            note(&"x".repeat(200)).height() <= 104 + 22 * 3,
+            "four lines at most"
+        );
+        let mut s = serving();
+        let fx = s.on(SvcEvent::PasteFailed, 1.0);
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::WidgetHide {
+                    after_ms: WARN_HIDE_MS
+                }
+            ),
+            "{fx:?}"
+        );
+        assert!(WARN_HIDE_MS > NOTE_HIDE_MS);
+        let fx = s.on(
+            SvcEvent::Routed(RouteResult::Message("Cancelled".into())),
+            2.0,
+        );
+        assert!(
+            has(
+                &fx,
+                &SvcEffect::WidgetHide {
+                    after_ms: NOTE_HIDE_MS
+                }
+            ),
+            "{fx:?}"
+        );
+    }
+
+    /// Review #87: a hook that fails mid-recording cancels the recording instead of leaving the mic open.
+    #[test]
+    fn a_failed_hook_cancels_a_recording_in_flight() {
+        let mut s = serving();
+        let fx = s.on(key(true, Some(7)), 10.0);
+        assert!(started_ctl(&fx));
+        let fx = s.on(SvcEvent::Hook(HookEvent::Failed), 11.0);
+        assert!(
+            has(&fx, &SvcEffect::ToController(OutsideAction::Cancel)),
+            "{fx:?}"
+        );
+        assert!(has(&fx, &SvcEffect::HookRec(false)), "{fx:?}");
+        // The key it held is forgotten: the next press starts afresh.
+        let fx = s.on(SvcEvent::Hook(HookEvent::Ready), 20.0);
+        assert!(!fx.iter().any(|e| matches!(e, SvcEffect::ToController(_))));
+        let fx = s.on(key(true, Some(7)), 30.0);
+        assert!(started_ctl(&fx), "{fx:?}");
+    }
+
+    #[test]
+    fn a_failed_hook_with_nothing_recording_cancels_nothing() {
+        let mut s = serving();
+        let fx = s.on(SvcEvent::Hook(HookEvent::Failed), 11.0);
+        assert!(!fx.iter().any(|e| matches!(e, SvcEffect::ToController(_))));
     }
 
     /* ----- crumbs ----- */

@@ -393,9 +393,16 @@ const PROBLEMS: &[&str] = &[
     "work-error",
     "panic",
     "render-error",
+    "agent-poll-failing",
 ];
 /// The agent indicator's records (not problems, the context for one).
-const AGENT: &[&str] = &["agent-hook", "agent-title", "agent-mark", "agent-restore"];
+const AGENT: &[&str] = &[
+    "agent-hook",
+    "agent-title",
+    "agent-mark",
+    "agent-restore",
+    "agent-poll-failing",
+];
 /// The crumbs an agent timeline shows beside the agent records.
 const AGENT_CRUMBS: &[&str] = &[
     "tab-open",
@@ -733,6 +740,10 @@ fn summary(raw: &Map<String, Value>) -> String {
             "{} restored with resume in {}",
             g("id"),
             or(raw.get("cwd"), "?")
+        ),
+        "agent-poll-failing" => format!(
+            "the agent poll's process query failed {} times in a row: tabs show no agent marks",
+            or(raw.get("fails"), "3")
         ),
         _ => {
             let rest: Map<String, Value> = raw
@@ -1125,6 +1136,21 @@ mod tests {
         let one = render(&opts(&["--agent", "--tab", "t3"]), "a", &lines, 0, &Utc);
         assert!(one.contains("t3 idle (stop)"), "{one}");
         assert!(!one.contains("t4"), "{one}");
+    }
+
+    /// Review #103: a poll that cannot read the process table is a problem the diag tool shows.
+    #[test]
+    fn a_failing_agent_poll_is_a_problem_line_and_part_of_the_agent_timeline() {
+        let lines = vec![line(
+            "2026-10-17T09:00:01.000Z",
+            r#"{"src":"app","k":"agent-poll-failing","fails":3}"#,
+        )];
+        let out = render(&opts(&[]), "d", &lines, 0, &Utc);
+        assert!(out.contains("agent-poll-failing"), "{out}");
+        assert!(out.contains("process query failed 3 times"), "{out}");
+        assert!(!out.contains("No stalls, errors or slow calls."), "{out}");
+        let agent = render(&opts(&["--agent"]), "d", &lines, 0, &Utc);
+        assert!(agent.contains("agent-poll-failing"), "{agent}");
     }
 
     #[test]

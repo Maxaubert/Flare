@@ -31,6 +31,8 @@ pub const DIAG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub const DIAG_KEEP: u32 = 4;
 /// The queue holds at most this many lines; past it the NEWEST are dropped and counted.
 pub const QUEUE_MAX: usize = 2000;
+/// The live file may pass `max_bytes` by this factor while rotation keeps failing; past it lines are dropped.
+const HARD_CAP_FACTOR: u64 = 2;
 /// How long a failed rotation waits before it is tried again (uptime ms).
 pub const ROTATE_RETRY_MS: u64 = 30_000;
 pub const FLUSH_MS: u64 = 250;
@@ -463,6 +465,36 @@ impl Inner {
         }
         let bytes = text.len() as u64;
         self.rotate_if_due(io, bytes);
+        // A rotation that keeps failing (the file is held open) must not let the log grow without bound:
+        // past twice the cap the batch is dropped, counted, and reported as `logger-dropped` once a
+        // rotation works again (review #104).
+        let mut kept = String::new();
+        let text = if io.size.saturating_add(bytes) > self.max_bytes.saturating_mul(HARD_CAP_FACTOR)
+        {
+            let mut n = 0u64;
+            for l in text.lines() {
+                match serde_json::from_str::<Value>(l) {
+                    // The one report of the failure itself still lands.
+                    Ok(v) if v["k"] == "logger-error" => {
+                        kept.push_str(l);
+                        kept.push('\n');
+                    }
+                    // A report of earlier drops carries its count forward.
+                    Ok(v) if v["k"] == "logger-dropped" => n += v["n"].as_u64().unwrap_or(1),
+                    _ => n += 1,
+                }
+            }
+            if n > 0 {
+                lock(&self.q).dropped += n;
+            }
+            if kept.is_empty() {
+                return Ok(());
+            }
+            kept.as_str()
+        } else {
+            text
+        };
+        let bytes = text.len() as u64;
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)

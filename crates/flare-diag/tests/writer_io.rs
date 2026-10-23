@@ -170,9 +170,15 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     assert!(log.failed());
     log.flush();
     let kinds = kinds_of(tmp.path());
-    for k in ["a", "b", "c", "d"] {
+    // The log keeps writing while the rotation fails, up to twice the cap (past it lines are dropped and
+    // counted: a held file must not grow without bound).
+    for k in ["a", "b", "c"] {
         assert!(kinds.iter().any(|x| x == k), "{kinds:?}");
     }
+    assert!(
+        kinds.iter().any(|x| x == "d" || x == "logger-dropped"),
+        "{kinds:?}"
+    );
     assert_eq!(kinds.iter().filter(|k| *k == "logger-error").count(), 1);
     assert!(!tmp.path().join("logs").join("diag.jsonl.1").exists());
     drop(held);
@@ -180,6 +186,49 @@ fn keeps_writing_when_a_rotation_fails_says_so_once_and_rotates_again_later() {
     log.write("main", "e", fields(&[("pad", json!(pad))]));
     log.flush();
     assert!(tmp.path().join("logs").join("diag.jsonl.1").exists());
+}
+
+#[test]
+fn a_rotation_that_keeps_failing_never_lets_the_live_file_grow_past_twice_the_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let up = Arc::new(AtomicU64::new(1_000));
+    let mut o = opts(tmp.path());
+    o.max_bytes = 600;
+    let u = up.clone();
+    o.uptime = Arc::new(move || u.load(Ordering::SeqCst));
+    let log = DiagLog::start(o);
+    let pad = "y".repeat(200);
+    log.write("main", "a", fields(&[("pad", json!(pad.clone()))]));
+    log.flush();
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(live(tmp.path()))
+        .unwrap();
+    for _ in 0..30 {
+        log.write("main", "b", fields(&[("pad", json!(pad.clone()))]));
+        log.flush();
+    }
+    let len = fs::metadata(live(tmp.path())).unwrap().len();
+    assert!(
+        len <= 2 * 600 + 300,
+        "the held file grew to {len} bytes: nothing bounded it"
+    );
+    drop(held);
+    up.fetch_add(30_001, Ordering::SeqCst);
+    log.write("main", "e", fields(&[("pad", json!(pad))]));
+    log.flush();
+    log.flush();
+    let all = lines_of(&live(tmp.path()));
+    let dropped: u64 = all
+        .iter()
+        .filter(|l| l["k"] == "logger-dropped")
+        .map(|l| l["n"].as_u64().unwrap_or(0))
+        .sum();
+    assert!(
+        dropped > 0,
+        "what was dropped is said once the log recovers: {all:?}"
+    );
 }
 
 #[test]
