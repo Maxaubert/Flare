@@ -1,9 +1,9 @@
 //! The process tree rules for finding an agent under a shell (Task 8; Prism Terminal's agentDetect.ts).
 //!
 //! Detection walks the process tree under each shell and matches command lines against the agents'
-//! PACKAGE signatures, not bare words: this machine's dev folder is literally named "Claude", and a
-//! tool touching files there must not light a tab. The only bare-name case is the program itself as
-//! the FIRST token (a native `claude.exe` started as `claude --resume`).
+//! PACKAGE signatures and program names, not bare words: this machine's dev folder is literally named
+//! "Claude", and a tool touching files there must not light a tab. A bare name counts only as the
+//! program itself, the FIRST token (a native `claude.exe` started as `claude --resume`).
 
 use crate::kinds::DetectedAgent;
 use regex::Regex;
@@ -18,22 +18,110 @@ pub struct ProcRow {
     pub cmd: String,
 }
 
-const AGENT_PATTERN: &str = r#"(?i)claude-code|(?:^"?|[\\/])claude(\.exe|\.cmd|\.ps1)?(["\s]|$)|(?:^"?|[\\/])(codex|aider|gemini)([\\/.]|["\s]|$)|@openai[\\/]codex|gemini-cli"#;
-const CLAUDE_PATTERN: &str = r#"(?i)claude-code|(?:^"?|[\\/])claude(\.exe|\.cmd|\.ps1)?(["\s]|$)"#;
-const CODEX_PATTERN: &str =
-    r#"(?i)(?:^"?|[\\/])codex(\.exe|\.cmd|\.ps1)?(["\s]|$)|@openai[\\/]codex"#;
+/// The package signatures: where the agents' own code lives, wherever the command line shows it
+/// (`node ...\node_modules\@anthropic-ai\claude-code\cli.js`). A folder that merely has such a word
+/// in its name never matches: the word must be a package scope, or a folder followed by the
+/// agent's entry file.
+const PACKAGE_PATTERN: &str = r#"(?i)@anthropic-ai[\\/]claude-code|@openai[\\/]codex|@google[\\/]gemini-cli|(?:^|[\\/"\s])(claude-code|gemini-cli)[\\/](?:cli\.[cm]?js|bin[\\/]|dist[\\/])"#;
 const PREFILTER_PATTERN: &str = r"(?i)claude|codex|aider|gemini";
 
-static AGENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(AGENT_PATTERN).expect("AGENT_RE"));
-static CLAUDE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(CLAUDE_PATTERN).expect("CLAUDE_RE"));
-static CODEX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(CODEX_PATTERN).expect("CODEX_RE"));
+static PACKAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(PACKAGE_PATTERN).expect("PACKAGE_RE"));
 static PREFILTER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(PREFILTER_PATTERN).expect("PREFILTER_RE"));
 
-/// Whether a command line is an AI agent (Claude Code, codex and kin), by its package signature.
+/// The agent a command line starts or runs, by its program (the FIRST token, bare name or path) or
+/// by a package signature. Never by a word somewhere in the arguments: a tool run in a folder named
+/// `claude` or `gemini`, or `git -C C:\src\claude status`, is not an agent.
+pub fn classify(cmd: &str) -> Option<DetectedAgent> {
+    let argv = split_command_line(cmd);
+    let first = argv.first().map(|a| program_name(a));
+    let by_program = first.and_then(agent_named);
+    if by_program.is_some() {
+        return by_program;
+    }
+    // A shim or exe in a later argument (`cmd /c C:\npm\claude.cmd`) counts only when it IS a
+    // program file of that name; a folder or a plain word never does.
+    if let Some(kind) = argv.iter().skip(1).find_map(|a| program_file(a)) {
+        return Some(kind);
+    }
+    let m = PACKAGE_RE.captures(cmd)?;
+    let text = m.get(0)?.as_str().to_ascii_lowercase();
+    Some(if text.contains("claude-code") {
+        DetectedAgent::Claude
+    } else if text.contains("codex") {
+        DetectedAgent::Codex
+    } else {
+        DetectedAgent::Other
+    })
+}
+
+/// Whether a command line is an AI agent (Claude Code, codex and kin).
 pub fn looks_like_agent(cmd: &str) -> bool {
-    AGENT_RE.is_match(cmd)
+    classify(cmd).is_some()
+}
+
+/// The arguments of a Windows command line, quotes removed (a program path may hold spaces).
+fn split_command_line(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut any = false;
+    for c in cmd.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any {
+                    out.push(std::mem::take(&mut cur));
+                    any = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                any = true;
+            }
+        }
+    }
+    if any {
+        out.push(cur);
+    }
+    out
+}
+
+/// The file name of a path, lower case, without the executable suffix a shell may add.
+fn program_name(arg: &str) -> String {
+    let base = arg
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(arg)
+        .to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".ps1", ".bat"] {
+        if let Some(stem) = base.strip_suffix(ext) {
+            return stem.to_string();
+        }
+    }
+    base
+}
+
+fn agent_named(name: impl AsRef<str>) -> Option<DetectedAgent> {
+    match name.as_ref() {
+        "claude" => Some(DetectedAgent::Claude),
+        "codex" => Some(DetectedAgent::Codex),
+        "aider" | "gemini" => Some(DetectedAgent::Other),
+        _ => None,
+    }
+}
+
+/// An argument that is an agent's program file: a path ending `.exe`, `.cmd` or `.ps1`.
+fn program_file(arg: &str) -> Option<DetectedAgent> {
+    let lower = arg.to_ascii_lowercase();
+    if ![".exe", ".cmd", ".ps1"].iter().any(|e| lower.ends_with(e)) {
+        return None;
+    }
+    agent_named(program_name(arg))
 }
 
 /// The broad word test the process query runs before the strict match above.
@@ -45,20 +133,22 @@ pub fn prefilter(cmd: &str) -> bool {
 /// else Codex; else Other (an agent with nothing to resume). A seen-set survives pid cycles.
 pub fn tree_agent_kind(rows: &[ProcRow], root_pid: u32) -> Option<DetectedAgent> {
     let mut kind: Option<DetectedAgent> = None;
-    for_each_descendant(rows, root_pid, |child| {
-        if !looks_like_agent(&child.cmd) {
-            return false;
-        }
-        if CLAUDE_RE.is_match(&child.cmd) {
+    for_each_descendant(rows, root_pid, |child| match classify(&child.cmd) {
+        Some(DetectedAgent::Claude) => {
             kind = Some(DetectedAgent::Claude);
-            return true;
+            true
         }
-        if CODEX_RE.is_match(&child.cmd) {
+        Some(DetectedAgent::Codex) => {
             kind = Some(DetectedAgent::Codex);
-        } else if kind.is_none() {
-            kind = Some(DetectedAgent::Other);
+            false
         }
-        false
+        Some(other) => {
+            if kind.is_none() {
+                kind = Some(other);
+            }
+            false
+        }
+        None => false,
     });
     kind
 }
@@ -134,6 +224,34 @@ mod tests {
         assert!(!looks_like_agent("git commit -m claude"));
         assert!(!looks_like_agent("notepad claude.txt"));
         assert!(!looks_like_agent("claudette.exe"));
+    }
+
+    #[test]
+    fn a_path_or_word_in_the_arguments_is_not_an_agent() {
+        for cmd in [
+            r"node C:\work\claude-code-ui\node_modules\.bin\vite.js dev",
+            r#"node "C:\Users\me\Claude Projects\site\node_modules\vite\bin\vite.js""#,
+            r"git -C C:\src\claude status",
+            r"git -C C:\src\gemini log",
+            r"node C:\src\codex\build.js",
+            r"python C:\tools\aider\notes.py",
+            r"npm run dev --prefix C:\work\claude-code-ui",
+        ] {
+            assert!(!looks_like_agent(cmd), "{cmd}");
+            assert_eq!(classify(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_shim_or_exe_argument_is_still_an_agent() {
+        assert_eq!(
+            classify(r#"cmd.exe /c "C:\npm\claude.cmd" --resume"#),
+            Some(DetectedAgent::Claude)
+        );
+        assert_eq!(
+            classify(r"pwsh -File C:\npm\codex.ps1"),
+            Some(DetectedAgent::Codex)
+        );
     }
 
     #[test]

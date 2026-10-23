@@ -239,7 +239,10 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
                 if path.is_empty() {
                     return Err("--user-data-dir= needs a path".to_string());
                 }
-                out.user_data_dir = Some(PathBuf::from(path));
+                // Absolute once, here: the lock and pipe names hash this text, and the updater
+                // restarts the app from another working folder with it.
+                out.user_data_dir =
+                    Some(std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path)));
             }
             other if !other.starts_with("--") => out.positional.push(other.to_string()),
             other => return Err(format!("unknown argument: {other}")),
@@ -398,6 +401,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(args.live_shell.as_deref(), Some("cmd"));
+    }
+
+    #[test]
+    fn a_relative_profile_becomes_absolute_so_every_spelling_shares_one_lock() {
+        let rel = parse_args(&a(&["--user-data-dir=dev"]), None).unwrap();
+        let dir = rel.user_data_dir.unwrap();
+        assert!(dir.is_absolute(), "{dir:?}");
+        assert!(dir.ends_with("dev"));
+        let abs = std::env::current_dir().unwrap().join("dev");
+        let spelled = parse_args(&a(&[&format!("--user-data-dir={}", abs.display())]), None)
+            .unwrap()
+            .user_data_dir
+            .unwrap();
+        assert_eq!(dir, spelled);
     }
 
     #[test]
