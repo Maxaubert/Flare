@@ -21,7 +21,7 @@ pub fn utf16_with_nul(s: &str) -> Vec<u16> {
 /// A movable global block holding `wide` (already zero-terminated), or why it could not be made.
 /// `size` is the block's byte size (the text's, except in the test that asks for an impossible one).
 fn alloc_text_block(wide: &[u16], size: usize) -> Result<*mut core::ffi::c_void, String> {
-    let bytes = wide.len() * std::mem::size_of::<u16>();
+    let bytes = std::mem::size_of_val(wide);
     // SAFETY: the block is ours until SetClipboardData takes it or the caller frees it; every
     // handle is checked for null before it is used; the copy stays inside both buffers.
     unsafe {
