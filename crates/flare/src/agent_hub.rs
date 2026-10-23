@@ -626,12 +626,6 @@ impl AgentHub {
         self.settle(now);
     }
 
-    pub fn pointer_moved(&mut self) {
-        let now = self.now();
-        self.ind.pointer_moved(now);
-        self.settle(now);
-    }
-
     /// Applies the poll worker's answers.
     pub fn drain_poll(&mut self) {
         let now = self.now();

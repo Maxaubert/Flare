@@ -36,15 +36,16 @@ pub struct Hooks {
 }
 
 /// Velopack's startup logic. Must be the first thing `main` does; it may end the process (the
-/// install and uninstall hooks) and returns at once on a dev build.
-pub fn bootstrap(hooks: Hooks) {
+/// install and uninstall hooks) and returns at once on a dev build. `aumid` is this run's taskbar
+/// identity (`flare_win::names::aumid_for_profile`): [`AUMID`] for the default profile.
+pub fn bootstrap(hooks: Hooks, aumid: &str) {
     let Hooks {
         before_uninstall,
         first_run,
     } = hooks;
     VelopackApp::build()
         .set_auto_apply_on_startup(false)
-        .set_app_user_model_id(AUMID)
+        .set_app_user_model_id(aumid)
         .on_before_uninstall_fast_callback(move |_v| before_uninstall())
         .on_after_install_fast_callback(|_v| {})
         .on_after_update_fast_callback(|_v| {})
