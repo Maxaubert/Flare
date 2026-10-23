@@ -215,6 +215,13 @@ export component ContextMenu inherits Rectangle {
             return reject;
         }
     }
+    // Called on every open, a reopen included: a menu replaced within one event-loop turn never
+    // shows `open` as false, so `changed open` alone would leave the old flyout and focus behind.
+    public function shown() {
+        root.open-sub = -1;
+        root.close-pending = false;
+        fs.focus();
+    }
     changed open => {
         root.open-sub = -1;
         root.close-pending = false;
@@ -267,6 +274,13 @@ export component ContextMenu inherits Rectangle {
         pointer-event(e) => {
             if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
                 root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            } else if e.button != PointerEventButton.right && e.kind == PointerEventKind.down {
+                // A left press on the fringe outside the panel is a press outside: it closes.
+                let px = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
+                let py = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
+                if px < panel.x || px >= panel.x + panel.width || py < panel.y || py >= panel.y + panel.height {
+                    root.dismissed();
+                }
             }
         }
     }
@@ -577,6 +591,7 @@ export component MenusPreview inherits Window {
     in-out property <length> menu-outside-y;
     out property <length> panel-x: menu.panel-x;
     out property <length> panel-y: menu.panel-y;
+    public function menu-shown() { menu.shown(); }
     out property <length> panel-w: menu.panel-w;
     out property <length> panel-h: menu.panel-h;
     out property <bool> fly-open: menu.fly-open;

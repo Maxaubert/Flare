@@ -361,6 +361,7 @@ export component AppWindow inherits Window {
     public function focus-find() { find.focus-input(); }
     public function focus-sidebar-find() { sb.focus-find(); }
     public function focus-overflow-field() { ov.focus-field(); }
+    public function menu-shown() { menu.shown(); }
 
     // ---- the grid pointer area, the find bar and the badge (Milestone 5) ----
     in property <MouseCursor> grid-cursor: MouseCursor.text;
@@ -893,6 +894,7 @@ export component AppWindow inherits Window {
             highlight <=> SettingsBridge.select-highlight;
             chosen(id) => { SettingsBridge.select-chosen(id); }
             dismissed => { SettingsBridge.select-dismissed(); }
+            outside-right(x, y) => { SettingsBridge.select-dismissed(); root.menu-outside-right(x, y); }
             key(k) => { SettingsBridge.select-key(k); }
         }
         menu := ContextMenu {

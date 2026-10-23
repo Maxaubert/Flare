@@ -303,16 +303,55 @@ fn a_right_click_outside_reports_its_point_and_a_left_press_only_closes() {
 
 #[test]
 fn the_overflow_list_hands_on_a_right_click_outside_too() {
-    let h = harness(1.0);
-    open_list(&h, vec![orow("a", false), orow("b", false)]);
-    h.right_click(5.0, 250.0);
-    assert_eq!(h.comp.get_ov_outside_rights(), 1);
-    assert!((h.comp.get_ov_outside_x() - 5.0).abs() < 0.01);
-    assert!((h.comp.get_ov_outside_y() - 250.0).abs() < 0.01);
-    assert_eq!(h.comp.get_ov_dismissed(), 0);
-    h.click(5.0, 250.0);
-    assert_eq!(h.comp.get_ov_dismissed(), 1);
-    assert_eq!(h.comp.get_ov_outside_rights(), 1);
+    for scale in SCALES {
+        let h = harness(scale);
+        open_list(&h, vec![orow("a", false), orow("b", false)]);
+        h.right_click(5.0, 250.0);
+        assert_eq!(h.comp.get_ov_outside_rights(), 1, "scale {scale}");
+        assert!(
+            (h.comp.get_ov_outside_x() - 5.0).abs() < 0.01,
+            "scale {scale}"
+        );
+        assert!(
+            (h.comp.get_ov_outside_y() - 250.0).abs() < 0.01,
+            "scale {scale}"
+        );
+        assert_eq!(h.comp.get_ov_dismissed(), 0, "scale {scale}");
+        h.click(5.0, 250.0);
+        assert_eq!(h.comp.get_ov_dismissed(), 1, "scale {scale}");
+        assert_eq!(h.comp.get_ov_outside_rights(), 1, "scale {scale}");
+    }
+}
+
+#[test]
+fn a_left_press_on_the_anchor_fringe_outside_the_panel_closes() {
+    for scale in SCALES {
+        let h = harness(scale);
+        open_menu(&h, vec![row("One"), row("Two")], 100.0, 100.0);
+        // The anchor square reaches 2 px past the panel's corner: that is outside, so a left press closes.
+        h.click(h.comp.get_panel_x() - 1.0, h.comp.get_panel_y() - 1.0);
+        assert_eq!(h.comp.get_menu_dismissed(), 1, "scale {scale}");
+        assert_eq!(h.comp.get_menu_outside_rights(), 0, "scale {scale}");
+    }
+}
+
+#[test]
+fn a_menu_replaced_in_one_turn_starts_without_a_flyout_and_escape_still_closes() {
+    let scale = 1.0;
+    let h = harness(scale);
+    open_menu(&h, flyout_rows(), 20.0, 20.0);
+    hover_row(&h, scale, 0);
+    assert!(h.comp.get_fly_open());
+    // The reopen: the rows change and `open` never goes false in between, as in a hand-over.
+    h.comp.set_menu_rows(menu_rows(flyout_rows()));
+    h.comp.set_menu_x(60.0);
+    h.comp.set_menu_y(60.0);
+    h.comp.invoke_menu_shown();
+    h.advance(0);
+    assert!(!h.comp.get_fly_open(), "the old flyout index is gone");
+    // The menu holds the keys: a real Escape reaches its FocusScope.
+    h.key_text(slint::SharedString::from(slint::platform::Key::Escape).as_str());
+    assert_eq!(h.comp.get_menu_dismissed(), 1);
 }
 
 #[test]

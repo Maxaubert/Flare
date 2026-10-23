@@ -315,6 +315,20 @@ fn compute_marks(prefs: &PrefStore) -> UiMarks {
 }
 
 /// The attention switches and the indicator style now.
+/// Replays a right click at `(x, y)` through Slint's own event path (move, press, release) from a zero
+/// timer, so the surface under a scrim that swallowed the press decides what it means.
+fn hand_on_right_click(weak: slint::Weak<AppWindow>, x: f32, y: f32) {
+    slint::Timer::single_shot(Duration::ZERO, move || {
+        let Some(app) = weak.upgrade() else { return };
+        let position = slint::LogicalPosition::new(x, y);
+        let win = app.window();
+        let button = slint::platform::PointerEventButton::Right;
+        win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        win.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        win.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    });
+}
+
 fn switches_of(prefs: &PrefStore) -> Switches {
     Switches {
         indicator: indicator_of(&LookStore::new(prefs.clone())),
@@ -2277,6 +2291,10 @@ impl AppCtl {
             app.set_menu_y(y);
         }
         self.push_menu();
+        if let Some(app) = self.app() {
+            // Every open, a reopen included (see ContextMenu::shown).
+            app.invoke_menu_shown();
+        }
         self.refresh();
     }
 
@@ -2303,27 +2321,24 @@ impl AppCtl {
         self.refresh();
     }
 
-    /// A right-click released outside an open menu or the +N list: both close, and the same
-    /// right-click is handed to whatever is under the point, so one click closes this menu and
+    /// A right-click released outside an open menu, the +N list or a Settings dropdown: all close, and
+    /// the same right-click is handed to whatever is under the point, so one click closes this menu and
     /// opens the next (a scrim swallows the press, so the surface beneath never saw it). The
     /// hand-over is Slint's own event path (`Window::dispatch_event`), no OS input, so every
-    /// surface decides what a right-click means exactly as for a real one (the terminal's
-    /// "send right clicks to programs" included). It runs from a zero timer: the real release is
+    /// surface decides what a right-click means exactly as for a real one (a program that owns the
+    /// mouse still gets the report, rule 156). It runs from a zero timer: the real release is
     /// still being delivered to the scrim, and the controller is borrowed for it.
     fn outside_right_click(&mut self, x: f32, y: f32) {
         self.close_menu_quietly();
+        let overflow_was_open = self.overflow.is_some();
         self.close_overflow_quietly();
         self.refresh();
-        let weak = self.weak.clone();
-        slint::Timer::single_shot(Duration::ZERO, move || {
-            let Some(app) = weak.upgrade() else { return };
-            let position = slint::LogicalPosition::new(x, y);
-            let win = app.window();
-            let button = slint::platform::PointerEventButton::Right;
-            win.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
-            win.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
-            win.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
-        });
+        // The hidden +N query field must not keep the keys; a surface that takes focus (a menu, the
+        // terminal) still takes it in the dispatched press.
+        if overflow_was_open {
+            self.focus_terminal();
+        }
+        hand_on_right_click(self.weak.clone(), x, y);
     }
 
     fn menu_picked(&mut self, i: i32) {

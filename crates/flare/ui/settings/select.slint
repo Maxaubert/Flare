@@ -124,6 +124,9 @@ export component SelectMenu inherits Rectangle {
     in-out property <int> highlight: -1;
     callback chosen(string);
     callback dismissed();
+    // A right-click released outside the menu: the point, in window coordinates. The menu is
+    // closed by the host, which hands the click on to what is under it.
+    callback outside-right(length, length);
     callback key(string);
 
     visible: root.open;
@@ -168,8 +171,14 @@ export component SelectMenu inherits Rectangle {
         width: parent.width;
         height: parent.height;
         enabled: root.open;
-        clicked => {
-            root.dismissed();
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right {
+                if e.kind == PointerEventKind.up {
+                    root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            } else if e.kind == PointerEventKind.down {
+                root.dismissed();
+            }
         }
     }
 

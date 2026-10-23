@@ -1276,6 +1276,75 @@ fn a_right_click_outside_an_open_menu_opens_the_menu_of_the_tab_under_it() {
 }
 
 #[test]
+fn a_right_click_outside_the_plus_n_list_closes_it_and_opens_the_tab_menu_under_it() {
+    let all = names(16);
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    let f = Fx::new(Opts::default().size(700, 600).saved(&refs));
+    f.restore();
+    let (mx, my) = f.more_center();
+    f.h.click(mx, my);
+    f.h.advance(0);
+    assert!(f.h.comp.get_overflow_open());
+    let (tx, ty) = f.tab_center(0);
+    f.h.right_click(tx, ty);
+    f.pump();
+    assert!(!f.h.comp.get_overflow_open(), "the list closed");
+    assert!(f.h.comp.get_menu_open(), "the tab menu opened");
+    assert!((f.h.comp.get_menu_x() - tx).abs() < 1.0);
+}
+
+#[test]
+fn closing_the_plus_n_list_by_a_right_click_on_a_bare_spot_gives_the_keys_back() {
+    let all = names(16);
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    let f = Fx::new(Opts::default().size(700, 600).saved(&refs));
+    f.restore();
+    let (mx, my) = f.more_center();
+    f.h.click(mx, my);
+    f.h.advance(0);
+    assert!(f.h.comp.get_overflow_open());
+    // The bar's far left, over no tab and no button.
+    f.h.right_click(1.0, 1.0);
+    f.pump();
+    assert!(!f.h.comp.get_overflow_open());
+    assert!(
+        !f.h.comp.get_chrome_has_focus(),
+        "no Slint control keeps the keys: they reach the terminal"
+    );
+}
+
+#[test]
+fn a_right_click_outside_a_settings_dropdown_closes_it_and_opens_the_tab_menu() {
+    let f = Fx::new(Opts::default().saved(&[r"C:", r"C:", r"C:\c"]));
+    f.restore();
+    let (tx, ty) = f.tab_center(0);
+    let b = slint::ComponentHandle::global::<crate::SettingsBridge>(&f.h.comp);
+    // The Settings controller is not part of this fixture: stand in for its close.
+    b.on_select_dismissed({
+        let w = slint::ComponentHandle::as_weak(&f.h.comp);
+        move || {
+            if let Some(a) = w.upgrade() {
+                slint::ComponentHandle::global::<crate::SettingsBridge>(&a).set_select_open(false);
+            }
+        }
+    });
+    b.set_select_x(300.0);
+    b.set_select_y(200.0);
+    b.set_select_w(160.0);
+    b.set_select_h(80.0);
+    b.set_select_open(true);
+    f.h.advance(0);
+    f.h.right_click(tx, ty);
+    f.pump();
+    assert!(!b.get_select_open(), "the dropdown closed");
+    assert!(
+        f.h.comp.get_menu_open(),
+        "the tab menu opened under the pointer"
+    );
+    assert!((f.h.comp.get_menu_x() - tx).abs() < 1.0);
+}
+
+#[test]
 fn exit_ends_its_tab_and_ctrl_w_closes_the_front() {
     let f = Fx::new(Opts::default().saved(&["C:\\a", "C:\\b"]));
     f.restore();
