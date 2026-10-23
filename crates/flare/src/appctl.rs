@@ -3446,6 +3446,7 @@ impl AppCtl {
     fn panel_wrap_toggled(&mut self) {
         let on = flare_settings::term_prefs::wrap_previews(&self.prefs);
         flare_settings::term_prefs::set_wrap_previews(&self.prefs, !on);
+        self.panels.set_wrap_moving(false);
         self.refresh();
     }
 
@@ -3459,16 +3460,20 @@ impl AppCtl {
         if app.get_sidebar_sliding() {
             return;
         }
+        self.panels.set_wrap_moving(true);
         self.panels.live_wrap(&app);
         let weak = self.me.clone();
         crate::timer_registry::set("panel.wrap-settle", WRAP_SETTLE_MS, false, move || {
             if let Some(rc) = weak.upgrade()
                 && let Ok(mut c) = rc.try_borrow_mut()
-                && let Some(app) = c.app()
-                && !app.get_sidebar_sliding()
-                && !app.get_panel_splitting()
             {
-                c.panels.settle_wrap(&app);
+                c.panels.set_wrap_moving(false);
+                if let Some(app) = c.app()
+                    && !app.get_sidebar_sliding()
+                    && !app.get_panel_splitting()
+                {
+                    c.panels.settle_wrap(&app);
+                }
             }
         });
     }
@@ -3483,6 +3488,7 @@ impl AppCtl {
     /// fits once at its new width.
     fn panel_splitter_released(&mut self, share: f32) {
         let Some(id) = self.front_id() else { return };
+        self.panels.set_wrap_moving(false);
         if self.panels.set_share(&id, share) {
             if let Some(app) = self.app() {
                 app.set_panel_share(share);
@@ -6647,15 +6653,22 @@ two",
             let y = f.h.comp.get_grid_top() + 200.0;
             f.h.move_to(x, y);
             f.h.press(x, y, slint::platform::PointerEventButton::Left);
+            let rows0 = rows_in_panel(&f);
+            let mut rows_changed = false;
             for k in [1.0f32, 2.0, 3.0, 4.0, 3.0, 2.0, -1.0, -3.0] {
                 drag_to(&f, x, y, -20.0 * k);
                 f.h.advance(0);
+                rows_changed |= rows_in_panel(&f) != rows0;
                 assert_eq!(
                     top_line_number(&f),
                     line,
                     "scale {scale}: the same line stays at the top at step {k}"
                 );
             }
+            assert!(
+                rows_changed,
+                "scale {scale}: the rows re-wrapped mid-drag (settle-only code fails here)"
+            );
             f.h.release(x, y, slint::platform::PointerEventButton::Left);
             f.pump();
             assert_eq!(
@@ -6697,7 +6710,8 @@ two",
                 f.pump();
                 worst = worst.max(t.elapsed());
                 changed_mid_drag |= rows_in_panel(&f) != rows0;
-                std::thread::sleep(Duration::from_millis(8));
+                // Long enough now and then for a worker's answer to land while the drag goes on.
+                std::thread::sleep(Duration::from_millis(if k % 5 == 0 { 150 } else { 8 }));
             }
             // A step hands the work to a worker and goes on: no step waits for a wrap of the whole file.
             assert!(
@@ -6717,8 +6731,8 @@ two",
                     && f.h.comp.get_panel_wrapped_cols() == f.h.comp.get_panel_wrap_cols()
             });
             assert!(
-                changed_mid_drag || rows_in_panel(&f) != rows0,
-                "scale {scale}: the rows re-wrapped"
+                changed_mid_drag,
+                "scale {scale}: a worker's answer re-wrapped the rows while the drag was still held"
             );
             let lines: Vec<slint::SharedString> =
                 big_body().lines().map(slint::SharedString::from).collect();
@@ -6733,18 +6747,98 @@ two",
 
     #[test]
     fn a_small_file_wrap_per_step_is_cheap() {
-        // The common case: a step's wrap of a file just under the live threshold costs a few milliseconds.
-        let lines: Vec<slint::SharedString> = (0..1000)
-            .map(|i| slint::SharedString::from(format!("line {i} {}", "word ".repeat(18))))
+        // The common case: a whole drag step (model build, push, top-line restore) on a file just under the live
+        // threshold. Judged against one bare wrap of the same file, so a loaded machine moves both.
+        let (f, _h, _) = live(Opts::default());
+        let body: String = (0..1000)
+            .map(|i| {
+                format!(
+                    "line {i} {}
+",
+                    "word ".repeat(34).trim_end()
+                )
+            })
             .collect();
-        assert!(lines.iter().map(|l| l.len() + 1).sum::<usize>() <= 200_000);
+        assert!((170_000..=200_000).contains(&body.len()), "{}", body.len());
+        show_text(&f, "small.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let lines: Vec<slint::SharedString> = body.lines().map(slint::SharedString::from).collect();
         let t = Instant::now();
-        for cols in 20..60 {
-            let _ = crate::panel_ctl::wrap_lines(&lines, cols, &|| false);
+        let _ = crate::panel_ctl::wrap_lines(&lines, 40, &|| false);
+        let base = t.elapsed();
+        let x = f.h.comp.get_panel_splitter_x() + f.h.comp.get_panel_splitter_w() / 2.0;
+        let y = f.h.comp.get_grid_top() + 200.0;
+        f.h.move_to(x, y);
+        f.h.press(x, y, slint::platform::PointerEventButton::Left);
+        let mut steps = Vec::new();
+        for k in 1..=24 {
+            let t = Instant::now();
+            drag_to(&f, x, y, -7.0 * k as f32);
+            steps.push(t.elapsed());
         }
-        let per = t.elapsed() / 40;
-        eprintln!("small-file wrap per step: {per:?}");
-        assert!(per < Duration::from_millis(16), "one wrap took {per:?}");
+        f.h.release(x, y, slint::platform::PointerEventButton::Left);
+        steps.sort();
+        let median = steps[steps.len() / 2];
+        eprintln!("small-file step {median:?} (bare wrap {base:?})");
+        assert!(
+            median < base * 40 + Duration::from_millis(60),
+            "a step took {median:?}, a bare wrap {base:?}"
+        );
+    }
+
+    /// A file between the live threshold and the settle threshold (about 540 KB).
+    fn mid_body() -> String {
+        format!(
+            "{}
+",
+            "word ".repeat(120).trim_end()
+        )
+        .repeat(900)
+    }
+
+    #[test]
+    fn a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker() {
+        let (f, _h, _) = live(Opts::default());
+        let body = mid_body();
+        assert!(body.len() > 200_000 && body.len() < 1_000_000);
+        show_text(&f, "mid.txt", &body);
+        f.pump_until("the wrapped rows", |f| {
+            f.h.comp.get_panel_kind() == 2 && f.h.comp.get_panel_wrapped()
+        });
+        let rows0 = rows_in_panel(&f);
+        let runs0 = f.ctl.borrow().panels.wrap_count();
+        // The slot's width moves with no splitter held (what a window edge does), and a refresh comes between steps
+        // (a shell redraw, an agent streaming).
+        f.h.comp.set_panel_share(0.3);
+        f.h.advance(0);
+        assert_eq!(
+            rows_in_panel(&f),
+            rows0,
+            "the first step did not wrap inline"
+        );
+        let runs1 = f.ctl.borrow().panels.wrap_count();
+        assert_eq!(runs1, runs0 + 1, "one worker wrap started");
+        for share in [0.33f32, 0.36, 0.4] {
+            f.h.comp.set_panel_share(share);
+            f.h.advance(0);
+            f.ctl.borrow_mut().refresh();
+            assert_eq!(
+                f.ctl.borrow().panels.wrap_count(),
+                runs1,
+                "a step or a refresh with a wrap in flight starts nothing (no inline wrap, no restart)"
+            );
+            assert_eq!(rows_in_panel(&f), rows0, "still no inline wrap");
+        }
+        // The worker's answer arrives before any settle timer.
+        f.pump_until("a worker answer", |f| rows_in_panel(f) != rows0);
+        f.ctl.borrow_mut().panels.set_wrap_moving(false);
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the exact wrap", |f| {
+            f.h.advance(0);
+            f.h.comp.get_panel_wrapped_cols() == f.h.comp.get_panel_wrap_cols()
+        });
     }
 
     /// A file of 300 long lines, each wrapping to several rows.
