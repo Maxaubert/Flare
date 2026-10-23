@@ -70,10 +70,8 @@ pub enum Event {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// The glue calls `PollWorker::again(tab)` (that tab's next answer is sent, changed or not: a claim
-    /// by a hook or a title about a tab the poll once answered "no agent" gets its correction) and then
-    /// `PollWorker::look_now()`.
-    AskLook { tab: String },
+    /// The glue calls `PollWorker::look_now()`.
+    AskLook,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -446,9 +444,7 @@ impl Indicator {
             return;
         }
         self.look_asked.insert(tab.to_string(), now);
-        effects.push(Effect::AskLook {
-            tab: tab.to_string(),
-        });
+        effects.push(Effect::AskLook);
     }
 
     fn on_poll(&mut self, now: u64, tab: &str, present: bool, kind: Option<DetectedAgent>) {
@@ -1086,25 +1082,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_claim_asks_the_poll_about_that_tab_by_name() {
-        let mut h = H::new();
-        let fx = h.ev(
-            0,
-            Event::Signal {
-                tab: "t9".into(),
-                signal: AgentSignal {
-                    state: HookState::Working,
-                    kind: None,
-                    session: None,
-                },
-            },
-        );
-        // The poll sends only changed answers: without the name, a tab it already reported "no agent"
-        // would keep the claim (a Claude icon, a Question) until the tab closed.
-        assert_eq!(fx, vec![Effect::AskLook { tab: "t9".into() }]);
-    }
-
-    #[test]
     fn a_poll_landing_mid_turn_keeps_the_working_a_hook_set_and_raises_no_finished() {
         let mut h = H::new();
         h.hook(0, "t1", HookState::Working);
@@ -1137,16 +1114,13 @@ mod tests {
     #[test]
     fn a_claude_title_is_the_agent_present_ahead_of_the_poll_and_asks_a_look() {
         let mut h = H::new();
-        assert_eq!(
-            h.title(0, "t1", "◐ Claude Code"),
-            vec![Effect::AskLook { tab: "t1".into() }]
-        );
+        assert_eq!(h.title(0, "t1", "◐ Claude Code"), vec![Effect::AskLook]);
         assert!(has(h.ind.agent_ids(), "t1"));
         assert_eq!(h.ind.agent_kind("t1"), Some(DetectedAgent::Claude));
         assert!(h.title(1000, "t1", "◐ Claude Code").is_empty());
         assert_eq!(
             h.title(15_000, "t1", "◐ Claude Code"),
-            vec![Effect::AskLook { tab: "t1".into() }]
+            vec![Effect::AskLook]
         );
         h.poll(16_000, "t1", true, Some(DetectedAgent::Claude));
         assert!(h.title(40_000, "t1", "◐ Claude Code").is_empty());
@@ -1159,7 +1133,7 @@ mod tests {
         // The poll already reported the tab, yet Claude's title says the agent changed.
         assert_eq!(
             h.title(1000, "t1", "\u{25d0} Claude Code"),
-            vec![Effect::AskLook { tab: "t1".into() }]
+            vec![Effect::AskLook]
         );
         // The poll's next answer names the new kind.
         h.poll(1500, "t1", true, Some(DetectedAgent::Claude));

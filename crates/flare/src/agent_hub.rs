@@ -319,11 +319,8 @@ impl AgentHub {
     fn run_effects(&self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::AskLook { tab } => {
+                Effect::AskLook => {
                     if let Some(p) = &self.poll {
-                        // The poll sends only answers that changed: a tab it already reported "no agent"
-                        // would never hear it was wrong without being asked about by name.
-                        p.again(&tab);
                         p.look_now();
                     }
                 }
@@ -1286,11 +1283,7 @@ mod tests {
         r.title("a", "");
         assert_eq!(r.hub.armed("a"), None);
         assert_eq!(*r.off.borrow(), vec!["a".to_string()]);
-        // Asked about by name twice: once when the title claimed the tab (review #47), once when it left.
-        assert_eq!(
-            *r.rec.agains.borrow(),
-            vec!["a".to_string(), "a".to_string()]
-        );
+        assert_eq!(*r.rec.agains.borrow(), vec!["a".to_string()]);
     }
 
     #[test]
