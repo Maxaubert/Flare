@@ -23,6 +23,7 @@ pub mod session_end;
 pub mod shell_open;
 pub mod single_instance;
 pub mod sysmenu;
+pub mod system_caret;
 pub mod taskbar;
 pub mod taskbar_flash;
 pub mod tcp_owner;

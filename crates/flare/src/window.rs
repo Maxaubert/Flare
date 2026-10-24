@@ -1819,11 +1819,34 @@ pub(crate) fn handle_key(kp: &KeyPath, ev: &KeyEvent) -> EventResult {
 
 /// The window gained or lost the focus (winit's `Focused`, or the test hook's `Focus`).
 pub(crate) fn handle_focus(kp: &KeyPath, on: bool) {
+    if let Some(app) = kp.app.upgrade() {
+        system_caret(&app, |p| p.focus(on));
+    }
     if on {
         // Coming back to the window is a look at the tab in front.
         kp.with_ctl(&mut |c| c.on_focus(true));
     } else {
         kp.with_ctl(&mut |c| c.on_focus_lost());
+    }
+}
+
+thread_local! {
+    /// The Win32 system caret (issue #70): it follows the IME area, so magnifiers and screen readers see where the
+    /// typing goes. Kept on the UI thread, which owns the window and so the caret.
+    static SYSTEM_CARET: RefCell<flare_win::system_caret::CaretPlan> = RefCell::default();
+}
+
+/// Plans a change to the system caret and makes its calls on the window.
+fn system_caret(
+    app: &AppWindow,
+    step: impl FnOnce(&mut flare_win::system_caret::CaretPlan) -> Vec<flare_win::system_caret::CaretOp>,
+) {
+    let ops = SYSTEM_CARET.with(|p| step(&mut p.borrow_mut()));
+    if ops.is_empty() {
+        return;
+    }
+    if let Some(hwnd) = hwnd_of(app) {
+        flare_win::system_caret::apply(hwnd, &ops);
     }
 }
 
@@ -1894,6 +1917,14 @@ fn place_ime(
         origin,
     );
     crate::ime::record_area(area);
+    // The focus is read here too, from Windows: a window that had it before the filter was installed never saw the
+    // event.
+    let focused = hwnd_of(app).is_some_and(flare_win::system_caret::has_focus);
+    system_caret(app, |p| {
+        let mut ops = p.focus(focused);
+        ops.extend(p.place(area.x, area.y, area.h as i32));
+        ops
+    });
     let _ = app.window().with_winit_window(|w| {
         w.set_ime_cursor_area(
             PhysicalPosition::new(area.x, area.y),
