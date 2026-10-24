@@ -871,14 +871,23 @@ impl WebHost {
             // SAFETY: as above.
             let _ = unsafe { webview.add_ProcessFailed(&h, &mut token) };
         }
-        // `window.close()` and a page asking for full screen of the whole window do nothing here.
+        // `window.close()` does nothing here. A page that puts an element in full screen (a video's button) is
+        // told to the app, which makes the page cover the window until the page leaves it.
         {
             let h = WindowCloseRequestedEventHandler::create(Box::new(move |_w, _a| Ok(())));
             // SAFETY: as above.
             let _ = unsafe { webview.add_WindowCloseRequested(&h, &mut token) };
-            let h = ContainsFullScreenElementChangedEventHandler::create(Box::new(
-                move |_w, _a| Ok(()),
-            ));
+            let (sink, tab) = (Arc::clone(&self.sink), name(tab));
+            let h = ContainsFullScreenElementChangedEventHandler::create(Box::new(move |w, _a| {
+                let Some(w) = w else { return Ok(()) };
+                // SAFETY: `w` is the live sender of this callback.
+                let on = unsafe { get_bool(|b| w.ContainsFullScreenElement(b)) };
+                sink(WebEvent::FullScreen {
+                    tab: tab.clone(),
+                    on,
+                });
+                Ok(())
+            }));
             // SAFETY: as above.
             let _ = unsafe { webview.add_ContainsFullScreenElementChanged(&h, &mut token) };
         }

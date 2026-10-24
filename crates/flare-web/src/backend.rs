@@ -127,6 +127,12 @@ pub enum WebEvent {
         tab: String,
         has: bool,
     },
+    /// The page put an element in full screen (a video's full-screen button, `requestFullscreen`), or left it
+    /// (Escape, `exitFullscreen`). The host is to make the page cover the window while `on` holds.
+    FullScreen {
+        tab: String,
+        on: bool,
+    },
     /// The browser process of the tab ended or the controller was closed under us.
     Gone {
         tab: String,
@@ -173,6 +179,7 @@ impl WebEvent {
             WebEvent::Still { .. } => "Still",
             WebEvent::Key { .. } => "Key",
             WebEvent::Focus { .. } => "Focus",
+            WebEvent::FullScreen { .. } => "FullScreen",
             WebEvent::Gone { .. } => "Gone",
             WebEvent::Script { .. } => "Script",
             WebEvent::Cdp { .. } => "Cdp",
