@@ -106,6 +106,26 @@ pub fn panel_types(ctx: &mut Ctx) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(500));
         }
     }
+    // How long a menu over the terminal waits before the page is hidden (the still in its place).
+    let _ = c.call(Method::BrowserOpen, json!({ "url": format!("{HOST}/doc.pdf") }), LOAD);
+    std::thread::sleep(Duration::from_millis(1500));
+    let g = probe(&mut app, "ui.rect", json!({"name": "grid"}));
+    let (gx, gy) = (g["dx"].as_f64().unwrap_or(0.0), g["dy"].as_f64().unwrap_or(0.0));
+    for i in 0..6 {
+        let t0 = std::time::Instant::now();
+        app.session.right_click((gx + 60.0) as f32, (gy + 60.0) as f32)?;
+        let mut hidden_ms = None;
+        while t0.elapsed() < Duration::from_secs(2) {
+            let s = web_state(&mut app);
+            if s["controller"]["visible"] == json!(false) {
+                hidden_ms = Some(t0.elapsed().as_millis());
+                break;
+            }
+        }
+        ctx.ok(true, format!("menu {i}: the page hid after {hidden_ms:?} ms"));
+        app.session.key("Escape")?;
+        std::thread::sleep(Duration::from_millis(600));
+    }
     let left = app.close();
     ctx.ok(left, "the app quits by itself");
     Ok(())
