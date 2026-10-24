@@ -2537,7 +2537,8 @@ fn a_page_in_full_screen_covers_the_window_and_gives_it_back_when_it_leaves() {
         !f.h.comp.window().is_fullscreen(),
         "the window is as it was"
     );
-    // The page moves back onto the slot once the window has shrunk (the next test).
+    // The window kept its size for full screen, so nothing waits for it to shrink: the page is back at once.
+    assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "back on the slot");
     assert_eq!(drawn(&f), slot_rect);
 }
 

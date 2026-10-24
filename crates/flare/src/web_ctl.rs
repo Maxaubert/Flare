@@ -396,6 +396,8 @@ pub struct WebCtl {
     window_follows: bool,
     /// The window's size the page last covered (set by every sync while it covers).
     covered: Option<(u32, u32)>,
+    /// The window's size at the last sync while no page covered it.
+    uncovered: Option<(u32, u32)>,
     /// The page left full screen and the window is on its way back: the page keeps covering the window until the
     /// window's size changes, so it moves into the panel once, at the window's new size, not first into a panel
     /// laid out for the full-screen window (the tab, and the size it covered).
@@ -502,6 +504,7 @@ impl WebCtl {
             covers: false,
             window_follows: false,
             covered: None,
+            uncovered: None,
             hold: None,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
@@ -738,10 +741,15 @@ impl WebCtl {
                 .contains_key(self.full.as_deref().unwrap_or_default());
         let size = slint::ComponentHandle::window(app).size();
         let size = (size.width, size.height);
-        self.covered = self.covers.then_some(size);
-        // A hold ends once the window has its new size, or its tab is no longer on screen.
+        if self.covers {
+            self.covered = Some(size);
+        } else {
+            self.covered = None;
+            self.uncovered = Some(size);
+        }
+        // A hold ends once the window has its new size, a Flare overlay opens, or its tab is no longer on screen.
         if let Some((tab, at)) = &self.hold
-            && (!shown || front_web != Some(tab.as_str()) || *at != size)
+            && (!shown || overlay || front_web != Some(tab.as_str()) || *at != size)
         {
             self.hold = None;
         }
@@ -1879,8 +1887,10 @@ impl WebCtl {
                     self.full = Some(tab);
                 } else if !on && self.full.as_deref() == Some(tab.as_str()) {
                     self.full = None;
+                    // Only a window that grew for full screen shrinks back: one that kept its size gets no hold.
                     if self.window_follows
                         && let Some(at) = self.covered
+                        && self.uncovered != Some(at)
                     {
                         self.hold = Some((tab, at));
                     }
