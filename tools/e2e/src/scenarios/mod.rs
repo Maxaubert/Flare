@@ -26,6 +26,7 @@ pub mod mini_app;
 pub mod mods;
 pub mod panel;
 pub mod panel_split;
+pub mod panel_types;
 pub mod settings_a;
 pub mod settings_b;
 pub mod settings_c;
@@ -538,6 +539,12 @@ pub const ALL: &[Scenario] = &[
         group: "panel",
         run: panel::panel_image,
         limit_secs: 240,
+    },
+    Scenario {
+        name: "panelTypes",
+        group: "panel",
+        run: panel_types::panel_types,
+        limit_secs: 300,
     },
     Scenario {
         name: "panelSplitter",
