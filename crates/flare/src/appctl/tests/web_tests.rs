@@ -2537,8 +2537,58 @@ fn a_page_in_full_screen_covers_the_window_and_gives_it_back_when_it_leaves() {
         !f.h.comp.window().is_fullscreen(),
         "the window is as it was"
     );
-    assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "back on the slot");
+    // The page moves back onto the slot once the window has shrunk (the next test).
     assert_eq!(drawn(&f), slot_rect);
+}
+
+/// The owner (2026-10-24): leaving full screen shook the UI, the page first moving into a panel laid out for the
+/// full-screen window and then again once the window had shrunk.
+#[test]
+fn a_page_leaving_full_screen_moves_into_the_panel_once_the_window_has_its_size() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let size = f.h.comp.window().size();
+    let slot_rect = drawn(&f);
+
+    full_screen(&f, &slot, &id, true);
+    // The OS gives the full-screen window the whole monitor.
+    f.h.comp.window().set_size(slint::PhysicalSize::new(
+        size.width + 400,
+        size.height + 200,
+    ));
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    let big = whole_window(&f);
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(big),
+        "the page covers the bigger window"
+    );
+
+    full_screen(&f, &slot, &id, false);
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "the window is leaving full screen"
+    );
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(big),
+        "until the window shrinks, the page keeps covering it"
+    );
+
+    f.h.comp.window().set_size(size);
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(slot_rect),
+        "then straight onto the slot"
+    );
 }
 
 #[test]

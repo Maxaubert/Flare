@@ -392,6 +392,14 @@ pub struct WebCtl {
     /// That page covers the whole window now: its tab is in front with its panel shown (set by every sync). The
     /// app makes the window full screen while it holds.
     covers: bool,
+    /// The app made the window full screen for the page (it was not already), so it leaves full screen with it.
+    window_follows: bool,
+    /// The window's size the page last covered (set by every sync while it covers).
+    covered: Option<(u32, u32)>,
+    /// The page left full screen and the window is on its way back: the page keeps covering the window until the
+    /// window's size changes, so it moves into the panel once, at the window's new size, not first into a panel
+    /// laid out for the full-screen window (the tab, and the size it covered).
+    hold: Option<(String, (u32, u32))>,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -492,6 +500,9 @@ impl WebCtl {
             bounds: None,
             full: None,
             covers: false,
+            window_follows: false,
+            covered: None,
+            hold: None,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
                 esc: RefCell::new(EscTwice::default()),
@@ -725,13 +736,21 @@ impl WebCtl {
             && self
                 .tabs
                 .contains_key(self.full.as_deref().unwrap_or_default());
-        let rect = if self.covers {
-            let size = slint::ComponentHandle::window(app).size();
+        let size = slint::ComponentHandle::window(app).size();
+        let size = (size.width, size.height);
+        self.covered = self.covers.then_some(size);
+        // A hold ends once the window has its new size, or its tab is no longer on screen.
+        if let Some((tab, at)) = &self.hold
+            && (!shown || front_web != Some(tab.as_str()) || *at != size)
+        {
+            self.hold = None;
+        }
+        let rect = if self.covers || self.hold.is_some() {
             PhysRect {
                 x: 0,
                 y: 0,
-                w: i32::try_from(size.width).unwrap_or(i32::MAX),
-                h: i32::try_from(size.height).unwrap_or(i32::MAX),
+                w: i32::try_from(size.0).unwrap_or(i32::MAX),
+                h: i32::try_from(size.1).unwrap_or(i32::MAX),
             }
         } else {
             rect
@@ -924,6 +943,9 @@ impl WebCtl {
         };
         if self.full.as_deref() == Some(tab) {
             self.full = None;
+        }
+        if self.hold.as_ref().is_some_and(|(t, _)| t == tab) {
+            self.hold = None;
         }
         if let Some(p) = t.probe {
             let _ = p.reply.send(Err(CtlError::new(
@@ -1124,6 +1146,11 @@ impl WebCtl {
     /// screen while it holds.
     pub fn covers_window(&self) -> bool {
         self.covers
+    }
+
+    /// The app made the window full screen for the page (true), or it was full screen already (false).
+    pub fn set_window_follows(&mut self, on: bool) {
+        self.window_follows = on;
     }
 
     pub fn has_tab(&self, tab: &str) -> bool {
@@ -1852,6 +1879,11 @@ impl WebCtl {
                     self.full = Some(tab);
                 } else if !on && self.full.as_deref() == Some(tab.as_str()) {
                     self.full = None;
+                    if self.window_follows
+                        && let Some(at) = self.covered
+                    {
+                        self.hold = Some((tab, at));
+                    }
                 }
                 // The window's rectangle is sent again at the next sync (the page grows or shrinks back).
                 self.bounds = None;
