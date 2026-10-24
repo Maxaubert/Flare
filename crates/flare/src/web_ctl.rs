@@ -1706,6 +1706,15 @@ impl WebCtl {
                     && !url.is_empty()
                 {
                     t.url = url.clone();
+                    // A new document: the last page's title is not its title (a page with none, a sound file,
+                    // would wear it). Its own title follows as a title change, or when its load ends.
+                    if !t.title.is_empty() {
+                        t.title.clear();
+                        out.push(WebOut::Title {
+                            tab: tab.clone(),
+                            title: String::new(),
+                        });
+                    }
                     out.push(WebOut::Address { tab, url });
                 }
             }

@@ -822,6 +822,17 @@ Plan: `docs/superpowers/plans/2026-10-21-surfaces.md`, stage 1. Decisions and ho
   `a_click_on_a_picture_shows_it_with_its_size`, `a_script_a_document_and_a_folder_never_open_a_panel`,
   `a_picture_named_like_one_that_is_a_script_is_not_shown`, `a_click_on_a_text_file_or_a_picture_asks_for_a_preview_and_a_script_is_still_revealed`,
   `a_link_that_changes_kind_shows_nothing` and `only_a_local_file_of_the_right_kind_is_loadable`.
+- **Reviewed by file type (2026-10-24).** Every type tried through the tools and the browser panel (the throwaway e2e
+  `panelTypes` on branch `review/panel-types`, files made by hand). Native panel: png, jpg, webp, bmp, ico, gif (first frame only),
+  UTF-8 and UTF-16 text, csv and md show; an empty or broken picture says "Flare cannot read this picture." and a binary
+  `.txt` "This file is not text."; svg, tiff, pdf, docx, xlsx and sound are refused, now with a hint that a PDF, sound or
+  video plays in the browser panel from a local web server. Browser panel: pdf (Edge's viewer), mp3, wav, flac and ogg (the
+  player), svg, gif and text show; tiff, csv, docx and xlsx are downloads and get the Save question. Fixed the same day: a
+  photo is drawn the way its camera held it (EXIF orientation, `a_photo_is_drawn_the_way_its_camera_held_it`), a picture too
+  big for the decoder's memory says it is too large, a sound file no longer keeps the last page's title in the header
+  (`a_new_document_with_no_title_does_not_wear_the_last_pages`; its load still reports "did not finish", as WebView2 hands
+  the stream to the player), and a file on a mapped network drive is `not_found` for both tools instead of each sending
+  the caller to the other (`a_file_on_a_network_drive_is_not_found_by_either_tool`).
 - **Setting "Open previews in Flare"** (Settings > Terminal > Links, `flare.window.openPreviews`, default on). Off: the click goes
   to Windows as before. The right-click menu's Open always does. Held by
   `with_previews_off_a_text_file_goes_to_windows_and_turning_them_on_again_shows_it`, `previews_are_on_until_a_stored_zero` and
