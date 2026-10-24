@@ -64,7 +64,9 @@ fn say_url(f: &Fx, cwd: &str, url: &str) {
     f.say(cwd, &format!("  Local:   {url}\r\n"));
 }
 
+/// The notifications shown, with "Notify me when an agent asks" switched on (it is off by default).
 fn toasts(f: &Fx) -> Rc<RefCell<Vec<Toast>>> {
+    set_notify_ask_on(&f.prefs, true);
     let got: Rc<RefCell<Vec<Toast>>> = Rc::default();
     let sink = Rc::clone(&got);
     f.ctl
@@ -492,6 +494,24 @@ fn coming_back_to_the_window_before_the_grace_ends_cancels_it() {
     assert!(got.borrow().is_empty());
 }
 
+/// The owner (2026-10-24): the toasts were unwanted, so a fresh profile shows none.
+#[test]
+fn by_default_a_question_shows_no_notification() {
+    let f = Fx::new();
+    let got: Rc<RefCell<Vec<Toast>>> = Rc::default();
+    let sink = Rc::clone(&got);
+    f.ctl
+        .borrow_mut()
+        .set_toast_sink(Rc::new(move |t: &Toast| sink.borrow_mut().push(t.clone())));
+    f.tabs(&["C:\\work", "C:\\other"]);
+    f.visit(1);
+    claude(&f, "C:\\work");
+    f.say("C:\\work", Q);
+    f.step(100);
+    f.step(2_000);
+    assert!(got.borrow().is_empty(), "{:?}", got.borrow());
+}
+
 #[test]
 fn the_setting_turns_the_notification_off() {
     let f = Fx::new();
@@ -558,7 +578,8 @@ fn a_notification_windows_would_not_take_flashes_the_taskbar_instead() {
     }
     f.ctl.borrow_mut().on_msg(UiMsg::ToastFailed);
     assert_eq!(flashes.get(), 1);
-    // With no sink at all (a build that never installed one) a question flashes too.
+    // With no sink at all (a build that never installed one) a question flashes too, the setting on.
+    set_notify_ask_on(&f.prefs, true);
     f.tabs(&["C:\\work", "C:\\other"]);
     f.visit(1);
     claude(&f, "C:\\work");

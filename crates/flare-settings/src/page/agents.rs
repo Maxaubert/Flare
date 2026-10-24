@@ -293,14 +293,13 @@ mod tests {
 
     #[test]
     fn every_switch_reads_on_unless_stored_zero() {
-        const SWITCHES: [&str; 7] = [
+        const SWITCHES: [&str; 6] = [
             "agent-done-on",
             "agent-rainbow",
             "agent-question-on",
             "agent-failed-on",
             "agent-hooks",
             "taskbar-badge",
-            "notify-ask",
         ];
         for id in SWITCHES {
             let key = def(id).keys[0];
@@ -333,6 +332,32 @@ mod tests {
                     the_row(&page, id).control,
                     Control::Switch { on: true },
                     "{id} reads on for any value other than 0"
+                );
+            });
+        }
+    }
+
+    /// The owner (2026-10-24): the question notification is off until it is switched on.
+    #[test]
+    fn the_question_notification_switch_reads_off_unless_stored_one() {
+        let key = def("notify-ask").keys[0];
+        let prefs = PrefStore::memory();
+        let look = LookStore::new(PrefStore::memory());
+        for (stored, on) in [
+            (None, false),
+            (Some("1"), true),
+            (Some("0"), false),
+            (Some("x"), false),
+        ] {
+            if let Some(v) = stored {
+                prefs.set(key, v);
+            }
+            with_env(&prefs, &look, ["", "", ""], |env| {
+                let page = build(env);
+                assert_eq!(
+                    the_row(&page, "notify-ask").control,
+                    Control::Switch { on },
+                    "stored {stored:?}"
                 );
             });
         }

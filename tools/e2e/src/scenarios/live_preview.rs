@@ -494,7 +494,14 @@ fn first_agent_is(app: &mut App, want: &str) -> bool {
 // ---- questionToast ---------------------------------------------------------------------------------------------
 
 pub fn question_toast(ctx: &mut Ctx) -> Result<(), String> {
+    // The setting on (it is off by default), stored in the profile.
     let w = ctx.new_world();
+    fs::create_dir_all(&w.profile).map_err(|e| e.to_string())?;
+    fs::write(
+        w.profile.join("settings.json"),
+        json!({"flare.window.notifyAsk": "1"}).to_string(),
+    )
+    .map_err(|e| e.to_string())?;
     let mut app = ctx.launch_in(
         &w,
         Launch {
@@ -509,14 +516,8 @@ pub fn question_toast(ctx: &mut Ctx) -> Result<(), String> {
     let left = app.close();
     ctx.ok(left, "the app quits by itself");
     r?;
-    // The setting off, stored in the profile of a world of its own.
+    // The setting at its default (off): a fresh profile in a world of its own.
     let off = ctx.new_world();
-    fs::create_dir_all(&off.profile).map_err(|e| e.to_string())?;
-    fs::write(
-        off.profile.join("settings.json"),
-        json!({"flare.window.notifyAsk": "0"}).to_string(),
-    )
-    .map_err(|e| e.to_string())?;
     let mut app = ctx.launch_in(
         &off,
         Launch {
