@@ -79,9 +79,10 @@ pub fn set_taskbar_badge_on(s: &PrefStore, on: bool) {
 }
 
 /// "Notify me when an agent asks" (Surfaces stage 7): a Windows notification when an agent in a tab out of
-/// sight, or in a window without the keyboard, raises a question. Default ON; only a stored "0" is off.
+/// sight, or in a window without the keyboard, raises a question. Default OFF (owner, 2026-10-24: the toasts were
+/// unwanted); only a stored "1" is on.
 pub fn notify_ask_on(s: &PrefStore) -> bool {
-    bool_pref_get(s, NOTIFY_ASK, true)
+    bool_pref_get(s, NOTIFY_ASK, false)
 }
 
 pub fn set_notify_ask_on(s: &PrefStore, on: bool) {
@@ -152,17 +153,17 @@ mod tests {
     }
 
     #[test]
-    fn the_question_notification_is_on_until_a_stored_zero() {
+    fn the_question_notification_is_off_until_a_stored_one() {
         let s = PrefStore::memory();
-        assert!(notify_ask_on(&s));
-        set_notify_ask_on(&s, false);
-        assert!(!notify_ask_on(&s));
-        assert_eq!(s.get(NOTIFY_ASK).as_deref(), Some("0"));
-        assert!(NOTIFY_ASK.starts_with("flare."));
+        assert!(!notify_ask_on(&s), "off by default");
         set_notify_ask_on(&s, true);
         assert!(notify_ask_on(&s));
+        assert_eq!(s.get(NOTIFY_ASK).as_deref(), Some("1"));
+        assert!(NOTIFY_ASK.starts_with("flare."));
+        set_notify_ask_on(&s, false);
+        assert!(!notify_ask_on(&s));
         s.set(NOTIFY_ASK, "junk");
-        assert!(notify_ask_on(&s), "an unknown value reads as the default");
+        assert!(!notify_ask_on(&s), "an unknown value reads as the default");
     }
 
     #[test]
