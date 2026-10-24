@@ -496,6 +496,9 @@ pub struct AppCtl {
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
+    /// Tabs whose panel their agent opened and where the hub has seen that agent since: when it is no longer
+    /// there, the panel closes (owner, 2026-10-24: a panel Claude opened belongs to its session, not the tab).
+    agent_panel_seen: HashSet<String>,
     /// The Settings controller (Task 41); the window hands it over after the controller exists.
     settings: Option<Rc<RefCell<SettingsCtl>>>,
     /// The Settings page is in front now.
@@ -874,6 +877,7 @@ impl AppCtl {
             looked: None,
             badge: None,
             restoring: HashMap::new(),
+            agent_panel_seen: HashSet::new(),
             settings: None,
             settings_shown: false,
             settings_present: false,
@@ -1667,6 +1671,29 @@ impl AppCtl {
                 self.model.set_agent(&id, want);
             }
         }
+        self.close_left_agent_panels();
+    }
+
+    /// The agent in `tab` opened its panel: the panel goes when that agent leaves.
+    fn mark_agent_panel(&mut self, tab: &str) {
+        self.panels.mark_agent(tab);
+        if self.hub.agent_here(tab) {
+            self.agent_panel_seen.insert(tab.to_string());
+        }
+    }
+
+    /// A panel its agent opened closes once the hub, having seen that agent in the tab, no longer does. A tab
+    /// whose agent has not been seen yet (a resume still starting) keeps its panel. The caller refreshes.
+    fn close_left_agent_panels(&mut self) {
+        let tabs = self.panels.agent_tabs();
+        self.agent_panel_seen.retain(|t| tabs.contains(t));
+        for tab in tabs {
+            if self.hub.agent_here(&tab) {
+                self.agent_panel_seen.insert(tab);
+            } else if self.agent_panel_seen.remove(&tab) && self.panels.close_for_agent(&tab) {
+                self.panel_changed(&tab);
+            }
+        }
     }
 
     /// A restored tab stops wearing its saved agent once the hub has seen the agent, or once the
@@ -2268,6 +2295,7 @@ impl AppCtl {
     /// its dev chip, its notifier row and its browser. One list for a close and for a shell that exited.
     fn forget_tab_surfaces(&mut self, id: &str) {
         self.panels.forget(id);
+        self.agent_panel_seen.remove(id);
         self.convo.forget(id);
         self.dev_forget(id);
         self.s7.notifier.forget(id);
@@ -3357,6 +3385,7 @@ impl AppCtl {
                         "the panel could not be opened",
                     ));
                 }
+                self.mark_agent_panel(&tab);
                 let snap = self
                     .panels
                     .snap(&tab)
@@ -3394,6 +3423,7 @@ impl AppCtl {
                 if !self.panels.show_titled(&tab, kind, &abs, title.as_deref()) {
                     return Err(CtlError::new(code::BAD_PARAMS, "that file cannot be shown"));
                 }
+                self.mark_agent_panel(&tab);
                 self.after_ctl_show(&tab)
             }
             CtlOp::ShowText { tab, text, title } => {
@@ -3403,6 +3433,7 @@ impl AppCtl {
                 if !self.panels.show_text(&tab, &text, title.as_deref()) {
                     return Err(CtlError::new(code::INTERNAL, "the text could not be shown"));
                 }
+                self.mark_agent_panel(&tab);
                 self.after_ctl_show(&tab)
             }
             // Answered by the browser's message, never here (see `ctl_browser`).
@@ -7392,6 +7423,7 @@ two",
             target: target.clone(),
             open,
             width,
+            by_agent: false,
         };
         let file = f.dir.path().join("panels.json");
         let saved = [
@@ -8293,6 +8325,52 @@ two",
             self.pump_until("the agent to be here", |f| f.agent_here(&id));
             id
         }
+
+        /// The process poll no longer finds the agent in `id`'s shell: it has exited. The answer is taken as
+        /// production takes it, on the host's wake.
+        fn agent_exits(&self, id: &str) {
+            let mut c = self.ctl.borrow_mut();
+            c.hub_mut().queue_poll_answer(id, false, None);
+            c.host_wake();
+        }
+    }
+
+    #[test]
+    fn a_panel_claude_opened_closes_when_claude_leaves() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.claude_in("C:\\a");
+        ctl_call(&f, show_text_op(&a, "report", Some("Report"))).unwrap();
+        f.pump_until("the panel", |f| f.h.comp.get_panel_open());
+        f.agent_exits(&a);
+        f.pump_until("the panel to close", |f| !f.h.comp.get_panel_open());
+        // What it showed is the user's now: the toggle chord brings it back, and it stays.
+        assert!(f.ctl.borrow().panels.agent_tabs().is_empty());
+        assert!(f.ctl.borrow_mut().panels.reopen(&a));
+        f.ctl.borrow_mut().refresh();
+        f.pump();
+        assert!(f.h.comp.get_panel_open());
+    }
+
+    #[test]
+    fn a_panel_the_user_opened_stays_when_claude_leaves() {
+        let (f, _h, _) = live(Opts::default());
+        let a = f.claude_in("C:\\a");
+        ctl_call(&f, show_text_op(&a, "report", None)).unwrap();
+        // The user shows a file of their own in the same panel: it is theirs from then on.
+        let note = f.dir.path().join("mine.txt");
+        std::fs::write(&note, "mine").unwrap(); // sync-ok: test code only
+        assert!(f.ctl.borrow_mut().panels.show(
+            &a,
+            flare_surfaces::PanelKind::Text,
+            &note.to_string_lossy()
+        ));
+        f.ctl.borrow_mut().refresh();
+        f.pump_until("the panel", |f| f.h.comp.get_panel_open());
+        f.agent_exits(&a);
+        f.ctl.borrow_mut().refresh();
+        f.pump();
+        assert!(!f.agent_here(&a), "the agent has left");
+        assert!(f.h.comp.get_panel_open(), "the user's panel stays");
     }
 
     #[test]

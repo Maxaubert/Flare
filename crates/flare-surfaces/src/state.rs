@@ -16,6 +16,9 @@ pub struct TabPanel {
     /// The slot's share of the page width. None until the user drags the splitter (never set is
     /// not zero: the layout's default applies, rule 40).
     pub width: Option<f32>,
+    /// The agent in the tab opened it (a control channel call), so it closes when that agent leaves. Anything the
+    /// user shows in the panel makes it theirs.
+    pub by_agent: bool,
 }
 
 impl TabPanel {
@@ -26,6 +29,7 @@ impl TabPanel {
             target,
             open: true,
             width: None,
+            by_agent: false,
         })
     }
 }
@@ -65,9 +69,45 @@ impl TabPanels {
                 target,
                 open: true,
                 width,
+                by_agent: false,
             },
         );
         true
+    }
+
+    /// The agent in the tab opened what its panel shows. False when the tab has no panel.
+    pub fn mark_agent(&mut self, tab: &str) -> bool {
+        match self.by_tab.get_mut(tab) {
+            Some(p) => {
+                p.by_agent = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The tabs whose OPEN panel their agent opened, sorted.
+    pub fn agent_tabs(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .by_tab
+            .iter()
+            .filter(|(_, p)| p.open && p.by_agent)
+            .map(|(t, _)| t.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// The agent that opened the tab's panel has left: the mark goes, so what the panel showed comes back by the
+    /// toggle chord as the user's. False when the panel was not the agent's.
+    pub fn unmark_agent(&mut self, tab: &str) -> bool {
+        match self.by_tab.get_mut(tab) {
+            Some(p) if p.by_agent => {
+                p.by_agent = false;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Changes what the tab's panel points at without opening, closing or moving it (a web page the
@@ -176,6 +216,25 @@ mod tests {
         assert!(p.reopen("t1"));
         assert!(!p.reopen("t1"));
         assert!(!p.reopen("nope"));
+    }
+
+    #[test]
+    fn an_agents_panel_is_listed_while_open_and_a_new_show_makes_it_the_users() {
+        let mut p = TabPanels::default();
+        assert!(!p.mark_agent("t1"));
+        p.show("t1", img(), "a.png");
+        p.show("t2", img(), "b.png");
+        assert!(p.mark_agent("t1"));
+        assert_eq!(p.agent_tabs(), vec!["t1".to_string()]);
+        p.close("t1");
+        assert!(p.agent_tabs().is_empty(), "a closed panel is not listed");
+        p.reopen("t1");
+        assert!(p.unmark_agent("t1"));
+        assert!(!p.unmark_agent("t1"));
+        assert!(p.agent_tabs().is_empty());
+        p.mark_agent("t2");
+        p.show("t2", PanelKind::Text, "c.txt");
+        assert!(p.agent_tabs().is_empty(), "what the user shows is theirs");
     }
 
     #[test]

@@ -315,6 +315,7 @@ impl AppCtl {
             return;
         }
         let answer = self.show_mod_panel(&tab, &mod_id).map(|spec| {
+            self.mark_agent_panel(&tab);
             // A tab that is behind gets its page made hidden, so the mod is running whether or not anyone looks.
             self.web.ensure_hidden(&tab, &spec.url.clone(), Some(spec));
             self.web_moved();
@@ -344,7 +345,10 @@ impl AppCtl {
             return;
         }
         let spec = match self.show_mod_panel(&tab, &mod_id) {
-            Ok(s) => s,
+            Ok(s) => {
+                self.mark_agent_panel(&tab);
+                s
+            }
             Err(e) => {
                 let _ = reply.send(Err(e));
                 return;

@@ -62,11 +62,13 @@ fn parse_panel(p: &Value) -> Option<TabPanel> {
         .and_then(Value::as_f64)
         .filter(|w| w.is_finite() && *w > 0.0 && *w < 1.0)
         .map(|w| w as f32);
+    let by_agent = p.get("agent").and_then(Value::as_bool).unwrap_or(false);
     Some(TabPanel {
         kind,
         target,
         open,
         width,
+        by_agent,
     })
 }
 
@@ -82,6 +84,10 @@ pub fn panels_json(tabs: &[SavedTabPanel]) -> String {
                 if let Some(w) = p.width {
                     // Four places are far finer than a pixel and keep the file stable.
                     panel["width"] = json!((f64::from(w) * 10_000.0).round() / 10_000.0);
+                }
+                // Only the agent's panel says so: a file the user opened is written as before.
+                if p.by_agent {
+                    panel["agent"] = json!(true);
                 }
                 json!({ "cwd": t.cwd, "panel": panel })
             }
@@ -207,6 +213,7 @@ mod tests {
             target: target.into(),
             open,
             width,
+            by_agent: false,
         }
     }
 
@@ -231,6 +238,22 @@ mod tests {
             ),
         ];
         assert_eq!(parse_panels(&panels_json(&tabs)), tabs);
+    }
+
+    #[test]
+    fn an_agents_panel_keeps_its_mark_and_only_it_writes_one() {
+        let mut theirs = panel(PanelKind::Text, r"C:\w\r.md", true, None);
+        theirs.by_agent = true;
+        let tabs = vec![
+            entry(r"C:\w", Some(theirs)),
+            entry(
+                r"C:\v",
+                Some(panel(PanelKind::Text, r"C:\v\n.md", true, None)),
+            ),
+        ];
+        let raw = panels_json(&tabs);
+        assert_eq!(raw.matches(r#""agent":true"#).count(), 1);
+        assert_eq!(parse_panels(&raw), tabs);
     }
 
     #[test]
