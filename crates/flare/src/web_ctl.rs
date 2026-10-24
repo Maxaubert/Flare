@@ -722,6 +722,12 @@ impl WebCtl {
         }
         let shown = app.get_panel_shown();
         let overlay = app.get_overlay_open();
+        // A Flare menu or dialog over a page in full screen ends the full screen: the page goes back into its
+        // panel (where its still is drawn) and the window back to what it was, not a whole-window frame
+        // squashed into the panel's box under the menu.
+        if overlay && shown && self.full.is_some() && self.full.as_deref() == front_web {
+            self.leave_full();
+        }
         let scale = app.get_scale();
         let rect = phys_rect(
             app.get_panel_web_x(),
@@ -1154,6 +1160,23 @@ impl WebCtl {
     /// screen while it holds.
     pub fn covers_window(&self) -> bool {
         self.covers
+    }
+
+    /// The page in full screen is asked to leave it, and is treated as having left at once (its own word that it
+    /// has is then nothing new). The window goes back with the next sync.
+    pub fn leave_full(&mut self) {
+        let Some(tab) = self.full.take() else { return };
+        self.covers = false;
+        self.hold = None;
+        self.bounds = None;
+        if let Some(b) = self.backend() {
+            // Id 0 is no script anyone waits for.
+            b.run_script(
+                &tab,
+                0,
+                "document.fullscreenElement && document.exitFullscreen(); 0",
+            );
+        }
     }
 
     /// The app made the window full screen for the page (true), or it was full screen already (false).
