@@ -117,6 +117,7 @@ impl AppCtl {
             (true, None) => {
                 let was = w.is_fullscreen();
                 self.web_full_was = Some(was);
+                self.web.set_window_follows(!was);
                 if !was {
                     // The UI turns solid and the backdrop comes off before the OS is asked (D7).
                     crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());

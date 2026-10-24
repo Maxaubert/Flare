@@ -2537,8 +2537,139 @@ fn a_page_in_full_screen_covers_the_window_and_gives_it_back_when_it_leaves() {
         !f.h.comp.window().is_fullscreen(),
         "the window is as it was"
     );
+    // The window kept its size for full screen, so nothing waits for it to shrink: the page is back at once.
     assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "back on the slot");
     assert_eq!(drawn(&f), slot_rect);
+}
+
+/// The owner (2026-10-24): leaving full screen shook the UI, the page first moving into a panel laid out for the
+/// full-screen window and then again once the window had shrunk.
+#[test]
+fn a_page_leaving_full_screen_moves_into_the_panel_once_the_window_has_its_size() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let size = f.h.comp.window().size();
+    let slot_rect = drawn(&f);
+
+    full_screen(&f, &slot, &id, true);
+    // The OS gives the full-screen window the whole monitor.
+    f.h.comp.window().set_size(slint::PhysicalSize::new(
+        size.width + 400,
+        size.height + 200,
+    ));
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    let big = whole_window(&f);
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(big),
+        "the page covers the bigger window"
+    );
+
+    full_screen(&f, &slot, &id, false);
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "the window is leaving full screen"
+    );
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(big),
+        "until the window shrinks, the page keeps covering it"
+    );
+
+    f.h.comp.window().set_size(size);
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(slot_rect),
+        "then straight onto the slot"
+    );
+}
+
+fn asked_to_leave_full_screen(slot: &Slot, tab: &str) -> bool {
+    fake(slot)
+        .calls()
+        .iter()
+        .any(|c| matches!(c, Call::Script(t, _, js) if t == tab && js.contains("exitFullscreen")))
+}
+
+/// The review (2026-10-24): a menu over a page in full screen had a whole-window frame squashed into the panel.
+#[test]
+fn a_flare_menu_over_a_page_in_full_screen_ends_the_full_screen() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    full_screen(&f, &slot, &id, true);
+    assert!(f.h.comp.window().is_fullscreen());
+    f.h.comp.set_dialog_open(true);
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.ctl.borrow().web.covers_window());
+    assert!(
+        asked_to_leave_full_screen(&slot, &id),
+        "the page is told to leave full screen"
+    );
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "the window is as it was"
+    );
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(drawn(&f)),
+        "the page is back in its panel"
+    );
+    // The dialog closes: the page stays in its panel.
+    f.h.comp.set_dialog_open(false);
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.h.comp.window().is_fullscreen());
+}
+
+/// The review (2026-10-24): F11 during a page in full screen left the page covering a window that was not.
+#[test]
+fn f11_takes_a_page_out_of_full_screen_and_the_window_back() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    full_screen(&f, &slot, &id, true);
+    assert!(f.h.comp.window().is_fullscreen());
+    // F11 acts, and the shell hears it too.
+    f.key(KeyEvent::new("F11", "F11"));
+    f.h.advance(0);
+    f.pump();
+    assert!(!f.ctl.borrow().web.covers_window());
+    assert!(asked_to_leave_full_screen(&slot, &id));
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "the window is as it was"
+    );
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(drawn(&f)),
+        "the page is back in its panel"
+    );
+    // The page's own word that it has left changes nothing, and the next F11 is the window's again.
+    full_screen(&f, &slot, &id, false);
+    assert!(!f.h.comp.window().is_fullscreen());
+    // F11 acts, and the shell hears it too.
+    f.key(KeyEvent::new("F11", "F11"));
+    f.h.advance(0);
+    assert!(
+        f.h.comp.window().is_fullscreen(),
+        "F11 makes the window full screen"
+    );
 }
 
 #[test]

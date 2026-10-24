@@ -4668,6 +4668,12 @@ impl ChordTarget for Target<'_> {
     }
 
     fn toggle_fullscreen(&mut self) {
+        // A page in full screen: F11 takes it out, and the window goes back to what it was before the page.
+        if self.0.web.covers_window() {
+            self.0.web.leave_full();
+            self.0.web_moved();
+            return;
+        }
         if let Some(app) = self.0.app() {
             // The UI turns solid and the backdrop comes off before the OS is asked (D7).
             crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
