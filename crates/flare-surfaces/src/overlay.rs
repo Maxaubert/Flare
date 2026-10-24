@@ -41,11 +41,13 @@ pub enum Overlay {
     Diagnostics,
     /// A tab being dragged: its ghost follows the pointer over the page.
     TabDrag,
+    /// The collapsed sidebar, out on a hover, reaching over the panel's slot.
+    SidebarOverSlot,
 }
 
 impl Overlay {
     /// All of them.
-    pub const ALL: [Overlay; 15] = [
+    pub const ALL: [Overlay; 16] = [
         Overlay::Menu,
         Overlay::Overflow,
         Overlay::Dialog,
@@ -61,6 +63,7 @@ impl Overlay {
         Overlay::Find,
         Overlay::Diagnostics,
         Overlay::TabDrag,
+        Overlay::SidebarOverSlot,
     ];
 }
 

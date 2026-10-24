@@ -4329,6 +4329,10 @@ impl AppCtl {
             self.update_stepped_aside = true;
         }
         if let Some(app) = self.app() {
+            // A question has the keys: a page that holds them (Ctrl+W pressed in it) gives them back.
+            if self.ask.is_some() {
+                self.web.release_focus(crate::window::hwnd_of(&app));
+            }
             match &self.ask {
                 Some(a) => {
                     let v = ask_view(a, &crate::chrome_apply::text_ink());

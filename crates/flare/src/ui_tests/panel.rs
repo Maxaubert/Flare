@@ -614,6 +614,14 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
         Overlay::Find => c.set_find_open(on),
         Overlay::Diagnostics => c.set_overlay_visible(on),
         Overlay::TabDrag => c.set_carrying(on),
+        Overlay::SidebarOverSlot => {
+            // Vertical tabs, collapsed, out on a hover, and wider than the terminal beside the panel.
+            c.set_layout_vertical(true);
+            c.set_has_tabs(true);
+            c.set_sidebar_collapsed(true);
+            c.set_sidebar_width(2000.0);
+            c.set_sidebar_revealed(on);
+        }
     }
 }
 
@@ -675,6 +683,7 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
         "root.find-open",
         "root.overlay-visible",
         "root.carrying",
+        "root.sidebar-over-slot",
     ] {
         assert!(line.contains(term), "overlay-open misses {term}");
     }

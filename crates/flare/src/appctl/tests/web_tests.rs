@@ -1456,6 +1456,25 @@ fn a_download_is_asked_about_and_saved_only_on_a_yes() {
     assert!(!f.h.comp.get_dialog_open());
 }
 
+/// The review (2026-10-24): a download started by a click in the page left the keys in the page, so Enter and
+/// Escape went to it, not to the question.
+#[test]
+fn the_download_question_takes_the_keys_back_from_the_page() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    fake(&slot).say(WebEvent::Focus {
+        tab: id.clone(),
+        has: true,
+    });
+    f.pump();
+    assert!(f.ctl.borrow().web.has_focus());
+    download(&fake(&slot), &id, 1, "report.pdf");
+    f.pump();
+    assert!(f.h.comp.get_dialog_open());
+    assert!(!f.ctl.borrow().web.has_focus(), "the question has the keys");
+}
+
 #[test]
 fn a_no_cancels_the_download_and_a_second_one_waits_its_turn() {
     let (f, _h, _) = live(Opts::default());

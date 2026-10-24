@@ -59,6 +59,9 @@ impl AppCtl {
                 app.set_dialog_body(body);
                 app.set_dialog_primary(v.primary.into());
                 app.set_dialog_danger(false);
+                // The question has the keys: the page that may hold them (a click in it started the download)
+                // gives them back, or Enter and Escape would go to the page.
+                self.web.release_focus(crate::window::hwnd_of(&app));
                 app.set_dialog_open(true);
             }
             None => app.set_dialog_open(false),
