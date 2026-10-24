@@ -1266,6 +1266,15 @@ impl TermUi {
             self.sync_inputs(t, now);
             self.mouse_flag
                 .set(t.handle.mode().mouse != MouseTracking::None);
+            // A path that named nothing when it was printed is looked at again once the "no" runs out, so a file
+            // made later (a log a script starts writing) becomes a link on a screen that prints nothing new.
+            if let Some(at) = t.handle.with_emu_quiet(|em| em.links_next_retry()) {
+                if now >= at {
+                    out.redraw = true;
+                } else {
+                    due.push(at);
+                }
+            }
         }
 
         let phase = self.badge.borrow().phase(now);
@@ -2173,6 +2182,36 @@ mod tests {
         assert!(
             !d.links.iter().any(|s| s.row == 1),
             "a missing file never lights up"
+        );
+    }
+
+    /// The owner's log path (2026-10-24): printed before the script that writes it had started, it stayed plain.
+    #[test]
+    fn a_file_made_after_its_path_was_printed_lights_up_on_a_quiet_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = Rig::with_cwd(1.0, dir.path());
+        light_up(&mut r, "late.log");
+        assert!(r.frame().links.is_empty(), "no file yet");
+        std::fs::write(dir.path().join("late.log"), "x").unwrap();
+        // Nothing new is printed. A frame before the "no" runs out still shows no link.
+        assert!(r.tick(0).next_due_ms.is_some(), "a wake is booked");
+        r.tick(1000);
+        assert!(r.frame().links.is_empty(), "too soon for a second look");
+        // Once it has run out, the tick wakes and draws, and that frame asks again.
+        assert!(
+            r.tick(flare_term::link_scan::RETRY_AFTER_MS).redraw,
+            "the wake draws a frame"
+        );
+        r.frame();
+        r.tick(40);
+        r.pump();
+        let d = r.frame();
+        assert!(
+            d.links
+                .iter()
+                .any(|s| s.row == 0 && s.col == 0 && s.width == 8),
+            "{:?}",
+            d.links
         );
     }
 

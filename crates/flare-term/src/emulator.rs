@@ -1335,6 +1335,11 @@ impl Emulator {
         marks
     }
 
+    /// When a line whose path named nothing is due a second look (a frame then scans it again), if any is.
+    pub fn links_next_retry(&self) -> Option<u64> {
+        self.links.next_retry()
+    }
+
     /// A path answer arrived: the lines that waited for it are scanned again.
     pub fn links_revisit(&mut self) {
         self.links.revisit();

@@ -161,6 +161,8 @@ pub struct PathLinks {
     anchors: HashMap<String, Vec<String>>,
     taught: HashMap<String, HashSet<String>>,
     asked: HashSet<String>,
+    /// The owners whose last `link_ranges` met a path that names nothing (yet).
+    denied: HashSet<String>,
     subscribed: HashSet<String>,
     deferred: Vec<String>,
 }
@@ -183,6 +185,7 @@ impl PathLinks {
             anchors: HashMap::new(),
             taught: HashMap::new(),
             asked: HashSet::new(),
+            denied: HashSet::new(),
             subscribed: HashSet::new(),
             deferred: Vec::new(),
         }
@@ -360,7 +363,7 @@ impl PathLinks {
         candidates: Vec<PathCandidate>,
         now_ms: u64,
     ) -> Vec<(PathCandidate, PathFound)> {
-        self.paths_found_inner(owner, cwd, candidates, now_ms, &mut Vec::new())
+        self.paths_found_inner(owner, cwd, candidates, now_ms, &mut Vec::new(), &mut false)
     }
 
     fn paths_found_inner(
@@ -370,14 +373,17 @@ impl PathLinks {
         candidates: Vec<PathCandidate>,
         now_ms: u64,
         ask: &mut Vec<(String, String)>,
+        denied: &mut bool,
     ) -> Vec<(PathCandidate, PathFound)> {
         let mut out: Vec<(PathCandidate, PathFound)> = Vec::new();
         for c in candidates {
             if out.iter().any(|(o, _)| o.start < c.end && c.start < o.end) {
                 continue;
             }
-            if let Found::Hit(f) = self.find_inner(owner, cwd, &c.path, now_ms, ask) {
-                out.push((c, f));
+            match self.find_inner(owner, cwd, &c.path, now_ms, ask) {
+                Found::Hit(f) => out.push((c, f)),
+                Found::No => *denied = true,
+                Found::Unknown => {}
             }
         }
         out
@@ -394,6 +400,7 @@ impl PathLinks {
         joins: &[usize],
     ) -> Vec<LinkRange> {
         self.asked.remove(owner);
+        self.denied.remove(owner);
         let links = find_links_in(text, joins);
         let mut out: Vec<LinkRange> = links
             .iter()
@@ -408,8 +415,10 @@ impl PathLinks {
             return out;
         }
         let mut ask: Vec<(String, String)> = Vec::new();
+        let mut denied = false;
         let candidates = path_candidates_in(text, Some(&links), joins);
-        for (c, f) in self.paths_found_inner(owner, cwd, candidates, now_ms, &mut ask) {
+        for (c, f) in self.paths_found_inner(owner, cwd, candidates, now_ms, &mut ask, &mut denied)
+        {
             if !is_relative(&c.path) {
                 self.learn_anchor(owner, &f.hit);
             }
@@ -418,6 +427,9 @@ impl PathLinks {
                 end: c.end,
                 path: Some(c.path),
             });
+        }
+        if denied {
+            self.denied.insert(owner.to_string());
         }
         if !ask.is_empty() {
             let mut by_base: Vec<(String, Vec<String>)> = Vec::new();
@@ -439,6 +451,12 @@ impl PathLinks {
     /// Whether the last `link_ranges` for `owner` left a question open. Reading clears it.
     pub fn take_asked(&mut self, owner: &str) -> bool {
         self.asked.remove(owner)
+    }
+
+    /// Whether the last `link_ranges` for `owner` met a path that names nothing: a file made later (a log a
+    /// script starts writing) is worth a second look once the "no" has run out. Reading clears it.
+    pub fn take_denied(&mut self, owner: &str) -> bool {
+        self.denied.remove(owner)
     }
 
     /// Moves queued asks to ready once `BATCH_MS` has passed since the first queued one, and
@@ -525,6 +543,7 @@ impl PathLinks {
         self.anchors.remove(owner);
         self.taught.remove(owner);
         self.asked.remove(owner);
+        self.denied.remove(owner);
         for g in &mut self.queued {
             for s in g.owners.values_mut() {
                 s.remove(owner);
