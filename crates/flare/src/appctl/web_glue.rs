@@ -260,7 +260,13 @@ impl AppCtl {
             _ => String::new(),
         };
         let r = match op {
-            crate::ctl_app::CtlOp::BrowserOpen { tab, url } => self.browser_open(&tab, &url),
+            crate::ctl_app::CtlOp::BrowserOpen { tab, url } => {
+                let r = self.browser_open(&tab, &url);
+                if r.is_ok() {
+                    self.mark_agent_panel(&tab);
+                }
+                r
+            }
             crate::ctl_app::CtlOp::BrowserNavigate { tab, to } => self.browser_navigate(&tab, to),
             _ => Err(CtlError::new(code::INTERNAL, "not a browser call")),
         };
@@ -351,6 +357,7 @@ impl AppCtl {
             )));
             return;
         }
+        self.mark_agent_panel(&tab);
         self.refresh();
         // A tab that is behind (or whose slot has no place yet) gets its page made hidden, so the page
         // loads and a diagram draws whether or not anyone is looking.

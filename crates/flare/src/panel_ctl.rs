@@ -509,6 +509,26 @@ impl PanelCtl {
         self.panels.open_on(tab).is_some()
     }
 
+    /// The agent in the tab opened what its panel shows (a control channel call): the panel closes when that
+    /// agent leaves.
+    pub fn mark_agent(&mut self, tab: &str) {
+        self.panels.mark_agent(tab);
+    }
+
+    /// The tabs whose open panel their agent opened.
+    pub fn agent_tabs(&self) -> Vec<String> {
+        self.panels.agent_tabs()
+    }
+
+    /// The agent that opened the tab's panel has left: the panel closes as its close button would, and what it
+    /// showed is the user's from then on. False when the panel was not the agent's or was not open.
+    pub fn close_for_agent(&mut self, tab: &str) -> bool {
+        if !self.panels.unmark_agent(tab) {
+            return false;
+        }
+        self.close(tab)
+    }
+
     /// Opens the Changes or Tasks panel on the tab (the conversation's, stage 6).
     /// False for any other kind.
     pub fn show_convo(&mut self, tab: &str, kind: PanelKind) -> bool {
