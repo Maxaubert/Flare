@@ -387,6 +387,11 @@ pub struct WebCtl {
     hwnd: Option<isize>,
     /// The window is ending: the browser is closed and never made again.
     closed: bool,
+    /// The tab whose page has an element in full screen (a video's full-screen button), until the page leaves it.
+    full: Option<String>,
+    /// That page covers the whole window now: its tab is in front with its panel shown (set by every sync). The
+    /// app makes the window full screen while it holds.
+    covers: bool,
 }
 
 /// The keys WebView2 reports in Win32 virtual-key codes, as the chord table knows them.
@@ -485,6 +490,8 @@ impl WebCtl {
             phase: Phase::Hidden,
             token: 0,
             bounds: None,
+            full: None,
+            covers: false,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
                 esc: RefCell::new(EscTwice::default()),
@@ -709,6 +716,26 @@ impl WebCtl {
             app.get_panel_web_h(),
             scale,
         );
+        // A page in full screen covers the whole window while its tab is in front and its panel shows: its
+        // rectangle is the window's client area, not the panel's. A tab behind keeps its state, and covers the
+        // window again when it comes back to the front.
+        self.covers = shown
+            && self.full.is_some()
+            && self.full.as_deref() == front_web
+            && self
+                .tabs
+                .contains_key(self.full.as_deref().unwrap_or_default());
+        let rect = if self.covers {
+            let size = slint::ComponentHandle::window(app).size();
+            PhysRect {
+                x: 0,
+                y: 0,
+                w: i32::try_from(size.width).unwrap_or(i32::MAX),
+                h: i32::try_from(size.height).unwrap_or(i32::MAX),
+            }
+        } else {
+            rect
+        };
 
         // The tab in front gets its browser the first time it has a place to be.
         if let (Some(tab), true) = (front_web, shown && !rect.is_empty())
@@ -895,6 +922,9 @@ impl WebCtl {
         let Some(t) = self.tabs.remove(tab) else {
             return false;
         };
+        if self.full.as_deref() == Some(tab) {
+            self.full = None;
+        }
         if let Some(p) = t.probe {
             let _ = p.reply.send(Err(CtlError::new(
                 code::UNAVAILABLE,
@@ -1090,6 +1120,12 @@ impl WebCtl {
     }
 
     /// The tab has a browser that is up (or on its way) and has not failed.
+    /// A page in full screen covers the window now (its tab in front, its panel shown): the window is to be full
+    /// screen while it holds.
+    pub fn covers_window(&self) -> bool {
+        self.covers
+    }
+
     pub fn has_tab(&self, tab: &str) -> bool {
         self.tabs.contains_key(tab)
     }
@@ -1810,6 +1846,15 @@ impl WebCtl {
             }
             WebEvent::Script { id, result } => {
                 self.scripts.insert(id, result);
+            }
+            WebEvent::FullScreen { tab, on } => {
+                if on && self.tabs.contains_key(&tab) {
+                    self.full = Some(tab);
+                } else if !on && self.full.as_deref() == Some(tab.as_str()) {
+                    self.full = None;
+                }
+                // The window's rectangle is sent again at the next sync (the page grows or shrinks back).
+                self.bounds = None;
             }
             WebEvent::Cdp { tab, id, result } => {
                 if let Some(o) = self.diagram_answer(&tab, id, &result) {

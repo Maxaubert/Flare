@@ -499,6 +499,8 @@ pub struct AppCtl {
     /// Tabs whose panel their agent opened and where the hub has seen that agent since: when it is no longer
     /// there, the panel closes (owner, 2026-10-24: a panel Claude opened belongs to its session, not the tab).
     agent_panel_seen: HashSet<String>,
+    /// While a page in the panel holds the window full screen: whether the window was full screen before it.
+    web_full_was: Option<bool>,
     /// The Settings controller (Task 41); the window hands it over after the controller exists.
     settings: Option<Rc<RefCell<SettingsCtl>>>,
     /// The Settings page is in front now.
@@ -878,6 +880,7 @@ impl AppCtl {
             badge: None,
             restoring: HashMap::new(),
             agent_panel_seen: HashSet::new(),
+            web_full_was: None,
             settings: None,
             settings_shown: false,
             settings_present: false,
@@ -3000,6 +3003,7 @@ impl AppCtl {
         self.panels.sync(app, front.as_deref());
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_web_full();
         self.sync_convo();
         let kind = front
             .as_deref()

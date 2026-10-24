@@ -102,7 +102,35 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.sync_web_full();
         self.prune_downloads();
+    }
+
+    /// The window follows a page in full screen (a video's full-screen button): full screen while the page covers
+    /// it, and back as it was when the page leaves full screen or its tab goes behind. A window the person had made
+    /// full screen already stays so.
+    pub(super) fn sync_web_full(&mut self) {
+        let Some(app) = self.app() else { return };
+        let want = self.web.covers_window();
+        let w = slint::ComponentHandle::window(&app);
+        match (want, self.web_full_was) {
+            (true, None) => {
+                let was = w.is_fullscreen();
+                self.web_full_was = Some(was);
+                if !was {
+                    // The UI turns solid and the backdrop comes off before the OS is asked (D7).
+                    crate::look_ctl::LookCtl::with_current(|l| l.before_fullscreen());
+                    w.set_fullscreen(true);
+                }
+            }
+            (false, Some(was)) => {
+                self.web_full_was = None;
+                if !was && w.is_fullscreen() {
+                    w.set_fullscreen(false);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The button of the missing-runtime note: Microsoft's page, in the browser the user has.

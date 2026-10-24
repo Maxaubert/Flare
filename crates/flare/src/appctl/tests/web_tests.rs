@@ -2478,3 +2478,108 @@ fn a_shell_that_exits_takes_its_web_panel_and_browser_with_it() {
     assert_eq!(f.ctl.borrow().web_controllers(), 0, "so is its browser");
     assert!(fake(&slot).calls().contains(&Call::Close(b)));
 }
+
+/// The last rectangle the fake was told for the tab.
+fn last_bounds(slot: &Slot, tab: &str) -> Option<PhysRect> {
+    fake(slot).calls().into_iter().rev().find_map(|c| match c {
+        Call::Bounds(t, r) if t == tab => Some(r),
+        _ => None,
+    })
+}
+
+/// The window's client area, as a rectangle at its origin.
+fn whole_window(f: &Fx) -> PhysRect {
+    let size = slint::ComponentHandle::window(&f.h.comp).size();
+    PhysRect {
+        x: 0,
+        y: 0,
+        w: size.width as i32,
+        h: size.height as i32,
+    }
+}
+
+fn full_screen(f: &Fx, slot: &Slot, tab: &str, on: bool) {
+    fake(slot).say(WebEvent::FullScreen {
+        tab: tab.into(),
+        on,
+    });
+    f.pump();
+    f.h.advance(0);
+    f.pump();
+}
+
+/// The owner (2026-10-24): a video's full-screen button did nothing, because the panel ignored the page's ask.
+#[test]
+fn a_page_in_full_screen_covers_the_window_and_gives_it_back_when_it_leaves() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    let slot_rect = drawn(&f);
+    assert!(!f.h.comp.window().is_fullscreen());
+
+    full_screen(&f, &slot, &id, true);
+    assert!(f.ctl.borrow().web.covers_window());
+    assert!(
+        f.h.comp.window().is_fullscreen(),
+        "the window goes full screen"
+    );
+    assert_eq!(
+        last_bounds(&slot, &id),
+        Some(whole_window(&f)),
+        "the page covers the window"
+    );
+
+    full_screen(&f, &slot, &id, false);
+    assert!(!f.ctl.borrow().web.covers_window());
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "the window is as it was"
+    );
+    assert_eq!(last_bounds(&slot, &id), Some(drawn(&f)), "back on the slot");
+    assert_eq!(drawn(&f), slot_rect);
+}
+
+#[test]
+fn a_page_in_full_screen_gives_the_window_back_while_its_tab_is_behind() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let a = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    full_screen(&f, &slot, &a, true);
+    assert!(f.h.comp.window().is_fullscreen());
+    let _b = f.ctl.borrow_mut().open_folder(r"C:\b");
+    f.ctl.borrow_mut().refresh();
+    f.h.advance(0);
+    f.pump();
+    assert!(
+        !f.h.comp.window().is_fullscreen(),
+        "another tab in front: the window is back"
+    );
+    // Back on the first tab, the page is still in full screen and covers the window again.
+    assert_eq!(
+        f.key(KeyEvent::new("1", "Digit1").ctrl()),
+        KeyOutcome::Consumed
+    );
+    f.h.advance(0);
+    f.pump();
+    assert!(f.h.comp.window().is_fullscreen());
+}
+
+#[test]
+fn a_window_already_full_screen_stays_so_when_the_page_leaves_full_screen() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    f.pump();
+    f.h.comp.window().set_fullscreen(true);
+    full_screen(&f, &slot, &id, true);
+    full_screen(&f, &slot, &id, false);
+    assert!(
+        f.h.comp.window().is_fullscreen(),
+        "the person's own full screen is kept"
+    );
+}
