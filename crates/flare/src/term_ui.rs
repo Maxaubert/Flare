@@ -642,7 +642,15 @@ impl TermUi {
             0 => {
                 let clicks = self.clicks.press(now, dev.0, dev.1, 0);
                 self.watch.down(e.x_css, e.y_css, clicks, now);
-                if mouse_owned {
+                // A press on a link is Flare's even when the program owns the mouse: the pointer already
+                // shows the hand there, and a left click opens it (owner 2026-10-25: Claude Code's links did
+                // not open, only the menu's "Open link" did). The program gets neither the press nor the release.
+                let on_link = mouse_owned
+                    && tab
+                        .handle
+                        .with_emu_quiet(|em| em.link_at_view(row_c, col))
+                        .is_some();
+                if mouse_owned && !on_link {
                     self.reporting = true;
                     self.press = None;
                     self.last_cell = Some((col, row_c));
@@ -2458,6 +2466,27 @@ mod tests {
         assert_eq!(r.wait_written(want.len()), want);
         assert!(!r.has_sel());
         assert!(r.handle.last_typed().is_none());
+    }
+
+    #[test]
+    fn a_click_on_a_link_opens_it_in_mouse_mode_and_the_program_gets_nothing() {
+        let mut r = Rig::new(1.0);
+        r.feed("see https://a.io/x ok");
+        r.feed(MOUSE_ON);
+        r.frame();
+        r.click(8, 0);
+        assert_eq!(*r.urls.borrow(), vec!["https://a.io/x".to_string()]);
+        thread::sleep(Duration::from_millis(30));
+        assert!(
+            r.written().is_empty(),
+            "no press or release reaches the program"
+        );
+        // Off the link the program still gets its clicks.
+        r.down(1, 0, false);
+        r.up(1, 0, false);
+        let want = b"\x1b[<0;2;1M\x1b[<0;2;1m";
+        assert_eq!(r.wait_written(want.len()), want);
+        assert_eq!(r.urls.borrow().len(), 1);
     }
 
     #[test]
