@@ -194,8 +194,8 @@ No mod call names a tab, so there is no tab argument to aim at another one.
   shared web profile that holds the user's logged-in tabs (S4 and "One profile per mod" below). **Not built:** it
   needs a second slot beside the mod's page, so a mod that holds `browser` is answered `unavailable`. The
   profile rule is already kept for the page itself: a mod's page runs in its own profile `flare-mod-<id>`
-  (not private, so its `localStorage` survives a restart), inside the mini-apps' sealed browser, under
-  `<profile>\WebView2-app-sealed` (decisions.md, stage 8). The agent's `browser_*` tools do not drive a mod's page
+  (not private, so its `localStorage` survives a restart), inside the mods' and plugins' own sealed browser (apart
+  from the mini-apps' since plugins phase 2b), under `<profile>\WebView2-app-sealed` (decisions.md, stage 8). The agent's `browser_*` tools do not drive a mod's page
   either (`unavailable`: the panel belongs to a mod).
 - A mod that is not shown in any tab has no bound tab: its `view.*` calls and its tool calls need one. A tool
   call opens the mod's panel in the CALLER's tab (a tab behind gets its page made hidden), so a call never fails
@@ -233,8 +233,10 @@ stops a mod from reading a page the user is logged into in another tab.
   Never written to a file, never logged, never shown. The lookup compares every live token in constant
   time.
 - **One profile per mod.** A mod's WebView2 profile is its own (`flare-mod-<id>`, kept between runs so its
-  `localStorage` survives a restart), inside the sealed browser the mini-apps use, under
-  `%LOCALAPPDATA%\Flare\WebView2-app-sealed` (with a `--user-data-dir`, beside that profile's `WebView2` folder);
+  `localStorage` survives a restart), inside the mods' and plugins' own sealed browser, under
+  `%LOCALAPPDATA%\Flare\WebView2-app-sealed` (with a `--user-data-dir`, beside that profile's `WebView2` folder; the
+  folder name is older than the split from the mini-apps in plugins phase 2b and must not change, or every mod's
+  storage is lost);
   never the web panel's profile and never the user's Edge profile. A profile name is the only per-mod name WebView2
   allows inside one browser, so the folder is not `...\mods\<id>\profile`.
 - **No network from a mod.** The page is served from its folder with a strict policy. A mod that needs
