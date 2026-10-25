@@ -116,7 +116,7 @@ impl AppCtl {
                 let applied = self
                     .mods
                     .as_ref()
-                    .map(|c| (c.hub().set_enabled_shown(&id, on, shown.as_deref()), c));
+                    .map(|c| (c.hub().set_enabled_shown(&id, on, shown.as_ref()), c));
                 match applied {
                     Some((Ok(change), c)) => {
                         c.persist(&id);

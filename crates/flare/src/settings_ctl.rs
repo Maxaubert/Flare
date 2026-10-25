@@ -95,8 +95,9 @@ pub trait ModsPort {
     fn info(&self) -> flare_settings::page::mods::ModsInfo;
     /// The page opened: look at the folder again (on a worker).
     fn page_shown(&self);
-    /// The person turned a mod on or off. `shown` is the permission words the row listed (what turning it on approves).
-    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>);
+    /// The person turned a mod on or off. `shown` is what the card listed: permission words, author and homepage
+    /// (what turning it on approves).
+    fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown);
     /// The person asked for the mod's panel.
     fn show_panel(&self, id: &str);
     /// The mods folder.
@@ -175,8 +176,8 @@ pub struct SettingsCtl {
     /// The diagnostics flag as `diag.json` held it when Settings last showed (or the switch last
     /// wrote it). A rebuild runs per wall frame and per slider step, so it never reads the file.
     diag_verbose: Cell<Option<bool>>,
-    /// The permission words each mod's row listed when the Mods page was last drawn (a switch approves exactly these).
-    mods_shown: RefCell<std::collections::HashMap<String, Vec<String>>>,
+    /// What each mod's card listed when the Mods page was last drawn (a switch approves exactly this).
+    mods_shown: RefCell<std::collections::HashMap<String, flare_mods::hub::Shown>>,
     pending_pick: RefCell<Option<String>>,
     /// The colour popover, the typed codes of the colour rows and the dropper.
     picker: PickerCtl,
@@ -1061,7 +1062,14 @@ impl SettingsCtl {
             *self.mods_shown.borrow_mut() = info
                 .mods
                 .iter()
-                .map(|m| (m.id.clone(), m.permissions.clone()))
+                .map(|m| {
+                    let shown = flare_mods::hub::Shown {
+                        permissions: m.permissions.clone(),
+                        author: m.author.clone(),
+                        homepage: m.homepage.clone(),
+                    };
+                    (m.id.clone(), shown)
+                })
                 .collect();
         }
         let env = PageEnv {
@@ -1486,7 +1494,8 @@ impl SettingsCtl {
             && let Some(id) = row.strip_prefix(flare_settings::page::mods::SWITCH_PREFIX)
         {
             if let Some(m) = &self.mods {
-                // A mod the page never drew has no list shown: an empty one, which only a mod asking for nothing matches.
+                // A mod the page never drew has nothing shown: an empty card, which only a mod asking for nothing and
+                // naming no maker matches.
                 let shown = self
                     .mods_shown
                     .borrow()

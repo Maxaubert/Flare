@@ -122,6 +122,16 @@ fn identity_of(f: &Found) -> Identity {
     }
 }
 
+/// What a mod's card in Settings showed when it was drawn. Turning the mod on approves exactly this.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    /// The permission words the row listed, in order.
+    pub permissions: Vec<String>,
+    /// Who made it and its address as the card showed them; empty when the manifest names none.
+    pub author: String,
+    pub homepage: String,
+}
+
 /// Where mods live and where the switches are kept.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -402,34 +412,37 @@ impl Hub {
         self.set_enabled_shown(id, on, None)
     }
 
-    /// As [`Hub::set_enabled`], for a switch the person clicked on a row of Settings. `shown` is the permission
-    /// words that row listed: turning a mod on approves THAT list, so when the manifest found now asks for anything
-    /// else (an edit picked up between the row being drawn and the click) nothing changes and the person is told
-    /// to look again.
+    /// As [`Hub::set_enabled`], for a switch the person clicked on a row of Settings. `shown` is what that card
+    /// listed (permission words, author, homepage): turning a mod on approves THAT, so when the manifest found now
+    /// says anything else (an edit picked up between the card being drawn and the click) nothing changes and the
+    /// person is told to look again.
     pub fn set_enabled_shown(
         &self,
         id: &str,
         on: bool,
-        shown: Option<&[String]>,
+        shown: Option<&Shown>,
     ) -> Result<Change, String> {
         let mut g = self.lock();
         if on && !g.found.iter().any(|f| f.manifest.id == id) {
             return Err(format!("there is no valid mod \"{id}\" to turn on"));
         }
         if on && let Some(shown) = shown {
-            let now: Vec<String> = g
+            let now: Shown = g
                 .found
                 .iter()
                 .find(|f| f.manifest.id == id)
-                .map(|f| {
-                    f.manifest
+                .map(|f| Shown {
+                    permissions: f
+                        .manifest
                         .permissions
                         .iter()
                         .map(|p| permission_words(*p).to_string())
-                        .collect()
+                        .collect(),
+                    author: f.manifest.author.clone().unwrap_or_default(),
+                    homepage: f.manifest.homepage.clone().unwrap_or_default(),
                 })
                 .unwrap_or_default();
-            if now != shown {
+            if &now != shown {
                 return Err(format!(
                     "the mod \"{id}\" changed what it asks for while you were looking; read the list again before turning it on"
                 ));
@@ -1139,14 +1152,17 @@ mod tests {
     fn a_switch_approves_the_list_the_row_showed_and_nothing_else() {
         let w = notes_world();
         w.hub.scan();
-        let shown: Vec<String> = w.hub.snapshot().mods[0]
-            .permissions
-            .iter()
-            .map(|p| permission_words(*p).to_string())
-            .collect();
+        let shown = Shown {
+            permissions: w.hub.snapshot().mods[0]
+                .permissions
+                .iter()
+                .map(|p| permission_words(*p).to_string())
+                .collect(),
+            ..Shown::default()
+        };
         // The manifest asks for something else by the time the click is handled: nothing is approved.
         let mut stale = shown.clone();
-        stale.pop();
+        stale.permissions.pop();
         assert!(
             w.hub
                 .set_enabled_shown("notes", true, Some(&stale))
@@ -1160,7 +1176,9 @@ mod tests {
             .unwrap();
         assert!(w.hub.is_enabled("notes"));
         // Turning off never needs the list.
-        w.hub.set_enabled_shown("notes", false, Some(&[])).unwrap();
+        w.hub
+            .set_enabled_shown("notes", false, Some(&Shown::default()))
+            .unwrap();
         assert!(!w.hub.is_enabled("notes"));
     }
 
@@ -1506,6 +1524,55 @@ mod tests {
         w.hub.persist("todo").unwrap();
         let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
         assert!(text.contains(r#""todo":{"on":false}"#), "{text}");
+    }
+
+    #[test]
+    fn a_switch_refuses_a_plugin_whose_maker_changed_since_its_card_was_drawn() {
+        let w = todo_world();
+        w.hub.scan();
+        let e = w.hub.snapshot().mods[0].clone();
+        let shown = Shown {
+            permissions: e
+                .permissions
+                .iter()
+                .map(|p| permission_words(*p).to_string())
+                .collect(),
+            author: e.author.unwrap_or_default(),
+            homepage: e.homepage.unwrap_or_default(),
+        };
+        // Same permissions, another maker, picked up by a rescan before the click: the person never saw this one.
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone else", r#"["decorate","tabs"]"#, ""),
+        );
+        w.hub.scan();
+        let why = w
+            .hub
+            .set_enabled_shown("todo", true, Some(&shown))
+            .unwrap_err();
+        assert!(why.contains("read the list again"), "{why}");
+        assert!(!w.hub.is_enabled("todo"));
+        assert!(w.hub.grant_of_mod("todo").is_none());
+        // Another homepage is refused the same way.
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["decorate","tabs"]"#, "")
+                .replace("example.com/todo", "example.org/todo"),
+        );
+        w.hub.scan();
+        assert!(w.hub.set_enabled_shown("todo", true, Some(&shown)).is_err());
+        assert!(!w.hub.is_enabled("todo"));
+        // Back to what the card showed: the switch approves it.
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["decorate","tabs"]"#, ""),
+        );
+        w.hub.scan();
+        w.hub.set_enabled_shown("todo", true, Some(&shown)).unwrap();
+        assert!(w.hub.is_enabled("todo"));
     }
 
     #[test]
