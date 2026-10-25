@@ -1486,6 +1486,45 @@ wide `tabs.list`, decor for plugins).
   `manifest-tour`'s background page now answers `add_item`. Both load as valid in
   `flare_mods::discover::tests::the_sample_plugins_are_valid`.
 
+## Plugins phase 4: sidebar sections and actions, 2026-10-25
+
+The fourth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.3, 5.4 and 13). The
+contract: `docs/surfaces/mods.md`, "Sidebar sections and actions", and `docs/surfaces/protocol.md` (`sidebar.set`,
+`actions.set`, click scope).
+
+- **Sections.** Each `contributes.sidebar` entry of a plugin that is on is a section under the tab list in the vertical
+  layout, drawn by Flare in the sidebar's look under the plugin's name (`ui/plugin_sections.slint`): a header that
+  folds on a click and has a menu (Move up, Move down, Fold), items with a checkbox, an icon, a second line and a jump
+  arrow, and a note when empty; at most 6 in all, in the person's order (`plugins.sidebar.order` and
+  `plugins.sidebar.folded` in the preferences), at most 45 percent of the sidebar. In the horizontal layout a Plugins
+  button in the title bar opens the same rows as a dropdown (an overlay: `Overlay::PluginsDropdown`). The model:
+  `plugin_ui` (pure); the window: `appctl::plugins_glue`. Tests: `plugin_ui` (9), `ui_tests::plugin_surfaces` (the
+  room, the ticked box, the clicks, the cap of the height, the dropdown), `a_section_is_drawn_under_its_plugins_name_set_by_sidebar_set_and_its_ticks_and_clicks_are_events`,
+  `sections_and_buttons_are_capped_and_the_persons_order_and_folds_are_kept`,
+  `the_plugins_dropdown_opens_from_the_top_bar_only_while_a_section_is_drawn`.
+- **`sidebar.set` and `actions.set`.** New methods in the `Sidebar` and `Actions` namespaces, checked on the worker
+  (declared key, fields, 50 items, 120-character clean lines, icons, a tab the plugin may see; 5 a second per section,
+  20 a second per plugin) and applied only for the generation they were checked for. Tests:
+  `sidebar_set_is_five_a_second_for_one_section_and_only_a_plugin_calls_it`, the refusals in the two appctl tests above
+  and below.
+- **Actions.** `tab-menu`: one flyout per plugin under its name in a shell tab's menu (`MenuRowData` gains `flyout`,
+  `parent` and an own icon path). `tab-hover`: Flare's outlined chip (`PluginChip`) on a hovered tab of 110 px or more
+  and on a hovered sidebar row, left of the badges and never over the ring, two on a tab at most. `top-bar`: up to 3
+  chips left of the update chip and the window buttons, with a 10 px gap of their own. State per tab or for every tab,
+  ticked and faint. A click is the page event `action` `{key, tab}` (to the background page when it listens), an item's
+  click or tick `sidebar.item` `{key, item, checked?}`; a background page's tool call says the agent's `tab`. Tests:
+  `actions_show_in_the_tab_menu_on_hover_and_in_the_top_bar_and_a_click_is_an_event_with_click_scope`,
+  `ui_tests::plugin_surfaces` (hover buttons: place, never over the ring, none on narrow or icon tabs, the click; the
+  top bar's gap in both bars), `flare_mods::bridge` (2 new), `ui_tests::overlay_order`, `ui_tests::panel` (the new
+  overlay term).
+- **Click scope.** A click on a plugin's action or item on tab X lets that plugin act on X until X closes or the plugin
+  is turned off (`Hub::grant_click_scope`, read by `AppDispatcher::scoped_tab`). Tests:
+  `flare_mods::hub::a_plugin_on_shows_what_it_contributes_and_a_click_scope_lasts_until_it_stops_or_the_tab_closes`, and
+  the actions test above.
+- **Sample.** `sample-plugins/todo`: to-dos per session tab in a sidebar section, `add_todo` and `todo_done` for Claude,
+  ticked off after a moment, kept in the page's `localStorage`, "Add to-do" in a tab's menu. It loads as valid in
+  `flare_mods::discover::tests::the_sample_plugins_are_valid`.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,

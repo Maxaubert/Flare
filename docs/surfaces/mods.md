@@ -377,6 +377,49 @@ is open).
   every plugin off, with a row at the top of Settings > Plugins; `--no-plugins` and Shift held at launch do the same for
   one start. The switches are untouched: the start after has them back. The record is `<profile>\plugins-run.json`.
 
+## Sidebar sections and actions (plugins phase 4)
+
+Design sections 5.3, 5.4 and 13. Sample: `../../sample-plugins/todo/` (to-dos per session tab, ticked off by Claude or
+by you).
+
+- **Sections.** Each `contributes.sidebar` entry of a plugin that is on (and holds `sidebar`) is a section Flare draws
+  under the tab list in the vertical tab layout, in the sidebar's look, under a header with the plugin's name (and the
+  section's title when it differs). The plugin cannot style it. At most 6 sections are drawn in all, in the order you
+  give them (the header's menu, a right-click or its dots: Move up, Move down, Fold), then the rest in the order the
+  plugins were found; a click on the header folds it. The order and the folds are preferences
+  (`plugins.sidebar.order`, `plugins.sidebar.folded`). The sections take at most 45 percent of the sidebar's height and
+  scroll inside. In the horizontal layout a "Plugins" button in the title bar (shown while any section is drawn) opens
+  the same sections as a dropdown.
+- **`sidebar.set {key, items}`** replaces a section's items: `key` is one of the plugin's `contributes.sidebar` keys;
+  `items` is a list of at most 50 objects `{id, text, sub?, icon?, checked?, tab?}` and nothing else. `id` (1 to 64
+  characters, unique in the list), `text` and `sub` (at most 120 characters) are clean lines (no control or hidden
+  formatting character); `icon` is a built-in badge or one of the plugin's `contributes.icons`; `checked` (true or
+  false) draws a checkbox; `tab` is a tab the plugin may see (its own, any with `tabs`, or one a click gave it), and a
+  click on the item brings that tab to the front. At most 5 calls a second for one section (`rate_limited`).
+- **`actions.set {key, tab?, enabled?, checked?, title?}`** changes one of the plugin's `contributes.actions`: on the
+  tab it names (one it may act on), on the caller's own tab when it names none, and on every tab when a background
+  page names none (the top bar's button reads that one). A field left out keeps what it was; a tab's own state wins
+  over the every-tab one field by field. `enabled: false` draws the action faint and its click does nothing; `checked`
+  draws it ticked (the accent); `title` (at most 80 characters) replaces its words. At most 20 calls a second for one
+  plugin.
+- **Where actions show.** `tab-menu`: in a shell tab's right-click menu, one flyout per plugin under its name holding
+  its actions. `tab-hover`: a small button in Flare's outlined chip on a tab while it is hovered (one per plugin, two on
+  a tab at most; named tabs of 110 px or more and sidebar rows), left of the badges and never over the agent's ring.
+  `top-bar`: a button left of the window buttons (one per plugin, 3 in all), kept apart from them by a gap. An action
+  without an icon shows its title's first letter. `session-bar` waits for the plugin bar (a later phase).
+- **Events.** `window.flare.on('action', fn)` hears `{key, tab}` when you click an action (`tab` is the tab it was
+  clicked on; for a top-bar button, the shell tab in front, or null). It goes to the plugin's background page when that
+  page listens, else to every page of the plugin that does. `window.flare.on('sidebar.item', fn)` hears `{key, item}`
+  for a click on an item and `{key, item, checked}` for a tick on its box (the box shows the new state at once; the
+  plugin may set the list again). A tool call answered by a background page also says `tab`, the tab the agent called
+  from.
+- **Click scope.** A click on a plugin's action or item on tab X (a tab's menu or hover button, an item that leads to
+  X, a top-bar button while X is in front) lets that plugin act on X as if it held `tabs` for that one tab, until X
+  closes or the plugin is turned off. So a plugin needs `tabs` only for tabs nobody clicked.
+- **When it stops.** A plugin turned off takes its sections, its actions and everything it set with it, and its click
+  scopes; a background page that ends takes what it set (it sets it again when it starts). A closed tab takes the
+  action state set for it.
+
 ## Tab bar and sidebar contributions (review 2026-10-25)
 
 Mods cannot draw on tabs, sidebar rows or the strip yet; the only screen area is the mod's panel page.
