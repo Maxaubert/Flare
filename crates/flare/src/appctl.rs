@@ -1579,14 +1579,17 @@ impl AppCtl {
         self.term
             .set_previews(flare_settings::term_prefs::open_previews(&self.prefs));
 
-        // Rule 37: nothing is written before the restore answered.
-        if let Some(s) = self.model.saved_if_restored()
+        // Rule 37: nothing is written before the restore answered. Nor after the end of life: `finish` wrote
+        // the tabs as they stood, then killed the shells, and a refresh after that sees every agent gone and
+        // would write a tabs.json with no agent to resume (2026-10-25: three restarts came back as plain shells).
+        if !self.ended
+            && let Some(s) = self.model.saved_if_restored()
             && self.last_saved.as_ref() != Some(&s)
         {
             self.deps.tabs_store.save(&s);
             self.last_saved = Some(s);
         }
-        if self.model.restore_done() {
+        if !self.ended && self.model.restore_done() {
             let tabs = self.shell_tabs();
             self.panels.persist(&tabs);
         }
@@ -8675,6 +8678,33 @@ two",
             ask_view(c.ask.as_ref().expect("an ask"), "#ffffff").body
         };
         assert!(body.contains("Codex"), "{body}");
+    }
+
+    #[test]
+    fn the_tabs_saved_at_quit_keep_their_agent_when_the_killed_shells_report_it_gone() {
+        let f = fx();
+        f.start_restore_and_wait();
+        f.open_tabs(&["C:\\a", "C:\\b"]);
+        let a = f.claude_in("C:\\a");
+        assert_eq!(
+            f.ctl.borrow_mut().on_close_requested(),
+            CloseDecision::Close
+        );
+        let agents = |f: &Fx| {
+            let raw = std::fs::read_to_string(f.dir.path().join("tabs.json")).unwrap(); // sync-ok: test code only, never the app
+            flare_tabs::restore::parse_tabs(&raw)
+                .tabs
+                .iter()
+                .map(|t| t.agent)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(agents(&f), vec![Some(AgentKind::Claude), None]);
+        // The shells are killed: the poll says the agent left, and the event loop still refreshes.
+        f.agent_exits(&a);
+        f.ctl.borrow_mut().refresh();
+        std::thread::sleep(Duration::from_millis(120)); // sync-ok: test code, past the store's 30 ms delay
+        f.pump();
+        assert_eq!(agents(&f), vec![Some(AgentKind::Claude), None]);
     }
 
     #[test]
