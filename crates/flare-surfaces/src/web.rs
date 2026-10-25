@@ -139,6 +139,18 @@ pub fn navigation_allowed(uri: &str) -> bool {
     lower == "about:blank" || lower.starts_with("https://") || lower.starts_with("http://")
 }
 
+/// The address the browser is sent to: a PDF opens without the viewer's toolbar and side pane, so the
+/// pages fill the panel (2026-10-25). An address that already has a fragment is left as it is.
+pub fn pdf_view(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let is_pdf = path.to_ascii_lowercase().ends_with(".pdf");
+    if is_pdf && !url.contains('#') && navigation_allowed(url) {
+        format!("{url}#toolbar=0&navpanes=0")
+    } else {
+        url.to_string()
+    }
+}
+
 /// What the web panel does now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WebShow {
@@ -405,6 +417,29 @@ pub fn host_label(url: &str) -> String {
 mod tests {
     use super::*;
     use crate::overlay::{Overlay, Overlays, PanelDraw, draw_for};
+
+    #[test]
+    fn a_pdf_opens_without_the_viewers_toolbar_and_nothing_else_changes() {
+        assert_eq!(
+            pdf_view("http://127.0.0.1:8766/report.pdf"),
+            "http://127.0.0.1:8766/report.pdf#toolbar=0&navpanes=0"
+        );
+        assert_eq!(
+            pdf_view("https://x.org/A.PDF?dl=1"),
+            "https://x.org/A.PDF?dl=1#toolbar=0&navpanes=0"
+        );
+        // A fragment someone chose (a page, a zoom) is theirs.
+        assert_eq!(
+            pdf_view("https://x.org/a.pdf#page=3"),
+            "https://x.org/a.pdf#page=3"
+        );
+        assert_eq!(
+            pdf_view("https://x.org/a.pdf.html"),
+            "https://x.org/a.pdf.html"
+        );
+        assert_eq!(pdf_view("https://x.org/?f=a.pdf"), "https://x.org/?f=a.pdf");
+        assert_eq!(pdf_view("about:blank"), "about:blank");
+    }
 
     #[test]
     fn a_capture_that_never_answers_is_ended_by_its_timeout() {
