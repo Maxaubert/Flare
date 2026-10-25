@@ -4265,6 +4265,28 @@ impl AppCtl {
         self.finish();
     }
 
+    /// The `tabs-saved` crumb of the last save: per shell tab, the agent `tabs.json` keeps for it and what the
+    /// hub knew, so a restart that resumes nothing can be told apart from a save that kept no agent.
+    fn note_saved_agents(&self) {
+        let tabs: Vec<serde_json::Value> = self
+            .model
+            .state
+            .tabs
+            .iter()
+            .filter(|t| t.kind == TabKind::Shell)
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "saved": self.model.agent_kind(&t.id).map(|k| format!("{k:?}").to_lowercase()),
+                    "here": self.hub.agent_here(&t.id),
+                    "kind": self.hub.agent_kind(&t.id).map(|k| format!("{k:?}").to_lowercase()),
+                    "session": self.hub.claude_session(&t.id).is_some(),
+                })
+            })
+            .collect();
+        crate::diag_ctl::crumb("tabs-saved", &[("tabs", serde_json::Value::Array(tabs))]);
+    }
+
     /// The end of life: both state files flushed, then every shell killed and waited for.
     fn finish(&mut self) {
         if self.ended {
@@ -4282,6 +4304,7 @@ impl AppCtl {
         self.save_window_now();
         if let Some(s) = self.model.saved_if_restored() {
             self.deps.tabs_store.save(&s);
+            self.note_saved_agents();
         }
         if self.model.restore_done() {
             let tabs = self.shell_tabs();

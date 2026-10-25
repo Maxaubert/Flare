@@ -580,6 +580,20 @@ impl AgentHub {
                 continue;
             }
             self.polled.insert(msg.id.clone());
+            // The poll sends changes only, so this is rare: the trail behind what `tabs.json` says about the
+            // tab's agent (2026-10-25: two Claude tabs came back as plain shells and the log could not say why).
+            let kind = msg
+                .kind
+                .map_or("none".to_string(), |k| format!("{k:?}").to_lowercase());
+            self.deps.diag.record(
+                "agent-poll",
+                &[
+                    ("id", DiagValue::Str(msg.id.clone())),
+                    ("present", DiagValue::Bool(msg.present)),
+                    ("kind", DiagValue::Str(kind)),
+                ],
+                epoch_ms(),
+            );
             self.ind_handle(
                 now,
                 Event::Poll {
