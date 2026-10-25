@@ -278,6 +278,54 @@ Port the rules, not the code. The table in `README.md` says what each Rust piece
   answer for a mod without `panel` lists only its own tab; `mint(["browser","eval"])` is refused;
   `"version": "2"` in `mods.json` is left alone and `"not json"` is moved to `mods.json.bad`.
 
+## Protocol 2 (`plugin.json`), plugins phase 2
+
+A plugin is a mod folder whose manifest is `plugin.json` with `"protocol": 2` (design:
+`../superpowers/specs/2026-10-25-plugin-system-design.md`, sections 3, 4 and 13). Every rule above holds, and these
+are added. `mod.json` must say protocol 1 and `plugin.json` protocol 2; a folder with both is refused. A protocol 1 mod
+keeps exactly its rules, its five permissions and its Settings rows. Sample: `../../sample-plugins/manifest-tour/`
+(loaded as valid by `flare_mods::discover::tests::the_sample_plugins_are_valid`).
+
+- **Where.** `<profile>\plugins\<id>\` beside `<profile>\mods\`; either file in either folder. The mods folder is read
+  first and the ids are one space: an id in both is refused in `plugins\`.
+- **Status.** The keys below are parsed and validated, and every file they name must exist in the folder. Background
+  pages, the bar, the sidebar sections, the actions and the helper are not started yet (later phases); a plugin's tools
+  are offered only when it has a panel to answer them.
+
+| Field | Rule |
+|---|---|
+| `author` | Optional. The text rule of `name` (80 characters). |
+| `homepage` | Optional. `https://` and a host, no space or user name, at most 200 characters. |
+| `background` | Optional. An `.html` path in the folder. Needs no permission. Tools may then go without a panel. |
+| `bar` | Optional. `{"entry": "bar.html", "height": 48}`, height 24 to 160. Goes with the `bar` permission, both ways. |
+| `contributes.sidebar` | At most 2 `{key, title}`; keys `a-z0-9-`, 1 to 24, unique. Goes with `sidebar`, both ways. |
+| `contributes.actions` | At most 8 `{key, title, icon?, where}`; `where` from `tab-menu`, `tab-hover` (one per plugin), `top-bar` (one per plugin), `session-bar` (needs a `bar`). `icon` is a built-in badge or one of `contributes.icons`. Goes with `actions`, both ways. |
+| `contributes.icons` | At most 32 `name: path`; a name not a built-in badge; the path starts with `M`/`m`, at most 2 KB, path commands, numbers, signs, dots, commas and spaces only. |
+| `helper` | Optional. `{"command": "bin\\helper.exe", "args": []}`: an `.exe` in the folder (the entry path rules), at most 16 args of 200 characters, no control characters. Goes with `process`, both ways. |
+
+Permissions a `plugin.json` may also ask for, and the words Settings shows:
+
+| Name | Words | Warning on the card |
+|---|---|---|
+| `tabs` | See all your tabs and what their agents are doing | with `network`: can send what your tabs show to the internet |
+| `decorate` | Put badges and progress on tabs | |
+| `sidebar` | Add a section to the sidebar | |
+| `actions` | Add buttons to tabs and menus | |
+| `bar` | Show a bar under the terminal | |
+| `sessions` | Read what you and Claude say in sessions | with `input`: can read and steer Claude; with `network`: can send what you and Claude say to the internet |
+| `input` | Type and run commands in your terminals (full control) | Full control |
+| `network` | Use the internet | can change what it does from the internet |
+| `process` | Run its own program on this PC (full access) | Full control, and it can leave things behind outside Flare |
+
+In the channel each new method family has its own namespace opened by exactly its permission (`sidebar.*`,
+`actions.*`, `bar.*`, `session.*`, `tabs.input`); nothing rides on the open `tabs.list`; `network` and `process` open no
+method; `tabs` widens the tab a call may name. A plugin with no permission still reaches only `hello` and its own-tab
+`tabs.list`.
+
+The approval in `mods.json` (same file, version 1) keeps, for a plugin, `author`, `homepage`, `source` (once install
+exists) and `hash` (`sha256:` over the folder's files). A plugin whose author or homepage changes is turned off until
+the person switches it on again, as one that asks for more permissions is.
+
 ## Tab bar and sidebar contributions (review 2026-10-25)
 
 Mods cannot draw on tabs, sidebar rows or the strip yet; the only screen area is the mod's panel page.
