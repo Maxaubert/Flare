@@ -623,6 +623,13 @@ impl AppDispatcher {
                 "\"{key}\" is not one of the plugin's contributes.sidebar sections"
             )));
         }
+        if let Some(k) = params.as_object().and_then(|o| {
+            o.keys()
+                .find(|k| !matches!(k.as_str(), "key" | "items"))
+                .cloned()
+        }) {
+            return Err(bad(format!("{k} is not a field of sidebar.set")));
+        }
         let list = match params.get("items") {
             Some(Value::Array(a)) => a,
             _ => return Err(bad("items is a list of items".into())),

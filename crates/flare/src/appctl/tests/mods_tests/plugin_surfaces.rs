@@ -97,6 +97,10 @@ fn a_section_is_drawn_under_its_plugins_name_set_by_sidebar_set_and_its_ticks_an
     let cases: Vec<(Value, &str)> = vec![
         (json!({"key": "nope", "items": []}), "bad_params"),
         (json!({"key": "todos"}), "bad_params"),
+        (
+            json!({"key": "todos", "items": [], "bogus": 1}),
+            "bad_params",
+        ),
         (json!({"key": "todos", "items": many}), "bad_params"),
         (
             json!({"key": "todos", "items": [item(json!({"text": "x".repeat(121)}))]}),
