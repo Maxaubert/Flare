@@ -277,3 +277,7 @@ Port the rules, not the code. The table in `README.md` says what each Rust piece
   `/data/secret.txt` through a junction `data -> <outside folder>` is refused by `serve`; a `tabs.list`
   answer for a mod without `panel` lists only its own tab; `mint(["browser","eval"])` is refused;
   `"version": "2"` in `mods.json` is left alone and `"not json"` is moved to `mods.json.bad`.
+
+## Tab bar and sidebar contributions (review 2026-10-25)
+
+Mods cannot draw on tabs, sidebar rows or the strip yet; the only screen area is the mod's panel page. The review of what is missing, how VS Code, WezTerm, iTerm2, Kitty and Zellij do it, and a phased design (first: an agent and mod tab indicator, `tabs.indicator` plus a `set_tab_indicator` MCP tool) is in `C:\Users\Admin\Documents\Claudeesearchlare‚6-10-25-mod-support.md`.
