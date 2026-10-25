@@ -1374,8 +1374,9 @@ The keys of later phases are checked now and run later. The contract: `docs/surf
 - **The permissions.** `tabs`, `decorate`, `sidebar`, `actions`, `bar`, `sessions`, `input`, `network` and `process`,
   askable only from protocol 2 (`ASKABLE_V1` is the old five). In `flare-ctl` each new method family has its own
   namespace (`Sidebar`, `Actions`, `Bar`, `Session`, `Input`) opened by exactly its permission, nothing rides on the open
-  `Tabs` one, `network` and `process` open no method, `tabs` only widens the tab a call may name
-  (`Grant::may_act_on_any_tab`), and the agent enters none of them. Their methods come with their phases. Tests:
+  `Tabs` one, `network`, `process` and `tabs` open no method, and the agent enters none of them. `tabs` is to widen the
+  tab a call may name (`Grant::may_act_on_any_tab`, defined and tested); nothing calls it yet, so every call still acts
+  on the caller's own tab (it is wired with the background pages). Their methods come with their phases. Tests:
   `flare_ctl::grant` (`each_namespace_is_opened_by_exactly_its_own_permission`,
   `a_grant_with_no_permission_may_call_only_hello_and_tabs_list` and four more).
 - **The approval.** The switch store stays `mods.json` (version 1): a plugin's entry adds `author`, `homepage`, `source`
@@ -1388,8 +1389,8 @@ The keys of later phases are checked now and run later. The contract: `docs/surf
   plain words, and a warnings row: "Full control" for `process` and `input`, the combined notes for `input`+`sessions`,
   `network`+`sessions`, `network`+`tabs`, and `network`'s own. Tests: `flare_settings::page::mods`,
   `ui_tests::settings_mods` (at 100 and 225 percent), `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
-- **Not built in this phase** (the plan's later phases): background pages, the sidebar sections and actions, the bar, the
-  helper and install from a zip or a URL. Their manifest keys are parsed and validated only.
+- **Not built in this phase** (the plan's later phases): background pages, a call naming another tab under `tabs`, the
+  sidebar sections and actions, the bar, the helper and install from a zip or a URL. Their manifest keys are parsed and validated only.
 
 ## General review, 2026-10-23
 

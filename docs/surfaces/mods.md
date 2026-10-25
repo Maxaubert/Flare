@@ -319,8 +319,10 @@ Permissions a `plugin.json` may also ask for, and the words Settings shows:
 
 In the channel each new method family has its own namespace opened by exactly its permission (`sidebar.*`,
 `actions.*`, `bar.*`, `session.*`, `tabs.input`); nothing rides on the open `tabs.list`; `network` and `process` open no
-method; `tabs` widens the tab a call may name. A plugin with no permission still reaches only `hello` and its own-tab
-`tabs.list`.
+method. `tabs` opens no method either: it is the permission that will let a call name another tab
+(`Grant::may_act_on_any_tab`), which comes with the background page phase. Until then every call, `decor.*` included,
+acts on the caller's own tab only, and naming another tab is `forbidden` whatever the plugin holds. A plugin with no
+permission still reaches only `hello` and its own-tab `tabs.list`.
 
 The approval in `mods.json` (same file, version 1) keeps, for a plugin, `author`, `homepage`, `source` (once install
 exists) and `hash` (`sha256:` over the folder's files). A plugin whose author or homepage changes is turned off until

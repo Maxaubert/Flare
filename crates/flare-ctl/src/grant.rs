@@ -134,7 +134,8 @@ impl Grant {
     }
 
     /// Whether this grant may name a tab other than its own in a call: the app, and a plugin that holds `tabs`.
-    /// The agent and every other plugin act on the tab they sit in only.
+    /// The agent and every other plugin act on the tab they sit in only. No dispatcher asks it yet (the background
+    /// page phase wires it in); until then every call, `decor.*` included, keeps to the caller's own tab.
     pub fn may_act_on_any_tab(&self) -> bool {
         match self {
             Grant::Ui => true,
@@ -492,7 +493,7 @@ mod tests {
     }
 
     /// Three permissions open no namespace: `network` changes a page's policy, `process` starts the helper, and
-    /// `tabs` widens the tab a call may name. None of them is a key to a method of its own.
+    /// `tabs` is to widen the tab a call may name (a later phase). None of them is a key to a method of its own.
     #[test]
     fn network_process_and_tabs_open_no_namespace() {
         for p in [P::Network, P::Process, P::Tabs] {
