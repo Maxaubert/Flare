@@ -25,6 +25,12 @@ pub fn is_badge_icon(icon: &str) -> bool {
     BADGE_ICONS.contains(&icon)
 }
 
+/// Whether `icon` may not wear the `accent` tone: an accent microphone beside the tab's end box is Flare's own
+/// dictation mark ("dictation is listening into this tab"), so a badge may not draw one.
+pub fn accent_refused(icon: &str) -> bool {
+    icon == "mic"
+}
+
 /// A key is 1 to 24 of `a-z`, `0-9` and `-`.
 pub fn valid_key(key: &str) -> bool {
     !key.is_empty()
@@ -48,6 +54,15 @@ mod tests {
         for mark in ["check", "dot", "", "Phone", "phone "] {
             assert!(!is_badge_icon(mark), "{mark:?}");
         }
+    }
+
+    #[test]
+    fn only_the_mic_is_refused_the_accent() {
+        let refused: Vec<&str> = BADGE_ICONS
+            .into_iter()
+            .filter(|i| accent_refused(i))
+            .collect();
+        assert_eq!(refused, ["mic"]);
     }
 
     #[test]

@@ -269,7 +269,7 @@ before the window hears of it (more answer `rate_limited`). The words: `flare_ct
 
 | Method | Params | Result |
 |---|---|---|
-| `tabs.badge.set` | `key` (1 to 24 of `a-z`, `0-9`, `-`), `icon` (one of `phone`, `globe`, `bell`, `mic`, `eye`, `moon`, `lock`, `bolt`, `star`, `plus`, `pin`; no `check`, no `dot`), `tip` (optional, one clean line of at most 80 characters: no control or hidden formatting character), `tone` (optional: `ink` default, `accent`, `muted`), `tab` (optional, own id only) | `{}` |
+| `tabs.badge.set` | `key` (1 to 24 of `a-z`, `0-9`, `-`), `icon` (one of `phone`, `globe`, `bell`, `mic`, `eye`, `moon`, `lock`, `bolt`, `star`, `plus`, `pin`; no `check`, no `dot`), `tip` (optional, one clean line of at most 80 characters: no control or hidden formatting character), `tone` (optional: `ink` default, `accent`, `muted`; `mic` may not be `accent`, which is Flare's dictation mark), `tab` (optional, own id only) | `{}` |
 | `tabs.badge.clear` | `key`, `tab` | `{"cleared": bool}` |
 | `tabs.progress.set` | `key`, `value` (optional, 0 to 1; absent is an unknown amount, a static dotted pill), `label` (optional, like `tip`), `tab` | `{}` |
 | `tabs.progress.clear` | `key`, `tab` | `{"cleared": bool}` |
@@ -278,9 +278,11 @@ Setting the same `(caller, key)` replaces; a caller keeps at most 4 badge keys o
 `bad_params`). A tab has one progress, the last set; clearing takes it only for the key that set it. A tab draws at most
 2 chips: the progress first, then one badge per caller (the agent's newest before any plugin's), 2 on a named tab of
 150 css px or more, 1 from 110 px, none below or on an icon tab; every piece is listed in the tab's tooltip, each line
-starting with who set it (`Claude: Call-me is on`). The agent's pieces go when the tab's Claude session changes from
+starting with who set it (`Claude: Call-me is on`; `Codex` on a Codex tab, `Agent` for any other agent). The agent's pieces go when the tab's Claude session changes from
 one id to another (a first id after none does not), when the agent leaves the tab (its kind is none; Codex too) and
-when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab), `bad_params`, `rate_limited`.
+when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab; or, for the agent's set, no agent in
+the tab: a plain shell's process holds the token too, and nothing would name or clear its pieces), `bad_params`,
+`rate_limited`.
 
 ### panel.open
 

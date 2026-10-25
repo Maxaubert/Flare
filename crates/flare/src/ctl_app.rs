@@ -412,6 +412,11 @@ impl AppDispatcher {
                         Tone::parse(t).ok_or_else(|| bad("tone is ink, accent or muted".into()))?
                     }
                 };
+                if tone == Tone::Accent && flare_ctl::decor::accent_refused(icon) {
+                    return Err(bad(
+                        "an accent mic is Flare's dictation mark: use ink or muted".into(),
+                    ));
+                }
                 CtlOp::BadgeSet {
                     tab,
                     source,
@@ -1942,6 +1947,11 @@ mod tests {
                 Method::TabsBadgeSet,
                 json!({"key": "a", "icon": "phone", "tone": "red"}),
                 "tone is ink",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "mic", "tone": "accent"}),
+                "dictation mark",
             ),
             (
                 Method::TabsBadgeSet,
