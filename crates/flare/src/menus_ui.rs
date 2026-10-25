@@ -27,6 +27,36 @@ pub const GLYPH_HELP: &str = "menu-help";
 pub const GLYPH_PANEL: &str = "menu-panel";
 pub const GLYPH_CHANGES: &str = "menu-changes";
 pub const GLYPH_TASKS: &str = "menu-tasks";
+/// The tab badges (plugins phase 1), one per `flare_ctl::decor::BADGE_ICONS` name.
+pub const GLYPH_BADGE_PHONE: &str = "badge-phone";
+pub const GLYPH_BADGE_GLOBE: &str = "badge-globe";
+pub const GLYPH_BADGE_BELL: &str = "badge-bell";
+pub const GLYPH_BADGE_MIC: &str = "badge-mic";
+pub const GLYPH_BADGE_EYE: &str = "badge-eye";
+pub const GLYPH_BADGE_MOON: &str = "badge-moon";
+pub const GLYPH_BADGE_LOCK: &str = "badge-lock";
+pub const GLYPH_BADGE_BOLT: &str = "badge-bolt";
+pub const GLYPH_BADGE_STAR: &str = "badge-star";
+pub const GLYPH_BADGE_PLUS: &str = "badge-plus";
+pub const GLYPH_BADGE_PIN: &str = "badge-pin";
+
+/// The glyph a badge icon is drawn with, for a built-in badge name (`flare_ctl::decor::BADGE_ICONS`).
+pub fn badge_glyph(icon: &str) -> Option<&'static str> {
+    Some(match icon {
+        "phone" => GLYPH_BADGE_PHONE,
+        "globe" => GLYPH_BADGE_GLOBE,
+        "bell" => GLYPH_BADGE_BELL,
+        "mic" => GLYPH_BADGE_MIC,
+        "eye" => GLYPH_BADGE_EYE,
+        "moon" => GLYPH_BADGE_MOON,
+        "lock" => GLYPH_BADGE_LOCK,
+        "bolt" => GLYPH_BADGE_BOLT,
+        "star" => GLYPH_BADGE_STAR,
+        "plus" => GLYPH_BADGE_PLUS,
+        "pin" => GLYPH_BADGE_PIN,
+        _ => return None,
+    })
+}
 
 /// The SVG path of a glyph name (24-unit viewbox), as `ui/glyphs.slint` holds it.
 pub fn glyph_path(name: &str) -> &'static str {
@@ -54,6 +84,27 @@ pub fn glyph_path(name: &str) -> &'static str {
         GLYPH_TASKS => {
             "M4 6.5l1.7 1.7L9 4.8M12 7h8M4 12.5l1.7 1.7L9 11M12 13h8M4 18.5l1.7 1.7L9 17M12 19h8"
         }
+        GLYPH_BADGE_PHONE => {
+            "M5.5 3.5h3.5l1.5 4-2.2 1.6a11 11 0 0 0 6.6 6.6l1.6-2.2 4 1.5v3.5a2 2 0 0 1-2 2A16.5 16.5 0 0 1 3.5 5.5a2 2 0 0 1 2-2z"
+        }
+        GLYPH_BADGE_GLOBE => {
+            "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM3.5 12h17M12 3.5a3.8 8.5 0 0 1 0 17a3.8 8.5 0 0 1 0-17z"
+        }
+        GLYPH_BADGE_BELL => "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15zM10 20.5h4",
+        GLYPH_BADGE_MIC => {
+            "M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0zM5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3"
+        }
+        GLYPH_BADGE_EYE => {
+            "M2.5 12C5 7.7 8.2 5.5 12 5.5C15.8 5.5 19 7.7 21.5 12C19 16.3 15.8 18.5 12 18.5C8.2 18.5 5 16.3 2.5 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"
+        }
+        GLYPH_BADGE_MOON => "M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",
+        GLYPH_BADGE_LOCK => "M5.5 11h13v9.5h-13zM8 11V8a4 4 0 0 1 8 0v3",
+        GLYPH_BADGE_BOLT => "M13 2.5L5 13.5h6l-1 8 8-11h-6z",
+        GLYPH_BADGE_STAR => {
+            "M12 3l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L12 16.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z"
+        }
+        GLYPH_BADGE_PLUS => "M12 5v14M5 12h14",
+        GLYPH_BADGE_PIN => "M15 3l6 6-3 1-4 4 .5 4.5L10 14l-6 6-1-1 6-6-4.5-4.5L9 8l4-4z",
         _ => "",
     }
 }
@@ -361,12 +412,34 @@ mod tests {
             GLYPH_PANEL,
             GLYPH_CHANGES,
             GLYPH_TASKS,
+            GLYPH_BADGE_PHONE,
+            GLYPH_BADGE_GLOBE,
+            GLYPH_BADGE_BELL,
+            GLYPH_BADGE_MIC,
+            GLYPH_BADGE_EYE,
+            GLYPH_BADGE_MOON,
+            GLYPH_BADGE_LOCK,
+            GLYPH_BADGE_BOLT,
+            GLYPH_BADGE_STAR,
+            GLYPH_BADGE_PLUS,
+            GLYPH_BADGE_PIN,
         ] {
             let needle = format!("<string> {name}: \"{}\";", glyph_path(name));
             assert!(
                 slint.contains(&needle),
                 "glyph {name} differs from glyphs.slint"
             );
+        }
+    }
+
+    #[test]
+    fn every_built_in_badge_has_a_glyph_and_nothing_else_does() {
+        for icon in flare_ctl::decor::BADGE_ICONS {
+            let glyph = badge_glyph(icon).unwrap_or_else(|| panic!("{icon} has no glyph"));
+            assert!(!glyph_path(glyph).is_empty(), "{icon}");
+        }
+        for icon in ["check", "dot", "", "close", "menu-copy"] {
+            assert_eq!(badge_glyph(icon), None, "{icon:?}");
         }
     }
 

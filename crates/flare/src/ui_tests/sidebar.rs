@@ -28,6 +28,7 @@ fn rows(active: usize) -> Vec<TabRow> {
             folder: format!("~\\work\\{name}").into(),
             active: i == active,
             kept: true,
+            prog: -1.0,
             ..TabRow::default()
         })
         .collect()
@@ -166,6 +167,7 @@ fn the_name_and_folder_baselines_are_as_far_apart_as_pts() {
             tip: "C:\\work".into(),
             folder: "work".into(),
             kept: true,
+            prog: -1.0,
             ..TabRow::default()
         };
         h.comp.set_rows(ModelRc::new(VecModel::from(vec![row])));

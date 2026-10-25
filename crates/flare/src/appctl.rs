@@ -43,6 +43,7 @@ use flare_settings::tab_layout::{TabLayout, tab_layout};
 use flare_settings::tab_switch::tab_switch;
 use flare_settings::term_prefs::agent_keys;
 use flare_tabs::close_flow::{CloseFlow, CloseVerdict, Confirmed};
+use flare_tabs::decor::{Decors, Refused, Source as DecorSource};
 use flare_tabs::drag_flight::DragInFlight;
 use flare_tabs::keymap::{ChordId, KeyContext, app_owns_key, key_label};
 use flare_tabs::model::TabModel;
@@ -459,6 +460,8 @@ pub struct AppCtl {
     dictation: crate::dictation_ctl::DictationKeys,
     /// The tabs the hub has been given a handle for; one that goes away is forgotten.
     hub_known: HashSet<String>,
+    /// The badges and progress callers put on tabs (plugins phase 1): the agent's own, through the channel.
+    decor: Decors,
     /// The hub's view of the host's handles, refreshed before every hub call.
     handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>>,
     /// The colours the marks wear, from the look and the picks.
@@ -860,6 +863,7 @@ impl AppCtl {
             find_shown: false,
             hub,
             hub_known: HashSet::new(),
+            decor: Decors::default(),
             handles,
             marks,
             marks_rainbow,
@@ -1484,6 +1488,7 @@ impl AppCtl {
             r.offset_css = offsets.get(&r.id).copied().unwrap_or(0.0);
             r.carried = carried.as_deref() == Some(r.id.as_str());
         }
+        crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale);
 
         sync_rows(&self.rows_model, &view.rows);
         if self.last_geom.as_ref() != Some(&view.geom) {
@@ -1835,6 +1840,8 @@ impl AppCtl {
         *self.handles.borrow_mut() = live;
         for id in gone {
             self.hub.on_closed(&id);
+            // Whatever was put on the tab goes with it.
+            self.decor.remove_tab(&id);
             // A recording that was to be pasted into this tab learns it has closed.
             crate::dictation_ctl::tab_gone(&id);
         }
@@ -3331,6 +3338,22 @@ impl AppCtl {
         events("panel.changed", params, Some(tab));
     }
 
+    /// Whether a tab holds any badge or progress (tests).
+    #[cfg(test)]
+    pub(crate) fn has_decor(&self, tab: &str) -> bool {
+        self.decor.get(tab).is_some()
+    }
+
+    /// The agent's badges and progress leave every tab whose session changed or whose agent left (the hub says
+    /// which). True when a tab lost something it showed.
+    fn clear_agent_decor(&mut self) -> bool {
+        let mut changed = false;
+        for (tab, _why) in self.hub.take_decor_gone() {
+            changed |= self.decor.clear_source(&tab, &DecorSource::Agent);
+        }
+        changed
+    }
+
     fn is_shell_tab(&self, tab: &str) -> bool {
         flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
@@ -3442,6 +3465,71 @@ impl AppCtl {
                 }
                 self.mark_agent_panel(&tab);
                 self.after_ctl_show(&tab)
+            }
+            // Decor (plugins phase 1): the worker checked every param and the rate; the tab keeps it and is drawn
+            // again only when something a person sees changed.
+            CtlOp::BadgeSet {
+                tab,
+                source,
+                key,
+                icon,
+                tip,
+                tone,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                match self.decor.set_badge(&tab, source, &key, &icon, &tip, tone) {
+                    Ok(changed) => {
+                        if changed {
+                            self.refresh();
+                        }
+                        Ok(json!({}))
+                    }
+                    Err(Refused::TooManyKeys) => Err(CtlError::new(
+                        code::BAD_PARAMS,
+                        format!(
+                            "a caller keeps at most {} badges on one tab and {} in all; clear one first",
+                            flare_tabs::decor::MAX_KEYS_PER_TAB,
+                            flare_tabs::decor::MAX_KEYS_TOTAL
+                        ),
+                    )),
+                }
+            }
+            CtlOp::BadgeClear { tab, source, key } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let cleared = self.decor.clear_badge(&tab, &source, &key);
+                if cleared {
+                    self.refresh();
+                }
+                Ok(json!({"cleared": cleared}))
+            }
+            CtlOp::ProgressSet {
+                tab,
+                source,
+                key,
+                value,
+                label,
+            } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                if self.decor.set_progress(&tab, source, &key, value, &label) {
+                    self.refresh();
+                }
+                Ok(json!({}))
+            }
+            CtlOp::ProgressClear { tab, source, key } => {
+                if !self.is_shell_tab(&tab) {
+                    return Err(no_tab());
+                }
+                let cleared = self.decor.clear_progress(&tab, &source, &key);
+                if cleared {
+                    self.refresh();
+                }
+                Ok(json!({"cleared": cleared}))
             }
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
@@ -4626,6 +4714,9 @@ impl AppCtl {
             self.sync_model_agents();
             self.close_flow
                 .set_busy(holds_window_close(self.hub.working_count()));
+            changed = true;
+        }
+        if self.clear_agent_decor() {
             changed = true;
         }
         // A hook may have named a new Claude session: a tracker follows it (only for an open Changes or Tasks panel).
@@ -8037,6 +8128,130 @@ two",
         fn clock_running(&self) -> bool {
             self.ctl.borrow().mark_clock_running()
         }
+    }
+
+    fn badge_op(tab: &str, key: &str, icon: &str, tip: &str) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::BadgeSet {
+            tab: tab.into(),
+            source: DecorSource::Agent,
+            key: key.into(),
+            icon: icon.into(),
+            tip: tip.into(),
+            tone: flare_tabs::decor::Tone::Ink,
+        }
+    }
+
+    fn progress_op(tab: &str, value: Option<f32>) -> crate::ctl_app::CtlOp {
+        crate::ctl_app::CtlOp::ProgressSet {
+            tab: tab.into(),
+            source: DecorSource::Agent,
+            key: "progress".into(),
+            value,
+            label: "Review".into(),
+        }
+    }
+
+    const TITLE_CLAUDE: &str = "\u{1b}]0;\u{2733} Claude Code\u{7}";
+    const SID_A: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";
+    const SID_B: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn osc_session(sid: &str) -> String {
+        format!("\u{1b}]777;flare-agent;state=working;session={sid}\u{7}")
+    }
+
+    /// Plugins phase 1: a badge and a progress go from the channel's op to the drawn row (flat fields and the
+    /// tooltip), and only the tab they were put on.
+    #[test]
+    fn a_badge_and_a_progress_from_the_channel_reach_the_drawn_row() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        let a = ids[0].clone();
+        assert_eq!(f.row(0).prog, -1.0);
+        assert_eq!(f.row(0).chip_count, 0);
+        ctl_call(&f, badge_op(&a, "call-me", "phone", "Call-me is on")).unwrap();
+        let r = f.row(0);
+        assert_eq!(r.chip_count, 1);
+        assert_eq!(
+            r.chip1_cmd.as_str(),
+            crate::menus_ui::glyph_path(crate::menus_ui::GLYPH_BADGE_PHONE)
+        );
+        assert!(
+            r.tip.as_str().ends_with("\nClaude: Call-me is on"),
+            "{}",
+            r.tip
+        );
+        ctl_call(&f, progress_op(&a, Some(0.5))).unwrap();
+        let r = f.row(0);
+        assert_eq!((r.prog, r.chip_count), (0.5, 1));
+        assert!(r.tip.as_str().contains("\nClaude: Review 50%"), "{}", r.tip);
+        // The other tab is untouched.
+        let b = f.row(1);
+        assert_eq!((b.prog, b.chip_count, b.tip.as_str()), (-1.0, 0, "C:\\b"));
+        // An unknown amount, then the clears.
+        ctl_call(&f, progress_op(&a, None)).unwrap();
+        assert_eq!(f.row(0).prog, -2.0);
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::ProgressClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "progress".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["cleared"], true);
+        ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::BadgeClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "call-me".into(),
+            },
+        )
+        .unwrap();
+        let r = f.row(0);
+        assert_eq!((r.prog, r.chip_count, r.tip.as_str()), (-1.0, 0, "C:\\a"));
+        assert!(!f.ctl.borrow().has_decor(&a));
+        // A tab that is not there is no tab, and a fifth key is refused.
+        let e = ctl_call(&f, badge_op("nope", "k", "star", "")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::NO_TAB);
+        for k in ["k1", "k2", "k3", "k4"] {
+            ctl_call(&f, badge_op(&a, k, "star", "")).unwrap();
+        }
+        let e = ctl_call(&f, badge_op(&a, "k5", "star", "")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::BAD_PARAMS);
+        assert!(e.message.contains("at most 4"), "{}", e.message);
+    }
+
+    /// The agent's decor belongs to its session: another session id, the agent leaving and the tab closing each
+    /// take it away; the first session id after none does not.
+    #[test]
+    fn the_agent_decor_goes_with_its_session_its_agent_and_its_tab() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        let (a, b) = (ids[0].clone(), ids[1].clone());
+        f.say("C:\\a", TITLE_CLAUDE);
+        ctl_call(&f, badge_op(&a, "call-me", "phone", "")).unwrap();
+        f.say("C:\\a", &osc_session(SID_A));
+        f.pump_until("working", |f| f.row(0).mark_state == 1);
+        assert_eq!(f.row(0).chip_count, 1, "a first session clears nothing");
+        f.say("C:\\a", &osc_session(SID_B));
+        f.pump_until("the new session to clear the badge", |f| {
+            f.row(0).chip_count == 0
+        });
+        assert!(!f.ctl.borrow().has_decor(&a));
+
+        // The agent leaves (its title goes): its progress goes.
+        ctl_call(&f, progress_op(&a, Some(0.3))).unwrap();
+        assert_eq!(f.row(0).prog, 0.3);
+        f.say("C:\\a", "\u{1b}]0;\u{7}");
+        f.pump_until("the agent to leave", |f| f.row(0).prog == -1.0);
+
+        // The tab closes: its decor goes with it.
+        ctl_call(&f, badge_op(&b, "x", "star", "")).unwrap();
+        assert!(f.ctl.borrow().has_decor(&b));
+        f.ctl.borrow_mut().request_close(&b);
+        f.pump_until("b to close", |f| !f.ctl.borrow().has_decor(&b));
     }
 
     #[test]

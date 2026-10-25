@@ -15,6 +15,12 @@ pub const MOD_CALL_TIMEOUT: Duration = Duration::from_secs(40);
 pub enum Method {
     Hello,
     TabsList,
+    /// A badge on a tab: a small glyph in Flare's outlined chip (plugins phase 1). The agent's own tab only.
+    TabsBadgeSet,
+    TabsBadgeClear,
+    /// A progress chip on a tab: a static pill, never at the tab's foot (the agent's mark lives there).
+    TabsProgressSet,
+    TabsProgressClear,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -56,6 +62,9 @@ pub enum Method {
 pub enum Namespace {
     Hello,
     Tabs,
+    /// What a caller draws on a tab (badges and progress), under the `decorate` permission. Its own namespace, so
+    /// nothing of it rides on the open `Tabs` one.
+    Decor,
     Panel,
     View,
     Browser,
@@ -69,9 +78,13 @@ pub enum Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 26] = [
+    pub const ALL: [Method; 30] = [
         Method::Hello,
         Method::TabsList,
+        Method::TabsBadgeSet,
+        Method::TabsBadgeClear,
+        Method::TabsProgressSet,
+        Method::TabsProgressClear,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -103,6 +116,10 @@ impl Method {
         match self {
             Method::Hello => "hello",
             Method::TabsList => "tabs.list",
+            Method::TabsBadgeSet => "tabs.badge.set",
+            Method::TabsBadgeClear => "tabs.badge.clear",
+            Method::TabsProgressSet => "tabs.progress.set",
+            Method::TabsProgressClear => "tabs.progress.clear",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -139,6 +156,10 @@ impl Method {
         match self {
             Method::Hello => Namespace::Hello,
             Method::TabsList => Namespace::Tabs,
+            Method::TabsBadgeSet
+            | Method::TabsBadgeClear
+            | Method::TabsProgressSet
+            | Method::TabsProgressClear => Namespace::Decor,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile
@@ -199,6 +220,7 @@ mod tests {
             let ok = match m.namespace() {
                 Namespace::Hello => prefix == "hello",
                 Namespace::Tabs => prefix == "tabs",
+                Namespace::Decor => prefix == "tabs",
                 Namespace::Panel => prefix == "panel",
                 Namespace::View => prefix == "view",
                 Namespace::Browser => prefix == "browser",
@@ -221,6 +243,8 @@ mod tests {
             "browser.fly",
             "view.image ",
             "tabs.list.x",
+            "tabs.badge",
+            "tabs.badge.set.x",
         ] {
             assert_eq!(Method::parse(n), None, "{n:?}");
         }

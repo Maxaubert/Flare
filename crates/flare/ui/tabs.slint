@@ -5,6 +5,7 @@ import { TabRow, StripGeom } from "types.slint";
 import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { MarkMotion, MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
+import { DecorPill } from "decor.slint";
 
 // The ring of a tab coming back: a 9 px circle, 1.5 px line at 22% ink, with a quarter of accent turning
 // once a second. It exists only while loading, so nothing animates at rest. The turn is the window's one
@@ -188,7 +189,7 @@ export component TabStrip inherits Rectangle {
             }
         }
 
-        // Named tab: icon, name, end.
+        // Named tab: icon, name, decor, end.
         if row.mode == 0 : Rectangle {
             AgentIcon {
                 x: 10px;
@@ -196,11 +197,23 @@ export component TabStrip inherits Rectangle {
                 kind: row.settings ? 3 : row.agent;
                 ink: tab.ink;
             }
+            // Badges and progress, just before the end; the name gives up what they take.
+            pill := DecorPill {
+                x: Px.snap(parent.width - 10px - xend.width - 4px - self.width);
+                y: Px.snap((parent.height - self.height) / 2);
+                items: min(row.chip-room, row.chip-count + (row.prog != -1 ? 1 : 0));
+                prog: row.prog;
+                chip1-cmd: row.chip1-cmd;
+                chip1-tone: row.chip1-tone;
+                chip2-cmd: row.chip2-cmd;
+                chip2-tone: row.chip2-tone;
+                ink: tab.ink;
+            }
             Text {
                 x: 34px;
                 y: 0px;
                 height: parent.height;
-                width: max(0px, parent.width - 34px - 10px - xend.width - 6px);
+                width: max(0px, parent.width - 34px - 10px - xend.width - 6px - (pill.width > 0 ? pill.width + 4px : 0px));
                 text: row.label;
                 font-size: 12px;
                 font-family: Theme.font-ui;

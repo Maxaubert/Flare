@@ -10,6 +10,7 @@ use flare_agent::icon::{IconKind, icon_kind};
 use flare_agent::kinds::DetectedAgent;
 use flare_agent::tab_look::{Switches, TabSets, tab_look, tab_title};
 use flare_agent::tab_mark::{MarkColour, MarkPlace, MarkState};
+use flare_tabs::decor::{Badge, Decors, MAX_DRAWN, Source, progress_code, room_for};
 use flare_tabs::model::TabModel;
 use flare_tabs::sidebar_rows::{find_keeps, folder_line};
 use flare_tabs::strip_layout::{layout_strip_with, room_for_plan};
@@ -62,6 +63,34 @@ pub struct RowData {
     pub mark_color: slint::Color,
     /// A finished Bar line wears the flowing rainbow.
     pub mark_rainbow: bool,
+    /// The badges and progress the tab draws ([`decorate`] fills it; none until then).
+    pub chips: RowChips,
+}
+
+/// What a row carries of its decor, as the flat fields of the Slint row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowChips {
+    /// The badges in drawing order: a glyph path ("" for none) and its tone (0 ink, 1 accent, 2 muted).
+    pub chip1: (&'static str, i32),
+    pub chip2: (&'static str, i32),
+    /// How many badges there are (0 to 2; with a progress, at most 2 chips in all).
+    pub count: i32,
+    /// -1 none, -2 an unknown amount, else 0 to 1.
+    pub prog: f32,
+    /// How many chips the strip has room for on this tab (0 to 2).
+    pub room: i32,
+}
+
+impl Default for RowChips {
+    fn default() -> Self {
+        Self {
+            chip1: ("", 0),
+            chip2: ("", 0),
+            count: 0,
+            prog: -1.0,
+            room: 0,
+        }
+    }
 }
 
 /// One dot on the +N button: the hidden tab's need, wearing the look's colour for it (a state
@@ -248,6 +277,7 @@ pub fn build_view(inp: &ViewInput) -> View {
                     colour_of(inp.agent.marks, s)
                 }),
             mark_rainbow: look.mark.colour == Some(MarkColour::Rainbow),
+            chips: RowChips::default(),
         });
     }
 
@@ -290,6 +320,54 @@ pub fn build_view(inp: &ViewInput) -> View {
     }
 }
 
+/// Puts each tab's badges and progress on its row: the chips it draws (the progress first, then one badge per
+/// source, at most two), how many of them the strip has room for at the tab's width, and one tooltip line for every
+/// piece, each naming who set it ("Claude" or "Codex" for the tab's agent). A tab with no decor keeps its row.
+pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    for r in rows.iter_mut() {
+        let Some(d) = decor.get(&r.id).filter(|_| !r.settings) else {
+            continue;
+        };
+        let drawn = d.drawn(MAX_DRAWN);
+        let glyph = |b: Option<&&Badge>| {
+            b.map_or(("", 0), |b| {
+                let path =
+                    crate::menus_ui::badge_glyph(&b.icon).map_or("", crate::menus_ui::glyph_path);
+                (path, b.tone.code())
+            })
+        };
+        r.chips = RowChips {
+            chip1: glyph(drawn.badges.first()),
+            chip2: glyph(drawn.badges.get(1)),
+            count: drawn.badges.len() as i32,
+            prog: progress_code(drawn.progress),
+            room: room_for(f64::from(r.w) / scale, r.mode == 0) as i32,
+        };
+        let agent = if r.agent == 2 { "Codex" } else { "Claude" };
+        let lines = d.tip_lines(|s| match s {
+            Source::Agent => agent.to_string(),
+            Source::Plugin(id) => id.clone(),
+        });
+        if !lines.is_empty() {
+            let mut tip = if r.tip.is_empty() {
+                r.label.clone()
+            } else {
+                r.tip.clone()
+            };
+            for l in lines {
+                tip.push('\n');
+                tip.push_str(&l);
+            }
+            r.tip = tip;
+        }
+    }
+}
+
 /// 1 working, 2 question, 3 finished, 4 failed.
 fn state_int(s: MarkState) -> i32 {
     match s {
@@ -322,6 +400,13 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         mark_rainbow: row.mark_rainbow,
         agent: row.agent,
         failed_tip: "".into(),
+        chip1_cmd: row.chips.chip1.0.into(),
+        chip1_tone: row.chips.chip1.1,
+        chip2_cmd: row.chips.chip2.0.into(),
+        chip2_tone: row.chips.chip2.1,
+        chip_count: row.chips.count,
+        prog: row.chips.prog,
+        chip_room: row.chips.room,
     }
 }
 
@@ -1012,6 +1097,7 @@ mod tests {
             mark_kind: 0,
             mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
             mark_rainbow: false,
+            chips: RowChips::default(),
         }
     }
 
@@ -1133,6 +1219,107 @@ mod tests {
         sw.done_on = false;
         let r = view_in(&m, 1000, &w, sw).rows.remove(0);
         assert_eq!(r.mark_state, 0);
+    }
+
+    fn decor_of(f: impl FnOnce(&mut Decors)) -> Decors {
+        let mut d = Decors::default();
+        f(&mut d);
+        d
+    }
+
+    #[test]
+    fn a_decorated_row_carries_its_chips_room_and_tooltip_lines() {
+        use flare_tabs::decor::Tone;
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "call-me",
+                "phone",
+                "Call-me is on",
+                Tone::Accent,
+            )
+            .unwrap();
+            d.set_progress(&id, Source::Agent, "progress", Some(0.5), "Build");
+        });
+        decorate(&mut v.rows, &decor, 1.0);
+        let r = &v.rows[0];
+        assert_eq!(r.chips.prog, 0.5);
+        assert_eq!(r.chips.count, 1);
+        assert_eq!(
+            r.chips.chip1,
+            (crate::menus_ui::glyph_path("badge-phone"), 1)
+        );
+        assert_eq!(r.chips.chip2, ("", 0));
+        assert_eq!(
+            r.tip,
+            "C:\\w\\api\nClaude: Build 50%\nClaude: Call-me is on"
+        );
+        // The strip has room for two on a 150 px tab and the others are untouched.
+        assert!(r.w >= 150, "{}", r.w);
+        assert_eq!(r.chips.room, 2);
+        assert_eq!(v.rows[1].chips, RowChips::default());
+        assert_eq!(v.rows[1].tip, "C:\\w\\web");
+        // The Slint row carries the same, flat.
+        let s = to_slint_row(r);
+        assert_eq!(
+            (s.chip_count, s.prog, s.chip_room, s.chip1_tone),
+            (1, 0.5, 2, 1)
+        );
+        assert_eq!(
+            s.chip1_cmd.as_str(),
+            crate::menus_ui::glyph_path("badge-phone")
+        );
+        // A plain row says "no progress".
+        assert_eq!(to_slint_row(&v.rows[1]).prog, -1.0);
+    }
+
+    #[test]
+    fn the_room_follows_the_tab_in_css_pixels_and_an_icon_tab_has_none() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let decor = decor_of(|d| {
+            for r in &v.rows {
+                d.set_progress(&r.id, Source::Agent, "progress", None, "");
+            }
+        });
+        v.rows[0].w = 120;
+        v.rows[1].w = 300;
+        v.rows[2].mode = 1;
+        decorate(&mut v.rows, &decor, 2.0);
+        // 120 device px at 2x is 60 css px: no room; 300 is 150: two.
+        assert_eq!(v.rows[0].chips.room, 0);
+        assert_eq!(v.rows[1].chips.room, 2);
+        assert_eq!(v.rows[2].chips.room, 0);
+        assert!(v.rows.iter().all(|r| r.chips.prog == -2.0));
+    }
+
+    #[test]
+    fn a_codex_tab_names_its_agent_in_the_tooltip() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        v.rows[0].agent = 2;
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "k",
+                "star",
+                "",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate(&mut v.rows, &decor, 1.0);
+        assert!(
+            v.rows[0].tip.ends_with("\nCodex: star"),
+            "{}",
+            v.rows[0].tip
+        );
     }
 
     #[test]

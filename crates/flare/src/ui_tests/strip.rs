@@ -54,6 +54,7 @@ fn rows_for(n: usize, active: usize, scale: f32, strip_css: f64) -> (Vec<TabRow>
                 },
                 x: slot.map_or(0, |s| s.x),
                 w: slot.map_or(0, |s| s.w),
+                prog: -1.0,
                 ..Default::default()
             }
         })

@@ -38,6 +38,7 @@ fn tab(i: usize, name: &str, active: bool) -> TabRow {
         folder: format!("~\\work\\{name}").into(),
         active,
         kept: true,
+        prog: -1.0,
         ..TabRow::default()
     }
 }

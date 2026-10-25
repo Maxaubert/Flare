@@ -1,0 +1,105 @@
+// The decor chip of a tab (plugins phase 1): an outlined pill Flare draws, holding a progress meter and up to two
+// badge glyphs. It is drawn on the tab's middle, never at its foot (the agent's MarkBar lives there), it has no
+// TouchArea of its own (the tab's tooltip carries its words and a press still starts a drag) and nothing in it
+// moves: an unknown amount is a static row of dots.
+import { Theme, Px } from "theme.slint";
+
+component DecorGlyph inherits Rectangle {
+    in property <string> cmd;
+    in property <color> ink;
+    width: 14px;
+    height: 14px;
+    // Slint fits the path into its box less the stroke: the box is grown by one stroke and moved back by half.
+    Path {
+        x: -(1.8 * 14px / 24) / 2;
+        y: -(1.8 * 14px / 24) / 2;
+        width: 14px + 1.8 * 14px / 24;
+        height: 14px + 1.8 * 14px / 24;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.cmd;
+        fill: transparent;
+        stroke: root.ink;
+        stroke-width: 1.8 * 14px / 24;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+export component DecorPill inherits Rectangle {
+    // How many chips to draw (the progress first, then the badges); 0 draws nothing and takes no room.
+    in property <int> items;
+    in property <float> prog: -1;
+    in property <string> chip1-cmd;
+    in property <int> chip1-tone;
+    in property <string> chip2-cmd;
+    in property <int> chip2-tone;
+    in property <color> ink;
+
+    property <bool> show-prog: root.items > 0 && root.prog != -1;
+    property <int> glyphs: root.items - (root.show-prog ? 1 : 0);
+    property <length> prog-w: 18px;
+    property <length> gap: 3px;
+    property <length> pad: 4px;
+    property <length> inner: (root.show-prog ? root.prog-w : 0px) + root.glyphs * 14px
+        + max(0, root.items - 1) * root.gap;
+
+    width: root.items > 0 ? Px.snap(root.inner + 2 * root.pad) : 0px;
+    height: 20px;
+    visible: root.items > 0;
+    border-radius: 10px;
+    border-width: Px.hair();
+    border-color: root.ink.with-alpha(0.38);
+    background: transparent;
+
+    pure function tone(t: int) -> color {
+        if t == 1 {
+            return Theme.accent-hi;
+        }
+        if t == 2 {
+            return root.ink.with-alpha(0.6);
+        }
+        return root.ink;
+    }
+
+    // The progress: an outlined track with a static fill, or four dots for an unknown amount.
+    if root.show-prog : Rectangle {
+        x: root.pad;
+        y: Px.snap((root.height - 6px) / 2);
+        width: root.prog-w;
+        height: 6px;
+        border-radius: 3px;
+        border-width: Px.hair();
+        border-color: root.ink.with-alpha(0.6);
+        if root.prog >= 0 : Rectangle {
+            x: 0px;
+            y: 0px;
+            width: Px.snap(parent.width * clamp(root.prog, 0, 1));
+            height: parent.height;
+            border-radius: 3px;
+            background: Theme.accent-hi;
+        }
+        if root.prog < -1.5 : Rectangle {
+            for i in 4 : Rectangle {
+                x: Px.snap(2px + i * 4px);
+                y: Px.snap((6px - 2px) / 2);
+                width: 2px;
+                height: 2px;
+                border-radius: 1px;
+                background: root.ink.with-alpha(0.8);
+            }
+        }
+    }
+    if root.glyphs >= 1 : DecorGlyph {
+        x: root.pad + (root.show-prog ? root.prog-w + root.gap : 0px);
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: root.chip1-cmd;
+        ink: root.tone(root.chip1-tone);
+    }
+    if root.glyphs >= 2 : DecorGlyph {
+        x: root.pad + (root.show-prog ? root.prog-w + root.gap : 0px) + 14px + root.gap;
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: root.chip2-cmd;
+        ink: root.tone(root.chip2-tone);
+    }
+}
