@@ -143,7 +143,8 @@ impl ModCtl {
         self.dispatcher = Some(d);
     }
 
-    /// Reads the mods folder on a worker. One scan at a time; one asked for meanwhile runs after it.
+    /// Reads the plugins folder on a worker (the first scan moves the old mods folder in). One scan at a time; one
+    /// asked for meanwhile runs after it.
     pub fn start_scan(&mut self) {
         if self.scanning.swap(true, Ordering::SeqCst) {
             self.rescan = true;
@@ -155,11 +156,9 @@ impl ModCtl {
             Arc::clone(&self.scanning),
         );
         let job = move || {
-            // The folders are made here (a worker) so the Open folder buttons have somewhere to go.
+            // The plugins folder is made here (a worker, at start and each time the page opens) so the Open plugins
+            // folder button has somewhere to go. The old mods folder is never made.
             let _ = std::fs::create_dir_all(&hub.config().dir); // sync-ok: the scan worker
-            if let Some(plugins) = &hub.config().plugins_dir {
-                let _ = std::fs::create_dir_all(plugins); // sync-ok: the scan worker
-            }
             let change = hub.scan();
             flag.store(false, Ordering::SeqCst);
             post(UiMsg::Mods(ModsMsgBox(ModsMsg::Scanned(change))));
@@ -469,12 +468,6 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
     ModsInfo {
         scanned: s.scanned,
         dir: hub.config().dir.to_string_lossy().into_owned(),
-        plugins_dir: hub
-            .config()
-            .plugins_dir
-            .as_ref()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default(),
         mods: s
             .mods
             .into_iter()
@@ -514,7 +507,6 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
             .map(|e| Problem {
                 folder: e.folder,
                 reason: e.reason,
-                plugins: e.root == flare_mods::Root::Plugins,
             })
             .collect(),
         notes: s.notes,
@@ -555,10 +547,6 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
 
     fn dir(&self) -> std::path::PathBuf {
         self.hub.config().dir.clone()
-    }
-
-    fn plugins_dir(&self) -> Option<std::path::PathBuf> {
-        self.hub.config().plugins_dir.clone()
     }
 }
 
@@ -613,14 +601,14 @@ mod tests {
 
     fn rig(perms: &str) -> Rig {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("mods");
+        let root = dir.path().join("plugins");
         let f = root.join("notes");
         std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
         std::fs::write(f.join("mod.json"), mod_json(perms)).unwrap(); // sync-ok: test code only
         std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
         let hub = Arc::new(Hub::new(Config {
             dir: root,
-            plugins_dir: None,
+            old_mods_dir: None,
             state_file: dir.path().join("mods.json"),
         }));
         hub.scan();
@@ -957,8 +945,8 @@ mod tests {
     fn a_scan_runs_on_a_worker_and_a_second_ask_runs_after_it() {
         let dir = tempfile::tempdir().unwrap();
         let hub = Arc::new(Hub::new(Config {
-            dir: dir.path().join("mods"),
-            plugins_dir: Some(dir.path().join("plugins")),
+            dir: dir.path().join("plugins"),
+            old_mods_dir: Some(dir.path().join("mods")),
             state_file: dir.path().join("mods.json"),
         }));
         let (tx, rx) = mpsc::channel::<String>();
@@ -972,8 +960,9 @@ mod tests {
         ctl.start_scan();
         ctl.start_scan(); // asked while the first may still run
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "scanned");
-        // The folder was made so the Open mods folder button has somewhere to go.
-        assert!(dir.path().join("mods").is_dir());
+        // The folder was made so the Open plugins folder button has somewhere to go; the old mods folder was not.
+        assert!(dir.path().join("plugins").is_dir());
+        assert!(!dir.path().join("mods").exists());
         // Whether or not the second ask was folded into the first, finishing the scan starts at most one more.
         let again = ctl.scan_done();
         if again {
@@ -987,6 +976,7 @@ mod tests {
     #[test]
     fn the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none() {
         let dir = tempfile::tempdir().unwrap();
+        // The mod starts in the old mods folder: the scan moves it in beside the plugin.
         let mods = dir.path().join("mods");
         let f = mods.join("notes");
         std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
@@ -1002,13 +992,13 @@ mod tests {
         .unwrap(); // sync-ok: test code only
         std::fs::create_dir_all(plugins.join("Junk")).unwrap(); // sync-ok: test code only
         let hub = Hub::new(Config {
-            dir: mods,
-            plugins_dir: Some(plugins.clone()),
+            dir: plugins.clone(),
+            old_mods_dir: Some(mods),
             state_file: dir.path().join("mods.json"),
         });
         hub.scan();
         let info = info_of(&hub, &Mutex::new(None));
-        assert_eq!(info.plugins_dir, plugins.to_string_lossy());
+        assert_eq!(info.dir, plugins.to_string_lossy());
         let notes = info.mods.iter().find(|m| m.id == "notes").unwrap();
         assert!(!notes.plugin && notes.author.is_empty() && notes.warnings.is_empty());
         assert_eq!(notes.permissions, ["Show its panel in a tab"]);
@@ -1036,6 +1026,10 @@ mod tests {
             ]
         );
         assert_eq!(info.problems.len(), 1);
-        assert!(info.problems[0].plugins && info.problems[0].folder == "Junk");
+        assert_eq!(info.problems[0].folder, "Junk");
+        assert!(
+            !dir.path().join("mods").exists(),
+            "the emptied mods folder is gone"
+        );
     }
 }

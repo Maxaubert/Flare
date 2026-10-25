@@ -100,10 +100,9 @@ pub trait ModsPort {
     fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown);
     /// The person asked for the mod's panel.
     fn show_panel(&self, id: &str);
-    /// The mods folder.
+    /// The plugins folder, the one folder for every plugin (the scan worker makes it, at start and when the page
+    /// opens).
     fn dir(&self) -> PathBuf;
-    /// The plugins folder, when this Flare reads one.
-    fn plugins_dir(&self) -> Option<PathBuf>;
 }
 
 /// The picker answers on a worker, so its callback is `Send`.
@@ -1572,12 +1571,6 @@ impl SettingsCtl {
         if row == flare_settings::page::mods::FOLDER_ROW && button == "open" {
             if let Some(m) = &self.mods {
                 (self.deps.open_path)(&m.dir());
-            }
-            return;
-        }
-        if row == flare_settings::page::mods::PLUGINS_FOLDER_ROW && button == "open" {
-            if let Some(dir) = self.mods.as_ref().and_then(|m| m.plugins_dir()) {
-                (self.deps.open_path)(&dir);
             }
             return;
         }

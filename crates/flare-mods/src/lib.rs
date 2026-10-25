@@ -1,15 +1,16 @@
 //! Mods, Surfaces stage 8, the library part: no UI, no Win32 window, no WebView2.
 //!
-//! A mod is a folder under `%APPDATA%\Flare\mods\<id>\` with a `mod.json` manifest that declares what
-//! it may do (`docs/surfaces/mods.md` is the contract). A plugin (protocol 2) is the same with a `plugin.json`,
-//! usually under `%APPDATA%\Flare\plugins\<id>\`; the two folders share one id space. This crate holds
-//! everything about a mod that is not drawing it:
+//! A mod is a folder under `%APPDATA%\Flare\plugins\<id>\` with a `mod.json` manifest that declares what
+//! it may do (`docs/surfaces/mods.md` is the contract). A plugin (protocol 2) is the same with a `plugin.json`, in
+//! the same folder: there is one folder for every plugin. This crate holds everything about a mod that is not
+//! drawing it:
 //!
 //! - `manifest`: the strict parse and validation of `mod.json` and `plugin.json` (every rule, with a
 //!   human-readable reason).
 //! - `paths`: the syntax of a path inside a mod folder, and the canonical containment check (no escape
 //!   by `..`, a drive, a UNC path or a link).
-//! - `discover`: the scan of the mods and plugins folders (bounded, per-folder errors, worker-callable).
+//! - `discover`: the scan of the plugins folder (bounded, per-folder errors, worker-callable).
+//! - `migrate`: the one-time move of the old `mods` folder's folders into the plugins folder.
 //! - `enabled`: which mods the user turned on (`mods.json`, atomic, unknown entries dropped), with what a
 //!   plugin said it was when it was approved.
 //! - `hash`: the content hash of a plugin folder kept with its approval.
@@ -32,12 +33,13 @@ pub mod enabled;
 pub mod hash;
 pub mod hub;
 pub mod manifest;
+pub mod migrate;
 pub mod paths;
 pub mod serve;
 pub mod tokens;
 pub mod tools;
 
-pub use discover::{Discovery, FolderError, Found, Root, discover, discover_all};
+pub use discover::{Discovery, FolderError, Found, discover};
 pub use enabled::EnabledStore;
 pub use hub::Hub;
 pub use manifest::{

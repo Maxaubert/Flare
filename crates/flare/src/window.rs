@@ -1076,11 +1076,12 @@ pub fn run_window(
         let apps_root = flare_surfaces::app::apps_root(&inst.profile.dir);
         flare_surfaces::app::retire_root(&apps_root); // sync-ok: startup, before the window shows
         rc.borrow_mut().set_apps_root(apps_root.clone());
-        // Mods (stage 8) and plugins (plugins phase 2): `<profile>\mods` and `<profile>\plugins`, found on a worker
-        // at start and when Settings > Plugins opens. Off until the person turns one on.
+        // Mods (stage 8) and plugins (plugins phase 2): all in `<profile>\plugins` (phase 2c), found on a worker at
+        // start and when Settings > Plugins opens; the first scan moves the old `<profile>\mods` in. Off until the
+        // person turns one on.
         let mods_hub = Arc::new(flare_mods::Hub::new(flare_mods::hub::Config {
-            dir: inst.profile.mods_dir(),
-            plugins_dir: Some(inst.profile.plugins_dir()),
+            dir: inst.profile.plugins_dir(),
+            old_mods_dir: Some(inst.profile.old_mods_dir()),
             state_file: inst.profile.mods_file(),
         }));
         let mut mods_dispatcher = None;

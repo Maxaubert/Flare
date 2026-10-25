@@ -1,6 +1,7 @@
 //! The Plugins page (Surfaces stage 8, plugins phase 2): the mods and plugins Flare found, what each may do in plain
-//! words, a switch for each (off until the user turns it on), the folders that are not mods and why, and buttons
-//! that open the plugins and mods folders. The page keeps its key `mods` and is titled Plugins. A protocol 1 mod's
+//! words, a switch for each (off until the user turns it on), the folders that are not mods and why, and a button
+//! that opens the plugins folder (the one folder for both protocols). The page keeps its key `mods` and is titled
+//! Plugins. A protocol 1 mod's
 //! rows are what they always were; a protocol 2 plugin adds who made it (`modby:<id>`) and, for the permissions
 //! that reach furthest, the warnings (`modwarn:<id>`). The rows are not in the closed row tables: there is one set
 //! per mod found, so their ids are made from the mod's id (`mod:<id>`, `modperm:<id>`) and interned once. The
@@ -35,14 +36,12 @@ pub struct ModInfo {
     pub full_control: bool,
 }
 
-/// A folder in the mods folder that is not a mod, and why.
+/// A folder in the plugins folder that is not a mod (or one left in the old mods folder), and why.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Problem {
-    /// The folder's name; empty for a problem with the root folder itself.
+    /// The folder's name; empty for a problem with the plugins folder itself.
     pub folder: String,
     pub reason: String,
-    /// It is in the plugins folder, not the mods folder.
-    pub plugins: bool,
 }
 
 /// What the page shows. The app fills it from the hub.
@@ -50,10 +49,8 @@ pub struct Problem {
 pub struct ModsInfo {
     /// A scan has finished (until then the page says it is looking).
     pub scanned: bool,
-    /// The mods folder, for the Open folder row.
+    /// The plugins folder, for the Open folder row.
     pub dir: String,
-    /// The plugins folder, for its Open folder row.
-    pub plugins_dir: String,
     pub mods: Vec<ModInfo>,
     pub problems: Vec<Problem>,
     /// Sentences about tools left out and a switch file that cannot be saved.
@@ -62,10 +59,8 @@ pub struct ModsInfo {
     pub save_error: Option<String>,
 }
 
-/// The id of the row that opens the mods folder.
-pub const FOLDER_ROW: &str = "mods-folder";
 /// The id of the row that opens the plugins folder.
-pub const PLUGINS_FOLDER_ROW: &str = "plugins-folder";
+pub const FOLDER_ROW: &str = "plugins-folder";
 /// The prefix of a plugin's maker row (then the plugin's id).
 pub const BY_PREFIX: &str = "modby:";
 /// The prefix of a plugin's warnings row (then the plugin's id).
@@ -77,9 +72,7 @@ pub const SWITCH_PREFIX: &str = "mod:";
 /// The prefix of a mod's permissions row (then the mod's id).
 pub const PERMS_PREFIX: &str = "modperm:";
 /// The words under the folder row while no path is known.
-pub const FOLDER_UNKNOWN: &str = "Where mods are kept.";
-/// The words under the plugins folder row while no path is known.
-pub const PLUGINS_FOLDER_UNKNOWN: &str = "Where plugins are kept.";
+pub const FOLDER_UNKNOWN: &str = "Where plugins are kept.";
 /// The maker row when the plugin does not say who made it.
 pub const NO_AUTHOR: &str = "The plugin does not say who made it.";
 /// The label of the warnings row of a plugin that asks for full control.
@@ -91,8 +84,9 @@ pub const NEEDS_APPROVAL: &str =
     "Asks for new permissions, so it was turned off. Switch it on to allow what is listed below.";
 /// The row shown while the first scan has not finished.
 pub const LOOKING: &str = "Looking for plugins...";
-/// The row shown when neither folder holds a plugin or a mod.
-pub const NONE_FOUND: &str = "No plugins yet. Put a plugin folder in the plugins folder (or a mod in the mods folder), then open this page again.";
+/// The row shown when the plugins folder holds nothing.
+pub const NONE_FOUND: &str =
+    "No plugins yet. Put a plugin folder in the plugins folder, then open this page again.";
 
 /// A static copy of a made-up id: rows and sections are named by `&'static str`, a mod's id is known only at
 /// run time, and each distinct id is kept once for the life of the process (at most 64 mods per scan).
@@ -146,37 +140,19 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
     };
     let mut sections = Vec::new();
 
-    // The folders, and what is going on.
+    // The folder, and what is going on.
     let mut top = Vec::new();
     top.push(BlockModel::Row(RowModel {
         buttons: vec![Button {
             id: "open",
             label: "Open plugins folder".to_string(),
             alt: None,
-            off: info.plugins_dir.is_empty(),
-        }],
-        ..plain(
-            PLUGINS_FOLDER_ROW,
-            "folder",
-            "Plugins folder".to_string(),
-            if info.plugins_dir.is_empty() {
-                PLUGINS_FOLDER_UNKNOWN.to_string()
-            } else {
-                info.plugins_dir.clone()
-            },
-        )
-    }));
-    top.push(BlockModel::Row(RowModel {
-        buttons: vec![Button {
-            id: "open",
-            label: "Open mods folder".to_string(),
-            alt: None,
             off: info.dir.is_empty(),
         }],
         ..plain(
             FOLDER_ROW,
             "folder",
-            "Mods folder".to_string(),
+            "Plugins folder".to_string(),
             if info.dir.is_empty() {
                 FOLDER_UNKNOWN.to_string()
             } else {
@@ -277,10 +253,8 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             ..plain(
                 intern(format!("modbad:{i}")),
                 "warn",
-                if p.folder.is_empty() && p.plugins {
+                if p.folder.is_empty() {
                     "The plugins folder".to_string()
-                } else if p.folder.is_empty() {
-                    "The mods folder".to_string()
                 } else {
                     p.folder.clone()
                 },
@@ -484,32 +458,11 @@ mod tests {
     }
 
     #[test]
-    fn the_plugins_folder_row_comes_first_and_opens_its_folder() {
-        let mut i = info(vec![]);
-        i.plugins_dir = r"C:\Users\x\AppData\Roaming\Flare\plugins".into();
-        with_env_mods(i, |env| {
-            let page = build(env);
-            let ids = all_row_ids(&page);
-            assert_eq!(&ids[..2], [PLUGINS_FOLDER_ROW, FOLDER_ROW]);
-            let r = row_of(&page, PLUGINS_FOLDER_ROW).unwrap();
-            assert_eq!(r.sub, r"C:\Users\x\AppData\Roaming\Flare\plugins");
-            assert_eq!(r.buttons[0].label, "Open plugins folder");
-            assert!(!r.buttons[0].off);
-        });
-        with_env_mods(ModsInfo::default(), |env| {
-            let r = row_of(&build(env), PLUGINS_FOLDER_ROW).cloned().unwrap();
-            assert_eq!(r.sub, PLUGINS_FOLDER_UNKNOWN);
-            assert!(r.buttons[0].off);
-        });
-    }
-
-    #[test]
     fn a_problem_with_the_plugins_folder_itself_names_it() {
         let mut i = info(vec![]);
         i.problems = vec![Problem {
             folder: String::new(),
             reason: "the plugins folder is not a folder".into(),
-            plugins: true,
         }];
         with_env_mods(i, |env| {
             assert_eq!(
@@ -535,7 +488,7 @@ mod tests {
     fn info(mods: Vec<ModInfo>) -> ModsInfo {
         ModsInfo {
             scanned: true,
-            dir: r"C:\Users\x\AppData\Roaming\Flare\mods".into(),
+            dir: r"C:\Users\x\AppData\Roaming\Flare\plugins".into(),
             mods,
             ..ModsInfo::default()
         }
@@ -602,14 +555,22 @@ mod tests {
     }
 
     #[test]
-    fn the_folder_row_opens_the_folder_and_shows_its_path() {
+    fn the_one_folder_row_comes_first_opens_the_plugins_folder_and_shows_its_path() {
         with_env_mods(info(vec![]), |env| {
             let page = build(env);
+            let ids = all_row_ids(&page);
+            assert_eq!(ids[0], FOLDER_ROW);
+            assert_eq!(FOLDER_ROW, "plugins-folder");
             let r = row_of(&page, FOLDER_ROW).unwrap();
-            assert_eq!(r.sub, r"C:\Users\x\AppData\Roaming\Flare\mods");
+            assert_eq!(r.label, "Plugins folder");
+            assert_eq!(r.sub, r"C:\Users\x\AppData\Roaming\Flare\plugins");
             assert_eq!(r.buttons[0].id, "open");
-            assert_eq!(r.buttons[0].label, "Open mods folder");
+            assert_eq!(r.buttons[0].label, "Open plugins folder");
             assert!(!r.buttons[0].off);
+            // No other folder row, and no word of a mods folder anywhere on the page.
+            assert_eq!(ids.iter().filter(|i| i.ends_with("-folder")).count(), 1);
+            let text = format!("{page:?}").to_lowercase();
+            assert!(!text.contains("mods folder"), "{text}");
         });
         with_env_mods(ModsInfo::default(), |env| {
             let page = build(env);
@@ -639,12 +600,10 @@ mod tests {
             Problem {
                 folder: "broken".into(),
                 reason: "mod.json is not valid JSON: expected value at line 1 column 1".into(),
-                plugins: false,
             },
             Problem {
                 folder: String::new(),
                 reason: "more than 64 folders; 3 were not read".into(),
-                plugins: false,
             },
         ];
         i.notes = vec!["The tool name mod_a_b is claimed by two mods.".into()];
@@ -660,7 +619,10 @@ mod tests {
             assert!(r.warn);
             assert_eq!(r.label, "broken");
             assert!(r.sub.contains("not valid JSON"));
-            assert_eq!(row_of(&page, "modbad:1").unwrap().label, "The mods folder");
+            assert_eq!(
+                row_of(&page, "modbad:1").unwrap().label,
+                "The plugins folder"
+            );
             let n = row_of(&page, "modnote:0").unwrap();
             assert!(n.warn && n.sub.contains("mod_a_b"));
             // A page with a problem is not "no mods found".
@@ -708,7 +670,7 @@ mod tests {
     fn a_row_id_names_its_mod() {
         assert_eq!(mod_of_row("mod:notes"), Some("notes"));
         assert_eq!(mod_of_row("modperm:notes"), Some("notes"));
-        assert_eq!(mod_of_row("mods-folder"), None);
+        assert_eq!(mod_of_row("plugins-folder"), None);
         assert_eq!(mod_of_row("modbad:0"), None);
     }
 
@@ -725,7 +687,6 @@ mod tests {
             LOOKING,
             NONE_FOUND,
             FOLDER_UNKNOWN,
-            PLUGINS_FOLDER_UNKNOWN,
             NO_AUTHOR,
             FULL_CONTROL,
             TAKE_NOTE,

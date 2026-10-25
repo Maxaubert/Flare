@@ -50,10 +50,7 @@ impl ModsPort for FakePort {
         self.shown.borrow_mut().push(id.to_string());
     }
     fn dir(&self) -> PathBuf {
-        PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\mods")
-    }
-    fn plugins_dir(&self) -> Option<PathBuf> {
-        Some(PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins"))
+        PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
     }
 }
 
@@ -87,7 +84,7 @@ fn notes(enabled: bool) -> ModInfo {
 fn info(mods: Vec<ModInfo>) -> ModsInfo {
     ModsInfo {
         scanned: true,
-        dir: r"C:\Users\x\AppData\Roaming\Flare\mods".into(),
+        dir: r"C:\Users\x\AppData\Roaming\Flare\plugins".into(),
         mods,
         ..ModsInfo::default()
     }
@@ -298,15 +295,9 @@ fn the_panel_button_waits_for_the_mod_and_the_folder_button_opens_the_mods_folde
     f.b()
         .invoke_row_button("modperm:notes".into(), "show".into());
     assert_eq!(f.port.shown.borrow().as_slice(), ["notes".to_string()]);
-    let folder = f.row("mods-folder").unwrap();
-    assert_eq!(
-        folder.buttons.iter().next().unwrap().label.as_str(),
-        "Open mods folder"
-    );
-    f.b().invoke_row_button("mods-folder".into(), "open".into());
-    assert_eq!(
-        f.opened.borrow().as_slice(),
-        [PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\mods")]
+    assert!(
+        f.row("mods-folder").is_none(),
+        "one folder row, the plugins one"
     );
 }
 
@@ -317,12 +308,10 @@ fn a_folder_that_is_not_a_mod_is_a_warning_with_its_reason_and_the_others_still_
         Problem {
             folder: "broken-mod".into(),
             reason: "mod.json is not valid JSON: expected value at line 1 column 1".into(),
-            plugins: false,
         },
         Problem {
             folder: "wrong".into(),
             reason: "the folder is named \"wrong\" but mod.json says id \"other\"; the folder name must be the id".into(),
-            plugins: false,
         },
     ];
     page.notes = vec![
@@ -376,7 +365,6 @@ fn every_row_sits_whole_in_its_card_on_device_pixels_at_every_scale_and_long_wor
     page.problems = vec![Problem {
         folder: "x".repeat(40),
         reason: "y ".repeat(300),
-        plugins: false,
     }];
     for s in SCALES2 {
         let f = fx_at(s, page.clone());
@@ -486,9 +474,7 @@ fn a_plugin_card_draws_its_maker_its_permissions_and_a_full_control_warning_and_
 
 #[test]
 fn the_plugins_folder_button_opens_the_plugins_folder() {
-    let mut page = info(vec![]);
-    page.plugins_dir = r"C:\Users\x\AppData\Roaming\Flare\plugins".into();
-    let f = fx_at(1.0, page);
+    let f = fx_at(1.0, info(vec![]));
     f.page("mods");
     let row = f.row("plugins-folder").expect("the plugins folder row");
     assert_eq!(
