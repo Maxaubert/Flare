@@ -16,7 +16,7 @@
 //! Tokens are secrets: nothing here returns one except [`Hub::grant_of_token`]'s grant and
 //! [`Hub::grant_of_mod`]'s grant, and no `Debug` or `Snapshot` carries one.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -233,8 +233,8 @@ struct Inner {
     /// Why this run keeps every plugin off (safe mode), if it does.
     safe: Option<String>,
     /// The tabs each plugin may act on because the person clicked one of its actions or sidebar items there
-    /// (design 13, "click scope"). Gone when the tab closes or the plugin's token dies.
-    clicked: BTreeMap<String, BTreeSet<String>>,
+    /// (design 13, "click scope"), oldest click first. Gone when the tab closes or the plugin's token dies.
+    clicked: BTreeMap<String, VecDeque<String>>,
 }
 
 /// The tabs one plugin may hold click scope on at once; a click on one more forgets the oldest.
@@ -455,14 +455,13 @@ impl Hub {
         if g.tokens.token_of(id).is_none() {
             return;
         }
-        let set = g.clicked.entry(id.to_string()).or_default();
-        if !set.contains(tab) && set.len() >= MAX_CLICKED_TABS {
-            let first = set.iter().next().cloned();
-            if let Some(first) = first {
-                set.remove(&first);
-            }
+        let list = g.clicked.entry(id.to_string()).or_default();
+        // A repeat click makes the tab the newest again.
+        list.retain(|t| t != tab);
+        if list.len() >= MAX_CLICKED_TABS {
+            list.pop_front();
         }
-        set.insert(tab.to_string());
+        list.push_back(tab.to_string());
     }
 
     /// Whether a click gave the plugin scope on `tab` ([`Hub::grant_click_scope`]).
@@ -470,16 +469,16 @@ impl Hub {
         self.lock()
             .clicked
             .get(id)
-            .is_some_and(|set| set.contains(tab))
+            .is_some_and(|list| list.iter().any(|t| t == tab))
     }
 
     /// The tab closed: no plugin keeps scope on it.
     pub fn forget_tab(&self, tab: &str) {
         let mut g = self.lock();
-        for set in g.clicked.values_mut() {
-            set.remove(tab);
+        for list in g.clicked.values_mut() {
+            list.retain(|t| t != tab);
         }
-        g.clicked.retain(|_, set| !set.is_empty());
+        g.clicked.retain(|_, list| !list.is_empty());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -2130,11 +2129,16 @@ mod tests {
             !w.hub.has_click_scope("todo", "t2"),
             "a switch off forgets every click"
         );
-        // Kept bounded: the oldest goes past the cap.
-        for i in 0..=MAX_CLICKED_TABS {
+        // Kept bounded: past the cap the oldest click goes, not the smallest id. A repeat click on tab-000 makes it
+        // the newest, so tab-001 is the oldest when one more tab is clicked.
+        for i in 0..MAX_CLICKED_TABS {
             w.hub.grant_click_scope("todo", &format!("tab-{i:03}"));
         }
-        assert!(!w.hub.has_click_scope("todo", "tab-000"));
+        w.hub.grant_click_scope("todo", "tab-000");
+        w.hub
+            .grant_click_scope("todo", &format!("tab-{MAX_CLICKED_TABS:03}"));
+        assert!(w.hub.has_click_scope("todo", "tab-000"));
+        assert!(!w.hub.has_click_scope("todo", "tab-001"));
         assert!(
             w.hub
                 .has_click_scope("todo", &format!("tab-{MAX_CLICKED_TABS:03}"))
