@@ -20,6 +20,17 @@ export struct TabRow {
     mark-rainbow: bool, // a finished Bar line wears the flowing rainbow
     agent: int,         // 0 shell, 1 claude, 2 codex (the tab icon)
     failed-tip: string, // "Failed: rate limit" while failed, else ""
+    // Decor (plugins phase 1): flat fields, so the row diff stays one compare. The badges in drawing order
+    // (their glyph paths, "" for none, and tone 0 ink, 1 accent, 2 muted), how many there are (0 to 2,
+    // and with a progress never more than 2 in all), the progress (-1 none, -2 an unknown amount drawn as a
+    // static dotted pill, else 0 to 1) and how many chips the strip has room for on this tab (0 to 2).
+    chip1-cmd: string,
+    chip1-tone: int,
+    chip2-cmd: string,
+    chip2-tone: int,
+    chip-count: int,
+    prog: float,
+    chip-room: int,
 }
 
 export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, more-count: int, dots: [color] }

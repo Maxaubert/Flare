@@ -10,9 +10,10 @@
 //!
 //! A tab is named by its secret (`FLARE_TAB_TOKEN`), never by an id: see `docs/surfaces/protocol.md`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flare_ctl::{CallContext, CtlError, Dispatcher, Grant, Method, code};
@@ -22,6 +23,7 @@ use flare_surfaces::agent_job::{Op as AgentOp, Target};
 use flare_surfaces::agent_web::{self as agent_web, Button, WaitFor};
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::preview;
+use flare_tabs::decor::{Source as DecorSource, Tone};
 use serde_json::{Value, json};
 
 use crate::appctl::{Post, UiMsg};
@@ -124,6 +126,34 @@ pub enum CtlOp {
         tab: String,
         mod_id: String,
     },
+    /// `tabs.badge.set` (plugins phase 1): checked on the call's thread (key, icon, tip, tone, rate), then kept
+    /// by the window for the tab and drawn in its chip.
+    BadgeSet {
+        tab: String,
+        source: DecorSource,
+        key: String,
+        icon: String,
+        tip: String,
+        tone: Tone,
+    },
+    BadgeClear {
+        tab: String,
+        source: DecorSource,
+        key: String,
+    },
+    /// `tabs.progress.set`: `value` 0 to 1, or None for an unknown amount.
+    ProgressSet {
+        tab: String,
+        source: DecorSource,
+        key: String,
+        value: Option<f32>,
+        label: String,
+    },
+    ProgressClear {
+        tab: String,
+        source: DecorSource,
+        key: String,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -175,6 +205,10 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BrowserAgent { .. } => "CtlOp::BrowserAgent",
             CtlOp::ShowMod { .. } => "CtlOp::ShowMod",
             CtlOp::ModTool { .. } => "CtlOp::ModTool",
+            CtlOp::BadgeSet { .. } => "CtlOp::BadgeSet",
+            CtlOp::BadgeClear { .. } => "CtlOp::BadgeClear",
+            CtlOp::ProgressSet { .. } => "CtlOp::ProgressSet",
+            CtlOp::ProgressClear { .. } => "CtlOp::ProgressClear",
         })
     }
 }
@@ -249,7 +283,15 @@ pub struct AppDispatcher {
     /// Mods (stage 8): tokens, tools and the calls waiting on a mod's page. Without it no token resolves and
     /// the mod methods answer `unavailable`.
     mods: Option<Arc<Hub>>,
+    /// The decor limit (plugins phase 1): one bucket per tab and caller, spent here before the window hears of a
+    /// change, so a flood of badges never reaches the UI thread.
+    decor_rate: Mutex<HashMap<(String, DecorSource), flare_ctl::session::Bucket>>,
+    /// The decor limit's clock (a test passes a still one).
+    clock: fn() -> Instant,
 }
+
+/// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
+const DECOR_BUCKETS_MAX: usize = 1024;
 
 /// Is `browser.eval` switched on for the agent? Asked from any thread, at every request.
 pub type EvalSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -271,7 +313,144 @@ impl AppDispatcher {
             eval: Arc::new(|| false),
             apps: None,
             mods: None,
+            decor_rate: Mutex::new(HashMap::new()),
+            clock: Instant::now,
         }
+    }
+
+    /// The tab a decor call is about, and who is calling: the connection's own tab only. A `tab` in the params
+    /// must be that tab (decorating another tab needs the `tabs` permission of the plugin phases).
+    fn decor_target(ctx: &CallContext, params: &Value) -> Result<(String, DecorSource), CtlError> {
+        let tab = Self::tab_of_call(ctx)?;
+        if let Some(t) = str_param(params, "tab")?
+            && t != tab
+        {
+            return Err(CtlError::new(
+                code::FORBIDDEN,
+                "a caller may decorate its own tab only",
+            ));
+        }
+        let source = match &ctx.grant {
+            Grant::Agent { .. } => DecorSource::Agent,
+            Grant::Mod { id, .. } => DecorSource::Plugin(id.clone()),
+            Grant::Ui => {
+                return Err(CtlError::new(
+                    code::FORBIDDEN,
+                    "Flare's own interface draws its own marks",
+                ));
+            }
+        };
+        Ok((tab, source))
+    }
+
+    /// One decor change of `source` on `tab` spent from its bucket ([`flare_ctl::decor::RATE_PER_TAB`] a
+    /// second), or `rate_limited`.
+    fn spend_decor(&self, tab: &str, source: &DecorSource) -> Result<(), CtlError> {
+        let now = (self.clock)();
+        let mut map = self.decor_rate.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= DECOR_BUCKETS_MAX && !map.contains_key(&(tab.to_string(), source.clone())) {
+            map.clear();
+        }
+        let rate = flare_ctl::decor::RATE_PER_TAB;
+        let ok = map
+            .entry((tab.to_string(), source.clone()))
+            .or_insert_with(|| flare_ctl::session::Bucket::new(rate, rate, now))
+            .take(now);
+        if ok {
+            Ok(())
+        } else {
+            Err(CtlError::new(
+                code::RATE_LIMITED,
+                format!("at most {rate} badge or progress changes a second on one tab"),
+            ))
+        }
+    }
+
+    /// `tabs.badge.*` and `tabs.progress.*`: every param is checked here, on the call's thread, and the change
+    /// is spent from the tab's limit before the window is asked.
+    fn decor_call(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        let (tab, source) = Self::decor_target(ctx, params)?;
+        let spend = (tab.clone(), source.clone());
+        let key = str_param(params, "key")?
+            .ok_or_else(|| bad("key is required".into()))?
+            .to_string();
+        if !flare_ctl::decor::valid_key(&key) {
+            return Err(bad(format!(
+                "key is 1 to {} of a-z, 0-9 and -",
+                flare_ctl::decor::KEY_MAX
+            )));
+        }
+        // A tip or a label: absent or empty is none; else one clean line (the manifest's rule for text a person reads).
+        let line = |name: &str| -> Result<String, CtlError> {
+            match str_param(params, name)? {
+                None | Some("") => Ok(String::new()),
+                Some(t) => {
+                    flare_mods::manifest::clean_line(t.to_string(), name, flare_ctl::decor::TIP_MAX)
+                        .map_err(bad)
+                }
+            }
+        };
+        let op = match method {
+            Method::TabsBadgeSet => {
+                let icon =
+                    str_param(params, "icon")?.ok_or_else(|| bad("icon is required".into()))?;
+                if !flare_ctl::decor::is_badge_icon(icon) {
+                    return Err(bad(format!(
+                        "icon is one of {}",
+                        flare_ctl::decor::BADGE_ICONS.join(", ")
+                    )));
+                }
+                let tone = match str_param(params, "tone")? {
+                    None => Tone::Ink,
+                    Some(t) => {
+                        Tone::parse(t).ok_or_else(|| bad("tone is ink, accent or muted".into()))?
+                    }
+                };
+                if tone == Tone::Accent && flare_ctl::decor::accent_refused(icon) {
+                    return Err(bad(
+                        "an accent mic is Flare's dictation mark: use ink or muted".into(),
+                    ));
+                }
+                CtlOp::BadgeSet {
+                    tab,
+                    source,
+                    key,
+                    icon: icon.to_string(),
+                    tip: line("tip")?,
+                    tone,
+                }
+            }
+            Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
+            Method::TabsProgressSet => {
+                let value = match num_param(params, "value")? {
+                    None => None,
+                    Some(v) if (0.0..=1.0).contains(&v) => Some(v as f32),
+                    Some(_) => {
+                        return Err(bad(
+                            "value is 0 to 1 (leave it out for an unknown amount)".into()
+                        ));
+                    }
+                };
+                CtlOp::ProgressSet {
+                    tab,
+                    source,
+                    key,
+                    value,
+                    label: line("label")?,
+                }
+            }
+            Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
+            _ => return Err(CtlError::new(code::INTERNAL, "not a decor method")),
+        };
+        // Only a call that is right spends from the limit.
+        self.spend_decor(&spend.0, &spend.1)?;
+        self.ask(op)
     }
 
     /// The mods hub (stage 8).
@@ -393,6 +572,13 @@ impl AppDispatcher {
     /// Where mini-apps are written and the user's network switch for them (stage 5).
     pub fn with_apps(mut self, apps: AppsCfg) -> Self {
         self.apps = Some(apps);
+        self
+    }
+
+    /// A still clock for the decor limit, so a test can spend a second's worth at one instant.
+    #[cfg(test)]
+    fn with_clock(mut self, clock: fn() -> Instant) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -929,6 +1115,10 @@ impl Dispatcher for AppDispatcher {
             Method::ViewFile,
             Method::ViewText,
             Method::ConvoState,
+            Method::TabsBadgeSet,
+            Method::TabsBadgeClear,
+            Method::TabsProgressSet,
+            Method::TabsProgressClear,
         ];
         // Mini-apps are listed only when this run can write them.
         if self.apps.is_some() {
@@ -1073,6 +1263,10 @@ impl Dispatcher for AppDispatcher {
             Method::ConvoState => self.ask(CtlOp::ConvoState {
                 tab: Self::tab_of_call(ctx)?,
             }),
+            Method::TabsBadgeSet
+            | Method::TabsBadgeClear
+            | Method::TabsProgressSet
+            | Method::TabsProgressClear => self.decor_call(ctx, method, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),
@@ -1474,6 +1668,15 @@ mod tests {
             assert!(caps.contains(&m), "{}", m.name());
         }
         assert!(caps.contains(&Method::ConvoState));
+        // Badges and progress on the caller's own tab (plugins phase 1).
+        for m in [
+            Method::TabsBadgeSet,
+            Method::TabsBadgeClear,
+            Method::TabsProgressSet,
+            Method::TabsProgressClear,
+        ] {
+            assert!(caps.contains(&m), "{}", m.name());
+        }
         assert!(
             !caps.contains(&Method::ToolsRespond),
             "mods come in stage 8"
@@ -1543,6 +1746,316 @@ mod tests {
             );
         }
         assert_eq!(r.ops.lock().unwrap().len(), 7);
+    }
+
+    /// One instant for the whole test: the decor limit never refills.
+    fn still() -> Instant {
+        static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *AT.get_or_init(Instant::now)
+    }
+
+    /// What a rig saw, one line per op.
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    /// A rig whose window records what each decor op carried.
+    fn decor_rig() -> (AppDispatcher, Log, Log) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let r = rig(
+            move |op| {
+                let line = match op {
+                    CtlOp::BadgeSet {
+                        tab,
+                        source,
+                        key,
+                        icon,
+                        tip,
+                        tone,
+                    } => format!("badge {tab} {source:?} {key} {icon} {tip:?} {tone:?}"),
+                    CtlOp::BadgeClear { tab, source, key } => {
+                        format!("clear {tab} {source:?} {key}")
+                    }
+                    CtlOp::ProgressSet {
+                        tab,
+                        source,
+                        key,
+                        value,
+                        label,
+                    } => format!("progress {tab} {source:?} {key} {value:?} {label:?}"),
+                    CtlOp::ProgressClear { tab, source, key } => {
+                        format!("unprogress {tab} {source:?} {key}")
+                    }
+                    _ => "other".to_string(),
+                };
+                s.lock().unwrap().push(line);
+                Ok(json!({}))
+            },
+            false,
+            FILES,
+        );
+        (r.d.with_clock(still), r.ops, seen)
+    }
+
+    #[test]
+    fn decor_calls_are_posted_for_the_callers_own_tab_with_what_they_carry() {
+        let (d, ops, seen) = decor_rig();
+        let c = agent_in_tab();
+        let calls = [
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "call-me", "icon": "phone", "tip": "Call-me is on"}),
+            ),
+            // The own tab named outright is the same tab; no tip is an empty one; a tone is taken.
+            (
+                Method::TabsBadgeSet,
+                json!({"tab": "tab-1", "key": "x", "icon": "globe", "tone": "accent", "tip": ""}),
+            ),
+            (Method::TabsBadgeClear, json!({"key": "x"})),
+            (
+                Method::TabsProgressSet,
+                json!({"key": "progress", "value": 0.25, "label": "Review"}),
+            ),
+            (Method::TabsProgressSet, json!({"key": "progress"})),
+            (Method::TabsProgressClear, json!({"key": "progress"})),
+        ];
+        for (m, p) in calls {
+            assert!(d.call(&c, m, p.clone()).is_ok(), "{} {p}", m.name());
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "badge tab-1 Agent call-me phone \"Call-me is on\" Ink",
+                "badge tab-1 Agent x globe \"\" Accent",
+                "clear tab-1 Agent x",
+                "progress tab-1 Agent progress Some(0.25) \"Review\"",
+                "progress tab-1 Agent progress None \"\"",
+                "unprogress tab-1 Agent progress",
+            ]
+        );
+        assert_eq!(
+            *ops.lock().unwrap(),
+            [
+                "CtlOp::BadgeSet",
+                "CtlOp::BadgeSet",
+                "CtlOp::BadgeClear",
+                "CtlOp::ProgressSet",
+                "CtlOp::ProgressSet",
+                "CtlOp::ProgressClear",
+            ]
+        );
+        // A mod's token is its own source (no mod may hold `decorate` yet; the dispatcher is ready for one).
+        let m = ctx(
+            Some("tab-1"),
+            Grant::Mod {
+                id: "todo".into(),
+                permissions: vec![Permission::Decorate],
+            },
+        );
+        d.call(
+            &m,
+            Method::TabsBadgeSet,
+            json!({"key": "a", "icon": "star"}),
+        )
+        .unwrap();
+        assert!(
+            seen.lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("Plugin(\"todo\")")
+        );
+    }
+
+    #[test]
+    fn a_decor_call_for_another_tab_or_no_tab_never_reaches_the_window() {
+        let (d, ops, _) = decor_rig();
+        let c = agent_in_tab();
+        for m in [
+            Method::TabsBadgeSet,
+            Method::TabsBadgeClear,
+            Method::TabsProgressSet,
+            Method::TabsProgressClear,
+        ] {
+            let p = json!({"tab": "tab-9", "key": "a", "icon": "phone"});
+            assert_eq!(code_of(d.call(&c, m, p)), code::FORBIDDEN, "{}", m.name());
+            let none = ctx(None, Grant::agent());
+            assert_eq!(
+                code_of(d.call(&none, m, json!({"key": "a", "icon": "phone"}))),
+                code::NO_TAB,
+                "{}",
+                m.name()
+            );
+        }
+        assert!(ops.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bad_keys_icons_tones_tips_and_values_are_named_on_the_worker() {
+        let (d, ops, _) = decor_rig();
+        let c = agent_in_tab();
+        let long = "a".repeat(flare_ctl::decor::KEY_MAX + 1);
+        let long_tip = "t".repeat(flare_ctl::decor::TIP_MAX + 1);
+        let bad = [
+            (
+                Method::TabsBadgeSet,
+                json!({"icon": "phone"}),
+                "key is required",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "Call Me", "icon": "phone"}),
+                "key is 1 to 24",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "", "icon": "phone"}),
+                "key is 1 to 24",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": long, "icon": "phone"}),
+                "key is 1 to 24",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": 7, "icon": "phone"}),
+                "key must be a string",
+            ),
+            (Method::TabsBadgeClear, json!({}), "key is required"),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a"}),
+                "icon is required",
+            ),
+            // No check and no dot: they would read as the agent's own marks.
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "check"}),
+                "icon is one of",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "dot"}),
+                "icon is one of",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "C:\\x.png"}),
+                "icon is one of",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "phone", "tone": "red"}),
+                "tone is ink",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "mic", "tone": "accent"}),
+                "dictation mark",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "phone", "tip": "two\nlines"}),
+                "control character",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "phone", "tip": "a\u{202e}b"}),
+                "hidden formatting",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "phone", "tip": "   "}),
+                "must not be empty",
+            ),
+            (
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "phone", "tip": long_tip}),
+                "longer than 80",
+            ),
+            (
+                Method::TabsProgressSet,
+                json!({"key": "p", "value": 1.5}),
+                "value is 0 to 1",
+            ),
+            (
+                Method::TabsProgressSet,
+                json!({"key": "p", "value": -0.1}),
+                "value is 0 to 1",
+            ),
+            (
+                Method::TabsProgressSet,
+                json!({"key": "p", "value": "half"}),
+                "value must be a number",
+            ),
+            (
+                Method::TabsProgressSet,
+                json!({"key": "p", "label": "x\u{200b}"}),
+                "hidden formatting",
+            ),
+            (
+                Method::TabsProgressSet,
+                json!({"value": 0.5}),
+                "key is required",
+            ),
+        ];
+        for (m, p, why) in bad {
+            let e = d.call(&c, m, p.clone()).unwrap_err();
+            assert_eq!(e.code, code::BAD_PARAMS, "{} {p}", m.name());
+            assert!(e.message.contains(why), "{p}: {}", e.message);
+        }
+        assert!(ops.lock().unwrap().is_empty(), "the window heard nothing");
+        // The edges are fine.
+        for v in [0.0, 1.0] {
+            d.call(&c, Method::TabsProgressSet, json!({"key": "p", "value": v}))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn ten_decor_changes_a_second_per_tab_and_the_rest_are_rate_limited_before_posting() {
+        let (d, ops, _) = decor_rig();
+        let c = agent_in_tab();
+        // Wrong calls spend nothing.
+        for _ in 0..20 {
+            let _ = d.call(
+                &c,
+                Method::TabsBadgeSet,
+                json!({"key": "a", "icon": "check"}),
+            );
+        }
+        for i in 0..10 {
+            let m = if i % 2 == 0 {
+                Method::TabsBadgeSet
+            } else {
+                Method::TabsProgressSet
+            };
+            d.call(&c, m, json!({"key": "a", "icon": "star", "value": 0.1}))
+                .unwrap_or_else(|e| panic!("call {i}: {e:?}"));
+        }
+        let e = d
+            .call(&c, Method::TabsBadgeClear, json!({"key": "a"}))
+            .unwrap_err();
+        assert_eq!(e.code, code::RATE_LIMITED);
+        assert!(e.message.contains("10"), "{}", e.message);
+        assert_eq!(
+            ops.lock().unwrap().len(),
+            10,
+            "the eleventh was never posted"
+        );
+        // Another tab, and another caller on the same tab, have their own second.
+        let other = ctx(Some("tab-2"), Grant::agent());
+        d.call(&other, Method::TabsBadgeClear, json!({"key": "a"}))
+            .unwrap();
+        let m = ctx(
+            Some("tab-1"),
+            Grant::Mod {
+                id: "todo".into(),
+                permissions: vec![Permission::Decorate],
+            },
+        );
+        d.call(&m, Method::TabsBadgeClear, json!({"key": "a"}))
+            .unwrap();
     }
 
     fn parsed(m: Method, p: Value) -> Result<(AgentOp, Duration), CtlError> {

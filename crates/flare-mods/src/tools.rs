@@ -185,6 +185,10 @@ mod tests {
             "browser_wait",
             "browser_eval",
             "close_panel",
+            "set_tab_badge",
+            "clear_tab_badge",
+            "set_tab_progress",
+            "clear_tab_progress",
         ];
         for id in ["notes", "a-b-c", "zzz"] {
             let name = tool_name(id, "show_image");

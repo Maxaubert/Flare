@@ -4,6 +4,7 @@ mod agent_flows;
 mod app;
 mod chip;
 mod convo;
+mod decor;
 mod dialog;
 mod dictation_page;
 mod dictation_pill;

@@ -6,6 +6,7 @@ import { Glyphs } from "glyphs.slint";
 import { TabRow } from "types.slint";
 import { MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
 import { LoadingRing } from "tabs.slint";
+import { DecorPill } from "decor.slint";
 
 // One 46 px slot of the column; the visible card moves inside it by the carry offset.
 component SideRow inherits Rectangle {
@@ -94,7 +95,7 @@ component SideRow inherits Rectangle {
         VerticalLayout {
             x: 56px;
             y: 0px;
-            width: max(0px, card.width - 56px - 8px - root.end-w - 10px);
+            width: max(0px, card.width - 56px - 8px - root.end-w - 10px - (pill.width > 0 ? pill.width + 6px : 0px));
             height: 46px;
             alignment: center;
             padding-top: 4px;
@@ -125,6 +126,19 @@ component SideRow inherits Rectangle {
             state: root.tab.mark-state;
             colour: root.tab.mark-color;
             rainbow: root.tab.mark-rainbow;
+        }
+
+        // Badges and progress, left of the ring (a row is always wide enough for both chips).
+        pill := DecorPill {
+            x: Px.snap(card.width - 8px - root.end-w - 6px - self.width);
+            y: Px.snap((46px - self.height) / 2);
+            items: root.tab.chip-count + (root.tab.prog != -1 ? 1 : 0);
+            prog: root.tab.prog;
+            chip1-cmd: root.tab.chip1-cmd;
+            chip1-tone: root.tab.chip1-tone;
+            chip2-cmd: root.tab.chip2-cmd;
+            chip2-tone: root.tab.chip2-tone;
+            ink: Theme.side-text;
         }
 
         // The end: the loading ring or the mark ring when there is one, and the X.

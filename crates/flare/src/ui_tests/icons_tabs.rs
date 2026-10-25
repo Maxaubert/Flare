@@ -338,6 +338,7 @@ fn tab(i: usize, x: i32, w: i32, active: bool, loading: bool) -> TabRow {
         mode: 0,
         x,
         w,
+        prog: -1.0,
         ..TabRow::default()
     }
 }

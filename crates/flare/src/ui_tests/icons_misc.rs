@@ -439,7 +439,7 @@ fn the_conversation_glyphs_draw_at_full_size_at_every_scale() {
 /// Stroked paths per top-level `ui/*.slint` file that are glyphs with a size test (the test files named in each
 /// file's comment). `tabs.slint`, `tabmark.slint`, `sidebar.slint` and `menus.slint` are covered by `icons_tabs.rs`
 /// and `icons_side.rs`; the rest by this file.
-const SIZED: [(&str, usize); 12] = [
+const SIZED: [(&str, usize); 13] = [
     ("convo.slint", 3),
     ("tabs.slint", 5),
     ("tabmark.slint", 7),
@@ -452,6 +452,8 @@ const SIZED: [(&str, usize); 12] = [
     ("dictation_pill.slint", 1),
     ("dictation_widget.slint", 1),
     ("panel.slint", 2),
+    // The badge glyph (plugins phase 1): `ui_tests::decor::every_badge_glyph_draws_at_full_size_at_every_scale`.
+    ("decor.slint", 1),
 ];
 
 /// The hairline rules: straight rules or the sidebar's corner arcs, not glyphs, with no size test.

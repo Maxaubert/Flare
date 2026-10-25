@@ -696,6 +696,7 @@ fn tab_row(i: usize, t: &Tab) -> TabRow {
         mark_rainbow: t.rainbow,
         agent: t.agent,
         settings: t.settings,
+        prog: -1.0,
         ..TabRow::default()
     }
 }

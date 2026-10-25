@@ -1,8 +1,8 @@
 //! Grants: who a connection is, and the pure rule that decides whether it may call a method.
 //!
 //! Three kinds. The **agent** grant is what a caller with no token gets (Claude Code through
-//! `flare-mcp`): it can show content and drive its own tab's browser panel, and nothing else (rule
-//! S3). A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5).
+//! `flare-mcp`): it can show content, drive its own tab's browser panel and put a badge or a progress
+//! chip on its own tab, and nothing else (rule S3). A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5).
 //! The **ui** grant is the app's own code, called in-process; it is never issued over the pipe, so
 //! no token can mean ui.
 
@@ -21,6 +21,9 @@ pub enum Permission {
     Eval,
     Convo,
     Tools,
+    /// Badges and progress on a tab (`tabs.badge.*`, `tabs.progress.*`). The agent holds it for its own tab;
+    /// a mod cannot ask for it yet (`flare_mods::manifest::ASKABLE` leaves it out until plugins come).
+    Decorate,
 }
 
 impl Permission {
@@ -32,6 +35,7 @@ impl Permission {
             Permission::Eval => "eval",
             Permission::Convo => "convo",
             Permission::Tools => "tools",
+            Permission::Decorate => "decorate",
         }
     }
 
@@ -43,6 +47,7 @@ impl Permission {
             Permission::Eval,
             Permission::Convo,
             Permission::Tools,
+            Permission::Decorate,
         ]
         .into_iter()
         .find(|p| p.name() == name)
@@ -80,14 +85,16 @@ impl Grant {
     pub fn permission_names(&self) -> Vec<&'static str> {
         match self {
             Grant::Agent { eval } => {
-                let mut v = vec!["panel", "view", "browser", "convo"];
+                let mut v = vec!["panel", "view", "browser", "convo", "decorate"];
                 if *eval {
                     v.push("eval");
                 }
                 v
             }
             Grant::Mod { permissions, .. } => permissions.iter().map(|p| p.name()).collect(),
-            Grant::Ui => vec!["panel", "view", "browser", "eval", "convo", "tools", "ui"],
+            Grant::Ui => vec![
+                "panel", "view", "browser", "eval", "convo", "tools", "decorate", "ui",
+            ],
         }
     }
 
@@ -103,7 +110,8 @@ impl Grant {
             // over the pipe by anyone, whatever they hold.
             _ if ns == N::Ui => false,
             Grant::Agent { eval } => match ns {
-                N::Panel | N::View | N::Convo => true,
+                // Decorating is for the caller's own tab only: the dispatcher holds it to that.
+                N::Panel | N::View | N::Convo | N::Decor => true,
                 N::Browser => method != Method::BrowserEval || *eval,
                 // Answering a tool call is a mod's job, not the agent's.
                 N::Tools => false,
@@ -122,6 +130,7 @@ impl Grant {
                     }
                     N::Convo => has(Permission::Convo),
                     N::Tools => has(Permission::Tools),
+                    N::Decor => has(Permission::Decorate),
                     // A mod cannot call another mod's tools, or its own: only the agent calls tools.
                     N::AgentTools => false,
                     N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
@@ -185,6 +194,10 @@ mod tests {
             Method::ConvoState,
             Method::ModsTools,
             Method::ModsCall,
+            Method::TabsBadgeSet,
+            Method::TabsBadgeClear,
+            Method::TabsProgressSet,
+            Method::TabsProgressClear,
         ] {
             assert!(g.may_call(m), "agent should call {}", m.name());
         }
@@ -209,7 +222,15 @@ mod tests {
 
     #[test]
     fn nothing_over_the_pipe_reaches_the_ui_namespace() {
-        let all = [P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools];
+        let all = [
+            P::Panel,
+            P::View,
+            P::Browser,
+            P::Eval,
+            P::Convo,
+            P::Tools,
+            P::Decorate,
+        ];
         for g in [Grant::agent(), Grant::Agent { eval: true }, mod_with(&all)] {
             for m in Method::ALL {
                 if m.namespace() == Namespace::Ui {
@@ -249,6 +270,41 @@ mod tests {
             let open = matches!(m, Method::Hello | Method::TabsList);
             assert_eq!(g.may_call(m), open, "{}", m.name());
         }
+    }
+
+    /// The rule plugins keep: a caller with no permission reaches `hello` and its own-tab `tabs.list`, and no
+    /// method of any other namespace, the new decor ones included.
+    #[test]
+    fn a_grant_with_no_permission_may_call_only_hello_and_tabs_list() {
+        let g = mod_with(&[]);
+        let open: Vec<Method> = Method::ALL.into_iter().filter(|m| g.may_call(*m)).collect();
+        assert_eq!(open, [Method::Hello, Method::TabsList]);
+        for m in Method::ALL {
+            if m.namespace() == Namespace::Decor {
+                assert_eq!(
+                    g.check(m).unwrap_err().code,
+                    code::FORBIDDEN,
+                    "{}",
+                    m.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decorate_unlocks_the_decor_methods_and_nothing_else() {
+        let g = mod_with(&[P::Decorate]);
+        for m in Method::ALL {
+            let want = matches!(
+                m.namespace(),
+                Namespace::Hello | Namespace::Tabs | Namespace::Decor
+            );
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        // The decor methods never ride on another permission.
+        let others = mod_with(&[P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools]);
+        assert!(!others.may_call(Method::TabsBadgeSet));
+        assert!(!others.may_call(Method::TabsProgressSet));
     }
 
     #[test]
@@ -294,25 +350,46 @@ mod tests {
 
     #[test]
     fn permission_names_round_trip() {
-        for p in [P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools] {
+        for p in [
+            P::Panel,
+            P::View,
+            P::Browser,
+            P::Eval,
+            P::Convo,
+            P::Tools,
+            P::Decorate,
+        ] {
             assert_eq!(Permission::parse(p.name()), Some(p));
         }
         assert_eq!(Permission::parse("root"), None);
         assert_eq!(
             Grant::agent().permission_names(),
-            ["panel", "view", "browser", "convo"]
+            ["panel", "view", "browser", "convo", "decorate"]
+        );
+        assert_eq!(
+            Grant::Agent { eval: true }.permission_names(),
+            ["panel", "view", "browser", "convo", "decorate", "eval"]
         );
     }
 
     /// What a grant says it holds must match what it can call (the `hello` answer shows both).
     #[test]
     fn permission_names_agree_with_what_each_grant_can_call() {
-        let all = [P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools];
+        let all = [
+            P::Panel,
+            P::View,
+            P::Browser,
+            P::Eval,
+            P::Convo,
+            P::Tools,
+            P::Decorate,
+        ];
         let grants = [
             Grant::agent(),
             Grant::Agent { eval: true },
             mod_with(&[]),
             mod_with(&[P::View, P::Convo]),
+            mod_with(&[P::Decorate]),
             mod_with(&all),
             Grant::Ui,
         ];
@@ -327,6 +404,7 @@ mod tests {
                     Namespace::Browser => "browser",
                     Namespace::Convo => "convo",
                     Namespace::Tools => "tools",
+                    Namespace::Decor => "decorate",
                     // The agent and the app call mod tools; no permission name stands for it.
                     Namespace::AgentTools => {
                         assert_eq!(

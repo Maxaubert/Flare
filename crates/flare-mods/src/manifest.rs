@@ -329,7 +329,12 @@ fn clean_text(
     shown: &str,
     max: usize,
 ) -> Result<String, String> {
-    let s = text_of(obj, key, shown)?;
+    clean_line(text_of(obj, key, shown)?, shown, max)
+}
+
+/// The rule of [`clean_text`] for a line that did not come from a manifest (a badge's tip, a progress label):
+/// not blank, at most `max` characters, no control or hidden formatting character. `shown` names it in the error.
+pub fn clean_line(s: String, shown: &str, max: usize) -> Result<String, String> {
     if s.trim().is_empty() {
         return Err(format!("{shown} must not be empty"));
     }
@@ -551,6 +556,13 @@ mod tests {
         );
         assert!(err_of(|v| v["permissions"] = serde_json::json!([1])).contains("must be a name"));
         assert!(err_of(|v| v["permissions"] = "view".into()).contains("list of names"));
+        // `decorate` is a real permission (the agent holds it) but not one a mod may ask for yet.
+        assert!(Permission::parse("decorate").is_some());
+        assert!(!ASKABLE.contains(&Permission::Decorate));
+        assert!(
+            err_of(|v| v["permissions"] = serde_json::json!(["decorate"]))
+                .contains("unknown permission \"decorate\"")
+        );
         assert!(
             err_of(|v| {
                 v.as_object_mut().unwrap().remove("permissions");

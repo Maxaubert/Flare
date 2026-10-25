@@ -71,6 +71,15 @@ pub struct HubDeps {
     pub reports_off: Rc<dyn Fn(&str)>,
 }
 
+/// Why the agent's badges and progress must leave a tab (plugins phase 1): they belong to one Claude session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecorGone {
+    /// The tab's session changed from one id to another (a first id after none is not a change).
+    SessionChanged,
+    /// The agent left the tab (its kind is none now): Claude and Codex alike.
+    AgentLeft,
+}
+
 /// One answer of the poll, queued for the UI thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PollMsg {
@@ -212,6 +221,9 @@ pub struct AgentHub {
     sessions: HashMap<String, String>,
     /// Tabs the process poll has answered for at least once (the e2e probe `agent.state` says so).
     polled: HashSet<String>,
+    /// Tabs whose agent decor must go, and why, in the order it happened; the window takes them
+    /// ([`AgentHub::take_decor_gone`]). A closed tab is not here: the window clears it on close.
+    decor_gone: Vec<(String, DecorGone)>,
     diag: AgentDiag,
     poll: Option<Box<dyn PollCtl>>,
     tx: Sender<PollMsg>,
@@ -233,6 +245,7 @@ impl AgentHub {
             folders: HashMap::new(),
             sessions: HashMap::new(),
             polled: HashSet::new(),
+            decor_gone: Vec::new(),
             diag,
             poll: None,
             tx,
@@ -308,6 +321,8 @@ impl AgentHub {
         if step.gone {
             self.sessions.remove(tab);
             (self.deps.reports_off)(tab);
+            self.decor_gone
+                .push((tab.to_string(), DecorGone::AgentLeft));
         }
         if step.recheck
             && let Some(p) = &self.poll
@@ -428,7 +443,12 @@ impl AgentHub {
                 HostEvent::Osc777 { id, data } => {
                     if let Some(signal) = parse_agent_signal(data) {
                         if let Some(session) = &signal.session {
-                            self.sessions.insert(id.clone(), session.clone());
+                            let old = self.sessions.insert(id.clone(), session.clone());
+                            // Another session in the same tab: what the old one put on the tab goes.
+                            if old.is_some_and(|o| o != *session) {
+                                self.decor_gone
+                                    .push((id.clone(), DecorGone::SessionChanged));
+                            }
                         }
                         self.ind_handle(
                             now,
@@ -485,13 +505,22 @@ impl AgentHub {
         self.folders.insert(tab.to_string(), cwd.to_string());
         let resumed = valid_resume(resume);
         // A restored Claude tab already has its session: the resume id (only a UUID).
-        match resumed {
+        let old = match resumed {
             Some(r) if agent_of_resume(r) == AgentKind::Claude && is_session_id(r) => {
-                self.sessions.insert(tab.to_string(), r.to_string());
+                self.sessions.insert(tab.to_string(), r.to_string())
             }
-            _ => {
-                self.sessions.remove(tab);
-            }
+            _ => self.sessions.remove(tab),
+        };
+        // A shell started again in a tab that had a session: that session's decor goes.
+        if let Some(old) = old
+            && self.sessions.get(tab) != Some(&old)
+        {
+            let why = if self.sessions.contains_key(tab) {
+                DecorGone::SessionChanged
+            } else {
+                DecorGone::AgentLeft
+            };
+            self.decor_gone.push((tab.to_string(), why));
         }
         self.arms.insert(
             tab.to_string(),
@@ -517,6 +546,7 @@ impl AgentHub {
         self.folders.remove(tab);
         self.sessions.remove(tab);
         self.polled.remove(tab);
+        self.decor_gone.retain(|(t, _)| t != tab);
         self.diag.forget(tab, now);
         self.settle(now);
     }
@@ -674,6 +704,12 @@ impl AgentHub {
 
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
+    }
+
+    /// The tabs whose agent badges and progress must go since the last take: the session changed or the agent
+    /// left (plugins phase 1).
+    pub fn take_decor_gone(&mut self) -> Vec<(String, DecorGone)> {
+        std::mem::take(&mut self.decor_gone)
     }
 
     pub fn indicator(&self) -> &Indicator {
@@ -1232,6 +1268,45 @@ mod tests {
         assert_eq!(tab_of(&r.hub, "a").session, None);
         r.hub.on_closed("b");
         assert!(r.hub.send_tabs().iter().all(|t| t.tab != "b"));
+    }
+
+    /// Plugins phase 1: the agent's decor belongs to its session. A first session is no change; another session,
+    /// the agent leaving and a shell started again over a session each report the tab once.
+    #[test]
+    fn the_agent_decor_goes_when_the_session_changes_or_the_agent_leaves() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.title("a", CLAUDE_TITLE);
+        r.print("a", &osc_session("working", SID));
+        assert!(
+            r.hub.take_decor_gone().is_empty(),
+            "a first session clears nothing"
+        );
+        r.print("a", &osc_session("done", SID));
+        assert!(
+            r.hub.take_decor_gone().is_empty(),
+            "the same session again clears nothing"
+        );
+        let next = "11111111-2222-4333-8444-555555555555";
+        r.print("a", &osc_session("working", next));
+        assert_eq!(
+            r.hub.take_decor_gone(),
+            [("a".to_string(), DecorGone::SessionChanged)]
+        );
+        // The title goes empty: the agent left the tab.
+        r.title("a", "");
+        assert_eq!(
+            r.hub.take_decor_gone(),
+            [("a".to_string(), DecorGone::AgentLeft)]
+        );
+        assert!(r.hub.take_decor_gone().is_empty(), "taken once");
+        // A closed tab's reports go with it (the window clears a closed tab itself).
+        r.open("b", None);
+        r.title("b", CLAUDE_TITLE);
+        r.print("b", &osc_session("working", SID));
+        r.print("b", &osc_session("working", next));
+        r.hub.on_closed("b");
+        assert!(r.hub.take_decor_gone().is_empty());
     }
 
     #[test]
