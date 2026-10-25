@@ -1944,6 +1944,11 @@ impl WebCtl {
                     });
                 }
             }
+            WebEvent::View { slot, event } => {
+                // A plugin's bar or background page: the app makes none yet (the background-page phase routes
+                // them), and none of them is a tab's panel, so nothing here acts on it.
+                log::debug!("a {} view said {}", slot.kind.name(), event.kind());
+            }
         }
         out.extend(mod_note);
         if let Some((tab, reply, settled)) = diagram_ask {

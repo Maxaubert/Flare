@@ -37,6 +37,14 @@ pub fn profile_name(id: &str) -> String {
     format!("{HOST_PREFIX}{id}")
 }
 
+/// The user data folder of the mods' and plugins' browser, beside the web panel's (`data_dir`): an
+/// environment of their own, apart from the web panel's and the mini-apps' (design 13). Its name is the one
+/// the mods shared with the sealed mini-apps before Phase 2b: every mod's profile (`flare-mod-<id>`, its
+/// storage) lives in it, so it must never change.
+pub fn env_folder(data_dir: &std::path::Path) -> std::path::PathBuf {
+    crate::app::sibling_folder(data_dir, "app-sealed")
+}
+
 /// The mod a host name belongs to, if it is a mod host.
 pub fn mod_of_host(host: &str) -> Option<&str> {
     host.strip_suffix(HOST_SUFFIX)
@@ -137,6 +145,19 @@ pub fn route_request(uri: &str, host: &str) -> Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Storage survives: the plugins' browser keeps the folder the mods' profiles were made in, and it is no
+    /// longer the mini-apps' or the web panel's.
+    #[test]
+    fn the_plugins_browser_keeps_the_mods_folder_and_shares_it_with_nobody() {
+        let d = std::path::Path::new("C:/p/WebView2");
+        let p = env_folder(d);
+        assert!(p.ends_with("WebView2-app-sealed"), "{p:?}");
+        assert_eq!(p.parent(), d.parent());
+        assert_ne!(p, crate::app::env_folder(d, false));
+        assert_ne!(p, crate::app::env_folder(d, true));
+        assert_ne!(p, d);
+    }
 
     #[test]
     fn a_mod_has_a_host_a_profile_and_an_address_of_its_own() {

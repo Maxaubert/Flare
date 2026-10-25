@@ -978,7 +978,7 @@ fn a_reply_meant_for_an_older_document_is_not_given_to_a_newer_one() {
     mods_msg(
         &f,
         ModsMsg::Reply {
-            tab: tab.clone(),
+            slot: flare_surfaces::slot::Slot::panel(&tab),
             mod_id: "plain".into(),
             generation: old,
             json: "{\"stale\":true}".into(),
@@ -988,7 +988,7 @@ fn a_reply_meant_for_an_older_document_is_not_given_to_a_newer_one() {
     mods_msg(
         &f,
         ModsMsg::Reply {
-            tab: tab.clone(),
+            slot: flare_surfaces::slot::Slot::panel(&tab),
             mod_id: "plain".into(),
             generation: new,
             json: "{\"fresh\":true}".into(),
@@ -1124,7 +1124,7 @@ fn a_reply_for_a_panel_that_has_gone_is_dropped_and_a_message_to_another_kind_of
     mods_msg(
         &f,
         ModsMsg::Reply {
-            tab: tab.clone(),
+            slot: flare_surfaces::slot::Slot::panel(&tab),
             mod_id: "other".into(),
             generation: 0,
             json: "{}".into(),
