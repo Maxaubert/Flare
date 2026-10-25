@@ -342,6 +342,12 @@ impl StallDeps {
     }
 }
 
+/// At most `LAGS_PER_WINDOW` `main-lag` lines a minute; the next one written says how many were held back
+/// (`held`). A lag that never ends must not push everything else out of the log (2026-10-25: 35 000 lines
+/// in 2.5 hours left nothing of the night before).
+pub const LAGS_PER_WINDOW: u64 = 20;
+pub const LAG_WINDOW_MS: u64 = 60_000;
+
 struct Inner {
     deps: StallDeps,
     /// The clock at the last beat, or NONE before the first.
@@ -351,6 +357,12 @@ struct Inner {
     /// The beat a `ui-stack` was written for.
     stacked_for: AtomicU64,
     suspended: AtomicBool,
+    /// The screen is off: Windows slows the timers then, so a late beat is not a lag.
+    screen_off: AtomicBool,
+    /// The minute the `main-lag` count is for, the lags written in it, and the ones held back.
+    lag_window: AtomicU64,
+    lags_in_window: AtomicU64,
+    lags_held: AtomicU64,
     hung: AtomicBool,
     hung_since: AtomicU64,
     canary_busy: AtomicBool,
@@ -373,6 +385,10 @@ impl StallWatch {
                 max_gap: AtomicU64::new(0),
                 stacked_for: AtomicU64::new(NONE),
                 suspended: AtomicBool::new(false),
+                screen_off: AtomicBool::new(false),
+                lag_window: AtomicU64::new(NONE),
+                lags_in_window: AtomicU64::new(0),
+                lags_held: AtomicU64::new(0),
                 hung: AtomicBool::new(false),
                 hung_since: AtomicU64::new(0),
                 canary_busy: AtomicBool::new(false),
@@ -387,7 +403,7 @@ impl StallWatch {
         let i = &self.inner;
         let now = i.deps.clock.now_ms();
         let prev = i.last_beat.swap(now, Ordering::SeqCst);
-        if prev != NONE && !i.suspended.load(Ordering::SeqCst) {
+        if prev != NONE && !self.quiet() {
             i.max_gap
                 .fetch_max(now.saturating_sub(prev), Ordering::SeqCst);
         }
@@ -412,18 +428,30 @@ impl StallWatch {
     /// One watchdog iteration.
     pub fn step(&self) {
         let i = &self.inner;
-        if i.suspended.load(Ordering::SeqCst) {
+        if self.quiet() {
             return;
         }
         let now = i.deps.clock.now_ms();
         let gap = i.max_gap.swap(0, Ordering::SeqCst);
         if gap >= i.deps.tick_ms + i.deps.lag_ms {
             let ms = gap - i.deps.tick_ms;
-            let list = i.deps.work.inflight(gap + i.deps.tick_ms, now);
-            let mut f = Map::new();
-            f.insert("ms".to_owned(), json!(ms));
-            f.insert("inflight".to_owned(), inflight_json(&list));
-            self.emit("main-lag", f);
+            let window = now / LAG_WINDOW_MS;
+            if i.lag_window.swap(window, Ordering::SeqCst) != window {
+                i.lags_in_window.store(0, Ordering::SeqCst);
+            }
+            if i.lags_in_window.fetch_add(1, Ordering::SeqCst) < LAGS_PER_WINDOW {
+                let list = i.deps.work.inflight(gap + i.deps.tick_ms, now);
+                let mut f = Map::new();
+                f.insert("ms".to_owned(), json!(ms));
+                f.insert("inflight".to_owned(), inflight_json(&list));
+                let held = i.lags_held.swap(0, Ordering::SeqCst);
+                if held > 0 {
+                    f.insert("held".to_owned(), json!(held));
+                }
+                self.emit("main-lag", f);
+            } else {
+                i.lags_held.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let last = i.last_beat.load(Ordering::SeqCst);
         if last != NONE
@@ -439,6 +467,30 @@ impl StallWatch {
             f.insert("inflight".to_owned(), inflight_json(&list));
             self.emit("ui-stack", f);
         }
+    }
+
+    /// Asleep or the screen off: nothing late is a stall.
+    fn quiet(&self) -> bool {
+        let i = &self.inner;
+        i.suspended.load(Ordering::SeqCst) || i.screen_off.load(Ordering::SeqCst)
+    }
+
+    /// The screen went off or came back. Back on, the gap is dropped and the beat clock starts over,
+    /// as after a sleep.
+    pub fn screen(&self, on: bool) {
+        let i = &self.inner;
+        if !on {
+            i.screen_off.store(true, Ordering::SeqCst);
+            return;
+        }
+        if !i.screen_off.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let now = i.deps.clock.now_ms();
+        if i.last_beat.load(Ordering::SeqCst) != NONE {
+            i.last_beat.store(now, Ordering::SeqCst);
+        }
+        i.max_gap.store(0, Ordering::SeqCst);
     }
 
     pub fn power_suspend(&self) {
@@ -512,7 +564,7 @@ impl StallWatch {
         let _ = catch_unwind(AssertUnwindSafe(|| (i.deps.canary)()));
         let ms = i.deps.clock.now_ms().saturating_sub(t0);
         i.canary_busy.store(false, Ordering::SeqCst);
-        if ms >= i.deps.canary_slow_ms && !i.suspended.load(Ordering::SeqCst) {
+        if ms >= i.deps.canary_slow_ms && !self.quiet() {
             let mut f = Map::new();
             f.insert("ms".to_owned(), json!(ms));
             self.emit("fs-slow", f);
