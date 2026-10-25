@@ -34,7 +34,9 @@ use std::sync::{Arc, Mutex};
 use flare_mods::serve as modserve;
 use flare_surfaces::app::{self, AppSpec};
 use flare_surfaces::modview::{self, Route};
-use flare_surfaces::web::{Failure, PhysRect, failure_of_kind, host_label, navigation_allowed};
+use flare_surfaces::web::{
+    Failure, PhysRect, failure_of_kind, host_label, navigation_allowed, pdf_view,
+};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
@@ -446,20 +448,18 @@ impl WebHost {
             EnvKind::AppNet => app::env_folder(&self.data_dir, true),
         };
         let folder = wide(&dir.to_string_lossy());
-        let options: Option<ICoreWebView2EnvironmentOptions> = match kind {
-            EnvKind::Web => None,
-            EnvKind::AppSealed | EnvKind::AppNet => {
-                let o = CoreWebView2EnvironmentOptions::default();
-                // SAFETY: the options object is ours alone and not yet shared with the loader.
-                unsafe {
-                    o.set_additional_browser_arguments(app::browser_arguments(
-                        kind == EnvKind::AppNet,
-                    ));
-                    o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
-                }
-                Some(o.into())
+        let o = CoreWebView2EnvironmentOptions::default();
+        // SAFETY: the options object is ours alone and not yet shared with the loader.
+        unsafe {
+            // Thin scrollbars over the page that fade when it is still, as Windows 11 draws them,
+            // instead of the classic grey bar with arrows (2026-10-25).
+            o.set_scroll_bar_style(COREWEBVIEW2_SCROLLBAR_STYLE_FLUENT_OVERLAY);
+            if kind != EnvKind::Web {
+                o.set_additional_browser_arguments(app::browser_arguments(kind == EnvKind::AppNet));
+                o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
             }
-        };
+        }
+        let options: Option<ICoreWebView2EnvironmentOptions> = Some(o.into());
         // SAFETY: `folder` is a NUL-terminated UTF-16 string that outlives the call; the options and
         // the handler are live COM objects the loader keeps alive until it fires.
         unsafe {
@@ -584,7 +584,7 @@ impl WebHost {
 
     /// Puts the view where it was asked to be and sends it to its address.
     fn go_live(view: &mut View, live: Live) {
-        let url = wide(&view.url);
+        let url = wide(&pdf_view(&view.url));
         // SAFETY: `live` holds live COM objects owned here; `url` is NUL-terminated and outlives the call.
         unsafe {
             let _ = live.controller.SetBounds(to_rect(view.bounds));
@@ -815,7 +815,7 @@ impl WebHost {
                     // A mini-app's links open nowhere: it is one page, and the browser panel is the
                     // person's to point somewhere.
                     if !is_app && navigation_allowed(&uri) {
-                        let u = wide(&uri);
+                        let u = wide(&pdf_view(&uri));
                         let _ = w.Navigate(PCWSTR(u.as_ptr()));
                     } else {
                         sink(WebEvent::Refused {
@@ -1557,7 +1557,7 @@ impl WebBackend for WebHost {
             v.url = url.to_string();
         }
         if let Some(l) = self.live(tab) {
-            let u = wide(url);
+            let u = wide(&pdf_view(url));
             // SAFETY: `webview` is live; `u` is NUL-terminated and outlives the call.
             let _ = unsafe { l.webview.Navigate(PCWSTR(u.as_ptr())) };
         }
