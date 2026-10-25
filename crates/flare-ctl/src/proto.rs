@@ -50,6 +50,9 @@ pub mod code {
     /// The user took over the page (a click or a key of their own in it) while the call ran. The
     /// page was left as it is; look again before going on.
     pub const INTERRUPTED: &str = "interrupted";
+    /// What the call would replace is someone else's: a plugin opens its panel only on a tab whose panel is closed
+    /// or shows the plugin already (plugins phase 3).
+    pub const BUSY: &str = "busy";
 
     /// Errors after which the server closes the connection.
     pub fn closes_client(code: &str) -> bool {

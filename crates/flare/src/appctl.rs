@@ -3376,6 +3376,7 @@ impl AppCtl {
         &self,
         tab: &str,
         source: &DecorSource,
+        generation: u64,
     ) -> Result<(), flare_ctl::CtlError> {
         if *source == DecorSource::Agent && self.hub.agent_kind(tab).is_none() {
             return Err(flare_ctl::CtlError::new(
@@ -3384,12 +3385,12 @@ impl AppCtl {
             ));
         }
         // A plugin's change that was checked while it was on is not applied once it is off: everything it put up
-        // went when it was turned off, and nothing of it comes back.
+        // went when it was turned off, and nothing of it comes back, not even when it is on again by now (its
+        // generation moved on).
         if let DecorSource::Plugin(id) = source
-            && self
-                .mods
-                .as_ref()
-                .is_some_and(|m| m.hub().grant_of_mod(id).is_none())
+            && self.mods.as_ref().is_some_and(|m| {
+                m.hub().grant_of_mod(id).is_none() || m.hub().generation(id) != generation
+            })
         {
             return Err(flare_ctl::CtlError::new(
                 flare_ctl::code::UNAUTHORIZED,
@@ -3525,11 +3526,12 @@ impl AppCtl {
                 icon,
                 tip,
                 tone,
+                generation,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
-                self.agent_decor_allowed(&tab, &source)?;
+                self.agent_decor_allowed(&tab, &source, generation)?;
                 match self.decor.set_badge(&tab, source, &key, &icon, &tip, tone) {
                     Ok(changed) => {
                         if changed {
@@ -3563,11 +3565,12 @@ impl AppCtl {
                 key,
                 value,
                 label,
+                generation,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
-                self.agent_decor_allowed(&tab, &source)?;
+                self.agent_decor_allowed(&tab, &source, generation)?;
                 if self.decor.set_progress(&tab, source, &key, value, &label) {
                     self.refresh();
                 }
@@ -8190,6 +8193,7 @@ two",
             icon: icon.into(),
             tip: tip.into(),
             tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
         }
     }
 
@@ -8200,6 +8204,7 @@ two",
             key: "progress".into(),
             value,
             label: "Review".into(),
+            generation: 0,
         }
     }
 
@@ -8342,6 +8347,7 @@ two",
             icon: "star".into(),
             tip: String::new(),
             tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
         };
         ctl_call(&f, op).unwrap();
         assert!(f.ctl.borrow().has_decor(&a));

@@ -348,9 +348,12 @@ is open).
   with the reason. A page that ends (its process, its browser, a failed load) is started again at once, at most 3 times
   in 5 minutes; the next end stops it, and Settings shows "Stopped" under its switch until it is turned off and on.
   Every 10 seconds the host pings it (`{"t":"ping"}`, answered by the bridge itself); a ping with no answer after 10
-  seconds closes the page and counts as an end. Everything the plugin drew on tabs goes when the page ends.
+  seconds closes the page and counts as an end, and so does a page still loading 10 seconds after it began (a script
+  that never lets it finish). Everything the plugin drew on tabs goes when the page ends.
 - **Turning off.** Every view of the plugin closes (its background page and its panels), its waiting calls fail and
-  its decor goes before Settings shows it off; its generation moves on, so nothing started before is applied after.
+  its decor goes before Settings shows it off; its generation moves on, so nothing started before is applied after
+  (a badge, progress or `panel.open` checked before the switch is refused with `unauthorized`, even once it is on
+  again).
 - **Tools.** A plugin with a background page has its tools answered there (`window.flare.on('tool', ...)` in the
   background page); no panel is opened for the call. A protocol 1 mod, and a plugin with no background page, keep the
   panel routing of stage 8.
@@ -359,10 +362,13 @@ is open).
   one window refresh, which also coalesces what changed). `tabs` is `{kind, tab}` with `kind` one of `opened`,
   `closed`, `focused`, `renamed`, `moved`, `panel` (what the tab's panel shows changed) and `tab` the object of the wide
   `tabs.list` (`protocol.md`). `agent` is `{tab, kind, state, session}`. A page of a plugin that holds `tabs` hears of
-  every tab; any other page only of the tab it sits in (a background page, of none). `plugin` is `{kind: "on"}`, said
+  every tab; any other page (a protocol 1 mod's too) only of the tab it sits in (a background page, of none), and then
+  only what own-tab `tabs.list` gives: `tab` is `{id, title, active}`, and no `agent` event comes (the folder, the
+  agent and the session are for `tabs`). `plugin` is `{kind: "on"}`, said
   once when the handler is registered, and `{kind: "off"}` as the plugin is turned off.
 - **Any tab.** With `tabs` a call may name any tab by its public id (`protocol.md`, section 4); without it, only its
-  own tab, and a background page none.
+  own tab, and a background page none. `panel.open` on a tab that is not the caller's own takes the panel only when it
+  is closed or shows the plugin already; the person's web page or another panel there answers `busy`.
 - **The budget.** One limiter per plugin, shared by all its pages (and later its helper): 50 messages a second with a
   burst of 100, 2 MB a second, and no message over 256 KB. A page's message over it is dropped before it is copied out
   of the page; a pipe connection's call over it answers `rate_limited`. Decor is 30 changes a second per plugin across

@@ -128,6 +128,9 @@ struct ModPage {
 struct BgRun {
     /// The ping sent and not answered yet: its id and when.
     ping: Option<(u64, Instant)>,
+    /// Since when the page is loading (started, or began to load again), None once it is ready. A page that stays
+    /// loading past [`PING_EVERY`] is never pinged, so it counts as silent.
+    loading: Option<Instant>,
 }
 
 /// What the ping timer found: the pages to ping now (with the message), and the ones that did not answer the last
@@ -350,7 +353,17 @@ impl ModCtl {
             self.next_generation += 1;
         }
         let generation = self.next_generation;
-        match self.pages.get_mut(&slot.into()) {
+        let slot = slot.into();
+        if slot.tab().is_none()
+            && let Some(run) = self.bg.get_mut(&slot.owner)
+        {
+            run.loading = if ready {
+                None
+            } else {
+                run.loading.or_else(|| Some(Instant::now()))
+            };
+        }
+        match self.pages.get_mut(&slot) {
             Some(t) => {
                 t.ready = ready;
                 if !ready {
@@ -458,7 +471,13 @@ impl ModCtl {
 
     /// The window opened the plugin's background page: its slot shows the plugin from now on.
     pub fn bg_started(&mut self, id: &str) {
-        self.bg.insert(id.to_string(), BgRun::default());
+        self.bg.insert(
+            id.to_string(),
+            BgRun {
+                ping: None,
+                loading: Some(Instant::now()),
+            },
+        );
         self.bind(Slot::background(id), id);
     }
 
@@ -488,7 +507,8 @@ impl ModCtl {
     }
 
     /// The ping timer: every running background page that is ready is pinged, unless the ping sent before is still
-    /// unanswered after [`PING_EVERY`] (then the page counts as dead and is in `silent`).
+    /// unanswered after [`PING_EVERY`] (then the page counts as dead and is in `silent`). A page still loading
+    /// [`PING_EVERY`] after it began is silent too (a script that never lets it finish).
     pub fn ping_round(&mut self, now: Instant) -> PingRound {
         let mut round = PingRound::default();
         for id in self.backgrounds() {
@@ -506,7 +526,14 @@ impl ModCtl {
                     run.ping = Some((self.ping_seq, now));
                     round.ping.push((id, bridge::ping_message(self.ping_seq)));
                 }
-                None => {}
+                None => {
+                    if run
+                        .loading
+                        .is_some_and(|since| now.saturating_duration_since(since) >= PING_EVERY)
+                    {
+                        round.silent.push(id);
+                    }
+                }
             }
         }
         round

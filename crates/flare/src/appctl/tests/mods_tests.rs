@@ -1698,6 +1698,42 @@ fn events_reach_every_page_that_listens_and_may_see_the_tab() {
     f.ctl.borrow_mut().refresh();
     assert!(events(&slot, "all-tabs").contains(&("focused".to_string(), a.clone())));
     assert_eq!(panel_events(&slot)[base_panel..], ["focused".to_string()]);
+    // Of its own tab, the mod hears what own-tab `tabs.list` gives: never the folder, the agent or the session.
+    let heard = posts(&slot, &a)
+        .into_iter()
+        .rfind(|v| v["t"] == "event")
+        .unwrap();
+    let mut keys: Vec<String> = heard["data"]["tab"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    assert_eq!(keys, ["active", "id", "title"], "{heard}");
+    assert!(
+        bg_posts(&slot, "all-tabs")
+            .iter()
+            .any(|v| v["name"] == "tabs" && v["data"]["tab"]["folder"] == "C:\\a"),
+        "the plugin with tabs hears the whole tab"
+    );
+    // An agent event (kind, state, session) reaches the plugin with tabs only, even about the mod's own tab.
+    page_says(&slot, &a, r#"{"t":"listen","name":"agent"}"#);
+    bg_message(&f, &slot, "all-tabs", r#"{"t":"listen","name":"agent"}"#);
+    f.pump();
+    let agent = json!({"tab": a, "kind": "claude", "state": "working", "session": "s-1"});
+    f.ctl
+        .borrow_mut()
+        .deliver_events(&[("agent", a.clone(), agent)]);
+    assert!(
+        bg_posts(&slot, "all-tabs")
+            .iter()
+            .any(|v| v["name"] == "agent" && v["data"]["session"] == "s-1")
+    );
+    assert!(
+        !posts(&slot, &a).iter().any(|v| v["name"] == "agent"),
+        "a page without tabs hears no agent event"
+    );
 
     // A new tab: opened, for the plugin that sees every tab.
     let c = f.ctl.borrow_mut().open_folder("C:\\c");
@@ -1708,6 +1744,164 @@ fn events_reach_every_page_that_listens_and_may_see_the_tab() {
     let n = events(&slot, "all-tabs").len();
     f.ctl.borrow_mut().refresh();
     assert_eq!(events(&slot, "all-tabs").len(), n);
+}
+
+#[test]
+fn a_plugin_opens_its_panel_on_another_tab_only_where_the_panel_is_closed_or_its_own() {
+    let (f, a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let _w = world(&f, |r| {
+        plugin_with(r, "wide", &["tabs", "panel"], true);
+        plugin_with(r, "other", &["tabs", "panel"], true);
+    });
+    for id in ["wide", "other"] {
+        turn(&f, id, true);
+        bg_up(&f, &slot, id);
+    }
+    let open = |id: &str, n: u64, tab: &str| {
+        bg_call(
+            &f,
+            &slot,
+            id,
+            n,
+            "panel.open",
+            json!({"kind": format!("mod:{id}"), "tab": tab}),
+        )
+    };
+    // Tab b shows the person's web page: the plugin is told `busy` and the page stays.
+    assert!(f.ctl.borrow_mut().panels.show(
+        &b,
+        flare_surfaces::PanelKind::Web,
+        "https://example.com/"
+    ));
+    f.ctl.borrow_mut().refresh();
+    let r = open("wide", 1, &b);
+    assert_eq!(r["error"]["code"], "busy", "{r}");
+    assert!(f.ctl.borrow().panels.is_open(&b));
+    assert_eq!(f.ctl.borrow().panels.mod_of(&b), None);
+    assert_eq!(
+        f.ctl.borrow().panels.web_target(&b).as_deref(),
+        Some("https://example.com/")
+    );
+    // Tab a has no panel: it opens there, and again on its own panel.
+    let r = open("wide", 2, &a);
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(f.ctl.borrow().panels.mod_of(&a), Some("wide"));
+    // Another plugin does not take it while it is open, and may once it is closed.
+    let r = open("other", 1, &a);
+    assert_eq!(r["error"]["code"], "busy", "{r}");
+    assert_eq!(f.ctl.borrow().panels.mod_of(&a), Some("wide"));
+    f.ctl.borrow_mut().panels.close(&a);
+    f.ctl.borrow_mut().refresh();
+    let r = open("other", 2, &a);
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(f.ctl.borrow().panels.mod_of(&a), Some("other"));
+}
+
+#[test]
+fn a_background_page_that_never_finishes_loading_is_closed_after_ten_seconds() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let _w = world(&f, |r| plugin_with(r, "stuck", &[], false));
+    turn(&f, "stuck", true);
+    f.pump();
+    assert_eq!(running(&f), ["stuck"]);
+    let opened = bg_opens(&slot, "stuck").0;
+    assert!(opened >= 1);
+    // It begins to load and never ends: no ping goes out, but ten seconds on it counts as ended.
+    bg_say(
+        &slot,
+        "stuck",
+        WebEvent::Loading {
+            tab: "stuck".into(),
+            url: modview::mod_url(&modview::mod_host("stuck")),
+            nav: 4242,
+        },
+    );
+    f.pump();
+    let t0 = Instant::now();
+    f.ctl.borrow_mut().plugins_tick(t0);
+    assert!(!f.ctl.borrow().mods.as_ref().unwrap().ping_waiting("stuck"));
+    assert_eq!(bg_opens(&slot, "stuck").1, 0, "not yet");
+    f.ctl
+        .borrow_mut()
+        .plugins_tick(t0 + Duration::from_secs(11));
+    assert_eq!(
+        bg_opens(&slot, "stuck"),
+        (opened + 1, 1),
+        "closed and started again"
+    );
+}
+
+#[test]
+fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_applied() {
+    let (f, a, _b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "flip", &["tabs", "decorate", "panel"], true)
+    });
+    turn(&f, "flip", true);
+    bg_up(&f, &slot, "flip");
+    let generation = w.hub.generation("flip");
+    turn(&f, "flip", false);
+    turn(&f, "flip", true);
+    assert_ne!(w.hub.generation("flip"), generation);
+    let stale = |op| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        f.ctl
+            .borrow_mut()
+            .on_msg(UiMsg::Ctl(crate::ctl_app::CtlRequestBox(
+                crate::ctl_app::CtlRequest {
+                    op,
+                    deadline: Instant::now() + Duration::from_secs(5),
+                    reply: tx,
+                },
+            )));
+        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+    };
+    let e = stale(CtlOp::BadgeSet {
+        tab: a.clone(),
+        source: flare_tabs::decor::Source::Plugin("flip".into()),
+        key: "k".into(),
+        icon: "star".into(),
+        tip: String::new(),
+        tone: flare_tabs::decor::Tone::Ink,
+        generation,
+    })
+    .unwrap_err();
+    assert_eq!(e.code, code::UNAUTHORIZED);
+    let e = stale(CtlOp::ProgressSet {
+        tab: a.clone(),
+        source: flare_tabs::decor::Source::Plugin("flip".into()),
+        key: "k".into(),
+        value: Some(0.5),
+        label: String::new(),
+        generation,
+    })
+    .unwrap_err();
+    assert_eq!(e.code, code::UNAUTHORIZED);
+    assert!(!f.ctl.borrow().has_decor(&a));
+    let e = stale(CtlOp::ShowMod {
+        tab: a.clone(),
+        mod_id: "flip".into(),
+        own: false,
+        generation,
+    })
+    .unwrap_err();
+    assert_eq!(e.code, code::UNAUTHORIZED);
+    assert_eq!(f.ctl.borrow().panels.mod_of(&a), None);
+    // The same call checked in this run is applied.
+    stale(CtlOp::BadgeSet {
+        tab: a.clone(),
+        source: flare_tabs::decor::Source::Plugin("flip".into()),
+        key: "k".into(),
+        icon: "star".into(),
+        tip: String::new(),
+        tone: flare_tabs::decor::Tone::Ink,
+        generation: w.hub.generation("flip"),
+    })
+    .unwrap();
+    assert!(f.ctl.borrow().has_decor(&a));
 }
 
 #[test]

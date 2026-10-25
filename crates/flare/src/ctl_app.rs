@@ -130,6 +130,11 @@ pub enum CtlOp {
     ShowMod {
         tab: String,
         mod_id: String,
+        /// The tab is the caller's own, so what its panel shows may go. On another tab (a plugin that holds `tabs`,
+        /// or its background page) the panel must be closed or show this mod already, else `busy`.
+        own: bool,
+        /// The mod's generation ([`Hub::generation`]) when the call was checked: one switched off since is refused.
+        generation: u64,
     },
     /// `tabs.badge.set` (plugins phase 1): checked on the call's thread (key, icon, tip, tone, rate), then kept
     /// by the window for the tab and drawn in its chip.
@@ -140,6 +145,9 @@ pub enum CtlOp {
         icon: String,
         tip: String,
         tone: Tone,
+        /// A plugin's generation ([`Hub::generation`]) when the call was checked (0 for the agent): a plugin
+        /// switched off since, even if on again, is refused.
+        generation: u64,
     },
     BadgeClear {
         tab: String,
@@ -153,6 +161,8 @@ pub enum CtlOp {
         key: String,
         value: Option<f32>,
         label: String,
+        /// As for `BadgeSet`.
+        generation: u64,
     },
     ProgressClear {
         tab: String,
@@ -435,6 +445,8 @@ impl AppDispatcher {
         params: &Value,
     ) -> Result<Value, CtlError> {
         let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        // Read before anything is checked, so a switch off during the checks is seen by the window.
+        let generation = self.generation_of(ctx);
         let (tab, source) = Self::decor_target(ctx, params)?;
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
@@ -489,6 +501,7 @@ impl AppDispatcher {
                     icon: icon.to_string(),
                     tip: line("tip")?,
                     tone,
+                    generation,
                 }
             }
             Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
@@ -508,6 +521,7 @@ impl AppDispatcher {
                     key,
                     value,
                     label: line("label")?,
+                    generation,
                 }
             }
             Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
@@ -522,6 +536,14 @@ impl AppDispatcher {
     pub fn with_mods(mut self, hub: Arc<Hub>) -> Self {
         self.mods = Some(hub);
         self
+    }
+
+    /// The calling plugin's generation ([`Hub::generation`]), 0 for any other caller.
+    fn generation_of(&self, ctx: &CallContext) -> u64 {
+        match (&ctx.grant, &self.mods) {
+            (Grant::Mod { id, .. }, Some(hub)) => hub.generation(id),
+            _ => 0,
+        }
     }
 
     fn hub(&self) -> Result<&Arc<Hub>, CtlError> {
@@ -619,6 +641,7 @@ impl AppDispatcher {
     ) -> Result<Value, CtlError> {
         let tab = Self::scoped_tab(ctx, params)?;
         let hub = self.hub()?;
+        let generation = hub.generation(mod_id);
         if hub.grant_of_mod(mod_id).is_none() {
             return Err(CtlError::new(
                 code::NOT_FOUND,
@@ -634,9 +657,12 @@ impl AppDispatcher {
                 ));
             }
         }
+        let own = ctx.tab.as_deref() == Some(tab.as_str());
         self.ask(CtlOp::ShowMod {
             tab,
             mod_id: mod_id.to_string(),
+            own,
+            generation,
         })
     }
 
@@ -1863,6 +1889,7 @@ mod tests {
                         icon,
                         tip,
                         tone,
+                        ..
                     } => format!("badge {tab} {source:?} {key} {icon} {tip:?} {tone:?}"),
                     CtlOp::BadgeClear { tab, source, key } => {
                         format!("clear {tab} {source:?} {key}")
@@ -1873,6 +1900,7 @@ mod tests {
                         key,
                         value,
                         label,
+                        ..
                     } => format!("progress {tab} {source:?} {key} {value:?} {label:?}"),
                     CtlOp::ProgressClear { tab, source, key } => {
                         format!("unprogress {tab} {source:?} {key}")

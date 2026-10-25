@@ -307,7 +307,8 @@ without it the panel opens `about:blank`).
   (`not_found` otherwise; `bad_params` for an id that is not a mod id or with a `url`, `path` or `text`). It answers
   at once with `{"panel": PanelInfo}` (`kind` `mod:<id>`, `title` the manifest's panel title, no `path`, `url` or
   `network`). The mod's page is made hidden when the tab is behind. A tab shows ONE panel, so it replaces what the
-  tab showed.
+  tab showed. On a tab named by `tab` that is not the caller's own (plugins phase 3) it replaces only a closed panel
+  or one showing the plugin already; else `busy`.
 - `changes` and `tasks` (stage 6) open the tab's conversation panel: the files the agent edited (with each file's
   diff), or the agent's task list. They are native panels with no file or address behind them, so `url`, `path` and
   `text` are refused (`bad_params`). The call answers at once with `{"panel": PanelInfo}` (`kind` `changes` or
@@ -610,6 +611,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `unavailable` | known method, cannot be done now (no runtime, nothing open, reserved, overloaded) | no |
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
+| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |

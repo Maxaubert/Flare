@@ -144,6 +144,15 @@ pub fn tab_events(before: &[TabFact], now: &[TabFact]) -> Vec<(&'static str, Str
     out
 }
 
+/// A `tabs` event as a page without `tabs` hears it: its kind, and of the tab what own-tab `tabs.list` gives.
+fn own_tab_event(data: &Value) -> Value {
+    let tab = &data["tab"];
+    json!({
+        "kind": data["kind"],
+        "tab": {"id": tab["id"], "title": tab["title"], "active": tab["active"]},
+    })
+}
+
 /// Which entries of `xs` make up its longest rising run (the first such run when there are several).
 fn longest_rising(xs: &[usize]) -> Vec<bool> {
     let n = xs.len();
@@ -565,7 +574,9 @@ impl AppCtl {
     }
 
     /// Hands each event to every page that listens to it and may see its tab: a plugin that holds `tabs` sees every
-    /// tab, any other page only the tab it sits in (a background page, in none).
+    /// tab, any other page only the tab it sits in (a background page, in none). A page without `tabs` hears of its
+    /// own tab what own-tab `tabs.list` gives (id, title, active) and no `agent` event: its approval never covered
+    /// the folder, the agent or the session.
     pub(crate) fn deliver_events(&mut self, events: &[(&'static str, String, Value)]) {
         let Some(m) = self.mods.as_mut() else { return };
         let hub = Arc::clone(m.hub());
@@ -574,6 +585,8 @@ impl AppCtl {
         let mut out: Vec<(Slot, String)> = Vec::new();
         for (name, tab, data) in events {
             let msg = bridge::event_message(name, data);
+            let narrow =
+                (*name == "tabs").then(|| bridge::event_message(name, &own_tab_event(data)));
             for (slot, mod_id) in m.listeners(name) {
                 let sees_all = *wide.entry(mod_id.clone()).or_insert_with(|| {
                     hub.grant_of_mod(&mod_id)
@@ -582,13 +595,19 @@ impl AppCtl {
                 if !sees_all && slot.tab() != Some(tab.as_str()) {
                     continue;
                 }
+                let msg = match (sees_all, &narrow) {
+                    (true, _) => &msg,
+                    (false, Some(n)) => n,
+                    // An `agent` event is for a plugin that holds `tabs` only.
+                    (false, None) => continue,
+                };
                 let n = handed.entry(slot.clone()).or_insert(0);
                 if *n >= MAX_EVENTS_PER_ROUND {
                     m.dropped += 1;
                     continue;
                 }
                 *n += 1;
-                if let Some(now) = m.queue_or_send(&slot, msg.clone()) {
+                if let Some(now) = m.queue_or_send(&slot, msg.to_string()) {
                     out.push((slot, now));
                 }
             }
@@ -782,12 +801,39 @@ impl AppCtl {
 
     /// `panel.open` kind `mod:<id>`: the panel on the caller's tab (a tab behind keeps its place).
     pub(super) fn ctl_show_mod(&mut self, op: CtlOp, reply: Reply) {
-        let CtlOp::ShowMod { tab, mod_id } = op else {
+        let CtlOp::ShowMod {
+            tab,
+            mod_id,
+            own,
+            generation,
+        } = op
+        else {
             let _ = reply.send(Err(CtlError::new(code::INTERNAL, "not a mod call")));
             return;
         };
         if !self.is_shell_tab(&tab) {
             let _ = reply.send(Err(CtlError::new(code::NO_TAB, "that tab is closed")));
+            return;
+        }
+        // Checked while the plugin was on, but switched off since (and maybe on again): its old run opens nothing.
+        if self
+            .mods
+            .as_ref()
+            .is_some_and(|m| m.hub().generation(&mod_id) != generation)
+        {
+            let _ = reply.send(Err(CtlError::new(
+                code::UNAUTHORIZED,
+                "the plugin was turned off",
+            )));
+            return;
+        }
+        // On a tab that is not the caller's own, the panel is taken only when it is closed or shows this mod already
+        // (design 13): the person's web page or another plugin's panel stays.
+        if !own && self.panels.is_open(&tab) && self.panels.mod_of(&tab) != Some(mod_id.as_str()) {
+            let _ = reply.send(Err(CtlError::new(
+                code::BUSY,
+                "that tab's panel shows something else",
+            )));
             return;
         }
         let answer = self.show_mod_panel(&tab, &mod_id).map(|spec| {
