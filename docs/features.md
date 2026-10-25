@@ -1370,7 +1370,7 @@ The keys of later phases are checked now and run later. The contract: `docs/surf
 - **Two folders, one id space.** `<profile>\plugins\` is read after `<profile>\mods\` (either file in either); an id in
   both is refused in `plugins\`; every file a manifest names must be a real file in the folder. Tests:
   `flare_mods::discover` (incl. `an_id_in_both_folders_is_refused_in_the_plugins_folder` and
-  `the_sample_plugins_are_valid`, which loads `sample-plugins/`).
+  `the_sample_plugins_are_valid`, which loads `sample-plugins/`). Replaced in phase 2c: one folder, `plugins\`.
 - **The permissions.** `tabs`, `decorate`, `sidebar`, `actions`, `bar`, `sessions`, `input`, `network` and `process`,
   askable only from protocol 2 (`ASKABLE_V1` is the old five). In `flare-ctl` each new method family has its own
   namespace (`Sidebar`, `Actions`, `Bar`, `Session`, `Input`) opened by exactly its permission, nothing rides on the open
@@ -1385,7 +1385,7 @@ The keys of later phases are checked now and run later. The contract: `docs/surf
   that asks for more is. A plugin whose tools only a background page could answer offers none yet (a note says so).
   Tests: `flare_mods::enabled`, `flare_mods::hash`, `flare_mods::hub` (the plugin tests).
 - **Settings > Plugins.** The page keeps its key `mods` and is titled Plugins, with an Open plugins folder row above the
-  mods folder row. A protocol 1 mod's card is unchanged; a plugin's adds "Made by" (author, homepage), its permissions in
+  mods folder row (phase 2c: the plugins folder row only). A protocol 1 mod's card is unchanged; a plugin's adds "Made by" (author, homepage), its permissions in
   plain words, and a warnings row: "Full control" for `process` and `input`, the combined notes for `input`+`sessions`,
   `network`+`sessions`, `network`+`tabs`, and `network`'s own. Tests: `flare_settings::page::mods`,
   `ui_tests::settings_mods` (at 100 and 225 percent), `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
@@ -1417,6 +1417,33 @@ the bar build on. Nothing the person sees changes, except that a mod's page can 
   (`<profile>\WebView2-app-sealed`, `modview::env_folder`), so every `flare-mod-<id>` profile and its storage stay where
   they were; the sealed mini-apps, which keep nothing on disk, moved to `WebView2-mini-sealed`. Test:
   `the_plugins_browser_keeps_the_mods_folder_and_shares_it_with_nobody`.
+
+## Plugins phase 2c: one plugins folder, 2026-10-25
+
+Asked for by the owner after phases 2 and 2b: every plugin, protocol 1 (`mod.json`) and protocol 2 (`plugin.json`)
+alike, lives in one folder, `<profile>\plugins\`. The contract: `docs/surfaces/mods.md`, "Where mods live and when they
+run".
+
+- **One folder.** Flare reads only `<profile>\plugins\` (`flare_mods::discover(dir)`; the `Root` of a found mod and the
+  second root are gone). Its refusals name "the plugins folder" ("not a plugin id", "a link to somewhere outside the
+  plugins folder"). Tests: `flare_mods::discover` (incl.
+  `mods_and_plugins_share_the_one_folder_and_the_old_mods_folder_is_not_read`).
+- **The move.** The first scan (on the scan worker, before it reads) moves every folder of `<profile>\mods\` whose name
+  is a legal id and that `plugins\` does not hold into `plugins\` by a rename. A name `plugins\` already holds stays in
+  `mods\` and is a "Not loaded" row in Settings > Plugins naming it in one sentence; a folder whose name is not an id
+  is left alone; an emptied `mods\` is removed, else it keeps what could not move. It runs once per start, so nothing
+  is moved twice. The switch, approval (`mods.json`, name unchanged) and storage (`flare-mod-<id>`) are by id, so a
+  moved mod keeps them. Tests: `flare_mods::migrate` (5: moved and the empty folder removed, a clash kept and named, a
+  non-id folder and loose files left alone, nothing moved twice, the plugins folder made only when something moves),
+  `flare_mods::hub::the_first_scan_moves_the_old_mods_in_and_a_moved_mod_keeps_its_switch`,
+  `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
+- **Settings > Plugins.** One folder row, `plugins-folder`, "Open plugins folder"; the mods folder row and every
+  "mods folder" word are gone. The scan worker makes the folder at start and each time the page opens (the old mods
+  folder is never made). Tests: `flare_settings::page::mods::the_one_folder_row_comes_first_opens_the_plugins_folder_and_shows_its_path`,
+  `ui_tests::settings_mods::the_plugins_folder_button_opens_the_plugins_folder`,
+  `mods_ctl::a_scan_runs_on_a_worker_and_a_second_ask_runs_after_it`.
+- **e2e.** `modsSample` copies the sample into the profile's `plugins\` and checks the `plugins-folder` row; its other
+  expectations are unchanged.
 
 ## General review, 2026-10-23
 

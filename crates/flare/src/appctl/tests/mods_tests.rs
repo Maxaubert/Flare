@@ -73,16 +73,16 @@ struct World {
     state_file: PathBuf,
 }
 
-/// The mods hub over the folder `mods` of the test's directory, the real dispatcher on it, and the controller
+/// The mods hub over the folder `plugins` of the test's directory, the real dispatcher on it, and the controller
 /// told about both. The first scan has finished when this returns.
 fn world(f: &Fx, make: impl FnOnce(&Path)) -> World {
-    let root = f.dir.path().join("mods");
+    let root = f.dir.path().join("plugins");
     std::fs::create_dir_all(&root).unwrap(); // sync-ok: test code only, never the app
     make(&root);
     let state_file = f.dir.path().join("mods.json");
     let hub = Arc::new(Hub::new(Config {
         dir: root.clone(),
-        plugins_dir: Some(f.dir.path().join("plugins")),
+        old_mods_dir: Some(f.dir.path().join("mods")),
         state_file: state_file.clone(),
     }));
     let post: Post = {

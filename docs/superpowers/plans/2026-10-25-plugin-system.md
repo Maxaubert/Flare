@@ -68,6 +68,16 @@ tab, protocol 1 routing, the e2e `modsSample`). One sealing function for plugin 
 WebView2 environment apart from the web panel and mini-apps. Tests: the existing web and mod tests unchanged, plus a
 view-kind wall test.
 
+## Phase 2c: one plugins folder
+
+Asked for by the owner after 2 and 2b; it amends design 13 ("Compatibility"): there is one folder, `<profile>\plugins\`,
+for protocol 1 and 2 alike, and `mods\` is no longer read. On start, before the first scan and on its worker, every
+folder of `mods\` whose name is a legal id and that `plugins\` does not hold is moved there (a rename); a name already
+in `plugins\` stays and is named in Settings in one sentence; an emptied `mods\` is removed. Storage (`flare-mod-<id>`)
+and the switch store (`mods.json`) are by id and unchanged. Settings: one "Open plugins folder" row. The e2e
+`modsSample` writes the sample into `plugins\`. Tests: the move (moved, clash kept and reported, empty `mods\` removed,
+a non-id folder left alone, nothing moved twice), discovery from `plugins\` only, the e2e scenario compiling.
+
 ## Phase 3: background pages, events, decorate any tab
 
 1. A background view per enabled plugin with `background` (hidden WebView2 in the plugin's profile, not tied to a

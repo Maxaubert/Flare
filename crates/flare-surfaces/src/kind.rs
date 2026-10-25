@@ -1,7 +1,7 @@
 //! The kinds of panel. `image`, `text`, `web`, `changes`, and `tasks` are built; the rest are named now so the
 //! store can keep them and later stages only add a viewer.
 
-/// The longest mod id (a folder name under the mods folder).
+/// The longest mod id (a folder name under the plugins folder).
 const MOD_ID_MAX: usize = 64;
 
 /// What a panel shows.

@@ -1,23 +1,22 @@
-//! The scan of the two plugin folders: `<profile>\mods\<id>\` and `<profile>\plugins\<id>\`, each folder holding
-//! a `mod.json` (protocol 1) or a `plugin.json` (protocol 2).
+//! The scan of the plugins folder, `<profile>\plugins\<id>\`, each folder holding a `mod.json` (protocol 1) or a
+//! `plugin.json` (protocol 2). It is the one folder for every plugin (plugins phase 2c); the old `mods\` folder is
+//! emptied into it once at start (`migrate`) and is not read.
 //!
 //! Worker-callable: it reads the disk, so the app runs it on a worker and posts the answer back. It
 //! never fails as a whole. A folder that is not a mod becomes one [`FolderError`] with its reason, and
-//! every other folder is still read. The bounds, per folder: at most [`MAX_MODS`] folders are read (sorted by
+//! every other folder is still read. The bounds: at most [`MAX_MODS`] folders are read (sorted by
 //! name; the rest are one error), at most [`MAX_ENTRIES`] directory entries are looked at, and a manifest
 //! over 64 KB is refused before it is parsed.
 //!
 //! The folder check: the folder name must be the manifest's id (lower-case, so a Windows folder cannot
 //! be two mods), the folder must canonicalise under its canonical root (a junction out is refused), the
 //! manifest must resolve inside the folder, and every file the manifest names (the panel, the background page,
-//! the bar, the helper) must resolve inside it too. The ids of both folders are one space: `mods\` is read
-//! first, and an id it holds is refused in `plugins\` (design section 13).
+//! the bar, the helper) must resolve inside it too.
 
 use crate::manifest::{
     Kind, MANIFEST_FILE, MAX_MANIFEST_BYTES, Manifest, PLUGIN_FILE, parse_as, valid_id,
 };
 use crate::paths;
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -26,32 +25,8 @@ pub const MAX_MODS: usize = 64;
 /// Directory entries looked at in one scan of one root.
 pub const MAX_ENTRIES: usize = 4096;
 
-/// Which of the two folders something was found in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Root {
-    /// `<profile>\mods`, today's folder.
-    #[default]
-    Mods,
-    /// `<profile>\plugins`, the second root, read after `mods`.
-    Plugins,
-}
-
-impl Root {
-    /// The folder as the refusals and Settings name it.
-    pub fn words(self) -> &'static str {
-        match self {
-            Root::Mods => "the mods folder",
-            Root::Plugins => "the plugins folder",
-        }
-    }
-
-    fn noun(self) -> &'static str {
-        match self {
-            Root::Mods => "mod",
-            Root::Plugins => "plugin",
-        }
-    }
-}
+/// The folder as the refusals name it.
+const WORDS: &str = "the plugins folder";
 
 /// A mod that passed every check.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,8 +34,6 @@ pub struct Found {
     pub manifest: Manifest,
     /// The canonical mod folder.
     pub folder: PathBuf,
-    /// The folder it was found in.
-    pub root: Root,
     /// The canonical panel file, when the mod has a panel.
     pub entry: Option<PathBuf>,
     /// The canonical background page, when a plugin has one.
@@ -77,8 +50,6 @@ pub struct FolderError {
     /// The folder's name, or empty for a problem with the root folder itself.
     pub folder: String,
     pub reason: String,
-    /// The root it is in.
-    pub root: Root,
 }
 
 /// The result of one scan: the valid mods (sorted by id) and the folders that were refused.
@@ -88,122 +59,71 @@ pub struct Discovery {
     pub errors: Vec<FolderError>,
 }
 
-/// Scans one mods folder `root`. A missing `root` is simply no mods.
+/// Scans the plugins folder `root`. A missing `root` is simply no plugins.
 pub fn discover(root: &Path) -> Discovery {
-    discover_all(root, None)
-}
-
-/// Scans the mods folder and then, when given, the plugins folder. A missing folder is simply nothing found in it.
-pub fn discover_all(mods: &Path, plugins: Option<&Path>) -> Discovery {
-    let mut out = Discovery::default();
-    let mut taken = BTreeSet::new();
-    scan_root(Root::Mods, mods, MAX_ENTRIES, &mut taken, &mut out);
-    if let Some(plugins) = plugins {
-        scan_root(Root::Plugins, plugins, MAX_ENTRIES, &mut taken, &mut out);
-    }
-    out.mods.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
-    out
+    discover_bounded(root, MAX_ENTRIES)
 }
 
 /// [`discover`] with the entry bound as a parameter, so a test can reach the bound with a few files.
-#[cfg(test)]
 fn discover_bounded(root: &Path, max_entries: usize) -> Discovery {
     let mut out = Discovery::default();
-    scan_root(
-        Root::Mods,
-        root,
-        max_entries,
-        &mut BTreeSet::new(),
-        &mut out,
-    );
+    scan_root(root, max_entries, &mut out);
     out.mods.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
     out
 }
 
-/// Reads one root into `out`. `taken` holds the ids an earlier root looked at; a folder named one of them is
-/// refused here, and this root's own ids are added to it.
-fn scan_root(
-    which: Root,
-    root: &Path,
-    max_entries: usize,
-    taken: &mut BTreeSet<String>,
-    out: &mut Discovery,
-) {
-    let words = which.words();
+/// Reads the folder `root` into `out`.
+fn scan_root(root: &Path, max_entries: usize, out: &mut Discovery) {
     match std::fs::metadata(root) {
         // sync-ok: runs on the discovery worker
         Ok(m) if m.is_dir() => {}
         Ok(_) => {
-            return refuse(out, which, "", format!("{words} is not a folder"));
+            return refuse(out, "", format!("{WORDS} is not a folder"));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            return refuse(out, which, "", format!("{words} cannot be read: {e}"));
+            return refuse(out, "", format!("{WORDS} cannot be read: {e}"));
         }
     }
     let canon_root = match std::fs::canonicalize(root) {
         // sync-ok: discovery worker
         Ok(p) => p,
         Err(e) => {
-            return refuse(out, which, "", format!("{words} cannot be read: {e}"));
+            return refuse(out, "", format!("{WORDS} cannot be read: {e}"));
         }
     };
-    let folders = folder_names(which, root, max_entries, out);
+    let folders = folder_names(root, max_entries, out);
     // Only names that are legal mod ids count toward the cap, so a junk folder sorted first (a backup, a
     // `.git`) cannot push a real mod out of the scan. Each junk name is still reported.
     let (ids, junk): (Vec<String>, Vec<String>) = folders.into_iter().partition(|n| valid_id(n));
     for name in &junk {
         refuse(
             out,
-            which,
             name,
-            format!(
-                "the folder name is not a {} id (3 to 40 characters: a-z, 0-9, '-')",
-                which.noun()
-            ),
-        );
-    }
-    // One id space: a name the mods folder already holds is refused here, and does not count toward the cap.
-    let (dup, ids): (Vec<String>, Vec<String>) = ids.into_iter().partition(|n| taken.contains(n));
-    for name in &dup {
-        refuse(
-            out,
-            which,
-            name,
-            format!(
-                "the id \"{name}\" is already in {}; an id must be unique across mods and plugins",
-                Root::Mods.words()
-            ),
+            "the folder name is not a plugin id (3 to 40 characters: a-z, 0-9, '-')".to_string(),
         );
     }
     let extra = ids.len().saturating_sub(MAX_MODS);
     if extra > 0 {
         refuse(
             out,
-            which,
             "",
             format!("more than {MAX_MODS} folders; {extra} were not read"),
         );
     }
     for name in ids.iter().take(MAX_MODS) {
-        load_one(which, &canon_root, root, name, out);
+        load_one(&canon_root, root, name, out);
     }
-    taken.extend(ids);
 }
 
 /// The names of the subfolders, sorted. Looks at most `max_entries` directory entries; one more than that is
 /// an error, and the rest are not looked at.
-fn folder_names(which: Root, root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<String> {
+fn folder_names(root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<String> {
     let entries = match std::fs::read_dir(root) {
         // sync-ok: discovery worker
         Ok(e) => e,
         Err(e) => {
-            refuse(
-                out,
-                which,
-                "",
-                format!("{} cannot be listed: {e}", which.words()),
-            );
+            refuse(out, "", format!("{WORDS} cannot be listed: {e}"));
             return Vec::new();
         }
     };
@@ -212,7 +132,6 @@ fn folder_names(which: Root, root: &Path, max_entries: usize, out: &mut Discover
         if i == max_entries {
             refuse(
                 out,
-                which,
                 "",
                 format!("more than {max_entries} entries; the rest were not looked at"),
             );
@@ -228,47 +147,41 @@ fn folder_names(which: Root, root: &Path, max_entries: usize, out: &mut Discover
     names
 }
 
-fn refuse(out: &mut Discovery, root: Root, folder: &str, reason: String) {
+fn refuse(out: &mut Discovery, folder: &str, reason: String) {
     out.errors.push(FolderError {
         folder: folder.to_string(),
         reason,
-        root,
     });
 }
 
-fn load_one(which: Root, canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
+fn load_one(canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
     let folder = match std::fs::canonicalize(root.join(name)) {
         // sync-ok: discovery worker
         Ok(p) => p,
-        Err(e) => return refuse(out, which, name, format!("the folder cannot be read: {e}")),
+        Err(e) => return refuse(out, name, format!("the folder cannot be read: {e}")),
     };
     if !folder.starts_with(canon_root) {
         return refuse(
             out,
-            which,
             name,
-            format!(
-                "the folder is a link to somewhere outside {}",
-                which.words()
-            ),
+            format!("the folder is a link to somewhere outside {WORDS}"),
         );
     }
     let kind = match manifest_kind(&folder) {
         Ok(k) => k,
-        Err(reason) => return refuse(out, which, name, reason),
+        Err(reason) => return refuse(out, name, reason),
     };
     let text = match read_manifest(&folder, kind.file()) {
         Ok(t) => t,
-        Err(reason) => return refuse(out, which, name, reason),
+        Err(reason) => return refuse(out, name, reason),
     };
     let manifest = match parse_as(kind, &text) {
         Ok(m) => m,
-        Err(reason) => return refuse(out, which, name, reason),
+        Err(reason) => return refuse(out, name, reason),
     };
     if manifest.id != name {
         return refuse(
             out,
-            which,
             name,
             format!(
                 "the folder is named \"{name}\" but {} says id \"{}\"; the folder name must be the id",
@@ -301,12 +214,11 @@ fn load_one(which: Root, canon_root: &Path, root: &Path, name: &str, out: &mut D
     })();
     let (entry, background, bar, helper) = match files {
         Ok(f) => f,
-        Err(reason) => return refuse(out, which, name, reason),
+        Err(reason) => return refuse(out, name, reason),
     };
     out.mods.push(Found {
         manifest,
         folder,
-        root: which,
         entry,
         background,
         bar,
@@ -364,7 +276,7 @@ mod tests {
                    "input_schema": {"type": "object"}}]
     }"#;
 
-    /// A mods folder with the named mod folders, each made by `make`.
+    /// A plugins folder with the named mod folders, each made by `make`.
     fn root_with(mods: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         for (name, manifest) in mods {
@@ -444,7 +356,7 @@ mod tests {
         let dir = root_with(&[("Bad_Name", GOOD)]);
         let d = discover(dir.path());
         assert!(
-            d.errors[0].reason.contains("not a mod id"),
+            d.errors[0].reason.contains("not a plugin id"),
             "{:?}",
             d.errors
         );
@@ -522,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn a_junction_out_of_the_mods_folder_is_refused() {
+    fn a_junction_out_of_the_plugins_folder_is_refused() {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("mod.json"), GOOD).unwrap(); // sync-ok: test code only
         fs::write(outside.path().join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
@@ -541,7 +453,7 @@ mod tests {
         let d = discover(dir.path());
         assert!(d.mods.is_empty());
         assert!(
-            d.errors[0].reason.contains("outside the mods folder"),
+            d.errors[0].reason.contains("outside the plugins folder"),
             "{:?}",
             d.errors
         );
@@ -582,7 +494,11 @@ mod tests {
         assert_eq!(d.mods.len(), 1, "the real mod is found");
         assert_eq!(d.mods[0].manifest.id, "zzz-mod");
         assert_eq!(d.errors.len(), 70, "each junk folder is reported");
-        assert!(d.errors.iter().all(|e| e.reason.contains("not a mod id")));
+        assert!(
+            d.errors
+                .iter()
+                .all(|e| e.reason.contains("not a plugin id"))
+        );
         assert!(!d.errors.iter().any(|e| e.reason.contains("were not read")));
     }
 
@@ -681,10 +597,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plugins = dir.path().join("plugins");
         plugin_at(&plugins, "todo", PLUGIN);
-        let d = discover_all(&dir.path().join("mods"), Some(&plugins));
+        let d = discover(&plugins);
         assert!(d.errors.is_empty(), "{:?}", d.errors);
         let f = &d.mods[0];
-        assert_eq!(f.root, Root::Plugins);
         assert!(f.manifest.is_plugin());
         assert!(f.entry.as_ref().unwrap().ends_with("panel.html"));
         assert!(f.background.as_ref().unwrap().ends_with("background.html"));
@@ -692,76 +607,40 @@ mod tests {
         assert!(f.helper.as_ref().unwrap().ends_with("helper.exe"));
     }
 
+    /// One folder holds both protocols, sorted by id; a `mods` folder beside it is not read.
     #[test]
-    fn both_roots_are_read_and_the_result_is_sorted_by_id() {
-        let mods = root_with(&[("notes", GOOD)]);
-        let plugins = tempfile::tempdir().unwrap();
-        plugin_at(plugins.path(), "todo", PLUGIN);
-        let early = PLUGIN.replace("\"todo\"", "\"alpha\"");
-        plugin_at(plugins.path(), "alpha", &early);
-        let d = discover_all(mods.path(), Some(plugins.path()));
+    fn mods_and_plugins_share_the_one_folder_and_the_old_mods_folder_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        plugin_at(&plugins, "todo", PLUGIN);
+        plugin_at(&plugins, "alpha", &PLUGIN.replace("\"todo\"", "\"alpha\""));
+        let f = plugins.join("notes");
+        fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
+        fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+        fs::write(f.join("mod.json"), GOOD).unwrap(); // sync-ok: test code only
+        let old = dir.path().join("mods").join("zeta");
+        fs::create_dir_all(&old).unwrap(); // sync-ok: test code only
+        fs::write(old.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+        fs::write(old.join("mod.json"), GOOD.replace("\"notes\"", "\"zeta\"")).unwrap(); // sync-ok: test code only
+        let d = discover(&plugins);
         assert!(d.errors.is_empty(), "{:?}", d.errors);
-        let got: Vec<(&str, Root)> = d
+        let got: Vec<(&str, bool)> = d
             .mods
             .iter()
-            .map(|f| (f.manifest.id.as_str(), f.root))
+            .map(|f| (f.manifest.id.as_str(), f.manifest.is_plugin()))
             .collect();
-        assert_eq!(
-            got,
-            [
-                ("alpha", Root::Plugins),
-                ("notes", Root::Mods),
-                ("todo", Root::Plugins)
-            ]
-        );
+        assert_eq!(got, [("alpha", true), ("notes", false), ("todo", true)]);
     }
 
     #[test]
-    fn an_id_in_both_folders_is_refused_in_the_plugins_folder() {
-        let mods = root_with(&[("notes", GOOD)]);
+    fn a_folder_with_both_manifests_is_refused() {
         let plugins = tempfile::tempdir().unwrap();
-        plugin_at(
-            plugins.path(),
-            "notes",
-            &PLUGIN.replace("\"todo\"", "\"notes\""),
-        );
-        let d = discover_all(mods.path(), Some(plugins.path()));
-        assert_eq!(d.mods.len(), 1);
-        assert_eq!(d.mods[0].root, Root::Mods, "the mods folder wins");
-        assert_eq!(d.errors.len(), 1);
-        assert_eq!(d.errors[0].root, Root::Plugins);
-        assert_eq!(d.errors[0].folder, "notes");
-        assert!(
-            d.errors[0]
-                .reason
-                .contains("unique across mods and plugins"),
-            "{:?}",
-            d.errors
-        );
-        // A broken folder in the mods folder still holds its id.
-        fs::write(mods.path().join("notes").join("mod.json"), "{").unwrap(); // sync-ok: test code only
-        let d = discover_all(mods.path(), Some(plugins.path()));
-        assert!(d.mods.is_empty());
-        assert_eq!(d.errors.len(), 2, "{:?}", d.errors);
-    }
-
-    #[test]
-    fn either_manifest_is_read_in_either_folder_and_both_at_once_is_refused() {
-        let plugins = tempfile::tempdir().unwrap();
-        // A protocol 1 mod dropped in the plugins folder by hand is still a mod.
         let f = plugins.path().join("notes");
         fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
         fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
         fs::write(f.join("mod.json"), GOOD).unwrap(); // sync-ok: test code only
-        let mods = tempfile::tempdir().unwrap();
-        plugin_at(mods.path(), "todo", PLUGIN);
-        let d = discover_all(mods.path(), Some(plugins.path()));
-        assert!(d.errors.is_empty(), "{:?}", d.errors);
-        assert_eq!(d.mods.len(), 2);
-        assert!(!d.mods[0].manifest.is_plugin() && d.mods[0].root == Root::Plugins);
-        assert!(d.mods[1].manifest.is_plugin() && d.mods[1].root == Root::Mods);
         fs::write(f.join("plugin.json"), PLUGIN).unwrap(); // sync-ok: test code only
-        let d = discover_all(mods.path(), Some(plugins.path()));
+        let d = discover(plugins.path());
         assert!(
             d.errors[0].reason.contains("both plugin.json and mod.json"),
             "{:?}",
@@ -777,7 +656,7 @@ mod tests {
             "todo",
             &PLUGIN.replace("\"protocol\": 2", "\"protocol\": 1"),
         );
-        let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+        let d = discover(plugins.path());
         assert!(
             d.errors[0]
                 .reason
@@ -790,7 +669,7 @@ mod tests {
             "todo",
             &PLUGIN.replace("\"todo\"", "\"other\""),
         );
-        let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+        let d = discover(plugins.path());
         assert!(
             d.errors[0].reason.contains("plugin.json says id \"other\""),
             "{:?}",
@@ -809,7 +688,7 @@ mod tests {
             let plugins = tempfile::tempdir().unwrap();
             plugin_at(plugins.path(), "todo", PLUGIN);
             fs::remove_file(plugins.path().join("todo").join(gone)).unwrap(); // sync-ok: test code only
-            let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+            let d = discover(plugins.path());
             assert!(d.mods.is_empty(), "{gone}");
             assert!(d.errors[0].reason.contains(want), "{gone}: {:?}", d.errors);
         }
@@ -820,32 +699,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("plugins");
         fs::write(&file, "x").unwrap(); // sync-ok: test code only
-        let d = discover_all(&dir.path().join("mods"), Some(&file));
-        assert_eq!(d.errors[0].root, Root::Plugins);
+        let d = discover(&file);
         assert_eq!(d.errors[0].reason, "the plugins folder is not a folder");
         let plugins = tempfile::tempdir().unwrap();
         fs::create_dir(plugins.path().join("Bad_Name")).unwrap(); // sync-ok: test code only
-        let d = discover_all(&dir.path().join("mods"), Some(plugins.path()));
+        let d = discover(plugins.path());
         assert!(
             d.errors[0].reason.contains("not a plugin id"),
             "{:?}",
             d.errors
         );
-        // A missing plugins folder is nothing found, as a missing mods folder is.
-        let d = discover_all(&dir.path().join("mods"), Some(&dir.path().join("absent")));
-        assert_eq!(d, Discovery::default());
     }
-
     /// Every folder in `sample-plugins/` is a valid protocol 2 plugin: they are the examples the plugin author docs use.
     #[test]
     fn the_sample_plugins_are_valid() {
         let samples = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sample-plugins"));
-        let d = discover_all(&samples.join("no-mods-here"), Some(samples));
+        let d = discover(samples);
         assert!(d.errors.is_empty(), "{:?}", d.errors);
         assert!(!d.mods.is_empty());
         for f in &d.mods {
             assert!(f.manifest.is_plugin(), "{}", f.manifest.id);
-            assert_eq!(f.root, Root::Plugins);
             for page in [&f.entry, &f.background, &f.bar].into_iter().flatten() {
                 let text = fs::read_to_string(page).unwrap(); // sync-ok: test code only
                 assert!(

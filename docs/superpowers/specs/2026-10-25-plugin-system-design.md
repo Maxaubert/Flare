@@ -280,7 +280,8 @@ Compatibility
   are added to the same file), the page key `mods` (the page is titled Plugins), the host and profile
   `flare-mod-<id>` (protocol 2 uses the same prefix, so storage survives). `ASKABLE_V1` stays the old list.
   `plugin.json` must say protocol 2 and `mod.json` protocol 1; anything else is refused. `plugins\` is a second root;
-  an id in both roots is refused in the second.
+  an id in both roots is refused in the second. Amended by phase 2c (owner, 2026-10-25): one folder, `plugins\`, for
+  both protocols; `mods\` is moved into it once at start and no longer read (plan, "Phase 2c").
 - Tool routing for protocol 1 and for plugins without a background page is unchanged (panel opened in the caller's
   tab). The e2e `modsSample` stays as it is.
 - Views are keyed by slot `{owner, kind}` (panel, bar, background) instead of by tab, as its own phase before

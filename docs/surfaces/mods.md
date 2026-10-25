@@ -19,7 +19,15 @@ Prism Terminal port, which must reproduce the same rules.
 
 ## Where mods live and when they run
 
-- Folder: `%APPDATA%\Flare\mods\<id>\`. The folder name is the id.
+- Folder: `%APPDATA%\Flare\plugins\<id>\`, the one folder for every plugin, protocol 1 (`mod.json`) and protocol 2
+  (`plugin.json`) alike (plugins phase 2c). The folder name is the id. Settings > Plugins has an "Open plugins folder"
+  button (the folder is made at start and each time the page opens, on the scan worker).
+- The old folder, `%APPDATA%\Flare\mods\`, is no longer read. At start, before the first scan and on its worker,
+  Flare moves once every folder in it whose name is a legal id into `plugins\` (a rename on the same volume). A name
+  `plugins\` already holds stays in `mods\` and Settings > Plugins names it in one sentence; a folder whose name is not
+  an id is left alone; an emptied `mods\` is removed, one that still holds something keeps it. A mod's switch and
+  approval (`mods.json`, whose name stays) and its storage (the profile `flare-mod-<id>`) are tied to its id, never to
+  its folder, so a moved mod keeps all three (`flare_mods::migrate`).
 - A mod is OFF until the user turns it on in Settings > Mods, which shows its permissions first.
 - Turning it on mints the mod's token. Turning it off kills the token. Nothing is stored about tokens: a
   restart mints new ones for the mods still on.
@@ -238,7 +246,7 @@ stops a mod from reading a page the user is logged into in another tab.
   folder name is older than the split from the mini-apps in plugins phase 2b and must not change, or every mod's
   storage is lost);
   never the web panel's profile and never the user's Edge profile. A profile name is the only per-mod name WebView2
-  allows inside one browser, so the folder is not `...\mods\<id>\profile`.
+  allows inside one browser, so the folder is not `...\plugins\<id>\profile`.
 - **No network from a mod.** The page is served from its folder with a strict policy. A mod that needs
   the internet is not a v1 mod.
 - **The manifest is untrusted.** Every field is checked before anything is used. A path is checked three
@@ -288,8 +296,7 @@ are added. `mod.json` must say protocol 1 and `plugin.json` protocol 2; a folder
 keeps exactly its rules, its five permissions and its Settings rows. Sample: `../../sample-plugins/manifest-tour/`
 (loaded as valid by `flare_mods::discover::tests::the_sample_plugins_are_valid`).
 
-- **Where.** `<profile>\plugins\<id>\` beside `<profile>\mods\`; either file in either folder. The mods folder is read
-  first and the ids are one space: an id in both is refused in `plugins\`.
+- **Where.** `<profile>\plugins\<id>\`, the same folder as a protocol 1 mod; the folder holds one of the two files.
 - **Status.** The keys below are parsed and validated, and every file they name must exist in the folder. Background
   pages, the bar, the sidebar sections, the actions and the helper are not started yet (later phases); a plugin's tools
   are offered only when it has a panel to answer them.

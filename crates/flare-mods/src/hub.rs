@@ -2,10 +2,10 @@
 //! no window and no browser. The Settings page, the control channel's dispatcher and the window all hold the
 //! same `Arc<Hub>`.
 //!
-//! - **Discovery** (`scan`) reads the mods folder, the plugins folder and the switch file on a worker; the answer
-//!   replaces what the hub knows. A scan never turns a mod on: the switches are the user's. A protocol 2 plugin
-//!   that is on stays on only while its manifest asks for nothing new AND names the author and homepage that were
-//!   approved (design section 13).
+//! - **Discovery** (`scan`) reads the plugins folder and the switch file on a worker (the first scan moves the old
+//!   mods folder's folders into the plugins folder before it reads); the answer replaces what the hub knows. A scan
+//!   never turns a mod on: the switches are the user's. A protocol 2 plugin that is on stays on only while its
+//!   manifest asks for nothing new AND names the author and homepage that were approved (design section 13).
 //! - **Switches** (`set_enabled`) are applied in memory at once, on any thread: turning a mod ON mints its
 //!   token, turning it OFF kills the token (a connection that presents it is refused on its next request) and
 //!   fails every tool call waiting on the mod. The file is written by `persist`, on a worker (rule 34).
@@ -18,14 +18,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use flare_ctl::{CtlError, Grant, Permission, code};
 use serde_json::Value;
 
-use crate::discover::{FolderError, Found, Root, discover_all};
+use crate::discover::{FolderError, Found, discover};
 use crate::enabled::{EnabledStore, Identity};
 use crate::tokens::Tokens;
 use crate::tools::{Collision, Route, TooLong, ToolTable};
@@ -135,10 +135,12 @@ pub struct Shown {
 /// Where mods live and where the switches are kept.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The folder holding one folder per mod (`%APPDATA%\Flare\mods`, or the profile's).
+    /// The plugins folder, holding one folder per mod or plugin, both protocols (`%APPDATA%\Flare\plugins`, or the
+    /// profile's).
     pub dir: PathBuf,
-    /// The second root, `plugins` beside `mods`, read after it (one id space). `None` reads `dir` only.
-    pub plugins_dir: Option<PathBuf>,
+    /// The old mods folder, `mods` beside it: the first scan moves its folders into `dir` (`migrate`), and it is
+    /// never read. `None` moves nothing.
+    pub old_mods_dir: Option<PathBuf>,
     /// The switch file (`mods.json`), for mods and plugins alike.
     pub state_file: PathBuf,
 }
@@ -149,8 +151,6 @@ pub struct ModEntry {
     pub id: String,
     /// 1 for a `mod.json`, 2 for a `plugin.json`.
     pub protocol: u64,
-    /// The folder it was found in.
-    pub root: Root,
     pub name: String,
     pub version: String,
     pub description: String,
@@ -221,6 +221,8 @@ pub struct Hub {
     inner: Mutex<Inner>,
     /// The switch file; loaded by the first scan. Its own lock, so a slow disk never holds the hub's.
     store: Mutex<Option<EnabledStore>>,
+    /// The folders the move left in the old mods folder, each with its sentence; set once, by the first scan.
+    kept: OnceLock<Vec<crate::migrate::Kept>>,
 }
 
 /// A tool call routed to a mod, waiting for the page's answer.
@@ -239,6 +241,7 @@ impl Hub {
             cfg,
             inner: Mutex::new(Inner::default()),
             store: Mutex::new(None),
+            kept: OnceLock::new(),
         }
     }
 
@@ -250,10 +253,41 @@ impl Hub {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Reads the mods folder (and, the first time, the switch file). Runs on a worker. Replaces what the hub
-    /// knew; mods that were turned on and are still valid keep their token, the others lose it.
+    /// Reads the plugins folder (and, the first time, moves the old mods folder into it and reads the switch file).
+    /// Runs on a worker. Replaces what the hub knew; mods that were turned on and are still valid keep their token,
+    /// the others lose it. What the move had to leave behind is reported after the folders that were read, for as
+    /// long as it is still there.
+    ///
+    /// An id whose old folder stayed because the plugins folder holds one of the same name is turned off by the first
+    /// scan, and saved off: its switch was given to the old folder, not to the one now read (design section 13).
     pub fn scan(&self) -> Change {
-        let found = discover_all(&self.cfg.dir, self.cfg.plugins_dir.as_deref());
+        let mut clashed: Vec<String> = Vec::new();
+        let kept = self.kept.get_or_init(|| {
+            let Some(old) = &self.cfg.old_mods_dir else {
+                return Vec::new();
+            };
+            let m = crate::migrate::move_into_plugins(old, &self.cfg.dir); // sync-ok: runs on the scan worker
+            if !m.moved.is_empty() {
+                log::info!(
+                    "moved {} from the old mods folder into the plugins folder",
+                    m.moved.join(", ")
+                );
+            }
+            clashed = m
+                .kept
+                .iter()
+                .filter(|k| k.clash)
+                .map(|k| k.error.folder.clone())
+                .collect();
+            m.kept
+        });
+        let mut found = discover(&self.cfg.dir);
+        // The sentence says to move or remove the folder; once that is done it is no longer said.
+        found.errors.extend(
+            kept.iter()
+                .filter(|k| std::fs::symlink_metadata(&k.path).is_ok()) // sync-ok: runs on the scan worker
+                .map(|k| k.error.clone()),
+        );
         // The first scan loads the switches; later ones keep the memory (a switch not yet written to disk is
         // not undone by a scan that reads the old file).
         let first_load = {
@@ -291,6 +325,11 @@ impl Hub {
                 .collect();
             g.approved = store_ids.into_iter().map(|(id, a, _)| (id, a)).collect();
         }
+        clashed.retain(|id| g.on.remove(id));
+        for id in &clashed {
+            g.approved.remove(id);
+            g.identity.remove(id);
+        }
         g.read_only = read_only;
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
         g.found = found.mods;
@@ -300,9 +339,10 @@ impl Hub {
         let after_tools: Vec<Route> = g.table.tools().cloned().collect();
         let shrunk = std::mem::take(&mut g.shrunk);
         drop(g);
-        // A mod that now asks for less keeps the smaller set on disk too (this runs on the scan worker).
-        for id in shrunk {
-            let _ = self.persist(&id);
+        // A mod that now asks for less keeps the smaller set on disk too, and a clash turned off stays off (this runs
+        // on the scan worker).
+        for id in shrunk.iter().chain(&clashed) {
+            let _ = self.persist(id);
         }
         Change {
             tools_changed: before_tools != after_tools,
@@ -529,7 +569,6 @@ impl Hub {
             .map(|f| ModEntry {
                 id: f.manifest.id.clone(),
                 protocol: f.manifest.protocol,
-                root: f.root,
                 name: f.manifest.name.clone(),
                 version: f.manifest.version.clone(),
                 description: f.manifest.description.clone(),
@@ -819,7 +858,7 @@ mod tests {
 
     fn world(mods: &[(&str, &str, &str)]) -> World {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("mods");
+        let root = dir.path().join("plugins");
         for (id, perms, tools) in mods {
             let f = root.join(id);
             std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
@@ -828,7 +867,7 @@ mod tests {
         }
         let hub = Hub::new(Config {
             dir: root.clone(),
-            plugins_dir: Some(dir.path().join("plugins")),
+            old_mods_dir: Some(dir.path().join("mods")),
             state_file: dir.path().join("mods.json"),
         });
         World {
@@ -1421,7 +1460,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub = Hub::new(Config {
             dir: dir.path().join("nope"),
-            plugins_dir: Some(dir.path().join("nope-either")),
+            old_mods_dir: Some(dir.path().join("nope-either")),
             state_file: dir.path().join("mods.json"),
         });
         hub.scan();
@@ -1452,7 +1491,7 @@ mod tests {
 
     /// Writes a plugin folder in the world's plugins folder, with a panel page and a background page.
     fn put_plugin(w: &World, id: &str, manifest: &str) {
-        let f = w.root.parent().unwrap().join("plugins").join(id);
+        let f = w.root.join(id);
         std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
         std::fs::write(f.join("plugin.json"), manifest).unwrap(); // sync-ok: test code only
         std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
@@ -1470,13 +1509,13 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_is_listed_with_its_protocol_root_author_and_homepage() {
+    fn a_plugin_is_listed_with_its_protocol_author_and_homepage() {
         let w = todo_world();
         w.hub.scan();
         let s = w.hub.snapshot();
         assert!(s.errors.is_empty(), "{:?}", s.errors);
         let e = &s.mods[0];
-        assert_eq!((e.protocol, e.root), (2, Root::Plugins));
+        assert_eq!(e.protocol, 2);
         assert_eq!(e.author.as_deref(), Some("someone"));
         assert_eq!(e.homepage.as_deref(), Some("https://example.com/todo"));
         assert!(!e.enabled, "off until the user turns it on");
@@ -1484,10 +1523,7 @@ mod tests {
         let n = notes_world();
         n.hub.scan();
         let m = &n.hub.snapshot().mods[0];
-        assert_eq!(
-            (m.protocol, m.root, m.author.clone()),
-            (1, Root::Mods, None)
-        );
+        assert_eq!((m.protocol, m.author.clone()), (1, None));
     }
 
     #[test]
@@ -1625,21 +1661,95 @@ mod tests {
         assert!(w.hub.snapshot().mods[0].needs_approval);
     }
 
+    // ---- the one-time move of the old mods folder ----
+
+    /// Writes a protocol 1 mod in the world's old mods folder, beside its plugins folder.
+    fn put_old_mod(w: &World, id: &str) {
+        let f = w.root.parent().unwrap().join("mods").join(id);
+        std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("mod.json"), mod_json(id, r#"["panel"]"#, "[]")).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+    }
+
+    /// The first scan moves the old mods folder in: a moved mod is found and keeps its switch (it is by id), a name
+    /// the plugins folder holds stays behind and is named after the folders that were read, and later scans move
+    /// nothing again.
     #[test]
-    fn an_id_in_both_folders_is_a_problem_and_the_mod_stays() {
-        let t = format!("[{}]", tool("append_note"));
-        let w = world(&[("notes", r#"["panel","tools"]"#, &t)]);
-        put_plugin(&w, "notes", &plugin_json("notes", "x", "[]", ""));
+    fn the_first_scan_moves_the_old_mods_in_and_a_moved_mod_keeps_its_switch() {
+        let w = world(&[]);
+        let old = w.root.parent().unwrap().join("mods");
+        put_old_mod(&w, "notes");
+        put_old_mod(&w, "clash");
+        put_plugin(&w, "clash", &plugin_json("clash", "x", "[]", ""));
+        std::fs::write(
+            w.root.parent().unwrap().join("mods.json"),
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel"]}}}"#,
+        )
+        .unwrap(); // sync-ok: test code only
         w.hub.scan();
+        assert!(w.root.join("notes").join("mod.json").is_file(), "moved");
+        assert!(!old.join("notes").exists());
         let s = w.hub.snapshot();
-        assert_eq!(s.mods.len(), 1);
-        assert_eq!(s.mods[0].root, Root::Mods);
-        assert_eq!(s.errors[0].root, Root::Plugins);
-        assert!(
-            s.errors[0]
-                .reason
-                .contains("unique across mods and plugins")
+        let ids: Vec<&str> = s.mods.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["clash", "notes"]);
+        assert_eq!(
+            s.mods[0].protocol, 2,
+            "the plugins folder's own clash is the one read"
         );
+        assert!(w.hub.is_enabled("notes"), "the switch survived the move");
+        assert!(w.hub.grant_of_mod("notes").is_some());
+        assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+        assert_eq!(s.errors[0].folder, "clash");
+        assert!(s.errors[0].reason.contains("already has a folder"));
+        assert!(
+            old.join("clash").is_dir(),
+            "the clash stays in the mods folder"
+        );
+        // A later scan moves nothing new, even a folder dropped into the old mods folder since.
+        put_old_mod(&w, "late-one");
+        w.hub.scan();
+        assert!(old.join("late-one").is_dir() && !w.root.join("late-one").exists());
+        assert_eq!(w.hub.snapshot().errors.len(), 1, "still reported, once");
+        // Once the user does what it says, the next scan no longer says it.
+        std::fs::remove_dir_all(old.join("clash")).unwrap(); // sync-ok: test code only
+        w.hub.scan();
+        assert!(w.hub.snapshot().errors.is_empty());
+    }
+
+    /// The switch of an id whose old folder stayed behind was given to that folder, not to the plugins folder's one
+    /// of the same name: the first scan turns it off and saves it off, so neither folder runs without a new yes.
+    #[test]
+    fn a_clash_does_not_hand_the_old_mods_switch_to_the_plugins_folder() {
+        let w = world(&[("notes", r#"["panel"]"#, "[]")]);
+        let old = w.root.parent().unwrap().join("mods");
+        put_old_mod(&w, "notes");
+        let state = w.root.parent().unwrap().join("mods.json");
+        std::fs::write(
+            &state,
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel"]}}}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        let c = w.hub.scan();
+        assert!(
+            !w.hub.is_enabled("notes"),
+            "the plugins folder's notes was never approved"
+        );
+        assert!(w.hub.grant_of_mod("notes").is_none());
+        assert!(c.revoked.is_empty(), "it never had a token");
+        let s = w.hub.snapshot();
+        assert!(!s.mods[0].enabled);
+        assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+        assert_eq!(s.errors[0].folder, "notes");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap(); // sync-ok: test code only
+        assert_eq!(saved["mods"]["notes"]["on"], false, "{saved}");
+        // Removing the old folder leaves the plugins folder's notes off, after a restart too, until it is turned on.
+        std::fs::remove_dir_all(old.join("notes")).unwrap(); // sync-ok: test code only
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(!again.is_enabled("notes"));
+        assert!(again.snapshot().errors.is_empty());
+        again.set_enabled("notes", true).unwrap();
+        assert!(again.grant_of_mod("notes").is_some());
     }
 
     #[test]
