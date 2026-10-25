@@ -222,7 +222,7 @@ pub struct Hub {
     /// The switch file; loaded by the first scan. Its own lock, so a slow disk never holds the hub's.
     store: Mutex<Option<EnabledStore>>,
     /// The folders the move left in the old mods folder, each with its sentence; set once, by the first scan.
-    kept: OnceLock<Vec<FolderError>>,
+    kept: OnceLock<Vec<crate::migrate::Kept>>,
 }
 
 /// A tool call routed to a mod, waiting for the page's answer.
@@ -255,8 +255,13 @@ impl Hub {
 
     /// Reads the plugins folder (and, the first time, moves the old mods folder into it and reads the switch file).
     /// Runs on a worker. Replaces what the hub knew; mods that were turned on and are still valid keep their token,
-    /// the others lose it. What the move had to leave behind is reported after the folders that were read.
+    /// the others lose it. What the move had to leave behind is reported after the folders that were read, for as
+    /// long as it is still there.
+    ///
+    /// An id whose old folder stayed because the plugins folder holds one of the same name is turned off by the first
+    /// scan, and saved off: its switch was given to the old folder, not to the one now read (design section 13).
     pub fn scan(&self) -> Change {
+        let mut clashed: Vec<String> = Vec::new();
         let kept = self.kept.get_or_init(|| {
             let Some(old) = &self.cfg.old_mods_dir else {
                 return Vec::new();
@@ -268,10 +273,21 @@ impl Hub {
                     m.moved.join(", ")
                 );
             }
+            clashed = m
+                .kept
+                .iter()
+                .filter(|k| k.clash)
+                .map(|k| k.error.folder.clone())
+                .collect();
             m.kept
         });
         let mut found = discover(&self.cfg.dir);
-        found.errors.extend(kept.iter().cloned());
+        // The sentence says to move or remove the folder; once that is done it is no longer said.
+        found.errors.extend(
+            kept.iter()
+                .filter(|k| std::fs::symlink_metadata(&k.path).is_ok()) // sync-ok: runs on the scan worker
+                .map(|k| k.error.clone()),
+        );
         // The first scan loads the switches; later ones keep the memory (a switch not yet written to disk is
         // not undone by a scan that reads the old file).
         let first_load = {
@@ -309,6 +325,11 @@ impl Hub {
                 .collect();
             g.approved = store_ids.into_iter().map(|(id, a, _)| (id, a)).collect();
         }
+        clashed.retain(|id| g.on.remove(id));
+        for id in &clashed {
+            g.approved.remove(id);
+            g.identity.remove(id);
+        }
         g.read_only = read_only;
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
         g.found = found.mods;
@@ -318,9 +339,10 @@ impl Hub {
         let after_tools: Vec<Route> = g.table.tools().cloned().collect();
         let shrunk = std::mem::take(&mut g.shrunk);
         drop(g);
-        // A mod that now asks for less keeps the smaller set on disk too (this runs on the scan worker).
-        for id in shrunk {
-            let _ = self.persist(&id);
+        // A mod that now asks for less keeps the smaller set on disk too, and a clash turned off stays off (this runs
+        // on the scan worker).
+        for id in shrunk.iter().chain(&clashed) {
+            let _ = self.persist(id);
         }
         Change {
             tools_changed: before_tools != after_tools,
@@ -1688,6 +1710,46 @@ mod tests {
         w.hub.scan();
         assert!(old.join("late-one").is_dir() && !w.root.join("late-one").exists());
         assert_eq!(w.hub.snapshot().errors.len(), 1, "still reported, once");
+        // Once the user does what it says, the next scan no longer says it.
+        std::fs::remove_dir_all(old.join("clash")).unwrap(); // sync-ok: test code only
+        w.hub.scan();
+        assert!(w.hub.snapshot().errors.is_empty());
+    }
+
+    /// The switch of an id whose old folder stayed behind was given to that folder, not to the plugins folder's one
+    /// of the same name: the first scan turns it off and saves it off, so neither folder runs without a new yes.
+    #[test]
+    fn a_clash_does_not_hand_the_old_mods_switch_to_the_plugins_folder() {
+        let w = world(&[("notes", r#"["panel"]"#, "[]")]);
+        let old = w.root.parent().unwrap().join("mods");
+        put_old_mod(&w, "notes");
+        let state = w.root.parent().unwrap().join("mods.json");
+        std::fs::write(
+            &state,
+            r#"{"version":1,"mods":{"notes":{"on":true,"permissions":["panel"]}}}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        let c = w.hub.scan();
+        assert!(
+            !w.hub.is_enabled("notes"),
+            "the plugins folder's notes was never approved"
+        );
+        assert!(w.hub.grant_of_mod("notes").is_none());
+        assert!(c.revoked.is_empty(), "it never had a token");
+        let s = w.hub.snapshot();
+        assert!(!s.mods[0].enabled);
+        assert_eq!(s.errors.len(), 1, "{:?}", s.errors);
+        assert_eq!(s.errors[0].folder, "notes");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap(); // sync-ok: test code only
+        assert_eq!(saved["mods"]["notes"]["on"], false, "{saved}");
+        // Removing the old folder leaves the plugins folder's notes off, after a restart too, until it is turned on.
+        std::fs::remove_dir_all(old.join("notes")).unwrap(); // sync-ok: test code only
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(!again.is_enabled("notes"));
+        assert!(again.snapshot().errors.is_empty());
+        again.set_enabled("notes", true).unwrap();
+        assert!(again.grant_of_mod("notes").is_some());
     }
 
     #[test]

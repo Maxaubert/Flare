@@ -12,7 +12,19 @@
 
 use crate::discover::{FolderError, MAX_ENTRIES};
 use crate::manifest::valid_id;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// A folder the move left in the old mods folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// What was left: the folder, or the mods folder itself when it could not be read. While it is there, the
+    /// sentence still holds.
+    pub path: PathBuf,
+    /// The plugins folder already has a folder of this name, so the old mod's switch is not that folder's to inherit.
+    pub clash: bool,
+    /// The folder and one sentence for Settings.
+    pub error: FolderError,
+}
 
 /// What the move did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -20,7 +32,7 @@ pub struct Moved {
     /// The folders moved into the plugins folder, sorted.
     pub moved: Vec<String>,
     /// The folders that stayed in the mods folder, each with one sentence for Settings, sorted by name.
-    pub kept: Vec<FolderError>,
+    pub kept: Vec<Kept>,
     /// The mods folder was emptied and removed.
     pub removed: bool,
 }
@@ -34,12 +46,16 @@ pub fn move_into_plugins(mods: &Path, plugins: &Path) -> Moved {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
         Err(e) => {
-            out.kept.push(FolderError {
-                folder: "mods".to_string(),
-                reason: format!(
-                    "The old mods folder ({}) cannot be read, so nothing in it was moved to the plugins folder: {e}.",
-                    mods.display()
-                ),
+            out.kept.push(Kept {
+                path: mods.to_path_buf(),
+                clash: false,
+                error: FolderError {
+                    folder: "mods".to_string(),
+                    reason: format!(
+                        "The old mods folder ({}) cannot be read, so nothing in it was moved to the plugins folder: {e}.",
+                        mods.display()
+                    ),
+                },
             });
             return out;
         }
@@ -56,12 +72,16 @@ pub fn move_into_plugins(mods: &Path, plugins: &Path) -> Moved {
         let to = plugins.join(&name);
         // sync-ok: the scan worker
         if std::fs::symlink_metadata(&to).is_ok() {
-            out.kept.push(FolderError {
-                reason: format!(
-                    "\"{name}\" stayed in the old mods folder ({}) because the plugins folder already has a folder named \"{name}\"; move or remove one of them.",
-                    mods.display()
-                ),
-                folder: name,
+            out.kept.push(Kept {
+                path: mods.join(&name),
+                clash: true,
+                error: FolderError {
+                    reason: format!(
+                        "\"{name}\" stayed in the old mods folder ({}) because the plugins folder already has a folder named \"{name}\"; move or remove one of them.",
+                        mods.display()
+                    ),
+                    folder: name,
+                },
             });
             continue;
         }
@@ -69,12 +89,16 @@ pub fn move_into_plugins(mods: &Path, plugins: &Path) -> Moved {
             .and_then(|()| std::fs::rename(mods.join(&name), &to)); // sync-ok: the scan worker
         match moved {
             Ok(()) => out.moved.push(name),
-            Err(e) => out.kept.push(FolderError {
-                reason: format!(
-                    "\"{name}\" stayed in the old mods folder ({}) because it could not be moved to the plugins folder: {e}.",
-                    mods.display()
-                ),
-                folder: name,
+            Err(e) => out.kept.push(Kept {
+                path: mods.join(&name),
+                clash: false,
+                error: FolderError {
+                    reason: format!(
+                        "\"{name}\" stayed in the old mods folder ({}) because it could not be moved to the plugins folder: {e}.",
+                        mods.display()
+                    ),
+                    folder: name,
+                },
             }),
         }
     }
@@ -124,8 +148,9 @@ mod tests {
         let m = move_into_plugins(&mods, &plugins);
         assert_eq!(m.moved, ["other"]);
         assert_eq!(m.kept.len(), 1);
-        assert_eq!(m.kept[0].folder, "notes");
-        let why = &m.kept[0].reason;
+        assert_eq!(m.kept[0].error.folder, "notes");
+        assert!(m.kept[0].clash && m.kept[0].path == mods.join("notes"));
+        let why = &m.kept[0].error.reason;
         assert!(
             why.contains("\"notes\"") && why.contains("already has a folder"),
             "{why}"
@@ -136,6 +161,30 @@ mod tests {
         // Neither side was touched, and the mods folder stays with what could not move.
         assert_eq!(read(&plugins.join("notes")), "new");
         assert_eq!(read(&mods.join("notes")), "old");
+        assert!(!m.removed && mods.is_dir());
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_moved_stays_and_says_why_and_the_others_still_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mods, plugins) = (dir.path().join("mods"), dir.path().join("plugins"));
+        folder(&mods, "notes", "n");
+        // A file where the plugins folder should be: nothing can be moved into it.
+        fs::write(&plugins, "not a folder").unwrap(); // sync-ok: test code only
+        let m = move_into_plugins(&mods, &plugins);
+        assert!(m.moved.is_empty());
+        assert_eq!(m.kept.len(), 1);
+        let k = &m.kept[0];
+        assert_eq!(k.error.folder, "notes");
+        assert!(!k.clash, "a failed move is not a clash");
+        assert_eq!(k.path, mods.join("notes"));
+        assert!(
+            k.error.reason.contains("could not be moved"),
+            "{}",
+            k.error.reason
+        );
+        assert!(k.error.reason.ends_with('.'));
+        assert_eq!(read(&mods.join("notes")), "n", "nothing was lost");
         assert!(!m.removed && mods.is_dir());
     }
 
