@@ -740,5 +740,16 @@ mod tests {
         assert!(!m.contributes.actions.is_empty());
         assert!(!m.contributes.icons.is_empty());
         assert_eq!(m.tools[0].name, "add_item");
+        // The browser badge: a background page only, with what it needs to see every tab and badge one.
+        let badge = d
+            .mods
+            .iter()
+            .find(|f| f.manifest.id == "browser-badge")
+            .expect("the browser badge");
+        let m = &badge.manifest;
+        assert!(badge.background.is_some() && badge.entry.is_none() && badge.bar.is_none());
+        use flare_ctl::Permission as P;
+        assert_eq!(m.permissions, [P::Tabs, P::Decorate]);
+        assert!(m.tools.is_empty());
     }
 }

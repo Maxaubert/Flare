@@ -142,6 +142,19 @@ pub enum WebOut {
     ModPage { tab: String, ready: bool },
     /// A mod's page, or the browser it ran in, is gone.
     ModLost { tab: String },
+    /// A plugin's background page sent a message over its bridge (plugins phase 3).
+    BgMessage { plugin: String, json: String },
+    /// A plugin's background page began loading (`ready` false) or finished loading well (true).
+    BgPage { plugin: String, ready: bool },
+    /// A plugin's background page, or the browser it ran in, is gone (a failed load included).
+    BgLost { plugin: String },
+}
+
+/// A plugin's background page as the controller knows it: the host it was opened on (a message from any other is
+/// not its) and the navigation that counts as its load.
+struct BgView {
+    host: String,
+    started_nav: Option<u64>,
 }
 
 struct Pending {
@@ -398,6 +411,9 @@ pub struct WebCtl {
     covered: Option<(u32, u32)>,
     /// The window's size at the last sync while no page covered it.
     uncovered: Option<(u32, u32)>,
+    /// The plugins' background pages (plugins phase 3), by plugin: hidden views tied to no tab, which never take
+    /// the keyboard and are never shown.
+    backgrounds: HashMap<String, BgView>,
     /// The page left full screen and the window is on its way back: the page keeps covering the window until the
     /// window's size changes, so it moves into the panel once, at the window's new size, not first into a panel
     /// laid out for the full-screen window (the tab, and the size it covered).
@@ -505,6 +521,7 @@ impl WebCtl {
             window_follows: false,
             covered: None,
             uncovered: None,
+            backgrounds: HashMap::new(),
             hold: None,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
@@ -654,6 +671,7 @@ impl WebCtl {
         }
         self.keys.job_active.set(false);
         self.keys.agent_keys.set(false);
+        self.backgrounds.clear();
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
@@ -1035,10 +1053,114 @@ impl WebCtl {
             crate::timer_registry::clear(CAPTURE_TIMER);
         }
         if self.tabs.is_empty() {
-            // No web panel is open: the browser goes (it is made again by the next one).
+            // No web panel is open: the browser goes (it is made again by the next one), unless a plugin's
+            // background page still runs in it.
             self.has_focus = false;
             self.bounds = None;
+            self.drop_idle_backend();
+        }
+    }
+
+    /// The browser goes when no view of any kind is left in it.
+    fn drop_idle_backend(&mut self) {
+        if self.tabs.is_empty() && self.backgrounds.is_empty() {
             self.backend = None;
+        }
+    }
+
+    // ---- plugins' background pages ------------------------------------------------------------------------------
+
+    /// Opens the plugin's background page: a hidden view in the plugins' browser and the plugin's own profile, tied
+    /// to no tab, sealed as a background page by the host. A page it already has is opened again (a restart).
+    pub fn open_background(&mut self, plugin: &str, spec: AppSpec) {
+        if self.closed {
+            return;
+        }
+        self.backgrounds.insert(
+            plugin.to_string(),
+            BgView {
+                host: spec.host.clone(),
+                started_nav: None,
+            },
+        );
+        let slot = flare_web::Slot::background(plugin);
+        match self.backend() {
+            Some(b) => b.open_view(&slot, spec, PhysRect::default(), false),
+            None => {
+                self.backgrounds.remove(plugin);
+            }
+        }
+    }
+
+    /// Closes the plugin's background page, if it has one.
+    pub fn close_background(&mut self, plugin: &str) {
+        self.close_background_keeping(plugin, false);
+    }
+
+    /// [`WebCtl::close_background`]; `keep` holds on to the browser even when no view is left (the page is opened
+    /// again right after).
+    pub fn close_background_keeping(&mut self, plugin: &str, keep: bool) {
+        if self.backgrounds.remove(plugin).is_some()
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.close_view(&flare_web::Slot::background(plugin));
+        }
+        if !keep {
+            self.drop_idle_backend();
+        }
+    }
+
+    /// Speaks to the plugin's background page (its bridge's `message` event).
+    pub fn post_to_background(&mut self, plugin: &str, json: &str) {
+        if self.backgrounds.contains_key(plugin)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.post_to_view(&flare_web::Slot::background(plugin), json);
+        }
+    }
+
+    /// The plugins whose background page has a view, sorted.
+    pub fn background_ids(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.backgrounds.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// What a background page's view said, for the window: its messages, its load and its end. Anything else of
+    /// it (a title, a focus) is nobody's business.
+    fn on_background_event(&mut self, plugin: &str, e: WebEvent) -> Option<WebOut> {
+        let v = self.backgrounds.get_mut(plugin)?;
+        match e {
+            WebEvent::Loading { nav, .. } => {
+                v.started_nav = Some(nav);
+                Some(WebOut::BgPage {
+                    plugin: plugin.to_string(),
+                    ready: false,
+                })
+            }
+            // Only the load of the navigation that began counts (a refused one ends with a failed load too).
+            WebEvent::Loaded { ok, nav, .. } if v.started_nav == Some(nav) => Some(if ok {
+                WebOut::BgPage {
+                    plugin: plugin.to_string(),
+                    ready: true,
+                }
+            } else {
+                self.backgrounds.remove(plugin);
+                WebOut::BgLost {
+                    plugin: plugin.to_string(),
+                }
+            }),
+            WebEvent::Failed { .. } | WebEvent::Gone { .. } => {
+                self.backgrounds.remove(plugin);
+                Some(WebOut::BgLost {
+                    plugin: plugin.to_string(),
+                })
+            }
+            WebEvent::ModMessage { host, json, .. } if host == v.host => Some(WebOut::BgMessage {
+                plugin: plugin.to_string(),
+                json,
+            }),
+            _ => None,
         }
     }
 
@@ -1945,9 +2067,13 @@ impl WebCtl {
                 }
             }
             WebEvent::View { slot, event } => {
-                // A plugin's bar or background page: the app makes none yet (the background-page phase routes
-                // them), and none of them is a tab's panel, so nothing here acts on it.
-                log::debug!("a {} view said {}", slot.kind.name(), event.kind());
+                // A plugin's background page is routed to the window; a bar (made by no one yet) is not a tab's panel,
+                // so nothing here acts on it.
+                if slot.kind == flare_web::ViewKind::Background {
+                    out.extend(self.on_background_event(&slot.owner, *event));
+                } else {
+                    log::debug!("a {} view said {}", slot.kind.name(), event.kind());
+                }
             }
         }
         out.extend(mod_note);
@@ -2067,6 +2193,7 @@ pub fn production_factory(
     window: slint::Weak<AppWindow>,
     user_data_dir: Option<std::path::PathBuf>,
     profile_dir: std::path::PathBuf,
+    limits: Option<std::sync::Arc<flare_mods::limit::Limits>>,
 ) -> WebFactory {
     Box::new(move |sink| {
         let parent = window
@@ -2104,6 +2231,7 @@ pub fn production_factory(
             virtual_hosts,
             // The e2e's seam: a mini-app without the peer-connection script, to test the walls under it.
             without_webrtc_script: crate::ship_ctl::e2e_var("APP_NO_WEBRTC_SCRIPT").is_some(),
+            limits: limits.clone(),
         }))
     })
 }

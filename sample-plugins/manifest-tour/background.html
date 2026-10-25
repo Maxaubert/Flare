@@ -8,13 +8,25 @@
 <body>
 <script>
 // The background page of the protocol 2 sample: it runs while the plugin is on, in a hidden view, whatever tab is
-// shown. This Flare checks that the file is in the plugin folder; a later version starts it.
+// shown. A plugin with a background page has its tools answered here, not by a panel, so this page keeps the list
+// that add_item adds to and answers with how long it is.
 (function () {
-  if (window.flare && typeof window.flare.on === 'function') {
-    window.flare.on('tool', function (call) {
-      window.flare.respond(call.callId, null, 'the panel answers ' + call.tool);
-    });
-  }
+  var flare = window.flare;
+  if (!flare) { return; }
+  var items = [];
+  flare.on('tool', function (call) {
+    if (call.tool !== 'add_item') {
+      flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    var text = call.input && typeof call.input.text === 'string' ? call.input.text.trim() : '';
+    if (text.length < 1 || text.length > 200) {
+      flare.respond(call.callId, null, 'text must be 1 to 200 characters');
+      return;
+    }
+    items.push(text);
+    flare.respond(call.callId, { count: items.length });
+  });
 })();
 </script>
 </body>

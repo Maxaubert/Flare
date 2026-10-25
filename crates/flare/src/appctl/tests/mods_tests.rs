@@ -1153,3 +1153,760 @@ fn mod_tools_are_listed_only_when_this_run_has_mods() {
     assert!(!Grant::agent().may_call(Method::ToolsRespond));
     let _ = &w.root;
 }
+
+// ---- plugins phase 3: background pages, events, any tab, decor, the budget ----------------------------------------
+
+use crate::appctl::mods_glue::{TabFact, tab_events};
+use flare_surfaces::slot::Slot as View;
+
+/// The custom icon every test plugin declares.
+const TICK: &str = "M4 12l5 5L20 6";
+
+/// A protocol 2 plugin with a background page, the given permissions, one tool when it may answer tools, a panel when
+/// asked, and an icon of its own.
+fn plugin_with(root: &Path, id: &str, perms: &[&str], panel: bool) {
+    let tools = if perms.contains(&"tools") {
+        r#","tools":[{"name":"ping","description":"Answers.","input_schema":{"type":"object"}}]"#
+    } else {
+        ""
+    };
+    let panel = if panel {
+        r#","panel":{"entry":"index.html","title":"P"}"#
+    } else {
+        ""
+    };
+    let text = format!(
+        r#"{{"id":"{id}","name":"Plugin {id}","version":"1.0.0","protocol":2,"description":"A test plugin.","author":"me","homepage":"https://example.com/{id}","permissions":{perms:?},"background":"bg.html","contributes":{{"icons":{{"tick":"{TICK}"}}}}{panel}{tools}}}"#
+    );
+    let to = root.join(id);
+    std::fs::create_dir_all(&to).unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("plugin.json"), text).unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("index.html"), "<p>page</p>").unwrap(); // sync-ok: test code only, never the app
+}
+
+/// Plays the browser for the plugin's background page.
+fn bg_say(slot: &Slot, id: &str, e: WebEvent) {
+    fake(slot).say(WebEvent::View {
+        slot: View::background(id),
+        event: Box::new(e),
+    });
+}
+
+/// The background page loads.
+fn bg_up(f: &Fx, slot: &Slot, id: &str) {
+    thread_local! {
+        static NAV: std::cell::Cell<u64> = const { std::cell::Cell::new(9000) };
+    }
+    let nav = NAV.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    let url = modview::mod_url(&modview::mod_host(id));
+    bg_say(
+        slot,
+        id,
+        WebEvent::Loading {
+            tab: id.into(),
+            url: url.clone(),
+            nav,
+        },
+    );
+    bg_say(
+        slot,
+        id,
+        WebEvent::Loaded {
+            tab: id.into(),
+            url,
+            ok: true,
+            status: "0".into(),
+            nav,
+        },
+    );
+    f.pump();
+    assert!(
+        f.ctl
+            .borrow()
+            .mods
+            .as_ref()
+            .unwrap()
+            .is_ready(View::background(id))
+    );
+}
+
+/// The background page says something over its bridge.
+fn bg_message(f: &Fx, slot: &Slot, id: &str, text: &str) {
+    bg_say(
+        slot,
+        id,
+        WebEvent::ModMessage {
+            tab: id.into(),
+            host: modview::mod_host(id),
+            json: text.into(),
+        },
+    );
+    f.pump();
+}
+
+/// What was posted to the plugin's background page.
+fn bg_posts(slot: &Slot, id: &str) -> Vec<Value> {
+    fake(slot)
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::PostView(s, json) if s == View::background(id) => {
+                Some(serde_json::from_str(&json).unwrap())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// How many times the plugin's background view was opened, and closed.
+fn bg_opens(slot: &Slot, id: &str) -> (usize, usize) {
+    let calls = fake(slot).calls();
+    let opens = calls
+        .iter()
+        .filter(|c| matches!(c, Call::OpenView { slot, .. } if *slot == View::background(id)))
+        .count();
+    let closes = calls
+        .iter()
+        .filter(|c| matches!(c, Call::CloseView(s) if *s == View::background(id)))
+        .count();
+    (opens, closes)
+}
+
+/// A call the background page makes, answered: the reply's result, or its error.
+fn bg_call(f: &Fx, slot: &Slot, id: &str, n: u64, method: &str, params: Value) -> Value {
+    bg_message(
+        f,
+        slot,
+        id,
+        &json!({"t": "call", "id": n, "method": method, "params": params}).to_string(),
+    );
+    let mut got = None;
+    f.pump_until("the reply", |_| {
+        got = bg_posts(slot, id)
+            .into_iter()
+            .find(|v| v["t"] == "reply" && v["id"] == n);
+        got.is_some()
+    });
+    got.unwrap()
+}
+
+/// Two shell tabs, `C:\a` (in front) and `C:\b`, and their ids.
+fn two_tabs() -> (Fx, String, String) {
+    let f = fx_with(Opts {
+        saved: vec![("C:\\a", None), ("C:\\b", None)],
+        ..Opts::default()
+    });
+    f.start_restore_and_wait();
+    let ids: Vec<String> = f
+        .ctl
+        .borrow()
+        .model()
+        .state
+        .tabs
+        .iter()
+        .map(|t| t.id.clone())
+        .collect();
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    f.ctl.borrow_mut().model.pick(&a);
+    f.ctl.borrow_mut().refresh();
+    (f, a, b)
+}
+
+fn running(f: &Fx) -> Vec<String> {
+    f.ctl.borrow().mods.as_ref().unwrap().backgrounds()
+}
+
+#[test]
+fn a_plugin_with_a_background_page_gets_one_hidden_sealed_view_tied_to_no_tab_while_it_is_on() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "pager", &[], false);
+        sample_notes(r);
+    });
+    // A protocol 1 mod has none.
+    turn(&f, "notes", true);
+    assert!(running(&f).is_empty());
+
+    turn(&f, "pager", true);
+    assert_eq!(running(&f), ["pager"]);
+    let open = fake(&slot)
+        .calls()
+        .into_iter()
+        .find_map(|c| match c {
+            Call::OpenView {
+                slot, app, visible, ..
+            } if slot == View::background("pager") => Some((app, visible)),
+            _ => None,
+        })
+        .expect("the background view");
+    assert!(!open.1, "hidden");
+    assert_eq!(open.0.module.as_ref().unwrap().entry, "bg.html");
+    let view = fake(&slot).view(&View::background("pager")).unwrap();
+    assert_eq!(
+        view.seal,
+        Some(flare_web::seal::plugin_seal(
+            flare_web::ViewKind::Background
+        ))
+    );
+    let probe = fake(&slot).probe_view(&View::background("pager")).unwrap();
+    assert_eq!(probe.profile, "flare-mod-pager", "the plugin's own profile");
+    assert!(
+        !fake(&slot)
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Focus(_))),
+        "it never takes the keyboard"
+    );
+    bg_up(&f, &slot, "pager");
+    let state = f.ctl.borrow().e2e_mods_state();
+    assert_eq!(state["backgrounds"][0]["plugin"], "pager");
+    assert_eq!(state["backgrounds"][0]["ready"], true);
+
+    // Off: the view closes before Settings hears it, and the plugin's generation moves on.
+    let g = w.hub.generation("pager");
+    turn(&f, "pager", false);
+    assert!(running(&f).is_empty());
+    assert_eq!(bg_opens(&slot, "pager"), (1, 1));
+    assert!(fake(&slot).view(&View::background("pager")).is_none());
+    assert_eq!(w.hub.generation("pager"), g + 1);
+    // A reply the old page's call earns after that is nobody's.
+    mods_msg(
+        &f,
+        ModsMsg::Reply {
+            slot: View::background("pager"),
+            mod_id: "pager".into(),
+            generation: 0,
+            json: "{}".into(),
+        },
+    );
+    assert!(bg_posts(&slot, "pager").is_empty());
+}
+
+#[test]
+fn a_background_page_that_ends_is_started_again_three_times_in_five_minutes_then_stays_stopped() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "pager", &["tabs", "decorate"], false)
+    });
+    turn(&f, "pager", true);
+    for round in 1..=3 {
+        bg_up(&f, &slot, "pager");
+        bg_say(
+            &slot,
+            "pager",
+            WebEvent::Gone {
+                tab: "pager".into(),
+                why: "crashed".into(),
+            },
+        );
+        f.pump();
+        assert_eq!(running(&f), ["pager"], "restart {round}");
+        assert_eq!(bg_opens(&slot, "pager").0, 1 + round);
+    }
+    assert_eq!(w.hub.stopped("pager"), None);
+    bg_up(&f, &slot, "pager");
+    bg_say(
+        &slot,
+        "pager",
+        WebEvent::Gone {
+            tab: "pager".into(),
+            why: "crashed".into(),
+        },
+    );
+    f.pump();
+    assert!(running(&f).is_empty(), "the fourth end stops it");
+    assert_eq!(bg_opens(&slot, "pager").0, 4);
+    assert_eq!(
+        w.hub.stopped("pager").as_deref(),
+        Some(crate::mods_ctl::STOPPED_CRASHED)
+    );
+    let info = crate::mods_ctl::info_of(&w.hub, &std::sync::Mutex::new(None));
+    assert_eq!(
+        info.mods[0].stopped.as_deref(),
+        Some(crate::mods_ctl::STOPPED_CRASHED),
+        "Settings says so"
+    );
+    // A load that fails counts as an end as well; turning it off and on starts it afresh.
+    turn(&f, "pager", false);
+    turn(&f, "pager", true);
+    assert_eq!(running(&f), ["pager"]);
+    assert_eq!(w.hub.stopped("pager"), None);
+    // (The browser went with the last view and was made again: count on the new one.)
+    let base = bg_opens(&slot, "pager").0;
+    bg_say(
+        &slot,
+        "pager",
+        WebEvent::Loading {
+            tab: "pager".into(),
+            url: "https://flare-mod-pager.local/".into(),
+            nav: 77,
+        },
+    );
+    bg_say(
+        &slot,
+        "pager",
+        WebEvent::Loaded {
+            tab: "pager".into(),
+            url: "https://flare-mod-pager.local/".into(),
+            ok: false,
+            status: "404".into(),
+            nav: 77,
+        },
+    );
+    f.pump();
+    assert_eq!(
+        bg_opens(&slot, "pager").0,
+        base + 1,
+        "started again after the failed load"
+    );
+}
+
+#[test]
+fn a_background_page_that_does_not_answer_the_ping_in_ten_seconds_is_closed_and_counts_as_ended() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let _w = world(&f, |r| plugin_with(r, "pager", &[], false));
+    turn(&f, "pager", true);
+    bg_up(&f, &slot, "pager");
+    let t0 = Instant::now();
+    f.ctl.borrow_mut().plugins_tick(t0);
+    let ping = bg_posts(&slot, "pager")
+        .into_iter()
+        .find(|v| v["t"] == "ping")
+        .expect("a ping");
+    assert!(f.ctl.borrow().mods.as_ref().unwrap().ping_waiting("pager"));
+    // The bridge answers it: the page is alive.
+    bg_message(
+        &f,
+        &slot,
+        "pager",
+        &json!({"t": "pong", "id": ping["id"]}).to_string(),
+    );
+    assert!(!f.ctl.borrow().mods.as_ref().unwrap().ping_waiting("pager"));
+    // The next ping goes unanswered: the round after ten seconds closes the page and starts it again.
+    f.ctl
+        .borrow_mut()
+        .plugins_tick(t0 + Duration::from_secs(10));
+    f.ctl
+        .borrow_mut()
+        .plugins_tick(t0 + Duration::from_secs(15));
+    assert_eq!(bg_opens(&slot, "pager"), (1, 0), "five seconds is not ten");
+    f.ctl
+        .borrow_mut()
+        .plugins_tick(t0 + Duration::from_secs(21));
+    assert_eq!(bg_opens(&slot, "pager"), (2, 1));
+    assert_eq!(running(&f), ["pager"]);
+}
+
+#[test]
+fn a_tool_of_a_plugin_with_a_background_page_is_answered_there_and_no_panel_opens() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| plugin_with(r, "pager", &["tools", "panel"], true));
+    turn(&f, "pager", true);
+    let tab = f.ctl.borrow().front_id().unwrap();
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_pager_ping", "input": {"n": 1}}),
+    );
+    // The page is not ready yet: the call waits for it, and no panel is opened for it.
+    f.pump_until("the call handed over", |f| {
+        f.ctl
+            .borrow()
+            .mods
+            .as_ref()
+            .unwrap()
+            .hub()
+            .pending_of("pager")
+            == 1
+    });
+    bg_up(&f, &slot, "pager");
+    f.pump_until("the tool event", |_| {
+        bg_posts(&slot, "pager").iter().any(|v| v["t"] == "tool")
+    });
+    assert!(f.ctl.borrow().panels.mod_of(&tab).is_none(), "no panel");
+    let ev = bg_posts(&slot, "pager")
+        .into_iter()
+        .find(|v| v["t"] == "tool")
+        .unwrap();
+    assert_eq!(ev["tool"], "ping");
+    bg_message(
+        &f,
+        &slot,
+        "pager",
+        &json!({"t":"respond","call_id":ev["callId"],"result":{"pong":true}}).to_string(),
+    );
+    assert_eq!(
+        answer_of(&f, &rx).unwrap(),
+        json!({"result": {"pong": true}})
+    );
+    // The page ends while a call waits: the call fails at once.
+    let rx = call_on_thread(
+        &w.dispatcher,
+        agent_in(&tab),
+        Method::ModsCall,
+        json!({"name": "mod_pager_ping", "input": {}}),
+    );
+    f.pump_until("the second call", |_| {
+        bg_posts(&slot, "pager")
+            .iter()
+            .filter(|v| v["t"] == "tool")
+            .count()
+            == 2
+    });
+    bg_say(
+        &slot,
+        "pager",
+        WebEvent::Gone {
+            tab: "pager".into(),
+            why: "x".into(),
+        },
+    );
+    let e = answer_of(&f, &rx).unwrap_err();
+    assert_eq!(e.code, code::UNAVAILABLE);
+}
+
+#[test]
+fn tab_events_say_what_changed_and_only_that() {
+    let fact = |id: &str, title: &str, active: bool| TabFact {
+        id: id.into(),
+        title: title.into(),
+        folder: format!("C:\\{id}"),
+        active,
+        agent: None,
+        state: "idle",
+        session: None,
+        panel: None,
+    };
+    let before = vec![
+        fact("t1", "a", true),
+        fact("t2", "b", false),
+        fact("t3", "c", false),
+    ];
+    assert!(tab_events(&before, &before).is_empty());
+    // t2 renamed and focused, t3 moved before t1, t1 got a browser panel, t4 opened, Claude came to t1.
+    let mut t1 = fact("t1", "a", false);
+    t1.panel = Some("browser".into());
+    t1.agent = Some("claude");
+    t1.state = "working";
+    let now = vec![
+        fact("t3", "c", false),
+        t1,
+        fact("t2", "B", true),
+        fact("t4", "d", false),
+    ];
+    let got: Vec<(String, String)> = tab_events(&before, &now)
+        .into_iter()
+        .map(|(name, tab, data)| {
+            let kind = if name == "tabs" {
+                data["kind"].as_str().unwrap().to_string()
+            } else {
+                format!("agent:{}", data["state"].as_str().unwrap())
+            };
+            (kind, tab)
+        })
+        .collect();
+    let has = |k: &str, t: &str| got.iter().any(|(a, b)| a == k && b == t);
+    assert!(has("opened", "t4"));
+    assert!(has("focused", "t2") && has("renamed", "t2"));
+    assert!(has("moved", "t3"), "{got:?}");
+    assert!(has("panel", "t1") && has("agent:working", "t1"));
+    assert!(
+        !has("moved", "t1") && !has("moved", "t2"),
+        "one drag is one move: {got:?}"
+    );
+    assert_eq!(got.len(), 6, "{got:?}");
+    // A closed tab is said with what was known of it.
+    let gone = tab_events(&before, &before[..2]);
+    assert_eq!(gone.len(), 1);
+    assert_eq!(gone[0].2["kind"], "closed");
+    assert_eq!(gone[0].2["tab"]["id"], "t3");
+}
+
+#[test]
+fn events_reach_every_page_that_listens_and_may_see_the_tab() {
+    let (f, a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "all-tabs", &["tabs"], false);
+        plugin_with(r, "no-tabs", &[], false);
+        mod_with(r, "solo", &["panel"]);
+    });
+    for id in ["all-tabs", "no-tabs", "solo"] {
+        turn(&f, id, true);
+    }
+    for id in ["all-tabs", "no-tabs"] {
+        bg_up(&f, &slot, id);
+        bg_message(&f, &slot, id, r#"{"t":"listen","name":"tabs"}"#);
+    }
+    // A page that listens to `plugin` hears at once that its plugin is on.
+    bg_message(&f, &slot, "all-tabs", r#"{"t":"listen","name":"plugin"}"#);
+    assert!(
+        bg_posts(&slot, "all-tabs")
+            .iter()
+            .any(|v| v["name"] == "plugin" && v["data"]["kind"] == "on")
+    );
+    // The mod's panel sits in tab a and listens too: it sees tab a only.
+    let tab = page_up(&f, &w, &slot, "solo");
+    assert_eq!(tab, a);
+    page_says(&slot, &a, r#"{"t":"listen","name":"tabs"}"#);
+    f.pump();
+    let events = |s: &Slot, id: &str| -> Vec<(String, String)> {
+        bg_posts(s, id)
+            .into_iter()
+            .filter(|v| v["t"] == "event" && v["name"] == "tabs")
+            .map(|v| {
+                (
+                    v["data"]["kind"].as_str().unwrap().to_string(),
+                    v["data"]["tab"]["id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let panel_events = |s: &Slot| -> Vec<String> {
+        posts(s, &a)
+            .into_iter()
+            .filter(|v| v["t"] == "event")
+            .map(|v| v["data"]["kind"].as_str().unwrap().to_string())
+            .collect()
+    };
+    f.ctl.borrow_mut().refresh();
+    let base_all = events(&slot, "all-tabs").len();
+    let base_panel = panel_events(&slot).len();
+
+    // Tab b comes to the front: the plugin with `tabs` hears it; the one without, and the page in a, do not.
+    f.ctl.borrow_mut().model.pick(&b);
+    f.ctl.borrow_mut().refresh();
+    let all = events(&slot, "all-tabs");
+    assert!(
+        all[base_all..].contains(&("focused".to_string(), b.clone())),
+        "{all:?}"
+    );
+    assert!(events(&slot, "no-tabs").is_empty(), "no tab is its own");
+    assert_eq!(panel_events(&slot).len(), base_panel);
+
+    // Tab a comes back: the page in a hears it too.
+    f.ctl.borrow_mut().model.pick(&a);
+    f.ctl.borrow_mut().refresh();
+    assert!(events(&slot, "all-tabs").contains(&("focused".to_string(), a.clone())));
+    assert_eq!(panel_events(&slot)[base_panel..], ["focused".to_string()]);
+
+    // A new tab: opened, for the plugin that sees every tab.
+    let c = f.ctl.borrow_mut().open_folder("C:\\c");
+    f.ctl.borrow_mut().refresh();
+    assert!(events(&slot, "all-tabs").contains(&("opened".to_string(), c.clone())));
+    assert!(events(&slot, "no-tabs").is_empty());
+    // Nothing changed, nothing is said.
+    let n = events(&slot, "all-tabs").len();
+    f.ctl.borrow_mut().refresh();
+    assert_eq!(events(&slot, "all-tabs").len(), n);
+}
+
+#[test]
+fn a_plugin_with_tabs_lists_and_decorates_any_tab_by_its_public_id_and_its_decor_goes_when_it_stops()
+ {
+    let (f, a, b) = two_tabs();
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "badger", &["tabs", "decorate"], false);
+        plugin_with(r, "own-only", &["decorate"], false);
+    });
+    turn(&f, "badger", true);
+    turn(&f, "own-only", true);
+    bg_up(&f, &slot, "badger");
+    bg_up(&f, &slot, "own-only");
+
+    // The wide list: every tab, with its folder, agent, state and panel, by the public id, never the secret.
+    let list = bg_call(&f, &slot, "badger", 1, "tabs.list", json!({}));
+    let tabs = list["result"]["tabs"].as_array().unwrap().clone();
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(tabs[0]["id"], json!(a));
+    assert_eq!(tabs[1]["folder"], "C:\\b");
+    for t in &tabs {
+        for key in ["title", "agent", "state", "session", "panel", "active"] {
+            assert!(t.get(key).is_some(), "{key} in {t}");
+        }
+        let token = f
+            .ctl
+            .borrow()
+            .deps
+            .host
+            .manager()
+            .ctl_token(t["id"].as_str().unwrap());
+        assert_ne!(Some(t["id"].as_str().unwrap().to_string()), token);
+    }
+    // Without `tabs`, a background page lists nothing (it sits in no tab).
+    let own = bg_call(&f, &slot, "own-only", 1, "tabs.list", json!({}));
+    assert_eq!(own["result"]["tabs"], json!([]));
+
+    // A badge on tab b, with the plugin's own icon: drawn in the chip, with the plugin's name in the tooltip.
+    let set = bg_call(
+        &f,
+        &slot,
+        "badger",
+        2,
+        "tabs.badge.set",
+        json!({"tab": b, "key": "seen", "icon": "tick", "tip": "Seen"}),
+    );
+    assert!(set.get("error").is_none(), "{set}");
+    assert!(f.ctl.borrow().has_decor(&b));
+    let row = (0..f.h.comp.get_tab_rows().row_count())
+        .filter_map(|i| f.h.comp.get_tab_rows().row_data(i))
+        .find(|r| r.id.as_str() == b)
+        .unwrap();
+    assert_eq!(row.chip1_cmd.as_str(), TICK);
+    assert!(
+        row.tip.as_str().contains("Plugin badger: Seen"),
+        "{}",
+        row.tip
+    );
+    // An icon it does not declare, and a tab by its secret, are refused.
+    let bad = bg_call(
+        &f,
+        &slot,
+        "badger",
+        3,
+        "tabs.badge.set",
+        json!({"tab": b, "key": "x", "icon": "nope"}),
+    );
+    assert_eq!(bad["error"]["code"], "bad_params");
+    let secret = f.ctl.borrow().deps.host.manager().ctl_token(&b);
+    if let Some(secret) = secret {
+        let by_secret = bg_call(
+            &f,
+            &slot,
+            "badger",
+            4,
+            "tabs.badge.set",
+            json!({"tab": secret, "key": "x", "icon": "star"}),
+        );
+        assert_eq!(by_secret["error"]["code"], "no_tab");
+    }
+    // Without `tabs` a background page may name no tab, and has none of its own.
+    let named = bg_call(
+        &f,
+        &slot,
+        "own-only",
+        2,
+        "tabs.badge.set",
+        json!({"tab": a, "key": "x", "icon": "star"}),
+    );
+    assert_eq!(named["error"]["code"], "forbidden");
+    let unnamed = bg_call(
+        &f,
+        &slot,
+        "own-only",
+        3,
+        "tabs.badge.set",
+        json!({"key": "x", "icon": "star"}),
+    );
+    assert_eq!(unnamed["error"]["code"], "no_tab");
+
+    // The page ends: what the plugin drew goes with it (and comes back only if the page sets it again).
+    bg_say(
+        &slot,
+        "badger",
+        WebEvent::Gone {
+            tab: "badger".into(),
+            why: "x".into(),
+        },
+    );
+    f.pump();
+    assert!(!f.ctl.borrow().has_decor(&b));
+    // Turned off: everything it drew goes, whatever tab.
+    bg_up(&f, &slot, "badger");
+    for (n, t) in [(5, &a), (6, &b)] {
+        let r = bg_call(
+            &f,
+            &slot,
+            "badger",
+            n,
+            "tabs.progress.set",
+            json!({"tab": t, "key": "p", "value": 0.5}),
+        );
+        assert!(r.get("error").is_none(), "{r}");
+    }
+    assert!(f.ctl.borrow().has_decor(&a) && f.ctl.borrow().has_decor(&b));
+    turn(&f, "badger", false);
+    assert!(!f.ctl.borrow().has_decor(&a) && !f.ctl.borrow().has_decor(&b));
+    let _ = &w.root;
+}
+
+#[test]
+fn a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let w = world(&f, |r| {
+        plugin_with(r, "chatty", &["panel"], true);
+        sample_notes(r);
+    });
+    turn(&f, "chatty", true);
+    turn(&f, "notes", true);
+    bg_up(&f, &slot, "chatty");
+    let dropped = |f: &Fx| f.ctl.borrow().mods.as_ref().unwrap().dropped;
+    // One message far over 256 KB is dropped whole.
+    let big = format!(
+        r#"{{"t":"listen","name":"tabs","pad":"{}"}}"#,
+        "x".repeat(300 * 1024)
+    );
+    bg_message(&f, &slot, "chatty", &big);
+    assert_eq!(dropped(&f), 1);
+    // A burst of 150 from the background page and the panel together: about 100 are taken, the rest dropped.
+    let tab = page_up(&f, &w, &slot, "chatty");
+    for i in 0..150 {
+        let text = r#"{"t":"listen","name":"tabs"}"#;
+        if i % 2 == 0 {
+            bg_say(
+                &slot,
+                "chatty",
+                WebEvent::ModMessage {
+                    tab: "chatty".into(),
+                    host: modview::mod_host("chatty"),
+                    json: text.into(),
+                },
+            );
+        } else {
+            page_says(&slot, &tab, text);
+        }
+    }
+    f.pump();
+    let over = dropped(&f) - 1;
+    assert!((40..=50).contains(&over), "{over} dropped of 150");
+    // A protocol 1 mod has no such budget.
+    let before = dropped(&f);
+    turn(&f, "chatty", false);
+    let tab = page_up(&f, &w, &slot, "notes");
+    for _ in 0..150 {
+        page_says(&slot, &tab, r#"{"t":"listen","name":"tabs"}"#);
+    }
+    f.pump();
+    assert_eq!(dropped(&f), before);
+
+    // A plugin's own connection over the pipe spends the same budget, on the worker.
+    turn(&f, "chatty", true);
+    let ctx = CallContext {
+        conn: 7,
+        client: "helper".into(),
+        client_version: String::new(),
+        grant: w.hub.grant_of_mod("chatty").unwrap(),
+        tab: None,
+    };
+    let codes: Vec<String> = (0..101)
+        .map(|_| {
+            w.dispatcher
+                .call(&ctx, Method::ConvoState, json!({}))
+                .unwrap_err()
+                .code
+        })
+        .collect();
+    assert!(codes[..100].iter().all(|c| c == code::NO_TAB), "{codes:?}");
+    assert_eq!(codes[100], code::RATE_LIMITED);
+}

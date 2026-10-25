@@ -38,6 +38,7 @@ mod mods_ctl;
 mod openers;
 mod panel_ctl;
 mod picker_ctl;
+mod plugin_safe;
 mod scrollbar;
 mod sessions;
 mod settings_ctl;

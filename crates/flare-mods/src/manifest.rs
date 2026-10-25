@@ -49,6 +49,9 @@ pub const MAX_ACTIONS: usize = 8;
 /// Named icons one plugin may declare, and the longest path of one (bytes).
 pub const MAX_ICONS: usize = 32;
 pub const MAX_ICON_PATH_BYTES: usize = 2 * 1024;
+/// The most path commands one icon may have, and how far from 0 any of its numbers may be (the box is 24 units).
+pub const MAX_ICON_COMMANDS: usize = 256;
+pub const MAX_ICON_COORD: f64 = 1000.0;
 /// Arguments of the helper program, and the longest one (characters).
 pub const MAX_HELPER_ARGS: usize = 16;
 pub const MAX_HELPER_ARG_CHARS: usize = 200;
@@ -920,7 +923,72 @@ fn icon_path_problem(path: &str) -> Option<String> {
             "has {c:?}; only path commands, numbers, commas and spaces are allowed"
         ));
     }
+    let commands = path
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic() && !matches!(c, 'e' | 'E'))
+        .count();
+    if commands > MAX_ICON_COMMANDS {
+        return Some(format!(
+            "has {commands} commands; the limit is {MAX_ICON_COMMANDS}"
+        ));
+    }
+    match path_numbers(path) {
+        None => return Some("has a number that cannot be read".into()),
+        Some(nums) => {
+            if let Some(n) = nums.into_iter().find(|n| n.abs() > MAX_ICON_COORD) {
+                return Some(format!(
+                    "has the number {n}; every number is within -{MAX_ICON_COORD} to {MAX_ICON_COORD}"
+                ));
+            }
+        }
+    }
     None
+}
+
+/// The numbers of a path of the allowed characters, in order; None when one does not read as a number. A sign
+/// starts a new number, and so does a second dot (`.5.5` is two numbers, as SVG reads it).
+fn path_numbers(path: &str) -> Option<Vec<f64>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut dot = false;
+    let flush = |cur: &mut String, out: &mut Vec<f64>| -> Option<()> {
+        if !cur.is_empty() {
+            let n: f64 = cur.parse().ok()?;
+            if !n.is_finite() {
+                return None;
+            }
+            out.push(n);
+            cur.clear();
+        }
+        Some(())
+    };
+    for c in path.chars() {
+        let after_exp = cur.ends_with(['e', 'E']);
+        match c {
+            '0'..='9' => cur.push(c),
+            'e' | 'E' if !cur.is_empty() => cur.push(c),
+            '+' | '-' if after_exp => cur.push(c),
+            '+' | '-' => {
+                flush(&mut cur, &mut out)?;
+                dot = false;
+                cur.push(c);
+            }
+            '.' if dot || cur.contains(['e', 'E']) => {
+                flush(&mut cur, &mut out)?;
+                cur.push(c);
+            }
+            '.' => cur.push(c),
+            _ => {
+                flush(&mut cur, &mut out)?;
+                dot = false;
+            }
+        }
+        if c == '.' {
+            dot = true;
+        }
+    }
+    flush(&mut cur, &mut out)?;
+    Some(out)
 }
 
 /// `helper`: `{command, args?}`, and the `process` permission goes with it.
@@ -1959,6 +2027,29 @@ mod tests {
             plugin_err(|v| v["contributes"]["icons"]["check"] = big.into())
                 .contains("the limit is 2048")
         );
+        // At most 256 commands, every number within +-1000, and every number one that reads.
+        let most = format!("M0 0{}", "l1 1".repeat(MAX_ICON_COMMANDS - 1));
+        assert!(with_plugin(|v| v["contributes"]["icons"]["check"] = most.clone().into()).is_ok());
+        let more = format!("{most}z");
+        let e = plugin_err(|v| v["contributes"]["icons"]["check"] = more.into());
+        assert!(e.contains("257 commands") && e.contains("256"), "{e}");
+        for ok in ["M-1000 1000", "M1e3 0", "M.5.5-1.5-.5"] {
+            assert!(
+                with_plugin(|v| v["contributes"]["icons"]["check"] = ok.into()).is_ok(),
+                "{ok}"
+            );
+        }
+        for (bad, want) in [
+            ("M1001 0", "1001"),
+            ("M0 -2000", "-2000"),
+            ("M1e4 0", "10000"),
+            ("M0 0l1e400 0", "cannot be read"),
+            ("M1e 0", "cannot be read"),
+            ("M0 - 1", "cannot be read"),
+        ] {
+            let e = plugin_err(|v| v["contributes"]["icons"]["check"] = bad.into());
+            assert!(e.contains(want), "{bad:?}: {e}");
+        }
         assert!(
             plugin_err(|v| v["contributes"]["icons"]["check"] = 1.into())
                 .contains("must be an SVG path")

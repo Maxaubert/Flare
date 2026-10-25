@@ -298,8 +298,9 @@ keeps exactly its rules, its five permissions and its Settings rows. Sample: `..
 
 - **Where.** `<profile>\plugins\<id>\`, the same folder as a protocol 1 mod; the folder holds one of the two files.
 - **Status.** The keys below are parsed and validated, and every file they name must exist in the folder. Background
-  pages, the bar, the sidebar sections, the actions and the helper are not started yet (later phases); a plugin's tools
-  are offered only when it has a panel to answer them.
+  pages run (phase 3, see "Background pages and events" below); the bar, the sidebar sections, the actions and the
+  helper are not started yet (later phases). A plugin's tools are offered when it has a background page (which then
+  answers them) or a panel.
 
 | Field | Rule |
 |---|---|
@@ -309,7 +310,7 @@ keeps exactly its rules, its five permissions and its Settings rows. Sample: `..
 | `bar` | Optional. `{"entry": "bar.html", "height": 48}`, height 24 to 160. Goes with the `bar` permission, both ways. |
 | `contributes.sidebar` | At most 2 `{key, title}`; keys `a-z0-9-`, 1 to 24, unique. Goes with `sidebar`, both ways. |
 | `contributes.actions` | At most 8 `{key, title, icon?, where}`; `where` from `tab-menu`, `tab-hover` (one per plugin), `top-bar` (one per plugin), `session-bar` (needs a `bar`). `icon` is a built-in badge or one of `contributes.icons`. Goes with `actions`, both ways. |
-| `contributes.icons` | At most 32 `name: path`; a name not a built-in badge; the path starts with `M`/`m`, at most 2 KB, path commands, numbers, signs, dots, commas and spaces only. |
+| `contributes.icons` | At most 32 `name: path`; a name not a built-in badge; the path starts with `M`/`m`, at most 2 KB, at most 256 commands, every number within -1000 to 1000, path commands, numbers, signs, dots, commas and spaces only. |
 | `helper` | Optional. `{"command": "bin\\helper.exe", "args": []}`: an `.exe` in the folder (the entry path rules), at most 16 args of 200 characters, no control characters. Goes with `process`, both ways. |
 
 Permissions a `plugin.json` may also ask for, and the words Settings shows:
@@ -328,14 +329,47 @@ Permissions a `plugin.json` may also ask for, and the words Settings shows:
 
 In the channel each new method family has its own namespace opened by exactly its permission (`sidebar.*`,
 `actions.*`, `bar.*`, `session.*`, `tabs.input`); nothing rides on the open `tabs.list`; `network` and `process` open no
-method. `tabs` opens no method either: it is the permission that will let a call name another tab
-(`Grant::may_act_on_any_tab`), which comes with the background page phase. Until then every call, `decor.*` included,
-acts on the caller's own tab only, and naming another tab is `forbidden` whatever the plugin holds. A plugin with no
-permission still reaches only `hello` and its own-tab `tabs.list`.
+method. `tabs` opens no method either: it lets a call name another tab (`Grant::may_act_on_any_tab`) and widens
+`tabs.list` (phase 3, below). A plugin with no permission still reaches only `hello` and its own-tab `tabs.list`.
 
 The approval in `mods.json` (same file, version 1) keeps, for a plugin, `author`, `homepage`, `source` (once install
 exists) and `hash` (`sha256:` over the folder's files). A plugin whose author or homepage changes is turned off until
 the person switches it on again, as one that asks for more permissions is.
+
+## Background pages and events (plugins phase 3)
+
+Design sections 6, 10 and 13. Sample: `../../sample-plugins/browser-badge/` (a globe on every tab whose browser panel
+is open).
+
+- **The background page.** A protocol 2 plugin that is on and declares `background` gets one hidden view of it for as
+  long as it is on: in the plugins' browser and the plugin's own profile (`flare-mod-<id>`, the storage its panel
+  has), tied to no tab, never shown and never given the keyboard, sealed as a background view (no script dialog, no
+  context menu, no browser keys, no download). At most 6 such plugins are on at once; turning on a seventh is refused
+  with the reason. A page that ends (its process, its browser, a failed load) is started again at once, at most 3 times
+  in 5 minutes; the next end stops it, and Settings shows "Stopped" under its switch until it is turned off and on.
+  Every 10 seconds the host pings it (`{"t":"ping"}`, answered by the bridge itself); a ping with no answer after 10
+  seconds closes the page and counts as an end. Everything the plugin drew on tabs goes when the page ends.
+- **Turning off.** Every view of the plugin closes (its background page and its panels), its waiting calls fail and
+  its decor goes before Settings shows it off; its generation moves on, so nothing started before is applied after.
+- **Tools.** A plugin with a background page has its tools answered there (`window.flare.on('tool', ...)` in the
+  background page); no panel is opened for the call. A protocol 1 mod, and a plugin with no background page, keep the
+  panel routing of stage 8.
+- **Events.** `window.flare.on(name, fn)` takes `tool`, `tabs`, `agent` and `plugin`, one handler each per page. The
+  host hands an event to every page of the plugin that registered for it, at most 32 a page in one round (a round is
+  one window refresh, which also coalesces what changed). `tabs` is `{kind, tab}` with `kind` one of `opened`,
+  `closed`, `focused`, `renamed`, `moved`, `panel` (what the tab's panel shows changed) and `tab` the object of the wide
+  `tabs.list` (`protocol.md`). `agent` is `{tab, kind, state, session}`. A page of a plugin that holds `tabs` hears of
+  every tab; any other page only of the tab it sits in (a background page, of none). `plugin` is `{kind: "on"}`, said
+  once when the handler is registered, and `{kind: "off"}` as the plugin is turned off.
+- **Any tab.** With `tabs` a call may name any tab by its public id (`protocol.md`, section 4); without it, only its
+  own tab, and a background page none.
+- **The budget.** One limiter per plugin, shared by all its pages (and later its helper): 50 messages a second with a
+  burst of 100, 2 MB a second, and no message over 256 KB. A page's message over it is dropped before it is copied out
+  of the page; a pipe connection's call over it answers `rate_limited`. Decor is 30 changes a second per plugin across
+  its tabs, on top of 10 per tab. Protocol 1 mods keep the limits they had.
+- **Safe mode.** Two starts in a row that end without closing properly while plugins are on make the next start keep
+  every plugin off, with a row at the top of Settings > Plugins; `--no-plugins` and Shift held at launch do the same for
+  one start. The switches are untouched: the start after has them back. The record is `<profile>\plugins-run.json`.
 
 ## Tab bar and sidebar contributions (review 2026-10-25)
 

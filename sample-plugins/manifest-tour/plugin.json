@@ -21,7 +21,7 @@
   "tools": [
     {
       "name": "add_item",
-      "description": "Adds one line to the Tour panel's list. Use it to try a protocol 2 plugin's tool.",
+      "description": "Adds one line to the Tour's list, kept by its background page. Use it to try a protocol 2 plugin's tool.",
       "input_schema": {
         "type": "object",
         "properties": { "text": { "type": "string", "description": "The line to add, 1 to 200 characters." } },

@@ -82,6 +82,8 @@ pub struct Args {
     pub e2e: bool,
     /// `--no-import`: the first-run import from Prism Terminal does not run this start.
     pub no_import: bool,
+    /// `--no-plugins`: every plugin stays off this start (safe mode); the switches are back the next start.
+    pub no_plugins: bool,
     /// `--scene <name>`: a headless scene for the screenshots.
     pub scene: Option<String>,
     /// `--live-tabs <n>`: how many live tabs a scene shows.
@@ -121,6 +123,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
         user_data_dir: None,
         e2e: false,
         no_import: false,
+        no_plugins: false,
         scene: None,
         live_tabs: None,
         instance_probe: false,
@@ -161,6 +164,7 @@ pub fn parse_args(args: &[String], env_renderer: Option<&str>) -> Result<Args, S
             "--live-shell" => out.live_shell = Some(value(args, &mut i, flag)?.to_string()),
             "--e2e" => out.e2e = true,
             "--no-import" => out.no_import = true,
+            "--no-plugins" => out.no_plugins = true,
             "--instance-probe" => out.instance_probe = true,
             "--preview-update" => out.preview_update = true,
             "--scene" => out.scene = Some(value(args, &mut i, flag)?.to_string()),
@@ -453,6 +457,8 @@ mod tests {
         assert!(!parse_args(&a(&[]), None).unwrap().no_import);
         assert!(parse_args(&a(&["--no-import"]), None).unwrap().no_import);
         assert!(parse_args(&a(&["--no-import=yes"]), None).is_err());
+        assert!(parse_args(&a(&["--no-plugins"]), None).unwrap().no_plugins);
+        assert!(!parse_args(&a(&[]), None).unwrap().no_plugins);
     }
 
     #[test]

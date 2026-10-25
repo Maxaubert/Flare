@@ -110,6 +110,9 @@ pub struct HostConfig {
     /// The e2e's seam only: do not add the peer-connection script to a mini-app, so the browser-level
     /// walls (the WebRTC policy and the dead proxy) can be tested on their own.
     pub without_webrtc_script: bool,
+    /// The plugins' budgets (design 13): a message from a plugin's page that is over its budget is dropped before
+    /// it is copied out of the page. None: no plugin is limited (a run with no mods).
+    pub limits: Option<Arc<flare_mods::limit::Limits>>,
 }
 
 /// Which browser a view runs in. A mini-app never shares a browser with the web panel, and an app with
@@ -241,6 +244,7 @@ pub struct WebHost {
     runtime: RuntimeCheck,
     virtual_hosts: Vec<(String, PathBuf)>,
     without_webrtc_script: bool,
+    limits: Option<Arc<flare_mods::limit::Limits>>,
     state: State,
     inbox: Rc<RefCell<VecDeque<Inbound>>>,
     filter: Rc<RefCell<Option<KeyFilter>>>,
@@ -358,6 +362,7 @@ impl WebHost {
             runtime: cfg.runtime,
             virtual_hosts: cfg.virtual_hosts,
             without_webrtc_script: cfg.without_webrtc_script,
+            limits: cfg.limits,
             state: State {
                 envs: HashMap::new(),
                 views: HashMap::new(),
@@ -1179,8 +1184,29 @@ impl WebHost {
         // A mod's page talks to the host over web messages, from its own address only.
         if module {
             let (sink, host) = (ViewSink::new(&self.sink, slot), app.host.clone());
+            let (limits, id) = (
+                self.limits.clone(),
+                app.module.as_ref().map(|m| m.id.clone()),
+            );
             let h = WebMessageReceivedEventHandler::create(Box::new(move |_w, args| {
                 let Some(args) = args else { return Ok(()) };
+                // A plugin's pages share one budget (protocol 1 mods have none): a message over it is dropped
+                // here, before it is copied out of the page. The window spends what it takes.
+                let limiter = limits
+                    .as_ref()
+                    .zip(id.as_deref())
+                    .and_then(|(l, id)| l.of(id));
+                if limiter
+                    .as_ref()
+                    .is_some_and(|l| !l.has_room(std::time::Instant::now()))
+                {
+                    return Ok(());
+                }
+                let cap = if limiter.is_some() {
+                    flare_mods::limit::MAX_MESSAGE
+                } else {
+                    MAX_PAGE_MESSAGE
+                };
                 // SAFETY: `args` is the live argument of this callback.
                 let (source, text) = unsafe {
                     (
@@ -1188,10 +1214,7 @@ impl WebHost {
                         get_string(|p| args.TryGetWebMessageAsString(p)),
                     )
                 };
-                if modview::nav_allowed(&source, &host)
-                    && !text.is_empty()
-                    && text.len() <= MAX_PAGE_MESSAGE
-                {
+                if modview::nav_allowed(&source, &host) && !text.is_empty() && text.len() <= cap {
                     sink.send(|tab| WebEvent::ModMessage {
                         tab,
                         host: host.clone(),

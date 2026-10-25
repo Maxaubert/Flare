@@ -14,8 +14,8 @@ implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks
 (`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
 `tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
 list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
-for the agent's own tab. Each method below says which stage owns its behaviour; the names, params and
-grants are fixed now.
+for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
+`tabs.list`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -182,8 +182,11 @@ same user, so a process that can read another process's environment can still re
 keeps unrelated processes of the user (a script, a browser tab, another app) from acting as a tab, and
 keeps the tab's identity out of anything that only sees `tabs.list`. A method acts only on the
 connection's own tab (`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants
-alike. The decor methods take an optional `tab`, and it must be the connection's own id (else `forbidden`):
-decorating another tab is for the `tabs` permission of a later plugin phase.
+alike, with one exception (plugins phase 3): the decor methods and `panel.open` kind `mod:<own id>` take an
+optional `tab`, the public id `tabs.list` gives. The connection's own id is always allowed; another one only for a
+plugin that holds `tabs` (`Grant::may_act_on_any_tab`), else `forbidden`. A plugin's background page sits in no tab,
+so without `tabs` it can name none (`forbidden`) and with it, it must name one (`no_tab` otherwise). A secret given as
+`tab` is no tab's id (`no_tab`).
 
 | Method | agent | mod needs | ui |
 |---|---|---|---|
@@ -193,7 +196,7 @@ decorating another tab is for the `tabs` permission of a later plugin phase.
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
-| `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE`) | yes |
+| `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -258,14 +261,23 @@ only: never screen content (S3). The agent grant gets **its own tab only** (an e
 connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel` permission no longer widens it). `title` is the label the
 tab strip shows, `active` is "in front". Stage 2.
 
+A plugin that holds `tabs` (plugins phase 3) gets every shell tab, in strip order, with more:
+`{"id", "title", "folder", "active", "agent": "claude"|"codex"|null, "state": "working"|"question"|"done"|"failed"|"idle",
+"session": string|null, "panel": string|null}`. `panel` is what the tab's open panel shows: `browser` for the web
+panel, else its kind (`image`, `text`, `changes`, `tasks`, `app`, `mod:<id>`), null when none is open. The same object
+is the `tab` of every `tabs` event a plugin page hears (`mods.md`, "Background pages and events").
+
 ### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
 
 What a caller draws on its own tab: badges (small glyphs) and one progress, in an outlined chip Flare draws before the
 tab's end (strip) or left of its ring (sidebar row). Never at the tab's foot, where the agent's bar mark is; nothing in
-it moves. Namespace `Decor` (prefix `tabs`), permission `decorate`; the agent holds it, a mod cannot ask for it yet.
-Every param is checked on the channel's worker, and each change is spent from a limit of 10 a second per tab and caller
-before the window hears of it (more answer `rate_limited`). The words: `flare_ctl::decor`; the model:
-`flare_tabs::decor`.
+it moves. Namespace `Decor` (prefix `tabs`), permission `decorate`; the agent holds it, a protocol 1 mod cannot ask for
+it, a plugin can (phase 3: its pieces are its own source, `plugin:<id>`, and with `tabs` it may name any tab). Every
+param is checked on the channel's worker, and each change is spent from a limit of 10 a second per tab and caller, and
+for a plugin also 30 a second across all its tabs, before the window hears of it (more answer `rate_limited`). A
+plugin's badge `icon` may also be one of its own `contributes.icons`, drawn in the chip's one colour like a built-in;
+its tooltip lines start with the plugin's name. Everything a plugin drew goes when it is turned off and when its
+background page ends. The words: `flare_ctl::decor`; the model: `flare_tabs::decor`.
 
 | Method | Params | Result |
 |---|---|---|
@@ -599,7 +611,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
-| `rate_limited` | too many requests (the connection's 100 a second, or a decor method's 10 a second per tab) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be

@@ -9,7 +9,17 @@
 //!   mod's grant HERE (the page never holds a token: the host looks the mod's live grant up, so a mod that was
 //!   turned off is refused at once), then run through the same dispatcher a pipe connection uses, on a worker,
 //!   with the tab the mod's panel sits in. `window.flare.respond` answers a tool call through the hub.
-//! - **Which tab.** A mod acts on ONE tab: the tab whose panel shows its page. No call names a tab.
+//! - **Which tab.** A mod acts on ONE tab: the tab whose panel shows its page. A plugin that holds `tabs` may name
+//!   any tab in a call (the dispatcher decides, `Grant::may_act_on_any_tab`); its background page has no tab of
+//!   its own, so it names one or acts on none.
+//! - **Background pages** (plugins phase 3). A protocol 2 plugin that is on and declares `background` has one
+//!   hidden page, tied to no tab, for as long as it is on. This controller keeps which ones run, the restarts of
+//!   each (3 in 5 minutes, then it is stopped and Settings says so) and the ping that tells a hung page from a
+//!   quiet one; the window opens and closes the views.
+//! - **Events.** A page says which events it listens to (`window.flare.on`); the window hands each event to every
+//!   page of the plugin that listens and may see it ([`ModCtl::listeners`]).
+//! - **The budget.** A plugin's pages share one limiter (`flare_mods::limit`): each message is spent here, as it
+//!   is handed over, and one over the budget is dropped unread.
 //! - **Which page.** Pages are kept by slot (`flare_surfaces::slot`): a tab's panel today, and later a bar
 //!   beside a tab or a plugin's background page. A method that is given a bare tab id means that tab's panel.
 //!   A call from a background page has no tab of its own.
@@ -18,9 +28,10 @@
 //!
 //! Nothing here blocks the UI thread: scans, saves and calls run on workers and come back as `UiMsg::Mods`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use flare_ctl::{CallContext, Dispatcher, Method, Namespace, code};
 use flare_mods::bridge::{self, PageMsg};
@@ -33,6 +44,15 @@ use crate::appctl::{Post, UiMsg};
 
 /// Calls from one mod's page running at once.
 pub const MAX_PAGE_CALLS: usize = 16;
+/// How often a background page is pinged, and how long it has to answer before it counts as dead (design 13).
+pub const PING_EVERY: Duration = Duration::from_secs(10);
+/// A background page is started again at most this many times in [`RESTART_WINDOW`]; the next death stops it.
+pub const MAX_RESTARTS: usize = 3;
+pub const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// The sentence Settings shows for a background page that ended too often.
+pub const STOPPED_CRASHED: &str = "Stopped: its background page ended again after 3 restarts in 5 minutes. Turn it off and on to start it again.";
+/// The sentence for a plugin past the cap of background pages (only a switch file edited by hand gets there).
+pub const STOPPED_CAP: &str = "Not started: at most 6 plugins with a background page run at once. Turn another one off first.";
 
 /// What a worker or the Settings page says to the mods controller (carried by `UiMsg::Mods`).
 pub enum ModsMsg {
@@ -64,6 +84,8 @@ pub enum ModsMsg {
     },
     /// Settings: show the mod's panel in the most recent shell tab.
     ShowPanel { id: String },
+    /// The ping timer (every [`PING_EVERY`] while a background page runs).
+    Tick,
 }
 
 /// A `ModsMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never a call's data.
@@ -78,6 +100,7 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Rescan => "ModsMsg::Rescan",
             ModsMsg::SetEnabled { .. } => "ModsMsg::SetEnabled",
             ModsMsg::ShowPanel { .. } => "ModsMsg::ShowPanel",
+            ModsMsg::Tick => "ModsMsg::Tick",
         })
     }
 }
@@ -96,6 +119,23 @@ struct ModPage {
     /// Which document this is: it changes whenever the page begins to load, so a reply meant for an older
     /// document is never given to a newer one.
     generation: u64,
+    /// The events the document listens to (`window.flare.on`), besides `tool`.
+    listens: BTreeSet<String>,
+}
+
+/// A background page that runs.
+#[derive(Debug, Default)]
+struct BgRun {
+    /// The ping sent and not answered yet: its id and when.
+    ping: Option<(u64, Instant)>,
+}
+
+/// What the ping timer found: the pages to ping now (with the message), and the ones that did not answer the last
+/// ping in time.
+#[derive(Debug, Default, PartialEq)]
+pub struct PingRound {
+    pub ping: Vec<(String, String)>,
+    pub silent: Vec<String>,
 }
 
 /// The mods controller (UI thread).
@@ -115,6 +155,19 @@ pub struct ModCtl {
     pub save_error: Arc<Mutex<Option<String>>>,
     /// Scans finished (the tests and the probe read it).
     pub scans: u64,
+    /// The background pages that run, by plugin.
+    bg: HashMap<String, BgRun>,
+    /// When each plugin's background page was started again after it ended (the restart policy), by plugin. Kept
+    /// while the page is stopped; forgotten when the plugin is switched.
+    restarts: HashMap<String, Vec<Instant>>,
+    /// Source of ping ids.
+    ping_seq: u64,
+    /// Messages dropped because a plugin was over its budget (the tests and the probe read it).
+    pub dropped: u64,
+    /// Safe mode's record of this run (`plugin_safe`), told once a plugin is on; None writes nothing (tests, e2e).
+    run_record: Option<std::path::PathBuf>,
+    /// The record was told already.
+    record_told: bool,
 }
 
 impl ModCtl {
@@ -130,6 +183,34 @@ impl ModCtl {
             rescan: false,
             save_error: Arc::new(Mutex::new(None)),
             scans: 0,
+            bg: HashMap::new(),
+            restarts: HashMap::new(),
+            ping_seq: 0,
+            dropped: 0,
+            run_record: None,
+            record_told: false,
+        }
+    }
+
+    /// Where this run's record for safe mode is (`plugin_safe`).
+    pub fn set_run_record(&mut self, file: Option<std::path::PathBuf>) {
+        self.run_record = file;
+    }
+
+    /// A plugin is on in this run: safe mode's record is told so, once, on a worker.
+    pub fn note_plugins_on(&mut self) {
+        if self.record_told || self.hub.snapshot().mods.iter().all(|m| !m.enabled) {
+            return;
+        }
+        self.record_told = true;
+        let Some(file) = self.run_record.clone() else {
+            return;
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("flare-plugins-record".into())
+            .spawn(move || crate::plugin_safe::plugins_on(&file))
+        {
+            log::debug!("the plugins' run record was not told: {e}");
         }
     }
 
@@ -255,6 +336,7 @@ impl ModCtl {
             t.ready = false;
             t.queue.clear();
             t.generation = generation;
+            t.listens.clear();
         }
     }
 
@@ -273,6 +355,8 @@ impl ModCtl {
                 t.ready = ready;
                 if !ready {
                     t.generation = generation;
+                    // A new document registers its own handlers.
+                    t.listens.clear();
                 }
                 if ready {
                     // A tool call whose caller gave up while the page was not ready (timed out, cancelled, failed)
@@ -339,12 +423,115 @@ impl ModCtl {
         self.inflight.get(mod_id).copied().unwrap_or(0)
     }
 
+    /// The pages that listen to the event `name` (`tool` is never one: tool calls go to the page that answers),
+    /// with their plugin, in slot order.
+    pub fn listeners(&self, name: &str) -> Vec<(Slot, String)> {
+        let mut v: Vec<(Slot, String)> = self
+            .pages
+            .iter()
+            .filter(|(_, p)| p.listens.contains(name))
+            .map(|(s, p)| (s.clone(), p.mod_id.clone()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Whether any page listens to one of `names`.
+    pub fn any_listens(&self, names: &[&str]) -> bool {
+        self.pages
+            .values()
+            .any(|p| names.iter().any(|n| p.listens.contains(*n)))
+    }
+
+    // ---- background pages ---------------------------------------------------------------------------------------
+
+    /// The plugins whose background page runs, sorted.
+    pub fn backgrounds(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.bg.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    pub fn bg_running(&self, id: &str) -> bool {
+        self.bg.contains_key(id)
+    }
+
+    /// The window opened the plugin's background page: its slot shows the plugin from now on.
+    pub fn bg_started(&mut self, id: &str) {
+        self.bg.insert(id.to_string(), BgRun::default());
+        self.bind(Slot::background(id), id);
+    }
+
+    /// The plugin's background page is closed (turned off, stopped, or ended): its slot shows nothing.
+    pub fn bg_ended(&mut self, id: &str) {
+        self.bg.remove(id);
+        self.unbind(Slot::background(id));
+    }
+
+    /// The plugin was switched: its restarts are forgotten, so a page that was stopped may run again.
+    pub fn bg_forget(&mut self, id: &str) {
+        self.restarts.remove(id);
+    }
+
+    /// The plugin's background page ended on its own (its process, a failed load, no answer to a ping): true when
+    /// it may be started again, false when it ended too often ([`MAX_RESTARTS`] restarts in [`RESTART_WINDOW`]) and
+    /// is to stay stopped. The page is let go either way.
+    pub fn bg_crashed(&mut self, id: &str, now: Instant) -> bool {
+        self.bg_ended(id);
+        let times = self.restarts.entry(id.to_string()).or_default();
+        times.retain(|t| now.saturating_duration_since(*t) < RESTART_WINDOW);
+        if times.len() >= MAX_RESTARTS {
+            return false;
+        }
+        times.push(now);
+        true
+    }
+
+    /// The ping timer: every running background page that is ready is pinged, unless the ping sent before is still
+    /// unanswered after [`PING_EVERY`] (then the page counts as dead and is in `silent`).
+    pub fn ping_round(&mut self, now: Instant) -> PingRound {
+        let mut round = PingRound::default();
+        for id in self.backgrounds() {
+            let ready = self.is_ready(Slot::background(&id));
+            let Some(run) = self.bg.get_mut(&id) else {
+                continue;
+            };
+            match run.ping {
+                Some((_, sent)) if now.saturating_duration_since(sent) >= PING_EVERY => {
+                    round.silent.push(id);
+                }
+                Some(_) => {}
+                None if ready => {
+                    self.ping_seq += 1;
+                    run.ping = Some((self.ping_seq, now));
+                    round.ping.push((id, bridge::ping_message(self.ping_seq)));
+                }
+                None => {}
+            }
+        }
+        round
+    }
+
+    /// Whether a ping is waiting for the plugin's background page to answer (tests).
+    #[cfg(test)]
+    pub fn ping_waiting(&self, id: &str) -> bool {
+        self.bg.get(id).is_some_and(|r| r.ping.is_some())
+    }
+
     /// A message the page of `slot` (a bare tab: its panel) posted. Returns the message to post back to the
     /// page at once (an answer, or the reason for a refusal); a call that is allowed runs on a worker and
     /// answers later. A message from a slot that shows no mod's page is ignored.
     pub fn on_page_message(&mut self, slot: impl Into<Slot>, text: &str) -> Option<String> {
         let slot = slot.into();
         let mod_id = self.pages.get(&slot)?.mod_id.clone();
+        // A plugin's pages spend one budget; a message over it is dropped unread (protocol 1 mods have none).
+        if let Some(limiter) = self.hub.limits().of(&mod_id)
+            && let Err(over) = limiter.admit(text.len(), Instant::now())
+        {
+            self.dropped += 1;
+            log::debug!("a message of plugin {mod_id} was dropped: {}", over.why());
+            return None;
+        }
         let msg = match bridge::parse_page_message(text) {
             Ok(m) => m,
             Err(why) => {
@@ -369,6 +556,26 @@ impl ModCtl {
             }
             PageMsg::Call { id, method, params } => {
                 self.page_call(&slot, &mod_id, id, &method, params)
+            }
+            PageMsg::Listen { name } => {
+                let page = self.pages.get_mut(&slot)?;
+                page.listens.insert(name.clone());
+                // A page that listens to `plugin` hears at once that the plugin is on: it is, or the page would
+                // not exist.
+                (name == "plugin")
+                    .then(|| bridge::event_message("plugin", &serde_json::json!({"kind": "on"})))
+            }
+            PageMsg::Pong { id } => {
+                if let Some(run) = slot
+                    .tab()
+                    .is_none()
+                    .then(|| self.bg.get_mut(&slot.owner))
+                    .flatten()
+                    && run.ping.is_some_and(|(p, _)| p == id)
+                {
+                    run.ping = None;
+                }
+                None
             }
         }
     }
@@ -498,6 +705,7 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
                     description: m.description,
                     enabled: m.enabled,
                     needs_approval: m.needs_approval,
+                    stopped: m.stopped,
                 }
             })
             .collect(),
@@ -510,6 +718,7 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
             })
             .collect(),
         notes: s.notes,
+        safe_mode: s.safe_mode,
         save_error: save_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     }
 }

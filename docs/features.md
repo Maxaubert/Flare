@@ -1445,6 +1445,47 @@ run".
 - **e2e.** `modsSample` copies the sample into the profile's `plugins\` and checks the `plugins-folder` row; its other
   expectations are unchanged.
 
+## Plugins phase 3: background pages, events, any tab, decor for plugins, 2026-10-25
+
+The third phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.1, 6, 10 and 13). The
+contract: `docs/surfaces/mods.md`, "Background pages and events", and `docs/surfaces/protocol.md` (the tab scope, the
+wide `tabs.list`, decor for plugins).
+
+- **Background pages.** A protocol 2 plugin that is on and has `background` gets a hidden view of it, tied to no tab,
+  in the plugins' browser and its own profile, sealed as a background view and never focused (`WebCtl::open_background`,
+  `AppCtl::sync_backgrounds`); at most 6 on at once (the seventh switch is refused with the reason); 3 restarts in 5
+  minutes, then "Stopped" under its switch in Settings; a 10 s ping with no answer is an end; safe mode after two
+  unclean starts in a row with plugins on, or `--no-plugins`, or Shift at launch (`plugin_safe`). Tests:
+  `appctl::tests::mods_tests` (`a_plugin_with_a_background_page_gets_one_hidden_sealed_view_tied_to_no_tab_while_it_is_on`,
+  `a_background_page_that_ends_is_started_again_three_times_in_five_minutes_then_stays_stopped`,
+  `a_background_page_that_does_not_answer_the_ping_in_ten_seconds_is_closed_and_counts_as_ended`),
+  `flare_mods::hub` (the cap, the generation, safe mode, stopped), `plugin_safe` (2), `flare_settings::page::mods`
+  (`a_stopped_background_page_and_safe_mode_are_said_in_warning_rows`), `config` (`--no-plugins`).
+- **Tools in the background page.** A plugin with a background page answers its tools there; no panel opens. Protocol 1
+  and plugins without one keep the panel routing (the e2e `modsSample` is unchanged). Tests:
+  `a_tool_of_a_plugin_with_a_background_page_is_answered_there_and_no_panel_opens`,
+  `flare_mods::hub::tools_of_a_plugin_with_a_background_page_are_answered_by_it`.
+- **Events.** The bridge's `on()` takes `tool`, `tabs`, `agent` and `plugin`, and answers the host's ping itself; after
+  each refresh the window compares the tabs with what the plugins last heard (`tab_events`: opened, closed, focused,
+  renamed, moved, panel, and agent kind, state and session) and hands each change to the pages that listen and may see
+  the tab, at most 32 a page a round. Tests: `flare_mods::bridge` (2 new), `tab_events_say_what_changed_and_only_that`,
+  `events_reach_every_page_that_listens_and_may_see_the_tab`.
+- **Any tab, decor and the wide list.** With `tabs` a call names any tab by its public id (never a secret); a background
+  page needs `tabs` to name one. Plugins decorate as `plugin:<id>`, with their own `contributes.icons` (at most 256
+  commands, numbers within +-1000) drawn in the chip, one badge drawn per plugin per tab, 30 changes a second per plugin;
+  everything a plugin drew goes when it is turned off or its background page ends. Tests: `ctl_app` (4 new: the scope,
+  the 30 a second, the wide list, the own panel on a named tab),
+  `a_plugin_with_tabs_lists_and_decorates_any_tab_by_its_public_id_and_its_decor_goes_when_it_stops`,
+  `tabs_ui::a_plugins_badge_draws_its_own_icon_and_says_its_name`, `flare_tabs::decor` (2 new),
+  `flare_mods::manifest` (the icon limits).
+- **The budget.** `flare_mods::limit`: one limiter per plugin shared by its pages, 50 messages a second (burst 100), 2 MB a
+  second, 256 KB a message; the browser glue drops a page's message over it before copying it, the window spends it, a
+  pipe connection spends it in the dispatcher. Tests: `flare_mods::limit` (4),
+  `a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread`.
+- **Sample.** `sample-plugins/browser-badge` (a background page: a globe on a tab while its browser panel is open);
+  `manifest-tour`'s background page now answers `add_item`. Both load as valid in
+  `flare_mods::discover::tests::the_sample_plugins_are_valid`.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,

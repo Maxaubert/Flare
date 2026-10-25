@@ -1,0 +1,11 @@
+{
+  "id": "browser-badge",
+  "name": "Browser badge",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "Puts a globe on a tab while that tab's browser panel is open, and takes it off when the panel closes.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/browser-badge",
+  "permissions": ["tabs", "decorate"],
+  "background": "background.html"
+}

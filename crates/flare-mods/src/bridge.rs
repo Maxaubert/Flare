@@ -9,6 +9,9 @@
 //!   `{"t":"respond","call_id":"c1","result":<any>}` or `{"t":"respond","call_id":"c1","error":"why"}`;
 //! - host to page: `{"t":"reply","id":<n>,"result":<any>}` or `{"t":"reply","id":<n>,"error":{"code","message"}}`
 //!   and `{"t":"tool","callId":"c1","tool":"append_note","input":{...}}`.
+//! - plugins (phase 3): the page says which events it listens to, `{"t":"listen","name":"tabs"}`, the host hands
+//!   it `{"t":"event","name":"tabs","data":{...}}`, and the host's `{"t":"ping","id":<n>}` is answered by the
+//!   bridge itself with `{"t":"pong","id":<n>}` (a background page that stops answering is closed).
 //!
 //! Everything the page sends is untrusted: [`parse_page_message`] checks the shape and the size before the host
 //! looks at a method name.
@@ -28,7 +31,8 @@ pub const BRIDGE_JS: &str = r#"(function () {
   if (window.flare) { return; }
   var wv = window.chrome && window.chrome.webview;
   if (!wv) { return; }
-  var handler = null;
+  var names = ['tool', 'tabs', 'agent', 'plugin'];
+  var handlers = {};
   var seq = 0;
   var waiting = new Map();
   function send(o) { wv.postMessage(JSON.stringify(o)); }
@@ -43,6 +47,7 @@ pub const BRIDGE_JS: &str = r#"(function () {
       if (m.error) { p.reject(m.error); } else { p.resolve(m.result); }
     } else if (m.t === 'tool') {
       var id = String(m.callId);
+      var handler = handlers.tool;
       if (!handler) {
         send({ t: 'respond', call_id: id, error: 'the mod is not listening for tool calls' });
         return;
@@ -52,14 +57,21 @@ pub const BRIDGE_JS: &str = r#"(function () {
       } catch (x) {
         send({ t: 'respond', call_id: id, error: 'the tool handler threw: ' + String((x && x.message) || x) });
       }
+    } else if (m.t === 'event') {
+      var fn = names.indexOf(m.name) > 0 ? handlers[m.name] : null;
+      if (!fn) { return; }
+      try { fn(m.data); } catch (x) { if (window.console) { console.error(x); } }
+    } else if (m.t === 'ping') {
+      send({ t: 'pong', id: m.id });
     }
   });
   var flare = {
     on: function (name, fn) {
-      if (name !== 'tool') { throw new TypeError("window.flare.on: the only event is 'tool'"); }
+      if (names.indexOf(name) < 0) { throw new TypeError("window.flare.on: the events are 'tool', 'tabs', 'agent' and 'plugin'"); }
       if (typeof fn !== 'function') { throw new TypeError('window.flare.on: the handler must be a function'); }
-      if (handler) { throw new Error("window.flare.on: a 'tool' handler is already registered"); }
-      handler = fn;
+      if (handlers[name]) { throw new Error("window.flare.on: a '" + name + "' handler is already registered"); }
+      handlers[name] = fn;
+      if (name !== 'tool') { send({ t: 'listen', name: name }); }
     },
     respond: function (callId, result, error) {
       if (typeof callId !== 'string' || !callId) { throw new TypeError('window.flare.respond: callId must be the call\'s callId'); }
@@ -92,6 +104,9 @@ pub const BRIDGE_JS: &str = r#"(function () {
   Object.defineProperty(window, 'flare', { value: Object.freeze(flare), writable: false, configurable: false, enumerable: true });
 })();"#;
 
+/// The events a page may listen to besides `tool` (plugins phase 3), each with one handler per page.
+pub const EVENTS: [&str; 3] = ["tabs", "agent", "plugin"];
+
 /// What the page sent.
 #[derive(Debug, PartialEq)]
 pub enum PageMsg {
@@ -106,6 +121,10 @@ pub enum PageMsg {
         call_id: String,
         outcome: Result<Value, String>,
     },
+    /// `window.flare.on(name, fn)` for an event other than `tool`: the page listens to `name` (one of [`EVENTS`]).
+    Listen { name: String },
+    /// The bridge's answer to the host's ping.
+    Pong { id: u64 },
 }
 
 /// Reads a message from the page. The reason is one sentence, for the page's own console.
@@ -150,7 +169,24 @@ pub fn parse_page_message(text: &str) -> Result<PageMsg, String> {
             };
             Ok(PageMsg::Respond { call_id, outcome })
         }
-        _ => Err("the message type is not call or respond".into()),
+        Some("listen") => {
+            let name = obj
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| EVENTS.contains(n))
+                .ok_or_else(|| "a page listens to tabs, agent or plugin".to_string())?;
+            Ok(PageMsg::Listen {
+                name: name.to_string(),
+            })
+        }
+        Some("pong") => {
+            let id = obj
+                .get("id")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "a pong needs the ping's id".to_string())?;
+            Ok(PageMsg::Pong { id })
+        }
+        _ => Err("the message type is not call, respond, listen or pong".into()),
     }
 }
 
@@ -167,6 +203,16 @@ pub fn reply_err(id: u64, code: &str, message: &str) -> String {
 /// The event that hands the agent's tool call to the page.
 pub fn tool_event(call_id: &str, tool: &str, input: &Value) -> String {
     json!({"t": "tool", "callId": call_id, "tool": tool, "input": input}).to_string()
+}
+
+/// An event for a page that listens to `name` (one of [`EVENTS`]).
+pub fn event_message(name: &str, data: &Value) -> String {
+    json!({"t": "event", "name": name, "data": data}).to_string()
+}
+
+/// The host's ping; the bridge answers it with a pong of the same id.
+pub fn ping_message(id: u64) -> String {
+    json!({"t": "ping", "id": id}).to_string()
 }
 
 #[cfg(test)]
@@ -212,6 +258,43 @@ mod tests {
                 outcome: Err("no".into())
             }
         );
+    }
+
+    #[test]
+    fn a_listen_names_one_of_the_events_and_a_pong_its_ping() {
+        for name in EVENTS {
+            let m = parse_page_message(&format!(r#"{{"t":"listen","name":"{name}"}}"#)).unwrap();
+            assert_eq!(m, PageMsg::Listen { name: name.into() });
+        }
+        for bad in [
+            r#"{"t":"listen","name":"tool"}"#,
+            r#"{"t":"listen","name":"session"}"#,
+            r#"{"t":"listen"}"#,
+            r#"{"t":"pong"}"#,
+            r#"{"t":"pong","id":"1"}"#,
+        ] {
+            assert!(parse_page_message(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_page_message(r#"{"t":"pong","id":4}"#).unwrap(),
+            PageMsg::Pong { id: 4 }
+        );
+        let e: Value =
+            serde_json::from_str(&event_message("tabs", &json!({"kind": "opened"}))).unwrap();
+        assert_eq!(
+            e,
+            json!({"t":"event","name":"tabs","data":{"kind":"opened"}})
+        );
+        let p: Value = serde_json::from_str(&ping_message(9)).unwrap();
+        assert_eq!(p, json!({"t":"ping","id":9}));
+    }
+
+    #[test]
+    fn the_script_takes_one_handler_per_event_and_answers_a_ping_itself() {
+        assert!(BRIDGE_JS.contains("['tool', 'tabs', 'agent', 'plugin']"));
+        assert!(BRIDGE_JS.contains("t: 'listen'"));
+        assert!(BRIDGE_JS.contains("t: 'pong'"));
+        assert!(BRIDGE_JS.contains("is already registered"));
     }
 
     #[test]
