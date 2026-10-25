@@ -532,7 +532,8 @@ line of each item.
   same probe in an ordinary panel as the control (it must hear packets, or silence proves nothing). *Electron:* check the policy with the
   same kind of socket, not by reading the setting back.
 - **Two environments cannot share a user data folder if their arguments differ, and an environment is a whole browser.** One folder per
-  kind (`WebView2-app-sealed`, `WebView2-app-net`), made lazily, closed with the last view of that kind. A swap to the same kind must
+  kind (`WebView2-mini-sealed`, `WebView2-app-net`, and the plugins' `WebView2-app-sealed`, a name kept from when mods
+  shared the mini-apps' browser because their profiles live in it), made lazily, closed with the last view of that kind. A swap to the same kind must
   keep the browser (the e2e compares the process id); a swap to another kind drops the idle one.
 - **A request filter that is not told the source kinds sees only the document's requests.** Use the all-sources variant where
   the runtime has it, and test a srcdoc frame and a blob worker, not one main-frame fetch.

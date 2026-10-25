@@ -18,6 +18,7 @@ use flare_mods::bridge;
 use flare_mods::hub::{Change, Hub};
 use flare_surfaces::app::AppSpec;
 use flare_surfaces::modview;
+use flare_surfaces::slot::Slot;
 use serde_json::{Value, json};
 
 use super::{AppCtl, UiMsg};
@@ -88,7 +89,7 @@ impl AppCtl {
                 self.settings_changed();
             }
             ModsMsg::Reply {
-                tab,
+                slot,
                 mod_id,
                 generation,
                 json,
@@ -97,14 +98,15 @@ impl AppCtl {
                     Some(c) => {
                         c.call_done(&mod_id);
                         // Call ids restart in every document: a reply for an older one is nobody's.
-                        c.mod_of(&tab) == Some(mod_id.as_str())
-                            && c.generation(&tab) == Some(generation)
+                        c.mod_of(&slot) == Some(mod_id.as_str())
+                            && c.generation(&slot) == Some(generation)
                     }
                     None => false,
                 };
                 // The page that asked may be gone (its panel closed, the mod turned off): then nobody listens.
-                if live {
-                    self.web.post_message(&tab, &json);
+                // Only a tab's panel has a page so far (a bar or a background page comes with its phase).
+                if live && slot.is_panel() {
+                    self.web.post_message(&slot.owner, &json);
                 }
             }
             ModsMsg::Rescan => {
@@ -160,10 +162,11 @@ impl AppCtl {
     /// to answer with, so the calls waiting on that mod fail (unless another tab still shows it).
     pub(super) fn sync_mods(&mut self) {
         let Some(m) = self.mods.as_mut() else { return };
-        for (tab, id) in m.bound() {
-            if self.panels.mod_of(&tab) != Some(id.as_str()) {
-                m.unbind(&tab);
-                if m.tabs_of(&id).is_empty() {
+        for (slot, id) in m.bound() {
+            // A tab's panel is the only slot with a page so far; the panels say which mod each one shows.
+            if slot.is_panel() && self.panels.mod_of(&slot.owner) != Some(id.as_str()) {
+                m.unbind(&slot);
+                if m.slots_of(&id).is_empty() {
                     m.fail_calls(&id, "the mod's panel was closed before it answered");
                 }
             }
@@ -208,7 +211,7 @@ impl AppCtl {
                         let queued = m.set_ready(&tab, ready);
                         if reload
                             && let Some(id) = m.mod_of(&tab).map(str::to_string)
-                            && m.tabs_of(&id).iter().all(|t| *t == tab)
+                            && m.slots_of(&id).iter().all(|s| *s == Slot::panel(&tab))
                         {
                             m.fail_calls(&id, "the mod's page reloaded before it answered");
                         }
@@ -232,7 +235,7 @@ impl AppCtl {
                     } else {
                         m.unbind(&tab);
                     }
-                    if m.tabs_of(&id).iter().all(|t| *t == tab) {
+                    if m.slots_of(&id).iter().all(|s| *s == Slot::panel(&tab)) {
                         m.fail_calls(&id, "the mod's page ended before it answered");
                     }
                 }
@@ -426,8 +429,8 @@ impl AppCtl {
             "errors": s.errors.iter().map(|e| json!({"folder": e.folder, "reason": e.reason})).collect::<Vec<_>>(),
             "notes": s.notes,
             "tools": m.hub().tools().iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
-            "bound": m.bound().iter().map(|(t, id)| json!({
-                "tab": t, "mod": id, "ready": m.is_ready(t),
+            "bound": m.bound().iter().filter(|(s, _)| s.is_panel()).map(|(s, id)| json!({
+                "tab": s.owner, "mod": id, "ready": m.is_ready(s),
             })).collect::<Vec<_>>(),
             "pending": s.mods.iter().map(|e| (e.id.clone(), m.hub().pending_of(&e.id))).filter(|(_, n)| *n > 0)
                 .map(|(id, n)| json!({"mod": id, "calls": n})).collect::<Vec<_>>(),

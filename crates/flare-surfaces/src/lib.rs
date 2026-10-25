@@ -20,6 +20,7 @@ pub mod modview;
 pub mod notify;
 pub mod overlay;
 pub mod preview;
+pub mod slot;
 pub mod state;
 pub mod store;
 pub mod web;

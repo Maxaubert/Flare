@@ -10,6 +10,9 @@
 //!   turned off is refused at once), then run through the same dispatcher a pipe connection uses, on a worker,
 //!   with the tab the mod's panel sits in. `window.flare.respond` answers a tool call through the hub.
 //! - **Which tab.** A mod acts on ONE tab: the tab whose panel shows its page. No call names a tab.
+//! - **Which page.** Pages are kept by slot (`flare_surfaces::slot`): a tab's panel today, and later a bar
+//!   beside a tab or a plugin's background page. A method that is given a bare tab id means that tab's panel.
+//!   A call from a background page has no tab of its own.
 //! - **The switches.** Turning a mod on or off is applied in memory at once (a token minted or killed) and saved
 //!   on a worker.
 //!
@@ -23,6 +26,7 @@ use flare_ctl::{CallContext, Dispatcher, Method, Namespace, code};
 use flare_mods::bridge::{self, PageMsg};
 use flare_mods::hub::{Change, Hub};
 use flare_settings::page::mods::{ModInfo, ModsInfo, Problem};
+use flare_surfaces::slot::Slot;
 use serde_json::Value;
 
 use crate::appctl::{Post, UiMsg};
@@ -41,7 +45,8 @@ pub enum ModsMsg {
     },
     /// A call the mod's page made has its answer: `json` is the message for the page.
     Reply {
-        tab: String,
+        /// The page that asked.
+        slot: Slot,
         mod_id: String,
         /// The document the call came from (`ModCtl::generation`): a reply for an older one is dropped,
         /// because the bridge's call ids restart in every document.
@@ -80,9 +85,9 @@ impl std::fmt::Debug for ModsMsgBox {
 /// Messages kept for a page that is not ready (the oldest are dropped past this).
 const QUEUE_CAP: usize = 64;
 
-/// A mod's page in a tab.
+/// A mod's page in a slot.
 #[derive(Debug, Default)]
-struct ModTab {
+struct ModPage {
     mod_id: String,
     /// The page has loaded and can be spoken to.
     ready: bool,
@@ -98,8 +103,8 @@ pub struct ModCtl {
     hub: Arc<Hub>,
     post: Post,
     dispatcher: Option<Arc<dyn Dispatcher>>,
-    tabs: HashMap<String, ModTab>,
-    /// Source of `ModTab::generation`.
+    pages: HashMap<Slot, ModPage>,
+    /// Source of `ModPage::generation`.
     next_generation: u64,
     /// Calls a page made that a worker is still running, by mod.
     inflight: HashMap<String, usize>,
@@ -118,7 +123,7 @@ impl ModCtl {
             hub,
             post,
             dispatcher: None,
-            tabs: HashMap::new(),
+            pages: HashMap::new(),
             next_generation: 0,
             inflight: HashMap::new(),
             scanning: Arc::new(AtomicBool::new(false)),
@@ -199,70 +204,72 @@ impl ModCtl {
 
     // ---- the pages ------------------------------------------------------------------------------------------------
 
-    /// The tab shows this mod's page now. A page the tab already had for the same mod keeps its state.
-    pub fn bind(&mut self, tab: &str, mod_id: &str) {
-        let same = self.tabs.get(tab).is_some_and(|t| t.mod_id == mod_id);
+    /// The slot (a bare tab: its panel) shows this mod's page now. A page the slot already had for the same mod
+    /// keeps its state.
+    pub fn bind(&mut self, slot: impl Into<Slot>, mod_id: &str) {
+        let slot = slot.into();
+        let same = self.pages.get(&slot).is_some_and(|t| t.mod_id == mod_id);
         if !same {
             self.next_generation += 1;
-            self.tabs.insert(
-                tab.to_string(),
-                ModTab {
+            self.pages.insert(
+                slot,
+                ModPage {
                     mod_id: mod_id.to_string(),
                     generation: self.next_generation,
-                    ..ModTab::default()
+                    ..ModPage::default()
                 },
             );
         }
     }
 
-    /// The tab no longer shows a mod's page. Gives the mod it was.
-    pub fn unbind(&mut self, tab: &str) -> Option<String> {
-        self.tabs.remove(tab).map(|t| t.mod_id)
+    /// The slot no longer shows a mod's page. Gives the mod it was.
+    pub fn unbind(&mut self, slot: impl Into<Slot>) -> Option<String> {
+        self.pages.remove(&slot.into()).map(|t| t.mod_id)
     }
 
-    pub fn bound(&self) -> Vec<(String, String)> {
-        let mut v: Vec<(String, String)> = self
-            .tabs
+    pub fn bound(&self) -> Vec<(Slot, String)> {
+        let mut v: Vec<(Slot, String)> = self
+            .pages
             .iter()
-            .map(|(t, m)| (t.clone(), m.mod_id.clone()))
+            .map(|(s, m)| (s.clone(), m.mod_id.clone()))
             .collect();
         v.sort();
         v
     }
 
-    pub fn mod_of(&self, tab: &str) -> Option<&str> {
-        self.tabs.get(tab).map(|t| t.mod_id.as_str())
+    pub fn mod_of(&self, slot: impl Into<Slot>) -> Option<&str> {
+        self.pages.get(&slot.into()).map(|t| t.mod_id.as_str())
     }
 
-    /// The document the tab's page is now (see `ModTab::generation`).
-    pub fn generation(&self, tab: &str) -> Option<u64> {
-        self.tabs.get(tab).map(|t| t.generation)
+    /// The document the slot's page is now (see `ModPage::generation`).
+    pub fn generation(&self, slot: impl Into<Slot>) -> Option<u64> {
+        self.pages.get(&slot.into()).map(|t| t.generation)
     }
 
-    /// The page lost its process or failed to load: it can be spoken to no more, but the tab still shows the
+    /// The page lost its process or failed to load: it can be spoken to no more, but the slot still shows the
     /// mod, so the next call makes a new page. Messages waiting for it are dropped (the caller fails their
     /// calls).
-    pub fn page_lost(&mut self, tab: &str) {
+    pub fn page_lost(&mut self, slot: impl Into<Slot>) {
         self.next_generation += 1;
         let generation = self.next_generation;
-        if let Some(t) = self.tabs.get_mut(tab) {
+        if let Some(t) = self.pages.get_mut(&slot.into()) {
             t.ready = false;
             t.queue.clear();
             t.generation = generation;
         }
     }
 
-    pub fn is_ready(&self, tab: &str) -> bool {
-        self.tabs.get(tab).is_some_and(|t| t.ready)
+    pub fn is_ready(&self, slot: impl Into<Slot>) -> bool {
+        self.pages.get(&slot.into()).is_some_and(|t| t.ready)
     }
 
     /// The page loaded (`true`) or began to load (`false`). Going ready gives back what was queued for it.
-    pub fn set_ready(&mut self, tab: &str, ready: bool) -> Vec<String> {
+    pub fn set_ready(&mut self, slot: impl Into<Slot>, ready: bool) -> Vec<String> {
         if !ready {
             self.next_generation += 1;
         }
         let generation = self.next_generation;
-        match self.tabs.get_mut(tab) {
+        match self.pages.get_mut(&slot.into()) {
             Some(t) => {
                 t.ready = ready;
                 if !ready {
@@ -293,8 +300,8 @@ impl ModCtl {
 
     /// A message for the page: Some when it can be sent now, None when it was queued until the page is ready (or
     /// there is no such page).
-    pub fn queue_or_send(&mut self, tab: &str, msg: String) -> Option<String> {
-        let t = self.tabs.get_mut(tab)?;
+    pub fn queue_or_send(&mut self, slot: impl Into<Slot>, msg: String) -> Option<String> {
+        let t = self.pages.get_mut(&slot.into())?;
         if t.ready {
             Some(msg)
         } else {
@@ -307,13 +314,13 @@ impl ModCtl {
         }
     }
 
-    /// The tabs showing the mod's page.
-    pub fn tabs_of(&self, mod_id: &str) -> Vec<String> {
-        let mut v: Vec<String> = self
-            .tabs
+    /// The slots showing the mod's page.
+    pub fn slots_of(&self, mod_id: &str) -> Vec<Slot> {
+        let mut v: Vec<Slot> = self
+            .pages
             .iter()
             .filter(|(_, t)| t.mod_id == mod_id)
-            .map(|(tab, _)| tab.clone())
+            .map(|(slot, _)| slot.clone())
             .collect();
         v.sort();
         v
@@ -333,11 +340,12 @@ impl ModCtl {
         self.inflight.get(mod_id).copied().unwrap_or(0)
     }
 
-    /// A message the page of `tab` posted. Returns the message to post back to the page at once (an
-    /// answer, or the reason for a refusal); a call that is allowed runs on a worker and answers later.
-    /// A message from a tab that shows no mod's page is ignored.
-    pub fn on_page_message(&mut self, tab: &str, text: &str) -> Option<String> {
-        let mod_id = self.tabs.get(tab)?.mod_id.clone();
+    /// A message the page of `slot` (a bare tab: its panel) posted. Returns the message to post back to the
+    /// page at once (an answer, or the reason for a refusal); a call that is allowed runs on a worker and
+    /// answers later. A message from a slot that shows no mod's page is ignored.
+    pub fn on_page_message(&mut self, slot: impl Into<Slot>, text: &str) -> Option<String> {
+        let slot = slot.into();
+        let mod_id = self.pages.get(&slot)?.mod_id.clone();
         let msg = match bridge::parse_page_message(text) {
             Ok(m) => m,
             Err(why) => {
@@ -361,14 +369,14 @@ impl ModCtl {
                 None
             }
             PageMsg::Call { id, method, params } => {
-                self.page_call(tab, &mod_id, id, &method, params)
+                self.page_call(&slot, &mod_id, id, &method, params)
             }
         }
     }
 
     fn page_call(
         &mut self,
-        tab: &str,
+        slot: &Slot,
         mod_id: &str,
         id: u64,
         method: &str,
@@ -415,23 +423,23 @@ impl ModCtl {
             return refuse(code::RATE_LIMITED, "too many calls at once");
         }
         *self.inflight.entry(mod_id.to_string()).or_insert(0) += 1;
-        let (post, tab_name, mod_name) =
-            (Arc::clone(&self.post), tab.to_string(), mod_id.to_string());
-        let generation = self.generation(tab).unwrap_or_default();
+        let (post, page, mod_name) = (Arc::clone(&self.post), slot.clone(), mod_id.to_string());
+        let generation = self.generation(slot).unwrap_or_default();
         let job = move || {
             let ctx = CallContext {
                 conn: 0,
                 client: format!("mod:{mod_name}"),
                 client_version: String::new(),
                 grant,
-                tab: Some(tab_name.clone()),
+                // The tab the page sits in; a background page has none.
+                tab: page.tab().map(str::to_string),
             };
             let json = match d.call(&ctx, m, params) {
                 Ok(v) => bridge::reply_ok(id, &v),
                 Err(e) => bridge::reply_err(id, &e.code, &e.message),
             };
             post(UiMsg::Mods(ModsMsgBox(ModsMsg::Reply {
-                tab: tab_name,
+                slot: page,
                 mod_id: mod_name,
                 generation,
                 json,
@@ -857,10 +865,71 @@ mod tests {
         assert!(r.ctl.bound().is_empty());
     }
 
+    /// Pages are kept by slot: a tab's panel and a bar beside the same tab are two pages, a background page
+    /// belongs to no tab, and a reply names the slot that asked.
+    #[test]
+    fn pages_are_kept_by_slot_and_a_background_page_calls_with_no_tab() {
+        let mut r = rig(r#"["panel","view"]"#);
+        let (panel, bar, bg) = (
+            Slot::panel("t1"),
+            Slot::bar("t1"),
+            Slot::background("notes"),
+        );
+        assert_eq!(
+            r.ctl.mod_of(&panel),
+            Some("notes"),
+            "a bare tab is its panel"
+        );
+        r.ctl.bind(&bar, "notes");
+        r.ctl.bind(&bg, "notes");
+        // In slot order: by owner, then kind.
+        assert_eq!(
+            r.ctl.slots_of("notes"),
+            [bg.clone(), panel.clone(), bar.clone()]
+        );
+        assert_ne!(r.ctl.generation(&panel), r.ctl.generation(&bar));
+        // Each page is ready, and queues, on its own.
+        r.ctl.set_ready(&bar, true);
+        assert!(r.ctl.is_ready(&bar) && !r.ctl.is_ready("t1"));
+        assert_eq!(r.ctl.queue_or_send(&bar, "b".into()), Some("b".into()));
+        assert_eq!(r.ctl.queue_or_send("t1", "p".into()), None);
+
+        // A call from the background page runs with no tab, and its reply names the background slot.
+        let (tx, rx) = mpsc::channel::<(Slot, u64)>();
+        let tx = Mutex::new(tx);
+        r.ctl.post = Arc::new(move |m: UiMsg| {
+            if let UiMsg::Mods(ModsMsgBox(ModsMsg::Reply {
+                slot, generation, ..
+            })) = m
+            {
+                let _ = tx.lock().unwrap().send((slot, generation));
+            }
+        });
+        assert_eq!(
+            r.ctl.on_page_message(&bg, &call(1, "view.text", "{}")),
+            None
+        );
+        let (slot, generation) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(slot, bg);
+        assert_eq!(Some(generation), r.ctl.generation(&bg));
+        assert_eq!(
+            r.calls.lock().unwrap()[0].2,
+            None,
+            "a background page has no tab"
+        );
+        r.ctl.on_page_message(&bar, &call(2, "view.text", "{}"));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap().0, bar);
+        assert_eq!(r.calls.lock().unwrap()[1].2.as_deref(), Some("t1"));
+
+        // Letting the panel go leaves the bar and the background page.
+        assert_eq!(r.ctl.unbind("t1").as_deref(), Some("notes"));
+        assert_eq!(r.ctl.slots_of("notes"), [bg, bar]);
+    }
+
     #[test]
     fn the_debug_form_of_a_message_prints_its_kind_only() {
         let m = ModsMsgBox(ModsMsg::Reply {
-            tab: "t".into(),
+            slot: Slot::panel("t"),
             mod_id: "notes".into(),
             generation: 0,
             json: "SECRET".into(),

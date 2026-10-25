@@ -1392,6 +1392,32 @@ The keys of later phases are checked now and run later. The contract: `docs/surf
 - **Not built in this phase** (the plan's later phases): background pages, a call naming another tab under `tabs`, the
   sidebar sections and actions, the bar, the helper and install from a zip or a URL. Their manifest keys are parsed and validated only.
 
+## Plugins phase 2b: views keyed by slot, 2026-10-25
+
+Phase 2b of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design 13): a refactor that the background pages and
+the bar build on. Nothing the person sees changes, except that a mod's page can no longer show an `alert`, `confirm` or
+`prompt` dialog (design 13: no script dialogs in any plugin view).
+
+- **Slots.** `flare_surfaces::slot::Slot {owner, kind}`, kind `Panel` (owner a tab), `Bar` (owner a tab) or
+  `Background` (owner a plugin id). `flare_web::WebHost` keys its views, held downloads, file reads and callbacks by
+  slot, with a generation per slot (kept after a close, so a late callback of a slot's earlier view is let go).
+  `WebBackend` gained slot methods (`open_view`, `close_view`, `set_view_bounds`, `set_view_visible`, `post_to_view`,
+  `probe_view`); the tab methods act on the tab's panel and behave as before. An event of a bar or background view
+  comes as `WebEvent::View {slot, event}`, so code that knows only panels never mistakes it for a tab's. A bar or
+  background slot takes only a mod's or plugin's page. `ModCtl` keys its pages by slot too (a bare tab id means its
+  panel), a reply names its slot, and a background page's call has no tab. The app makes only panels so far. Tests:
+  `flare_surfaces::slot`, `flare_web::backend` (the three slot tests with the fake), `mods_ctl::pages_are_kept_by_slot_and_a_background_page_calls_with_no_tab`.
+- **One seal.** `WebHost::seal_plugin_view` puts up every wall of a mod's or plugin's view from `flare_web::seal::plugin_seal(kind)`:
+  no script dialog (dismissed at once), no window of its own, no permission, no external program, no developer tools
+  or status bar, frames of its own host only; a bar and a background page also have no context menu, no browser keys
+  and no download (cancelled at once), while a panel keeps its menu, keys and the download question as before. Tests:
+  `flare_web::seal` (one per kind) and `every_kind_of_plugin_view_is_sealed_as_its_kind_says`.
+- **The plugins' own browser.** Mods and plugins run in a WebView2 environment of their own (`EnvKind::Plugin`), apart
+  from the web panel's and the mini-apps'. It keeps the folder the mods' profiles were always in
+  (`<profile>\WebView2-app-sealed`, `modview::env_folder`), so every `flare-mod-<id>` profile and its storage stay where
+  they were; the sealed mini-apps, which keep nothing on disk, moved to `WebView2-mini-sealed`. Test:
+  `the_plugins_browser_keeps_the_mods_folder_and_shares_it_with_nobody`.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,

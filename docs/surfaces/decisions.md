@@ -587,7 +587,8 @@ terminal, working, instead of Claude describing it in words.
   realm (an about:blank or srcdoc frame) might have run before it. Now: (1) **the browser itself.** A mini-app never shares a WebView2
   environment with the web panel. `flare-web` keeps one environment per kind (`EnvKind`): `AppSealed` (apps with no network) and
   `AppNet` (apps that were granted `https:`), each made lazily when the first app of that kind opens, in a user data folder of its own
-  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`) and closed with the last view that uses it (an
+  beside the panel's (`WebView2-app-sealed`, `WebView2-app-net`, `app::env_folder`; since plugins phase 2b the sealed mini-apps use
+  `WebView2-mini-sealed` and `WebView2-app-sealed` is the mods' and plugins' own) and closed with the last view that uses it (an
   idle kind is dropped when a view of another kind replaces it). Both start with `--webrtc-ip-handling-policy=disable_non_proxied_udp`
   (plus Chromium's `--force-...` spelling); `AppSealed` also with `--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=<-loopback>`, a
   proxy that is not there with loopback taken out of the built-in bypass, so a WebSocket or any request the page makes without Flare's
