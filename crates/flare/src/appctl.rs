@@ -3354,6 +3354,23 @@ impl AppCtl {
         changed
     }
 
+    /// The agent's badges and progress need an agent in the tab: its token alone is not enough, since any
+    /// process in a plain shell tab holds it. The decor would wear an agent's name no one runs, and nothing
+    /// would ever clear it (the hub reports an agent leaving only where one was).
+    fn agent_decor_allowed(
+        &self,
+        tab: &str,
+        source: &DecorSource,
+    ) -> Result<(), flare_ctl::CtlError> {
+        if *source == DecorSource::Agent && self.hub.agent_kind(tab).is_none() {
+            return Err(flare_ctl::CtlError::new(
+                flare_ctl::code::FORBIDDEN,
+                "no agent in this tab",
+            ));
+        }
+        Ok(())
+    }
+
     fn is_shell_tab(&self, tab: &str) -> bool {
         flare_tabs::tabs::shell_tabs(&self.model.state)
             .iter()
@@ -3479,6 +3496,7 @@ impl AppCtl {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
+                self.agent_decor_allowed(&tab, &source)?;
                 match self.decor.set_badge(&tab, source, &key, &icon, &tip, tone) {
                     Ok(changed) => {
                         if changed {
@@ -3516,6 +3534,7 @@ impl AppCtl {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
+                self.agent_decor_allowed(&tab, &source)?;
                 if self.decor.set_progress(&tab, source, &key, value, &label) {
                     self.refresh();
                 }
@@ -8166,6 +8185,7 @@ two",
         let f = fx();
         let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
         let a = ids[0].clone();
+        f.claude_in("C:\\a");
         assert_eq!(f.row(0).prog, -1.0);
         assert_eq!(f.row(0).chip_count, 0);
         ctl_call(&f, badge_op(&a, "call-me", "phone", "Call-me is on")).unwrap();
@@ -8231,6 +8251,7 @@ two",
         let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
         let (a, b) = (ids[0].clone(), ids[1].clone());
         f.say("C:\\a", TITLE_CLAUDE);
+        f.pump_until("the agent to be here", |f| f.agent_here(&a));
         ctl_call(&f, badge_op(&a, "call-me", "phone", "")).unwrap();
         f.say("C:\\a", &osc_session(SID_A));
         f.pump_until("working", |f| f.row(0).mark_state == 1);
@@ -8248,10 +8269,49 @@ two",
         f.pump_until("the agent to leave", |f| f.row(0).prog == -1.0);
 
         // The tab closes: its decor goes with it.
+        f.claude_in("C:\\b");
         ctl_call(&f, badge_op(&b, "x", "star", "")).unwrap();
         assert!(f.ctl.borrow().has_decor(&b));
-        f.ctl.borrow_mut().request_close(&b);
+        // Closed as a yes to the close ask would (an agent tab asks first).
+        f.ctl.borrow_mut().close_now(&b);
         f.pump_until("b to close", |f| !f.ctl.borrow().has_decor(&b));
+    }
+
+    /// A plain shell tab holds the agent's token too, but with no agent in it the agent's badge and progress
+    /// are refused: nothing would name or clear them. Clearing is harmless and still answers.
+    #[test]
+    fn a_shell_tab_with_no_agent_gets_no_agent_decor() {
+        let f = fx();
+        let ids = f.open_tabs(&["C:\\a"]);
+        let a = ids[0].clone();
+        let e = ctl_call(&f, badge_op(&a, "k", "star", "Hi")).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::FORBIDDEN);
+        assert!(e.message.contains("no agent"), "{}", e.message);
+        let e = ctl_call(&f, progress_op(&a, Some(0.5))).unwrap_err();
+        assert_eq!(e.code, flare_ctl::code::FORBIDDEN);
+        assert!(!f.ctl.borrow().has_decor(&a));
+        assert_eq!((f.row(0).chip_count, f.row(0).prog), (0, -1.0));
+        let v = ctl_call(
+            &f,
+            crate::ctl_app::CtlOp::BadgeClear {
+                tab: a.clone(),
+                source: DecorSource::Agent,
+                key: "k".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(v["cleared"], false);
+        // A plugin's decor does not need the tab's agent.
+        let op = crate::ctl_app::CtlOp::BadgeSet {
+            tab: a.clone(),
+            source: DecorSource::Plugin("p".into()),
+            key: "k".into(),
+            icon: "star".into(),
+            tip: String::new(),
+            tone: flare_tabs::decor::Tone::Ink,
+        };
+        ctl_call(&f, op).unwrap();
+        assert!(f.ctl.borrow().has_decor(&a));
     }
 
     #[test]

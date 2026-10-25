@@ -322,7 +322,7 @@ pub fn build_view(inp: &ViewInput) -> View {
 
 /// Puts each tab's badges and progress on its row: the chips it draws (the progress first, then one badge per
 /// source, at most two), how many of them the strip has room for at the tab's width, and one tooltip line for every
-/// piece, each naming who set it ("Claude" or "Codex" for the tab's agent). A tab with no decor keeps its row.
+/// piece, each naming who set it ("Claude" or "Codex" for the tab's agent, "Agent" for any other). A tab with no decor keeps its row.
 pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -348,7 +348,12 @@ pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
             prog: progress_code(drawn.progress),
             room: room_for(f64::from(r.w) / scale, r.mode == 0) as i32,
         };
-        let agent = if r.agent == 2 { "Codex" } else { "Claude" };
+        // Named by the agent the row shows; another agent (or none yet) is no "Claude".
+        let agent = match r.agent {
+            1 => "Claude",
+            2 => "Codex",
+            _ => "Agent",
+        };
         let lines = d.tip_lines(|s| match s {
             Source::Agent => agent.to_string(),
             Source::Plugin(id) => id.clone(),
@@ -1245,6 +1250,8 @@ mod tests {
             .unwrap();
             d.set_progress(&id, Source::Agent, "progress", Some(0.5), "Build");
         });
+        // The row shows Claude, so the agent's lines say "Claude".
+        v.rows[0].agent = 1;
         decorate(&mut v.rows, &decor, 1.0);
         let r = &v.rows[0];
         assert_eq!(r.chips.prog, 0.5);
@@ -1275,6 +1282,30 @@ mod tests {
         );
         // A plain row says "no progress".
         assert_eq!(to_slint_row(&v.rows[1]).prog, -1.0);
+    }
+
+    /// A row that shows no Claude (another agent, say) never names Claude in its tooltip.
+    #[test]
+    fn a_row_with_no_claude_names_no_claude_in_the_tooltip() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        v.rows[0].agent = 0;
+        let id = v.rows[0].id.clone();
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                Source::Agent,
+                "k",
+                "star",
+                "Hi",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate(&mut v.rows, &decor, 1.0);
+        let tip = &v.rows[0].tip;
+        assert!(tip.ends_with("\nAgent: Hi"), "{tip}");
+        assert!(!tip.contains("Claude"), "{tip}");
     }
 
     #[test]
