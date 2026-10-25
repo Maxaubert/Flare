@@ -214,6 +214,8 @@ fn call_decor_tool(name: &str, args: &Map<String, Value>, channel: &mut dyn Chan
         match args.get(k) {
             Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
             None | Some(Value::Null) if !required => Ok(None),
+            // An empty optional text is "none", as Flare itself takes it.
+            Some(Value::String(_)) if !required => Ok(None),
             _ if required => Err(ToolResult::error(format!(
                 "{k} is required: a non-empty string."
             ))),
@@ -1215,6 +1217,15 @@ mod tests {
         assert!(text_of(&r).contains("50%"), "{}", text_of(&r));
         let r = call(&mut ch, "set_tab_progress", json!({}));
         assert!(text_of(&r).contains("unknown"), "{}", text_of(&r));
+        // An empty optional tip or label is "none", not a wrong type.
+        let r = call(
+            &mut ch,
+            "set_tab_badge",
+            json!({"key": "k", "icon": "star", "tip": ""}),
+        );
+        assert_eq!(r["result"]["isError"], false, "{}", text_of(&r));
+        let r = call(&mut ch, "set_tab_progress", json!({"label": ""}));
+        assert_eq!(r["result"]["isError"], false, "{}", text_of(&r));
         call(&mut ch, "clear_tab_progress", json!({}));
         let key = flare_ctl::decor::AGENT_PROGRESS_KEY;
         assert_eq!(
@@ -1229,6 +1240,8 @@ mod tests {
                     Method::TabsProgressSet,
                     json!({"key": key, "value": 0.5, "label": "Review"})
                 ),
+                (Method::TabsProgressSet, json!({"key": key})),
+                (Method::TabsBadgeSet, json!({"key": "k", "icon": "star"})),
                 (Method::TabsProgressSet, json!({"key": key})),
                 (Method::TabsProgressClear, json!({"key": key})),
             ]
