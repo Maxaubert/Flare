@@ -3,7 +3,7 @@
 // the view is scrolled back). It is drawn over the grid and never takes the pointer. Edges sit on
 // whole device pixels so the width reads the same at every display scaling.
 
-import { Theme, Px } from "theme.slint";
+import { Theme, Px, Motion } from "theme.slint";
 
 export component TermScrollbar inherits Rectangle {
     // True when the shell has history to scroll through.
@@ -37,6 +37,47 @@ export component TermScrollbar inherits Rectangle {
             border-radius: self.width / 2;
             background: Theme.text.with-alpha(root.back ? 0.65 : 0.4);
         }
+    }
+}
+
+// The side panels' scroll thumb (Changes, Tasks, files, text): 4 px, the ink at 30 percent, and only while the
+// view moves: it fades in on a scroll and out a second after the last one (owner, 2026-10-25: "more minimal").
+// It only shows where the view is, and takes no pointer.
+export component ViewThumb inherits Rectangle {
+    in property <length> view-h;
+    in property <length> content-h;
+    in property <length> scrolled;   // the viewport's offset, negative or zero
+    // True from a scroll until the view has been still for `rest`.
+    out property <bool> awake: false;
+    property <duration> rest: 1000ms;
+    visible: root.content-h > root.view-h + 1px;
+    width: Px.snap(4px);
+    height: root.view-h;
+    changed scrolled => {
+        root.awake = true;
+        still.running = false;
+        still.running = true;
+    }
+    still := Timer {
+        interval: root.rest;
+        running: false;
+        triggered => {
+            root.awake = false;
+            self.running = false;
+        }
+    }
+    thumb := Rectangle {
+        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
+        property <length> travel: root.view-h - self.len;
+        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
+        x: 0px;
+        y: Px.snap(self.at * self.travel);
+        width: parent.width;
+        height: Px.snap(self.len);
+        border-radius: self.width / 2;
+        background: Theme.text.with-alpha(0.3);
+        opacity: root.awake ? 1 : 0;
+        animate opacity { duration: root.awake ? Motion.d(80ms) : Motion.d(400ms); easing: ease-out; }
     }
 }
 
