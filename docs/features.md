@@ -1355,6 +1355,43 @@ every later phase uses is built. The methods: `docs/surfaces/protocol.md` (`tabs
 - **By hand (step 9 of the plan, the owner):** in a NEW Claude session after the install (a running session keeps its
   tool list), `set_tab_badge phone` and `set_tab_progress 0.5` show in the strip and the sidebar.
 
+## Plugins phase 2: the protocol 2 manifest, the plugin permissions, Settings > Plugins, 2026-10-25
+
+The second phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 3, 4, 9 and 13). A plugin is
+a folder with a `plugin.json` that says protocol 2; a protocol 1 mod (`mod.json`) reads and behaves exactly as before.
+The keys of later phases are checked now and run later. The contract: `docs/surfaces/mods.md`, "Protocol 2".
+
+- **The manifest.** `plugin.json` adds `author`, `homepage` (`https://` only), `background`, `bar {entry, height 24 to
+  160}`, `contributes {sidebar (2), actions (8, places tab-menu, tab-hover, top-bar, session-bar), icons (32 SVG paths
+  of path characters, 2 KB)}` and `helper {command (.exe in the folder), args (16 of 200)}`; each key goes with its
+  permission both ways, and unknown keys are refused at every level. `mod.json` must say protocol 1 and `plugin.json`
+  protocol 2; a protocol 2 key in a `mod.json` is refused with a pointer to `plugin.json`. Tests: `flare_mods::manifest`
+  (the plugin vectors, one per key), `flare_mods::paths` (the helper's `.exe` rule).
+- **Two folders, one id space.** `<profile>\plugins\` is read after `<profile>\mods\` (either file in either); an id in
+  both is refused in `plugins\`; every file a manifest names must be a real file in the folder. Tests:
+  `flare_mods::discover` (incl. `an_id_in_both_folders_is_refused_in_the_plugins_folder` and
+  `the_sample_plugins_are_valid`, which loads `sample-plugins/`).
+- **The permissions.** `tabs`, `decorate`, `sidebar`, `actions`, `bar`, `sessions`, `input`, `network` and `process`,
+  askable only from protocol 2 (`ASKABLE_V1` is the old five). In `flare-ctl` each new method family has its own
+  namespace (`Sidebar`, `Actions`, `Bar`, `Session`, `Input`) opened by exactly its permission, nothing rides on the open
+  `Tabs` one, `network`, `process` and `tabs` open no method, and the agent enters none of them. `tabs` is to widen the
+  tab a call may name (`Grant::may_act_on_any_tab`, defined and tested); nothing calls it yet, so every call still acts
+  on the caller's own tab (it is wired with the background pages). Their methods come with their phases. Tests:
+  `flare_ctl::grant` (`each_namespace_is_opened_by_exactly_its_own_permission`,
+  `a_grant_with_no_permission_may_call_only_hello_and_tabs_list` and four more).
+- **The approval.** The switch store stays `mods.json` (version 1): a plugin's entry adds `author`, `homepage`, `source`
+  (once install exists) and `hash` (`sha256:` over the folder's files, made on the save worker); protocol 1 entries are
+  written byte for byte as before. A plugin whose author or homepage changes is turned off until approved again, as one
+  that asks for more is. A plugin whose tools only a background page could answer offers none yet (a note says so).
+  Tests: `flare_mods::enabled`, `flare_mods::hash`, `flare_mods::hub` (the plugin tests).
+- **Settings > Plugins.** The page keeps its key `mods` and is titled Plugins, with an Open plugins folder row above the
+  mods folder row. A protocol 1 mod's card is unchanged; a plugin's adds "Made by" (author, homepage), its permissions in
+  plain words, and a warnings row: "Full control" for `process` and `input`, the combined notes for `input`+`sessions`,
+  `network`+`sessions`, `network`+`tabs`, and `network`'s own. Tests: `flare_settings::page::mods`,
+  `ui_tests::settings_mods` (at 100 and 225 percent), `mods_ctl::the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none`.
+- **Not built in this phase** (the plan's later phases): background pages, a call naming another tab under `tabs`, the
+  sidebar sections and actions, the bar, the helper and install from a zip or a URL. Their manifest keys are parsed and validated only.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,

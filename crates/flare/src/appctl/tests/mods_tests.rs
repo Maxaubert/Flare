@@ -82,6 +82,7 @@ fn world(f: &Fx, make: impl FnOnce(&Path)) -> World {
     let state_file = f.dir.path().join("mods.json");
     let hub = Arc::new(Hub::new(Config {
         dir: root.clone(),
+        plugins_dir: Some(f.dir.path().join("plugins")),
         state_file: state_file.clone(),
     }));
     let post: Post = {

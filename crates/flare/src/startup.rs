@@ -68,6 +68,12 @@ impl Profile {
         self.dir.join("mods")
     }
 
+    /// Where plugins live (plugins phase 2): the second root beside `mods`, `<profile>\plugins\<id>\plugin.json`.
+    /// One id space with the mods folder, which is read first.
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.dir.join("plugins")
+    }
+
     /// Which mods the user turned on (`{"version":1,"mods":{"notes":true}}`), next to the mods folder.
     pub fn mods_file(&self) -> PathBuf {
         self.dir.join("mods.json")

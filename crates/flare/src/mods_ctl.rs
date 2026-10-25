@@ -54,8 +54,8 @@ pub enum ModsMsg {
     SetEnabled {
         id: String,
         on: bool,
-        /// The permission words the Settings row listed; None for a switch that did not come from a row (the tests).
-        shown: Option<Vec<String>>,
+        /// What the Settings card listed; None for a switch that did not come from a row (the tests).
+        shown: Option<flare_mods::hub::Shown>,
     },
     /// Settings: show the mod's panel in the most recent shell tab.
     ShowPanel { id: String },
@@ -150,8 +150,11 @@ impl ModCtl {
             Arc::clone(&self.scanning),
         );
         let job = move || {
-            // The folder is made here (a worker) so the Open mods folder button has somewhere to go.
+            // The folders are made here (a worker) so the Open folder buttons have somewhere to go.
             let _ = std::fs::create_dir_all(&hub.config().dir); // sync-ok: the scan worker
+            if let Some(plugins) = &hub.config().plugins_dir {
+                let _ = std::fs::create_dir_all(plugins); // sync-ok: the scan worker
+            }
             let change = hub.scan();
             flag.store(false, Ordering::SeqCst);
             post(UiMsg::Mods(ModsMsgBox(ModsMsg::Scanned(change))));
@@ -451,28 +454,50 @@ impl ModCtl {
     }
 }
 
-/// What the Mods page shows, from the hub.
+/// What the Plugins page shows, from the hub. A protocol 1 mod's rows are filled exactly as before; a protocol 2
+/// plugin adds who made it and the warnings for its permissions.
 pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
     let s = hub.snapshot();
     ModsInfo {
         scanned: s.scanned,
         dir: hub.config().dir.to_string_lossy().into_owned(),
+        plugins_dir: hub
+            .config()
+            .plugins_dir
+            .as_ref()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         mods: s
             .mods
             .into_iter()
-            .map(|m| ModInfo {
-                has_panel: m.panel_title.is_some(),
-                permissions: m
-                    .permissions
-                    .iter()
-                    .map(|p| flare_mods::hub::permission_words(*p).to_string())
-                    .collect(),
-                id: m.id,
-                name: m.name,
-                version: m.version,
-                description: m.description,
-                enabled: m.enabled,
-                needs_approval: m.needs_approval,
+            .map(|m| {
+                let plugin = m.protocol == flare_mods::PROTOCOL_V2;
+                ModInfo {
+                    has_panel: m.panel_title.is_some(),
+                    permissions: m
+                        .permissions
+                        .iter()
+                        .map(|p| flare_mods::hub::permission_words(*p).to_string())
+                        .collect(),
+                    warnings: if plugin {
+                        flare_mods::hub::permission_warnings(&m.permissions)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    full_control: plugin && flare_mods::hub::is_full_control(&m.permissions),
+                    plugin,
+                    author: m.author.unwrap_or_default(),
+                    homepage: m.homepage.unwrap_or_default(),
+                    id: m.id,
+                    name: m.name,
+                    version: m.version,
+                    description: m.description,
+                    enabled: m.enabled,
+                    needs_approval: m.needs_approval,
+                }
             })
             .collect(),
         problems: s
@@ -481,6 +506,7 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
             .map(|e| Problem {
                 folder: e.folder,
                 reason: e.reason,
+                plugins: e.root == flare_mods::Root::Plugins,
             })
             .collect(),
         notes: s.notes,
@@ -505,7 +531,7 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
         (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::Rescan)));
     }
 
-    fn set_enabled(&self, id: &str, on: bool, shown: Vec<String>) {
+    fn set_enabled(&self, id: &str, on: bool, shown: flare_mods::hub::Shown) {
         (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::SetEnabled {
             id: id.to_string(),
             on,
@@ -521,6 +547,10 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
 
     fn dir(&self) -> std::path::PathBuf {
         self.hub.config().dir.clone()
+    }
+
+    fn plugins_dir(&self) -> Option<std::path::PathBuf> {
+        self.hub.config().plugins_dir.clone()
     }
 }
 
@@ -582,6 +612,7 @@ mod tests {
         std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
         let hub = Arc::new(Hub::new(Config {
             dir: root,
+            plugins_dir: None,
             state_file: dir.path().join("mods.json"),
         }));
         hub.scan();
@@ -858,6 +889,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub = Arc::new(Hub::new(Config {
             dir: dir.path().join("mods"),
+            plugins_dir: Some(dir.path().join("plugins")),
             state_file: dir.path().join("mods.json"),
         }));
         let (tx, rx) = mpsc::channel::<String>();
@@ -879,5 +911,62 @@ mod tests {
             assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "scanned");
         }
         assert_eq!(ctl.scans, 1);
+    }
+
+    /// The page's words for a protocol 2 plugin come from the hub: who made it, the permissions in plain words and the
+    /// warnings; a protocol 1 mod beside it is filled exactly as before.
+    #[test]
+    fn the_page_info_of_a_plugin_has_its_maker_and_warnings_and_a_mod_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path().join("mods");
+        let f = mods.join("notes");
+        std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("mod.json"), mod_json(r#"["panel"]"#)).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+        let plugins = dir.path().join("plugins");
+        let p = plugins.join("steer");
+        std::fs::create_dir_all(&p).unwrap(); // sync-ok: test code only
+        std::fs::write(
+            p.join("plugin.json"),
+            r#"{"id":"steer","name":"Steer","version":"2.0.0","protocol":2,"description":"d","author":"someone","homepage":"https://example.com/","permissions":["sessions","input","network"]}"#,
+        )
+        .unwrap(); // sync-ok: test code only
+        std::fs::create_dir_all(plugins.join("Junk")).unwrap(); // sync-ok: test code only
+        let hub = Hub::new(Config {
+            dir: mods,
+            plugins_dir: Some(plugins.clone()),
+            state_file: dir.path().join("mods.json"),
+        });
+        hub.scan();
+        let info = info_of(&hub, &Mutex::new(None));
+        assert_eq!(info.plugins_dir, plugins.to_string_lossy());
+        let notes = info.mods.iter().find(|m| m.id == "notes").unwrap();
+        assert!(!notes.plugin && notes.author.is_empty() && notes.warnings.is_empty());
+        assert_eq!(notes.permissions, ["Show its panel in a tab"]);
+        let steer = info.mods.iter().find(|m| m.id == "steer").unwrap();
+        assert!(steer.plugin && steer.full_control);
+        assert_eq!(
+            (steer.author.as_str(), steer.homepage.as_str()),
+            ("someone", "https://example.com/")
+        );
+        assert_eq!(
+            steer.permissions,
+            [
+                "Read what you and Claude say in sessions",
+                "Type and run commands in your terminals (full control)",
+                "Use the internet"
+            ]
+        );
+        assert_eq!(
+            steer.warnings,
+            [
+                flare_mods::hub::WARN_INPUT,
+                flare_mods::hub::WARN_INPUT_SESSIONS,
+                flare_mods::hub::WARN_NETWORK_SESSIONS,
+                flare_mods::hub::WARN_NETWORK
+            ]
+        );
+        assert_eq!(info.problems.len(), 1);
+        assert!(info.problems[0].plugins && info.problems[0].folder == "Junk");
     }
 }

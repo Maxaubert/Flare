@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Tour background</title>
+</head>
+<body>
+<script>
+// The background page of the protocol 2 sample: it runs while the plugin is on, in a hidden view, whatever tab is
+// shown. This Flare checks that the file is in the plugin folder; a later version starts it.
+(function () {
+  if (window.flare && typeof window.flare.on === 'function') {
+    window.flare.on('tool', function (call) {
+      window.flare.respond(call.callId, null, 'the panel answers ' + call.tool);
+    });
+  }
+})();
+</script>
+</body>
+</html>

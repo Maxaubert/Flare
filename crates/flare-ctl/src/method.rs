@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use crate::grant::Permission;
+
 /// Default time a request may take before the server answers `timeout`.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Time for the `browser.*` methods (page loads, waits).
@@ -74,6 +76,57 @@ pub enum Namespace {
     AgentTools,
     /// Methods only the app's own UI may call (settings, shell input, mod management).
     Ui,
+    /// A plugin's sidebar sections (`sidebar.set`), under `sidebar`. Its methods come with the sidebar phase.
+    Sidebar,
+    /// A plugin's buttons and menu items (`actions.set`), under `actions`.
+    Actions,
+    /// A plugin's strip under a terminal (`bar.show`, `bar.hide`), under `bar`.
+    Bar,
+    /// What is said in Claude sessions (`session.read`), under `sessions`.
+    Session,
+    /// Typing into a tab's shell (`tabs.input`), under `input`. Its own namespace, so it never rides on the open
+    /// `Tabs` one.
+    Input,
+}
+
+impl Namespace {
+    /// Every namespace.
+    pub const ALL: [Namespace; 15] = [
+        Namespace::Hello,
+        Namespace::Tabs,
+        Namespace::Decor,
+        Namespace::Panel,
+        Namespace::View,
+        Namespace::Browser,
+        Namespace::Convo,
+        Namespace::Tools,
+        Namespace::AgentTools,
+        Namespace::Ui,
+        Namespace::Sidebar,
+        Namespace::Actions,
+        Namespace::Bar,
+        Namespace::Session,
+        Namespace::Input,
+    ];
+
+    /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`),
+    /// for the agent's tools and for the app's own: no permission reaches those.
+    pub fn permission(self) -> Option<Permission> {
+        match self {
+            Namespace::Hello | Namespace::Tabs | Namespace::AgentTools | Namespace::Ui => None,
+            Namespace::Decor => Some(Permission::Decorate),
+            Namespace::Panel => Some(Permission::Panel),
+            Namespace::View => Some(Permission::View),
+            Namespace::Browser => Some(Permission::Browser),
+            Namespace::Convo => Some(Permission::Convo),
+            Namespace::Tools => Some(Permission::Tools),
+            Namespace::Sidebar => Some(Permission::Sidebar),
+            Namespace::Actions => Some(Permission::Actions),
+            Namespace::Bar => Some(Permission::Bar),
+            Namespace::Session => Some(Permission::Sessions),
+            Namespace::Input => Some(Permission::Input),
+        }
+    }
 }
 
 impl Method {
@@ -228,6 +281,11 @@ mod tests {
                 Namespace::Tools => prefix == "tools",
                 Namespace::AgentTools => prefix == "mods",
                 Namespace::Ui => matches!(prefix, "shell" | "settings" | "mods"),
+                Namespace::Sidebar => prefix == "sidebar",
+                Namespace::Actions => prefix == "actions",
+                Namespace::Bar => prefix == "bar",
+                Namespace::Session => prefix == "session",
+                Namespace::Input => prefix == "tabs",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
