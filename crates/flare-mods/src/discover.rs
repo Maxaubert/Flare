@@ -1,24 +1,57 @@
-//! The scan of the mods folder: `<root>\<id>\mod.json`.
+//! The scan of the two plugin folders: `<profile>\mods\<id>\` and `<profile>\plugins\<id>\`, each folder holding
+//! a `mod.json` (protocol 1) or a `plugin.json` (protocol 2).
 //!
 //! Worker-callable: it reads the disk, so the app runs it on a worker and posts the answer back. It
 //! never fails as a whole. A folder that is not a mod becomes one [`FolderError`] with its reason, and
-//! every other folder is still read. The bounds: at most [`MAX_MODS`] folders are read (sorted by name;
-//! the rest are one error), at most [`MAX_ENTRIES`] directory entries are looked at, and a `mod.json`
+//! every other folder is still read. The bounds, per folder: at most [`MAX_MODS`] folders are read (sorted by
+//! name; the rest are one error), at most [`MAX_ENTRIES`] directory entries are looked at, and a manifest
 //! over 64 KB is refused before it is parsed.
 //!
 //! The folder check: the folder name must be the manifest's id (lower-case, so a Windows folder cannot
-//! be two mods), the folder must canonicalise under the canonical mods folder (a junction out is
-//! refused), `mod.json` must resolve inside the folder, and the panel entry must resolve inside it too.
+//! be two mods), the folder must canonicalise under its canonical root (a junction out is refused), the
+//! manifest must resolve inside the folder, and every file the manifest names (the panel, the background page,
+//! the bar, the helper) must resolve inside it too. The ids of both folders are one space: `mods\` is read
+//! first, and an id it holds is refused in `plugins\` (design section 13).
 
-use crate::manifest::{MANIFEST_FILE, MAX_MANIFEST_BYTES, Manifest, valid_id};
+use crate::manifest::{
+    Kind, MANIFEST_FILE, MAX_MANIFEST_BYTES, Manifest, PLUGIN_FILE, parse_as, valid_id,
+};
 use crate::paths;
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Mod folders read in one scan.
+/// Mod folders read in one scan of one root.
 pub const MAX_MODS: usize = 64;
-/// Directory entries looked at in one scan.
+/// Directory entries looked at in one scan of one root.
 pub const MAX_ENTRIES: usize = 4096;
+
+/// Which of the two folders something was found in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Root {
+    /// `<profile>\mods`, today's folder.
+    #[default]
+    Mods,
+    /// `<profile>\plugins`, the second root, read after `mods`.
+    Plugins,
+}
+
+impl Root {
+    /// The folder as the refusals and Settings name it.
+    pub fn words(self) -> &'static str {
+        match self {
+            Root::Mods => "the mods folder",
+            Root::Plugins => "the plugins folder",
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Root::Mods => "mod",
+            Root::Plugins => "plugin",
+        }
+    }
+}
 
 /// A mod that passed every check.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,16 +59,26 @@ pub struct Found {
     pub manifest: Manifest,
     /// The canonical mod folder.
     pub folder: PathBuf,
+    /// The folder it was found in.
+    pub root: Root,
     /// The canonical panel file, when the mod has a panel.
     pub entry: Option<PathBuf>,
+    /// The canonical background page, when a plugin has one.
+    pub background: Option<PathBuf>,
+    /// The canonical bar page, when a plugin has a bar.
+    pub bar: Option<PathBuf>,
+    /// The canonical helper program, when a plugin has one.
+    pub helper: Option<PathBuf>,
 }
 
-/// A folder that was not read as a mod, and why (one sentence for Settings > Mods).
+/// A folder that was not read as a mod, and why (one sentence for Settings > Plugins).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderError {
-    /// The folder's name, or empty for a problem with the mods folder itself.
+    /// The folder's name, or empty for a problem with the root folder itself.
     pub folder: String,
     pub reason: String,
+    /// The root it is in.
+    pub root: Root,
 }
 
 /// The result of one scan: the valid mods (sorted by id) and the folders that were refused.
@@ -45,69 +88,122 @@ pub struct Discovery {
     pub errors: Vec<FolderError>,
 }
 
-/// Scans `root` for mods. A missing `root` is simply no mods.
+/// Scans one mods folder `root`. A missing `root` is simply no mods.
 pub fn discover(root: &Path) -> Discovery {
-    discover_bounded(root, MAX_ENTRIES)
+    discover_all(root, None)
+}
+
+/// Scans the mods folder and then, when given, the plugins folder. A missing folder is simply nothing found in it.
+pub fn discover_all(mods: &Path, plugins: Option<&Path>) -> Discovery {
+    let mut out = Discovery::default();
+    let mut taken = BTreeSet::new();
+    scan_root(Root::Mods, mods, MAX_ENTRIES, &mut taken, &mut out);
+    if let Some(plugins) = plugins {
+        scan_root(Root::Plugins, plugins, MAX_ENTRIES, &mut taken, &mut out);
+    }
+    out.mods.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    out
 }
 
 /// [`discover`] with the entry bound as a parameter, so a test can reach the bound with a few files.
+#[cfg(test)]
 fn discover_bounded(root: &Path, max_entries: usize) -> Discovery {
     let mut out = Discovery::default();
+    scan_root(
+        Root::Mods,
+        root,
+        max_entries,
+        &mut BTreeSet::new(),
+        &mut out,
+    );
+    out.mods.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    out
+}
+
+/// Reads one root into `out`. `taken` holds the ids an earlier root looked at; a folder named one of them is
+/// refused here, and this root's own ids are added to it.
+fn scan_root(
+    which: Root,
+    root: &Path,
+    max_entries: usize,
+    taken: &mut BTreeSet<String>,
+    out: &mut Discovery,
+) {
+    let words = which.words();
     match std::fs::metadata(root) {
         // sync-ok: runs on the discovery worker
         Ok(m) if m.is_dir() => {}
         Ok(_) => {
-            refuse(&mut out, "", "the mods folder is not a folder".into());
-            return out;
+            return refuse(out, which, "", format!("{words} is not a folder"));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            refuse(&mut out, "", format!("the mods folder cannot be read: {e}"));
-            return out;
+            return refuse(out, which, "", format!("{words} cannot be read: {e}"));
         }
     }
     let canon_root = match std::fs::canonicalize(root) {
         // sync-ok: discovery worker
         Ok(p) => p,
         Err(e) => {
-            refuse(&mut out, "", format!("the mods folder cannot be read: {e}"));
-            return out;
+            return refuse(out, which, "", format!("{words} cannot be read: {e}"));
         }
     };
-    let folders = folder_names(root, max_entries, &mut out);
+    let folders = folder_names(which, root, max_entries, out);
     // Only names that are legal mod ids count toward the cap, so a junk folder sorted first (a backup, a
     // `.git`) cannot push a real mod out of the scan. Each junk name is still reported.
     let (ids, junk): (Vec<String>, Vec<String>) = folders.into_iter().partition(|n| valid_id(n));
     for name in &junk {
         refuse(
-            &mut out,
+            out,
+            which,
             name,
-            "the folder name is not a mod id (3 to 40 characters: a-z, 0-9, '-')".into(),
+            format!(
+                "the folder name is not a {} id (3 to 40 characters: a-z, 0-9, '-')",
+                which.noun()
+            ),
+        );
+    }
+    // One id space: a name the mods folder already holds is refused here, and does not count toward the cap.
+    let (dup, ids): (Vec<String>, Vec<String>) = ids.into_iter().partition(|n| taken.contains(n));
+    for name in &dup {
+        refuse(
+            out,
+            which,
+            name,
+            format!(
+                "the id \"{name}\" is already in {}; an id must be unique across mods and plugins",
+                Root::Mods.words()
+            ),
         );
     }
     let extra = ids.len().saturating_sub(MAX_MODS);
     if extra > 0 {
         refuse(
-            &mut out,
+            out,
+            which,
             "",
             format!("more than {MAX_MODS} folders; {extra} were not read"),
         );
     }
     for name in ids.iter().take(MAX_MODS) {
-        load_one(&canon_root, root, name, &mut out);
+        load_one(which, &canon_root, root, name, out);
     }
-    out.mods.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
-    out
+    taken.extend(ids);
 }
 
 /// The names of the subfolders, sorted. Looks at most `max_entries` directory entries; one more than that is
 /// an error, and the rest are not looked at.
-fn folder_names(root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<String> {
+fn folder_names(which: Root, root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<String> {
     let entries = match std::fs::read_dir(root) {
         // sync-ok: discovery worker
         Ok(e) => e,
         Err(e) => {
-            refuse(out, "", format!("the mods folder cannot be listed: {e}"));
+            refuse(
+                out,
+                which,
+                "",
+                format!("{} cannot be listed: {e}", which.words()),
+            );
             return Vec::new();
         }
     };
@@ -116,6 +212,7 @@ fn folder_names(root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<Str
         if i == max_entries {
             refuse(
                 out,
+                which,
                 "",
                 format!("more than {max_entries} entries; the rest were not looked at"),
             );
@@ -131,80 +228,127 @@ fn folder_names(root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<Str
     names
 }
 
-fn refuse(out: &mut Discovery, folder: &str, reason: String) {
+fn refuse(out: &mut Discovery, root: Root, folder: &str, reason: String) {
     out.errors.push(FolderError {
         folder: folder.to_string(),
         reason,
+        root,
     });
 }
 
-fn load_one(canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
+fn load_one(which: Root, canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
     let folder = match std::fs::canonicalize(root.join(name)) {
         // sync-ok: discovery worker
         Ok(p) => p,
-        Err(e) => return refuse(out, name, format!("the folder cannot be read: {e}")),
+        Err(e) => return refuse(out, which, name, format!("the folder cannot be read: {e}")),
     };
     if !folder.starts_with(canon_root) {
         return refuse(
             out,
+            which,
             name,
-            "the folder is a link to somewhere outside the mods folder".into(),
+            format!(
+                "the folder is a link to somewhere outside {}",
+                which.words()
+            ),
         );
     }
-    let text = match read_manifest(&folder) {
-        Ok(t) => t,
-        Err(reason) => return refuse(out, name, reason),
+    let kind = match manifest_kind(&folder) {
+        Ok(k) => k,
+        Err(reason) => return refuse(out, which, name, reason),
     };
-    let manifest = match crate::manifest::parse(&text) {
+    let text = match read_manifest(&folder, kind.file()) {
+        Ok(t) => t,
+        Err(reason) => return refuse(out, which, name, reason),
+    };
+    let manifest = match parse_as(kind, &text) {
         Ok(m) => m,
-        Err(reason) => return refuse(out, name, reason),
+        Err(reason) => return refuse(out, which, name, reason),
     };
     if manifest.id != name {
         return refuse(
             out,
+            which,
             name,
             format!(
-                "the folder is named \"{name}\" but mod.json says id \"{}\"; the folder name must be the id",
+                "the folder is named \"{name}\" but {} says id \"{}\"; the folder name must be the id",
+                kind.file(),
                 manifest.id
             ),
         );
     }
-    let entry = match &manifest.panel {
-        None => None,
-        Some(p) => match paths::inside(&folder, &p.entry) {
-            Ok(path) => Some(path),
-            Err(reason) => {
-                return refuse(out, name, format!("panel.entry {reason}"));
-            }
-        },
+    // Every file the manifest names must be a real file inside the folder.
+    let page = |rel: Option<&str>, field: &str| -> Result<Option<PathBuf>, String> {
+        rel.map(|r| paths::inside(&folder, r).map_err(|reason| format!("{field} {reason}")))
+            .transpose()
+    };
+    let files = (|| {
+        let entry = page(
+            manifest.panel.as_ref().map(|p| p.entry.as_str()),
+            "panel.entry",
+        )?;
+        let background = page(manifest.background.as_deref(), "background")?;
+        let bar = page(manifest.bar.as_ref().map(|b| b.entry.as_str()), "bar.entry")?;
+        let helper = manifest
+            .helper
+            .as_ref()
+            .map(|h| {
+                paths::program_inside(&folder, &h.command)
+                    .map_err(|reason| format!("helper.command {reason}"))
+            })
+            .transpose()?;
+        Ok::<_, String>((entry, background, bar, helper))
+    })();
+    let (entry, background, bar, helper) = match files {
+        Ok(f) => f,
+        Err(reason) => return refuse(out, which, name, reason),
     };
     out.mods.push(Found {
         manifest,
         folder,
+        root: which,
         entry,
+        background,
+        bar,
+        helper,
     });
 }
 
-/// The text of `mod.json` in a canonical mod folder: it must resolve inside the folder, be at most 64 KB
+/// Which manifest the folder holds: exactly one of `plugin.json` and `mod.json`.
+fn manifest_kind(folder: &Path) -> Result<Kind, String> {
+    let has = |f: &str| std::fs::symlink_metadata(folder.join(f)).is_ok(); // sync-ok: discovery worker
+    match (has(PLUGIN_FILE), has(MANIFEST_FILE)) {
+        (true, true) => Err(format!(
+            "the folder holds both {PLUGIN_FILE} and {MANIFEST_FILE}; keep the one for its protocol"
+        )),
+        (true, false) => Ok(Kind::Plugin),
+        (false, true) => Ok(Kind::Mod),
+        (false, false) => Err(format!(
+            "there is no {MANIFEST_FILE} or {PLUGIN_FILE} in this folder"
+        )),
+    }
+}
+
+/// The text of the manifest `file` in a canonical mod folder: it must resolve inside the folder, be at most 64 KB
 /// and be UTF-8.
-fn read_manifest(folder: &Path) -> Result<String, String> {
-    let file = folder.join(MANIFEST_FILE);
-    let real = std::fs::canonicalize(&file) // sync-ok: discovery worker
-        .map_err(|_| "there is no mod.json in this folder".to_string())?;
+fn read_manifest(folder: &Path, file: &str) -> Result<String, String> {
+    let path = folder.join(file);
+    let real = std::fs::canonicalize(&path) // sync-ok: discovery worker
+        .map_err(|_| format!("{file} cannot be opened"))?;
     if !real.starts_with(folder) {
-        return Err("mod.json is a link to a file outside the mod folder".into());
+        return Err(format!("{file} is a link to a file outside the mod folder"));
     }
     let mut raw = Vec::new();
     std::fs::File::open(&real) // sync-ok: discovery worker
         .and_then(|f| f.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut raw))
-        .map_err(|e| format!("mod.json cannot be read: {e}"))?;
+        .map_err(|e| format!("{file} cannot be read: {e}"))?;
     if raw.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(format!(
-            "mod.json is larger than {} KB",
+            "{file} is larger than {} KB",
             MAX_MANIFEST_BYTES / 1024
         ));
     }
-    String::from_utf8(raw).map_err(|_| "mod.json is not UTF-8 text".to_string())
+    String::from_utf8(raw).map_err(|_| format!("{file} is not UTF-8 text"))
 }
 
 #[cfg(test)]
@@ -506,5 +650,222 @@ mod tests {
             !page.contains("http://") && !page.contains("https://") && !page.contains("//cdn"),
             "the sample makes no network reference"
         );
+    }
+
+    // ---- the plugins folder and protocol 2 ----
+
+    const PLUGIN: &str = r#"{
+        "id": "todo", "name": "To-dos", "version": "1.0.0", "protocol": 2,
+        "description": "Things to check.", "author": "someone",
+        "permissions": ["panel", "bar", "process"],
+        "background": "background.html",
+        "panel": {"entry": "panel.html", "title": "To-dos"},
+        "bar": {"entry": "ui/bar.html", "height": 40},
+        "helper": {"command": "bin/helper.exe"}
+    }"#;
+
+    /// A plugin folder `name` under `root` with the files PLUGIN names.
+    fn plugin_at(root: &Path, name: &str, manifest: &str) {
+        let f = root.join(name);
+        fs::create_dir_all(f.join("ui")).unwrap(); // sync-ok: test code only
+        fs::create_dir_all(f.join("bin")).unwrap(); // sync-ok: test code only
+        for page in ["background.html", "panel.html", "ui/bar.html"] {
+            fs::write(f.join(page), "<p>x</p>").unwrap(); // sync-ok: test code only
+        }
+        fs::write(f.join("bin").join("helper.exe"), "MZ").unwrap(); // sync-ok: test code only
+        fs::write(f.join("plugin.json"), manifest).unwrap(); // sync-ok: test code only
+    }
+
+    #[test]
+    fn a_plugin_in_the_plugins_folder_is_found_with_every_file_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = dir.path().join("plugins");
+        plugin_at(&plugins, "todo", PLUGIN);
+        let d = discover_all(&dir.path().join("mods"), Some(&plugins));
+        assert!(d.errors.is_empty(), "{:?}", d.errors);
+        let f = &d.mods[0];
+        assert_eq!(f.root, Root::Plugins);
+        assert!(f.manifest.is_plugin());
+        assert!(f.entry.as_ref().unwrap().ends_with("panel.html"));
+        assert!(f.background.as_ref().unwrap().ends_with("background.html"));
+        assert!(f.bar.as_ref().unwrap().ends_with("bar.html"));
+        assert!(f.helper.as_ref().unwrap().ends_with("helper.exe"));
+    }
+
+    #[test]
+    fn both_roots_are_read_and_the_result_is_sorted_by_id() {
+        let mods = root_with(&[("notes", GOOD)]);
+        let plugins = tempfile::tempdir().unwrap();
+        plugin_at(plugins.path(), "todo", PLUGIN);
+        let early = PLUGIN.replace("\"todo\"", "\"alpha\"");
+        plugin_at(plugins.path(), "alpha", &early);
+        let d = discover_all(mods.path(), Some(plugins.path()));
+        assert!(d.errors.is_empty(), "{:?}", d.errors);
+        let got: Vec<(&str, Root)> = d
+            .mods
+            .iter()
+            .map(|f| (f.manifest.id.as_str(), f.root))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("alpha", Root::Plugins),
+                ("notes", Root::Mods),
+                ("todo", Root::Plugins)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_id_in_both_folders_is_refused_in_the_plugins_folder() {
+        let mods = root_with(&[("notes", GOOD)]);
+        let plugins = tempfile::tempdir().unwrap();
+        plugin_at(
+            plugins.path(),
+            "notes",
+            &PLUGIN.replace("\"todo\"", "\"notes\""),
+        );
+        let d = discover_all(mods.path(), Some(plugins.path()));
+        assert_eq!(d.mods.len(), 1);
+        assert_eq!(d.mods[0].root, Root::Mods, "the mods folder wins");
+        assert_eq!(d.errors.len(), 1);
+        assert_eq!(d.errors[0].root, Root::Plugins);
+        assert_eq!(d.errors[0].folder, "notes");
+        assert!(
+            d.errors[0]
+                .reason
+                .contains("unique across mods and plugins"),
+            "{:?}",
+            d.errors
+        );
+        // A broken folder in the mods folder still holds its id.
+        fs::write(mods.path().join("notes").join("mod.json"), "{").unwrap(); // sync-ok: test code only
+        let d = discover_all(mods.path(), Some(plugins.path()));
+        assert!(d.mods.is_empty());
+        assert_eq!(d.errors.len(), 2, "{:?}", d.errors);
+    }
+
+    #[test]
+    fn either_manifest_is_read_in_either_folder_and_both_at_once_is_refused() {
+        let plugins = tempfile::tempdir().unwrap();
+        // A protocol 1 mod dropped in the plugins folder by hand is still a mod.
+        let f = plugins.path().join("notes");
+        fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
+        fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+        fs::write(f.join("mod.json"), GOOD).unwrap(); // sync-ok: test code only
+        let mods = tempfile::tempdir().unwrap();
+        plugin_at(mods.path(), "todo", PLUGIN);
+        let d = discover_all(mods.path(), Some(plugins.path()));
+        assert!(d.errors.is_empty(), "{:?}", d.errors);
+        assert_eq!(d.mods.len(), 2);
+        assert!(!d.mods[0].manifest.is_plugin() && d.mods[0].root == Root::Plugins);
+        assert!(d.mods[1].manifest.is_plugin() && d.mods[1].root == Root::Mods);
+        fs::write(f.join("plugin.json"), PLUGIN).unwrap(); // sync-ok: test code only
+        let d = discover_all(mods.path(), Some(plugins.path()));
+        assert!(
+            d.errors[0].reason.contains("both plugin.json and mod.json"),
+            "{:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn a_plugin_json_must_say_protocol_2_and_its_refusals_name_plugin_json() {
+        let plugins = tempfile::tempdir().unwrap();
+        plugin_at(
+            plugins.path(),
+            "todo",
+            &PLUGIN.replace("\"protocol\": 2", "\"protocol\": 1"),
+        );
+        let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+        assert!(
+            d.errors[0]
+                .reason
+                .contains("protocol must be the number 2 in plugin.json"),
+            "{:?}",
+            d.errors
+        );
+        plugin_at(
+            plugins.path(),
+            "todo",
+            &PLUGIN.replace("\"todo\"", "\"other\""),
+        );
+        let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+        assert!(
+            d.errors[0].reason.contains("plugin.json says id \"other\""),
+            "{:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn every_file_a_plugin_names_must_be_in_its_folder() {
+        for (gone, want) in [
+            ("background.html", "background does not exist"),
+            ("ui/bar.html", "bar.entry does not exist"),
+            ("bin/helper.exe", "helper.command does not exist"),
+            ("panel.html", "panel.entry does not exist"),
+        ] {
+            let plugins = tempfile::tempdir().unwrap();
+            plugin_at(plugins.path(), "todo", PLUGIN);
+            fs::remove_file(plugins.path().join("todo").join(gone)).unwrap(); // sync-ok: test code only
+            let d = discover_all(&plugins.path().join("none"), Some(plugins.path()));
+            assert!(d.mods.is_empty(), "{gone}");
+            assert!(d.errors[0].reason.contains(want), "{gone}: {:?}", d.errors);
+        }
+    }
+
+    #[test]
+    fn problems_of_the_plugins_folder_name_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plugins");
+        fs::write(&file, "x").unwrap(); // sync-ok: test code only
+        let d = discover_all(&dir.path().join("mods"), Some(&file));
+        assert_eq!(d.errors[0].root, Root::Plugins);
+        assert_eq!(d.errors[0].reason, "the plugins folder is not a folder");
+        let plugins = tempfile::tempdir().unwrap();
+        fs::create_dir(plugins.path().join("Bad_Name")).unwrap(); // sync-ok: test code only
+        let d = discover_all(&dir.path().join("mods"), Some(plugins.path()));
+        assert!(
+            d.errors[0].reason.contains("not a plugin id"),
+            "{:?}",
+            d.errors
+        );
+        // A missing plugins folder is nothing found, as a missing mods folder is.
+        let d = discover_all(&dir.path().join("mods"), Some(&dir.path().join("absent")));
+        assert_eq!(d, Discovery::default());
+    }
+
+    /// Every folder in `sample-plugins/` is a valid protocol 2 plugin: they are the examples the plugin author docs use.
+    #[test]
+    fn the_sample_plugins_are_valid() {
+        let samples = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sample-plugins"));
+        let d = discover_all(&samples.join("no-mods-here"), Some(samples));
+        assert!(d.errors.is_empty(), "{:?}", d.errors);
+        assert!(!d.mods.is_empty());
+        for f in &d.mods {
+            assert!(f.manifest.is_plugin(), "{}", f.manifest.id);
+            assert_eq!(f.root, Root::Plugins);
+            for page in [&f.entry, &f.background, &f.bar].into_iter().flatten() {
+                let text = fs::read_to_string(page).unwrap(); // sync-ok: test code only
+                assert!(
+                    !text.contains("http://") && !text.contains("//cdn"),
+                    "{} makes no network reference",
+                    page.display()
+                );
+            }
+        }
+        let tour = d
+            .mods
+            .iter()
+            .find(|f| f.manifest.id == "manifest-tour")
+            .expect("the manifest tour");
+        let m = &tour.manifest;
+        assert!(m.author.is_some() && m.homepage.is_some());
+        assert!(tour.background.is_some() && tour.bar.is_some() && tour.entry.is_some());
+        assert!(!m.contributes.sidebar.is_empty());
+        assert!(!m.contributes.actions.is_empty());
+        assert!(!m.contributes.icons.is_empty());
+        assert_eq!(m.tools[0].name, "add_item");
     }
 }

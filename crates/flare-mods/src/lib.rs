@@ -1,14 +1,18 @@
 //! Mods, Surfaces stage 8, the library part: no UI, no Win32 window, no WebView2.
 //!
 //! A mod is a folder under `%APPDATA%\Flare\mods\<id>\` with a `mod.json` manifest that declares what
-//! it may do (`docs/surfaces/mods.md` is the contract). This crate holds everything about a mod that
-//! is not drawing it:
+//! it may do (`docs/surfaces/mods.md` is the contract). A plugin (protocol 2) is the same with a `plugin.json`,
+//! usually under `%APPDATA%\Flare\plugins\<id>\`; the two folders share one id space. This crate holds
+//! everything about a mod that is not drawing it:
 //!
-//! - `manifest`: the strict parse and validation of `mod.json` (every rule, with a human-readable reason).
+//! - `manifest`: the strict parse and validation of `mod.json` and `plugin.json` (every rule, with a
+//!   human-readable reason).
 //! - `paths`: the syntax of a path inside a mod folder, and the canonical containment check (no escape
 //!   by `..`, a drive, a UNC path or a link).
-//! - `discover`: the scan of the mods folder (bounded, per-folder errors, worker-callable).
-//! - `enabled`: which mods the user turned on (`mods.json`, atomic, unknown entries dropped).
+//! - `discover`: the scan of the mods and plugins folders (bounded, per-folder errors, worker-callable).
+//! - `enabled`: which mods the user turned on (`mods.json`, atomic, unknown entries dropped), with what a
+//!   plugin said it was when it was approved.
+//! - `hash`: the content hash of a plugin folder kept with its approval.
 //! - `tokens`: the in-memory token of each enabled mod (256 bits from the system RNG, never stored),
 //!   and the pure map from a token to the mod's `Grant` (rule S5).
 //! - `tools`: the names the agent sees (`mod_<id>_<tool>`) and the table that routes a call to its mod,
@@ -25,6 +29,7 @@
 pub mod bridge;
 pub mod discover;
 pub mod enabled;
+pub mod hash;
 pub mod hub;
 pub mod manifest;
 pub mod paths;
@@ -32,9 +37,11 @@ pub mod serve;
 pub mod tokens;
 pub mod tools;
 
-pub use discover::{Discovery, FolderError, Found, discover};
+pub use discover::{Discovery, FolderError, Found, Root, discover, discover_all};
 pub use enabled::EnabledStore;
 pub use hub::Hub;
-pub use manifest::{Manifest, PROTOCOL, parse as parse_manifest};
+pub use manifest::{
+    Kind, Manifest, PROTOCOL_V1, PROTOCOL_V2, parse as parse_manifest, parse_plugin,
+};
 pub use tokens::{Tokens, mod_grant};
 pub use tools::{Collision, Route, TooLong, ToolTable, tool_name};

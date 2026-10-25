@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Tour</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; padding: 12px 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  ol { margin: 0; padding-left: 22px; }
+  li { margin: 3px 0; overflow-wrap: anywhere; }
+  .empty { margin: 0; opacity: 0.6; }
+</style>
+</head>
+<body>
+<h1>Tour</h1>
+<ol id="list"></ol>
+<p class="empty" id="empty">Nothing yet. Claude can add a line with add_item.</p>
+<script>
+// The panel of the protocol 2 sample. Like a protocol 1 mod it talks to Flare only through window.flare, and it
+// answers the add_item tool. The background page, the bar, the sidebar section and the actions are declared in
+// plugin.json; this Flare checks them and runs them in a later version.
+(function () {
+  var items = [];
+
+  function render() {
+    var list = document.getElementById('list');
+    list.textContent = '';
+    items.forEach(function (text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    });
+    document.getElementById('empty').hidden = items.length > 0;
+  }
+
+  window.flare.on('tool', function (call) {
+    if (call.tool !== 'add_item') {
+      window.flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    var text = call.input && typeof call.input.text === 'string' ? call.input.text.trim() : '';
+    if (text.length < 1 || text.length > 200) {
+      window.flare.respond(call.callId, null, 'text must be 1 to 200 characters');
+      return;
+    }
+    items.push(text);
+    render();
+    window.flare.respond(call.callId, { count: items.length });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

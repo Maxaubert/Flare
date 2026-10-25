@@ -1,9 +1,11 @@
-//! The mods hub (stage 8, the app part): everything the app knows about mods, behind one lock, with no
-//! window and no browser. The Settings page, the control channel's dispatcher and the window all hold the
+//! The mods hub (stage 8, the app part): everything the app knows about mods and plugins, behind one lock, with
+//! no window and no browser. The Settings page, the control channel's dispatcher and the window all hold the
 //! same `Arc<Hub>`.
 //!
-//! - **Discovery** (`scan`) reads the mods folder and the switch file on a worker; the answer replaces what
-//!   the hub knows. A scan never turns a mod on: the switches are the user's.
+//! - **Discovery** (`scan`) reads the mods folder, the plugins folder and the switch file on a worker; the answer
+//!   replaces what the hub knows. A scan never turns a mod on: the switches are the user's. A protocol 2 plugin
+//!   that is on stays on only while its manifest asks for nothing new AND names the author and homepage that were
+//!   approved (design section 13).
 //! - **Switches** (`set_enabled`) are applied in memory at once, on any thread: turning a mod ON mints its
 //!   token, turning it OFF kills the token (a connection that presents it is refused on its next request) and
 //!   fails every tool call waiting on the mod. The file is written by `persist`, on a worker (rule 34).
@@ -23,8 +25,8 @@ use std::time::{Duration, Instant};
 use flare_ctl::{CtlError, Grant, Permission, code};
 use serde_json::Value;
 
-use crate::discover::{FolderError, Found, discover};
-use crate::enabled::EnabledStore;
+use crate::discover::{FolderError, Found, Root, discover_all};
+use crate::enabled::{EnabledStore, Identity};
 use crate::tokens::Tokens;
 use crate::tools::{Collision, Route, TooLong, ToolTable};
 
@@ -35,8 +37,9 @@ pub const MAX_PENDING_PER_MOD: usize = 8;
 /// How often a waiting call looks at the stop flag.
 const SLICE: Duration = Duration::from_millis(50);
 
-/// What a permission lets a mod do, in the plain words Settings > Mods shows before the person turns the mod on.
-/// `eval` is never granted to a mod; its words say so if it ever reaches a list.
+/// What a permission lets a mod do, in the plain words Settings > Plugins shows before the person turns the mod on.
+/// `eval` is never granted to a mod; its words say so if it ever reaches a list. The two full-control
+/// permissions say so in their words, and [`permission_warnings`] says it again.
 pub fn permission_words(p: Permission) -> &'static str {
     match p {
         Permission::Panel => "Show its panel in a tab",
@@ -46,6 +49,76 @@ pub fn permission_words(p: Permission) -> &'static str {
         Permission::Tools => "Answer the agent's tool calls",
         Permission::Eval => "Run scripts in pages (never allowed to a mod)",
         Permission::Decorate => "Put badges and progress on tabs",
+        Permission::Tabs => "See all your tabs and what their agents are doing",
+        Permission::Sidebar => "Add a section to the sidebar",
+        Permission::Actions => "Add buttons to tabs and menus",
+        Permission::Bar => "Show a bar under the terminal",
+        Permission::Sessions => "Read what you and Claude say in sessions",
+        Permission::Input => "Type and run commands in your terminals (full control)",
+        Permission::Network => "Use the internet",
+        Permission::Process => "Run its own program on this PC (full access)",
+    }
+}
+
+/// The sentence for `process`: a program that runs as the person, with everything that means.
+pub const WARN_PROCESS: &str = "Full control: its program runs as you with full access to this PC, and can leave things behind outside Flare.";
+/// The sentence for `input`, in the same tier as `process`.
+pub const WARN_INPUT: &str =
+    "Full control: it can type and run commands in your terminals, as if you typed them.";
+/// `input` and `sessions` together.
+pub const WARN_INPUT_SESSIONS: &str =
+    "With both, it can read what Claude says and steer Claude by typing to it.";
+/// `network` and `sessions` together.
+pub const WARN_NETWORK_SESSIONS: &str = "It can send what you and Claude say to the internet.";
+/// `network` and `tabs` together.
+pub const WARN_NETWORK_TABS: &str =
+    "It can send what your tabs show, their names and folders, to the internet.";
+/// `network` alone.
+pub const WARN_NETWORK: &str = "It can change what it does from the internet.";
+
+/// The warnings Settings shows with a plugin's permissions, most serious first: the full-control ones for `process`
+/// and `input`, then the combinations that reach further than either permission alone, then `network`'s own.
+pub fn permission_warnings(perms: &[Permission]) -> Vec<&'static str> {
+    let has = |p: Permission| perms.contains(&p);
+    let mut out = Vec::new();
+    if has(Permission::Process) {
+        out.push(WARN_PROCESS);
+    }
+    if has(Permission::Input) {
+        out.push(WARN_INPUT);
+    }
+    if has(Permission::Input) && has(Permission::Sessions) {
+        out.push(WARN_INPUT_SESSIONS);
+    }
+    if has(Permission::Network) && has(Permission::Sessions) {
+        out.push(WARN_NETWORK_SESSIONS);
+    }
+    if has(Permission::Network) && has(Permission::Tabs) {
+        out.push(WARN_NETWORK_TABS);
+    }
+    if has(Permission::Network) {
+        out.push(WARN_NETWORK);
+    }
+    out
+}
+
+/// Whether the list holds a permission that hands over full control (`process`, `input`).
+pub fn is_full_control(perms: &[Permission]) -> bool {
+    perms
+        .iter()
+        .any(|p| matches!(p, Permission::Process | Permission::Input))
+}
+
+/// What the approval of `f` keeps about who made it: the manifest's author and homepage for a plugin (the source
+/// and the hash come later: install records the source, `persist` the hash), nothing for a protocol 1 mod.
+fn identity_of(f: &Found) -> Identity {
+    if !f.manifest.is_plugin() {
+        return Identity::default();
+    }
+    Identity {
+        author: f.manifest.author.clone(),
+        homepage: f.manifest.homepage.clone(),
+        ..Identity::default()
     }
 }
 
@@ -54,7 +127,9 @@ pub fn permission_words(p: Permission) -> &'static str {
 pub struct Config {
     /// The folder holding one folder per mod (`%APPDATA%\Flare\mods`, or the profile's).
     pub dir: PathBuf,
-    /// The switch file (`mods.json`).
+    /// The second root, `plugins` beside `mods`, read after it (one id space). `None` reads `dir` only.
+    pub plugins_dir: Option<PathBuf>,
+    /// The switch file (`mods.json`), for mods and plugins alike.
     pub state_file: PathBuf,
 }
 
@@ -62,6 +137,10 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModEntry {
     pub id: String,
+    /// 1 for a `mod.json`, 2 for a `plugin.json`.
+    pub protocol: u64,
+    /// The folder it was found in.
+    pub root: Root,
     pub name: String,
     pub version: String,
     pub description: String,
@@ -70,9 +149,12 @@ pub struct ModEntry {
     pub panel_title: Option<String>,
     pub tool_count: usize,
     pub enabled: bool,
-    /// The mod was on and its manifest now asks for permissions the user never approved, so it was turned off.
-    /// Switching it on again approves the new list.
+    /// The mod was on and its manifest now asks for permissions the user never approved (or, for a plugin, names
+    /// another author or homepage), so it was turned off. Switching it on again approves the new list.
     pub needs_approval: bool,
+    /// Protocol 2: who made it and where it lives, as the manifest says.
+    pub author: Option<String>,
+    pub homepage: Option<String>,
 }
 
 /// What the hub knows now.
@@ -110,6 +192,8 @@ struct Inner {
     on: BTreeSet<String>,
     /// What the user approved for each mod that is on (kept with the switch in `mods.json`).
     approved: BTreeMap<String, Vec<Permission>>,
+    /// Who each plugin that is on said it was when it was approved (empty for a protocol 1 mod).
+    identity: BTreeMap<String, Identity>,
     /// Mods turned off by a scan because their manifest asks for more than was approved.
     needs: BTreeSet<String>,
     /// Mods whose approved set was cut down by the last reconcile; the scan writes them.
@@ -159,7 +243,7 @@ impl Hub {
     /// Reads the mods folder (and, the first time, the switch file). Runs on a worker. Replaces what the hub
     /// knew; mods that were turned on and are still valid keep their token, the others lose it.
     pub fn scan(&self) -> Change {
-        let found = discover(&self.cfg.dir);
+        let found = discover_all(&self.cfg.dir, self.cfg.plugins_dir.as_deref());
         // The first scan loads the switches; later ones keep the memory (a switch not yet written to disk is
         // not undone by a scan that reads the old file).
         let first_load = {
@@ -176,10 +260,13 @@ impl Hub {
             store
                 .as_ref()
                 .map(|s| {
-                    let ids: Vec<(String, Vec<Permission>)> = s
+                    let ids: Vec<(String, Vec<Permission>, Identity)> = s
                         .enabled_ids()
                         .into_iter()
-                        .filter_map(|id| s.approved(&id).map(|a| (id, a)))
+                        .filter_map(|id| {
+                            let who = s.identity(&id).unwrap_or_default();
+                            s.approved(&id).map(|a| (id, a, who))
+                        })
                         .collect();
                     (ids, s.is_read_only())
                 })
@@ -187,8 +274,12 @@ impl Hub {
         };
         let mut g = self.lock();
         if first_load {
-            g.on = store_ids.iter().map(|(id, _)| id.clone()).collect();
-            g.approved = store_ids.into_iter().collect();
+            g.on = store_ids.iter().map(|(id, ..)| id.clone()).collect();
+            g.identity = store_ids
+                .iter()
+                .map(|(id, _, who)| (id.clone(), who.clone()))
+                .collect();
+            g.approved = store_ids.into_iter().map(|(id, a, _)| (id, a)).collect();
         }
         g.read_only = read_only;
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
@@ -222,8 +313,13 @@ impl Hub {
                 continue;
             };
             let asked = f.manifest.permissions.clone();
+            // A plugin is also approved as who it said it was: another author or homepage is a new approval.
+            let same_maker = !f.manifest.is_plugin()
+                || g.identity.get(&id).is_some_and(|who| {
+                    who.author == f.manifest.author && who.homepage == f.manifest.homepage
+                });
             match g.approved.get(&id).cloned() {
-                Some(ok) if asked.iter().all(|p| ok.contains(p)) => {
+                Some(ok) if same_maker && asked.iter().all(|p| ok.contains(p)) => {
                     if ok.iter().any(|p| !asked.contains(p)) {
                         g.approved.insert(id.clone(), asked);
                         g.shrunk.push(id);
@@ -277,11 +373,12 @@ impl Hub {
                 log::warn!("could not make a token for mod {id}; it stays off");
             }
         }
-        // The tool table: only mods that are on and hold a token.
+        // The tool table: only mods that are on and hold a token, and that have a panel to answer the calls (a
+        // plugin whose tools only its background page answers waits for background pages; the snapshot says so).
         let manifests: Vec<&crate::manifest::Manifest> = g
             .found
             .iter()
-            .filter(|f| g.tokens.token_of(&f.manifest.id).is_some())
+            .filter(|f| g.tokens.token_of(&f.manifest.id).is_some() && f.manifest.panel.is_some())
             .map(|f| &f.manifest)
             .collect();
         let (table, collisions, too_long) = ToolTable::build(manifests);
@@ -342,16 +439,18 @@ impl Hub {
         g.needs.remove(id);
         if on {
             // Switching on is the approval: the manifest's list as it stands now.
-            let asked = g
+            let (asked, who) = g
                 .found
                 .iter()
                 .find(|f| f.manifest.id == id)
-                .map(|f| f.manifest.permissions.clone())
+                .map(|f| (f.manifest.permissions.clone(), identity_of(f)))
                 .unwrap_or_default();
             g.approved.insert(id.to_string(), asked);
+            g.identity.insert(id.to_string(), who);
             g.on.insert(id.to_string());
         } else {
             g.approved.remove(id);
+            g.identity.remove(id);
             g.on.remove(id);
         }
         let revoked = Self::reconcile(&mut g);
@@ -365,17 +464,43 @@ impl Hub {
     /// Writes the mod's switch to the file, as it stands NOW. Runs on a worker. It reads the state under the
     /// file's lock, so two saves racing each other (a mod turned on and straight off again) both write the latest
     /// state, never a stale one. An error is a sentence for Settings; the switch keeps its effect for this session.
+    ///
+    /// A plugin that is on and whose approval holds no content hash yet gets one first (its folder's files are read
+    /// here, on the worker, before any lock is taken), so the hash kept is of the folder the person approved.
     pub fn persist(&self, id: &str) -> Result<(), String> {
+        let unhashed = {
+            let g = self.lock();
+            let needs = g.on.contains(id) && g.identity.get(id).is_some_and(|w| w.hash.is_none());
+            g.found
+                .iter()
+                .find(|f| f.manifest.id == id && f.manifest.is_plugin())
+                .filter(|_| needs)
+                .map(|f| f.folder.clone())
+        };
+        if let Some(folder) = unhashed {
+            match crate::hash::folder_hash(&folder) {
+                Ok(hash) => {
+                    let mut g = self.lock();
+                    if g.on.contains(id)
+                        && let Some(who) = g.identity.get_mut(id)
+                    {
+                        who.hash = Some(hash);
+                    }
+                }
+                Err(why) => log::warn!("no content hash for plugin {id}: {why}"),
+            }
+        }
         let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        let (on, approved) = {
+        let (on, approved, who) = {
             let g = self.lock();
             (
                 g.on.contains(id),
                 g.approved.get(id).cloned().unwrap_or_default(),
+                g.identity.get(id).cloned().unwrap_or_default(),
             )
         };
         let store = store.get_or_insert_with(|| EnabledStore::load(self.cfg.state_file.clone())); // sync-ok: runs on a worker
-        store.set(id, on, &approved)
+        store.set_with(id, on, &approved, &who)
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -390,6 +515,8 @@ impl Hub {
             .iter()
             .map(|f| ModEntry {
                 id: f.manifest.id.clone(),
+                protocol: f.manifest.protocol,
+                root: f.root,
                 name: f.manifest.name.clone(),
                 version: f.manifest.version.clone(),
                 description: f.manifest.description.clone(),
@@ -398,9 +525,19 @@ impl Hub {
                 tool_count: f.manifest.tools.len(),
                 enabled: g.on.contains(&f.manifest.id),
                 needs_approval: g.needs.contains(&f.manifest.id),
+                author: f.manifest.author.clone(),
+                homepage: f.manifest.homepage.clone(),
             })
             .collect();
         let mut notes = Vec::new();
+        for f in &g.found {
+            if !f.manifest.tools.is_empty() && f.manifest.panel.is_none() {
+                notes.push(format!(
+                    "The tools of {} are left out: its background page answers them, and this Flare does not run background pages yet.",
+                    f.manifest.id
+                ));
+            }
+        }
         for c in &g.collisions {
             let who: Vec<String> = c.claims.iter().map(|(m, t)| format!("{m} ({t})")).collect();
             notes.push(format!(
@@ -678,6 +815,7 @@ mod tests {
         }
         let hub = Hub::new(Config {
             dir: root.clone(),
+            plugins_dir: Some(dir.path().join("plugins")),
             state_file: dir.path().join("mods.json"),
         });
         World {
@@ -694,10 +832,64 @@ mod tests {
 
     #[test]
     fn every_permission_a_manifest_may_ask_has_plain_words() {
-        for p in crate::manifest::ASKABLE {
+        for p in crate::manifest::ASKABLE_V2 {
             let w = permission_words(p);
             assert!(!w.is_empty() && !w.contains('\u{2014}'), "{p:?}");
-            assert!(w.split_whitespace().count() <= 8, "{w}");
+            assert!(w.split_whitespace().count() <= 10, "{w}");
+        }
+        // The words of every permission are different, so a list reads as what it asks for.
+        let mut all: Vec<&str> = Permission::ALL.into_iter().map(permission_words).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), Permission::ALL.len());
+    }
+
+    #[test]
+    fn the_full_control_permissions_say_so_in_their_words_and_warnings() {
+        assert!(permission_words(Permission::Process).contains("full access"));
+        assert!(permission_words(Permission::Input).contains("full control"));
+        assert_eq!(permission_warnings(&[Permission::Process]), [WARN_PROCESS]);
+        assert_eq!(permission_warnings(&[Permission::Input]), [WARN_INPUT]);
+        assert!(is_full_control(&[Permission::View, Permission::Input]));
+        assert!(is_full_control(&[Permission::Process]));
+        assert!(!is_full_control(&crate::manifest::ASKABLE_V1));
+        for w in [WARN_PROCESS, WARN_INPUT] {
+            assert!(w.starts_with("Full control:"), "{w}");
+        }
+        assert!(WARN_PROCESS.contains("outside Flare"));
+    }
+
+    #[test]
+    fn the_combined_warnings_come_with_both_permissions_only() {
+        use Permission as P;
+        assert!(permission_warnings(&crate::manifest::ASKABLE_V1).is_empty());
+        assert!(permission_warnings(&[P::Sessions, P::Tabs, P::Decorate]).is_empty());
+        assert_eq!(
+            permission_warnings(&[P::Input, P::Sessions]),
+            [WARN_INPUT, WARN_INPUT_SESSIONS]
+        );
+        assert_eq!(
+            permission_warnings(&[P::Network, P::Sessions]),
+            [WARN_NETWORK_SESSIONS, WARN_NETWORK]
+        );
+        assert_eq!(
+            permission_warnings(&[P::Tabs, P::Network]),
+            [WARN_NETWORK_TABS, WARN_NETWORK]
+        );
+        assert_eq!(permission_warnings(&[P::Network]), [WARN_NETWORK]);
+        assert_eq!(
+            permission_warnings(&crate::manifest::ASKABLE_V2),
+            [
+                WARN_PROCESS,
+                WARN_INPUT,
+                WARN_INPUT_SESSIONS,
+                WARN_NETWORK_SESSIONS,
+                WARN_NETWORK_TABS,
+                WARN_NETWORK
+            ]
+        );
+        for w in permission_warnings(&crate::manifest::ASKABLE_V2) {
+            assert!(!w.contains('\u{2014}'), "{w}");
         }
     }
 
@@ -1211,6 +1403,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let hub = Hub::new(Config {
             dir: dir.path().join("nope"),
+            plugins_dir: Some(dir.path().join("nope-either")),
             state_file: dir.path().join("mods.json"),
         });
         hub.scan();
@@ -1229,5 +1422,192 @@ mod tests {
         };
         let text = format!("{:?}", w.hub.snapshot());
         assert!(!text.contains(&token));
+    }
+
+    // ---- protocol 2 plugins in the plugins folder ----
+
+    fn plugin_json(id: &str, author: &str, perms: &str, extra: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"Plugin {id}","version":"1.0.0","protocol":2,"description":"d","author":"{author}","homepage":"https://example.com/{id}","permissions":{perms}{extra}}}"#
+        )
+    }
+
+    /// Writes a plugin folder in the world's plugins folder, with a panel page and a background page.
+    fn put_plugin(w: &World, id: &str, manifest: &str) {
+        let f = w.root.parent().unwrap().join("plugins").join(id);
+        std::fs::create_dir_all(&f).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("plugin.json"), manifest).unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("index.html"), "<p>x</p>").unwrap(); // sync-ok: test code only
+        std::fs::write(f.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only
+    }
+
+    fn todo_world() -> World {
+        let w = world(&[]);
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["decorate","tabs"]"#, ""),
+        );
+        w
+    }
+
+    #[test]
+    fn a_plugin_is_listed_with_its_protocol_root_author_and_homepage() {
+        let w = todo_world();
+        w.hub.scan();
+        let s = w.hub.snapshot();
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        let e = &s.mods[0];
+        assert_eq!((e.protocol, e.root), (2, Root::Plugins));
+        assert_eq!(e.author.as_deref(), Some("someone"));
+        assert_eq!(e.homepage.as_deref(), Some("https://example.com/todo"));
+        assert!(!e.enabled, "off until the user turns it on");
+        // A protocol 1 mod says protocol 1 and has no author.
+        let n = notes_world();
+        n.hub.scan();
+        let m = &n.hub.snapshot().mods[0];
+        assert_eq!(
+            (m.protocol, m.root, m.author.clone()),
+            (1, Root::Mods, None)
+        );
+    }
+
+    #[test]
+    fn turning_a_plugin_on_grants_its_plugin_permissions_and_keeps_who_made_it_with_a_hash() {
+        let w = todo_world();
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        assert_eq!(
+            w.hub.grant_of_mod("todo").unwrap(),
+            Grant::Mod {
+                id: "todo".into(),
+                permissions: vec![Permission::Decorate, Permission::Tabs]
+            }
+        );
+        w.hub.persist("todo").unwrap();
+        let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let e = &v["mods"]["todo"];
+        assert_eq!(e["on"], true);
+        assert_eq!(e["permissions"], json!(["decorate", "tabs"]));
+        assert_eq!(e["author"], "someone");
+        assert_eq!(e["homepage"], "https://example.com/todo");
+        assert!(
+            e["hash"].as_str().is_some_and(crate::hash::is_hash),
+            "{text}"
+        );
+        assert!(e.get("source").is_none(), "no install source yet");
+        // A restart reads it back on.
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(again.is_enabled("todo"));
+        // Off drops the identity with the approval.
+        w.hub.set_enabled("todo", false).unwrap();
+        w.hub.persist("todo").unwrap();
+        let text = std::fs::read_to_string(&w.hub.config().state_file).unwrap(); // sync-ok: test code only
+        assert!(text.contains(r#""todo":{"on":false}"#), "{text}");
+    }
+
+    #[test]
+    fn a_plugin_whose_author_or_homepage_changes_is_turned_off_until_approved_again() {
+        let w = todo_world();
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        w.hub.persist("todo").unwrap();
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone else", r#"["decorate","tabs"]"#, ""),
+        );
+        let c = w.hub.scan();
+        assert_eq!(c.revoked, vec!["todo".to_string()]);
+        assert!(!w.hub.is_enabled("todo"));
+        assert!(w.hub.snapshot().mods[0].needs_approval);
+        let again = Hub::new(w.hub.config().clone());
+        again.scan();
+        assert!(!again.is_enabled("todo"), "a restart keeps it off");
+        // Switching it on approves the new maker.
+        w.hub.set_enabled("todo", true).unwrap();
+        w.hub.persist("todo").unwrap();
+        w.hub.scan();
+        assert!(w.hub.is_enabled("todo"));
+        // The homepage counts too.
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone else", r#"["decorate","tabs"]"#, "")
+                .replace("example.com/todo", "example.org/todo"),
+        );
+        w.hub.scan();
+        assert!(!w.hub.is_enabled("todo"));
+    }
+
+    #[test]
+    fn a_plugin_that_asks_for_more_is_turned_off_like_a_mod() {
+        let w = todo_world();
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        w.hub.persist("todo").unwrap();
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["decorate","tabs","sessions"]"#, ""),
+        );
+        w.hub.scan();
+        assert!(!w.hub.is_enabled("todo"));
+        assert!(w.hub.snapshot().mods[0].needs_approval);
+    }
+
+    #[test]
+    fn an_id_in_both_folders_is_a_problem_and_the_mod_stays() {
+        let t = format!("[{}]", tool("append_note"));
+        let w = world(&[("notes", r#"["panel","tools"]"#, &t)]);
+        put_plugin(&w, "notes", &plugin_json("notes", "x", "[]", ""));
+        w.hub.scan();
+        let s = w.hub.snapshot();
+        assert_eq!(s.mods.len(), 1);
+        assert_eq!(s.mods[0].root, Root::Mods);
+        assert_eq!(s.errors[0].root, Root::Plugins);
+        assert!(
+            s.errors[0]
+                .reason
+                .contains("unique across mods and plugins")
+        );
+    }
+
+    #[test]
+    fn tools_only_a_background_page_could_answer_are_left_out_with_a_note() {
+        let w = world(&[]);
+        let tools = format!(r#","background":"bg.html","tools":[{}]"#, tool("add_todo"));
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "me", r#"["tools"]"#, &tools),
+        );
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        assert!(w.hub.grant_of_mod("todo").is_some());
+        assert!(w.hub.tools().is_empty(), "nothing could answer them yet");
+        let s = w.hub.snapshot();
+        assert!(
+            s.notes
+                .iter()
+                .any(|n| n.contains("todo") && n.contains("background")),
+            "{:?}",
+            s.notes
+        );
+        // With a panel as well, the panel answers them as a mod's does.
+        let tools = format!(
+            r#","background":"bg.html","panel":{{"entry":"index.html","title":"T"}},"tools":[{}]"#,
+            tool("add_todo")
+        );
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "me", r#"["tools","panel"]"#, &tools),
+        );
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        assert_eq!(w.hub.tools()[0].name, "mod_todo_add_todo");
     }
 }
