@@ -230,7 +230,10 @@ impl AppCtl {
                 WebOut::Changed => self.refresh(),
                 o @ (WebOut::ModMessage { .. }
                 | WebOut::ModPage { .. }
-                | WebOut::ModLost { .. }) => {
+                | WebOut::ModLost { .. }
+                | WebOut::BgMessage { .. }
+                | WebOut::BgPage { .. }
+                | WebOut::BgLost { .. }) => {
                     self.on_mod_web(o);
                 }
                 WebOut::Download {

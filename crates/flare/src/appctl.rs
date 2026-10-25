@@ -462,6 +462,9 @@ pub struct AppCtl {
     hub_known: HashSet<String>,
     /// The badges and progress callers put on tabs (plugins phase 1): the agent's own, through the channel.
     decor: Decors,
+    /// The tabs as the plugins last heard of them (plugins phase 3): the next refresh tells them what changed.
+    /// None while no page listens.
+    plugin_seen: Option<Vec<crate::appctl::mods_glue::TabFact>>,
     /// The hub's view of the host's handles, refreshed before every hub call.
     handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>>,
     /// The colours the marks wear, from the look and the picks.
@@ -864,6 +867,7 @@ impl AppCtl {
             hub,
             hub_known: HashSet::new(),
             decor: Decors::default(),
+            plugin_seen: None,
             handles,
             marks,
             marks_rainbow,
@@ -1488,7 +1492,16 @@ impl AppCtl {
             r.offset_css = offsets.get(&r.id).copied().unwrap_or(0.0);
             r.carried = carried.as_deref() == Some(r.id.as_str());
         }
-        crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale);
+        match self.mods.as_ref().map(|m| Arc::clone(m.hub())) {
+            Some(hub) => crate::tabs_ui::decorate_with(
+                &mut view.rows,
+                &self.decor,
+                self.scale,
+                &|id, icon| hub.icon_of(id, icon),
+                &|id| hub.name_of(id),
+            ),
+            None => crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale),
+        }
 
         sync_rows(&self.rows_model, &view.rows);
         if self.last_geom.as_ref() != Some(&view.geom) {
@@ -1603,6 +1616,8 @@ impl AppCtl {
         self.update_skeleton(now);
         self.update_clock();
         self.update_badge();
+        // What changed on the tabs since the last refresh goes to the plugins that listen (one round a refresh).
+        self.plugin_events();
         app.window().request_redraw();
         self.kick();
     }
@@ -3361,11 +3376,25 @@ impl AppCtl {
         &self,
         tab: &str,
         source: &DecorSource,
+        generation: u64,
     ) -> Result<(), flare_ctl::CtlError> {
         if *source == DecorSource::Agent && self.hub.agent_kind(tab).is_none() {
             return Err(flare_ctl::CtlError::new(
                 flare_ctl::code::FORBIDDEN,
                 "no agent in this tab",
+            ));
+        }
+        // A plugin's change that was checked while it was on is not applied once it is off: everything it put up
+        // went when it was turned off, and nothing of it comes back, not even when it is on again by now (its
+        // generation moved on).
+        if let DecorSource::Plugin(id) = source
+            && self.mods.as_ref().is_some_and(|m| {
+                m.hub().grant_of_mod(id).is_none() || m.hub().generation(id) != generation
+            })
+        {
+            return Err(flare_ctl::CtlError::new(
+                flare_ctl::code::UNAUTHORIZED,
+                "the plugin is turned off",
             ));
         }
         Ok(())
@@ -3399,6 +3428,11 @@ impl AppCtl {
                         json!({"id": t.id, "title": label, "active": active.as_deref() == Some(&t.id)})
                     })
                     .collect();
+                Ok(json!({"tabs": tabs}))
+            }
+            CtlOp::TabsWide => {
+                let tabs: Vec<serde_json::Value> =
+                    self.tab_facts().iter().map(|f| f.to_json()).collect();
                 Ok(json!({"tabs": tabs}))
             }
             CtlOp::TabCwd { tab } => {
@@ -3492,11 +3526,12 @@ impl AppCtl {
                 icon,
                 tip,
                 tone,
+                generation,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
-                self.agent_decor_allowed(&tab, &source)?;
+                self.agent_decor_allowed(&tab, &source, generation)?;
                 match self.decor.set_badge(&tab, source, &key, &icon, &tip, tone) {
                     Ok(changed) => {
                         if changed {
@@ -3530,11 +3565,12 @@ impl AppCtl {
                 key,
                 value,
                 label,
+                generation,
             } => {
                 if !self.is_shell_tab(&tab) {
                     return Err(no_tab());
                 }
-                self.agent_decor_allowed(&tab, &source)?;
+                self.agent_decor_allowed(&tab, &source, generation)?;
                 if self.decor.set_progress(&tab, source, &key, value, &label) {
                     self.refresh();
                 }
@@ -8157,6 +8193,7 @@ two",
             icon: icon.into(),
             tip: tip.into(),
             tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
         }
     }
 
@@ -8167,6 +8204,7 @@ two",
             key: "progress".into(),
             value,
             label: "Review".into(),
+            generation: 0,
         }
     }
 
@@ -8309,6 +8347,7 @@ two",
             icon: "star".into(),
             tip: String::new(),
             tone: flare_tabs::decor::Tone::Ink,
+            generation: 0,
         };
         ctl_call(&f, op).unwrap();
         assert!(f.ctl.borrow().has_decor(&a));

@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use flare_ctl::{CtlError, Grant, Permission, code};
@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use crate::discover::{FolderError, Found, discover};
 use crate::enabled::{EnabledStore, Identity};
+use crate::limit::Limits;
 use crate::tokens::Tokens;
 use crate::tools::{Collision, Route, TooLong, ToolTable};
 
@@ -34,6 +35,8 @@ use crate::tools::{Collision, Route, TooLong, ToolTable};
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Calls one mod may have waiting at once.
 pub const MAX_PENDING_PER_MOD: usize = 8;
+/// Plugins with a background page that may be on at once (design 10).
+pub const MAX_BACKGROUND: usize = 6;
 /// How often a waiting call looks at the stop flag.
 const SLICE: Duration = Duration::from_millis(50);
 
@@ -165,6 +168,11 @@ pub struct ModEntry {
     /// Protocol 2: who made it and where it lives, as the manifest says.
     pub author: Option<String>,
     pub homepage: Option<String>,
+    /// Protocol 2: it has a background page.
+    pub background: bool,
+    /// Its background page was stopped (it failed too often, or more are running than may): the sentence for
+    /// Settings.
+    pub stopped: Option<String>,
 }
 
 /// What the hub knows now.
@@ -177,6 +185,8 @@ pub struct Snapshot {
     pub errors: Vec<FolderError>,
     /// Sentences about tools left out (a clash, a name too long) and a switch file that is read-only.
     pub notes: Vec<String>,
+    /// Why every plugin is off this run (safe mode), if it is.
+    pub safe_mode: Option<String>,
 }
 
 /// What a scan or a switch changed, for the window.
@@ -214,6 +224,14 @@ struct Inner {
     too_long: Vec<TooLong>,
     read_only: bool,
     pending: HashMap<String, Pending>,
+    /// Bumped for a mod each time its token dies (turned off, changed, gone): what was started for an older
+    /// generation is never applied to the newer one.
+    generations: BTreeMap<String, u64>,
+    /// Plugins whose background page was stopped by the window (it failed too often), with the sentence Settings
+    /// shows. Cleared when the plugin is switched.
+    stopped: BTreeMap<String, String>,
+    /// Why this run keeps every plugin off (safe mode), if it does.
+    safe: Option<String>,
 }
 
 pub struct Hub {
@@ -223,6 +241,8 @@ pub struct Hub {
     store: Mutex<Option<EnabledStore>>,
     /// The folders the move left in the old mods folder, each with its sentence; set once, by the first scan.
     kept: OnceLock<Vec<crate::migrate::Kept>>,
+    /// The budget of every protocol 2 plugin that is on (design 13), shared with the window and the browser glue.
+    limits: Arc<Limits>,
 }
 
 /// A tool call routed to a mod, waiting for the page's answer.
@@ -242,7 +262,117 @@ impl Hub {
             inner: Mutex::new(Inner::default()),
             store: Mutex::new(None),
             kept: OnceLock::new(),
+            limits: Arc::new(Limits::default()),
         }
+    }
+
+    /// The plugins' budgets: the window spends a page's messages from it, the browser glue looks at it before it
+    /// copies one, the dispatcher spends a pipe connection's.
+    pub fn limits(&self) -> Arc<Limits> {
+        Arc::clone(&self.limits)
+    }
+
+    /// Keeps the budgets in step with the plugins that are on (protocol 1 mods have none).
+    fn sync_limits(&self) {
+        let ids: Vec<String> = {
+            let g = self.lock();
+            g.found
+                .iter()
+                .filter(|f| f.manifest.is_plugin() && g.tokens.token_of(&f.manifest.id).is_some())
+                .map(|f| f.manifest.id.clone())
+                .collect()
+        };
+        self.limits.keep_only(&ids, Instant::now());
+    }
+
+    /// This run keeps every plugin off (safe mode, design 13): set before the first scan, whose switches are then
+    /// read but not applied (and not written, so the next run has them back). `why` is the sentence Settings shows.
+    pub fn set_safe_mode(&self, why: &str) {
+        self.lock().safe = Some(why.to_string());
+    }
+
+    /// Why this run keeps the plugins off, if it does.
+    pub fn safe_mode(&self) -> Option<String> {
+        self.lock().safe.clone()
+    }
+
+    /// The mod's generation: it changes each time the mod's token dies (turned off, changed or gone).
+    pub fn generation(&self, id: &str) -> u64 {
+        self.lock().generations.get(id).copied().unwrap_or(0)
+    }
+
+    /// The background page of a protocol 2 plugin that is on: its folder and entry. None for a mod, a plugin with
+    /// no background page, or one that is off.
+    pub fn background_of(&self, id: &str) -> Option<(PathBuf, String)> {
+        let g = self.lock();
+        g.tokens.token_of(id)?;
+        let f = g.found.iter().find(|f| f.manifest.id == id)?;
+        let entry = f
+            .manifest
+            .background
+            .clone()
+            .filter(|_| f.manifest.is_plugin())?;
+        Some((f.folder.clone(), entry))
+    }
+
+    /// The protocol 2 plugins that are on and have a background page, by id.
+    pub fn with_background(&self) -> Vec<String> {
+        let g = self.lock();
+        g.found
+            .iter()
+            .filter(|f| {
+                f.manifest.is_plugin()
+                    && f.manifest.background.is_some()
+                    && g.tokens.token_of(&f.manifest.id).is_some()
+            })
+            .map(|f| f.manifest.id.clone())
+            .collect()
+    }
+
+    /// The agent's calls of this mod's tools are answered by its background page (a protocol 2 plugin that has
+    /// one), not by a panel opened in the caller's tab.
+    pub fn answers_in_background(&self, id: &str) -> bool {
+        let g = self.lock();
+        g.found.iter().any(|f| {
+            f.manifest.id == id && f.manifest.is_plugin() && f.manifest.background.is_some()
+        })
+    }
+
+    /// The window stopped the plugin's background page (`Some(why)`), or started it again (`None`).
+    pub fn set_stopped(&self, id: &str, why: Option<&str>) {
+        let mut g = self.lock();
+        match why {
+            Some(w) => g.stopped.insert(id.to_string(), w.to_string()),
+            None => g.stopped.remove(id),
+        };
+    }
+
+    /// Why the plugin's background page is stopped, if it is.
+    pub fn stopped(&self, id: &str) -> Option<String> {
+        self.lock().stopped.get(id).cloned()
+    }
+
+    /// The plugin's name for a person (its manifest's), or the id when it is not found.
+    pub fn name_of(&self, id: &str) -> String {
+        self.lock()
+            .found
+            .iter()
+            .find(|f| f.manifest.id == id)
+            .map_or_else(|| id.to_string(), |f| f.manifest.name.clone())
+    }
+
+    /// The SVG path of the plugin's own icon `name` (its `contributes.icons`); None when it declares none of that name.
+    pub fn icon_of(&self, id: &str, name: &str) -> Option<String> {
+        self.lock()
+            .found
+            .iter()
+            .find(|f| f.manifest.id == id)?
+            .manifest
+            .contributes
+            .icons
+            .iter()
+            .find(|i| i.name == name)
+            .map(|i| i.path.clone())
     }
 
     pub fn config(&self) -> &Config {
@@ -318,7 +448,10 @@ impl Hub {
         };
         let mut g = self.lock();
         if first_load {
-            g.on = store_ids.iter().map(|(id, ..)| id.clone()).collect();
+            // Safe mode reads the switches and applies none of them: nothing is on this run, nothing is written.
+            if g.safe.is_none() {
+                g.on = store_ids.iter().map(|(id, ..)| id.clone()).collect();
+            }
             g.identity = store_ids
                 .iter()
                 .map(|(id, _, who)| (id.clone(), who.clone()))
@@ -339,6 +472,7 @@ impl Hub {
         let after_tools: Vec<Route> = g.table.tools().cloned().collect();
         let shrunk = std::mem::take(&mut g.shrunk);
         drop(g);
+        self.sync_limits();
         // A mod that now asks for less keeps the smaller set on disk too, and a clash turned off stays off (this runs
         // on the scan worker).
         for id in shrunk.iter().chain(&clashed) {
@@ -423,19 +557,27 @@ impl Hub {
                 log::warn!("could not make a token for mod {id}; it stays off");
             }
         }
-        // The tool table: only mods that are on and hold a token, and that have a panel to answer the calls (a
-        // plugin whose tools only its background page answers waits for background pages; the snapshot says so).
+        // The tool table: only mods that are on and hold a token, and that have a page to answer the calls: a
+        // panel, or for a protocol 2 plugin its background page (which then answers them, design 13).
         let manifests: Vec<&crate::manifest::Manifest> = g
             .found
             .iter()
-            .filter(|f| g.tokens.token_of(&f.manifest.id).is_some() && f.manifest.panel.is_some())
+            .filter(|f| {
+                let m = &f.manifest;
+                let answers = m.panel.is_some() || (m.is_plugin() && m.background.is_some());
+                g.tokens.token_of(&m.id).is_some() && answers
+            })
             .map(|f| &f.manifest)
             .collect();
         let (table, collisions, too_long) = ToolTable::build(manifests);
         g.table = table;
         g.collisions = collisions;
         g.too_long = too_long;
-        // Calls waiting on a mod that lost its token can never be answered.
+        // Calls waiting on a mod that lost its token can never be answered, and whatever was started for it is of
+        // an older generation now.
+        for id in &revoked {
+            *g.generations.entry(id.clone()).or_insert(0) += 1;
+        }
         for id in &revoked {
             Self::fail_calls_locked(
                 g,
@@ -488,8 +630,24 @@ impl Hub {
                 ));
             }
         }
+        // At most MAX_BACKGROUND plugins run a background page at once: one more is refused, with the reason.
+        if on && !g.on.contains(id) {
+            let has_bg = |f: &Found| f.manifest.is_plugin() && f.manifest.background.is_some();
+            let wants = g.found.iter().any(|f| f.manifest.id == id && has_bg(f));
+            let running = g
+                .found
+                .iter()
+                .filter(|f| has_bg(f) && g.on.contains(&f.manifest.id))
+                .count();
+            if wants && running >= MAX_BACKGROUND {
+                return Err(format!(
+                    "at most {MAX_BACKGROUND} plugins with a background page run at once; turn one of them off before \"{id}\""
+                ));
+            }
+        }
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
         g.needs.remove(id);
+        g.stopped.remove(id);
         if on {
             // Switching on is the approval: the manifest's list as it stands now.
             let (asked, who) = g
@@ -508,6 +666,8 @@ impl Hub {
         }
         let revoked = Self::reconcile(&mut g);
         let after_tools: Vec<Route> = g.table.tools().cloned().collect();
+        drop(g);
+        self.sync_limits();
         Ok(Change {
             tools_changed: before_tools != after_tools,
             revoked,
@@ -579,14 +739,20 @@ impl Hub {
                 needs_approval: g.needs.contains(&f.manifest.id),
                 author: f.manifest.author.clone(),
                 homepage: f.manifest.homepage.clone(),
+                background: f.manifest.is_plugin() && f.manifest.background.is_some(),
+                stopped: g.stopped.get(&f.manifest.id).cloned(),
             })
             .collect();
         let mut notes = Vec::new();
         for f in &g.found {
-            if !f.manifest.tools.is_empty() && f.manifest.panel.is_none() {
+            let m = &f.manifest;
+            if !m.tools.is_empty()
+                && m.panel.is_none()
+                && !(m.is_plugin() && m.background.is_some())
+            {
                 notes.push(format!(
-                    "The tools of {} are left out: its background page answers them, and this Flare does not run background pages yet.",
-                    f.manifest.id
+                    "The tools of {} are left out: it has neither a panel nor a background page to answer them.",
+                    m.id
                 ));
             }
         }
@@ -618,6 +784,7 @@ impl Hub {
             mods,
             errors: g.errors.clone(),
             notes,
+            safe_mode: g.safe.clone(),
         }
     }
 
@@ -1753,7 +1920,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_only_a_background_page_could_answer_are_left_out_with_a_note() {
+    fn tools_of_a_plugin_with_a_background_page_are_answered_by_it() {
         let w = world(&[]);
         let tools = format!(r#","background":"bg.html","tools":[{}]"#, tool("add_todo"));
         put_plugin(
@@ -1762,18 +1929,15 @@ mod tests {
             &plugin_json("todo", "me", r#"["tools"]"#, &tools),
         );
         w.hub.scan();
+        assert!(w.hub.answers_in_background("todo"));
         w.hub.set_enabled("todo", true).unwrap();
-        assert!(w.hub.grant_of_mod("todo").is_some());
-        assert!(w.hub.tools().is_empty(), "nothing could answer them yet");
-        let s = w.hub.snapshot();
-        assert!(
-            s.notes
-                .iter()
-                .any(|n| n.contains("todo") && n.contains("background")),
-            "{:?}",
-            s.notes
-        );
-        // With a panel as well, the panel answers them as a mod's does.
+        assert_eq!(w.hub.tools()[0].name, "mod_todo_add_todo");
+        assert!(w.hub.snapshot().notes.is_empty());
+        assert_eq!(w.hub.with_background(), ["todo"]);
+        let (folder, entry) = w.hub.background_of("todo").unwrap();
+        assert!(folder.ends_with("todo"));
+        assert_eq!(entry, "bg.html");
+        // With a panel as well, the background page still answers them.
         let tools = format!(
             r#","background":"bg.html","panel":{{"entry":"index.html","title":"T"}},"tools":[{}]"#,
             tool("add_todo")
@@ -1786,5 +1950,117 @@ mod tests {
         w.hub.scan();
         w.hub.set_enabled("todo", true).unwrap();
         assert_eq!(w.hub.tools()[0].name, "mod_todo_add_todo");
+        assert!(w.hub.answers_in_background("todo"));
+        // A protocol 1 mod never does.
+        let n = notes_world();
+        n.hub.scan();
+        n.hub.set_enabled("notes", true).unwrap();
+        assert!(!n.hub.answers_in_background("notes"));
+        assert!(n.hub.background_of("notes").is_none());
+    }
+
+    #[test]
+    fn at_most_six_plugins_with_a_background_page_are_on_and_the_seventh_is_told_why() {
+        let w = world(&[]);
+        for i in 0..7 {
+            let id = format!("bg{i}");
+            put_plugin(
+                &w,
+                &id,
+                &plugin_json(&id, "me", "[]", r#","background":"bg.html""#),
+            );
+        }
+        put_plugin(&w, "plain", &plugin_json("plain", "me", "[]", ""));
+        w.hub.scan();
+        for i in 0..6 {
+            w.hub.set_enabled(&format!("bg{i}"), true).unwrap();
+        }
+        let e = w.hub.set_enabled("bg6", true).unwrap_err();
+        assert!(e.contains("at most 6") && e.contains("bg6"), "{e}");
+        assert!(!w.hub.is_enabled("bg6"));
+        // A plugin without one is not counted, and one already on may be switched on again.
+        w.hub.set_enabled("plain", true).unwrap();
+        w.hub.set_enabled("bg0", true).unwrap();
+        w.hub.set_enabled("bg0", false).unwrap();
+        w.hub.set_enabled("bg6", true).unwrap();
+        assert_eq!(w.hub.with_background().len(), 6);
+    }
+
+    #[test]
+    fn a_plugins_generation_changes_whenever_its_token_dies_and_its_budget_follows_the_switch() {
+        let w = todo_world();
+        w.hub.scan();
+        let g0 = w.hub.generation("todo");
+        w.hub.set_enabled("todo", true).unwrap();
+        assert_eq!(w.hub.generation("todo"), g0, "turning on kills nothing");
+        assert_eq!(w.hub.limits().ids(), ["todo"]);
+        w.hub.set_enabled("todo", false).unwrap();
+        assert_eq!(w.hub.generation("todo"), g0 + 1);
+        assert!(w.hub.limits().of("todo").is_none());
+        w.hub.set_enabled("todo", true).unwrap();
+        // A new manifest that asks for more turns it off: another generation.
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["decorate","tabs","view"]"#, ""),
+        );
+        w.hub.scan();
+        assert_eq!(w.hub.generation("todo"), g0 + 2);
+        // A protocol 1 mod has no budget of its own.
+        let n = notes_world();
+        n.hub.scan();
+        n.hub.set_enabled("notes", true).unwrap();
+        assert!(n.hub.limits().ids().is_empty());
+    }
+
+    #[test]
+    fn safe_mode_reads_the_switches_applies_none_and_writes_none() {
+        let w = todo_world();
+        w.hub.scan();
+        w.hub.set_enabled("todo", true).unwrap();
+        w.hub.persist("todo").unwrap();
+        let safe = Hub::new(w.hub.config().clone());
+        safe.set_safe_mode("Plugins are off for this start.");
+        safe.scan();
+        assert!(!safe.is_enabled("todo"));
+        assert!(safe.grant_of_mod("todo").is_none());
+        assert_eq!(
+            safe.snapshot().safe_mode.as_deref(),
+            Some("Plugins are off for this start.")
+        );
+        // The next run has the switch back.
+        let next = Hub::new(w.hub.config().clone());
+        next.scan();
+        assert!(next.is_enabled("todo"));
+        assert_eq!(next.safe_mode(), None);
+        // The person may still turn one on by hand.
+        safe.set_enabled("todo", true).unwrap();
+        assert!(safe.is_enabled("todo"));
+    }
+
+    #[test]
+    fn a_stopped_background_page_is_named_until_the_plugin_is_switched() {
+        let w = world(&[]);
+        let extra = r#","background":"bg.html","contributes":{"icons":{"tick":"M4 12l5 5L20 6"}}"#;
+        put_plugin(
+            &w,
+            "pin-up",
+            &plugin_json("pin-up", "me", r#"["decorate"]"#, extra),
+        );
+        w.hub.scan();
+        w.hub.set_enabled("pin-up", true).unwrap();
+        w.hub.set_stopped("pin-up", Some("It stopped."));
+        let e = &w.hub.snapshot().mods[0];
+        assert!(e.background);
+        assert_eq!(e.stopped.as_deref(), Some("It stopped."));
+        w.hub.set_enabled("pin-up", false).unwrap();
+        assert_eq!(w.hub.stopped("pin-up"), None);
+        assert_eq!(w.hub.name_of("pin-up"), "Plugin pin-up");
+        assert_eq!(w.hub.name_of("nobody"), "nobody");
+        assert_eq!(
+            w.hub.icon_of("pin-up", "tick").as_deref(),
+            Some("M4 12l5 5L20 6")
+        );
+        assert_eq!(w.hub.icon_of("pin-up", "other"), None);
     }
 }

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Browser badge</title>
+</head>
+<body>
+<script>
+// The background page of the browser-badge sample: it runs, hidden, while the plugin is on. Every tab's info has a
+// `panel` field ("browser" while the tab's browser panel is open), and a `tabs` event says when it changes. With
+// `tabs` the page may name any tab; with `decorate` it may put a badge on it.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var shown = {};
+
+  function sync(tab) {
+    if (!tab || typeof tab.id !== 'string') { return; }
+    var open = tab.panel === 'browser';
+    if (open && !shown[tab.id]) {
+      shown[tab.id] = true;
+      flare.call('tabs.badge.set', { tab: tab.id, key: 'browser', icon: 'globe', tip: 'A browser panel is open' })
+        .catch(function () { delete shown[tab.id]; });
+    } else if (!open && shown[tab.id]) {
+      delete shown[tab.id];
+      flare.call('tabs.badge.clear', { tab: tab.id, key: 'browser' }).catch(function () {});
+    }
+  }
+
+  flare.on('tabs', function (e) {
+    if (!e || !e.tab) { return; }
+    // A closed tab takes its badges with it.
+    if (e.kind === 'closed') { delete shown[e.tab.id]; return; }
+    sync(e.tab);
+  });
+
+  // The tabs that already have a browser panel when the plugin starts.
+  flare.call('tabs.list', {}).then(function (r) {
+    (r && r.tabs ? r.tabs : []).forEach(sync);
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>

@@ -1084,6 +1084,19 @@ pub fn run_window(
             old_mods_dir: Some(inst.profile.old_mods_dir()),
             state_file: inst.profile.mods_file(),
         }));
+        // Safe mode (design 13): `--no-plugins`, Shift held at launch, or two unclean ends in a row with plugins on
+        // keep every plugin off this start. The e2e runs are killed at will, so only the flag counts there.
+        let asked = args.no_plugins || (!args.e2e && crate::plugin_safe::shift_held());
+        let safe = if args.e2e {
+            asked.then_some(crate::plugin_safe::WHY_ASKED)
+        } else {
+            crate::plugin_safe::start(&inst.profile.dir, asked)
+        };
+        if let Some(why) = safe {
+            log::warn!("plugins are off for this start (safe mode)");
+            mods_hub.set_safe_mode(why);
+        }
+        let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
         let mut mods_dispatcher = None;
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
@@ -1130,7 +1143,9 @@ pub fn run_window(
                 Err(e) => log::warn!("the control channel did not start: {e}"),
             }
         }
+        let plugin_limits = mods_hub.limits();
         rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
+        rc.borrow_mut().set_plugin_run_record(run_record);
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),
@@ -1143,6 +1158,7 @@ pub fn run_window(
                 app.as_weak(),
                 args.user_data_dir.clone(),
                 inst.profile.dir.clone(),
+                Some(plugin_limits),
             ));
         // Windows' notifications and the system's listening table (stage 7); under --e2e a recorder.
         crate::appctl::install_surfaces7(&rc, Arc::clone(&post), args.e2e);
@@ -1583,6 +1599,10 @@ pub fn run_window(
     // by the next start).
     if let Some(inst) = instance.as_ref() {
         flare_surfaces::app::clean_root(&flare_surfaces::app::apps_root(&inst.profile.dir)); // sync-ok: quit path, after the window and the channel are gone
+        // A clean quit: the plugins' run record is closed (safe mode counts the runs that end without this).
+        if !args.e2e {
+            crate::plugin_safe::clean_exit(&inst.profile.dir); // sync-ok: quit path, after the window and the channel are gone
+        }
     }
     APP_CTL.with(|cell| *cell.borrow_mut() = None);
     LookCtl::uninstall();

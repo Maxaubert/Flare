@@ -8,7 +8,9 @@
 //! that touches the disk (resolving a path the agent named) happens here, on the call's thread, with
 //! the same checks a click on a path gets (rules 13 and 14).
 //!
-//! A tab is named by its secret (`FLARE_TAB_TOKEN`), never by an id: see `docs/surfaces/protocol.md`.
+//! A connection's tab is named by its secret (`FLARE_TAB_TOKEN`), never by an id: see `docs/surfaces/protocol.md`.
+//! A plugin that holds `tabs` may name another tab in a call, by the public id `tabs.list` gives (never a secret);
+//! every other caller acts on its own tab only.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -62,6 +64,9 @@ pub enum CtlOp {
     Tabs {
         own: Option<String>,
     },
+    /// `tabs.list` for a plugin that holds `tabs` (plugins phase 3): every shell tab with its folder, its agent's
+    /// kind, state and Claude session, and what its panel shows.
+    TabsWide,
     /// The tab's folder, so a relative path can be resolved the way the tab sees it.
     TabCwd {
         tab: String,
@@ -125,6 +130,11 @@ pub enum CtlOp {
     ShowMod {
         tab: String,
         mod_id: String,
+        /// The tab is the caller's own, so what its panel shows may go. On another tab (a plugin that holds `tabs`,
+        /// or its background page) the panel must be closed or show this mod already, else `busy`.
+        own: bool,
+        /// The mod's generation ([`Hub::generation`]) when the call was checked: one switched off since is refused.
+        generation: u64,
     },
     /// `tabs.badge.set` (plugins phase 1): checked on the call's thread (key, icon, tip, tone, rate), then kept
     /// by the window for the tab and drawn in its chip.
@@ -135,6 +145,9 @@ pub enum CtlOp {
         icon: String,
         tip: String,
         tone: Tone,
+        /// A plugin's generation ([`Hub::generation`]) when the call was checked (0 for the agent): a plugin
+        /// switched off since, even if on again, is refused.
+        generation: u64,
     },
     BadgeClear {
         tab: String,
@@ -148,6 +161,8 @@ pub enum CtlOp {
         key: String,
         value: Option<f32>,
         label: String,
+        /// As for `BadgeSet`.
+        generation: u64,
     },
     ProgressClear {
         tab: String,
@@ -192,6 +207,7 @@ impl std::fmt::Debug for CtlRequestBox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self.0.op {
             CtlOp::Tabs { .. } => "CtlOp::Tabs",
+            CtlOp::TabsWide => "CtlOp::TabsWide",
             CtlOp::TabCwd { .. } => "CtlOp::TabCwd",
             CtlOp::PanelState { .. } => "CtlOp::PanelState",
             CtlOp::PanelClose { .. } => "CtlOp::PanelClose",
@@ -286,12 +302,16 @@ pub struct AppDispatcher {
     /// The decor limit (plugins phase 1): one bucket per tab and caller, spent here before the window hears of a
     /// change, so a flood of badges never reaches the UI thread.
     decor_rate: Mutex<HashMap<(String, DecorSource), flare_ctl::session::Bucket>>,
+    /// A plugin's decor limit across all its tabs (design 13): one bucket per plugin.
+    decor_plugin_rate: Mutex<HashMap<String, flare_ctl::session::Bucket>>,
     /// The decor limit's clock (a test passes a still one).
     clock: fn() -> Instant,
 }
 
 /// Buckets kept at most; past it the map starts again (a bucket is only a second of memory).
 const DECOR_BUCKETS_MAX: usize = 1024;
+/// Decor changes one plugin may make in a second, all its tabs together (design 13).
+pub const DECOR_PER_PLUGIN: f64 = 30.0;
 
 /// Is `browser.eval` switched on for the agent? Asked from any thread, at every request.
 pub type EvalSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -314,22 +334,36 @@ impl AppDispatcher {
             apps: None,
             mods: None,
             decor_rate: Mutex::new(HashMap::new()),
+            decor_plugin_rate: Mutex::new(HashMap::new()),
             clock: Instant::now,
         }
     }
 
-    /// The tab a decor call is about, and who is calling: the connection's own tab only. A `tab` in the params
-    /// must be that tab (decorating another tab needs the `tabs` permission of the plugin phases).
-    fn decor_target(ctx: &CallContext, params: &Value) -> Result<(String, DecorSource), CtlError> {
-        let tab = Self::tab_of_call(ctx)?;
-        if let Some(t) = str_param(params, "tab")?
-            && t != tab
-        {
-            return Err(CtlError::new(
+    /// The tab a call acts on (plugins phase 3): the `tab` it names, or else the caller's own. A caller may name its
+    /// own tab; another one only with a grant that may act on any tab (a plugin that holds `tabs`). A background
+    /// page has no tab of its own, so without `tabs` it can name none, and with it, it must name one. The id is
+    /// the public one `tabs.list` gives; a tab that is not open answers `no_tab` on the UI thread.
+    fn scoped_tab(ctx: &CallContext, params: &Value) -> Result<String, CtlError> {
+        match str_param(params, "tab")? {
+            Some(t) if ctx.tab.as_deref() == Some(t) => Ok(t.to_string()),
+            Some(t) if ctx.grant.may_act_on_any_tab() => {
+                if t.is_empty() || t.len() > 64 {
+                    return Err(CtlError::new(code::BAD_PARAMS, "tab is a tab's id"));
+                }
+                Ok(t.to_string())
+            }
+            Some(_) => Err(CtlError::new(
                 code::FORBIDDEN,
-                "a caller may decorate its own tab only",
-            ));
+                "naming another tab needs the tabs permission",
+            )),
+            None => Self::tab_of_call(ctx),
         }
+    }
+
+    /// The tab a decor call is about, and who is calling: the caller's own tab, or for a plugin that holds `tabs`
+    /// any tab it names ([`AppDispatcher::scoped_tab`]).
+    fn decor_target(ctx: &CallContext, params: &Value) -> Result<(String, DecorSource), CtlError> {
+        let tab = Self::scoped_tab(ctx, params)?;
         let source = match &ctx.grant {
             Grant::Agent { .. } => DecorSource::Agent,
             Grant::Mod { id, .. } => DecorSource::Plugin(id.clone()),
@@ -356,13 +390,49 @@ impl AppDispatcher {
             .entry((tab.to_string(), source.clone()))
             .or_insert_with(|| flare_ctl::session::Bucket::new(rate, rate, now))
             .take(now);
-        if ok {
-            Ok(())
-        } else {
-            Err(CtlError::new(
+        drop(map);
+        if !ok {
+            return Err(CtlError::new(
                 code::RATE_LIMITED,
                 format!("at most {rate} badge or progress changes a second on one tab"),
-            ))
+            ));
+        }
+        // A plugin also has a second for all its tabs together, so naming many tabs is no way round the first.
+        if let DecorSource::Plugin(id) = source {
+            let mut all = self
+                .decor_plugin_rate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if all.len() >= DECOR_BUCKETS_MAX && !all.contains_key(id) {
+                all.clear();
+            }
+            let ok = all
+                .entry(id.clone())
+                .or_insert_with(|| {
+                    flare_ctl::session::Bucket::new(DECOR_PER_PLUGIN, DECOR_PER_PLUGIN, now)
+                })
+                .take(now);
+            if !ok {
+                return Err(CtlError::new(
+                    code::RATE_LIMITED,
+                    format!(
+                        "at most {DECOR_PER_PLUGIN} badge or progress changes a second for one plugin"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `icon` may go on a badge of this caller: a built-in one, or for a plugin one of its own
+    /// `contributes.icons`.
+    fn badge_icon_ok(&self, ctx: &CallContext, icon: &str) -> bool {
+        if flare_ctl::decor::is_badge_icon(icon) {
+            return true;
+        }
+        match (&ctx.grant, &self.mods) {
+            (Grant::Mod { id, .. }, Some(hub)) => hub.icon_of(id, icon).is_some(),
+            _ => false,
         }
     }
 
@@ -375,6 +445,8 @@ impl AppDispatcher {
         params: &Value,
     ) -> Result<Value, CtlError> {
         let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        // Read before anything is checked, so a switch off during the checks is seen by the window.
+        let generation = self.generation_of(ctx);
         let (tab, source) = Self::decor_target(ctx, params)?;
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
@@ -400,9 +472,14 @@ impl AppDispatcher {
             Method::TabsBadgeSet => {
                 let icon =
                     str_param(params, "icon")?.ok_or_else(|| bad("icon is required".into()))?;
-                if !flare_ctl::decor::is_badge_icon(icon) {
+                if !self.badge_icon_ok(ctx, icon) {
+                    let own = if matches!(ctx.grant, Grant::Mod { .. }) {
+                        " or one of the plugin's contributes.icons"
+                    } else {
+                        ""
+                    };
                     return Err(bad(format!(
-                        "icon is one of {}",
+                        "icon is one of {}{own}",
                         flare_ctl::decor::BADGE_ICONS.join(", ")
                     )));
                 }
@@ -424,6 +501,7 @@ impl AppDispatcher {
                     icon: icon.to_string(),
                     tip: line("tip")?,
                     tone,
+                    generation,
                 }
             }
             Method::TabsBadgeClear => CtlOp::BadgeClear { tab, source, key },
@@ -443,6 +521,7 @@ impl AppDispatcher {
                     key,
                     value,
                     label: line("label")?,
+                    generation,
                 }
             }
             Method::TabsProgressClear => CtlOp::ProgressClear { tab, source, key },
@@ -457,6 +536,14 @@ impl AppDispatcher {
     pub fn with_mods(mut self, hub: Arc<Hub>) -> Self {
         self.mods = Some(hub);
         self
+    }
+
+    /// The calling plugin's generation ([`Hub::generation`]), 0 for any other caller.
+    fn generation_of(&self, ctx: &CallContext) -> u64 {
+        match (&ctx.grant, &self.mods) {
+            (Grant::Mod { id, .. }, Some(hub)) => hub.generation(id),
+            _ => 0,
+        }
     }
 
     fn hub(&self) -> Result<&Arc<Hub>, CtlError> {
@@ -544,10 +631,17 @@ impl AppDispatcher {
         Ok(json!({}))
     }
 
-    /// `panel.open` kind `mod:<id>`: the mod's panel on the caller's tab.
-    fn open_mod_panel(&self, ctx: &CallContext, mod_id: &str) -> Result<Value, CtlError> {
-        let tab = Self::tab_of_call(ctx)?;
+    /// `panel.open` kind `mod:<id>`: the mod's panel on the caller's tab (or, for a plugin that holds `tabs`, on a
+    /// tab it names).
+    fn open_mod_panel(
+        &self,
+        ctx: &CallContext,
+        mod_id: &str,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        let tab = Self::scoped_tab(ctx, params)?;
         let hub = self.hub()?;
+        let generation = hub.generation(mod_id);
         if hub.grant_of_mod(mod_id).is_none() {
             return Err(CtlError::new(
                 code::NOT_FOUND,
@@ -563,9 +657,12 @@ impl AppDispatcher {
                 ));
             }
         }
+        let own = ctx.tab.as_deref() == Some(tab.as_str());
         self.ask(CtlOp::ShowMod {
             tab,
             mod_id: mod_id.to_string(),
+            own,
+            generation,
         })
     }
 
@@ -1132,7 +1229,22 @@ impl Dispatcher for AppDispatcher {
     }
 
     fn call(&self, ctx: &CallContext, method: Method, params: Value) -> Result<Value, CtlError> {
+        // A plugin's connection (its helper, later) spends from the plugin's one budget, here on the worker before
+        // anything is posted. A page's messages were spent as the window took them (`conn` 0).
+        if ctx.conn != 0
+            && let Grant::Mod { id, .. } = &ctx.grant
+            && let Some(limiter) = self.mods.as_ref().and_then(|h| h.limits().of(id))
+            && let Err(over) = limiter.admit(params.to_string().len(), Instant::now())
+        {
+            return Err(CtlError::new(code::RATE_LIMITED, over.why()));
+        }
         match method {
+            // A plugin that holds `tabs` sees every tab, with what its agent is doing (plugins phase 3).
+            Method::TabsList
+                if matches!(ctx.grant, Grant::Mod { .. }) && ctx.grant.may_act_on_any_tab() =>
+            {
+                self.ask(CtlOp::TabsWide)
+            }
             Method::TabsList => {
                 // The agent and a mod see their own tab only (id and title, never a screen: S3). Tab titles carry
                 // folders, commands and task names, which a mod's "show its panel" approval never covered.
@@ -1149,9 +1261,15 @@ impl Dispatcher for AppDispatcher {
                 tab: Self::tab_of_call(ctx)?,
             }),
             Method::PanelOpen => {
-                let tab = Self::tab_of_call(ctx)?;
                 // A mod opens its OWN panel and nothing else: a web panel would reach the network in the
-                // user's shared profile (S4/S5), the rest are not the mod's to drive (rule 207).
+                // user's shared profile (S4/S5), the rest are not the mod's to drive (rule 207). A plugin that holds
+                // `tabs` may open it on a tab it names.
+                let mod_kind = str_param(&params, "kind")?.is_some_and(|k| k.starts_with("mod:"));
+                let tab = if mod_kind {
+                    Self::scoped_tab(ctx, &params)?
+                } else {
+                    Self::tab_of_call(ctx)?
+                };
                 if let Grant::Mod { id, .. } = &ctx.grant {
                     let own = format!("mod:{id}");
                     if let Some(k) = str_param(&params, "kind")?
@@ -1204,7 +1322,7 @@ impl Dispatcher for AppDispatcher {
                         if !flare_surfaces::kind::valid_mod_id(id) {
                             return Err(CtlError::new(code::BAD_PARAMS, "that is not a mod id"));
                         }
-                        self.open_mod_panel(ctx, id)
+                        self.open_mod_panel(ctx, id, &params)
                     }
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
@@ -1771,6 +1889,7 @@ mod tests {
                         icon,
                         tip,
                         tone,
+                        ..
                     } => format!("badge {tab} {source:?} {key} {icon} {tip:?} {tone:?}"),
                     CtlOp::BadgeClear { tab, source, key } => {
                         format!("clear {tab} {source:?} {key}")
@@ -1781,6 +1900,7 @@ mod tests {
                         key,
                         value,
                         label,
+                        ..
                     } => format!("progress {tab} {source:?} {key} {value:?} {label:?}"),
                     CtlOp::ProgressClear { tab, source, key } => {
                         format!("unprogress {tab} {source:?} {key}")
@@ -2056,6 +2176,172 @@ mod tests {
         );
         d.call(&m, Method::TabsBadgeClear, json!({"key": "a"}))
             .unwrap();
+    }
+
+    fn plugin(tab: Option<&str>, perms: &[Permission]) -> CallContext {
+        ctx(
+            tab,
+            Grant::Mod {
+                id: "badger".into(),
+                permissions: perms.to_vec(),
+            },
+        )
+    }
+
+    /// The tab scope (plugins phase 3): `tabs` lets a plugin name any tab; without it a caller names its own or none,
+    /// and a background page (no tab of its own) can name none.
+    #[test]
+    fn a_plugin_with_tabs_may_name_any_tab_and_every_other_caller_its_own_only() {
+        let (d, ops, seen) = decor_rig();
+        let star = |tab: Option<&str>| match tab {
+            Some(t) => json!({"tab": t, "key": "a", "icon": "star"}),
+            None => json!({"key": "a", "icon": "star"}),
+        };
+        let wide = plugin(Some("tab-1"), &[Permission::Decorate, Permission::Tabs]);
+        d.call(&wide, Method::TabsBadgeSet, star(Some("tab-9")))
+            .unwrap();
+        // A background page (no tab) with `tabs` names one; naming none is no tab.
+        let bg = plugin(None, &[Permission::Decorate, Permission::Tabs]);
+        d.call(&bg, Method::TabsBadgeSet, star(Some("tab-7")))
+            .unwrap();
+        assert_eq!(
+            code_of(d.call(&bg, Method::TabsBadgeSet, star(None))),
+            code::NO_TAB
+        );
+        assert!(seen.lock().unwrap()[0].starts_with("badge tab-9 Plugin(\"badger\")"));
+        assert!(seen.lock().unwrap()[1].starts_with("badge tab-7 "));
+        // Without `tabs`: its own tab only, and from a background page none at all.
+        let narrow = plugin(Some("tab-1"), &[Permission::Decorate]);
+        assert_eq!(
+            code_of(d.call(&narrow, Method::TabsBadgeSet, star(Some("tab-9")))),
+            code::FORBIDDEN
+        );
+        d.call(&narrow, Method::TabsBadgeSet, star(Some("tab-1")))
+            .unwrap();
+        let narrow_bg = plugin(None, &[Permission::Decorate]);
+        for t in [Some("tab-1"), None] {
+            let want = if t.is_some() {
+                code::FORBIDDEN
+            } else {
+                code::NO_TAB
+            };
+            assert_eq!(
+                code_of(d.call(&narrow_bg, Method::TabsBadgeSet, star(t))),
+                want
+            );
+        }
+        // An id that is no id is refused before the window is asked.
+        assert_eq!(
+            code_of(d.call(&wide, Method::TabsBadgeSet, star(Some("")))),
+            code::BAD_PARAMS
+        );
+        assert_eq!(ops.lock().unwrap().len(), 3);
+        // The agent keeps to its own tab whatever it names.
+        assert_eq!(
+            code_of(d.call(&agent_in_tab(), Method::TabsBadgeSet, star(Some("tab-9")))),
+            code::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn a_plugin_makes_thirty_decor_changes_a_second_across_all_its_tabs() {
+        let (d, ops, _) = decor_rig();
+        let wide = plugin(Some("tab-1"), &[Permission::Decorate, Permission::Tabs]);
+        // Thirty tabs, one change each: each tab's own second is far from spent, the plugin's is not.
+        for i in 0..30 {
+            d.call(
+                &wide,
+                Method::TabsBadgeClear,
+                json!({"tab": format!("tab-{i}"), "key": "a"}),
+            )
+            .unwrap_or_else(|e| panic!("change {i}: {e:?}"));
+        }
+        let e = d
+            .call(
+                &wide,
+                Method::TabsBadgeClear,
+                json!({"tab": "tab-99", "key": "a"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::RATE_LIMITED);
+        assert!(e.message.contains("one plugin"), "{}", e.message);
+        assert_eq!(ops.lock().unwrap().len(), 30);
+        // The agent is not a plugin: only its tab's second holds it.
+        d.call(&agent_in_tab(), Method::TabsBadgeClear, json!({"key": "a"}))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_plugin_with_tabs_gets_the_wide_list_and_every_other_caller_its_own_tab() {
+        let r = rig(ok_all, false, FILES);
+        let wide = plugin(None, &[Permission::Tabs]);
+        r.d.call(&wide, Method::TabsList, json!({})).unwrap();
+        r.d.call(
+            &plugin(Some("tab-1"), &[Permission::Tabs]),
+            Method::TabsList,
+            json!({}),
+        )
+        .unwrap();
+        r.d.call(&plugin(Some("tab-1"), &[]), Method::TabsList, json!({}))
+            .unwrap();
+        r.d.call(&agent_in_tab(), Method::TabsList, json!({}))
+            .unwrap();
+        // A background page without `tabs` has no tab: nothing to list, nothing asked.
+        let v =
+            r.d.call(
+                &plugin(None, &[Permission::View]),
+                Method::TabsList,
+                json!({}),
+            )
+            .unwrap();
+        assert_eq!(v, json!({"tabs": []}));
+        assert_eq!(
+            r.ops.lock().unwrap().as_slice(),
+            [
+                "CtlOp::TabsWide",
+                "CtlOp::TabsWide",
+                "CtlOp::Tabs",
+                "CtlOp::Tabs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plugin_with_tabs_may_open_its_own_panel_on_a_tab_it_names_and_nothing_else() {
+        let r = rig(ok_all, false, FILES);
+        let wide = plugin(None, &[Permission::Panel, Permission::Tabs]);
+        // There is no hub in this rig: the call gets as far as the mods and stops there, past the scope.
+        let e =
+            r.d.call(
+                &wide,
+                Method::PanelOpen,
+                json!({"kind": "mod:badger", "tab": "tab-3"}),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::UNAVAILABLE);
+        for (p, want) in [
+            (
+                json!({"kind": "mod:other", "tab": "tab-3"}),
+                code::FORBIDDEN,
+            ),
+            (json!({"kind": "web", "tab": "tab-3"}), code::NO_TAB),
+        ] {
+            assert_eq!(
+                code_of(r.d.call(&wide, Method::PanelOpen, p.clone())),
+                want,
+                "{p}"
+            );
+        }
+        let narrow = plugin(None, &[Permission::Panel]);
+        assert_eq!(
+            code_of(r.d.call(
+                &narrow,
+                Method::PanelOpen,
+                json!({"kind": "mod:badger", "tab": "tab-3"})
+            )),
+            code::FORBIDDEN
+        );
+        assert!(r.ops.lock().unwrap().is_empty());
     }
 
     fn parsed(m: Method, p: Value) -> Result<(AgentOp, Duration), CtlError> {

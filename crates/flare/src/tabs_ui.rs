@@ -70,9 +70,10 @@ pub struct RowData {
 /// What a row carries of its decor, as the flat fields of the Slint row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowChips {
-    /// The badges in drawing order: a glyph path ("" for none) and its tone (0 ink, 1 accent, 2 muted).
-    pub chip1: (&'static str, i32),
-    pub chip2: (&'static str, i32),
+    /// The badges in drawing order: a glyph path ("" for none) and its tone (0 ink, 1 accent, 2 muted). A plugin's
+    /// own icon is its path from `contributes.icons`, drawn in the chip's one colour like a built-in.
+    pub chip1: (String, i32),
+    pub chip2: (String, i32),
     /// How many badges there are (0 to 2; with a progress, at most 2 chips in all).
     pub count: i32,
     /// -1 none, -2 an unknown amount, else 0 to 1.
@@ -84,8 +85,8 @@ pub struct RowChips {
 impl Default for RowChips {
     fn default() -> Self {
         Self {
-            chip1: ("", 0),
-            chip2: ("", 0),
+            chip1: (String::new(), 0),
+            chip2: (String::new(), 0),
             count: 0,
             prog: -1.0,
             room: 0,
@@ -324,6 +325,18 @@ pub fn build_view(inp: &ViewInput) -> View {
 /// source, at most two), how many of them the strip has room for at the tab's width, and one tooltip line for every
 /// piece, each naming who set it ("Claude" or "Codex" for the tab's agent, "Agent" for any other). A tab with no decor keeps its row.
 pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
+    decorate_with(rows, decor, scale, &|_, _| None, &|id| id.to_string());
+}
+
+/// [`decorate`], with what the plugins say: the path of a plugin's own icon (`icon_of(plugin, name)`, from its
+/// `contributes.icons`) and the name its tooltip lines start with (`name_of(plugin)`).
+pub fn decorate_with(
+    rows: &mut [RowData],
+    decor: &Decors,
+    scale: f64,
+    icon_of: &dyn Fn(&str, &str) -> Option<String>,
+    name_of: &dyn Fn(&str) -> String,
+) {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -335,9 +348,12 @@ pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
         };
         let drawn = d.drawn(MAX_DRAWN);
         let glyph = |b: Option<&&Badge>| {
-            b.map_or(("", 0), |b| {
-                let path =
-                    crate::menus_ui::badge_glyph(&b.icon).map_or("", crate::menus_ui::glyph_path);
+            b.map_or((String::new(), 0), |b| {
+                let path = match (crate::menus_ui::badge_glyph(&b.icon), &b.source) {
+                    (Some(g), _) => crate::menus_ui::glyph_path(g).to_string(),
+                    (None, Source::Plugin(id)) => icon_of(id, &b.icon).unwrap_or_default(),
+                    (None, Source::Agent) => String::new(),
+                };
                 (path, b.tone.code())
             })
         };
@@ -356,7 +372,7 @@ pub fn decorate(rows: &mut [RowData], decor: &Decors, scale: f64) {
         };
         let lines = d.tip_lines(|s| match s {
             Source::Agent => agent.to_string(),
-            Source::Plugin(id) => id.clone(),
+            Source::Plugin(id) => name_of(id),
         });
         if !lines.is_empty() {
             let mut tip = if r.tip.is_empty() {
@@ -405,9 +421,9 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         mark_rainbow: row.mark_rainbow,
         agent: row.agent,
         failed_tip: "".into(),
-        chip1_cmd: row.chips.chip1.0.into(),
+        chip1_cmd: row.chips.chip1.0.as_str().into(),
         chip1_tone: row.chips.chip1.1,
-        chip2_cmd: row.chips.chip2.0.into(),
+        chip2_cmd: row.chips.chip2.0.as_str().into(),
         chip2_tone: row.chips.chip2.1,
         chip_count: row.chips.count,
         prog: row.chips.prog,
@@ -1257,10 +1273,10 @@ mod tests {
         assert_eq!(r.chips.prog, 0.5);
         assert_eq!(r.chips.count, 1);
         assert_eq!(
-            r.chips.chip1,
+            (r.chips.chip1.0.as_str(), r.chips.chip1.1),
             (crate::menus_ui::glyph_path("badge-phone"), 1)
         );
-        assert_eq!(r.chips.chip2, ("", 0));
+        assert_eq!((r.chips.chip2.0.as_str(), r.chips.chip2.1), ("", 0));
         assert_eq!(
             r.tip,
             "C:\\w\\api\nClaude: Build 50%\nClaude: Call-me is on"
@@ -1282,6 +1298,49 @@ mod tests {
         );
         // A plain row says "no progress".
         assert_eq!(to_slint_row(&v.rows[1]).prog, -1.0);
+    }
+
+    /// A plugin's badge draws its own icon's path in the chip and its tooltip line starts with the plugin's name.
+    #[test]
+    fn a_plugins_badge_draws_its_own_icon_and_says_its_name() {
+        let m = three();
+        let mut v = view_of(&m, 1000, 1.0, "");
+        let id = v.rows[0].id.clone();
+        let p = || Source::Plugin("badger".to_string());
+        let decor = decor_of(|d| {
+            d.set_badge(
+                &id,
+                p(),
+                "seen",
+                "tick",
+                "Seen",
+                flare_tabs::decor::Tone::Ink,
+            )
+            .unwrap();
+        });
+        decorate_with(
+            &mut v.rows,
+            &decor,
+            1.0,
+            &|plugin, icon| (plugin == "badger" && icon == "tick").then(|| "M4 12l5 5L20 6".into()),
+            &|plugin| format!("The {plugin}"),
+        );
+        let r = &v.rows[0];
+        assert_eq!(r.chips.chip1.0, "M4 12l5 5L20 6");
+        assert!(r.tip.ends_with("\nThe badger: Seen"), "{}", r.tip);
+        // An icon nobody declares draws nothing, and without the plugins' words the id names it.
+        let decor = decor_of(|d| {
+            d.set_badge(&id, p(), "seen", "gone", "", flare_tabs::decor::Tone::Ink)
+                .unwrap();
+        });
+        let mut v = view_of(&m, 1000, 1.0, "");
+        decorate(&mut v.rows, &decor, 1.0);
+        assert_eq!(v.rows[0].chips.chip1.0, "");
+        assert!(
+            v.rows[0].tip.ends_with("\nbadger: gone"),
+            "{}",
+            v.rows[0].tip
+        );
     }
 
     /// A row that shows no Claude (another agent, say) never names Claude in its tooltip.

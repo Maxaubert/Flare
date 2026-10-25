@@ -352,6 +352,32 @@ impl Decors {
         self.with(tab, |d| d.clear_source(source))
     }
 
+    /// Everything `source` put on any tab goes (a plugin turned off, or its background page ended). True when
+    /// anything went.
+    pub fn clear_source_everywhere(&mut self, source: &Source) -> bool {
+        let mut changed = false;
+        for d in self.tabs.values_mut() {
+            changed |= d.clear_source(source);
+        }
+        self.tabs.retain(|_, d| !d.is_empty());
+        changed
+    }
+
+    /// The tabs that hold something of `source`, sorted (tests and the probe).
+    pub fn tabs_of(&self, source: &Source) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(_, d)| {
+                d.badges.iter().any(|b| &b.source == source)
+                    || d.progress.as_ref().is_some_and(|p| &p.source == source)
+            })
+            .map(|(t, _)| t.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     /// The tab closed: all of its decor goes.
     pub fn remove_tab(&mut self, tab: &str) -> bool {
         self.tabs.remove(tab).is_some_and(|d| !d.is_empty())
@@ -380,6 +406,45 @@ mod tests {
 
     fn icons<'a>(d: &'a Drawn<'a>) -> Vec<&'a str> {
         d.badges.iter().map(|b| b.icon.as_str()).collect()
+    }
+
+    #[test]
+    fn a_source_cleared_everywhere_leaves_every_tab_and_the_others_keep_theirs() {
+        let mut all = Decors::default();
+        for tab in ["a", "b", "c"] {
+            all.set_badge(tab, plugin("todo"), "k", "star", "", Tone::Ink)
+                .unwrap();
+        }
+        all.set_progress("b", plugin("todo"), "p", Some(0.5), "");
+        all.set_badge("c", Source::Agent, "call-me", "phone", "", Tone::Ink)
+            .unwrap();
+        assert_eq!(all.tabs_of(&plugin("todo")), ["a", "b", "c"]);
+        assert!(all.clear_source_everywhere(&plugin("todo")));
+        assert!(all.tabs_of(&plugin("todo")).is_empty());
+        assert!(
+            all.get("a").is_none() && all.get("b").is_none(),
+            "empty tabs go"
+        );
+        assert_eq!(all.get("c").unwrap().badges().len(), 1, "the agent's stays");
+        assert!(!all.clear_source_everywhere(&plugin("todo")));
+    }
+
+    /// Two plugins on one tab are drawn once each: a plugin with several badges there shows its newest only.
+    #[test]
+    fn each_plugin_draws_at_most_one_badge_on_a_tab() {
+        let mut d = Decor::default();
+        d.set_badge(plugin("a"), "one", "star", "", Tone::Ink)
+            .unwrap();
+        d.set_badge(plugin("a"), "two", "bell", "", Tone::Ink)
+            .unwrap();
+        d.set_badge(plugin("a"), "three", "moon", "", Tone::Ink)
+            .unwrap();
+        let drawn = d.drawn(2);
+        assert_eq!(icons(&drawn), ["moon"]);
+        d.set_badge(plugin("b"), "x", "globe", "", Tone::Ink)
+            .unwrap();
+        let drawn = d.drawn(2);
+        assert_eq!(icons(&drawn), ["globe", "moon"]);
     }
 
     #[test]

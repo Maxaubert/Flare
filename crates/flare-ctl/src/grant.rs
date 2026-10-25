@@ -134,8 +134,9 @@ impl Grant {
     }
 
     /// Whether this grant may name a tab other than its own in a call: the app, and a plugin that holds `tabs`.
-    /// The agent and every other plugin act on the tab they sit in only. No dispatcher asks it yet (the background
-    /// page phase wires it in); until then every call, `decor.*` included, keeps to the caller's own tab.
+    /// The agent and every other plugin act on the tab they sit in only (a plugin's background page, which sits in
+    /// none, then acts on no tab). The app's dispatcher asks it for the decor methods, a plugin's own panel and the
+    /// wide `tabs.list` (plugins phase 3).
     pub fn may_act_on_any_tab(&self) -> bool {
         match self {
             Grant::Ui => true,

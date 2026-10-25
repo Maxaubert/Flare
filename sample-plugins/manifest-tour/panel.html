@@ -19,9 +19,10 @@
 <ol id="list"></ol>
 <p class="empty" id="empty">Nothing yet. Claude can add a line with add_item.</p>
 <script>
-// The panel of the protocol 2 sample. Like a protocol 1 mod it talks to Flare only through window.flare, and it
-// answers the add_item tool. The background page, the bar, the sidebar section and the actions are declared in
-// plugin.json; this Flare checks them and runs them in a later version.
+// The panel of the protocol 2 sample. Like a protocol 1 mod it talks to Flare only through window.flare. Since the
+// plugin has a background page, that page answers add_item; this handler answers only in a Flare that routes the
+// tool to the panel. The bar, the sidebar section and the actions are declared in plugin.json; this Flare checks
+// them and runs them in a later version.
 (function () {
   var items = [];
 

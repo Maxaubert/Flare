@@ -34,6 +34,9 @@ pub struct ModInfo {
     pub warnings: Vec<String>,
     /// Protocol 2: it asks for a permission that hands over full control (`process`, `input`).
     pub full_control: bool,
+    /// Protocol 2: its background page was stopped (it ended too often, or more run than may), with the sentence
+    /// that says so. The switch row shows it in place of the description.
+    pub stopped: Option<String>,
 }
 
 /// A folder in the plugins folder that is not a mod (or one left in the old mods folder), and why.
@@ -57,6 +60,8 @@ pub struct ModsInfo {
     pub notes: Vec<String>,
     /// The switch that could not be saved, and why (the last one).
     pub save_error: Option<String>,
+    /// Every plugin is off for this start (safe mode, design 13), and why: shown at the top of the page.
+    pub safe_mode: Option<String>,
 }
 
 /// The id of the row that opens the plugins folder.
@@ -82,6 +87,9 @@ pub const TAKE_NOTE: &str = "Before you turn it on";
 /// The words under a mod's switch when it asks for permissions that were never allowed.
 pub const NEEDS_APPROVAL: &str =
     "Asks for new permissions, so it was turned off. Switch it on to allow what is listed below.";
+/// The row that says every plugin is off for this start (safe mode), and its label.
+pub const SAFE_ROW: &str = "mods-safe-mode";
+pub const SAFE_LABEL: &str = "Plugins are off for this start";
 /// The row shown while the first scan has not finished.
 pub const LOOKING: &str = "Looking for plugins...";
 /// The row shown when the plugins folder holds nothing.
@@ -175,6 +183,12 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             NONE_FOUND.to_string(),
         )));
     }
+    if let Some(why) = &info.safe_mode {
+        top.push(BlockModel::Row(RowModel {
+            warn: true,
+            ..plain(SAFE_ROW, "warn", SAFE_LABEL.to_string(), why.clone())
+        }));
+    }
     if let Some(why) = &info.save_error {
         top.push(BlockModel::Row(RowModel {
             warn: true,
@@ -205,6 +219,9 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         );
         if m.needs_approval {
             switch.sub = NEEDS_APPROVAL.to_string();
+            switch.warn = true;
+        } else if let Some(why) = m.stopped.as_ref().filter(|_| m.enabled) {
+            switch.sub = why.clone();
             switch.warn = true;
         }
         switch.tap = true;
@@ -492,6 +509,32 @@ mod tests {
             mods,
             ..ModsInfo::default()
         }
+    }
+
+    #[test]
+    fn a_stopped_background_page_and_safe_mode_are_said_in_warning_rows() {
+        let mut m = todo(true);
+        m.stopped = Some("Stopped: its background page ended 3 times in 5 minutes.".into());
+        let mut i = info(vec![m]);
+        i.safe_mode = Some("Flare did not close properly twice in a row.".into());
+        with_env_mods(i, |env| {
+            let page = build(env);
+            let sw = row_of(&page, "mod:todo").unwrap();
+            assert!(sw.warn && sw.sub.starts_with("Stopped:"), "{}", sw.sub);
+            let safe = row_of(&page, SAFE_ROW).unwrap();
+            assert!(safe.warn);
+            assert_eq!(safe.label, SAFE_LABEL);
+            assert!(safe.sub.contains("twice"));
+        });
+        // A plugin that is off says what it is, stopped or not.
+        let mut m = todo(false);
+        m.stopped = Some("Stopped.".into());
+        with_env_mods(info(vec![m]), |env| {
+            let page = build(env);
+            let sw = row_of(&page, "mod:todo").unwrap();
+            assert!(!sw.warn && !sw.sub.starts_with("Stopped"));
+            assert!(row_of(&page, SAFE_ROW).is_none());
+        });
     }
 
     #[test]

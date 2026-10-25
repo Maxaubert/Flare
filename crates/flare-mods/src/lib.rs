@@ -32,6 +32,7 @@ pub mod discover;
 pub mod enabled;
 pub mod hash;
 pub mod hub;
+pub mod limit;
 pub mod manifest;
 pub mod migrate;
 pub mod paths;
