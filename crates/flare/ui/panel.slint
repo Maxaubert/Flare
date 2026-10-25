@@ -7,6 +7,7 @@
 
 import { Theme, Px, SettingsFixed } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
+import { ViewThumb } from "scrollbar.slint";
 import { ChangesView, TasksView, ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
 
 // The header's close button: 20 px, the glyph 10 px, as the tab strip's close.
@@ -39,27 +40,8 @@ component PanelClose inherits Rectangle {
     }
 }
 
-// A thin scroll thumb on the right edge, drawn like the terminal's: it only shows what the
-// view is, and takes no pointer.
-component PanelThumb inherits Rectangle {
-    in property <length> view-h;
-    in property <length> content-h;
-    in property <length> scrolled;   // the viewport's offset, negative or zero
-    visible: root.content-h > root.view-h + 1px;
-    width: Px.snap(6px);
-    height: root.view-h;
-    thumb := Rectangle {
-        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
-        property <length> travel: root.view-h - self.len;
-        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
-        x: 0px;
-        y: Px.snap(self.at * self.travel);
-        width: parent.width;
-        height: Px.snap(self.len);
-        border-radius: self.width / 2;
-        background: Theme.text.with-alpha(0.4);
-    }
-}
+// The side panel's fading scroll thumb (scrollbar.slint).
+component PanelThumb inherits ViewThumb {}
 
 // An image: fitted to the slot (never enlarged), or at one image pixel to one device pixel with
 // scrollbars of its own after a click. A picture with transparency sits on a checkerboard.

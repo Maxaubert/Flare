@@ -6,6 +6,7 @@
 
 import { Theme, Px, SettingsFixed } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
+import { ViewThumb } from "scrollbar.slint";
 
 // One changed file in the list.
 export struct ConvoFileRow {
@@ -43,26 +44,8 @@ export global ConvoInk {
     in property <color> removed: Theme.danger-fill;
 }
 
-// A thin scroll thumb on the right edge, as the text viewer's: it shows where the view is and takes no pointer.
-component ConvoThumb inherits Rectangle {
-    in property <length> view-h;
-    in property <length> content-h;
-    in property <length> scrolled;   // the viewport's offset, negative or zero
-    visible: root.content-h > root.view-h + 1px;
-    width: Px.snap(6px);
-    height: root.view-h;
-    Rectangle {
-        property <length> len: max(Px.snap(24px), root.view-h * root.view-h / max(root.content-h, 1px));
-        property <length> travel: root.view-h - self.len;
-        property <float> at: root.content-h > root.view-h ? min(1.0, max(0.0, -root.scrolled / (root.content-h - root.view-h))) : 0.0;
-        x: 0px;
-        y: Px.snap(self.at * self.travel);
-        width: parent.width;
-        height: Px.snap(self.len);
-        border-radius: self.width / 2;
-        background: Theme.text.with-alpha(0.4);
-    }
-}
+// The side panel's fading scroll thumb (scrollbar.slint).
+component ConvoThumb inherits ViewThumb {}
 
 // The files the agent changed, newest first.
 component FileList inherits Rectangle {
