@@ -421,6 +421,7 @@ impl AppCtl {
                 "id": e.id, "enabled": e.enabled, "tools": e.tool_count,
                 "needs_approval": e.needs_approval,
                 "panel": e.panel_title,
+                "protocol": e.protocol,
             })).collect::<Vec<_>>(),
             "errors": s.errors.iter().map(|e| json!({"folder": e.folder, "reason": e.reason})).collect::<Vec<_>>(),
             "notes": s.notes,

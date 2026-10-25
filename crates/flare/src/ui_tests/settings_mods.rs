@@ -1,5 +1,6 @@
-//! Settings > Mods (Surfaces stage 8), headless, at 100 and 225 percent: the rail lists the page, each mod is a
-//! switch row and a permissions row in plain words, a folder that is not a mod is a warning with its reason, the
+//! Settings > Plugins (the page key `mods`; Surfaces stage 8, plugins phase 2), headless, at 100 and 225 percent:
+//! the rail lists the page, each mod is a switch row and a permissions row in plain words (a plugin adds who made
+//! it and its warnings), a folder that is not a mod is a warning with its reason, the
 //! buttons and the switch reach the mods port, and every row sits in the panel on whole device pixels whatever
 //! the length of its words.
 
@@ -51,6 +52,9 @@ impl ModsPort for FakePort {
     fn dir(&self) -> PathBuf {
         PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\mods")
     }
+    fn plugins_dir(&self) -> Option<PathBuf> {
+        Some(PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins"))
+    }
 }
 
 type Queue = Arc<Mutex<VecDeque<UiMsg>>>;
@@ -76,6 +80,7 @@ fn notes(enabled: bool) -> ModInfo {
         enabled,
         needs_approval: false,
         has_panel: true,
+        ..ModInfo::default()
     }
 }
 
@@ -205,7 +210,7 @@ fn the_rail_lists_mods_between_dictation_and_diagnostics() {
             "{s}"
         );
         let item = f.b().get_rail().iter().find(|r| r.id == "mods").unwrap();
-        assert_eq!(item.label.as_str(), "Mods");
+        assert_eq!(item.label.as_str(), "Plugins");
         assert!(!item.icon.is_empty());
     }
 }
@@ -307,10 +312,12 @@ fn a_folder_that_is_not_a_mod_is_a_warning_with_its_reason_and_the_others_still_
         Problem {
             folder: "broken-mod".into(),
             reason: "mod.json is not valid JSON: expected value at line 1 column 1".into(),
+            plugins: false,
         },
         Problem {
             folder: "wrong".into(),
             reason: "the folder is named \"wrong\" but mod.json says id \"other\"; the folder name must be the id".into(),
+            plugins: false,
         },
     ];
     page.notes = vec![
@@ -364,6 +371,7 @@ fn every_row_sits_whole_in_its_card_on_device_pixels_at_every_scale_and_long_wor
     page.problems = vec![Problem {
         folder: "x".repeat(40),
         reason: "y ".repeat(300),
+        plugins: false,
     }];
     for s in SCALES2 {
         let f = fx_at(s, page.clone());
@@ -407,4 +415,85 @@ fn every_row_sits_whole_in_its_card_on_device_pixels_at_every_scale_and_long_wor
             "content height covers the last card at {s}"
         );
     }
+}
+
+/// A protocol 2 plugin as the app fills it: who made it, its permissions in plain words and the warnings.
+fn todo_plugin() -> ModInfo {
+    ModInfo {
+        id: "todo".into(),
+        name: "Session to-dos".into(),
+        version: "1.0.0".into(),
+        description: "Things to check per session.".into(),
+        permissions: vec![
+            "Read what you and Claude say in sessions".into(),
+            "Type and run commands in your terminals (full control)".into(),
+        ],
+        enabled: false,
+        has_panel: false,
+        plugin: true,
+        author: "someone".into(),
+        homepage: "https://example.com/todo".into(),
+        warnings: vec![
+            flare_mods::hub::WARN_INPUT.into(),
+            flare_mods::hub::WARN_INPUT_SESSIONS.into(),
+        ],
+        full_control: true,
+        ..ModInfo::default()
+    }
+}
+
+#[test]
+fn a_plugin_card_draws_its_maker_its_permissions_and_a_full_control_warning_and_a_mod_card_is_unchanged()
+ {
+    for s in SCALES2 {
+        let f = fx_at(s, info(vec![notes(false), todo_plugin()]));
+        f.page("mods");
+        let card = |id: &str| -> Vec<String> {
+            f.sections()
+                .into_iter()
+                .find(|sec| sec.id == id)
+                .map(|sec| sec.rows.iter().map(|r| r.id.to_string()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(card("modcard:notes"), ["mod:notes", "modperm:notes"]);
+        assert_eq!(
+            card("modcard:todo"),
+            ["mod:todo", "modby:todo", "modperm:todo", "modwarn:todo"]
+        );
+        assert_eq!(
+            f.row("mod:todo").unwrap().label.as_str(),
+            "Session to-dos 1.0.0"
+        );
+        assert!(
+            !f.row("mod:todo").unwrap().on,
+            "off until the user turns it on"
+        );
+        let by = f.row("modby:todo").unwrap();
+        assert_eq!(by.sub.as_str(), "someone, https://example.com/todo");
+        let perms = f.row("modperm:todo").unwrap();
+        assert!(perms.sub.as_str().contains("(full control)"));
+        let warn = f.row("modwarn:todo").unwrap();
+        assert!(warn.warn);
+        assert_eq!(warn.label.as_str(), "Full control");
+        assert!(warn.sub.as_str().contains("steer Claude"));
+    }
+}
+
+#[test]
+fn the_plugins_folder_button_opens_the_plugins_folder() {
+    let mut page = info(vec![]);
+    page.plugins_dir = r"C:\Users\x\AppData\Roaming\Flare\plugins".into();
+    let f = fx_at(1.0, page);
+    f.page("mods");
+    let row = f.row("plugins-folder").expect("the plugins folder row");
+    assert_eq!(
+        row.buttons.iter().next().unwrap().label.as_str(),
+        "Open plugins folder"
+    );
+    f.b()
+        .invoke_row_button("plugins-folder".into(), "open".into());
+    assert_eq!(
+        f.opened.borrow().as_slice(),
+        [PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")]
+    );
 }
