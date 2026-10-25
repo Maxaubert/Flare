@@ -13,7 +13,8 @@ implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks
 (`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
 (`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
 `tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
-list them in `capabilities`. Each method below says which stage owns its behaviour; the names, params and
+list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
+for the agent's own tab. Each method below says which stage owns its behaviour; the names, params and
 grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
@@ -181,7 +182,8 @@ same user, so a process that can read another process's environment can still re
 keeps unrelated processes of the user (a script, a browser tab, another app) from acting as a tab, and
 keeps the tab's identity out of anything that only sees `tabs.list`. A method acts only on the
 connection's own tab (`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants
-alike.
+alike. The decor methods take an optional `tab`, and it must be the connection's own id (else `forbidden`):
+decorating another tab is for the `tabs` permission of a later plugin phase.
 
 | Method | agent | mod needs | ui |
 |---|---|---|---|
@@ -191,6 +193,7 @@ alike.
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
+| `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE`) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -254,6 +257,30 @@ Params: none. Result: `{"tabs": [{"id": string, "title": string, "active": bool}
 only: never screen content (S3). The agent grant gets **its own tab only** (an empty list when the
 connection has no tab); a mod gets its own tab only too (2026-10-22: the `panel` permission no longer widens it). `title` is the label the
 tab strip shows, `active` is "in front". Stage 2.
+
+### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
+
+What a caller draws on its own tab: badges (small glyphs) and one progress, in an outlined chip Flare draws before the
+tab's end (strip) or left of its ring (sidebar row). Never at the tab's foot, where the agent's bar mark is; nothing in
+it moves. Namespace `Decor` (prefix `tabs`), permission `decorate`; the agent holds it, a mod cannot ask for it yet.
+Every param is checked on the channel's worker, and each change is spent from a limit of 10 a second per tab and caller
+before the window hears of it (more answer `rate_limited`). The words: `flare_ctl::decor`; the model:
+`flare_tabs::decor`.
+
+| Method | Params | Result |
+|---|---|---|
+| `tabs.badge.set` | `key` (1 to 24 of `a-z`, `0-9`, `-`), `icon` (one of `phone`, `globe`, `bell`, `mic`, `eye`, `moon`, `lock`, `bolt`, `star`, `plus`, `pin`; no `check`, no `dot`), `tip` (optional, one clean line of at most 80 characters: no control or hidden formatting character), `tone` (optional: `ink` default, `accent`, `muted`), `tab` (optional, own id only) | `{}` |
+| `tabs.badge.clear` | `key`, `tab` | `{"cleared": bool}` |
+| `tabs.progress.set` | `key`, `value` (optional, 0 to 1; absent is an unknown amount, a static dotted pill), `label` (optional, like `tip`), `tab` | `{}` |
+| `tabs.progress.clear` | `key`, `tab` | `{"cleared": bool}` |
+
+Setting the same `(caller, key)` replaces; a caller keeps at most 4 badge keys on a tab and 200 in all (a fifth is
+`bad_params`). A tab has one progress, the last set; clearing takes it only for the key that set it. A tab draws at most
+2 chips: the progress first, then one badge per caller (the agent's newest before any plugin's), 2 on a named tab of
+150 css px or more, 1 from 110 px, none below or on an icon tab; every piece is listed in the tab's tooltip, each line
+starting with who set it (`Claude: Call-me is on`). The agent's pieces go when the tab's Claude session changes from
+one id to another (a first id after none does not), when the agent leaves the tab (its kind is none; Codex too) and
+when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab), `bad_params`, `rate_limited`.
 
 ### panel.open
 
@@ -570,7 +597,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
-| `rate_limited` | too many requests | no |
+| `rate_limited` | too many requests (the connection's 100 a second, or a decor method's 10 a second per tab) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be
@@ -629,6 +656,10 @@ calls:
 | `browser_wait` | one of `text`, `selector`, `ms`; `timeout_ms` | `browser.wait` |
 | `browser_navigate` | `url`, or `action` (`back`, `forward`, `reload`) | `browser.navigate` (opens the panel with `browser.open` when none is open and a `url` was given) |
 | `browser_eval` | `expression` | `browser.eval` |
+| `set_tab_badge` | `key`, `icon` (an enum of the built-in badges), `tip` | `tabs.badge.set` |
+| `clear_tab_badge` | `key` | `tabs.badge.clear` |
+| `set_tab_progress` | `value` (0 to 1, optional), `label` | `tabs.progress.set` with `key` `progress` |
+| `clear_tab_progress` | none | `tabs.progress.clear` with `key` `progress` |
 | `mod_<id>_<tool>` | the mod's own `input_schema` | `mods.call` (listed by `mods.tools`; a string result is passed as it is, anything else as compact JSON, cut at 60 000 characters; a mod's own error is `isError` text with its reason, a refusal of Flare is `Flare refused: ...`) |
 
 `open_page` answers with

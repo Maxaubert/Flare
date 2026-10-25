@@ -1319,6 +1319,42 @@ The owner used the build and said: "whats the agent board i dont get the new rig
 
 - **Review fixes (round 9, 2026-10-22).** A re-wrap keeps the line at the top of the view (and a view scrolled sideways returns to the left edge when wrap turns on); wrapping counts display width (CJK and emoji take two columns); while the splitter is held a narrowing slot lets the wrapped rows overflow sideways instead of cutting them; a tab switched by chord during a drag lets go of the grab; a page in front (Settings) no longer unwraps and re-wraps the file; "Show in side panel" on a file that went away or is no longer showable says "Cannot show this file" in the panel and still opens nothing in Windows; PRIVACY.md no longer describes the removed board; the e2e scenario file `board.rs` is `live_preview.rs` (group `preview`). The owner's "bug out when growing or shrinking" was not reproduced: a short screen recording would settle it.
 
+## Plugins phase 1: badges and progress on Claude's own tab, 2026-10-25
+
+The first phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design: `docs/superpowers/specs/2026-10-25-plugin-system-design.md`,
+sections 5.1, 5.2, 8 and 13). No plugins yet: Claude puts a badge or a progress on the tab it runs in, and the drawing
+every later phase uses is built. The methods: `docs/surfaces/protocol.md` (`tabs.badge.*`, `tabs.progress.*`).
+
+- **What shows.** An outlined pill just before the tab's end in the strip (left of the ring on a sidebar row) holds a
+  progress meter (a static fill from 0 to 1, or four dots when the amount is unknown) and badge glyphs (phone, globe,
+  bell, mic, eye, moon, lock, bolt, star, plus, pin, 14 px, in the tab's ink, an accent or a muted tone). At most 2
+  chips: 2 on a named tab of 150 css px or more, 1 from 110, none below or on an icon tab; the name narrows by what the
+  pill takes. Never at the tab's foot (the agent's bar mark stays whole) and nothing animates. Every piece is a line in
+  the tab's tooltip (`Claude: Review 50%`, `Claude: Call-me is on`); the pill has no pointer area, so a drag still
+  starts on it. Tests: `ui_tests::decor` (5: the pill's place at 100, 150 and 200 percent, the name giving way, no
+  room and icon tabs, the bar under it untouched, the sidebar row), `tabs_ui` (3), `menus_ui` (the glyph pin test and
+  `every_built_in_badge_has_a_glyph_and_nothing_else_does`).
+- **The model.** `flare_tabs::decor`: badges keyed by who set them and a key (replace by key, clear by key, clear by
+  source, 4 keys a tab and 200 in all per source), one progress a tab, which chips a tab draws for its width, and the
+  tooltip lines. Flat fields in the Slint row (`chip1-cmd`, `chip1-tone`, `chip2-cmd`, `chip2-tone`, `chip-count`,
+  `prog`, `chip-room`), so the row diff stays one compare. Tests: `flare_tabs::decor` (11).
+- **The channel.** A `Decor` namespace with `tabs.badge.set|clear` and `tabs.progress.set|clear`, a `decorate`
+  permission (the agent holds it; a `mod.json` cannot ask for it yet), for the caller's own tab only. Key, icon, tone,
+  tip (the manifest's clean-text rule, 80 characters) and value are checked on the channel's worker, and each change is
+  spent from 10 a second per tab and caller there, before the window is asked. Tests: `flare_ctl::grant` (incl.
+  `a_grant_with_no_permission_may_call_only_hello_and_tabs_list`), `flare_ctl::decor`, `flare_ctl::method`,
+  `ctl_app` (4: own tab only, bad params named, what each op carries, the rate), `flare_mods::manifest`.
+- **Cleared with the session.** The agent hub reports a tab whose Claude session changed from one id to another or
+  whose agent left; the window clears the agent's pieces on those and on close. Tests:
+  `agent_hub::the_agent_decor_goes_when_the_session_changes_or_the_agent_leaves`,
+  `appctl::tests::a_badge_and_a_progress_from_the_channel_reach_the_drawn_row`,
+  `appctl::tests::the_agent_decor_goes_with_its_session_its_agent_and_its_tab`.
+- **The agent's tools.** `flare-mcp` lists 19 tools: the 15 before, then `set_tab_badge {key, icon, tip?}`,
+  `clear_tab_badge {key}`, `set_tab_progress {value?, label?}` and `clear_tab_progress`. Tests: `flare-mcp` (3 new,
+  and the counts in `tests/stdio.rs`), the e2e tool list in `mcpRoundTrip`.
+- **By hand (step 9 of the plan, the owner):** in a NEW Claude session after the install (a running session keeps its
+  tool list), `set_tab_badge phone` and `set_tab_progress 0.5` show in the strip and the sidebar.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,
