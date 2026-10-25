@@ -317,6 +317,9 @@ impl AppCtl {
         }
         self.sync_mods();
         self.sync_backgrounds();
+        // What the plugins that are on add to the sidebar and the action places, read again.
+        self.sync_plugin_surfaces();
+        self.refresh();
         if let Some(m) = self.mods.as_mut() {
             m.note_plugins_on();
         }
@@ -347,6 +350,7 @@ impl AppCtl {
         }
         self.stop_background(id);
         self.clear_plugin_decor(id);
+        self.clear_plugin_surfaces(id);
     }
 
     /// Everything the plugin put on any tab goes. True when a tab lost something it showed.
@@ -361,7 +365,7 @@ impl AppCtl {
     }
 
     /// Speaks to the page in `slot`: a tab's panel or a background page (a bar has no page yet).
-    fn post_to_slot(&mut self, slot: &Slot, json: &str) {
+    pub(super) fn post_to_slot(&mut self, slot: &Slot, json: &str) {
         match slot.kind {
             ViewKind::Panel => self.web.post_message(&slot.owner, json),
             ViewKind::Background => self.web.post_to_background(&slot.owner, json),
@@ -457,6 +461,8 @@ impl AppCtl {
         // Started again at once: the plugins' browser is kept for the new page.
         self.web.close_background_keeping(id, again);
         self.clear_plugin_decor(id);
+        // What it set in its sections and on its actions goes too; it sets them again when it starts.
+        self.clear_plugin_surfaces(id);
         log::warn!("plugin {id}: its background page ended ({why})");
         if again {
             self.start_background(id);
@@ -465,6 +471,9 @@ impl AppCtl {
                 m.hub().set_stopped(id, Some(STOPPED_CRASHED));
             }
             log::warn!("plugin {id}: its background page ended too often and stays stopped");
+            // A stopped plugin's sections and actions leave the screen.
+            self.sync_plugin_surfaces();
+            self.refresh();
             self.settings_changed();
         }
         if self
@@ -878,7 +887,8 @@ impl AppCtl {
                 let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, why)));
                 return;
             }
-            let msg = bridge::tool_event(&call_id, &tool, &input);
+            // The page hears which tab the agent called from (plugins phase 4), so a tool can act on it.
+            let msg = bridge::tool_event_from(&call_id, &tool, &input, &tab);
             if let Some(now) = m.queue_or_send(Slot::background(&mod_id), msg) {
                 self.web.post_to_background(&mod_id, &now);
             }

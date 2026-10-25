@@ -65,6 +65,9 @@ pub struct RowData {
     pub mark_rainbow: bool,
     /// The badges and progress the tab draws ([`decorate`] fills it; none until then).
     pub chips: RowChips,
+    /// The plugins' hover buttons the tab draws while hovered (plugins phase 4; none until the window sets them),
+    /// at most [`crate::plugin_ui::HOVER_MAX`].
+    pub hover: Vec<crate::plugin_ui::Button>,
 }
 
 /// What a row carries of its decor, as the flat fields of the Slint row.
@@ -279,6 +282,7 @@ pub fn build_view(inp: &ViewInput) -> View {
                 }),
             mark_rainbow: look.mark.colour == Some(MarkColour::Rainbow),
             chips: RowChips::default(),
+            hover: Vec::new(),
         });
     }
 
@@ -428,7 +432,23 @@ pub fn to_slint_row(row: &RowData) -> crate::TabRow {
         chip_count: row.chips.count,
         prog: row.chips.prog,
         chip_room: row.chips.room,
+        hov_count: row.hover.len().min(crate::plugin_ui::HOVER_MAX) as i32,
+        hov1_cmd: hover_of(row, 0).map_or("", |b| b.cmd.as_str()).into(),
+        hov1_letter: hover_of(row, 0).map_or("", |b| b.letter.as_str()).into(),
+        hov1_tip: hover_of(row, 0).map_or("", |b| b.tip.as_str()).into(),
+        hov1_on: hover_of(row, 0).is_some_and(|b| b.checked),
+        hov1_off: hover_of(row, 0).is_some_and(|b| !b.enabled),
+        hov2_cmd: hover_of(row, 1).map_or("", |b| b.cmd.as_str()).into(),
+        hov2_letter: hover_of(row, 1).map_or("", |b| b.letter.as_str()).into(),
+        hov2_tip: hover_of(row, 1).map_or("", |b| b.tip.as_str()).into(),
+        hov2_on: hover_of(row, 1).is_some_and(|b| b.checked),
+        hov2_off: hover_of(row, 1).is_some_and(|b| !b.enabled),
     }
+}
+
+/// The row's hover button at place `i`, if it has one.
+fn hover_of(row: &RowData, i: usize) -> Option<&crate::plugin_ui::Button> {
+    row.hover.get(i).filter(|_| i < crate::plugin_ui::HOVER_MAX)
 }
 
 /// Updates the ONE `VecModel` that `tab-rows` was given at startup IN PLACE (a new model would
@@ -1119,6 +1139,7 @@ mod tests {
             mark_color: slint::Color::from_argb_u8(0, 0, 0, 0),
             mark_rainbow: false,
             chips: RowChips::default(),
+            hover: Vec::new(),
         }
     }
 

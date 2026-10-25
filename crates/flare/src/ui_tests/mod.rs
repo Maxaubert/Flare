@@ -19,6 +19,7 @@ mod motion;
 mod overlay_order;
 mod panel;
 mod panel_wrap;
+mod plugin_surfaces;
 mod scrollbar;
 mod settings_about;
 mod settings_colour;

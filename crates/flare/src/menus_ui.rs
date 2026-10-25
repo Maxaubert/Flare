@@ -122,6 +122,13 @@ pub struct MenuRowData {
     pub trailing_tip: String,
     /// Starts a new group: a wider gap and a rule above the row (the Surfaces rows of the terminal menu).
     pub group: bool,
+    /// A row with a flyout of children (one level): the rows whose `parent` is its index (a plugin's group in the
+    /// tab menu, plugins phase 4). It only opens the flyout.
+    pub flyout: bool,
+    /// The index of the flyout row this row hangs from; -1 for a row of the menu itself.
+    pub parent: i32,
+    /// A glyph path drawn instead of `icon` when not empty (a plugin's own icon, which is no named glyph).
+    pub icon_cmd: String,
 }
 
 impl MenuRowData {
@@ -136,7 +143,15 @@ impl MenuRowData {
             trailing_filled: false,
             trailing_tip: String::new(),
             group: false,
+            flyout: false,
+            parent: -1,
+            icon_cmd: String::new(),
         }
+    }
+
+    /// A row with these words and nothing else (the plugins' rows build on it).
+    pub fn labelled(label: &str) -> Self {
+        Self::plain(label)
     }
 }
 
@@ -149,6 +164,10 @@ pub enum MenuKind {
     /// The terminal's menu; its rows and picks belong to `TermUi`.
     Term {
         tab: String,
+    },
+    /// The menu of a plugin's sidebar section (plugins phase 4): move it up or down, fold it.
+    Section {
+        sid: String,
     },
 }
 

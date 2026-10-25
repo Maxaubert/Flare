@@ -1,0 +1,303 @@
+// The plugins' sidebar sections (plugins phase 4, design 5.3): Flare draws them in the sidebar's look, under the
+// plugin's name, and the plugin cannot style them. One flat list of rows (a header, its items or the empty note),
+// the same in the sidebar and in the Plugins dropdown of the horizontal layout. Every glyph is the decor chip's
+// 14 px `DecorGlyph`, so nothing here is a new stroked path.
+import { Theme, Px } from "theme.slint";
+import { PluginRow } from "types.slint";
+import { DecorGlyph } from "decor.slint";
+
+// The header's fold chevron, the header's menu dots, an item's tick and its jump arrow.
+global PluginGlyphs {
+    out property <string> open: "M6 9l6 6 6-6";
+    out property <string> folded: "M9 6l6 6-6 6";
+    out property <string> more: "M6 12h.01M12 12h.01M18 12h.01";
+    out property <string> tick: "M5 12.5l4.5 4.5L19 7.5";
+    out property <string> jump: "M9 6l6 6-6 6";
+}
+
+component SectionHeader inherits Rectangle {
+    in property <PluginRow> data;
+    in property <color> ink;
+    in property <color> dim;
+    callback fold();
+    callback menu(length, length);
+    height: 28px;
+    accessible-role: button;
+    accessible-label: root.data.text + (root.data.sub != "" ? ": " + root.data.sub : "");
+    accessible-action-default => { root.fold(); }
+
+    ta := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                root.fold();
+            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.right {
+                root.menu(self.mouse-x + self.absolute-position.x, self.mouse-y + self.absolute-position.y);
+            }
+        }
+    }
+    DecorGlyph {
+        x: 10px;
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: root.data.folded ? PluginGlyphs.folded : PluginGlyphs.open;
+        ink: root.dim;
+    }
+    Text {
+        x: 30px;
+        width: max(0px, root.width - 30px - 30px);
+        height: root.height;
+        vertical-alignment: center;
+        text: root.data.text + (root.data.sub != "" ? "  \u{00b7}  " + root.data.sub : "");
+        font-family: Theme.font-ui;
+        font-size: 11.5px;
+        font-weight: 600;
+        color: ta.has-hover ? root.ink : root.dim;
+        overflow: elide;
+    }
+    // The header's menu: move the section up or down, fold it.
+    more := Rectangle {
+        x: root.width - 8px - 20px;
+        y: Px.snap((root.height - 20px) / 2);
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        background: mta.has-hover ? Theme.hover-hi : transparent;
+        opacity: (ta.has-hover || mta.has-hover) ? 1 : 0;
+        DecorGlyph {
+            x: 3px;
+            y: 3px;
+            cmd: PluginGlyphs.more;
+            ink: root.ink;
+        }
+        mta := TouchArea {
+            clicked => {
+                root.menu(more.absolute-position.x, more.absolute-position.y + more.height);
+            }
+        }
+    }
+}
+
+component SectionItem inherits Rectangle {
+    in property <PluginRow> data;
+    in property <color> ink;
+    in property <color> dim;
+    callback picked(bool /*the checkbox*/);
+    callback tip(string, length, length, length, length);
+    property <bool> boxed: root.data.check >= 0;
+    property <length> text-x: 18px + (root.boxed ? 22px : 0px) + (root.data.icon != "" ? 20px : 0px);
+    height: root.data.sub != "" ? 40px : 28px;
+    accessible-role: button;
+    accessible-label: root.data.text;
+    accessible-checkable: root.boxed;
+    accessible-checked: root.data.check == 1;
+    accessible-action-default => { root.picked(root.boxed); }
+
+    card := Rectangle {
+        x: 8px;
+        width: root.width - 16px;
+        height: root.height;
+        border-radius: 6px;
+        background: ta.has-hover || bta.has-hover ? Theme.text.with-alpha(0.06) : transparent;
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.picked(false); }
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.data.text + (root.data.sub != "" ? "\n" + root.data.sub : ""),
+                    card.absolute-position.x, card.absolute-position.y, card.width, card.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
+            }
+        }
+    }
+    // The checkbox: an outlined square, filled with the accent and a tick when ticked. Its own touch area, above
+    // the row's, so a press on it ticks and a press beside it is the item's click.
+    box := Rectangle {
+        visible: root.boxed;
+        x: 16px;
+        y: Px.snap((root.height - 16px) / 2);
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        border-width: root.data.check == 1 ? 0px : Px.hair();
+        border-color: bta.has-hover ? root.ink : root.dim;
+        background: root.data.check == 1 ? Theme.accent-hi : transparent;
+        if root.data.check == 1 : DecorGlyph {
+            x: 1px;
+            y: 1px;
+            cmd: PluginGlyphs.tick;
+            ink: Theme.on-accent;
+        }
+        bta := TouchArea {
+            enabled: root.boxed;
+            x: -4px;
+            y: -6px;
+            width: parent.width + 8px;
+            height: parent.height + 12px;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.picked(true); }
+        }
+    }
+    if root.data.icon != "" : DecorGlyph {
+        x: 18px + (root.boxed ? 22px : 0px);
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: root.data.icon;
+        ink: root.dim;
+    }
+    VerticalLayout {
+        x: root.text-x;
+        width: max(0px, root.width - root.text-x - 12px - (root.data.jump ? 18px : 0px));
+        height: root.height;
+        alignment: center;
+        Text {
+            text: root.data.text;
+            color: root.data.check == 1 ? root.dim : root.ink;
+            font-family: Theme.font-ui;
+            font-size: 12.5px;
+            overflow: elide;
+        }
+        if root.data.sub != "" : Text {
+            text: root.data.sub;
+            color: root.dim;
+            font-family: Theme.font-ui;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+    if root.data.jump : DecorGlyph {
+        x: root.width - 12px - 14px;
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: PluginGlyphs.jump;
+        ink: root.dim.with-alpha(ta.has-hover ? 1 : 0.6);
+    }
+}
+
+export component PluginSections inherits Rectangle {
+    in property <[PluginRow]> rows;
+    in property <color> ink: Theme.side-text;
+    in property <color> dim: Theme.side-dim;
+    out property <length> content-h: col.preferred-height;
+    // A header was clicked (fold or unfold it), its menu asked for (at a point in the window), an item clicked
+    // (true when the press was on its checkbox).
+    callback fold(string);
+    callback header-menu(string, length, length);
+    callback item(string, string, bool);
+    callback tip(string, length, length, length, length);
+
+    col := VerticalLayout {
+        padding-top: 4px;
+        padding-bottom: 6px;
+        spacing: 0px;
+        alignment: start;
+        for r in root.rows : Rectangle {
+            height: r.kind == 0 ? 28px : (r.kind == 2 ? 24px : (r.sub != "" ? 40px : 28px));
+            if r.kind == 0 : SectionHeader {
+                width: parent.width;
+                data: r;
+                ink: root.ink;
+                dim: root.dim;
+                fold => { root.fold(r.sid); }
+                menu(x, y) => { root.header-menu(r.sid, x, y); }
+            }
+            if r.kind == 1 : SectionItem {
+                width: parent.width;
+                data: r;
+                ink: root.ink;
+                dim: root.dim;
+                picked(on-box) => { root.item(r.sid, r.id, on-box); }
+                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+            }
+            if r.kind == 2 : Text {
+                x: 30px;
+                width: max(0px, parent.width - 38px);
+                height: parent.height;
+                vertical-alignment: center;
+                text: r.text;
+                color: Theme.dim2;
+                font-family: Theme.font-ui;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// The Plugins dropdown of the horizontal layout (plugins phase 4): the same sections in a card that hangs under the
+// top bar's Plugins button. It fills the window like the menus: a left press outside closes it, a right press outside
+// is handed on after its release, and Escape closes it.
+export component PluginsDropdown inherits Rectangle {
+    in property <bool> open;
+    in property <[PluginRow]> rows;
+    // The card's right edge and top, in window coordinates.
+    in property <length> anchor-right;
+    in property <length> anchor-top;
+    out property <length> card-x: card.x;
+    out property <length> card-y: card.y;
+    out property <length> card-w: card.width;
+    out property <length> card-h: card.height;
+    callback dismissed();
+    callback outside-right(length, length);
+    callback fold(string);
+    callback header-menu(string, length, length);
+    callback item(string, string, bool);
+    callback tip(string, length, length, length, length);
+    visible: root.open;
+
+    TouchArea {
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right {
+                if e.kind == PointerEventKind.up {
+                    root.outside-right(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            } else if e.kind == PointerEventKind.down {
+                root.dismissed();
+            }
+        }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    changed open => {
+        if root.open { fs.focus(); }
+    }
+
+    card := Rectangle {
+        width: Px.snap(min(300px, root.width - 16px));
+        height: Px.snap(min(list.content-h + 2 * Px.hair(), root.height - root.anchor-top - 12px));
+        x: Px.snap(max(8px, min(root.anchor-right - self.width, root.width - self.width - 8px)));
+        y: Px.snap(root.anchor-top);
+        background: Theme.side-flat;
+        border-radius: 6px;
+        border-width: Px.hair();
+        border-color: Theme.divider;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: #00000080;
+        clip: true;
+        TouchArea { }
+        Flickable {
+            x: Px.hair();
+            y: Px.hair();
+            width: parent.width - 2 * Px.hair();
+            height: parent.height - 2 * Px.hair();
+            content-height: list.content-h;
+            list := PluginSections {
+                width: parent.width;
+                height: self.content-h;
+                rows: root.rows;
+                ink: Theme.text;
+                dim: Theme.dim;
+                fold(s) => { root.fold(s); }
+                header-menu(s, x, y) => { root.header-menu(s, x, y); }
+                item(s, i, b) => { root.item(s, i, b); }
+                tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+            }
+        }
+    }
+}

@@ -7,7 +7,9 @@ import { StartScreen, StartScreenPreview } from "start.slint";
 import { ContextMenu, OverflowList, MenusPreview } from "menus.slint";
 import { Tip } from "tip.slint";
 import { Dialog, DialogPreview } from "dialog.slint";
-import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection } from "types.slint";
+import { TabRow, StripGeom, Place, MenuRow, OverflowRow, NoteSection, PluginRow, PluginButton } from "types.slint";
+import { PluginChip } from "decor.slint";
+import { PluginsDropdown } from "plugin_sections.slint";
 import { FindBar } from "find.slint";
 import { CopiedBadge } from "badge.slint";
 import { TermScrollbar } from "scrollbar.slint";
@@ -39,7 +41,7 @@ export { TabSidebarPreview } from "sidebar.slint";
 export { StartScreenPreview } from "start.slint";
 export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
-export { TabRow, StripGeom, Place, MenuRow, OverflowRow } from "types.slint";
+export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton } from "types.slint";
 export { ConvoFileRow, ConvoDiffRow, ConvoTaskRow, ConvoInk } from "convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
@@ -130,6 +132,77 @@ component TitleButton inherits Rectangle {
         }
     }
     out property <bool> keyboard-focused: keys.has-focus;
+}
+
+// The plugins' corner of the title bar (plugins phase 4): the Plugins button that opens the sections as a dropdown
+// (horizontal tabs only, while any plugin has a section), then each plugin's top-bar button (three at most), in
+// Flare's outlined chips. Its width is what it draws plus the gap that keeps it apart from the window buttons, and
+// nothing when it draws nothing.
+component PluginBar inherits Rectangle {
+    // False draws nothing (the other bar's corner is the one on show).
+    in property <bool> shown: true;
+    in property <bool> menu-shown;
+    in property <bool> menu-open;
+    in property <[PluginButton]> buttons;
+    in property <color> ink;
+    callback menu-clicked();
+    callback clicked(int);
+    callback tip(string, length, length, length, length);
+    property <int> n: root.shown ? root.buttons.length : 0;
+    property <length> menu-w: (root.shown && root.menu-shown) ? Px.snap(menu-label.preferred-width + 20px) : 0px;
+    property <length> first-x: root.menu-w > 0 && root.n > 0 ? root.menu-w + 4px : root.menu-w;
+    property <length> content-w: root.first-x + root.n * 26px + max(0, root.n - 1) * 4px;
+    // The gap kept on the right, apart from the update chip and the window buttons (which add their own 8).
+    out property <length> gap: 10px;
+    width: root.content-w > 0 ? Px.snap(root.content-w + root.gap) : 0px;
+    visible: root.content-w > 0;
+    menu-chip := Rectangle {
+        x: 0px;
+        y: Px.snap((root.height - 22px) / 2);
+        height: 22px;
+        width: root.menu-w;
+        visible: root.menu-w > 0;
+        border-radius: 11px;
+        border-width: Px.hair();
+        border-color: root.menu-open ? Theme.accent-hi : root.ink.with-alpha(0.38);
+        background: mta.has-hover || root.menu-open ? Theme.hover-hi : transparent;
+        accessible-role: button;
+        accessible-label: "Plugins";
+        accessible-action-default => { root.menu-clicked(); }
+        menu-label := Text {
+            text: "Plugins";
+            font-family: Theme.font-ui;
+            font-size: 11.5px;
+            color: root.ink;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        mta := TouchArea {
+            clicked => { root.menu-clicked(); }
+            changed has-hover => {
+                if self.has-hover {
+                    root.tip("The plugins' sections", menu-chip.absolute-position.x, menu-chip.absolute-position.y, menu-chip.width, menu-chip.height);
+                } else {
+                    root.tip("", 0px, 0px, 0px, 0px);
+                }
+            }
+        }
+    }
+    for b[i] in root.buttons : PluginChip {
+        x: root.first-x + i * 30px;
+        y: Px.snap((root.height - 22px) / 2);
+        width: 26px;
+        height: 22px;
+        visible: root.shown;
+        cmd: b.cmd;
+        letter: b.letter;
+        tip-text: b.tip;
+        on: b.checked;
+        off: !b.enabled;
+        ink: root.ink;
+        clicked => { root.clicked(i); }
+        tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+    }
 }
 
 // The window buttons (command help while it is on, settings, minimise, maximise, close),
@@ -416,7 +489,7 @@ export component AppWindow inherits Window {
     // True while any Flare overlay is open. A web panel (stage 3) is a child window and paints
     // above Slint, so it hides while this is true. `flare_surfaces::overlay::Overlay::ALL` names the
     // terms; a test opens each one and a scan counts the terms.
-    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying;
+    out property <bool> overlay-open: root.menu-open || root.overflow-open || root.plugins-open || root.dialog-open || root.update-open || root.update-notice != "" || root.front-kind == 1 || SettingsBridge.select-open || SettingsBridge.editor-open || SettingsBridge.ask-open || SettingsBridge.dict-ask-open || SettingsBridge.picker-open || HelpBridge.open || root.find-open || root.overlay-visible || root.carrying;
     changed overlay-open => { root.overlay-changed(); }
 
     // ---- tabs ----
@@ -437,6 +510,29 @@ export component AppWindow inherits Window {
     in property <bool> help-on-top;
     callback help-clicked();
     out property <int> strip-phys-width: strip.strip-phys-width;
+    // ---- plugins (phase 4) ----
+    // The sections' rows (the sidebar's, and the dropdown's in the horizontal layout), the top bar's buttons, and
+    // whether the dropdown is open.
+    in property <[PluginRow]> plugin-rows;
+    in property <[PluginButton]> plugin-top-buttons;
+    in property <bool> plugins-open;
+    // Where the plugins' corner of whichever bar shows now ends on the right, and where the window buttons start.
+    out property <length> plugin-bar-x: root.side-mode ? side-plugins.absolute-position.x : top-plugins.absolute-position.x;
+    out property <length> plugin-bar-w: root.side-mode ? side-plugins.width : top-plugins.width;
+    out property <length> title-buttons-x: root.side-mode ? side-buttons.absolute-position.x : top-buttons.absolute-position.x;
+    out property <length> plugins-card-x: pdrop.card-x;
+    out property <length> plugins-card-y: pdrop.card-y;
+    out property <length> plugins-card-w: pdrop.card-w;
+    out property <length> plugins-card-h: pdrop.card-h;
+    out property <length> sidebar-sections-y: sb.sections-y;
+    out property <length> sidebar-sections-h: sb.sections-h;
+    callback plugins-clicked();
+    callback plugins-dismissed();
+    callback plugin-top-clicked(int);
+    callback tab-hover-action(string, int);
+    callback plugin-fold(string);
+    callback plugin-header-menu(string, length, length);
+    callback plugin-item(string, string, bool);
     // ---- sidebar ----
     in property <bool> sidebar-collapsed;
     in property <bool> sidebar-revealed;
@@ -726,6 +822,7 @@ export component AppWindow inherits Window {
                             plus-menu(a, b) => { root.plus-menu(a, b); }
                             more-clicked(a, b) => { root.more-clicked(a, b); }
                             tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
+                            hover-action(a, b) => { root.tab-hover-action(a, b); }
                         }
                         // The empty part of the row after the + button: the window moves by it and a
                         // double click maximises (the strip's own move area swallows the event).
@@ -741,6 +838,17 @@ export component AppWindow inherits Window {
                                 double-clicked => { root.bar-double-clicked(); }
                             }
                         }
+                    }
+                    // The plugins' corner (plugins phase 4), its own gap kept from the chip and the buttons.
+                    top-plugins := PluginBar {
+                        shown: !root.side-mode;
+                        menu-shown: root.plugin-rows.length > 0;
+                        menu-open: root.plugins-open;
+                        buttons: root.plugin-top-buttons;
+                        ink: Theme.text;
+                        menu-clicked => { root.plugins-clicked(); }
+                        clicked(i) => { root.plugin-top-clicked(i); }
+                        tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                     }
                     // The update chip (M9 Task 30): 10 px left of the first BUTTON (PT `toNextControl`),
                     // in a slot that takes its width from the strip while an offer exists. The buttons'
@@ -801,6 +909,17 @@ export component AppWindow inherits Window {
                     x: Px.snap(16px);
                     y: (parent.height - self.height) / 2;
                     size: 17px;
+                }
+                side-plugins := PluginBar {
+                    x: (root.update-chip-shown ? side-chip.x - Px.snap(10px) : side-buttons.x) - self.width;
+                    y: 0px;
+                    height: parent.height;
+                    shown: root.side-mode;
+                    menu-shown: false;
+                    buttons: root.plugin-top-buttons;
+                    ink: Theme.secondary-text;
+                    clicked(i) => { root.plugin-top-clicked(i); }
+                    tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                 }
                 side-chip := UpdateChip {
                     x: side-buttons.x - Px.snap(10px - 8px) - self.width;
@@ -1131,6 +1250,11 @@ export component AppWindow inherits Window {
                     carrying: root.carrying;
                     find-key: root.find-tab-key;
                     new-tab-title: root.new-tab-title;
+                    plugin-rows: root.plugin-rows;
+                    hover-action(a, b) => { root.tab-hover-action(a, b); }
+                    plugin-fold(s) => { root.plugin-fold(s); }
+                    plugin-header-menu(s, x, y) => { root.plugin-header-menu(s, x, y); }
+                    plugin-item(s, i, b) => { root.plugin-item(s, i, b); }
                     press(a, b, c, d, e, f) => { root.title-pressed(); root.side-press(a, b, c, d, e, f); }
                     drag-moved(a) => { root.side-moved(a); }
                     drag-released() => { root.side-released(); }
@@ -1173,6 +1297,23 @@ export component AppWindow inherits Window {
             dismissed => { SettingsBridge.select-dismissed(); }
             outside-right(x, y) => { SettingsBridge.select-dismissed(); root.menu-outside-right(x, y); }
             key(k) => { SettingsBridge.select-key(k); }
+        }
+        // The Plugins dropdown (plugins phase 4), under the menus: its header menu opens over it.
+        pdrop := PluginsDropdown {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            open: root.plugins-open && !root.side-mode;
+            rows: root.plugin-rows;
+            anchor-right: top-plugins.absolute-position.x + top-plugins.width - top-plugins.gap;
+            anchor-top: Px.snap(Theme.bar-height + 2px);
+            dismissed => { root.plugins-dismissed(); }
+            outside-right(x, y) => { root.plugins-dismissed(); root.menu-outside-right(x, y); }
+            fold(s) => { root.plugin-fold(s); }
+            header-menu(s, x, y) => { root.plugin-header-menu(s, x, y); }
+            item(s, i, b) => { root.plugin-item(s, i, b); }
+            tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
         }
         menu := ContextMenu {
             x: 0px;

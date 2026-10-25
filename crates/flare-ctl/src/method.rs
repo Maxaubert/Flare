@@ -23,6 +23,10 @@ pub enum Method {
     /// A progress chip on a tab: a static pill, never at the tab's foot (the agent's mark lives there).
     TabsProgressSet,
     TabsProgressClear,
+    /// The items of one of a plugin's sidebar sections (plugins phase 4), drawn by Flare in the sidebar's look.
+    SidebarSet,
+    /// The state of one of a plugin's actions, on one tab or on every tab (plugins phase 4).
+    ActionsSet,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -76,7 +80,7 @@ pub enum Namespace {
     AgentTools,
     /// Methods only the app's own UI may call (settings, shell input, mod management).
     Ui,
-    /// A plugin's sidebar sections (`sidebar.set`), under `sidebar`. Its methods come with the sidebar phase.
+    /// A plugin's sidebar sections (`sidebar.set`), under `sidebar`.
     Sidebar,
     /// A plugin's buttons and menu items (`actions.set`), under `actions`.
     Actions,
@@ -131,13 +135,15 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 30] = [
+    pub const ALL: [Method; 32] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
         Method::TabsBadgeClear,
         Method::TabsProgressSet,
         Method::TabsProgressClear,
+        Method::SidebarSet,
+        Method::ActionsSet,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -173,6 +179,8 @@ impl Method {
             Method::TabsBadgeClear => "tabs.badge.clear",
             Method::TabsProgressSet => "tabs.progress.set",
             Method::TabsProgressClear => "tabs.progress.clear",
+            Method::SidebarSet => "sidebar.set",
+            Method::ActionsSet => "actions.set",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -213,6 +221,8 @@ impl Method {
             | Method::TabsBadgeClear
             | Method::TabsProgressSet
             | Method::TabsProgressClear => Namespace::Decor,
+            Method::SidebarSet => Namespace::Sidebar,
+            Method::ActionsSet => Namespace::Actions,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile

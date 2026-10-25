@@ -4,7 +4,7 @@
 // moves: an unknown amount is a static row of dots.
 import { Theme, Px } from "theme.slint";
 
-component DecorGlyph inherits Rectangle {
+export component DecorGlyph inherits Rectangle {
     in property <string> cmd;
     in property <color> ink;
     width: 14px;
@@ -101,5 +101,63 @@ export component DecorPill inherits Rectangle {
         y: Px.snap((root.height - 14px) / 2);
         cmd: root.chip2-cmd;
         ink: root.tone(root.chip2-tone);
+    }
+}
+
+
+// A plugin's button (plugins phase 4): the tab's hover button and the top bar's. Flare's outlined chip, never the
+// agent's ring and never a window button's look, holding the action's 14 px glyph or, without one, its title's first
+// letter. Ticked it wears the accent; turned off it is faint and takes no click.
+export component PluginChip inherits Rectangle {
+    in property <string> cmd;
+    in property <string> letter;
+    in property <string> tip-text;
+    in property <bool> on;
+    in property <bool> off;
+    in property <color> ink;
+    out property <bool> hovered: ta.has-hover;
+    callback clicked();
+    callback tip(string, length, length, length, length);
+    width: 22px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: Px.hair();
+    border-color: root.on ? Theme.accent-hi : root.ink.with-alpha(0.38);
+    background: root.off ? transparent : (ta.has-hover ? Theme.hover-hi : (root.on ? Theme.accent-hi.with-alpha(0.14) : transparent));
+    opacity: root.off ? 0.45 : 1;
+    accessible-role: button;
+    accessible-label: root.tip-text;
+    accessible-enabled: !root.off;
+    accessible-action-default => {
+        if !root.off { root.clicked(); }
+    }
+    if root.cmd != "" : DecorGlyph {
+        x: Px.snap((root.width - 14px) / 2);
+        y: Px.snap((root.height - 14px) / 2);
+        cmd: root.cmd;
+        ink: root.on ? Theme.accent-hi : root.ink;
+    }
+    if root.cmd == "" : Text {
+        text: root.letter;
+        width: root.width;
+        height: root.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-family: Theme.font-ui;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: root.on ? Theme.accent-hi : root.ink;
+    }
+    ta := TouchArea {
+        enabled: !root.off;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.tip(root.tip-text, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+            } else {
+                root.tip("", 0px, 0px, 0px, 0px);
+            }
+        }
     }
 }

@@ -168,6 +168,7 @@ pub enum UiMsg {
 }
 
 mod mods_glue;
+mod plugins_glue;
 mod surfaces7;
 mod web_glue;
 
@@ -432,6 +433,11 @@ pub struct AppCtl {
     /// The e2e holds the slide at an offset for a picture: no frame moves it until released.
     slide_held: bool,
     rows_model: Rc<VecModel<TabRow>>,
+    /// The plugins' section rows and top-bar buttons (plugins phase 4), each one model kept for the window's life.
+    plugin_rows_model: Rc<VecModel<crate::PluginRow>>,
+    plugin_top_model: Rc<VecModel<crate::PluginButton>>,
+    /// The plugins' sidebar sections and actions (plugins phase 4).
+    plugins: plugins_glue::PluginSurfaces,
     view: View,
     last_geom: Option<GeomData>,
     query: String,
@@ -697,7 +703,11 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
     MenuRow {
         label: r.label.as_str().into(),
         hint: r.hint.as_str().into(),
-        icon: glyph_path(r.icon).into(),
+        icon: if r.icon_cmd.is_empty() {
+            glyph_path(r.icon).into()
+        } else {
+            r.icon_cmd.as_str().into()
+        },
         filled_icon: r.filled_icon,
         disabled: r.disabled,
         trailing_icon: r.trailing_icon.map_or("", glyph_path).into(),
@@ -705,9 +715,9 @@ fn menu_row(r: &MenuRowData) -> MenuRow {
         trailing_tip: r.trailing_tip.as_str().into(),
         keep_open: false,
         group: r.group,
-        flyout: false,
+        flyout: r.flyout,
         flyout_pick: false,
-        parent: -1,
+        parent: r.parent,
     }
 }
 
@@ -753,6 +763,10 @@ impl AppCtl {
         }
         let rows_model: Rc<VecModel<TabRow>> = Rc::new(VecModel::default());
         app.set_tab_rows(ModelRc::from(rows_model.clone()));
+        let plugin_rows_model: Rc<VecModel<crate::PluginRow>> = Rc::new(VecModel::default());
+        app.set_plugin_rows(ModelRc::from(plugin_rows_model.clone()));
+        let plugin_top_model: Rc<VecModel<crate::PluginButton>> = Rc::new(VecModel::default());
+        app.set_plugin_top_buttons(ModelRc::from(plugin_top_model.clone()));
         let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
         {
             // The look controller reaches every live tab (front and background) through this.
@@ -837,6 +851,9 @@ impl AppCtl {
             frame_clock,
             slide_held: false,
             rows_model,
+            plugin_rows_model,
+            plugin_top_model,
+            plugins: plugins_glue::PluginSurfaces::default(),
             view: View {
                 rows: Vec::new(),
                 geom: GeomData {
@@ -1135,6 +1152,33 @@ impl AppCtl {
             |c, id: SharedString, x: f32, y: f32| { c.open_tab_menu(&id, x, y) }
         );
         bind!(app, rc, on_new_tab, |c| c.new_tab());
+        // The plugins' sections and actions (plugins phase 4).
+        bind!(app, rc, on_plugins_clicked, |c| c.plugins_clicked());
+        bind!(app, rc, on_plugins_dismissed, |c| c.plugins_dismissed());
+        bind!(app, rc, on_plugin_top_clicked, |c, i: i32| c
+            .plugin_top_clicked(i));
+        bind!(
+            app,
+            rc,
+            on_tab_hover_action,
+            |c, id: SharedString, i: i32| c.tab_hover_action(&id, i)
+        );
+        bind!(app, rc, on_plugin_fold, |c, sid: SharedString| c
+            .plugin_fold(&sid));
+        bind!(
+            app,
+            rc,
+            on_plugin_header_menu,
+            |c, sid: SharedString, x: f32, y: f32| { c.plugin_header_menu(&sid, x, y) }
+        );
+        bind!(
+            app,
+            rc,
+            on_plugin_item,
+            |c, sid: SharedString, id: SharedString, on_box: bool| {
+                c.plugin_item(&sid, &id, on_box)
+            }
+        );
         bind!(app, rc, on_plus_menu, |c, x: f32, y: f32| c
             .open_plus_menu(x, y));
         bind!(app, rc, on_more_clicked, |c, x: f32, y: f32| c
@@ -1502,8 +1546,10 @@ impl AppCtl {
             ),
             None => crate::tabs_ui::decorate(&mut view.rows, &self.decor, self.scale),
         }
+        self.plugin_hover_rows(&mut view.rows);
 
         sync_rows(&self.rows_model, &view.rows);
+        self.push_plugins(&app);
         if self.last_geom.as_ref() != Some(&view.geom) {
             let dots: Vec<slint::Color> = view.geom.dots.iter().map(|d| d.colour).collect();
             app.set_strip_geom(StripGeom {
@@ -1857,6 +1903,7 @@ impl AppCtl {
             self.hub.on_closed(&id);
             // Whatever was put on the tab goes with it.
             self.decor.remove_tab(&id);
+            self.plugin_tab_gone(&id);
             // A recording that was to be pasted into this tab learns it has closed.
             crate::dictation_ctl::tab_gone(&id);
         }
@@ -2481,6 +2528,7 @@ impl AppCtl {
         self.clear_tip();
         self.close_menu_quietly();
         self.close_overflow_quietly();
+        self.plugins.open = false;
         self.refresh();
     }
 
@@ -2502,10 +2550,16 @@ impl AppCtl {
         } else {
             tab.cwd.clone()
         };
-        let rows = tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
-            .into_iter()
-            .map(|r| (r, String::new()))
-            .collect();
+        let shell = tab.kind == TabKind::Shell;
+        let mut rows: Vec<(MenuRowData, String)> =
+            tab_menu_rows(&cwd, self.key_label_of(ChordId::CloseTab))
+                .into_iter()
+                .map(|r| (r, String::new()))
+                .collect();
+        // The plugins' actions for a shell tab, one flyout under each plugin's name (plugins phase 4).
+        if shell {
+            self.plugin_menu_rows(id, &mut rows);
+        }
         self.show_menu(
             MenuKind::Tab {
                 id: id.to_string(),
@@ -2564,6 +2618,7 @@ impl AppCtl {
     /// still being delivered to the scrim, and the controller is borrowed for it.
     fn outside_right_click(&mut self, x: f32, y: f32) {
         self.close_menu_quietly();
+        self.plugins.open = false;
         let overflow_was_open = self.overflow.is_some();
         self.close_overflow_quietly();
         self.refresh();
@@ -2588,6 +2643,8 @@ impl AppCtl {
                     self.open_recent(path);
                 }
             }
+            MenuKind::Tab { id, .. } if self.plugin_menu_picked(&id.clone(), &path.clone()) => {}
+            MenuKind::Section { sid } => self.section_menu_picked(&sid.clone(), &row.label.clone()),
             MenuKind::Tab { id, cwd } => match row.label.as_str() {
                 "Close tab" => self.request_close(id),
                 "Copy folder path" => (self.deps.clipboard)(cwd),
@@ -3188,6 +3245,9 @@ impl AppCtl {
                     trailing_filled: false,
                     trailing_tip: String::new(),
                     group,
+                    flyout: false,
+                    parent: -1,
+                    icon_cmd: String::new(),
                 },
                 String::new(),
             )
@@ -3586,6 +3646,20 @@ impl AppCtl {
                 }
                 Ok(json!({"cleared": cleared}))
             }
+            // The plugins' sections and actions (plugins phase 4): checked on the worker, applied in `plugins_glue`.
+            CtlOp::SidebarSet {
+                plugin,
+                key,
+                items,
+                generation,
+            } => self.ctl_sidebar_set(plugin, key, items, generation),
+            CtlOp::ActionsSet {
+                plugin,
+                key,
+                tab,
+                state,
+                generation,
+            } => self.ctl_actions_set(plugin, key, tab, state, generation),
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

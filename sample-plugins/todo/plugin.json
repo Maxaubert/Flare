@@ -1,0 +1,40 @@
+{
+  "id": "todo",
+  "name": "Session to-dos",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "Things to check, per session tab, in a sidebar section. Claude adds one with add_todo and ticks it off with todo_done when you say you looked at it; ticking the box yourself does the same. A ticked item leaves the list a moment later.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/todo",
+  "permissions": ["tabs", "sidebar", "actions", "tools"],
+  "background": "background.html",
+  "contributes": {
+    "sidebar": [{ "key": "todos", "title": "To-dos" }],
+    "actions": [{ "key": "add", "title": "Add to-do", "icon": "plus", "where": ["tab-menu"] }]
+  },
+  "tools": [
+    {
+      "name": "add_todo",
+      "description": "Adds a to-do for the person to check, shown in Flare's sidebar under the session's tab. Answers with the to-do's id, which todo_done takes.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "description": "What to check, 1 to 120 characters." },
+          "tab": { "type": "string", "description": "The tab's id; leave it out for the tab you run in." }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "todo_done",
+      "description": "Ticks off a to-do once the person says they looked at it; it leaves the list a moment later.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The id add_todo answered with." }
+        },
+        "required": ["id"]
+      }
+    }
+  ]
+}

@@ -601,6 +601,7 @@ fn set_overlay(c: &AppWindow, which: Overlay, on: bool) {
     match which {
         Overlay::Menu => c.set_menu_open(on),
         Overlay::Overflow => c.set_overflow_open(on),
+        Overlay::PluginsDropdown => c.set_plugins_open(on),
         Overlay::Dialog => c.set_dialog_open(on),
         Overlay::UpdateWindow => c.set_update_open(on),
         Overlay::UpdateNotice => c.set_update_notice(if on { "A new version" } else { "" }.into()),
@@ -662,6 +663,7 @@ fn overlay_open_is_read_only_for_rust_and_computed_in_the_window_file() {
     for term in [
         "root.menu-open",
         "root.overflow-open",
+        "root.plugins-open",
         "root.dialog-open",
         "root.update-open",
         "root.update-notice",

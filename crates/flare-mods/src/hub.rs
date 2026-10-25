@@ -232,6 +232,23 @@ struct Inner {
     stopped: BTreeMap<String, String>,
     /// Why this run keeps every plugin off (safe mode), if it does.
     safe: Option<String>,
+    /// The tabs each plugin may act on because the person clicked one of its actions or sidebar items there
+    /// (design 13, "click scope"). Gone when the tab closes or the plugin's token dies.
+    clicked: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// The tabs one plugin may hold click scope on at once; a click on one more forgets the oldest.
+pub const MAX_CLICKED_TABS: usize = 64;
+
+/// What a plugin that is on adds to Flare's own surfaces (plugins phase 4): its sidebar sections when it holds
+/// `sidebar`, its actions when it holds `actions`, and its own icons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Surfaces {
+    pub id: String,
+    pub name: String,
+    pub sidebar: Vec<crate::manifest::SidebarDef>,
+    pub actions: Vec<crate::manifest::ActionDef>,
+    pub icons: Vec<crate::manifest::IconDef>,
 }
 
 pub struct Hub {
@@ -377,6 +394,92 @@ impl Hub {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// What every protocol 2 plugin that is on and not stopped adds to the sidebar and the action places, in the
+    /// order the scan found them. A part needs its permission in the live grant (the manifest asks for it too).
+    pub fn surfaces(&self) -> Vec<Surfaces> {
+        let g = self.lock();
+        g.found
+            .iter()
+            .filter(|f| f.manifest.is_plugin() && !g.stopped.contains_key(&f.manifest.id))
+            .filter_map(|f| {
+                let m = &f.manifest;
+                let token = g.tokens.token_of(&m.id)?;
+                let Some(Grant::Mod { permissions, .. }) = g.tokens.grant(token) else {
+                    return None;
+                };
+                let sidebar = if permissions.contains(&Permission::Sidebar) {
+                    m.contributes.sidebar.clone()
+                } else {
+                    Vec::new()
+                };
+                let actions = if permissions.contains(&Permission::Actions) {
+                    m.contributes.actions.clone()
+                } else {
+                    Vec::new()
+                };
+                if sidebar.is_empty() && actions.is_empty() {
+                    return None;
+                }
+                Some(Surfaces {
+                    id: m.id.clone(),
+                    name: m.name.clone(),
+                    sidebar,
+                    actions,
+                    icons: m.contributes.icons.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether the plugin's manifest declares the sidebar section `key`.
+    pub fn declares_section(&self, id: &str, key: &str) -> bool {
+        self.lock().found.iter().any(|f| {
+            f.manifest.id == id && f.manifest.contributes.sidebar.iter().any(|s| s.key == key)
+        })
+    }
+
+    /// Whether the plugin's manifest declares the action `key`.
+    pub fn declares_action(&self, id: &str, key: &str) -> bool {
+        self.lock().found.iter().any(|f| {
+            f.manifest.id == id && f.manifest.contributes.actions.iter().any(|a| a.key == key)
+        })
+    }
+
+    /// The person clicked one of the plugin's actions or sidebar items on `tab`: the plugin may act on that tab
+    /// from now on, as if it held `tabs` for it alone, until the tab closes or the plugin's token dies (design 13).
+    /// A plugin that is off gets nothing.
+    pub fn grant_click_scope(&self, id: &str, tab: &str) {
+        let mut g = self.lock();
+        if g.tokens.token_of(id).is_none() {
+            return;
+        }
+        let set = g.clicked.entry(id.to_string()).or_default();
+        if !set.contains(tab) && set.len() >= MAX_CLICKED_TABS {
+            let first = set.iter().next().cloned();
+            if let Some(first) = first {
+                set.remove(&first);
+            }
+        }
+        set.insert(tab.to_string());
+    }
+
+    /// Whether a click gave the plugin scope on `tab` ([`Hub::grant_click_scope`]).
+    pub fn has_click_scope(&self, id: &str, tab: &str) -> bool {
+        self.lock()
+            .clicked
+            .get(id)
+            .is_some_and(|set| set.contains(tab))
+    }
+
+    /// The tab closed: no plugin keeps scope on it.
+    pub fn forget_tab(&self, tab: &str) {
+        let mut g = self.lock();
+        for set in g.clicked.values_mut() {
+            set.remove(tab);
+        }
+        g.clicked.retain(|_, set| !set.is_empty());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -577,6 +680,7 @@ impl Hub {
         // an older generation now.
         for id in &revoked {
             *g.generations.entry(id.clone()).or_insert(0) += 1;
+            g.clicked.remove(id);
         }
         for id in &revoked {
             Self::fail_calls_locked(
@@ -1984,6 +2088,57 @@ mod tests {
         w.hub.set_enabled("bg0", false).unwrap();
         w.hub.set_enabled("bg6", true).unwrap();
         assert_eq!(w.hub.with_background().len(), 6);
+    }
+
+    #[test]
+    fn a_plugin_on_shows_what_it_contributes_and_a_click_scope_lasts_until_it_stops_or_the_tab_closes()
+     {
+        let w = world(&[]);
+        let contributes = r#","background":"bg.html","contributes":{"sidebar":[{"key":"todos","title":"To-dos"}],"actions":[{"key":"add","title":"Add","icon":"plus","where":["tab-menu"]}]}"#;
+        put_plugin(
+            &w,
+            "todo",
+            &plugin_json("todo", "someone", r#"["sidebar","actions"]"#, contributes),
+        );
+        w.hub.scan();
+        // Off: nothing on the screen, and no click gives it anything.
+        assert!(w.hub.surfaces().is_empty());
+        w.hub.grant_click_scope("todo", "t1");
+        assert!(!w.hub.has_click_scope("todo", "t1"));
+        w.hub.set_enabled("todo", true).unwrap();
+        let s = w.hub.surfaces();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "Plugin todo");
+        assert_eq!(s[0].sidebar[0].key, "todos");
+        assert_eq!(s[0].actions[0].key, "add");
+        assert!(w.hub.declares_section("todo", "todos") && !w.hub.declares_section("todo", "add"));
+        assert!(w.hub.declares_action("todo", "add") && !w.hub.declares_action("todo", "todos"));
+        // A stopped plugin's surfaces leave the screen.
+        w.hub.set_stopped("todo", Some("stopped"));
+        assert!(w.hub.surfaces().is_empty());
+        w.hub.set_stopped("todo", None);
+        // A click scope: on that tab only, gone with the tab, and gone when the plugin's token dies.
+        w.hub.grant_click_scope("todo", "t1");
+        w.hub.grant_click_scope("todo", "t2");
+        assert!(w.hub.has_click_scope("todo", "t1") && !w.hub.has_click_scope("todo", "t3"));
+        assert!(!w.hub.has_click_scope("other", "t1"));
+        w.hub.forget_tab("t1");
+        assert!(!w.hub.has_click_scope("todo", "t1") && w.hub.has_click_scope("todo", "t2"));
+        w.hub.set_enabled("todo", false).unwrap();
+        w.hub.set_enabled("todo", true).unwrap();
+        assert!(
+            !w.hub.has_click_scope("todo", "t2"),
+            "a switch off forgets every click"
+        );
+        // Kept bounded: the oldest goes past the cap.
+        for i in 0..=MAX_CLICKED_TABS {
+            w.hub.grant_click_scope("todo", &format!("tab-{i:03}"));
+        }
+        assert!(!w.hub.has_click_scope("todo", "tab-000"));
+        assert!(
+            w.hub
+                .has_click_scope("todo", &format!("tab-{MAX_CLICKED_TABS:03}"))
+        );
     }
 
     #[test]
