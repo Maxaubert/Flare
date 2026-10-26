@@ -1,0 +1,125 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Working tab icons</title>
+<style>
+:root{--ground:#171717;--side:#0d0d0d;--text:#dedacf;--soft:#c2bfb5;--dim:#929089;--line:#ffffff17;--div:#ffffff12;--clawd:#d77757}
+*{box-sizing:border-box}
+body{margin:0;background:#0a0a0a;color:var(--text);font:14px/1.4 "Segoe UI",system-ui,sans-serif;padding:24px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px} h2{font-size:15px;margin:26px 0 10px}
+p.sub{color:var(--dim);margin:0 0 8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{background:var(--ground);border:1px solid var(--line);border-radius:8px;padding:14px}
+.name{font-weight:600}.name span{color:var(--dim);font-weight:400}
+.desc{color:var(--dim);font-size:12.5px;margin:2px 0 10px;min-height:34px}
+.stage{height:110px;display:flex;align-items:center;justify-content:center;background:#121212;border-radius:6px;margin-bottom:10px}
+.tab{height:36px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#1f1f1e;border:1px solid var(--div);border-radius:6px;color:var(--text);font-size:13px;margin-bottom:6px}
+.row{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--side);border:1px solid var(--div);border-radius:6px;color:var(--text);font-size:13px}
+.tab .nm,.row .nm{flex:1}
+.row small{color:var(--dim);margin-left:6px}
+.ring{width:12px;height:12px;border-radius:50%;border:2px solid rgba(222,218,207,.24);position:relative;flex:none}
+.ring::after{content:"";position:absolute;inset:-2px;border-radius:50%;border:2px solid transparent;border-top-color:var(--text);animation:spin 1s linear infinite}
+.ico{display:inline-block;flex:none;overflow:visible}
+.clawd path{fill:var(--clawd)} .clawd .lid{fill:transparent}
+.oai path{fill:var(--text)}
+svg *{transform-box:fill-box}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---- Clawd ---- */
+.hop{animation:hop 1.6s cubic-bezier(.3,0,.4,1) infinite}
+@keyframes hop{0%,100%{transform:translateY(0) scale(1,1)}12%{transform:translateY(0) scale(1.08,.88)}45%{transform:translateY(-22%) scale(.96,1.06)}78%{transform:translateY(0) scale(1.06,.92)}}
+.walk .legL{animation:legA .9s steps(1) infinite} .walk .legR{animation:legB .9s steps(1) infinite}
+.walk{animation:bob .45s ease-in-out infinite alternate}
+@keyframes legA{0%{transform:translateY(0)}50%{transform:translateY(-45%)}}
+@keyframes legB{0%{transform:translateY(-45%)}50%{transform:translateY(0)}}
+@keyframes bob{from{transform:translateY(0)}to{transform:translateY(-4%)}}
+.wave .armR{animation:armUp 1s ease-in-out infinite alternate;transform-origin:0% 100%}
+@keyframes armUp{from{transform:translateY(0)}to{transform:translateY(-100%)}}
+.dance{animation:sway 1.8s ease-in-out infinite;transform-origin:50% 100%}
+.dance .armL{animation:armUp .9s ease-in-out infinite alternate}
+.dance .armR{animation:armUp .9s ease-in-out infinite alternate-reverse}
+@keyframes sway{0%,100%{transform:rotate(-9deg)}50%{transform:rotate(9deg) translateY(-6%)}}
+.typing .armL{animation:tap .3s steps(1) infinite} .typing .armR{animation:tap .3s steps(1) infinite .15s}
+.typing{animation:bob .6s ease-in-out infinite alternate}
+@keyframes tap{0%{transform:translateY(0)}50%{transform:translateY(45%)}}
+.blink .lid{animation:lid 4.5s steps(1) infinite}
+.blink{animation:bob 2s ease-in-out infinite alternate}
+@keyframes lid{0%,92%{fill:transparent}93%,97%{fill:var(--clawd)}98%{fill:transparent}}
+.wiggle{animation:wig 1.3s ease-in-out infinite;transform-origin:50% 100%}
+@keyframes wig{0%,100%{transform:skewX(0)}25%{transform:skewX(-10deg)}75%{transform:skewX(10deg)}}
+
+
+/* ---- hop + blink routines (longer) ---- */
+.hb1{animation:hop 1.8s cubic-bezier(.3,0,.4,1) infinite}
+.hb1 .lid{animation:lid2 3.6s steps(1) infinite}
+@keyframes lid2{0%,46%{fill:transparent}47%,50%{fill:var(--clawd)}51%,100%{fill:transparent}}
+.hb2{animation:hopRest 4s cubic-bezier(.3,0,.4,1) infinite}
+.hb2 .lid{animation:lid3 4s steps(1) infinite}
+@keyframes hopRest{0%{transform:translateY(0) scale(1,1)}5%{transform:scale(1.08,.88)}14%{transform:translateY(-22%) scale(.96,1.06)}23%{transform:translateY(0) scale(1.06,.92)}28%{transform:translateY(0) scale(1,1)}33%{transform:scale(1.08,.88)}42%{transform:translateY(-22%) scale(.96,1.06)}51%{transform:translateY(0) scale(1.06,.92)}56%,100%{transform:translateY(0) scale(1,1)}}
+@keyframes lid3{0%,70%{fill:transparent}71%,74%{fill:var(--clawd)}75%,82%{fill:transparent}83%,86%{fill:var(--clawd)}87%,100%{fill:transparent}}
+.hb3{animation:routine 6s ease-in-out infinite;transform-origin:50% 100%}
+.hb3 .lid{animation:lid4 6s steps(1) infinite}
+@keyframes routine{0%{transform:translate(0,0) scale(1,1)}4%{transform:scale(1.08,.88)}10%{transform:translate(0,-22%) scale(.96,1.06)}16%{transform:translate(0,0) scale(1.06,.92)}20%{transform:translate(0,0)}30%{transform:translateX(-10%)}38%{transform:translate(-10%,-14%)}46%{transform:translateX(-10%)}52%{transform:translateX(0)}60%{transform:translateX(10%)}68%{transform:translate(10%,-14%)}76%{transform:translateX(10%)}84%,100%{transform:translate(0,0)}}
+@keyframes lid4{0%,86%{fill:transparent}87%,90%{fill:var(--clawd)}91%,100%{fill:transparent}}
+.hb4{animation:hopBig 2.6s cubic-bezier(.3,0,.4,1) infinite}
+.hb4 .lid{animation:lid2 5.2s steps(1) infinite}
+.hb4 .armL,.hb4 .armR{animation:armHop 2.6s ease-in-out infinite}
+@keyframes hopBig{0%,100%{transform:translateY(0) scale(1,1)}10%{transform:scale(1.1,.85)}35%{transform:translateY(-30%) scale(.95,1.08)}60%{transform:translateY(0) scale(1.08,.9)}70%,100%{transform:translateY(0) scale(1,1)}}
+@keyframes armHop{0%,12%,62%,100%{transform:translateY(0)}35%{transform:translateY(-100%)}}
+
+/* ---- OpenAI ---- */
+.rot{animation:spin 4s linear infinite;transform-origin:50% 50%}
+.rotease{animation:spinEase 3s cubic-bezier(.65,0,.35,1) infinite;transform-origin:50% 50%}
+@keyframes spinEase{0%{transform:rotate(0)}70%,100%{transform:rotate(360deg)}}
+.tick{animation:tick 5s steps(6) infinite;transform-origin:50% 50%}
+@keyframes tick{to{transform:rotate(360deg)}}
+.breathe{animation:breathe 2.6s ease-in-out infinite alternate;transform-origin:50% 50%}
+@keyframes breathe{from{transform:scale(.82);opacity:.7}to{transform:scale(1.05);opacity:1}}
+.wob{animation:wob 2.2s ease-in-out infinite;transform-origin:50% 50%}
+@keyframes wob{0%,100%{transform:rotate(-25deg)}50%{transform:rotate(25deg)}}
+.spinpulse{animation:spin 3.5s linear infinite,breathe2 1.8s ease-in-out infinite alternate;transform-origin:50% 50%}
+@keyframes breathe2{from{opacity:.55}to{opacity:1}}
+</style></head><body>
+<h1>Agent tab icons that move while working: pick some</h1>
+<p class="sub">Each card: big, then at real size (18 px) on a working tab in the strip and on a sidebar row. The ring at the end is the agent working. The icon moves only while the tab is working, and stays still with Windows' "animation effects" off.</p>
+<h2>Claude: hop + blink (new, longer)</h2><div class="grid" id="hb"></div>
+<h2>Claude: the first set, slowed down</h2><div class="grid" id="claude"></div>
+<h2>Codex / ChatGPT (the OpenAI mark), slowed down</h2><div class="grid" id="openai"></div>
+<template id="clawd"><svg class="ico clawd" viewBox="0.5 -2.5 17 17"><path class="body" d="M3 0h1.02v2.04h-1.02zM3 2h1.02v2.04h-1.02zM4 0h1.02v2.04h-1.02zM5 0h1.02v2.04h-1.02zM4 2h1.02v2.04h-1.02zM12 0h1.02v2.04h-1.02zM13 0h1.02v2.04h-1.02zM13 2h1.02v2.04h-1.02zM14 0h1.02v2.04h-1.02zM14 2h1.02v2.04h-1.02zM3 4h1.02v2.04h-1.02zM3 6h1.02v2.04h-1.02zM14 4h1.02v2.04h-1.02zM14 6h1.02v2.04h-1.02zM6 0h1.02v2.04h-1.02zM6 2h1.02v2.04h-1.02zM7 0h1.02v2.04h-1.02zM7 2h1.02v2.04h-1.02zM8 0h1.02v2.04h-1.02zM8 2h1.02v2.04h-1.02zM9 0h1.02v2.04h-1.02zM9 2h1.02v2.04h-1.02zM10 0h1.02v2.04h-1.02zM10 2h1.02v2.04h-1.02zM11 0h1.02v2.04h-1.02zM11 2h1.02v2.04h-1.02zM4 4h1.02v2.04h-1.02zM4 6h1.02v2.04h-1.02zM5 4h1.02v2.04h-1.02zM5 6h1.02v2.04h-1.02zM6 4h1.02v2.04h-1.02zM6 6h1.02v2.04h-1.02zM7 4h1.02v2.04h-1.02zM7 6h1.02v2.04h-1.02zM8 4h1.02v2.04h-1.02zM8 6h1.02v2.04h-1.02zM9 4h1.02v2.04h-1.02zM9 6h1.02v2.04h-1.02zM10 4h1.02v2.04h-1.02zM10 6h1.02v2.04h-1.02zM11 4h1.02v2.04h-1.02zM11 6h1.02v2.04h-1.02zM12 4h1.02v2.04h-1.02zM12 6h1.02v2.04h-1.02zM13 4h1.02v2.04h-1.02zM13 6h1.02v2.04h-1.02z"/><path class="armL" d="M1 4h1.02v2.04h-1.02zM2 4h1.02v2.04h-1.02z"/><path class="armR" d="M15 4h1.02v2.04h-1.02zM16 4h1.02v2.04h-1.02z"/><path class="legL" d="M4 8h1.02v2.04h-1.02zM6 8h1.02v2.04h-1.02z"/><path class="legR" d="M11 8h1.02v2.04h-1.02zM13 8h1.02v2.04h-1.02z"/><path class="lid" d="M5 2h1.02v2.04h-1.02zM12 2h1.02v2.04h-1.02z"/></svg></template>
+<template id="oai"><svg class="ico oai" viewBox="0 0 24 24"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg></template>
+<script>
+const HB = [
+ ['H1','hop + blink','A slow hop (1.8 s), and a blink every other landing.','hb1'],
+ ['H2','two hops, rest, double blink','Hop, hop, then stands still and blinks twice. 4 s.','hb2'],
+ ['H3','hop, shuffle, blink','Hops, steps left and right with a little bounce each, then blinks. 6 s.','hb3'],
+ ['H4','big hop, claws up + blink','A higher hop with both claws up in the air, blinking now and then. 2.6 s.','hb4'],
+];
+const C = [
+ ['C1','hop','Jumps with a little squash on landing.','hop'],
+ ['C2','walk in place','Legs step left-right, body bobs.','walk'],
+ ['C3','wave','One claw waves up and down.','wave'],
+ ['C4','dance','Sways side to side, claws up in turn.','dance'],
+ ['C5','typing','Claws tap fast, like typing.','typing'],
+ ['C6','blink + bob','Barely moves: a slow bob and a blink now and then.','blink'],
+ ['C7','wiggle','Leans left and right.','wiggle'],
+];
+const O = [
+ ['O1','spin','Steady turn, once every 2.4 s.','rot'],
+ ['O2','spin, pause','A quick turn, then a short rest.','rotease'],
+ ['O3','tick','Turns in six steps, like a clock.','tick'],
+ ['O4','breathe','Grows and shrinks softly.','breathe'],
+ ['O5','wobble','Rocks back and forth.','wob'],
+ ['O6','spin + fade','Turns while fading in and out.','spinpulse'],
+];
+function render(list, tpl, el, label) {
+  const t = document.getElementById(tpl).innerHTML;
+  const icon = (px, cls) => t.replace('class="ico', `width="${px}" height="${px}" class="ico ${cls}`);
+  document.getElementById(el).innerHTML = list.map(([k,n,d,cls]) => `
+  <div class="card"><div class="name">${k} <span>${n}</span></div><div class="desc">${d}</div>
+   <div class="stage">${icon(84, cls)}</div>
+   <div class="tab">${icon(18, cls)}<span class="nm">${label}</span><span class="ring"></span></div>
+   <div class="row">${icon(18, cls)}<span class="nm">${label}<small>Github</small></span><span class="ring"></span></div>
+  </div>`).join('');
+}
+render(HB, 'clawd', 'hb', 'Flare');
+render(C, 'clawd', 'claude', 'Flare');
+render(O, 'oai', 'openai', 'Thrasher');
+</script></body></html>
