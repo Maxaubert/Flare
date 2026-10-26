@@ -444,6 +444,12 @@ Found while building it (2026-10-22, WebView2 Runtime 155.0.4283.62). What each 
     (the list, no picture) and the page must show when the tab is brought to the front.
 11. A very large page (thousands of nodes): time a look by hand; the tree is parsed on the UI thread, so watch for a hitch.
 12. Ctrl+wheel the panel to zoom while Claude is asked to click a link: it must land (the e2e proves it at 150 percent).
+13. The agent's cursor, the real window, at 100 and 150 percent: ask Claude to `open_page` and `browser_click` a button by ref. The
+    orange arrow with its "Claude" tag appears at the button, the ripple shows on the press, the arrow stays about a second and a half
+    and fades. It takes no click (click where it is: the page gets it), never takes the focus, has no taskbar button, sits under
+    another app's window dragged over Flare, and is gone at once when a Flare menu opens, the tab changes or the window is minimised.
+    Move the window and drag the splitter while it shows: it follows. Click a second element: it glides from the first.
+14. The cursor on a monitor of another scale (drag Flare across while it shows): it is drawn at the new scale on the next frame.
 
 ## Stage 5: mini-apps and diagrams
 

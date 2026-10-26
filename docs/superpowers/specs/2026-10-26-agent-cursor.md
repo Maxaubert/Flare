@@ -51,6 +51,8 @@ so the person can follow it and take over in time, as with Claude in Chrome.
 
 ## Plan
 
+Built 2026-10-26 (steps 1 to 7); what was decided while building is in `docs/surfaces/decisions.md` ("The agent's cursor").
+
 One branch `feat/agent-cursor`, one PR. Each step with its tests; fmt, clippy, the `flare` bin and `flare-surfaces`,
 `flare-win` suites (known failures excepted).
 
