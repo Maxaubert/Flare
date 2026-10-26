@@ -174,6 +174,7 @@ mod tests {
             "show_file",
             "show_text",
             "show_diagram",
+            "show_audio",
             "show_html",
             "open_page",
             "browser_look",

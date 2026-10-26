@@ -208,6 +208,19 @@ pub enum CtlOp {
         /// As for `BadgeSet`.
         generation: u64,
     },
+    /// `bar.show` (plugins phase 6): the plugin's bar under the tab's terminal, checked on the call's thread (the plugin
+    /// has a bar, the tab is one it may see, the rate). `busy` when another plugin's bar shows there.
+    BarShow {
+        plugin: String,
+        tab: String,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `bar.hide`: the plugin's bar leaves the tab (another plugin's stays).
+    BarHide {
+        plugin: String,
+        tab: String,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -268,6 +281,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::ActionsSet { .. } => "CtlOp::ActionsSet",
             CtlOp::SessionOf { .. } => "CtlOp::SessionOf",
             CtlOp::TabInput { .. } => "CtlOp::TabInput",
+            CtlOp::BarShow { .. } => "CtlOp::BarShow",
+            CtlOp::BarHide { .. } => "CtlOp::BarHide",
         })
     }
 }
@@ -883,6 +898,42 @@ impl AppDispatcher {
         })
     }
 
+    /// `bar.show {tab?}` and `bar.hide {tab?}` (plugins phase 6): the calling plugin's bar on the tab it names (one it may
+    /// see) or its own; a background page names one. The plugin must have a bar it may show (its manifest's, with `bar`
+    /// approved), and each is spent from its own second on that tab.
+    fn bar_call(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        use crate::plugin_bar::BAR_RATE;
+        let generation = self.generation_of(ctx);
+        let plugin = Self::plugin_caller(ctx, "a bar")?;
+        only_fields(params, &["tab"], method.name())?;
+        if self.hub()?.bar_of(&plugin).is_none() {
+            return Err(CtlError::new(
+                code::BAD_PARAMS,
+                "the plugin has no bar (plugin.json \"bar\")",
+            ));
+        }
+        let tab = self.scoped_tab(ctx, params)?;
+        self.spend_surface(
+            format!("{}:{plugin}/{tab}", method.name()),
+            BAR_RATE,
+            &format!("{} calls on one tab", method.name()),
+        )?;
+        self.ask(if method == Method::BarShow {
+            CtlOp::BarShow {
+                plugin,
+                tab,
+                generation,
+            }
+        } else {
+            CtlOp::BarHide { plugin, tab }
+        })
+    }
+
     /// `storage.get {key?}` and `storage.set {key?, value}`: the calling plugin's own store, read and changed here on
     /// the call's thread (its writes go to a worker of their own). A protocol 1 mod has none.
     fn storage_call(
@@ -1301,6 +1352,87 @@ impl AppDispatcher {
         )
     }
 
+    /// `view.audio {path | url, title?, autoplay?}` (plugins phase 6): Flare's audio player in the caller's panel. A
+    /// `path` is resolved again here (rule 13), must be on the click allowlist as named and as the file system names it
+    /// (rule 14) and be a sound file by both names; it is copied beside the page (at most 100 MB). A `url` must be a
+    /// public `https` address (never loopback, a private range or a local name), and the page may load that origin's
+    /// media only. The page is Flare's: no script of the caller's, and it plays by itself only with `autoplay`, once.
+    fn view_audio(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use flare_surfaces::audio;
+        let tab = Self::tab_of_call(ctx)?;
+        self.apps()?;
+        only_fields(params, &["path", "url", "title", "autoplay"], "view.audio")?;
+        let bad = |m: &str| CtlError::new(code::BAD_PARAMS, m.to_string());
+        let title = title_param(params)?.unwrap_or_else(|| audio::DEFAULT_TITLE.to_string());
+        let autoplay = bool_param(params, "autoplay")?.unwrap_or(false);
+        let deadline = Instant::now() + BROWSER_WAIT;
+        match (str_param(params, "path")?, str_param(params, "url")?) {
+            (Some(p), None) => {
+                if p.trim().is_empty() || p.len() > 4096 || p.contains('\0') {
+                    return Err(bad("that is not a usable path"));
+                }
+                let base = if std::path::Path::new(p).is_absolute() {
+                    String::new()
+                } else {
+                    let cwd = self.ask_by(CtlOp::TabCwd { tab: tab.clone() }, deadline)?;
+                    cwd["cwd"].as_str().unwrap_or_default().to_string()
+                };
+                // A file nobody may open answers the same way as a missing one, so a probe learns nothing.
+                let (abs, real) = (self.resolve)(&base, p, &self.home).ok_or_else(|| {
+                    CtlError::new(code::NOT_FOUND, "no such file that Flare may play")
+                })?;
+                let ext = audio::audio_ext(&abs, &real).ok_or_else(|| {
+                    bad(&format!(
+                        "Flare plays sound files only ({})",
+                        audio::AUDIO_EXTS.join(", ")
+                    ))
+                })?;
+                let bytes = read_audio(&real)?;
+                let track = audio::track_name(ext);
+                let page = audio::page(&track, &title, None, autoplay);
+                self.show_app(
+                    tab,
+                    &[(app::PAGE, page.as_bytes()), (track.as_str(), &bytes)],
+                    false,
+                    title,
+                    false,
+                    deadline,
+                )
+            }
+            (None, Some(u)) => {
+                if u.len() > 2048 {
+                    return Err(bad("url is over 2 KB"));
+                }
+                // An address is the internet: a plugin plays one only with `network` (else the address could carry
+                // what the plugin knows out of the PC).
+                if let Grant::Mod { id, .. } = &ctx.grant
+                    && !self.hub()?.network_of(id)
+                {
+                    return Err(CtlError::new(
+                        code::FORBIDDEN,
+                        "playing an address needs the network permission",
+                    ));
+                }
+                if let Some(why) = flare_surfaces::net::refusal(u) {
+                    return Err(bad(&format!("that address cannot be played: {why}")));
+                }
+                let origin =
+                    audio::origin_of(u).ok_or_else(|| bad("that address has no origin"))?;
+                let page = audio::page(u, &title, Some(&origin), autoplay);
+                // The browser of networked mini-apps: the page's own policy lets in this origin's media and nothing else.
+                self.show_app(
+                    tab,
+                    &[(app::PAGE, page.as_bytes())],
+                    true,
+                    title,
+                    false,
+                    deadline,
+                )
+            }
+            _ => Err(bad("give either path or url, not both and not neither")),
+        }
+    }
+
     /// `view.diagram`: Mermaid text drawn by the bundled build.
     fn view_diagram(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
         let tab = Self::tab_of_call(ctx)?;
@@ -1347,6 +1479,25 @@ fn read_page(real: &str) -> Result<String, CtlError> {
         return Err(bad("that page is empty"));
     }
     Ok(text)
+}
+
+/// Reads a sound file the backend has resolved: at most [`flare_surfaces::audio::AUDIO_MAX`].
+fn read_audio(real: &str) -> Result<Vec<u8>, CtlError> {
+    use std::io::Read;
+    let file = std::fs::File::open(real) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| CtlError::new(code::NOT_FOUND, "no such file that Flare may play"))?;
+    let max = flare_surfaces::audio::AUDIO_MAX;
+    let mut bytes = Vec::new();
+    file.take(max + 1)
+        .read_to_end(&mut bytes) // sync-ok: the channel call's own thread, never the UI thread
+        .map_err(|_| CtlError::new(code::BAD_PARAMS, "that sound file could not be read"))?;
+    if bytes.len() as u64 > max {
+        return Err(CtlError::new(
+            code::BAD_PARAMS,
+            "that sound file is over 100 MB",
+        ));
+    }
+    Ok(bytes)
 }
 
 /// `bad_params` for a field the method does not take.
@@ -1618,9 +1769,9 @@ impl Dispatcher for AppDispatcher {
             Method::TabsProgressSet,
             Method::TabsProgressClear,
         ];
-        // Mini-apps are listed only when this run can write them.
+        // Mini-apps, and the audio player that is one, are listed only when this run can write them.
         if self.apps.is_some() {
-            all.extend([Method::ViewHtml, Method::ViewDiagram]);
+            all.extend([Method::ViewHtml, Method::ViewDiagram, Method::ViewAudio]);
         }
         // Mods (stage 8) are listed only where there is a hub for them, and so are the plugins' own surfaces.
         if self.mods.is_some() {
@@ -1634,6 +1785,8 @@ impl Dispatcher for AppDispatcher {
                 Method::TabsInput,
                 Method::StorageGet,
                 Method::StorageSet,
+                Method::BarShow,
+                Method::BarHide,
             ]);
         }
         all
@@ -1801,6 +1954,8 @@ impl Dispatcher for AppDispatcher {
             Method::SessionRead => self.session_read(ctx, &params),
             Method::TabsInput => self.tabs_input(ctx, &params),
             Method::StorageGet | Method::StorageSet => self.storage_call(ctx, method, &params),
+            Method::BarShow | Method::BarHide => self.bar_call(ctx, method, &params),
+            Method::ViewAudio => self.view_audio(ctx, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),
@@ -3689,6 +3844,171 @@ mod tests {
         );
         assert!(default_title.is_ok());
         assert_eq!(last_app(&r).2, "Diagram");
+    }
+
+    /// An `AppRig` whose resolver knows `speech.mp3` (the sound file `real`) and `notes.txt`, and with a hub where the
+    /// plugin `radio` holds `network` and `mute` does not.
+    fn audio_rig(root: &std::path::Path, real: &std::path::Path) -> (AppRig, Arc<Hub>) {
+        let mut r = app_rig(root, false, &[]);
+        let real = real.to_string_lossy().into_owned();
+        r.d.resolve = Arc::new(move |_base, text, _home| match text {
+            "speech.mp3" | "C:\\work\\speech.mp3" => Some((text.to_string(), real.clone())),
+            "notes.txt" => Some((text.to_string(), "C:\\work\\notes.txt".to_string())),
+            _ => None,
+        });
+        let plugins = root.join("plugins");
+        for (id, perms) in [("radio", r#"["view","network"]"#), ("mute", r#"["view"]"#)] {
+            let f = plugins.join(id);
+            std::fs::create_dir_all(&f).unwrap();
+            std::fs::write(
+                f.join("plugin.json"),
+                format!(
+                    r#"{{"id":"{id}","name":"P {id}","version":"1.0.0","protocol":2,"description":"d","author":"me","homepage":"https://example.com/{id}","permissions":{perms},"background":"bg.html"}}"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(f.join("bg.html"), "<p>bg</p>").unwrap();
+        }
+        let hub = Arc::new(Hub::new(flare_mods::hub::Config {
+            dir: plugins,
+            old_mods_dir: None,
+            state_file: root.join("mods.json"),
+        }));
+        hub.scan();
+        hub.set_enabled("radio", true).unwrap();
+        hub.set_enabled("mute", true).unwrap();
+        r.d.mods = Some(Arc::clone(&hub));
+        (r, hub)
+    }
+
+    #[test]
+    fn view_audio_copies_a_sound_file_beside_flares_own_player_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("speech.mp3");
+        std::fs::write(&real, b"ID3 fake").unwrap();
+        let (r, _hub) = audio_rig(dir.path(), &real);
+        let v =
+            r.d.call(
+                &agent_in_tab(),
+                Method::ViewAudio,
+                json!({"path": "speech.mp3", "title": "Reply", "autoplay": true}),
+            )
+            .unwrap();
+        assert_eq!(v["panel"]["kind"], "app");
+        let (tab, spec, title, diagram) = last_app(&r);
+        assert_eq!(
+            (tab.as_str(), title.as_str(), diagram),
+            ("tab-1", "Reply", false)
+        );
+        assert!(!spec.allow_network, "a file needs no network");
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(page.contains(&flare_surfaces::audio::csp(None)));
+        assert!(page.find("Content-Security-Policy") < page.find("<audio"));
+        assert!(page.contains("src=\"track.mp3\""));
+        assert!(page.contains("if(true&&!once)"), "autoplay once, as asked");
+        assert_eq!(
+            std::fs::read(spec.folder.join("track.mp3")).unwrap(),
+            b"ID3 fake"
+        );
+        // No title: the default one.
+        r.d.call(
+            &agent_in_tab(),
+            Method::ViewAudio,
+            json!({"path": "speech.mp3"}),
+        )
+        .unwrap();
+        assert_eq!(last_app(&r).2, flare_surfaces::audio::DEFAULT_TITLE);
+    }
+
+    #[test]
+    fn view_audio_refuses_what_is_not_sound_local_addresses_and_a_plugin_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("speech.mp3");
+        std::fs::write(&real, b"x").unwrap();
+        let (r, _hub) = audio_rig(dir.path(), &real);
+        let c = agent_in_tab();
+        for (params, want) in [
+            (json!({}), code::BAD_PARAMS),
+            (
+                json!({"path": "speech.mp3", "url": "https://example.com/a.mp3"}),
+                code::BAD_PARAMS,
+            ),
+            (json!({"path": "notes.txt"}), code::BAD_PARAMS),
+            (json!({"path": "missing.mp3"}), code::NOT_FOUND),
+            (
+                json!({"path": "speech.mp3", "loop": true}),
+                code::BAD_PARAMS,
+            ),
+            (json!({"url": "http://example.com/a.mp3"}), code::BAD_PARAMS),
+            (json!({"url": "https://localhost/a.mp3"}), code::BAD_PARAMS),
+            (
+                json!({"url": "https://192.168.1.4/a.mp3"}),
+                code::BAD_PARAMS,
+            ),
+            (
+                json!({"url": "https://printer.local/a.mp3"}),
+                code::BAD_PARAMS,
+            ),
+            (json!({"url": "https://[::1]/a.mp3"}), code::BAD_PARAMS),
+        ] {
+            let e = r.d.call(&c, Method::ViewAudio, params.clone()).unwrap_err();
+            assert_eq!(e.code, want, "{params}: {}", e.message);
+        }
+        assert!(
+            r.ops
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|o| !matches!(o, CtlOp::ShowApp { .. }))
+        );
+        // A public https address: the networked player, its policy lets in that origin's media only.
+        r.d.call(
+            &c,
+            Method::ViewAudio,
+            json!({"url": "https://cdn.example.com/a.ogg"}),
+        )
+        .unwrap();
+        let (_, spec, _, _) = last_app(&r);
+        assert!(spec.allow_network);
+        let page = std::fs::read_to_string(spec.folder.join(app::PAGE)).unwrap();
+        assert!(
+            page.contains("media-src https://cdn.example.com;"),
+            "{page}"
+        );
+        assert!(page.contains("connect-src 'none'"));
+        assert_eq!(std::fs::read_dir(&spec.folder).unwrap().count(), 1);
+        // A plugin plays an address only with `network`; a file it may play with `view` alone.
+        let plugin = |id: &str, perms: Vec<Permission>| {
+            ctx(
+                Some("tab-1"),
+                Grant::Mod {
+                    id: id.into(),
+                    permissions: perms,
+                    plugin: true,
+                },
+            )
+        };
+        let url = json!({"url": "https://cdn.example.com/a.ogg"});
+        let e =
+            r.d.call(
+                &plugin("mute", vec![Permission::View]),
+                Method::ViewAudio,
+                url.clone(),
+            )
+            .unwrap_err();
+        assert_eq!(e.code, code::FORBIDDEN, "{}", e.message);
+        r.d.call(
+            &plugin("radio", vec![Permission::View, Permission::Network]),
+            Method::ViewAudio,
+            url,
+        )
+        .unwrap();
+        r.d.call(
+            &plugin("mute", vec![Permission::View]),
+            Method::ViewAudio,
+            json!({"path": "speech.mp3"}),
+        )
+        .unwrap();
     }
 
     #[test]

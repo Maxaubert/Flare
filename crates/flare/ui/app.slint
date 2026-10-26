@@ -533,6 +533,25 @@ export component AppWindow inherits Window {
     callback plugin-fold(string);
     callback plugin-header-menu(string, length, length);
     callback plugin-item(string, string, bool);
+    // ---- the session bar (plugins phase 6) ----
+    // The front tab's plugin bar: its height (0 for none) and its plugin's `session-bar` actions. It sits under the
+    // terminal, which gives up the height (the grid reflows once). It shows only while the grid is in front.
+    in property <length> bar-h: 0px;
+    in property <[PluginButton]> bar-chips;
+    property <length> bar-shown-h: root.front-kind == 0 && root.has-tabs ? root.bar-h : 0px;
+    property <length> bar-chips-w: root.bar-chips.length > 0 ? root.bar-chips.length * 30px + 6px : 0px;
+    out property <bool> bar-shown: root.bar-shown-h > 0;
+    // Where the plugin's page goes (the row less its top line and the chips), in the window; the browser follows it.
+    out property <length> bar-web-x: bar-row.absolute-position.x;
+    out property <length> bar-web-y: bar-row.absolute-position.y + Px.hair();
+    out property <length> bar-web-w: max(0px, bar-row.width - root.bar-chips-w);
+    out property <length> bar-web-h: max(0px, bar-row.height - Px.hair());
+    out property <length> bar-chips-x: bar-row.absolute-position.x + bar-row.width - root.bar-chips-w;
+    callback bar-chip-clicked(int);
+    changed bar-web-x => { root.panel-web-moved(); }
+    changed bar-web-y => { root.panel-web-moved(); }
+    changed bar-web-w => { root.panel-web-moved(); }
+    changed bar-web-h => { root.panel-web-moved(); }
     // ---- sidebar ----
     in property <bool> sidebar-collapsed;
     in property <bool> sidebar-revealed;
@@ -966,7 +985,7 @@ export component AppWindow inherits Window {
                         x: 0px;
                         y: 0px;
                         width: root.grid-w;
-                        height: parent.height;
+                        height: parent.height - root.bar-shown-h;
                         clip: true;
                         visible: root.front-kind == 0;
                         Image {
@@ -1025,6 +1044,37 @@ export component AppWindow inherits Window {
                             tip-text: root.preview-chip-tip;
                             tip(a, b, c, d, e) => { root.tip-request(a, b, c, d, e); }
                             clicked => { root.preview-chip-clicked(); }
+                        }
+                    }
+                    // The plugin's session bar under the terminal (plugins phase 6): a line, the plugin's page (a
+                    // browser view placed over the row's left part) and, on the right, its `session-bar` actions in
+                    // Flare's chips.
+                    bar-row := Rectangle {
+                        x: 0px;
+                        y: parent.height - root.bar-shown-h;
+                        width: root.grid-w;
+                        height: root.bar-shown-h;
+                        visible: root.bar-shown-h > 0;
+                        background: Theme.ground;
+                        Rectangle {
+                            y: 0px;
+                            width: parent.width;
+                            height: Px.hair();
+                            background: Theme.divider;
+                        }
+                        for b[i] in root.bar-chips : PluginChip {
+                            x: parent.width - root.bar-chips-w + 6px + i * 30px;
+                            y: Px.snap((parent.height - 20px) / 2);
+                            width: 26px;
+                            height: 20px;
+                            cmd: b.cmd;
+                            letter: b.letter;
+                            tip-text: b.tip;
+                            on: b.checked;
+                            off: !b.enabled;
+                            ink: Theme.secondary-text;
+                            clicked => { root.bar-chip-clicked(i); }
+                            tip(a, c, d, e, f) => { root.tip-request(a, c, d, e, f); }
                         }
                     }
                     // The panel slot and its splitter (Surfaces stage 1), right of the grid. Declared before

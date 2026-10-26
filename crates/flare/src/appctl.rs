@@ -167,6 +167,7 @@ pub enum UiMsg {
     Mods(crate::mods_ctl::ModsMsgBox),
 }
 
+mod bar_glue;
 mod mods_glue;
 mod plugins_glue;
 mod sessions_glue;
@@ -437,6 +438,10 @@ pub struct AppCtl {
     /// The plugins' section rows and top-bar buttons (plugins phase 4), each one model kept for the window's life.
     plugin_rows_model: Rc<VecModel<crate::PluginRow>>,
     plugin_top_model: Rc<VecModel<crate::PluginButton>>,
+    /// The bars the tabs show (plugins phase 6), the front bar's chips as Slint draws them and as they were built.
+    bars: crate::plugin_bar::Bars,
+    bar_chips_model: Rc<VecModel<crate::PluginButton>>,
+    bar_chips: Vec<crate::plugin_ui::Button>,
     /// The plugins' sidebar sections and actions (plugins phase 4).
     plugins: plugins_glue::PluginSurfaces,
     /// The transcripts followed for the plugins that listen to `session`, and each plugin's share (plugins phase 5).
@@ -770,6 +775,8 @@ impl AppCtl {
         app.set_plugin_rows(ModelRc::from(plugin_rows_model.clone()));
         let plugin_top_model: Rc<VecModel<crate::PluginButton>> = Rc::new(VecModel::default());
         app.set_plugin_top_buttons(ModelRc::from(plugin_top_model.clone()));
+        let bar_chips_model: Rc<VecModel<crate::PluginButton>> = Rc::new(VecModel::default());
+        app.set_bar_chips(ModelRc::from(bar_chips_model.clone()));
         let handles: Rc<RefCell<HashMap<String, Arc<TermHandle>>>> = Rc::default();
         {
             // The look controller reaches every live tab (front and background) through this.
@@ -856,6 +863,9 @@ impl AppCtl {
             rows_model,
             plugin_rows_model,
             plugin_top_model,
+            bars: crate::plugin_bar::Bars::default(),
+            bar_chips_model,
+            bar_chips: Vec::new(),
             plugins: plugins_glue::PluginSurfaces::default(),
             sessions: crate::plugin_sessions::PluginSessions::default(),
             view: View {
@@ -1161,6 +1171,8 @@ impl AppCtl {
         bind!(app, rc, on_plugins_dismissed, |c| c.plugins_dismissed());
         bind!(app, rc, on_plugin_top_clicked, |c, i: i32| c
             .plugin_top_clicked(i));
+        bind!(app, rc, on_bar_chip_clicked, |c, i: i32| c
+            .bar_chip_clicked(i));
         bind!(
             app,
             rc,
@@ -3087,8 +3099,11 @@ impl AppCtl {
         self.panels
             .set_wrap(flare_settings::term_prefs::wrap_previews(&self.prefs));
         self.panels.sync(app, front.as_deref());
+        // The bar's height first: the terminal is laid out shorter before the browser is placed.
+        self.push_bar(app);
         let ctx = self.key_context();
         self.web.sync(app, &self.panels, front.as_deref(), ctx);
+        self.sync_bar_views(app);
         self.sync_web_full();
         self.sync_convo();
         let kind = front
@@ -3673,6 +3688,13 @@ impl AppCtl {
                 enter,
                 generation,
             } => self.ctl_tab_input(plugin, tab, text, enter, generation),
+            // The session bar (plugins phase 6): checked on the worker, applied in `bar_glue`.
+            CtlOp::BarShow {
+                plugin,
+                tab,
+                generation,
+            } => self.ctl_bar_show(plugin, tab, generation),
+            CtlOp::BarHide { plugin, tab } => self.ctl_bar_hide(plugin, tab),
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

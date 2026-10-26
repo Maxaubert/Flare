@@ -356,6 +356,44 @@ impl Hub {
         Some((f.folder.clone(), entry))
     }
 
+    /// The bar of a protocol 2 plugin that is on and holds `bar` in its live grant (plugins phase 6): its folder, its
+    /// entry and its height (the manifest's, already 24 to 160). None for a mod, a plugin with no bar, or one that is
+    /// off.
+    pub fn bar_of(&self, id: &str) -> Option<(PathBuf, String, u32)> {
+        let g = self.lock();
+        let token = g.tokens.token_of(id)?;
+        let Some(Grant::Mod { permissions, .. }) = g.tokens.grant(token) else {
+            return None;
+        };
+        if !permissions.contains(&Permission::Bar) {
+            return None;
+        }
+        let f = g
+            .found
+            .iter()
+            .find(|f| f.manifest.id == id && f.manifest.is_plugin())?;
+        let bar = f.manifest.bar.as_ref()?;
+        let height = bar.height.clamp(
+            crate::manifest::MIN_BAR_HEIGHT as u32,
+            crate::manifest::MAX_BAR_HEIGHT as u32,
+        );
+        Some((f.folder.clone(), bar.entry.clone(), height))
+    }
+
+    /// Whether the plugin's pages may reach the internet: a protocol 2 plugin that is on and holds `network` in its live
+    /// grant (plugins phase 6). A protocol 1 mod never does.
+    pub fn network_of(&self, id: &str) -> bool {
+        let g = self.lock();
+        let plugin = g
+            .found
+            .iter()
+            .any(|f| f.manifest.id == id && f.manifest.is_plugin());
+        plugin
+            && g.tokens.token_of(id).and_then(|t| g.tokens.grant(t)).is_some_and(
+                |gr| matches!(gr, Grant::Mod { permissions, .. } if permissions.contains(&Permission::Network)),
+            )
+    }
+
     /// The protocol 2 plugins that are on and have a background page, by id.
     pub fn with_background(&self) -> Vec<String> {
         let g = self.lock();
@@ -2091,6 +2129,48 @@ mod tests {
         n.hub.set_enabled("notes", true).unwrap();
         assert!(!n.hub.answers_in_background("notes"));
         assert!(n.hub.background_of("notes").is_none());
+    }
+
+    #[test]
+    fn a_plugins_bar_and_network_count_only_while_it_is_on_with_them_approved() {
+        let w = world(&[]);
+        put_plugin(
+            &w,
+            "player",
+            &plugin_json(
+                "player",
+                "me",
+                r#"["bar","network"]"#,
+                r#","bar":{"entry":"bar.html","height":48}"#,
+            ),
+        );
+        std::fs::write(w.root.join("player").join("bar.html"), "<p>bar</p>").unwrap(); // sync-ok: test code only
+        put_plugin(&w, "plain", &plugin_json("plain", "me", r#"["tabs"]"#, ""));
+        w.hub.scan();
+        assert!(
+            w.hub.snapshot().errors.is_empty(),
+            "{:?}",
+            w.hub.snapshot().errors
+        );
+        // Off: nothing.
+        assert!(w.hub.bar_of("player").is_none());
+        assert!(!w.hub.network_of("player"));
+        w.hub.set_enabled("player", true).unwrap();
+        w.hub.set_enabled("plain", true).unwrap();
+        let (folder, entry, height) = w.hub.bar_of("player").unwrap();
+        assert!(folder.ends_with("player"));
+        assert_eq!((entry.as_str(), height), ("bar.html", 48));
+        assert!(w.hub.network_of("player"));
+        // A plugin without them has neither.
+        assert!(w.hub.bar_of("plain").is_none());
+        assert!(!w.hub.network_of("plain"));
+        // A protocol 1 mod never reaches the network.
+        let n = notes_world();
+        n.hub.scan();
+        n.hub.set_enabled("notes", true).unwrap();
+        assert!(!n.hub.network_of("notes") && n.hub.bar_of("notes").is_none());
+        w.hub.set_enabled("player", false).unwrap();
+        assert!(w.hub.bar_of("player").is_none() && !w.hub.network_of("player"));
     }
 
     #[test]

@@ -148,6 +148,46 @@ pub enum WebOut {
     BgPage { plugin: String, ready: bool },
     /// A plugin's background page, or the browser it ran in, is gone (a failed load included).
     BgLost { plugin: String },
+    /// A plugin's bar page under a tab's terminal sent a message over its bridge (plugins phase 6).
+    BarMessage {
+        tab: String,
+        plugin: String,
+        json: String,
+    },
+    /// A plugin's bar page began loading (`ready` false) or finished loading well (true).
+    BarPage {
+        tab: String,
+        plugin: String,
+        ready: bool,
+    },
+    /// A plugin's bar page, or the browser it ran in, is gone (a failed load included).
+    BarLost { tab: String, plugin: String },
+}
+
+/// A tab's bar as the window wants it (plugins phase 6): the plugin whose bar the tab shows, and its page.
+#[derive(Clone, Debug)]
+pub struct BarWant {
+    pub tab: String,
+    pub plugin: String,
+    pub spec: AppSpec,
+}
+
+/// What [`WebCtl::sync_bars`] did to the bar views: the window binds a page to an opened one and lets a closed one go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BarChange {
+    Opened { tab: String, plugin: String },
+    Closed { tab: String, plugin: String },
+}
+
+/// A plugin's bar view under a tab's terminal: whose page, its host (a message from any other is not its), the
+/// navigation that counts as its load, what the browser was last told and when it was last on screen.
+struct BarView {
+    plugin: String,
+    host: String,
+    started_nav: Option<u64>,
+    visible: bool,
+    bounds: Option<PhysRect>,
+    seen: u64,
 }
 
 /// A plugin's background page as the controller knows it: the host it was opened on (a message from any other is
@@ -414,6 +454,11 @@ pub struct WebCtl {
     /// The plugins' background pages (plugins phase 3), by plugin: hidden views tied to no tab, which never take
     /// the keyboard and are never shown.
     backgrounds: HashMap<String, BgView>,
+    /// The plugins' bar views (plugins phase 6), by tab: shown under the terminal while their tab is in front, hidden
+    /// behind, never given the keyboard.
+    bars: HashMap<String, BarView>,
+    /// Counts the syncs that put a bar on screen (a bar view's `seen`).
+    bar_clock: u64,
     /// The page left full screen and the window is on its way back: the page keeps covering the window until the
     /// window's size changes, so it moves into the panel once, at the window's new size, not first into a panel
     /// laid out for the full-screen window (the tab, and the size it covered).
@@ -522,6 +567,8 @@ impl WebCtl {
             covered: None,
             uncovered: None,
             backgrounds: HashMap::new(),
+            bars: HashMap::new(),
+            bar_clock: 0,
             hold: None,
             keys: Rc::new(KeyState {
                 ctx: Cell::new(KeyContext::default()),
@@ -672,6 +719,7 @@ impl WebCtl {
         self.keys.job_active.set(false);
         self.keys.agent_keys.set(false);
         self.backgrounds.clear();
+        self.bars.clear();
         if let Some(mut b) = self.backend.take() {
             b.close_all();
         }
@@ -1063,8 +1111,206 @@ impl WebCtl {
 
     /// The browser goes when no view of any kind is left in it.
     fn drop_idle_backend(&mut self) {
-        if self.tabs.is_empty() && self.backgrounds.is_empty() {
+        if self.tabs.is_empty() && self.backgrounds.is_empty() && self.bars.is_empty() {
             self.backend = None;
+        }
+    }
+
+    // ---- plugins' bars ------------------------------------------------------------------------------------------
+
+    /// Makes the bar views agree with the bars the tabs show (`wanted`) and puts the front tab's on screen in the
+    /// window's bar row (its rectangle is the layout's `bar-web-*`), hidden while a Flare overlay is open or the grid is
+    /// not in front. A view is made the first time its tab is in front with a bar (lazily), hidden while its tab is
+    /// behind, closed when its tab no longer shows that plugin's bar, and an older one behind is closed past
+    /// [`crate::plugin_bar::LIVE_PER_PLUGIN`] a plugin. Only a change is sent to the browser.
+    pub fn sync_bars(
+        &mut self,
+        app: &AppWindow,
+        wanted: &[BarWant],
+        front: Option<&str>,
+    ) -> Vec<BarChange> {
+        let mut out = Vec::new();
+        let stale: Vec<String> = self
+            .bars
+            .iter()
+            .filter(|(t, v)| !wanted.iter().any(|w| w.tab == **t && w.plugin == v.plugin))
+            .map(|(t, _)| t.clone())
+            .collect();
+        for t in stale {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
+        let scale = app.get_scale();
+        let rect = phys_rect(
+            app.get_bar_web_x(),
+            app.get_bar_web_y(),
+            app.get_bar_web_w(),
+            app.get_bar_web_h(),
+            scale,
+        );
+        let on_screen = app.get_bar_shown() && !app.get_overlay_open() && !rect.is_empty();
+        let shown = front
+            .filter(|_| on_screen)
+            .and_then(|t| wanted.iter().find(|w| w.tab == t));
+        if let Some(w) = shown
+            && !self.bars.contains_key(&w.tab)
+            && !self.closed
+        {
+            self.bars.insert(
+                w.tab.clone(),
+                BarView {
+                    plugin: w.plugin.clone(),
+                    host: w.spec.host.clone(),
+                    started_nav: None,
+                    visible: true,
+                    bounds: Some(rect),
+                    seen: 0,
+                },
+            );
+            match self.backend() {
+                Some(b) => {
+                    b.open_view(&flare_web::Slot::bar(&w.tab), w.spec.clone(), rect, true);
+                    out.push(BarChange::Opened {
+                        tab: w.tab.clone(),
+                        plugin: w.plugin.clone(),
+                    });
+                }
+                None => {
+                    self.bars.remove(&w.tab);
+                }
+            }
+        }
+        let shown_tab = shown.map(|w| w.tab.clone());
+        if shown_tab.is_some() {
+            self.bar_clock += 1;
+        }
+        let clock = self.bar_clock;
+        let mut acts: Vec<(String, Option<bool>, Option<PhysRect>)> = Vec::new();
+        for (t, v) in &mut self.bars {
+            let visible = shown_tab.as_deref() == Some(t.as_str());
+            let vis = (v.visible != visible).then_some(visible);
+            v.visible = visible;
+            let bounds = (visible && v.bounds != Some(rect)).then_some(rect);
+            if bounds.is_some() {
+                v.bounds = Some(rect);
+            }
+            if visible {
+                v.seen = clock;
+            }
+            if vis.is_some() || bounds.is_some() {
+                acts.push((t.clone(), vis, bounds));
+            }
+        }
+        if let Some(b) = self.backend.as_mut() {
+            for (t, vis, bounds) in acts {
+                let slot = flare_web::Slot::bar(&t);
+                // Moved before it shows, so it never flashes at its old place.
+                if let Some(r) = bounds {
+                    b.set_view_bounds(&slot, r);
+                }
+                if let Some(v) = vis {
+                    b.set_view_visible(&slot, v);
+                }
+            }
+        }
+        let live: Vec<(String, String, u64)> = self
+            .bars
+            .iter()
+            .map(|(t, v)| (t.clone(), v.plugin.clone(), v.seen))
+            .collect();
+        for t in crate::plugin_bar::surplus(&live, shown_tab.as_deref()) {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
+        if self.bars.is_empty() && !out.is_empty() {
+            self.drop_idle_backend();
+        }
+        out
+    }
+
+    /// Closes the tab's bar view, if it has one.
+    fn close_bar(&mut self, tab: &str) -> Option<BarChange> {
+        let v = self.bars.remove(tab)?;
+        if let Some(b) = self.backend.as_mut() {
+            b.close_view(&flare_web::Slot::bar(tab));
+        }
+        Some(BarChange::Closed {
+            tab: tab.to_string(),
+            plugin: v.plugin,
+        })
+    }
+
+    /// Speaks to the tab's bar page (its bridge's `message` event).
+    pub fn post_to_bar(&mut self, tab: &str, json: &str) {
+        if self.bars.contains_key(tab)
+            && let Some(b) = self.backend.as_mut()
+        {
+            b.post_to_view(&flare_web::Slot::bar(tab), json);
+        }
+    }
+
+    /// The tabs whose bar has a view, sorted, with the plugin and whether it is on screen.
+    pub fn bar_views(&self) -> Vec<(String, String, bool)> {
+        let mut v: Vec<(String, String, bool)> = self
+            .bars
+            .iter()
+            .map(|(t, b)| (t.clone(), b.plugin.clone(), b.visible))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// What a bar page's view said, for the window: its messages, its load and its end. The keyboard it took by a
+    /// click goes back to the window at once (a bar never keeps it); anything else of it is nobody's business.
+    fn on_bar_event(&mut self, tab: &str, e: WebEvent) -> Option<WebOut> {
+        let v = self.bars.get_mut(tab)?;
+        let plugin = v.plugin.clone();
+        match e {
+            WebEvent::Loading { nav, .. } => {
+                v.started_nav = Some(nav);
+                Some(WebOut::BarPage {
+                    tab: tab.to_string(),
+                    plugin,
+                    ready: false,
+                })
+            }
+            WebEvent::Loaded { ok, nav, .. } if v.started_nav == Some(nav) => Some(if ok {
+                WebOut::BarPage {
+                    tab: tab.to_string(),
+                    plugin,
+                    ready: true,
+                }
+            } else {
+                self.close_bar(tab);
+                WebOut::BarLost {
+                    tab: tab.to_string(),
+                    plugin,
+                }
+            }),
+            WebEvent::Failed { .. } | WebEvent::Gone { .. } => {
+                self.close_bar(tab);
+                Some(WebOut::BarLost {
+                    tab: tab.to_string(),
+                    plugin,
+                })
+            }
+            WebEvent::ModMessage { host, json, .. } if host == v.host => Some(WebOut::BarMessage {
+                tab: tab.to_string(),
+                plugin,
+                json,
+            }),
+            WebEvent::Focus { has: true, .. } => {
+                if let Some(h) = self.hwnd {
+                    // SAFETY: SetFocus on Flare's own live window, from its own thread.
+                    unsafe {
+                        windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h as *mut _);
+                    }
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -2071,6 +2317,8 @@ impl WebCtl {
                 // so nothing here acts on it.
                 if slot.kind == flare_web::ViewKind::Background {
                     out.extend(self.on_background_event(&slot.owner, *event));
+                } else if slot.kind == flare_web::ViewKind::Bar {
+                    out.extend(self.on_bar_event(&slot.owner, *event));
                 } else {
                     log::debug!("a {} view said {}", slot.kind.name(), event.kind());
                 }

@@ -37,6 +37,32 @@ pub fn profile_name(id: &str) -> String {
     format!("{HOST_PREFIX}{id}")
 }
 
+/// The extra arguments of the networked plugins' browser: the mini-apps' WebRTC policy, and a resolver for which the
+/// local names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) are not found, a wall behind
+/// the request wall's refusal of them. A plugin's own pages are answered by Flare and never use the resolver.
+pub fn net_browser_arguments() -> String {
+    let local = [
+        "localhost",
+        "*.localhost",
+        "*.local",
+        "*.lan",
+        "*.internal",
+        "*.home.arpa",
+    ]
+    .map(|n| format!("MAP {n} ~NOTFOUND"))
+    .join(", ");
+    format!(
+        "{} --host-resolver-rules=\"{local}\"",
+        crate::app::WEBRTC_POLICY_FLAG
+    )
+}
+
+/// The user data folder of the networked plugins' browser (plugins phase 6), beside the sealed one: a browser started
+/// with other arguments needs a folder of its own, so a plugin that holds `network` keeps its profile here.
+pub fn net_env_folder(data_dir: &std::path::Path) -> std::path::PathBuf {
+    crate::app::sibling_folder(data_dir, "plugin-net")
+}
+
 /// The user data folder of the mods' and plugins' browser, beside the web panel's (`data_dir`): an
 /// environment of their own, apart from the web panel's and the mini-apps' (design 13). Its name is the one
 /// the mods shared with the sealed mini-apps before Phase 2b: every mod's profile (`flare-mod-<id>`, its
@@ -61,12 +87,18 @@ pub fn is_mod_url(url: &str) -> bool {
 
 /// The view spec of a mod: its folder (the canonical one the scan found), host and address, and no network.
 pub fn mod_spec(id: &str, folder: &std::path::Path, entry: &str) -> AppSpec {
+    plugin_spec(id, folder, entry, false)
+}
+
+/// The view spec of a plugin's page: [`mod_spec`], and with `network` (the plugin holds the approved `network`
+/// permission, plugins phase 6) a page that may reach public `https` addresses, in the plugins' networked browser.
+pub fn plugin_spec(id: &str, folder: &std::path::Path, entry: &str, network: bool) -> AppSpec {
     let host = mod_host(id);
     AppSpec {
         url: mod_url(&host),
         host,
         folder: folder.to_path_buf(),
-        allow_network: false,
+        allow_network: network,
         module: Some(ModSpec {
             id: id.to_string(),
             entry: entry.to_string(),
@@ -130,8 +162,17 @@ pub enum Route {
 
 /// Decides one request of the mod's view.
 pub fn route_request(uri: &str, host: &str) -> Route {
+    route_request_net(uri, host, false)
+}
+
+/// Decides one request of a plugin's view; with `network` an `https` request to a public host goes out
+/// ([`crate::net::is_public_https`]: never loopback, a private range or a local name).
+pub fn route_request_net(uri: &str, host: &str, network: bool) -> Route {
     if let Some(path) = request_path(uri, host) {
         return Route::Serve(path);
+    }
+    if network && crate::net::is_public_https(uri) {
+        return Route::Pass;
     }
     match url::Url::parse(uri)
         .map(|u| u.scheme().to_string())
@@ -254,5 +295,58 @@ mod tests {
         ] {
             assert_eq!(route_request(bad, h), Route::Refuse, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_networked_plugin_reaches_public_https_and_nothing_local() {
+        let h = "flare-mod-notes.local";
+        assert_eq!(
+            route_request_net("https://flare-mod-notes.local/a.js", h, true),
+            Route::Serve("/a.js".into())
+        );
+        assert_eq!(
+            route_request_net("https://example.com/feed.json", h, true),
+            Route::Pass
+        );
+        assert_eq!(
+            route_request_net("https://example.com/feed.json", h, false),
+            Route::Refuse,
+            "without network nothing goes out"
+        );
+        for bad in [
+            "http://example.com/",
+            "https://localhost/",
+            "https://127.0.0.1/",
+            "https://192.168.0.2/",
+            "https://flare-mod-other.local/",
+            "https://router.lan/",
+            "https://[::1]/",
+        ] {
+            assert_eq!(route_request_net(bad, h, true), Route::Refuse, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_networked_plugins_browser_keeps_the_webrtc_policy_and_knows_no_local_name() {
+        let a = net_browser_arguments();
+        assert!(a.contains(crate::app::WEBRTC_POLICY_FLAG));
+        assert!(a.contains("MAP localhost ~NOTFOUND") && a.contains("MAP *.local ~NOTFOUND"));
+        assert!(!a.contains("proxy-server"), "it has the real route");
+        assert!(!a.contains("MAP * ~NOTFOUND"), "public names resolve");
+    }
+
+    #[test]
+    fn a_networked_plugin_has_its_own_browser_folder_and_spec() {
+        let d = std::path::Path::new("C:/p/WebView2");
+        assert!(net_env_folder(d).ends_with("WebView2-plugin-net"));
+        assert_ne!(net_env_folder(d), env_folder(d));
+        let s = plugin_spec(
+            "notes",
+            std::path::Path::new("C:/m/notes"),
+            "bar.html",
+            true,
+        );
+        assert!(s.allow_network);
+        assert_eq!(s.module.as_ref().unwrap().entry, "bar.html");
     }
 }

@@ -13,10 +13,12 @@
 pub mod agent_job;
 pub mod agent_web;
 pub mod app;
+pub mod audio;
 pub mod devpreview;
 pub mod kind;
 pub mod layout;
 pub mod modview;
+pub mod net;
 pub mod notify;
 pub mod overlay;
 pub mod preview;
