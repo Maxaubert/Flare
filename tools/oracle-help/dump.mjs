@@ -3,25 +3,20 @@
 // file (one entry per line, so diffs read well), meta.json, and blankless.json
 // (what the row draws and copies, for every entry and variant).
 // Run after copy-sources.mjs: node dump.mjs
+// Flare's own entries (flare.mjs) are laid over Prism Terminal's catalogue.
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AGENTS_HELP } from './src/agents.ts'
 import { BASH_HELP } from './src/bash.ts'
 import { CMD_HELP } from './src/cmd.ts'
 import { GIT_HELP } from './src/git.ts'
 import { PACKAGES_HELP } from './src/packages.ts'
 import { POWERSHELL_HELP } from './src/powershell.ts'
 import { WSL_HELP } from './src/wsl.ts'
-import {
-  ALL_HELP,
-  HELP_CATEGORIES,
-  HELP_ID_PREFIXES,
-  blankless,
-  isKeyPress
-} from './src/index.ts'
+import { HELP_ID_PREFIXES, blankless, isKeyPress } from './src/index.ts'
 import { HELP_SHELLS } from './src/shells.ts'
+import { FLARE_AGENTS_FILE, FLARE_ALL_HELP, FLARE_HELP_CATEGORIES } from './flare.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const DATA_DIR = join(HERE, '..', '..', 'crates', 'flare-help', 'data')
@@ -35,7 +30,7 @@ export const FILE_LISTS = [
   ['cmd', CMD_HELP],
   ['bash', BASH_HELP],
   ['git', GIT_HELP],
-  ['agents', AGENTS_HELP],
+  ['agents', FLARE_AGENTS_FILE],
   ['packages', PACKAGES_HELP],
   ['wsl', WSL_HELP]
 ]
@@ -79,18 +74,18 @@ function main() {
     console.log(`${name}.json ${list.length} entries`)
   }
   if (total < 250 || total > 600) throw new Error(`entry total ${total} outside PT's own 250 to 600 gate`)
-  if (total !== ALL_HELP.length) throw new Error(`ALL_HELP has ${ALL_HELP.length}, the files ${total}`)
+  if (total !== FLARE_ALL_HELP.length) throw new Error(`the catalogue has ${FLARE_ALL_HELP.length}, the files ${total}`)
 
   const meta = {
     total,
-    categories: HELP_CATEGORIES,
+    categories: FLARE_HELP_CATEGORIES,
     shells: HELP_SHELLS,
     idPrefixes: HELP_ID_PREFIXES
   }
   mkdirSync(FIXTURE_DIR, { recursive: true })
   writeFileSync(join(FIXTURE_DIR, 'meta.json'), `${JSON.stringify(meta, null, 2)}\n`)
 
-  const cases = blanklessCases(ALL_HELP)
+  const cases = blanklessCases(FLARE_ALL_HELP)
   writeFileSync(join(FIXTURE_DIR, 'blankless.json'), `${JSON.stringify(cases, null, 2)}\n`)
 
   const dashes = [

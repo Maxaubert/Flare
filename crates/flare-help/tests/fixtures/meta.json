@@ -1,5 +1,5 @@
 {
-  "total": 328,
+  "total": 330,
   "categories": [
     {
       "id": "folders",
@@ -31,7 +31,7 @@
     },
     {
       "id": "agents",
-      "name": "Claude Code and Codex"
+      "name": "Claude Code, Codex and Antigravity"
     },
     {
       "id": "packages",

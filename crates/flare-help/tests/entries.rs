@@ -263,7 +263,7 @@ fn the_categories_are_in_the_panels_order_with_the_panels_names() {
         (HelpCategory::Network, "Network"),
         (HelpCategory::System, "System"),
         (HelpCategory::Git, "Git"),
-        (HelpCategory::Agents, "Claude Code and Codex"),
+        (HelpCategory::Agents, "Claude Code, Codex and Antigravity"),
         (HelpCategory::Packages, "Installing things"),
         (HelpCategory::Wsl, "WSL (Linux on Windows)"),
         (HelpCategory::Shell, "The shell itself"),

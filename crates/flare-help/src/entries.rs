@@ -1,5 +1,6 @@
 //! The help catalogue, loaded once from the generated data files (M7 Task 5). The seven files
-//! come from Prism Terminal's own TypeScript (`tools/oracle-help`); nothing here is typed by hand.
+//! come from Prism Terminal's own TypeScript (`tools/oracle-help`), with Flare's own entries from
+//! its `flare.mjs` (agy, 2026-10-26); nothing here is typed by hand.
 
 use crate::shells::shown_in;
 use crate::types::{HelpCategory, HelpEntry, HelpShellChoice};
@@ -39,7 +40,7 @@ pub const HELP_CATEGORIES: [(HelpCategory, &str); 11] = [
     (HelpCategory::Network, "Network"),
     (HelpCategory::System, "System"),
     (HelpCategory::Git, "Git"),
-    (HelpCategory::Agents, "Claude Code and Codex"),
+    (HelpCategory::Agents, "Claude Code, Codex and Antigravity"),
     (HelpCategory::Packages, "Installing things"),
     (HelpCategory::Wsl, "WSL (Linux on Windows)"),
     (HelpCategory::Shell, "The shell itself"),

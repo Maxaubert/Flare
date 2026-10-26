@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ALL_HELP } from './src/index.ts'
+import { FLARE_AGENTS_HELP, FLARE_ALL_HELP } from './flare.mjs'
 import { expand, meaningfulWords, searchHelp, stem, tokenise, withinOneEdit } from './src/search.ts'
 import { FIXTURE_DIR, EM_DASH } from './dump.mjs'
 
@@ -105,7 +106,7 @@ function synonymGroups() {
 /** Every string a catalogue entry carries, for the vocabulary. */
 function catalogueTexts() {
   const texts = []
-  for (const e of ALL_HELP) {
+  for (const e of FLARE_ALL_HELP) {
     texts.push(e.task, e.summary, e.command, ...e.keywords, ...Object.keys(e.placeholders ?? {}))
     for (const v of e.variants ?? []) texts.push(v.label, v.command, ...(v.keywords ?? []))
   }
@@ -113,15 +114,15 @@ function catalogueTexts() {
 }
 
 /** Each query run as PT's search runs it. Generated queries come from one
- *  entry in three, in catalogue order, each run in the entry's own shell. */
+ *  entry in three of Prism Terminal's, in catalogue order, and from every one
+ *  of Flare's (flare.mjs), each run in the entry's own shell. */
 function searchCases() {
   const cases = []
   for (const q of QUERIES) {
     for (const shell of ['powershell', 'cmd', 'bash']) cases.push({ q, shell, limit: 50 })
     cases.push({ q, shell: null, limit: 10 })
   }
-  ALL_HELP.forEach((e, i) => {
-    if (i % 3 !== 0) return
+  const fromEntry = (e) => {
     const own = e.shell === 'any' || e.shell === 'windows' ? 'powershell' : e.shell
     const qs = [
       e.task,
@@ -133,7 +134,11 @@ function searchCases() {
     const longest = e.task.split(/[^A-Za-z]+/).reduce((a, b) => (b.length > a.length ? b : a), '')
     if (longest.length >= 5) qs.push(longest.slice(0, 2) + longest.slice(3))
     for (const q of qs) cases.push({ q, shell: own, limit: 10 })
+  }
+  ALL_HELP.forEach((e, i) => {
+    if (i % 3 === 0) fromEntry(e)
   })
+  FLARE_AGENTS_HELP.forEach(fromEntry)
   return cases
 }
 
@@ -141,7 +146,7 @@ function golden() {
   const cases = searchCases()
   const rows = cases.map((c) => {
     const opts = c.shell ? { shell: c.shell, limit: c.limit } : { limit: c.limit }
-    const hits = searchHelp(ALL_HELP, c.q, opts)
+    const hits = searchHelp(FLARE_ALL_HELP, c.q, opts)
     return {
       q: c.q,
       shell: c.shell,

@@ -6108,6 +6108,18 @@
     "key": false
   },
   {
+    "command": "agy",
+    "names": [],
+    "out": "agy",
+    "key": false
+  },
+  {
+    "command": "agy -c",
+    "names": [],
+    "out": "agy -c",
+    "key": false
+  },
+  {
     "command": "winget search NAME",
     "names": [
       "NAME",
