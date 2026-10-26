@@ -47,15 +47,26 @@ const REPARSE_ATTRIBUTE: u32 = 0x400;
 const BAD_CHARS: [char; 6] = ['<', '>', '"', '|', '?', '*'];
 
 /// The parts of a zip entry's name, or why the entry is refused. `name` uses `/` between parts; a trailing `/` marks a
-/// folder entry.
+/// folder entry. A refusal shows the name with each control or hidden formatting character as `?` (Settings shows the
+/// sentence), and a name that passes holds none, so the later sentences that name it are clean too.
 pub fn check_entry(name: &str) -> Result<Vec<String>, String> {
-    let shown: String = name.chars().take(60).collect();
+    let hidden = |c: char| c.is_control() || crate::manifest::is_format_char(c);
+    let shown: String = name
+        .chars()
+        .take(60)
+        .map(|c| if hidden(c) { '?' } else { c })
+        .collect();
     let refuse = |why: &str| Err(format!("the zip entry \"{shown}\" {why}"));
     if name.is_empty() {
         return refuse("has no name");
     }
     if name.chars().any(char::is_control) {
         return refuse("has a control character in its name");
+    }
+    if name.chars().any(crate::manifest::is_format_char) {
+        return refuse(
+            "has a hidden formatting character in its name (a zero-width space or a bidi override)",
+        );
     }
     if name.contains('\\') {
         return refuse("uses '\\' in its name");
@@ -512,6 +523,8 @@ mod tests {
             ("a//b.txt", "empty"),
             ("./a.txt", "'.'"),
             ("a\u{1}b", "control"),
+            ("a\u{202e}b.txt", "hidden formatting"),
+            ("a\u{200b}b.txt", "hidden formatting"),
             ("CON", "device"),
             ("sub/nul.txt", "device"),
             ("Com1.log", "device"),
@@ -524,6 +537,17 @@ mod tests {
         ] {
             let e = check_entry(bad).expect_err(bad);
             assert!(e.contains(why), "{bad}: {e}");
+        }
+        // The sentence Settings shows holds no control or hidden character of the name.
+        for (bad, shown) in [
+            ("a\u{1b}[2Jb", "a?[2Jb"),
+            ("a\nb", "a?b"),
+            ("a\u{202e}b", "a?b"),
+        ] {
+            let e = check_entry(bad).expect_err(bad);
+            assert!(e.contains(&format!("\"{shown}\"")), "{e:?}");
+            let hidden = |c: char| c.is_control() || crate::manifest::is_format_char(c);
+            assert!(!e.chars().any(hidden), "{e:?}");
         }
         let long = "a".repeat(MAX_PATH_CHARS + 1);
         assert!(check_entry(&long).unwrap_err().contains("longer"));

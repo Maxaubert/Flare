@@ -1172,7 +1172,7 @@ pub fn clean_line(s: String, shown: &str, max: usize) -> Result<String, String> 
 /// The Unicode format characters (general category Cf) a person cannot see but a renderer or a model reads:
 /// soft hyphen, the Arabic letter mark, the Mongolian vowel separator, the zero-width and bidi-control
 /// characters, the word joiner, the invisible operators, the BOM and the interlinear annotation marks.
-fn is_format_char(c: char) -> bool {
+pub fn is_format_char(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}'
