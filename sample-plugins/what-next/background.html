@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src https://api.github.com">
+<title>What next</title>
+</head>
+<body>
+<script>
+// The background page of the what-next sample: it runs, hidden, while the plugin is on, and keeps one list in the
+// "Next up" sidebar section. Two ways to fill it:
+// 1. Claude calls set_next (for example with what `gh issue list` printed). This needs no network: the plugin as
+//    shipped has only `sidebar` and `tools`.
+// 2. The page fetches a repository's open issues itself: set REPO below and add "network" to the permissions in
+//    plugin.json. Flare then asks you again ("Use the internet"). Without `network` Flare's policy blocks the fetch,
+//    and the section says so.
+// The list is kept in the plugin's own store (storage.get / storage.set), so it is back after a restart.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var REPO = '';             // 'owner/repo' to fetch its issues; empty: only set_next fills the list
+  var REFRESH_MS = 10 * 60 * 1000;
+  var MAX_ITEMS = 20;
+  var TEXT_MAX = 120;
+  var list = { source: '', items: [] };
+
+  // One clean line: no control or hidden formatting characters, at most `max` characters.
+  function clean(s, max) {
+    s = String(s == null ? '' : s)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/[­؜᠎​-‏‪-‮⁠-⁤﻿]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+
+  // What the section shows: `#12 Fix the crash`, with where it came from underneath.
+  function render() {
+    var items = list.items.map(function (it, i) {
+      var o = { id: 'i' + i, text: clean((it.number ? '#' + it.number + ' ' : '') + it.title, TEXT_MAX) };
+      if (list.source) { o.sub = clean(list.source, TEXT_MAX); }
+      return o;
+    });
+    flare.call('sidebar.set', { key: 'next', items: items }).catch(function () {});
+  }
+
+  // Checks and keeps a list; throws a sentence for one that does not fit.
+  function keep(source, items) {
+    if (!Array.isArray(items)) { throw 'items must be a list'; }
+    if (items.length > MAX_ITEMS) { throw 'at most ' + MAX_ITEMS + ' items'; }
+    var out = items.map(function (it, i) {
+      var title = clean(it && it.title, TEXT_MAX);
+      if (!title) { throw 'item ' + i + ' has no title'; }
+      var n = it.number;
+      return { title: title, number: Number.isInteger(n) && n > 0 ? n : null };
+    });
+    list = { source: clean(source, 80), items: out };
+    flare.call('storage.set', { key: 'list', value: list }).catch(function () {});
+    render();
+  }
+
+  flare.on('tool', function (call) {
+    if (call.tool !== 'set_next') {
+      flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    var input = call.input || {};
+    try { keep(input.source, input.items); } catch (why) {
+      flare.respond(call.callId, null, String(why));
+      return;
+    }
+    flare.respond(call.callId, { shown: list.items.length });
+  });
+
+  // Path 2: the repository's oldest open issues (pull requests left out), again every 10 minutes.
+  function fetchIssues() {
+    var url = 'https://api.github.com/repos/' + REPO + '/issues?state=open&per_page=30&sort=created&direction=asc';
+    fetch(url, { headers: { Accept: 'application/vnd.github+json' } })
+      .then(function (r) { if (!r.ok) { throw 'GitHub said ' + r.status; } return r.json(); })
+      .then(function (issues) {
+        var items = (Array.isArray(issues) ? issues : [])
+          .filter(function (x) { return x && !x.pull_request; })
+          .slice(0, MAX_ITEMS)
+          .map(function (x) { return { title: x.title, number: x.number }; });
+        keep(REPO, items);
+      })
+      .catch(function (why) {
+        // Most often: no `network` permission, so the policy refused the fetch.
+        keep(REPO, [{ title: 'Could not fetch the issues (does the plugin have network?): ' + String(why) }]);
+      });
+  }
+
+  flare.call('storage.get', { key: 'list' }).then(function (r) {
+    var v = r && r.value;
+    if (v && Array.isArray(v.items)) { list = { source: String(v.source || ''), items: v.items }; }
+  }).catch(function () {}).then(function () {
+    render();
+    if (REPO) {
+      fetchIssues();
+      setInterval(fetchIssues, REFRESH_MS);
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -777,5 +777,72 @@ mod tests {
         ] {
             assert!(page.contains(uses), "the to-do page uses {uses}");
         }
+        // Plugins phase 8: the other examples of the design, each the smallest set of permissions it needs.
+        let sample = |id: &str| {
+            let f = d
+                .mods
+                .iter()
+                .find(|f| f.manifest.id == id)
+                .unwrap_or_else(|| panic!("the {id} sample"));
+            let page =
+                fs::read_to_string(f.background.as_ref().expect("a background page")).unwrap(); // sync-ok: test code only
+            (f, page)
+        };
+        let tools = |f: &Found| -> Vec<String> {
+            f.manifest.tools.iter().map(|t| t.name.clone()).collect()
+        };
+        // What next: a sidebar section Claude fills with set_next; no network unless the person adds it.
+        let (next, page) = sample("what-next");
+        assert_eq!(next.manifest.permissions, [P::Sidebar, P::Tools]);
+        assert_eq!(next.manifest.contributes.sidebar[0].key, "next");
+        assert_eq!(tools(next), ["set_next"]);
+        for uses in ["sidebar.set", "storage.set", "api.github.com"] {
+            assert!(page.contains(uses), "the what-next page uses {uses}");
+        }
+        // The Sonara bar: a bar with a fake source, back and skip as session-bar actions.
+        let (sonara, page) = sample("sonara-bar");
+        assert_eq!(sonara.manifest.permissions, [P::Bar, P::Actions, P::Tools]);
+        assert!(sonara.bar.is_some());
+        assert_eq!(tools(sonara), ["sonara_now"]);
+        let places = |f: &Found, key: &str| {
+            f.manifest
+                .contributes
+                .actions
+                .iter()
+                .find(|a| a.key == key)
+                .map(|a| a.places.clone())
+                .unwrap_or_default()
+        };
+        use crate::manifest::Place as W;
+        assert_eq!(places(sonara, "skip"), [W::SessionBar]);
+        for uses in ["bar.show", "'action'", "storage.get"] {
+            assert!(page.contains(uses), "the sonara-bar page uses {uses}");
+        }
+        // Session buttons: typing into a Claude tab is `input`, full control.
+        let (buttons, page) = sample("session-buttons");
+        assert_eq!(
+            buttons.manifest.permissions,
+            [P::Tabs, P::Actions, P::Input, P::Bar]
+        );
+        assert_eq!(
+            places(buttons, "compact"),
+            [W::TabHover, W::TabMenu, W::SessionBar]
+        );
+        assert!(buttons.manifest.tools.is_empty());
+        for uses in ["tabs.input", "'/compact'", "enter: true", "'claude'"] {
+            assert!(page.contains(uses), "the session-buttons page uses {uses}");
+        }
+        // Look: a star from agent events and a weighted progress from set_steps.
+        let (look, page) = sample("look");
+        assert_eq!(look.manifest.permissions, [P::Tabs, P::Decorate, P::Tools]);
+        assert_eq!(tools(look), ["set_steps"]);
+        for uses in [
+            "tabs.badge.set",
+            "tabs.progress.set",
+            "'agent'",
+            "function weighted",
+        ] {
+            assert!(page.contains(uses), "the look page uses {uses}");
+        }
     }
 }

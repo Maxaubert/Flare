@@ -1,0 +1,39 @@
+{
+  "id": "what-next",
+  "name": "What next",
+  "version": "0.1.0",
+  "protocol": 2,
+  "description": "A sidebar section with what is left to do, such as a repository's next GitHub issues. Claude fills it with set_next (for example from gh issue list); with the network permission added, the page can fetch the issues itself.",
+  "author": "Flare",
+  "homepage": "https://github.com/Maxaubert/Flare/tree/main/sample-plugins/what-next",
+  "permissions": ["sidebar", "tools"],
+  "background": "background.html",
+  "contributes": {
+    "sidebar": [{ "key": "next", "title": "Next up" }]
+  },
+  "tools": [
+    {
+      "name": "set_next",
+      "description": "Replaces the list in Flare's \"Next up\" sidebar section with what is left to do, most important first, such as the repository's next open GitHub issues. An empty list clears it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "description": "Where the list comes from, such as owner/repo; shown under each item." },
+          "items": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string", "description": "What to do, 1 to 120 characters." },
+                "number": { "type": "integer", "description": "The issue's number, if it is one." }
+              },
+              "required": ["title"]
+            }
+          }
+        },
+        "required": ["items"]
+      }
+    }
+  ]
+}

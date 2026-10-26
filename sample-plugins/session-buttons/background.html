@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Session buttons</title>
+</head>
+<body>
+<script>
+// The background page of the session-buttons sample: it runs, hidden, while the plugin is on. Each button is an
+// action Flare draws (on the tab's hover chip, in its menu, in the plugin's bar) and sends here as `action` {key, tab}.
+// The page answers with tabs.input, which types into that tab's shell as one paste and presses Enter after it: that is
+// `input`, full control of your terminals, so it types only where Claude runs (it reads that with `tabs`).
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  // What each button types. Change the preset line to your own.
+  var TYPES = {
+    compact: '/compact',
+    tell: 'Carry on with the next step, and tell me when you are done.'
+  };
+  var agents = {}; // tab id: the agent that runs there ("claude", "codex" or null)
+  var bars = {};   // tab id: true while it shows the buttons bar
+
+  function type(tab, text) {
+    if (agents[tab] !== 'claude') { return; } // a plain shell would run it as a command
+    flare.call('tabs.input', { tab: tab, text: text, enter: true }).catch(function () {});
+  }
+
+  function toggleBar(tab) {
+    var show = !bars[tab];
+    flare.call(show ? 'bar.show' : 'bar.hide', { tab: tab }).then(function () {
+      if (show) { bars[tab] = true; } else { delete bars[tab]; }
+      return flare.call('actions.set', { key: 'bar', tab: tab, checked: show,
+        title: show ? 'Hide the buttons bar' : 'Show the buttons bar' });
+    }).catch(function () {});
+  }
+
+  flare.on('action', function (e) {
+    if (!e || !e.tab) { return; }
+    if (TYPES.hasOwnProperty(e.key)) { type(e.tab, TYPES[e.key]); }
+    if (e.key === 'bar') { toggleBar(e.tab); }
+  });
+
+  flare.on('agent', function (e) {
+    if (e && typeof e.tab === 'string') { agents[e.tab] = e.kind; }
+  });
+
+  flare.on('tabs', function (e) {
+    if (!e || !e.tab) { return; }
+    if (e.kind === 'closed') {
+      delete agents[e.tab.id];
+      delete bars[e.tab.id];
+    } else if (e.tab.hasOwnProperty('agent')) {
+      agents[e.tab.id] = e.tab.agent;
+    }
+  });
+
+  flare.call('tabs.list', {}).then(function (r) {
+    (r && r.tabs ? r.tabs : []).forEach(function (t) { agents[t.id] = t.agent; });
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>

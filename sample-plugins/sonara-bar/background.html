@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<title>Sonara bar</title>
+</head>
+<body>
+<script>
+// The background page of the Sonara bar sample: it runs, hidden, while the plugin is on. It is the FAKE source: no
+// sound plays and nothing talks to Sonara. What "plays" is one record in the plugin's own store (storage key "now":
+// {title, pos, len, playing, at}, `pos` measured at the time `at`), which the bar page reads and writes too. Claude
+// sets it with sonara_now; the bar's back and skip chips are actions Flare draws and sends here as `action`.
+// A real player would put a helper program (`process`) here that reads Sonara's state and relays the seeks.
+(function () {
+  var flare = window.flare;
+  if (!flare) { return; }
+  var STEP_S = 10;
+  var shown = {}; // tab id: true while that tab shows the bar
+
+  function clean(s, max) {
+    s = String(s == null ? '' : s)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/[­؜᠎​-‏‪-‮⁠-⁤﻿]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+
+  // Where a record is now: a playing one moves on with the clock and stops at its end.
+  function current(n) {
+    var pos = n.pos;
+    var playing = n.playing;
+    if (playing) {
+      pos += (Date.now() - n.at) / 1000;
+      if (pos >= n.len) { pos = n.len; playing = false; }
+    }
+    return { title: n.title, pos: pos, len: n.len, playing: playing, at: Date.now() };
+  }
+
+  function read() {
+    return flare.call('storage.get', { key: 'now' }).then(function (r) {
+      var n = r && r.value;
+      return n && typeof n.len === 'number' ? n
+        : { title: 'Nothing yet (a fake source: Claude sets it with sonara_now)', pos: 0, len: 60, playing: false, at: Date.now() };
+    });
+  }
+
+  function write(n) {
+    return flare.call('storage.set', { key: 'now', value: n });
+  }
+
+  flare.on('tool', function (call) {
+    if (call.tool !== 'sonara_now') {
+      flare.respond(call.callId, null, 'no tool called ' + call.tool);
+      return;
+    }
+    var i = call.input || {};
+    var title = clean(i.title, 120);
+    if (!title) { flare.respond(call.callId, null, 'title must be 1 to 120 characters'); return; }
+    if (typeof i.len !== 'number' || !(i.len > 0) || !isFinite(i.len)) {
+      flare.respond(call.callId, null, 'len must be a number of seconds above 0');
+      return;
+    }
+    if (typeof i.pos !== 'number' || !(i.pos >= 0) || i.pos > i.len) {
+      flare.respond(call.callId, null, 'pos must be 0 to len');
+      return;
+    }
+    write({ title: title, pos: i.pos, len: i.len, playing: i.playing === true, at: Date.now() }).then(function () {
+      flare.respond(call.callId, { ok: true });
+    }, function (e) {
+      flare.respond(call.callId, null, 'Flare refused it: ' + ((e && e.message) || 'unknown'));
+    });
+  });
+
+  flare.on('action', function (e) {
+    if (!e) { return; }
+    if (e.key === 'player' && e.tab) {
+      // The tab's menu shows or hides the bar there; the click gives the plugin that tab (click scope).
+      // A bar that went by itself (its page ended) answers hidden: false; the menu then says Show again.
+      var tab = e.tab;
+      var show = !shown[tab];
+      flare.call(show ? 'bar.show' : 'bar.hide', { tab: tab }).then(function () {
+        if (show) { shown[tab] = true; } else { delete shown[tab]; }
+        return flare.call('actions.set', { key: 'player', tab: tab, checked: show,
+          title: show ? 'Hide the player' : 'Show the player' });
+      }).catch(function () {});
+    } else if (e.key === 'back' || e.key === 'skip') {
+      read().then(function (n) {
+        var c = current(n);
+        c.pos = Math.max(0, Math.min(c.len, c.pos + (e.key === 'skip' ? STEP_S : -STEP_S)));
+        return write(c);
+      }).catch(function () {});
+    }
+  });
+})();
+</script>
+</body>
+</html>
