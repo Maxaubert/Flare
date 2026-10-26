@@ -168,6 +168,7 @@ pub enum UiMsg {
 }
 
 mod bar_glue;
+mod install_glue;
 mod mods_glue;
 mod plugins_glue;
 mod sessions_glue;

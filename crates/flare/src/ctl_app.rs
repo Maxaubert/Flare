@@ -2064,6 +2064,16 @@ impl CtlServer {
         })
     }
 
+    /// Where the events for one plugin's helper go: to the clients that said hello with that plugin's token.
+    pub fn owner_events(&self) -> crate::mods_ctl::OwnerEvents {
+        let server = Arc::clone(&self.server);
+        Arc::new(move |event, params, owner| {
+            if let Some(s) = server.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                s.publish_to_owner(event, params, owner);
+            }
+        })
+    }
+
     /// Quit: waiting calls answer `unavailable` within a slice, the pipe closes, the workers leave.
     /// Bounded by the server's own stop wait (2 s), inside the quit budget (rule 28). Returns how many
     /// handlers were still running.

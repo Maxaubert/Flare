@@ -1426,7 +1426,11 @@ fn a_background_page_that_ends_is_started_again_three_times_in_five_minutes_then
         w.hub.stopped("pager").as_deref(),
         Some(crate::mods_ctl::STOPPED_CRASHED)
     );
-    let info = crate::mods_ctl::info_of(&w.hub, &std::sync::Mutex::new(None));
+    let info = crate::mods_ctl::info_of(
+        &w.hub,
+        &std::sync::Mutex::new(None),
+        &std::sync::Mutex::new(crate::mods_ctl::InstallState::default()),
+    );
     assert_eq!(
         info.mods[0].stopped.as_deref(),
         Some(crate::mods_ctl::STOPPED_CRASHED),
@@ -2109,5 +2113,6 @@ fn a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread() {
 
 // The plugins' sidebar sections and actions (plugins phase 4) live in their own file beside these.
 mod plugin_bar;
+mod plugin_install;
 mod plugin_sessions;
 mod plugin_surfaces;

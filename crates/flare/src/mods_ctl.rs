@@ -100,7 +100,44 @@ pub enum ModsMsg {
         /// The plugin's generation when the call was checked: a plugin switched off since presses nothing.
         generation: u64,
     },
+    /// Settings: install a plugin from a `.zip` file (the picker opens).
+    InstallFile,
+    /// Settings: install a plugin from an `https` address.
+    InstallUrl { url: String },
+    /// Settings: update the plugin (from its address, or a file).
+    Update { id: String },
+    /// Settings: remove the plugin.
+    Remove { id: String },
+    /// The file picker answered (None: cancelled). `expect` is the id an update must hold.
+    Picked {
+        path: Option<std::path::PathBuf>,
+        expect: Option<String>,
+    },
+    /// A worker unpacked and checked a zip (or could not, with the sentence).
+    Staged(Result<Box<flare_mods::hub::StagedInstall>, String>),
+    /// A worker put the plugin in place and scanned (or could not).
+    Installed(Result<flare_mods::hub::Installed, String>),
+    /// A worker removed the plugin and scanned (or could not).
+    Removed {
+        id: String,
+        result: Result<Change, String>,
+    },
+    /// A plugin's helper program started, ended and was started again, or stopped (its own threads).
+    Helper(flare_mods::helper::Note),
 }
+
+/// What Settings shows of the installs: one runs, and what the last one said.
+#[derive(Clone, Debug, Default)]
+pub struct InstallState {
+    pub installing: bool,
+    /// (failed, the sentence).
+    pub note: Option<(bool, String)>,
+}
+
+/// Where the channel's events for one plugin's helper go: (event, params, plugin id).
+pub type OwnerEvents = Arc<dyn Fn(&str, Value, &str) + Send + Sync>;
+/// The file picker for a plugin zip; its answer comes on a worker.
+pub type PickZip = std::rc::Rc<dyn Fn(crate::settings_ctl::PickAnswer)>;
 
 /// A `ModsMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never a call's data.
 pub struct ModsMsgBox(pub ModsMsg);
@@ -117,6 +154,15 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::Tick => "ModsMsg::Tick",
             ModsMsg::Said { .. } => "ModsMsg::Said",
             ModsMsg::Enter { .. } => "ModsMsg::Enter",
+            ModsMsg::InstallFile => "ModsMsg::InstallFile",
+            ModsMsg::InstallUrl { .. } => "ModsMsg::InstallUrl",
+            ModsMsg::Update { .. } => "ModsMsg::Update",
+            ModsMsg::Remove { .. } => "ModsMsg::Remove",
+            ModsMsg::Picked { .. } => "ModsMsg::Picked",
+            ModsMsg::Staged(_) => "ModsMsg::Staged",
+            ModsMsg::Installed(_) => "ModsMsg::Installed",
+            ModsMsg::Removed { .. } => "ModsMsg::Removed",
+            ModsMsg::Helper(_) => "ModsMsg::Helper",
         })
     }
 }
@@ -187,6 +233,14 @@ pub struct ModCtl {
     run_record: Option<std::path::PathBuf>,
     /// The record was told already.
     record_told: bool,
+    /// Installs, updates and removals: one at a time, and what the last one said (Settings reads it).
+    pub install: Arc<Mutex<InstallState>>,
+    /// The plugins' helper programs (plugins phase 7); None without the control channel (a helper needs its pipe).
+    pub helpers: Option<flare_mods::helper::Host>,
+    /// Where events for a plugin's helper go (the channel); None without it.
+    pub owner_events: Option<OwnerEvents>,
+    /// The file picker of Install from file; None in a run without a window (the tests answer through it too).
+    pub pick_zip: Option<PickZip>,
 }
 
 impl ModCtl {
@@ -208,6 +262,10 @@ impl ModCtl {
             dropped: 0,
             run_record: None,
             record_told: false,
+            install: Arc::new(Mutex::new(InstallState::default())),
+            helpers: None,
+            owner_events: None,
+            pick_zip: None,
         }
     }
 
@@ -713,8 +771,13 @@ impl ModCtl {
 
 /// What the Plugins page shows, from the hub. A protocol 1 mod's rows are filled exactly as before; a protocol 2
 /// plugin adds who made it and the warnings for its permissions.
-pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
+pub fn info_of(
+    hub: &Hub,
+    save_error: &Mutex<Option<String>>,
+    install: &Mutex<InstallState>,
+) -> ModsInfo {
     let s = hub.snapshot();
+    let install = install.lock().unwrap_or_else(|e| e.into_inner()).clone();
     ModsInfo {
         scanned: s.scanned,
         dir: hub.config().dir.to_string_lossy().into_owned(),
@@ -749,6 +812,7 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
                     enabled: m.enabled,
                     needs_approval: m.needs_approval,
                     stopped: m.stopped,
+                    source: m.source.unwrap_or_default(),
                 }
             })
             .collect(),
@@ -763,6 +827,9 @@ pub fn info_of(hub: &Hub, save_error: &Mutex<Option<String>>) -> ModsInfo {
         notes: s.notes,
         safe_mode: s.safe_mode,
         save_error: save_error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        installing: install.installing,
+        install_note: install.note,
+        url: String::new(),
     }
 }
 
@@ -772,11 +839,12 @@ pub struct ModsSettings {
     pub hub: Arc<Hub>,
     pub post: Post,
     pub save_error: Arc<Mutex<Option<String>>>,
+    pub install: Arc<Mutex<InstallState>>,
 }
 
 impl crate::settings_ctl::ModsPort for ModsSettings {
     fn info(&self) -> ModsInfo {
-        info_of(&self.hub, &self.save_error)
+        info_of(&self.hub, &self.save_error, &self.install)
     }
 
     fn page_shown(&self) {
@@ -799,6 +867,28 @@ impl crate::settings_ctl::ModsPort for ModsSettings {
 
     fn dir(&self) -> std::path::PathBuf {
         self.hub.config().dir.clone()
+    }
+
+    fn install_file(&self) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::InstallFile)));
+    }
+
+    fn install_url(&self, url: &str) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::InstallUrl {
+            url: url.to_string(),
+        })));
+    }
+
+    fn update(&self, id: &str) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::Update {
+            id: id.to_string(),
+        })));
+    }
+
+    fn remove(&self, id: &str) {
+        (self.post)(UiMsg::Mods(ModsMsgBox(ModsMsg::Remove {
+            id: id.to_string(),
+        })));
     }
 }
 
@@ -1180,7 +1270,7 @@ mod tests {
     #[test]
     fn the_page_info_lists_the_permissions_in_plain_words_and_no_token() {
         let r = rig(r#"["panel","tools"]"#);
-        let info = info_of(r.ctl.hub(), &r.ctl.save_error);
+        let info = info_of(r.ctl.hub(), &r.ctl.save_error, &r.ctl.install);
         assert_eq!(info.mods.len(), 1);
         assert_eq!(
             info.mods[0].permissions,
@@ -1249,7 +1339,11 @@ mod tests {
             state_file: dir.path().join("mods.json"),
         });
         hub.scan();
-        let info = info_of(&hub, &Mutex::new(None));
+        let info = info_of(
+            &hub,
+            &Mutex::new(None),
+            &Mutex::new(InstallState::default()),
+        );
         assert_eq!(info.dir, plugins.to_string_lossy());
         let notes = info.mods.iter().find(|m| m.id == "notes").unwrap();
         assert!(!notes.plugin && notes.author.is_empty() && notes.warnings.is_empty());
