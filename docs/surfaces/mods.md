@@ -528,8 +528,8 @@ Design sections 4, 9, 10 and 13.
   most 50 MB counted while it streams, 60 seconds in all, no cookies, no proxy from the environment, never the web
   panel's browser (`flare_mods::fetch`).
 - **The zip.** Each entry is written by Flare with create-new, never by a library's extract. Refused: links (a unix
-  link mode, a Windows reparse attribute), encrypted entries, absolute and drive paths, `:`, `\`, control characters and
-  `<>"|?*`, `.` and `..` parts, parts that end in a dot or a space, Windows device names with any extension (`CON`,
+  link mode, a Windows reparse attribute), encrypted entries, absolute and drive paths, `:`, `\`, control and hidden
+  formatting characters (a refusal shows each as `?`), `<>"|?*`, `.` and `..` parts, parts that end in a dot or a space, Windows device names with any extension (`CON`,
   `nul.txt`, `COM1`), names that differ only in case, paths over 200 characters or more than 8 folders deep. The real
   decompressed bytes are counted: 16 MB an entry, 100 MB in all, 50 MB for the zip, 2000 entries. The layout is
   `plugin.json` (or `mod.json`) at the top or in exactly one top folder. It is extracted to `plugins\.staging\<random>`
@@ -542,15 +542,20 @@ Design sections 4, 9, 10 and 13.
 - **Update.** The card's Update button downloads again from the address it was installed from, or else opens the file
   picker; the zip must hold the same plugin ("That zip holds the plugin "x", not "y"."). An older version than the one
   installed is refused ("Remove it first to install an older one."). When the plugin is on, its views close and its
-  helper stops before the folder is replaced (it is paused meanwhile, so nothing starts again), the old folder is moved
-  aside, the new one moved in by rename (the old one put back if that fails) and the old copy sent to the Recycle Bin;
+  helper stops before the folder is replaced (it is paused meanwhile, so nothing starts again; the worker waits, at most
+  5 seconds, until every process of the helper's job has ended, since one whose current folder is the plugin's holds
+  it), the old folder is moved aside, the new one moved in by rename (the old one put back if that fails) and the old copy sent to the Recycle Bin;
   then the plugins are scanned and the consent check decides: the same permissions and maker keep it on, as a new
-  generation (what was started for the old copy is never applied); more permissions, or another author, homepage or
-  source, turn it off until it is approved again ("asks for more than you allowed"). Another maker or source also wipes
+  generation (what was started for the old copy is never applied); more permissions, or another author, homepage,
+  source or protocol (a `mod.json` in place of an approved `plugin.json`, or the other way round; a protocol 1 mod
+  installed from an address is approved with that address too), turn it off until it is approved again ("asks for
+  more than you allowed"). Another maker or source also wipes
   its storage and its browser profile.
-- **Remove.** The card's Remove button turns the plugin off (every view closes, its helper stops), then a worker sends
-  its folder to the Recycle Bin (a link is unlinked, never followed) and forgets its approval and install record
-  (`mods.json`), its storage (`plugins-storage\<id>.json`), its helper log and its browser profile folders.
+- **Remove.** The card's Remove button turns the plugin off (every view closes, its helper stops), then a worker waits
+  for its helper to end as an update does, sends its folder to the Recycle Bin (a link is unlinked, never followed) and
+  forgets its approval and install record (`mods.json`), its storage (`plugins-storage\<id>.json`), its helper log and
+  its browser profile folders; the window then drops its sections from the sidebar order and folds
+  (`plugins.sidebar.order`, `plugins.sidebar.folded`).
 - **One at a time.** Install, update, remove and the scan hold one disk lock in the hub, so they never run at once;
   Settings' buttons wait while one runs, and the install row's subtext says what the last one said, in one sentence (a
   warning when it failed).
