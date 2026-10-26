@@ -112,16 +112,21 @@ pub fn is_full_control(perms: &[Permission]) -> bool {
         .any(|p| matches!(p, Permission::Process | Permission::Input))
 }
 
-/// What the approval of `f` keeps about who made it: the manifest's author and homepage for a plugin, and where Settings
-/// installed it from (`installed`; the hash comes later, from `persist`), nothing for a protocol 1 mod.
+/// What the approval of `f` keeps about who made it: where Settings installed it from (`installed`), and for a plugin
+/// also the manifest's author and homepage (the hash comes later, from `persist`). A protocol 1 mod dropped in the
+/// folder by hand keeps nothing, as before.
 fn identity_of(f: &Found, installed: Option<&Identity>) -> Identity {
+    let source = installed.and_then(|i| i.source.clone());
     if !f.manifest.is_plugin() {
-        return Identity::default();
+        return Identity {
+            source,
+            ..Identity::default()
+        };
     }
     Identity {
         author: f.manifest.author.clone(),
         homepage: f.manifest.homepage.clone(),
-        source: installed.and_then(|i| i.source.clone()),
+        source,
         ..Identity::default()
     }
 }
@@ -701,13 +706,18 @@ impl Hub {
             };
             let asked = f.manifest.permissions.clone();
             // A plugin is also approved as who it said it was: another author or homepage is a new approval.
-            // So is where Settings installed it from: an update from another address is a new approval too.
-            let source = g.installed.get(&id).and_then(|i| i.source.clone());
-            let same_maker = !f.manifest.is_plugin()
-                || g.identity.get(&id).is_some_and(|who| {
-                    who.author == f.manifest.author
-                        && who.homepage == f.manifest.homepage
-                        && who.source == source
+            // So is where Settings installed it from (a protocol 1 mod too): an update from another address is a new
+            // approval. And so is another protocol: a plugin's approval (its token, or a hash only a plugin's has)
+            // never carries over to a protocol 1 `mod.json` of the same id, nor the other way round.
+            let now = identity_of(f, g.installed.get(&id));
+            let plugin = f.manifest.is_plugin();
+            let same_protocol = g.tokens.plugin_of(&id).is_none_or(|p| p == plugin);
+            let same_maker = same_protocol
+                && g.identity.get(&id).map_or(!plugin, |who| {
+                    who.author == now.author
+                        && who.homepage == now.homepage
+                        && who.source == now.source
+                        && (plugin || who.hash.is_none())
                 });
             match g.approved.get(&id).cloned() {
                 Some(ok) if same_maker && asked.iter().all(|p| ok.contains(p)) => {

@@ -5,9 +5,9 @@
 //!   stops the plugin's views and helper when it replaces one that is on ([`Hub::pause`] keeps them from starting
 //!   again meanwhile), and [`Hub::commit_install`] puts the folder in place, records where it came from and its hash,
 //!   and scans. The scan decides what the plugin may do: a new plugin is off (an install never turns one on); an
-//!   update that asks for more permissions, or names another author, homepage or source, is turned off until it is
-//!   approved again, which is the existing consent check of `reconcile`. A change of maker also wipes its storage and
-//!   its browser profile, so a new owner never reads what the old one kept.
+//!   update that asks for more permissions, or names another author, homepage, source or protocol, is turned off until
+//!   it is approved again, which is the existing consent check of `reconcile`. A change of maker also wipes its storage
+//!   and its browser profile, so a new owner never reads what the old one kept.
 //! - **Remove** ([`Hub::remove_plugin`]): the window turns the plugin off first; here its folder goes to the Recycle
 //!   Bin, and its approval, install record, storage, helper log and browser profile are forgotten.
 //! - **The helper** ([`Hub::helper_of`]): only a protocol 2 plugin that is on, holds `process` in its live grant and
@@ -563,6 +563,80 @@ mod tests {
             w.hub.storage().get("demo", Some("k")).unwrap(),
             serde_json::Value::Null
         );
+    }
+
+    /// A zip holding a protocol 1 `mod.json` (a panel) with `manifest` as its text.
+    fn mod_zip(dir: &Path, name: &str, manifest: &str) -> PathBuf {
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut cur);
+            let o = zip::write::SimpleFileOptions::default();
+            w.start_file("mod.json", o).unwrap();
+            w.write_all(manifest.as_bytes()).unwrap();
+            w.start_file("index.html", o).unwrap();
+            w.write_all(b"<p>panel</p>").unwrap();
+            w.finish().unwrap();
+        }
+        let p = dir.join(name);
+        std::fs::write(&p, cur.into_inner()).unwrap(); // sync-ok: test code only
+        p
+    }
+
+    #[test]
+    fn a_protocol_1_mod_json_in_place_of_an_approved_plugin_is_a_new_approval() {
+        let two = r#"{"id":"demo","name":"Demo","version":"1.0.0","protocol":2,"description":"d","author":"me","permissions":["decorate","panel"],"background":"bg.html","panel":{"entry":"bg.html","title":"P"}}"#;
+        let one = r#"{"id":"demo","name":"Demo","version":"2.0.0","protocol":1,"description":"d","permissions":["panel"],"panel":{"entry":"index.html","title":"P"}}"#;
+        for source in [
+            Some("https://b.example/x.zip"),
+            Some("https://a.example/x.zip"),
+            None,
+        ] {
+            let w = world();
+            install(&w, "a.zip", two, Some("https://a.example/x.zip")).unwrap();
+            turn_on(&w);
+            assert!(w.hub.is_enabled("demo"));
+            let z = mod_zip(w.dir.path(), "b.zip", one);
+            let staged = w.hub.stage_install(&z, source).unwrap();
+            let done = w.hub.commit_install(staged).unwrap();
+            assert!(!w.hub.found("demo").unwrap().manifest.is_plugin());
+            assert!(
+                done.needs_approval,
+                "{source:?}: another protocol is a new approval"
+            );
+            assert!(!w.hub.is_enabled("demo"), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn a_protocol_1_mod_from_another_address_is_a_new_approval_and_from_the_same_one_stays_on() {
+        let one = |v: &str| {
+            format!(
+                r#"{{"id":"demo","name":"Demo","version":"{v}","protocol":1,"description":"d","permissions":["panel"],"panel":{{"entry":"index.html","title":"P"}}}}"#
+            )
+        };
+        let w = world();
+        let z = mod_zip(w.dir.path(), "a.zip", &one("1.0.0"));
+        let staged = w
+            .hub
+            .stage_install(&z, Some("https://a.example/x.zip"))
+            .unwrap();
+        w.hub.commit_install(staged).unwrap();
+        w.hub.set_enabled("demo", true).unwrap();
+        w.hub.persist("demo").unwrap();
+        let z = mod_zip(w.dir.path(), "b.zip", &one("1.0.1"));
+        let staged = w
+            .hub
+            .stage_install(&z, Some("https://a.example/x.zip"))
+            .unwrap();
+        assert!(!w.hub.commit_install(staged).unwrap().needs_approval);
+        assert!(w.hub.is_enabled("demo"), "the same address keeps it on");
+        let z = mod_zip(w.dir.path(), "c.zip", &one("1.0.2"));
+        let staged = w
+            .hub
+            .stage_install(&z, Some("https://b.example/x.zip"))
+            .unwrap();
+        assert!(w.hub.commit_install(staged).unwrap().needs_approval);
+        assert!(!w.hub.is_enabled("demo"), "another address turns it off");
     }
 
     #[test]
