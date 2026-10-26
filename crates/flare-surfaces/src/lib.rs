@@ -10,6 +10,7 @@
 //! 41 (the state is stored atomically, unknown values read as the default and are never written
 //! back, a failed store keeps the defaults).
 
+pub mod agent_cursor;
 pub mod agent_job;
 pub mod agent_web;
 pub mod app;
