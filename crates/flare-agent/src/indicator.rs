@@ -68,6 +68,10 @@ pub enum Event {
         present: bool,
         kind: Option<DetectedAgent>,
     },
+    /// The shell drew its prompt (it reported its folder): the program in front has ended.
+    Prompt {
+        tab: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +259,7 @@ impl Indicator {
             Event::Status { tab, status } => self.on_status(now, &tab, status, &mut effects),
             Event::Output { tab } => self.on_output(now, &tab),
             Event::Key { tab, key } => self.on_key(now, &tab, &key),
+            Event::Prompt { tab } => self.on_prompt(&tab),
         }
         self.reconcile(now);
         effects
@@ -483,6 +488,13 @@ impl Indicator {
         if !present || kind.is_some_and(|k| k != DetectedAgent::Claude) {
             self.hooked.remove(tab);
         }
+        // So were the reports of an agent the poll no longer names (it quit without `state=clear`).
+        if present
+            && let Some(k) = kind
+            && self.agent_kinds.get(tab).is_some_and(|old| *old != k)
+        {
+            self.drop_status(tab, "status of the agent that left");
+        }
         if present && let Some(k) = kind {
             self.agent_kinds.insert(tab.to_string(), k);
         } else if !present {
@@ -626,11 +638,7 @@ impl Indicator {
         }
         let state = match status {
             ProgramStatus::Clear => {
-                if self.status.remove(tab).is_some() {
-                    self.why(tab, "status cleared");
-                    self.working.remove(tab);
-                    self.question.remove(tab);
-                }
+                self.drop_status(tab, "status cleared");
                 return;
             }
             ProgramStatus::Report(r) => r.state,
@@ -646,6 +654,21 @@ impl Indicator {
             return;
         }
         self.apply_status(tab, state);
+    }
+
+    /// The reports go, and the marks they set with them: the tab's titles and output speak again.
+    fn drop_status(&mut self, tab: &str, why: &str) {
+        if self.status.remove(tab).is_some() {
+            self.why(tab, why);
+            self.working.remove(tab);
+            self.question.remove(tab);
+        }
+    }
+
+    /// A prompt: the program that reported has ended, cleared or not, so its last report is not
+    /// kept for the next agent (nor applied when the poll finds one).
+    fn on_prompt(&mut self, tab: &str) {
+        self.drop_status(tab, "status of a program that ended");
     }
 
     /// The marks one status says: working, blocked (a question), done, error (failed) or idle.
@@ -2493,6 +2516,55 @@ mod tests {
             has(h.ind.working_ids(), "t1"),
             "an idle title does not undo a report"
         );
+    }
+
+    #[test]
+    fn an_agent_that_follows_agy_without_a_clear_drives_its_own_marks() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "t1", "state=blocked:kind=permission:app=agy");
+        assert!(has(h.ind.question_ids(), "t1"));
+        // agy quit on Ctrl+C with no `state=clear`; the poll's next answer names Codex.
+        h.poll(20, "t1", true, Some(DetectedAgent::Codex));
+        assert!(!h.ind.reports_status("t1"));
+        assert!(h.ind.question_ids().is_empty());
+        h.title(30, "t1", "\u{2819} proj");
+        h.title(40, "t1", "proj");
+        h.title(50, "t1", "[ ! ] Action Required | proj");
+        assert!(has(h.ind.question_ids(), "t1"));
+        h.title(60, "t1", "\u{2826} proj");
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn output_scores_an_agent_that_follows_agy_without_a_clear() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "t1", "state=idle:app=agy");
+        h.poll(20, "t1", true, Some(DetectedAgent::Claude));
+        for t in (5000..9000).step_by(200) {
+            h.ev(t, Event::Output { tab: "t1".into() });
+        }
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn a_prompt_drops_the_report_of_the_program_that_ended() {
+        let mut h = H::new();
+        // A plain program reports and ends; the shell's prompt follows.
+        status(&mut h, 0, "t1", "state=working:app=build");
+        h.ev(10, Event::Prompt { tab: "t1".into() });
+        assert!(!h.ind.reports_status("t1"));
+        // The next agent the poll finds does not inherit it.
+        h.poll(20, "t1", true, Some(DetectedAgent::Codex));
+        assert!(h.ind.working_ids().is_empty());
+        // agy's own reports, live under it, drop on the prompt after it too.
+        h.poll(30, "t2", true, Some(DetectedAgent::Agy));
+        status(&mut h, 40, "t2", "state=working:app=agy");
+        assert!(has(h.ind.working_ids(), "t2"));
+        h.ev(50, Event::Prompt { tab: "t2".into() });
+        assert!(!h.ind.reports_status("t2"));
+        assert!(!has(h.ind.working_ids(), "t2"));
     }
 
     #[test]

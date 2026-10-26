@@ -475,6 +475,7 @@ impl AgentHub {
                 HostEvent::Cwd { id, path } => {
                     self.folders.insert(id.clone(), path.clone());
                     self.ind.activity.mark_prompt(id, now);
+                    self.ind_handle(now, Event::Prompt { tab: id.clone() });
                     let step = arm_on_prompt(&self.arm_of(id));
                     self.apply_arm(id, step);
                 }
