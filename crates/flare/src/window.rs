@@ -507,6 +507,46 @@ fn attach_material_when_ready(
     );
     timer
 }
+
+/// Runs `f` with the window's handle as soon as it has one (looking as often as the `--e2e` park
+/// timer does). Right after `show()` there is none: the winit backend makes the native window only
+/// once the event loop runs, so a step that asked then got nothing and was skipped for good (the
+/// taskbar badge never showed, 2026-10-26). Keep the returned timer alive for the run.
+fn when_handle_ready(
+    app: &AppWindow,
+    what: &'static str,
+    f: impl FnOnce(&AppWindow, isize) + 'static,
+) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    let weak_timer = Rc::downgrade(&timer);
+    let weak = app.as_weak();
+    let mut f = Some(f);
+    let mut polls = 0u32;
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(E2E_HANDLE_POLL_MS),
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let decision = poll_handle(polls, E2E_HANDLE_POLLS, hwnd_of(&app));
+            polls += 1;
+            match decision {
+                HandlePoll::Wait => return,
+                HandlePoll::Found(h) => {
+                    if let Some(f) = f.take() {
+                        f(&app, h);
+                    }
+                }
+                HandlePoll::GiveUp => {
+                    log::warn!("the window never got a handle, so {what} is not set up");
+                }
+            }
+            if let Some(t) = weak_timer.upgrade() {
+                t.stop();
+            }
+        },
+    );
+    timer
+}
 /// Brings the window forward the way `raise_plan` says (under `--e2e` it only shows).
 fn raise_window(app: &AppWindow, e2e: bool) {
     let minimised = app.window().is_minimized();
@@ -1532,9 +1572,6 @@ pub fn run_window(
     app.show()?;
     // The watchdog: the UI thread beats every 50 ms, and the hung-window poll looks at this window.
     let beat_timer = crate::diag_ctl::beat_timer();
-    if let Some(hwnd) = hwnd_of(&app) {
-        crate::diag_ctl::set_window(hwnd);
-    }
     // A bell flashes the taskbar button while the window is not in front (no sound). Under --e2e the
     // window is parked and has no button, so the flash is only counted.
     if let Some(rc) = &ctl {
@@ -1565,11 +1602,8 @@ pub fn run_window(
             crate::e2e_glue::install(&app, rc, args, kp, backends_clip.clone());
         }
     }
-    // The exe's own icon on the window (and again on every scale-factor change).
-    crate::startup::apply_window_icon(hwnd_of(&app));
-    // The agent: the process poll, and the taskbar overlay (it needs the window's handle, which
-    // exists now). Under --e2e the real overlay is never touched: a recording shell stands in, so
-    // the badge's text can be read.
+    // The agent: the process poll, and the taskbar overlay. Under --e2e the real overlay is never
+    // touched: a recording shell stands in, so the badge's text can be read.
     if let Some(rc) = &ctl {
         let mut c = rc.borrow_mut();
         c.start_agent_poll();
@@ -1577,11 +1611,28 @@ pub fn run_window(
             c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::with_shell(Box::new(
                 flare_win::taskbar::RecordShell,
             )));
-        } else if let Some(hwnd) = hwnd_of(&app) {
-            flare_win::taskbar::watch_button_created(hwnd);
-            c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
         }
     }
+    // What needs the window's handle, once it has one: the watchdog's hung-window poll, the exe's
+    // own icon on the window (again on every scale-factor change) and the taskbar overlay.
+    let handle_timer = {
+        let ctl = ctl.clone();
+        let e2e = args.e2e;
+        when_handle_ready(
+            &app,
+            "the watchdog, the icon and the badge",
+            move |_, hwnd| {
+                crate::diag_ctl::set_window(hwnd);
+                crate::startup::apply_window_icon(Some(hwnd));
+                // No subclass for `TaskbarButtonCreated`: one beside AccessKit's crashed the window
+                // as the first overlay was set (2026-10-26). A gained focus redraws the badge instead.
+                if let Some(rc) = ctl.filter(|_| !e2e) {
+                    rc.borrow_mut()
+                        .set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
+                }
+            },
+        )
+    };
     if initial.as_ref().is_some_and(|i| i.maximise) {
         app.window().set_maximized(true);
     }
@@ -1669,6 +1720,7 @@ pub fn run_window(
     SOFTWARE_PAINT.with(|h| *h.borrow_mut() = None);
     drop(beat_timer);
     drop(park_timer);
+    drop(handle_timer);
     drop(material_timer);
     drop(instance); // the lock is released last
     result

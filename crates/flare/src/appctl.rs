@@ -514,6 +514,8 @@ pub struct AppCtl {
     looked: Option<(Option<String>, bool)>,
     /// The taskbar overlay, made once the window has a handle.
     badge: Option<TaskbarBadge>,
+    /// The badge's last outcome (count, on, drawn), so the log hears each change once.
+    badge_seen: Option<(usize, bool, bool)>,
     /// Tabs restored with an agent to resume: the kind and when they were spawned. They wear the
     /// agent's icon from the first frame and are saved as that agent until the hub takes over.
     restoring: HashMap<String, (AgentKind, u64)>,
@@ -917,6 +919,7 @@ impl AppCtl {
             flash: Rc::new(|| {}),
             looked: None,
             badge: None,
+            badge_seen: None,
             restoring: HashMap::new(),
             agent_panel_seen: HashSet::new(),
             web_full_was: None,
@@ -1703,14 +1706,25 @@ impl AppCtl {
         let on = taskbar_badge_on(&self.prefs);
         let scale = self.scale;
         let Some(b) = self.badge.as_mut() else { return };
-        // Explorer made the taskbar button again (it restarted): the overlay is gone, draw it anew.
-        if flare_win::taskbar::take_button_created() {
-            b.refresh();
-        }
-        if !on || n == 0 {
-            b.clear();
+        let ok = if !on || n == 0 {
+            b.clear()
         } else {
-            b.set(n, scale);
+            b.set(n, scale)
+        };
+        if self.badge_seen != Some((n, on, ok)) {
+            self.badge_seen = Some((n, on, ok));
+            let mut fields = vec![
+                ("count", serde_json::json!(n)),
+                ("on", serde_json::json!(on)),
+                ("ok", serde_json::json!(ok)),
+            ];
+            if !ok {
+                fields.push((
+                    "why",
+                    crate::diag_ctl::txt(&flare_win::taskbar::last_shell_error()),
+                ));
+            }
+            crate::diag_ctl::crumb("taskbar-badge", &fields);
         }
     }
 
@@ -1827,6 +1841,12 @@ impl AppCtl {
             return;
         }
         self.focused = focused;
+        // Coming back draws the taskbar badge anew: Explorer may have restarted since, which takes
+        // every overlay away, or the button did not exist yet when the badge was first set.
+        if focused && let Some(b) = self.badge.as_mut() {
+            b.refresh();
+            self.update_badge();
+        }
         self.sync_looking();
         if self.hub.take_changed() {
             self.sync_model_agents();
@@ -9311,6 +9331,29 @@ two",
             log.0.borrow().last().cloned().map(|l| l.0),
             Some(None),
             "nothing marked: the overlay is cleared"
+        );
+    }
+
+    /// Coming back to the window draws the badge anew even when the count did not change: Explorer may have
+    /// restarted (which takes every overlay away), and no subclass listens for its `TaskbarButtonCreated`.
+    #[test]
+    fn a_gained_focus_draws_the_same_badge_again() {
+        let f = fx();
+        let log = f.with_badge();
+        let ids = f.open_tabs(&["C:\\a", "C:\\b"]);
+        f.say("C:\\a", OSC_DONE);
+        f.pump_until("a mark", |f| {
+            f.ctl.borrow().hub.indicator().done_ids().contains(&ids[0])
+        });
+        f.ctl.borrow_mut().on_focus(false);
+        let before = log.0.borrow().len();
+        f.ctl.borrow_mut().refresh();
+        assert_eq!(log.0.borrow().len(), before, "the same count draws nothing");
+        f.ctl.borrow_mut().on_focus(true);
+        let drawn: Vec<Overlay> = log.0.borrow()[before..].to_vec();
+        assert!(
+            drawn.iter().any(|o| o.1 == "1 tab needs a look"),
+            "drawn again on focus: {drawn:?}"
         );
     }
 
