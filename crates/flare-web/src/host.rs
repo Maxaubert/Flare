@@ -129,12 +129,16 @@ enum EnvKind {
     /// Mods' and plugins' views (no network): the sealed mini-apps' arguments, in the folder every mod's
     /// profile lives in (`modview::env_folder`), so their storage is where it always was.
     Plugin,
+    /// The views of a plugin that holds `network` (plugins phase 6): the WebRTC policy and a resolver that knows no
+    /// local name, in a folder of its own (`modview::net_env_folder`).
+    PluginNet,
 }
 
 impl EnvKind {
     fn of(app: Option<&AppSpec>) -> Self {
         match app {
             None => Self::Web,
+            Some(a) if a.module.is_some() && a.allow_network => Self::PluginNet,
             Some(a) if a.module.is_some() => Self::Plugin,
             Some(a) if a.allow_network => Self::AppNet,
             Some(_) => Self::AppSealed,
@@ -216,6 +220,8 @@ type Downloads = Rc<RefCell<HashMap<u64, Download>>>;
 /// answered (the page's request never waits on the UI thread, rule 34).
 struct PendingServe {
     slot: Slot,
+    /// The page is a plugin's that holds `network`: its answer carries the networked policy.
+    network: bool,
     args: ICoreWebView2WebResourceRequestedEventArgs,
     deferral: ICoreWebView2Deferral,
     webview: ICoreWebView2,
@@ -477,6 +483,7 @@ impl WebHost {
             EnvKind::AppSealed => app::env_folder(&self.data_dir, false),
             EnvKind::AppNet => app::env_folder(&self.data_dir, true),
             EnvKind::Plugin => modview::env_folder(&self.data_dir),
+            EnvKind::PluginNet => modview::net_env_folder(&self.data_dir),
         };
         let folder = wide(&dir.to_string_lossy());
         let o = CoreWebView2EnvironmentOptions::default();
@@ -486,7 +493,10 @@ impl WebHost {
             // instead of the classic grey bar with arrows (2026-10-25).
             o.set_scroll_bar_style(COREWEBVIEW2_SCROLLBAR_STYLE_FLUENT_OVERLAY);
             if kind != EnvKind::Web {
-                o.set_additional_browser_arguments(app::browser_arguments(kind == EnvKind::AppNet));
+                o.set_additional_browser_arguments(match kind {
+                    EnvKind::PluginNet => modview::net_browser_arguments(),
+                    k => app::browser_arguments(k == EnvKind::AppNet),
+                });
                 o.set_target_compatible_browser_version(app::APP_MIN_BROWSER.to_string());
             }
         }
@@ -1087,6 +1097,7 @@ impl WebHost {
             live: Arc::clone(&self.serve_live),
             sink: Arc::clone(&self.sink),
             slot: slot.clone(),
+            network: allow,
         };
         let h = WebResourceRequestedEventHandler::create(Box::new(move |w, args| {
             let (Some(w), Some(args)) = (w, args) else {
@@ -1099,7 +1110,8 @@ impl WebHost {
                 };
                 let uri = get_string(|p| req.Uri(p));
                 if let Some((entry, folder)) = &files {
-                    match modview::route_request(&uri, &host) {
+                    // A plugin that holds `network` reaches public https hosts, and nothing local (plugins phase 6).
+                    match modview::route_request_net(&uri, &host, allow) {
                         Route::Pass => {}
                         Route::Refuse => refuse_request(&w, &args, 403),
                         Route::Serve(path) => serve.start(&w, &args, entry, folder, path),
@@ -1240,7 +1252,7 @@ impl WebHost {
         let Some(p) = self.serving.borrow_mut().remove(&id) else {
             return;
         };
-        answer_request(&p.webview, &p.args, result);
+        answer_request(&p.webview, &p.args, result, p.network);
         // SAFETY: the deferral is a live COM object kept since the callback.
         let _ = unsafe { p.deferral.Complete() };
     }
@@ -1339,6 +1351,7 @@ struct ServeCtx {
     live: Arc<AtomicUsize>,
     sink: Sink,
     slot: Slot,
+    network: bool,
 }
 
 impl ServeCtx {
@@ -1366,6 +1379,7 @@ impl ServeCtx {
             id,
             PendingServe {
                 slot: self.slot.clone(),
+                network: self.network,
                 args: args.clone(),
                 deferral,
                 webview: w.clone(),
@@ -1437,6 +1451,7 @@ fn refuse_request(
             status: status as u16,
             reason: String::new(),
         }),
+        false,
     );
 }
 
@@ -1445,12 +1460,13 @@ fn answer_request(
     w: &ICoreWebView2,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     result: Result<modserve::Served, modserve::Refused>,
+    network: bool,
 ) {
     let (status, reason, headers, bytes) = match &result {
         Ok(s) => (
             200,
             "OK",
-            modserve::headers_for(s.mime),
+            modserve::headers_for(s.mime, network),
             Some(s.bytes.as_slice()),
         ),
         Err(r) => (

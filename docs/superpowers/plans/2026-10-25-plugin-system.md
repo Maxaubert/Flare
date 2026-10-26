@@ -128,6 +128,17 @@ Built 2026-10-26, with these calls by the builder (the owner may overrule):
 3. `show_audio` (agent and `view.audio` for plugins): an audio player page in the panel.
 4. Tests: bar layout and reflow, CSP per permission, audio view.
 
+Built 2026-10-26, with these calls by the builder (the owner may overrule):
+- No pin yet, so a second plugin asking for a tab's bar is always `busy` (design 5.5's "unless the user pinned it").
+- The bar's page hides under a Flare overlay instead of showing a still, and a click that focuses it hands the keyboard
+  back to the terminal at once. At most two bar views are kept a plugin; an older one behind is made again later.
+- `session-bar` actions are Flare's chips at the bar row's right end, at most 4.
+- A plugin with `network` has its profile in a browser folder of its own (`WebView2-plugin-net`): an update that adds or
+  drops `network` starts its page storage empty. Local hosts are refused by the request wall and the resolver; a public
+  name that resolves to a private address is left to the browser.
+- `view.audio` copies a file beside Flare's player page (100 MB at most); an address needs `network` from a plugin and
+  plays whatever the mini-app network switch says (the page is Flare's, its policy lets in one origin's media).
+
 ## Phase 7: helper process, install and update
 
 1. Helper: start `helper.command` from inside the plugin folder (path checks as entries), in a job object, env

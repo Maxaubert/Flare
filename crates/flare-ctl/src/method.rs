@@ -35,6 +35,9 @@ pub enum Method {
     /// A plugin's own small store (plugins phase 5): what it keeps, read back. No permission, never the agent's.
     StorageGet,
     StorageSet,
+    /// A plugin's strip under a tab's terminal (plugins phase 6), shown and hidden, under `bar`. One bar a tab.
+    BarShow,
+    BarHide,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -45,6 +48,8 @@ pub enum Method {
     ViewHtml,
     /// A Mermaid diagram (Surfaces stage 5).
     ViewDiagram,
+    /// A sound file or a public https address in Flare's audio player (plugins phase 6).
+    ViewAudio,
     BrowserOpen,
     BrowserNavigate,
     BrowserLook,
@@ -152,7 +157,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 36] = [
+    pub const ALL: [Method; 39] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -165,6 +170,8 @@ impl Method {
         Method::TabsInput,
         Method::StorageGet,
         Method::StorageSet,
+        Method::BarShow,
+        Method::BarHide,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -173,6 +180,7 @@ impl Method {
         Method::ViewText,
         Method::ViewHtml,
         Method::ViewDiagram,
+        Method::ViewAudio,
         Method::BrowserOpen,
         Method::BrowserNavigate,
         Method::BrowserLook,
@@ -206,6 +214,8 @@ impl Method {
             Method::TabsInput => "tabs.input",
             Method::StorageGet => "storage.get",
             Method::StorageSet => "storage.set",
+            Method::BarShow => "bar.show",
+            Method::BarHide => "bar.hide",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -214,6 +224,7 @@ impl Method {
             Method::ViewText => "view.text",
             Method::ViewHtml => "view.html",
             Method::ViewDiagram => "view.diagram",
+            Method::ViewAudio => "view.audio",
             Method::BrowserOpen => "browser.open",
             Method::BrowserNavigate => "browser.navigate",
             Method::BrowserLook => "browser.look",
@@ -251,12 +262,14 @@ impl Method {
             Method::SessionRead => Namespace::Session,
             Method::TabsInput => Namespace::Input,
             Method::StorageGet | Method::StorageSet => Namespace::Storage,
+            Method::BarShow | Method::BarHide => Namespace::Bar,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile
             | Method::ViewText
             | Method::ViewHtml
-            | Method::ViewDiagram => Namespace::View,
+            | Method::ViewDiagram
+            | Method::ViewAudio => Namespace::View,
             Method::BrowserOpen
             | Method::BrowserNavigate
             | Method::BrowserLook

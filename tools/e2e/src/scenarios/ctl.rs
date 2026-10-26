@@ -680,6 +680,7 @@ fn mcp_on(
                 "show_text",
                 "show_html",
                 "show_diagram",
+                "show_audio",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -695,7 +696,7 @@ fn mcp_on(
                 "set_tab_progress",
                 "clear_tab_progress",
             ],
-        format!("tools/list names the seven show tools, the eight browser tools and the four tab tools ({names:?})"),
+        format!("tools/list names the eight show tools, the eight browser tools and the four tab tools ({names:?})"),
     );
     ctx.ok(
         replies

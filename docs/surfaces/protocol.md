@@ -16,7 +16,8 @@ implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks
 list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
 `tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
-plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`; plugins phase 6 adds `bar.show`,
+`bar.hide` and `view.audio`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -194,7 +195,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 |---|---|---|---|
 | `hello`, `tabs.list` | yes | (always) | yes |
 | `panel.open`, `panel.close`, `panel.state` | yes | `panel` | yes |
-| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram` | yes | `view` | yes |
+| `view.image`, `view.file`, `view.text`, `view.html`, `view.diagram`, `view.audio` | yes | `view` (`view.audio` with a `url` also `network`) | yes |
 | `browser.open` ... `browser.wait` | yes (its own tab's panel only) | `browser` | yes |
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
@@ -204,6 +205,7 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `session.read` | **no** | `sessions` | yes |
 | `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
 | `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
+| `bar.show`, `bar.hide` | **no** | `bar` | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -343,6 +345,21 @@ checks the tab, the plugin's generation and its `input` again before the paste a
 see, the agent, a protocol 1 mod's store), `no_tab`, `rate_limited`, `too_large`, `unauthorized` (switched off since
 the call was checked), `unavailable` (the tab's shell is not running, a transcript that cannot be read).
 
+### bar.show, bar.hide (plugins phase 6)
+
+Namespace `Bar` (permission `bar`); the agent never enters it and the dispatcher refuses any caller that is not a plugin.
+Listed in `capabilities` when the run has a mods hub. The contract is in `mods.md` ("Session bar, network and audio").
+
+| Method | Params | Result |
+|---|---|---|
+| `bar.show` | `tab` (optional: a tab the plugin may see; absent is the caller's own; a background page names one) | `{tab, height}` once the tab shows the plugin's bar (`height` from the manifest, 24 to 160) |
+| `bar.hide` | `tab` (optional, as above) | `{hidden}`: false when the tab showed no bar of this plugin |
+
+One bar a tab: `busy` when another plugin's bar shows there. Each is once a second per plugin per tab (`rate_limited`).
+Errors: `bad_params` (a field that is not one, a plugin with no `bar` in its manifest), `forbidden` (no permission, a tab
+the plugin may not see, the agent), `no_tab`, `busy`, `rate_limited`, `unauthorized` (switched off since the call was
+checked).
+
 ### panel.open
 
 Params: `kind` (string, required; `"web"`, `"changes"` or `"tasks"`), `url` (string, optional, `web` only;
@@ -474,6 +491,20 @@ the element. **A diagram that does not parse** is `bad_params` with the message 
 control characters removed, empty lines dropped, at most 800 characters>`; the panel shows the same text in red. The theme follows
 the system's light or dark setting (`prefers-color-scheme`), not Flare's theme (the panel is a web page). Errors as `view.html`
 (`unavailable` also when the page failed to load, the panel closed or the page moved on while the drawing was asked about). Stage 5.
+
+### view.audio (plugins phase 6)
+
+Params: exactly one of `path` (a sound file: mp3, wav, ogg, oga, opus, m4a, aac, flac, webm or weba, as typed and as the
+file system names it; resolved like `view.file`, rules 13 and 14; at most 100 MB) and `url` (an `https` address on a
+public host, at most 2 KB: loopback, private, shared and link-local addresses, a host without a dot, `localhost` and the
+names ending `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa` and `.localdomain` are `bad_params`), `title`
+(default "Audio"), `autoplay` (bool, default false). Shows Flare's own player page, a mini-app in the caller's panel:
+for a file the track is copied beside the page and the page's policy lets in `media-src 'self'` only; for an address the
+page runs in the networked mini-app browser and its policy lets in that origin's media only (`connect-src 'none'`, no
+frame, no form). Play, pause and seek; it never loops and plays by itself only with `autoplay`, once. Answers as
+`view.html` once the page has loaded. A plugin gives a `url` only when it holds `network` (else `forbidden`). Errors as
+`view.html`, plus `not_found` (no such file Flare may play, S2) and `bad_params` (not a sound file, a refused address,
+both or neither of `path` and `url`, a field that is not one).
 
 ### browser.* (stage 3 for opening and navigating, stage 4 for the agent using the page)
 
@@ -658,10 +689,10 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `unavailable` | known method, cannot be done now (no runtime, nothing open, reserved, overloaded) | no |
 | `timeout` | not answered within its timeout | no |
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
-| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3) | no |
+| `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3), or its `bar.show` on a tab that shows another plugin's bar (phase 6) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
 | `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, or a plugin's 50 messages and 2 MB a second) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, `bar.show`'s and `bar.hide`'s once a second per tab, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be
@@ -710,6 +741,7 @@ calls:
 | `show_text` | `text` (non-empty), `title` (optional) | `view.text` |
 | `show_html` | exactly one of `html` and `path` (relative paths are made absolute like the other file tools), `title`, `allow_network` | `view.html` (answers with what the page can do: no network, the network it got, or that it asked for the network and the setting is off) |
 | `show_diagram` | `mermaid` (non-empty), `title` | `view.diagram` (a diagram that does not parse is a tool error: `The diagram did not draw. Mermaid said:` and the parser's words, up to 900 characters and a few lines, then `Fix the Mermaid text and call show_diagram again.`) |
+| `show_audio` | exactly one of `path` (made absolute) and `url`, `title`, `autoplay` | `view.audio` |
 | `open_page` | `url` (non-empty) | `browser.open` |
 | `close_panel` | none | `panel.close` |
 | `browser_look` | none | `browser.look` (answers with MCP image content and the list as text) |

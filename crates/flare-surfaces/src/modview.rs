@@ -37,6 +37,81 @@ pub fn profile_name(id: &str) -> String {
     format!("{HOST_PREFIX}{id}")
 }
 
+/// The extra arguments of the networked plugins' browser: the mini-apps' WebRTC policy, and a resolver for which the
+/// local names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) and the local address ranges
+/// ([`local_address_patterns`]) are not found. A plugin's own pages are answered by Flare and never use the resolver.
+///
+/// The resolver is the wall for what the request wall never sees: a WebSocket (`wss:`, which the policy's `https:`
+/// matches) and WebTransport do not reach `WebResourceRequested`, and this browser has a real route (no dead proxy).
+/// A proxy script cannot take loopback and link-local addresses instead: Chromium sends those direct whatever the
+/// script says, and `<-loopback>` only works with a fixed proxy (`net/docs/proxy.md`, "Implicit bypass rules"). The
+/// resolver's rules apply to an address written as numbers too (Chromium's `HostMappingRules` matches the host as
+/// written, before an address is looked up or taken as it is), so no connection of the browser's own reaches them.
+/// Read from Chromium's source, not yet measured on this runtime.
+pub fn net_browser_arguments() -> String {
+    let names = [
+        "localhost",
+        "*.localhost",
+        "*.local",
+        "*.lan",
+        "*.internal",
+        "*.home.arpa",
+    ];
+    let rules = names
+        .into_iter()
+        .map(str::to_string)
+        .chain(local_address_patterns())
+        .map(|n| format!("MAP {n} ~NOTFOUND"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} --host-resolver-rules=\"{rules}\"",
+        crate::app::WEBRTC_POLICY_FLAG
+    )
+}
+
+/// The local address ranges as the resolver's patterns (`*` is any run of characters), past the two that take one a
+/// second octet: loopback (127/8), "this network" (0/8), private (10/8, 192.168/16), link-local (169.254/16), the
+/// protocol range (192.0.0/24), benchmarking (198.18/15) and broadcast; for IPv6, written with its brackets as the
+/// browser writes it: every address that begins `::` (loopback, unspecified, the IPv4-mapped and -compatible forms),
+/// unique-local (fc00::/7), link-local (fe80::/10) and NAT64 (64:ff9b::/96). A public name whose first label is one
+/// of these numbers (`10.example.com`) is not found either; that is the price of a pattern with no ranges.
+pub const LOCAL_ADDRESS_PATTERNS: [&str; 17] = [
+    "127.*",
+    "0.*",
+    "10.*",
+    "192.168.*",
+    "169.254.*",
+    "192.0.0.*",
+    "198.18.*",
+    "198.19.*",
+    "255.255.255.255",
+    "[::*",
+    "[fc*",
+    "[fd*",
+    "[fe8*",
+    "[fe9*",
+    "[fea*",
+    "[feb*",
+    "[64:ff9b:*",
+];
+
+/// [`LOCAL_ADDRESS_PATTERNS`] and the two ranges that need a pattern for each second octet: 172.16/12 and 100.64/10.
+fn local_address_patterns() -> Vec<String> {
+    LOCAL_ADDRESS_PATTERNS
+        .iter()
+        .map(|p| p.to_string())
+        .chain((16..32).map(|b| format!("172.{b}.*")))
+        .chain((64..128).map(|b| format!("100.{b}.*")))
+        .collect()
+}
+
+/// The user data folder of the networked plugins' browser (plugins phase 6), beside the sealed one: a browser started
+/// with other arguments needs a folder of its own, so a plugin that holds `network` keeps its profile here.
+pub fn net_env_folder(data_dir: &std::path::Path) -> std::path::PathBuf {
+    crate::app::sibling_folder(data_dir, "plugin-net")
+}
+
 /// The user data folder of the mods' and plugins' browser, beside the web panel's (`data_dir`): an
 /// environment of their own, apart from the web panel's and the mini-apps' (design 13). Its name is the one
 /// the mods shared with the sealed mini-apps before Phase 2b: every mod's profile (`flare-mod-<id>`, its
@@ -61,12 +136,18 @@ pub fn is_mod_url(url: &str) -> bool {
 
 /// The view spec of a mod: its folder (the canonical one the scan found), host and address, and no network.
 pub fn mod_spec(id: &str, folder: &std::path::Path, entry: &str) -> AppSpec {
+    plugin_spec(id, folder, entry, false)
+}
+
+/// The view spec of a plugin's page: [`mod_spec`], and with `network` (the plugin holds the approved `network`
+/// permission, plugins phase 6) a page that may reach public `https` addresses, in the plugins' networked browser.
+pub fn plugin_spec(id: &str, folder: &std::path::Path, entry: &str, network: bool) -> AppSpec {
     let host = mod_host(id);
     AppSpec {
         url: mod_url(&host),
         host,
         folder: folder.to_path_buf(),
-        allow_network: false,
+        allow_network: network,
         module: Some(ModSpec {
             id: id.to_string(),
             entry: entry.to_string(),
@@ -130,8 +211,17 @@ pub enum Route {
 
 /// Decides one request of the mod's view.
 pub fn route_request(uri: &str, host: &str) -> Route {
+    route_request_net(uri, host, false)
+}
+
+/// Decides one request of a plugin's view; with `network` an `https` request to a public host goes out
+/// ([`crate::net::is_public_https`]: never loopback, a private range or a local name).
+pub fn route_request_net(uri: &str, host: &str, network: bool) -> Route {
     if let Some(path) = request_path(uri, host) {
         return Route::Serve(path);
+    }
+    if network && crate::net::is_public_https(uri) {
+        return Route::Pass;
     }
     match url::Url::parse(uri)
         .map(|u| u.scheme().to_string())
@@ -254,5 +344,139 @@ mod tests {
         ] {
             assert_eq!(route_request(bad, h), Route::Refuse, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_networked_plugin_reaches_public_https_and_nothing_local() {
+        let h = "flare-mod-notes.local";
+        assert_eq!(
+            route_request_net("https://flare-mod-notes.local/a.js", h, true),
+            Route::Serve("/a.js".into())
+        );
+        assert_eq!(
+            route_request_net("https://example.com/feed.json", h, true),
+            Route::Pass
+        );
+        assert_eq!(
+            route_request_net("https://example.com/feed.json", h, false),
+            Route::Refuse,
+            "without network nothing goes out"
+        );
+        for bad in [
+            "http://example.com/",
+            "https://localhost/",
+            "https://127.0.0.1/",
+            "https://192.168.0.2/",
+            "https://flare-mod-other.local/",
+            "https://router.lan/",
+            "https://[::1]/",
+        ] {
+            assert_eq!(route_request_net(bad, h, true), Route::Refuse, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_networked_plugins_browser_keeps_the_webrtc_policy_and_knows_no_local_name() {
+        let a = net_browser_arguments();
+        assert!(a.contains(crate::app::WEBRTC_POLICY_FLAG));
+        assert!(a.contains("MAP localhost ~NOTFOUND") && a.contains("MAP *.local ~NOTFOUND"));
+        assert!(!a.contains("proxy-server"), "it has the real route");
+        assert!(!a.contains("MAP * ~NOTFOUND"), "public names resolve");
+    }
+
+    /// `*` as the resolver's rules read it: any run of characters.
+    fn glob(p: &str, s: &str) -> bool {
+        match p.split_once('*') {
+            None => p == s,
+            Some((head, rest)) => {
+                s.starts_with(head)
+                    && (head.len()..=s.len()).any(|i| s.is_char_boundary(i) && glob(rest, &s[i..]))
+            }
+        }
+    }
+
+    #[test]
+    fn a_networked_plugins_resolver_knows_no_local_address_and_every_public_one() {
+        // A WebSocket never meets the request wall: the resolver is what refuses a local address written as numbers.
+        let a = net_browser_arguments();
+        let rules: Vec<&str> = a
+            .split("--host-resolver-rules=\"")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('"')
+            .split(", ")
+            .map(|r| {
+                r.strip_prefix("MAP ")
+                    .unwrap()
+                    .strip_suffix(" ~NOTFOUND")
+                    .unwrap()
+            })
+            .collect();
+        // The host as the browser writes it, and with its port.
+        let mapped = |host: &str| {
+            let with_port = format!("{host}:443");
+            rules.iter().any(|p| glob(p, host) || glob(p, &with_port))
+        };
+        for local in [
+            "127.0.0.1",
+            "127.8.9.10",
+            "0.0.0.0",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.127.0.1",
+            "198.18.0.1",
+            "[::1]",
+            "[::]",
+            "[::ffff:7f00:1]",
+            "[fc00::1]",
+            "[fd12:3456::1]",
+            "[fe80::1]",
+            "[febf::1]",
+            "[64:ff9b::7f00:1]",
+            "localhost",
+            "router.lan",
+        ] {
+            assert!(mapped(local), "{local} is not found");
+            let ip = local.trim_start_matches('[').trim_end_matches(']');
+            if let Ok(ip) = ip.parse::<std::net::IpAddr>() {
+                assert!(
+                    !crate::net::is_public_https(&format!("https://{local}/")),
+                    "{ip}: the request wall refuses it too"
+                );
+            }
+        }
+        for public in [
+            "8.8.8.8",
+            "172.15.0.1",
+            "172.32.0.1",
+            "100.63.0.1",
+            "100.128.0.1",
+            "1.1.1.1",
+            "[2606:4700::1111]",
+            "example.com",
+            "fdroid.org",
+            "fe80.example.com",
+        ] {
+            assert!(!mapped(public), "{public} resolves");
+        }
+    }
+
+    #[test]
+    fn a_networked_plugin_has_its_own_browser_folder_and_spec() {
+        let d = std::path::Path::new("C:/p/WebView2");
+        assert!(net_env_folder(d).ends_with("WebView2-plugin-net"));
+        assert_ne!(net_env_folder(d), env_folder(d));
+        let s = plugin_spec(
+            "notes",
+            std::path::Path::new("C:/m/notes"),
+            "bar.html",
+            true,
+        );
+        assert!(s.allow_network);
+        assert_eq!(s.module.as_ref().unwrap().entry, "bar.html");
     }
 }

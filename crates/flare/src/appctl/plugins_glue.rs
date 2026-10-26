@@ -131,16 +131,18 @@ impl AppCtl {
             .collect();
     }
 
-    /// Everything the plugin set goes (it stopped, or its background page ended).
+    /// Everything the plugin set goes (it stopped, or its background page ended), its bars too (plugins phase 6).
     pub(super) fn clear_plugin_surfaces(&mut self, id: &str) {
         if self.plugins.ui.clear_plugin(id) {
             self.refresh();
         }
+        self.clear_plugin_bars(id);
     }
 
     /// A tab closed: the action state set for it goes, and no plugin keeps click scope on it.
     pub(super) fn plugin_tab_gone(&mut self, tab: &str) {
         self.plugins.ui.remove_tab(tab);
+        self.bar_tab_gone(tab);
         if let Some(m) = &self.mods {
             m.hub().forget_tab(tab);
         }
@@ -549,7 +551,7 @@ impl AppCtl {
 
 /// Puts `rows` into the model in place: rows that differ are set, extra ones pushed or removed from the end (a new
 /// model would drop the rows' hover and touch state).
-fn sync_model<T: Clone + PartialEq + 'static>(target: &slint::VecModel<T>, rows: &[T]) {
+pub(super) fn sync_model<T: Clone + PartialEq + 'static>(target: &slint::VecModel<T>, rows: &[T]) {
     let shared = target.row_count().min(rows.len());
     for (i, row) in rows.iter().enumerate().take(shared) {
         if target.row_data(i).as_ref() != Some(row) {

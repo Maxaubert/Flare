@@ -265,9 +265,12 @@ mod tests {
             Method::TabsBadgeClear,
             Method::TabsProgressSet,
             Method::TabsProgressClear,
+            Method::ViewAudio,
         ] {
             assert!(g.may_call(m), "agent should call {}", m.name());
         }
+        // A bar is a plugin's (plugins phase 6).
+        assert!(!g.may_call(Method::BarShow) && !g.may_call(Method::BarHide));
         assert!(!g.may_call(Method::BrowserEval));
         assert!(Grant::Agent { eval: true }.may_call(Method::BrowserEval));
     }
@@ -414,6 +417,23 @@ mod tests {
         let others = mod_with(&[P::Panel, P::View, P::Browser, P::Eval, P::Convo, P::Tools]);
         assert!(!others.may_call(Method::TabsBadgeSet));
         assert!(!others.may_call(Method::TabsProgressSet));
+    }
+
+    /// Plugins phase 6: `bar` opens bar.show and bar.hide and nothing else; `view` opens the audio player; `network`
+    /// opens no method (it changes the pages' policy).
+    #[test]
+    fn bar_opens_only_the_bar_and_view_opens_the_audio_player() {
+        let g = mod_with(&[P::Bar]);
+        for m in Method::ALL {
+            let want = matches!(
+                m.namespace(),
+                Namespace::Hello | Namespace::Tabs | Namespace::Bar | Namespace::Storage
+            );
+            assert_eq!(g.may_call(m), want, "{}", m.name());
+        }
+        assert!(mod_with(&[P::View]).may_call(Method::ViewAudio));
+        assert!(!mod_with(&[P::Network, P::Panel]).may_call(Method::ViewAudio));
+        assert!(!mod_with(&[P::Network, P::Panel, P::Sessions]).may_call(Method::BarShow));
     }
 
     #[test]

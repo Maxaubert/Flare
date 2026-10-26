@@ -371,12 +371,12 @@ impl AppCtl {
         changed
     }
 
-    /// Speaks to the page in `slot`: a tab's panel or a background page (a bar has no page yet).
+    /// Speaks to the page in `slot`: a tab's panel, a tab's bar or a background page.
     pub(super) fn post_to_slot(&mut self, slot: &Slot, json: &str) {
         match slot.kind {
             ViewKind::Panel => self.web.post_message(&slot.owner, json),
             ViewKind::Background => self.web.post_to_background(&slot.owner, json),
-            ViewKind::Bar => {}
+            ViewKind::Bar => self.web.post_to_bar(&slot.owner, json),
         }
     }
 
@@ -420,8 +420,9 @@ impl AppCtl {
             return false;
         };
         m.bg_started(id);
+        let net = m.hub().network_of(id);
         self.web
-            .open_background(id, modview::mod_spec(id, &folder, &entry));
+            .open_background(id, modview::plugin_spec(id, &folder, &entry, net));
         if !self.web.background_ids().iter().any(|b| b == id) {
             if let Some(m) = self.mods.as_mut() {
                 m.bg_ended(id);
@@ -699,6 +700,9 @@ impl AppCtl {
                 }
             }
             WebOut::BgLost { plugin } => self.background_lost(&plugin, "its page or browser ended"),
+            o @ (WebOut::BarMessage { .. } | WebOut::BarPage { .. } | WebOut::BarLost { .. }) => {
+                self.on_bar_web(o);
+            }
             WebOut::ModMessage { tab, mod_id, json } => {
                 // The message counts only for the mod the tab's panel shows now: a message the page of another
                 // mod queued before the panel switched is dropped, never run with this mod's grant.
@@ -797,7 +801,9 @@ impl AppCtl {
                 format!("the mod \"{mod_id}\" has no panel"),
             ));
         };
-        let spec = modview::mod_spec(mod_id, &found.folder, &panel.entry);
+        // A plugin that holds `network` has a networked page (plugins phase 6); a mod never does.
+        let net = m.hub().network_of(mod_id);
+        let spec = modview::plugin_spec(mod_id, &found.folder, &panel.entry, net);
         if self.panels.mod_of(tab) == Some(mod_id) {
             if let Some(m) = self.mods.as_mut() {
                 m.bind(tab, mod_id);

@@ -339,6 +339,20 @@ fn show_tools() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "show_audio",
+            description: "Play a sound file (mp3, wav, ogg, opus, m4a, aac, flac, webm) or a public https address in an audio player beside this terminal tab in Flare, with play, pause and seek. A file is copied into the player (at most 100 MB); an address must be https on a public host (never localhost, a .local name or a private network address) and the player loads that sound only. It plays by itself only when autoplay is true, and then once. Replaces what the panel showed.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the sound file (absolute, or relative to the folder you are working in). Give this or url."},
+                    "url": {"type": "string", "description": "A public https address of a sound to play. Give this or path."},
+                    "title": {"type": "string", "description": "A short title for the panel header."},
+                    "autoplay": {"type": "boolean", "description": "Start playing once as soon as the player is shown (default false)."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        ToolDef {
             name: "open_page",
             description: "Open a web page (http or https) in a browser panel beside this terminal tab in Flare, so the user can see it without leaving the terminal. Videos play in it. Use it for a local dev server (http://localhost:3000), documentation or anything the user should look at. Replaces what the panel showed. Returns once the page has loaded.",
             schema: json!({
@@ -530,6 +544,35 @@ pub fn call_tool(
             channel
                 .call(Method::ViewHtml, params)
                 .map(|v| shown_app_text(&v, wants_network))
+        }
+        "show_audio" => {
+            let mut params = json!({});
+            match (args.get("path"), args.get("url")) {
+                (Some(Value::String(p)), None | Some(Value::Null)) if !p.trim().is_empty() => {
+                    params["path"] = json!(absolute(p));
+                }
+                (None | Some(Value::Null), Some(Value::String(u))) if !u.trim().is_empty() => {
+                    params["url"] = json!(u.trim());
+                }
+                _ => {
+                    return Some(ToolResult::error(
+                        "give either path (a non-empty string) or url (a non-empty string), not both and not neither.",
+                    ));
+                }
+            }
+            match args.get("title") {
+                None | Some(Value::Null) => {}
+                Some(Value::String(t)) => params["title"] = json!(t),
+                Some(_) => return Some(ToolResult::error("title must be a string.")),
+            }
+            match args.get("autoplay") {
+                None | Some(Value::Null) => {}
+                Some(Value::Bool(b)) => params["autoplay"] = json!(b),
+                Some(_) => return Some(ToolResult::error("autoplay must be true or false.")),
+            }
+            channel
+                .call(Method::ViewAudio, params)
+                .map(|_| ToolResult::text("Showing the audio player in Flare."))
         }
         "show_diagram" => {
             let src = match args.get("mermaid") {
@@ -1148,6 +1191,7 @@ mod tests {
                 "show_text",
                 "show_html",
                 "show_diagram",
+                "show_audio",
                 "open_page",
                 "close_panel",
                 "browser_look",
@@ -1172,8 +1216,67 @@ mod tests {
         assert_eq!(list[2]["inputSchema"]["required"], json!(["text"]));
         assert!(list[3]["inputSchema"].get("required").is_none());
         assert_eq!(list[4]["inputSchema"]["required"], json!(["mermaid"]));
-        assert_eq!(list[5]["inputSchema"]["required"], json!(["url"]));
-        assert_eq!(list[6]["inputSchema"]["properties"], json!({}));
+        assert!(list[5]["inputSchema"].get("required").is_none());
+        assert_eq!(list[6]["inputSchema"]["required"], json!(["url"]));
+        assert_eq!(list[7]["inputSchema"]["properties"], json!({}));
+    }
+
+    #[test]
+    fn show_audio_routes_a_path_made_absolute_or_a_url_to_view_audio() {
+        let mut ch = Fake::default();
+        let r = handle_message(
+            &req(
+                1,
+                "tools/call",
+                json!({"name": "show_audio", "arguments": {"path": "speech.mp3", "title": "Reply", "autoplay": true}}),
+            ),
+            &mut ch,
+        )
+        .unwrap();
+        assert_eq!(r["result"]["isError"], false);
+        assert_eq!(ch.calls[0].0, Method::ViewAudio);
+        let p = &ch.calls[0].1;
+        assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_absolute());
+        assert_eq!(
+            (p["title"].clone(), p["autoplay"].clone()),
+            (json!("Reply"), json!(true))
+        );
+        let mut ch = Fake::default();
+        handle_message(
+            &req(
+                2,
+                "tools/call",
+                json!({"name": "show_audio", "arguments": {"url": " https://example.com/a.ogg "}}),
+            ),
+            &mut ch,
+        );
+        assert_eq!(
+            ch.calls,
+            vec![(
+                Method::ViewAudio,
+                json!({"url": "https://example.com/a.ogg"})
+            )]
+        );
+        for args in [
+            json!({}),
+            json!({"path": "a.mp3", "url": "https://example.com/a.mp3"}),
+            json!({"path": ""}),
+            json!({"path": "a.mp3", "title": 1}),
+            json!({"path": "a.mp3", "autoplay": "yes"}),
+        ] {
+            let mut ch = Fake::default();
+            let r = handle_message(
+                &req(
+                    3,
+                    "tools/call",
+                    json!({"name": "show_audio", "arguments": args}),
+                ),
+                &mut ch,
+            )
+            .unwrap();
+            assert_eq!(r["result"]["isError"], true, "{args}");
+            assert!(ch.calls.is_empty(), "{args}");
+        }
     }
 
     #[test]

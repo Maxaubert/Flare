@@ -102,6 +102,7 @@ impl AppCtl {
         let front = self.model.active_shell().map(|t| t.id.clone());
         let ctx = self.key_context();
         self.web.sync(&app, &self.panels, front.as_deref(), ctx);
+        self.sync_bar_views(&app);
         self.sync_web_full();
         self.prune_downloads();
     }
@@ -233,7 +234,10 @@ impl AppCtl {
                 | WebOut::ModLost { .. }
                 | WebOut::BgMessage { .. }
                 | WebOut::BgPage { .. }
-                | WebOut::BgLost { .. }) => {
+                | WebOut::BgLost { .. }
+                | WebOut::BarMessage { .. }
+                | WebOut::BarPage { .. }
+                | WebOut::BarLost { .. }) => {
                     self.on_mod_web(o);
                 }
                 WebOut::Download {
