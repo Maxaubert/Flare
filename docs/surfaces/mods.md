@@ -330,7 +330,8 @@ Permissions a `plugin.json` may also ask for, and the words Settings shows:
 In the channel each new method family has its own namespace opened by exactly its permission (`sidebar.*`,
 `actions.*`, `bar.*`, `session.*`, `tabs.input`); nothing rides on the open `tabs.list`; `network` and `process` open no
 method. `tabs` opens no method either: it lets a call name another tab (`Grant::may_act_on_any_tab`) and widens
-`tabs.list` (phase 3, below). A plugin with no permission still reaches only `hello` and its own-tab `tabs.list`.
+`tabs.list` (phase 3, below). A plugin with no permission reaches only `hello`, its own-tab `tabs.list` and its own
+store (`storage.*`, phase 5 below), which holds only what it put there; the agent never reaches a plugin's store.
 
 The approval in `mods.json` (same file, version 1) keeps, for a plugin, `author`, `homepage`, `source` (once install
 exists) and `hash` (`sha256:` over the folder's files). A plugin whose author or homepage changes is turned off until
@@ -419,6 +420,40 @@ by you).
 - **When it stops.** A plugin turned off takes its sections, its actions and everything it set with it, and its click
   scopes; a background page that ends takes what it set (it sets it again when it starts). A closed tab takes the
   action state set for it.
+
+## Sessions, typing and storage (plugins phase 5)
+
+Design sections 6, 7 and 13.
+
+- **`session` events (`sessions`).** `window.flare.on('session', fn)` hears what is said in the Claude session of a tab
+  the plugin may see (its own, any with `tabs`, or one a click gave it): one event per entry, `{tab, session, role,
+  text, tool?, at?, dropped?}`. `role` is `user` (a prompt), `assistant` (the reply's words) or `tool` (a tool call:
+  `tool` is its name and `text` the one argument that says what it does, such as the command or the file, else its
+  input as JSON). Tool results, the assistant's thinking, Claude Code's own notes and the lines of subagents are not
+  entries. `text` is cleaned (no control or invisible character, line breaks kept as `\n`) and at most 2000 characters
+  (a cut ends in `...`); `at` is the transcript's own time. Only what is said after the page began to listen comes
+  (the earlier part is `session.read`). A plugin hears at most 50 entries a second; what is over is dropped and the
+  next event it hears says how many in `dropped`.
+- **The follower.** A tab's transcript (`<Claude folder>\projects\<folder>\<session>.jsonl`, the one the Changes
+  panel reads) is followed only while a page of a plugin that holds `sessions` listens and may see that tab, and the
+  tab's Claude session is known; it starts at the file's end and reads on a worker of its own. Nobody listening, the
+  plugin turned off, a new session in the tab or the tab closed: it stops.
+- **`session.read {tab?}` (`sessions`).** The last 200 entries of the tab's session (read from the transcript's last
+  4 MB on the call's worker), oldest first, each `{role, text, tool?, at?}`: `{tab, session, entries}`. A tab with no
+  known session answers `session: null` and no entries. Once a second per tab per plugin.
+- **`tabs.input {tab?, text, enter?}` (`input`).** Types `text` into the shell of a tab the plugin may see, the way
+  your paste goes: one bracketed paste when the program asked for one (Claude Code does), else the lines as a paste
+  sends them, with no final Enter. `enter: true` presses Enter 300 ms later, only if the tab is still open and the
+  plugin still on. `text` is 1 to 4096 bytes; any control character but a tab and line breaks is refused (so nothing
+  can end the paste early or press a key of its own). At most 2 a second per tab. Answers `{typed, enter}`. It is the
+  only way into a shell from outside Flare's own interface (regression rules 2 and 188): the agent never has it.
+- **`storage.get {key?}` and `storage.set {key?, value}` (no permission, plugins only).** The plugin's own JSON object
+  in `<profile>\plugins-storage\<id>.json`. `get` with a key gives `{value}` (null when the key is not there), with
+  none the whole object; `set` with a key sets it (a null value removes it), with none `value` replaces the whole
+  object (it must be one). Keys are 1 to 128 characters with no control character. The store is at most 1 MB as
+  written; a set past that answers `too_large` and changes nothing. A set is answered at once; the file is written on a
+  worker, at most twice a second (sets in between land together), to a `.tmp` file renamed over the old one. A file
+  that is not a JSON object reads as empty. A protocol 1 mod has no store (`forbidden`), and neither has the agent.
 
 ## Tab bar and sidebar contributions (review 2026-10-25)
 

@@ -1525,6 +1525,40 @@ contract: `docs/surfaces/mods.md`, "Sidebar sections and actions", and `docs/sur
   ticked off after a moment, kept in the page's `localStorage`, "Add to-do" in a tab's menu. It loads as valid in
   `flare_mods::discover::tests::the_sample_plugins_are_valid`.
 
+## Plugins phase 5: sessions, typing and storage, 2026-10-26
+
+The fifth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 6, 7 and 13). The contract:
+`docs/surfaces/mods.md`, "Sessions, typing and storage", and `docs/surfaces/protocol.md` (`session.read`,
+`tabs.input`, `storage.*`).
+
+- **Session events.** `window.flare.on('session', fn)` hears `{tab, session, role, text, tool?, at?, dropped?}` for
+  each prompt, reply and tool call of a tab's Claude session, for a plugin that holds `sessions` and may see the tab;
+  text cleaned and at most 2000 characters; 50 a second per plugin, the rest counted in `dropped`. The entries:
+  `flare_convo::said`; the follower: `flare_convo::follow` (the transcript tail started at its end,
+  `Tail::skip_to_end`); which tabs are followed and each plugin's share: `plugin_sessions` and
+  `appctl::sessions_glue`. A tab is followed only while a page listens and may see it and its session is known; off,
+  nobody listening or the tab closed stops it. Tests: `flare-convo/tests/said.rs` (7), `plugin_sessions` (3),
+  `a_tab_is_followed_only_while_a_plugin_with_sessions_listens_and_may_see_it`,
+  `each_plugin_hears_fifty_entries_a_second_and_the_next_event_says_what_it_missed`.
+- **`session.read`.** The last 200 entries, read from the transcript's last 4 MB on the call's worker; once a second per
+  tab. Test: `session_read_gives_the_last_two_hundred_entries_to_a_plugin_that_holds_sessions_only`.
+- **`tabs.input`.** Typing for a plugin that holds `input`, on a tab it may see: one paste the way the person's goes
+  (bracketed when asked), the Enter 300 ms later only while the tab is open and the plugin on; 4 KB, control characters
+  refused but tab and line breaks, 2 a second per tab. The typed intent is `flare_term::handle::PluginInput` (regression
+  rules 2 and 188 amended: the plugin exception, never the agent). Tests:
+  `tabs_input_types_as_a_paste_with_its_checks_and_the_enter_comes_after`,
+  `the_enter_is_not_pressed_once_the_plugin_is_off_and_a_closed_tab_takes_nothing`,
+  `rule_s3_the_agent_cannot_type_into_shells_change_settings_or_enable_mods` (now with `tabs.input`).
+- **Storage.** `storage.get {key?}` and `storage.set {key?, value}`: each protocol 2 plugin's own JSON object in
+  `<profile>\plugins-storage\<id>.json`, at most 1 MB (`too_large`), read on the call's worker, written atomically by
+  a writer thread at most twice a second (`flare_mods::storage`). A new `Storage` namespace that needs no permission and
+  is closed to the agent; a protocol 1 mod is refused. Tests: `flare_mods::storage` (7),
+  `storage_is_each_plugins_own_and_never_a_protocol_1_mods_or_the_agents`, the grant table
+  (`a_grant_with_no_permission_may_call_only_hello_tabs_list_and_its_own_store`).
+- **Settings.** `input` already reads "Type and run commands in your terminals (full control)" and `input` with
+  `sessions` adds "With both, it can read what Claude says and steer Claude by typing to it." (unchanged, tested in
+  `flare_mods::hub` and `ui_tests::settings_mods`).
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,
