@@ -1570,14 +1570,16 @@ contract: `docs/surfaces/mods.md`, "Session bar, network and audio", and `docs/s
   second plugin gets `busy`. The terminal is laid out shorter by the bar's height and the shell is resized once (the
   window-resize path, no animation); the bar shows only while its tab is in front with its terminal. Its page is a
   plugin view in the bar slot, sealed as a bar, made lazily for the tab in front, hidden behind or under a Flare
-  overlay, at most two kept a plugin, and never the keyboard. Every bar of a plugin goes when it stops, a tab's with the
+  overlay, at most two kept a plugin and 12 plugin views in all (`plugin_bar::MAX_VIEWS`: the panels of mods and
+  plugins and the background pages stay, an older bar behind goes; the front one always shows), and never the keyboard. Every bar of a plugin goes when it stops, a tab's with the
   tab, and a bar page that ends takes its bar. The pure part: `plugin_bar` (one bar a tab, the height limits, what a
-  plugin stops, which views go past two); the window: `appctl::bar_glue` and `WebCtl::sync_bars`; the layout:
+  plugin stops, which views go past two or past the total); the window: `appctl::bar_glue` and `WebCtl::sync_bars`; the layout:
   `bar-h`, `bar-row` and `bar-web-*` in `app.slint`.
 - **`session-bar` actions.** Drawn as Flare's chips at the right end of the bar row (at most 4), with `actions.set`
   state; a click is `action {key, tab}` with click scope.
 - **`network`.** A plugin that holds it runs its pages in a networked plugins' browser (`EnvKind::PluginNet`,
-  `WebView2-plugin-net`: the WebRTC policy and a resolver that knows no local name) with the policy
+  `WebView2-plugin-net`: the WebRTC policy and a resolver that knows no local name and no local address range, the
+  wall for a WebSocket, which `https:` in the policy matches as `wss:` and which never meets the request wall) with the policy
   `flare_mods::serve::NET_CSP` (https `connect-src`, `img-src`, `media-src`; `frame-src 'none'`, `form-action 'self'`,
   `base-uri 'none'`); the request wall lets out only https to a public host (`flare_surfaces::net`: loopback, private,
   shared and link-local ranges, dotless hosts and local names refused). No navigation away and no window, as before.
@@ -1587,11 +1589,11 @@ contract: `docs/surfaces/mods.md`, "Session bar, network and audio", and `docs/s
   `flare-mcp`: Flare's own player page (`flare_surfaces::audio`) in the panel, a mini-app whose policy lets in its own
   copied track (at most 100 MB, the sound types by both names, rules 13 and 14) or one public https origin; play,
   pause, seek, no loop, autoplay only when asked and once. A plugin plays an address only with `network`.
-- **Tests.** `plugin_bar` (4), `appctl::tests::mods_tests::plugin_bar` (3: the bar and its one fit, `busy`, the rate,
+- **Tests.** `plugin_bar` (5), `appctl::tests::mods_tests::plugin_bar` (3: the bar and its one fit, `busy`, the rate,
   lazy views, hiding behind a tab and an overlay, clearing on hide, off and tab close; the chips and their clicks; the
   bar page's calls; networked pages), `ui_tests::plugin_bar` (3: the grid gives up the height at every scale, the row
   under it, the chips' room and clicks, nothing while the grid is not in front), `flare_surfaces::net` (2),
-  `flare_surfaces::audio` (4), `modview` (3 new), `flare_mods::serve` (the policy per permission), `flare_mods::hub`
+  `flare_surfaces::audio` (4), `modview` (4 new), `flare_mods::serve` (the policy per permission), `flare_mods::hub`
   (`a_plugins_bar_and_network_count_only_while_it_is_on_with_them_approved`), the grant table
   (`bar_opens_only_the_bar_and_view_opens_the_audio_player`), `ctl_app` (`view_audio_*`, 2) and `flare-mcp`
   (`show_audio_routes_a_path_made_absolute_or_a_url_to_view_audio`, the pinned tools list).
@@ -1603,6 +1605,11 @@ Builder's calls (the owner may overrule):
 - A click that gives the bar's page focus hands the keyboard back to the terminal at once ("never take focus").
 - A networked plugin's profile lives in its own browser folder, so a plugin that gains or loses `network` in an update
   starts with empty page storage (two browsers with different arguments cannot share a folder).
+- The networked plugins' browser walls the local addresses in its resolver (`MAP 127.* ~NOTFOUND` and the like), not
+  with a proxy script: Chromium sends loopback and link-local direct whatever a script says, and `<-loopback>` works
+  only with a fixed proxy (`net/docs/proxy.md`). That the rules apply to an address written as numbers is read from
+  Chromium's `HostMappingRules`, not yet measured on this runtime; a public name whose first label is such a number
+  (`10.example.com`) is not found either.
 - `show_audio` with an address uses the networked mini-app browser whatever the mini-app network switch says (that
   switch is for pages the agent writes); the page is Flare's and its policy lets in one origin's media only.
 
