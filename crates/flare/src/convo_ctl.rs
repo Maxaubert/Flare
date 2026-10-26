@@ -136,7 +136,7 @@ impl ConvoCtl {
 
     /// The Claude folder: the one set, else `CLAUDE_CONFIG_DIR` (a Claude Code setting every tab inherits), else
     /// `<profile>\.claude`.
-    fn claude_dir(&self) -> Option<PathBuf> {
+    pub(crate) fn claude_dir(&self) -> Option<PathBuf> {
         if let Some(d) = &self.claude_dir {
             return Some(d.clone());
         }

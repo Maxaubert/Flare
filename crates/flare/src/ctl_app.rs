@@ -12,6 +12,11 @@
 //! A plugin that holds `tabs` may name another tab in a call, by the public id `tabs.list` gives (never a secret);
 //! so may a plugin on a tab where the person clicked one of its actions or sidebar items (click scope, design 13).
 //! Every other caller acts on its own tab only.
+//!
+//! Plugins phase 5: `session.read` reads the last entries of a tab's Claude transcript here, on the call's thread (the
+//! window only says where the session is filed); `tabs.input` is checked here (the `input` permission, the tab, the
+//! text's size and characters, the rate) before the window types it as a paste (rule 2's plugin exception); and
+//! `storage.*` reads and changes the plugin's own store here, its writes going to a worker of their own.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -188,6 +193,21 @@ pub enum CtlOp {
         /// As for `BadgeSet`.
         generation: u64,
     },
+    /// `session.read` (plugins phase 5): where the tab's Claude session is filed, so the call's thread can read its
+    /// transcript. Answered with `{session, folder, claude_dir}` (`session` null when none is known).
+    SessionOf {
+        tab: String,
+    },
+    /// `tabs.input` (plugins phase 5): text a plugin types into the tab's shell as one paste, checked on the call's
+    /// thread (the permission, the tab, the size, the characters, the rate), and an Enter after it when asked.
+    TabInput {
+        plugin: String,
+        tab: String,
+        text: String,
+        enter: bool,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -246,6 +266,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::ProgressClear { .. } => "CtlOp::ProgressClear",
             CtlOp::SidebarSet { .. } => "CtlOp::SidebarSet",
             CtlOp::ActionsSet { .. } => "CtlOp::ActionsSet",
+            CtlOp::SessionOf { .. } => "CtlOp::SessionOf",
+            CtlOp::TabInput { .. } => "CtlOp::TabInput",
         })
     }
 }
@@ -774,6 +796,129 @@ impl AppDispatcher {
         })
     }
 
+    /// The calling plugin's id: the phase 5 methods are a plugin's (the grant already keeps the agent out).
+    fn plugin_caller(ctx: &CallContext, what: &str) -> Result<String, CtlError> {
+        match &ctx.grant {
+            Grant::Mod { id, .. } => Ok(id.clone()),
+            _ => Err(CtlError::new(
+                code::FORBIDDEN,
+                format!("{what} is a plugin's"),
+            )),
+        }
+    }
+
+    /// `session.read {tab?}`: the last entries of the Claude session in the tab (the caller's own, or one it may name),
+    /// read from the transcript's end here on the call's thread. A tab with no known session has none.
+    fn session_read(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use crate::plugin_sessions::{READ_RATE, entry_json};
+        let plugin = Self::plugin_caller(ctx, "reading a session")?;
+        only_fields(params, &["tab"], "session.read")?;
+        let tab = self.scoped_tab(ctx, params)?;
+        self.spend_surface(
+            format!("session.read:{plugin}/{tab}"),
+            READ_RATE,
+            "session.read calls for one tab",
+        )?;
+        let at = self.ask(CtlOp::SessionOf { tab: tab.clone() })?;
+        let none = || Ok(json!({"tab": tab, "session": null, "entries": []}));
+        let (Some(session), Some(folder), Some(dir)) = (
+            at["session"].as_str(),
+            at["folder"].as_str(),
+            at["claude_dir"].as_str(),
+        ) else {
+            return none();
+        };
+        let dir = std::path::Path::new(dir);
+        let Some(mut path) = flare_convo::transcript_path_in(dir, folder, session) else {
+            return none();
+        };
+        // The tab's folder may have moved since the session began: the same session in another project folder. These
+        // look at the disk on the control channel's worker, never the UI thread.
+        if !path.is_file()
+            && let Some(other) = flare_convo::find_transcript_in(dir, session)
+        {
+            path = other;
+        }
+        let entries =
+            flare_convo::said::read_last(&path, flare_convo::said::READ_LAST).map_err(|e| {
+                CtlError::new(
+                    code::UNAVAILABLE,
+                    format!("the session's transcript could not be read: {e}"),
+                )
+            })?;
+        let entries: Vec<Value> = entries.iter().map(entry_json).collect();
+        Ok(json!({"tab": tab, "session": session, "entries": entries}))
+    }
+
+    /// `tabs.input {tab?, text, enter?}`: a plugin that holds `input` types `text` into a tab it may see, as one paste
+    /// (bracketed when the program asked), and presses Enter after it when `enter` is true. Refused here: a text that
+    /// is empty, over 4 KB or holds a control character (only a tab and line breaks), and more than 2 a second on a
+    /// tab.
+    fn tabs_input(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use crate::plugin_sessions::{INPUT_RATE, input_refusal};
+        let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        let generation = self.generation_of(ctx);
+        let plugin = Self::plugin_caller(ctx, "typing into a terminal")?;
+        only_fields(params, &["tab", "text", "enter"], "tabs.input")?;
+        let tab = self.scoped_tab(ctx, params)?;
+        let text = match params.get("text") {
+            Some(Value::String(s)) => s.clone(),
+            _ => return Err(bad("text is required".into())),
+        };
+        if let Some(why) = input_refusal(&text) {
+            return Err(bad(why));
+        }
+        let enter = bool_param(params, "enter")?.unwrap_or(false);
+        self.spend_surface(
+            format!("tabs.input:{tab}"),
+            INPUT_RATE,
+            "tabs.input calls on one tab",
+        )?;
+        self.ask(CtlOp::TabInput {
+            plugin,
+            tab,
+            text,
+            enter,
+            generation,
+        })
+    }
+
+    /// `storage.get {key?}` and `storage.set {key?, value}`: the calling plugin's own store, read and changed here on
+    /// the call's thread (its writes go to a worker of their own). A protocol 1 mod has none.
+    fn storage_call(
+        &self,
+        ctx: &CallContext,
+        method: Method,
+        params: &Value,
+    ) -> Result<Value, CtlError> {
+        let plugin = Self::plugin_caller(ctx, "storage")?;
+        let hub = self.hub()?;
+        if !hub.is_plugin(&plugin) {
+            return Err(CtlError::new(
+                code::FORBIDDEN,
+                "storage is for plugins (plugin.json, protocol 2)",
+            ));
+        }
+        let key = str_param(params, "key")?;
+        match method {
+            Method::StorageGet => {
+                only_fields(params, &["key"], "storage.get")?;
+                Ok(json!({"value": hub.storage().get(&plugin, key)?}))
+            }
+            _ => {
+                only_fields(params, &["key", "value"], "storage.set")?;
+                let value = params.get("value").cloned().ok_or_else(|| {
+                    CtlError::new(
+                        code::BAD_PARAMS,
+                        "value is required (with a key, null removes it)",
+                    )
+                })?;
+                hub.storage().set(&plugin, key, value)?;
+                Ok(json!({}))
+            }
+        }
+    }
+
     /// The mods hub (stage 8).
     pub fn with_mods(mut self, hub: Arc<Hub>) -> Self {
         self.mods = Some(hub);
@@ -1204,6 +1349,20 @@ fn read_page(real: &str) -> Result<String, CtlError> {
     Ok(text)
 }
 
+/// `bad_params` for a field the method does not take.
+fn only_fields(params: &Value, allowed: &[&str], method: &str) -> Result<(), CtlError> {
+    match params
+        .as_object()
+        .and_then(|o| o.keys().find(|k| !allowed.contains(&k.as_str())))
+    {
+        Some(k) => Err(CtlError::new(
+            code::BAD_PARAMS,
+            format!("{k} is not a field of {method}"),
+        )),
+        None => Ok(()),
+    }
+}
+
 fn str_param<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>, CtlError> {
     match params.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1471,6 +1630,10 @@ impl Dispatcher for AppDispatcher {
                 Method::ToolsRespond,
                 Method::SidebarSet,
                 Method::ActionsSet,
+                Method::SessionRead,
+                Method::TabsInput,
+                Method::StorageGet,
+                Method::StorageSet,
             ]);
         }
         all
@@ -1635,6 +1798,9 @@ impl Dispatcher for AppDispatcher {
             | Method::TabsProgressClear => self.decor_call(ctx, method, &params),
             Method::SidebarSet => self.sidebar_set(ctx, &params),
             Method::ActionsSet => self.actions_set(ctx, &params),
+            Method::SessionRead => self.session_read(ctx, &params),
+            Method::TabsInput => self.tabs_input(ctx, &params),
+            Method::StorageGet | Method::StorageSet => self.storage_call(ctx, method, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),
@@ -2219,6 +2385,7 @@ mod tests {
             Grant::Mod {
                 id: "todo".into(),
                 permissions: vec![Permission::Decorate],
+                plugin: true,
             },
         );
         d.call(
@@ -2422,6 +2589,7 @@ mod tests {
             Grant::Mod {
                 id: "todo".into(),
                 permissions: vec![Permission::Decorate],
+                plugin: true,
             },
         );
         d.call(&m, Method::TabsBadgeClear, json!({"key": "a"}))
@@ -2434,6 +2602,7 @@ mod tests {
             Grant::Mod {
                 id: "badger".into(),
                 permissions: perms.to_vec(),
+                plugin: true,
             },
         )
     }
@@ -2842,6 +3011,7 @@ mod tests {
                 Grant::Mod {
                     id: "m".into(),
                     permissions: p,
+                    plugin: true,
                 },
             )
         };
@@ -3320,6 +3490,7 @@ mod tests {
             Grant::Mod {
                 id: "m".into(),
                 permissions: vec![Permission::Panel, Permission::View],
+                plugin: true,
             },
         );
         for kind in ["web", "changes", "tasks", "mod:other"] {

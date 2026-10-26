@@ -34,6 +34,14 @@ pub struct CursorStop {
 /// The most stops kept between two frames.
 const STOPS_KEPT: usize = 64;
 
+/// What a plugin that holds `input` may write into a shell (rule 2): a typed intent, never raw bytes. A paste goes
+/// the way the person's paste goes; an Enter is the carriage return that sends what was pasted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginInput<'a> {
+    Paste(&'a str),
+    Enter,
+}
+
 fn epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -497,6 +505,30 @@ impl TermHandle {
         self.sh.snap_to_bottom();
         self.sh.mgr.write(&self.sh.id, &bytes);
         self.sh.mark_typed();
+    }
+
+    /// A plugin's typing (plugins phase 5, rule 2's plugin exception): the one way a caller outside Flare's own
+    /// interface writes into a shell. Only the app's `tabs.input` path calls it, for a plugin that holds `input` the
+    /// person approved, on a tab the plugin may see; the agent has no way here (rule 188). A paste is sanitised again
+    /// and goes as the person's paste does (bracketed when the program asked); an Enter is one carriage return. False
+    /// when there was nothing to write.
+    pub fn plugin_input(&self, input: PluginInput<'_>) -> bool {
+        match input {
+            PluginInput::Paste(text) => {
+                let text = flare_shells::paste::sanitize_paste(text);
+                if text.is_empty() {
+                    return false;
+                }
+                self.paste(&text);
+            }
+            PluginInput::Enter => {
+                self.sh.finish_reveal();
+                self.sh.snap_to_bottom();
+                self.sh.mgr.write(&self.sh.id, b"\r");
+                self.sh.mark_typed();
+            }
+        }
+        true
     }
 
     /// A report the program asked for (a mouse report): written as is. Not typing, no snap (D11).

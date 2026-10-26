@@ -23,6 +23,7 @@
 //! - `bridge`: the `window.flare` script the host injects, and the messages between the page and the host.
 //! - `hub`: everything the app knows about mods behind one lock (discovery, switches, tokens, the tool table
 //!   and the calls waiting on a mod's page), still with no window and no browser.
+//! - `storage`: each plugin's own small JSON store (`storage.get`, `storage.set`), written atomically on a worker.
 //!
 //! Every disk call here runs on the caller's thread, which is a worker in the app (rule 34). The
 //! store and the scan never touch the UI thread.
@@ -37,6 +38,7 @@ pub mod manifest;
 pub mod migrate;
 pub mod paths;
 pub mod serve;
+pub mod storage;
 pub mod tokens;
 pub mod tools;
 

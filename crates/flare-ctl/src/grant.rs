@@ -2,7 +2,8 @@
 //!
 //! Three kinds. The **agent** grant is what a caller with no token gets (Claude Code through
 //! `flare-mcp`): it can show content, drive its own tab's browser panel and put a badge or a progress
-//! chip on its own tab, and nothing else (rule S3). A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5).
+//! chip on its own tab, and nothing else (rule S3): it never types into a shell, reads a session or keeps a store.
+//! A **mod** grant is exactly the permissions its manifest declared and the user accepted (S5), plus its own store.
 //! The **ui** grant is the app's own code, called in-process; it is never issued over the pipe, so
 //! no token can mean ui.
 
@@ -32,9 +33,9 @@ pub enum Permission {
     Actions,
     /// The plugin's strip under a tab's terminal (`bar.*`).
     Bar,
-    /// Read the conversation of Claude sessions (`session.*`).
+    /// Read the conversation of Claude sessions (`session.*`, and the `session` event).
     Sessions,
-    /// Type into a tab's shell (`tabs.input`). Full control, and never the agent's.
+    /// Type into a tab's shell (`tabs.input`). Full control, and never the agent's (rules 2 and 188).
     Input,
     /// The plugin's pages may reach the internet. No method of its own: it changes the pages' policy.
     Network,
@@ -91,10 +92,12 @@ impl Permission {
 pub enum Grant {
     /// No token. `eval` is the user's switch for `browser.eval` (default off).
     Agent { eval: bool },
-    /// A mod's token: exactly these permissions.
+    /// A mod's token: exactly these permissions. `plugin` is true for a protocol 2 plugin, false for a protocol 1
+    /// mod, which keeps exactly what it had (no store).
     Mod {
         id: String,
         permissions: Vec<Permission>,
+        plugin: bool,
     },
     /// The app's own UI, in-process only.
     Ui,
@@ -173,13 +176,21 @@ impl Grant {
                 N::Tools => false,
                 // Listing and calling the mods' tools is the agent's job.
                 N::AgentTools => true,
-                // The plugin surfaces are a plugin's; typing into a shell is never the agent's (rules 2 and 188).
-                N::Sidebar | N::Actions | N::Bar | N::Session | N::Input => false,
+                // The plugin surfaces and a plugin's store are a plugin's; reading a session is not the agent's, and
+                // typing into a shell is never the agent's (rules 2 and 188).
+                N::Sidebar | N::Actions | N::Bar | N::Session | N::Input | N::Storage => false,
                 N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
             },
-            Grant::Mod { permissions, .. } => match ns {
+            Grant::Mod {
+                permissions,
+                plugin,
+                ..
+            } => match ns {
                 // A mod cannot call another mod's tools, or its own: only the agent calls tools.
                 N::AgentTools => false,
+                // A plugin's own store needs no permission: it holds only what the plugin put there. A protocol 1
+                // mod has none (the dispatcher checks that again, and keeps a plugin to its own store).
+                N::Storage => *plugin,
                 // Every other namespace is exactly its one permission.
                 _ => ns.permission().is_some_and(|p| permissions.contains(&p)),
             },
@@ -213,6 +224,15 @@ mod tests {
         Grant::Mod {
             id: "demo".into(),
             permissions: perms.to_vec(),
+            plugin: true,
+        }
+    }
+
+    fn v1_mod_with(perms: &[Permission]) -> Grant {
+        Grant::Mod {
+            id: "demo".into(),
+            permissions: perms.to_vec(),
+            plugin: false,
         }
     }
 
@@ -252,14 +272,20 @@ mod tests {
         assert!(Grant::Agent { eval: true }.may_call(Method::BrowserEval));
     }
 
+    /// Rules 2 and 188: the agent never types into a shell, by the app's own `shell.input` or by a plugin's
+    /// `tabs.input`; it changes no setting, turns on no mod, reads no session and keeps no plugin store.
     #[test]
     fn rule_s3_the_agent_cannot_type_into_shells_change_settings_or_enable_mods() {
         for g in [Grant::agent(), Grant::Agent { eval: true }] {
             for m in [
                 Method::ShellInput,
+                Method::TabsInput,
                 Method::SettingsSet,
                 Method::ModsEnable,
                 Method::ToolsRespond,
+                Method::SessionRead,
+                Method::StorageGet,
+                Method::StorageSet,
             ] {
                 let err = g.check(m).unwrap_err();
                 assert_eq!(err.code, code::FORBIDDEN, "{}", m.name());
@@ -303,21 +329,65 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_mod_can_only_hello_and_list() {
+    fn an_empty_mod_can_only_hello_list_and_keep_its_own_store() {
         let g = mod_with(&[]);
         for m in Method::ALL {
-            let open = matches!(m, Method::Hello | Method::TabsList);
+            let open = matches!(
+                m,
+                Method::Hello | Method::TabsList | Method::StorageGet | Method::StorageSet
+            );
             assert_eq!(g.may_call(m), open, "{}", m.name());
         }
     }
 
-    /// The rule plugins keep: a caller with no permission reaches `hello` and its own-tab `tabs.list`, and no
-    /// method of any other namespace, the new decor ones included.
+    /// A protocol 1 mod keeps exactly what it had: the same methods as a plugin with the same permissions, less the
+    /// store, so its `hello` lists no `storage.*` method it would only be refused.
     #[test]
-    fn a_grant_with_no_permission_may_call_only_hello_and_tabs_list() {
+    fn a_protocol_1_mod_has_no_store_and_otherwise_what_a_plugin_has() {
+        let all = Permission::ALL;
+        for perms in [&[][..], &[P::View, P::Tools][..], &all[..]] {
+            let v1 = v1_mod_with(perms);
+            let v2 = mod_with(perms);
+            assert!(!v1.may_enter(Namespace::Storage));
+            for m in Method::ALL {
+                let want = v2.may_call(m) && m.namespace() != Namespace::Storage;
+                assert_eq!(v1.may_call(m), want, "{}", m.name());
+            }
+            for m in [Method::StorageGet, Method::StorageSet] {
+                assert_eq!(v1.check(m).unwrap_err().code, code::FORBIDDEN);
+            }
+        }
+        let empty: Vec<Method> = Method::ALL
+            .into_iter()
+            .filter(|m| v1_mod_with(&[]).may_call(*m))
+            .collect();
+        assert_eq!(empty, [Method::Hello, Method::TabsList]);
+    }
+
+    /// The rule plugins keep: a caller with no permission reaches `hello`, its own-tab `tabs.list` and its own
+    /// store (which holds only what it put there), and no method of any other namespace, the decor, session and
+    /// input ones included.
+    #[test]
+    fn a_grant_with_no_permission_may_call_only_hello_tabs_list_and_its_own_store() {
         let g = mod_with(&[]);
         let open: Vec<Method> = Method::ALL.into_iter().filter(|m| g.may_call(*m)).collect();
-        assert_eq!(open, [Method::Hello, Method::TabsList]);
+        assert_eq!(
+            open,
+            [
+                Method::Hello,
+                Method::TabsList,
+                Method::StorageGet,
+                Method::StorageSet
+            ]
+        );
+        for m in [Method::SessionRead, Method::TabsInput] {
+            assert_eq!(
+                g.check(m).unwrap_err().code,
+                code::FORBIDDEN,
+                "{}",
+                m.name()
+            );
+        }
         for m in Method::ALL {
             if m.namespace() == Namespace::Decor {
                 assert_eq!(
@@ -336,7 +406,7 @@ mod tests {
         for m in Method::ALL {
             let want = matches!(
                 m.namespace(),
-                Namespace::Hello | Namespace::Tabs | Namespace::Decor
+                Namespace::Hello | Namespace::Tabs | Namespace::Decor | Namespace::Storage
             );
             assert_eq!(g.may_call(m), want, "{}", m.name());
         }
@@ -419,6 +489,8 @@ mod tests {
             mod_with(&[P::View, P::Convo]),
             mod_with(&[P::Decorate]),
             mod_with(&all),
+            v1_mod_with(&[]),
+            v1_mod_with(&all),
             Grant::Ui,
         ];
         for g in grants {
@@ -438,6 +510,17 @@ mod tests {
                     Namespace::Bar => "bar",
                     Namespace::Session => "sessions",
                     Namespace::Input => "input",
+                    // Every plugin keeps its own store and the app reaches it; a protocol 1 mod and the agent never do.
+                    Namespace::Storage => {
+                        assert_eq!(
+                            g.may_call(m),
+                            matches!(g, Grant::Mod { plugin: true, .. } | Grant::Ui),
+                            "{} {}",
+                            g.kind(),
+                            m.name()
+                        );
+                        continue;
+                    }
                     // The agent and the app call mod tools; no permission name stands for it.
                     Namespace::AgentTools => {
                         assert_eq!(
@@ -470,7 +553,7 @@ mod tests {
             for p in Permission::ALL {
                 let g = mod_with(&[p]);
                 let want = match ns {
-                    Namespace::Hello | Namespace::Tabs => true,
+                    Namespace::Hello | Namespace::Tabs | Namespace::Storage => true,
                     Namespace::AgentTools | Namespace::Ui => false,
                     _ => ns.permission() == Some(p),
                 };
@@ -485,6 +568,7 @@ mod tests {
             }
         }
         assert_eq!(Namespace::Tabs.permission(), None);
+        assert_eq!(Namespace::Storage.permission(), None);
         assert_eq!(Namespace::Input.permission(), Some(P::Input));
         assert_eq!(Namespace::Session.permission(), Some(P::Sessions));
         assert_eq!(Namespace::Sidebar.permission(), Some(P::Sidebar));
@@ -502,7 +586,10 @@ mod tests {
             for m in Method::ALL {
                 assert_eq!(
                     g.may_call(m),
-                    matches!(m, Method::Hello | Method::TabsList),
+                    matches!(
+                        m,
+                        Method::Hello | Method::TabsList | Method::StorageGet | Method::StorageSet
+                    ),
                     "{} with {}",
                     m.name(),
                     p.name()
@@ -513,7 +600,7 @@ mod tests {
     }
 
     /// With every permission a plugin can hold, nothing of the app's own or of the agent's tools opens; with none,
-    /// a plugin reaches only `hello` and `tabs.list` in every namespace there is.
+    /// a plugin reaches only `hello`, `tabs.list` and its own store in every namespace there is.
     #[test]
     fn the_widest_plugin_still_cannot_reach_the_ui_or_the_agents_tools() {
         let all = mod_with(&Permission::ALL);
@@ -524,13 +611,14 @@ mod tests {
         for ns in Namespace::ALL {
             assert_eq!(
                 none.may_enter(ns),
-                matches!(ns, Namespace::Hello | Namespace::Tabs),
+                matches!(ns, Namespace::Hello | Namespace::Tabs | Namespace::Storage),
                 "{ns:?}"
             );
         }
     }
 
-    /// The agent never gets a plugin surface, and never types into a shell (rules 2 and 188).
+    /// The agent never gets a plugin surface or a plugin's store, never reads a session and never types into a
+    /// shell (rules 2 and 188).
     #[test]
     fn the_agent_enters_no_plugin_namespace() {
         for g in [Grant::agent(), Grant::Agent { eval: true }] {
@@ -540,6 +628,7 @@ mod tests {
                 Namespace::Bar,
                 Namespace::Session,
                 Namespace::Input,
+                Namespace::Storage,
             ] {
                 assert!(!g.may_enter(ns), "{ns:?}");
             }

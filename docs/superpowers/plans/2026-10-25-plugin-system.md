@@ -110,6 +110,16 @@ a non-id folder left alone, nothing moved twice), discovery from `plugins\` only
 3. `storage.get/set` per plugin (1 MB JSON, atomic, off the UI thread).
 4. Tests: follower start and stop with listeners, event shape, input path, storage limits.
 
+Built 2026-10-26, with these calls by the builder (the owner may overrule):
+- Session text is cut at 2000 characters (design 6 says 16 KB): a plugin reads a session, it does not mirror it, and
+  50 events a second of 16 KB is 800 KB a second through the page bridge. `session.read` reads the transcript's last
+  4 MB. Tool results, thinking, `isMeta` notes and subagent lines are not entries.
+- `storage.*` needs no permission (design 7) and so a plugin with none reaches `hello`, own-tab `tabs.list` and its own
+  store; design 13's exhaustive test now pins those four methods. It is kept to protocol 2 plugins (a protocol 1 mod
+  keeps exactly what it had) and closed to the agent. The file is `<profile>\plugins-storage\<id>.json`.
+- `tabs.input` lets a tab and line breaks through (design 7 said a tab only): a newline goes as a paste carries it,
+  which is rule 1's set. Its Enter is written 300 ms after the paste (the checked send's wait), checked again then.
+
 ## Phase 6: session bar, network, audio
 
 1. Bar slot under a tab's terminal: `bar.show/hide`, height from the manifest, terminal reflows, one per tab, `busy`.

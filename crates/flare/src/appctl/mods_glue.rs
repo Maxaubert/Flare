@@ -290,6 +290,12 @@ impl AppCtl {
                 self.settings_changed();
             }
             ModsMsg::ShowPanel { id } => self.show_mod_in_recent_tab(&id),
+            ModsMsg::Said { tab, session, said } => self.on_said(&tab, &session, said),
+            ModsMsg::Enter {
+                plugin,
+                tab,
+                generation,
+            } => self.plugin_enter(&plugin, &tab, generation),
         }
     }
 
@@ -351,6 +357,7 @@ impl AppCtl {
         self.stop_background(id);
         self.clear_plugin_decor(id);
         self.clear_plugin_surfaces(id);
+        self.sessions_plugin_off(id);
     }
 
     /// Everything the plugin put on any tab goes. True when a tab lost something it showed.
@@ -561,8 +568,10 @@ impl AppCtl {
     }
 
     /// What changed on the tabs since the plugins last heard goes to the pages that listen (after each refresh).
-    /// Nothing is looked at while no page listens to `tabs` or `agent`.
+    /// Nothing is looked at while no page listens to `tabs` or `agent`. The sessions followed for `session` are
+    /// brought in line too (a tab opened, closed, or its Claude session changed).
     pub(super) fn plugin_events(&mut self) {
+        self.sync_session_followers();
         if !self
             .mods
             .as_ref()
@@ -648,8 +657,14 @@ impl AppCtl {
         }
     }
 
-    /// What the browser told the window about a mod's page.
+    /// What the browser told the window about a mod's page. A page that began to listen to `session`, or stopped (it
+    /// loaded again, it ended), changes which sessions are followed.
     pub(super) fn on_mod_web(&mut self, out: WebOut) {
+        self.on_mod_web_out(out);
+        self.sync_session_followers();
+    }
+
+    fn on_mod_web_out(&mut self, out: WebOut) {
         match out {
             WebOut::BgMessage { plugin, json } => {
                 let slot = Slot::background(&plugin);
@@ -989,6 +1004,7 @@ impl AppCtl {
             })).collect::<Vec<_>>(),
             "dropped": m.dropped,
             "safe_mode": s.safe_mode,
+            "followed": self.followed_sessions(),
         })
     }
 }

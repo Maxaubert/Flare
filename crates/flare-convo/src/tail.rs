@@ -1,7 +1,8 @@
 //! Tails a transcript that is still being written.
 //!
 //! `Tail` is a plain struct: `poll` reads at most `MAX_READ` bytes from its offset and returns the complete lines in
-//! them. A partial last line waits for its newline. A line longer than `MAX_LINE` is skipped and counted. A file that
+//! them (`skip_to_end` starts it at the end of the file instead, for a reader that wants only what comes next). A
+//! partial last line waits for its newline. A line longer than `MAX_LINE` is skipped and counted. A file that
 //! got shorter than the offset, whose file index changed (a replacement), or whose last `GUARD` bytes before the offset
 //! changed (a rewrite in place that ends longer), restarts from byte 0 and says so.
 //!
@@ -64,6 +65,8 @@ pub struct Tail {
     partial: Vec<u8>,
     /// Inside a line too long to keep: bytes are dropped until its newline.
     skipping: bool,
+    /// The line being dropped is the tail of one cut by `skip_to_end`, not a long one: it is not counted.
+    resync: bool,
     skipped_long: u64,
 }
 
@@ -76,8 +79,41 @@ impl Tail {
             guard: Vec::new(),
             partial: Vec::new(),
             skipping: false,
+            resync: false,
             skipped_long: 0,
         }
+    }
+
+    /// Moves the offset to the end of the file as it is now, so only what is written from here on is read. A last
+    /// line that has no newline yet is dropped up to its newline (it began before the offset). A missing file leaves
+    /// the offset at 0: everything written to it once it exists is new. Runs on a worker.
+    pub fn skip_to_end(&mut self) -> std::io::Result<()> {
+        self.restart();
+        let opened = File::open(&self.path); // sync-ok: runs on the reader's worker
+        let mut file = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                self.file_key = None;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let len = file.metadata()?.len(); // sync-ok: runs on the reader's worker
+        self.file_key = file_key(&file);
+        if len == 0 {
+            return Ok(());
+        }
+        let start = len.saturating_sub(GUARD as u64);
+        file.seek(SeekFrom::Start(start))?; // sync-ok: runs on the reader's worker
+        let mut last = vec![0u8; usize::try_from(len - start).unwrap_or(GUARD)];
+        file.read_exact(&mut last)?; // sync-ok: runs on the reader's worker
+        self.offset = len;
+        if last.last() != Some(&b'\n') {
+            self.skipping = true;
+            self.resync = true;
+        }
+        self.guard = last;
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -153,6 +189,7 @@ impl Tail {
         self.guard.clear();
         self.partial.clear();
         self.skipping = false;
+        self.resync = false;
     }
 
     /// Splits a chunk into lines; the bytes after its last newline stay in `partial`.
@@ -182,7 +219,9 @@ impl Tail {
     fn finish_line(&mut self) -> Option<String> {
         if self.skipping {
             self.skipping = false;
-            self.skipped_long += 1;
+            if !std::mem::take(&mut self.resync) {
+                self.skipped_long += 1;
+            }
             return None;
         }
         let mut line = std::mem::take(&mut self.partial);

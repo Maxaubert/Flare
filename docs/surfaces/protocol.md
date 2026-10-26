@@ -15,7 +15,8 @@ implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks
 `tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
 list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
-`tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+`tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope;
+plugins phase 5 adds `session.read`, `tabs.input`, `storage.get` and `storage.set`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -200,13 +201,16 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
 | `sidebar.set` | no | `sidebar` | yes |
 | `actions.set` | no | `actions` | yes |
+| `session.read` | **no** | `sessions` | yes |
+| `tabs.input` | **no** (rules 2 and 188) | `input` (a `mod.json` cannot ask for it) | yes |
+| `storage.get`, `storage.set` | **no** | (always, a protocol 2 plugin's own store; a protocol 1 mod is refused by the dispatcher) | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
 
 **Rule S3** is the last row and the `agent` column: the agent can show content and drive its panel
-browser. It cannot type into a shell, change settings, enable mods, answer as a mod, or read other
-tabs' screens. The three methods in the last row are reserved names that exist only so the grant table
+browser. It cannot type into a shell (neither `shell.input` nor a plugin's `tabs.input`), change settings, enable
+mods, answer as a mod, read a session's conversation, keep a plugin's store, or read other tabs' screens. The three methods in the last row are reserved names that exist only so the grant table
 can pin their refusal: nothing over the pipe reaches them, whatever token or permission is held, and
 the in-process UI path does not use the channel for them at all in v1.
 
@@ -316,6 +320,28 @@ Limits: `sidebar.set` 5 a second per section, `actions.set` 20 a second per plug
 `bad_params` (an undeclared key, a field that is not one, a text too long or not clean, a list too long), `forbidden`
 (a tab the plugin may not see), `no_tab` (`actions.set` on a closed tab), `rate_limited`, `unauthorized`. The clicks come
 back as the page events `action` and `sidebar.item` (`mods.md`), not as channel events.
+
+### session.read, tabs.input, storage.get, storage.set (plugins phase 5)
+
+Namespaces `Session` (permission `sessions`), `Input` (`input`) and `Storage` (no permission: every protocol 2 plugin's
+own store). The agent enters none of them; the dispatcher also refuses any caller that is not a plugin. Listed in
+`capabilities` when the run has a mods hub. The contract and the `session` page event are in `mods.md` ("Sessions,
+typing and storage").
+
+| Method | Params | Result |
+|---|---|---|
+| `session.read` | `tab` (optional: a tab the plugin may see; absent is the caller's own) | `{tab, session, entries}`: the last 200 entries `{role, text, tool?, at?}` of the tab's Claude session, oldest first; `session` null and no entries when none is known |
+| `tabs.input` | `tab` (optional, as above), `text` (1 to 4096 bytes; no control character but tab, LF and CR), `enter` (optional bool) | `{typed: true, enter}` once the paste is written; the Enter follows 300 ms later while the tab is open and the plugin on |
+| `storage.get` | `key` (optional, 1 to 128 characters, no control character) | `{value}`: the key's value (null when absent) or the whole object |
+| `storage.set` | `key` (optional), `value` (required; with a key, null removes it; with none, the whole object) | `{}` |
+
+Limits: `session.read` once a second per tab per plugin, `tabs.input` 2 a second per tab (`rate_limited`); a store is
+at most 1 MB as written (`too_large`, nothing changed). `tabs.input` is the typed intent of rule 2's plugin exception:
+the window types the text as the person's paste (`TermHandle::plugin_input`), bracketed when the program asked, and
+checks the tab, the plugin's generation and its `input` again before the paste and before the Enter. Errors:
+`bad_params` (a field that is not one, a text refused, a bad key), `forbidden` (no permission, a tab the plugin may not
+see, the agent, a protocol 1 mod's store), `no_tab`, `rate_limited`, `too_large`, `unauthorized` (switched off since
+the call was checked), `unavailable` (the tab's shell is not running, a transcript that cannot be read).
 
 ### panel.open
 
@@ -634,7 +660,8 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
 | `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, or a plugin's 50 messages and 2 MB a second) | no |
+| `too_large` (a call) | a plugin's `storage.set` would pass 1 MB (plugins phase 5); nothing changed | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, `session.read`'s once a second per tab, `tabs.input`'s 2 a second per tab, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be

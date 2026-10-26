@@ -27,6 +27,14 @@ pub enum Method {
     SidebarSet,
     /// The state of one of a plugin's actions, on one tab or on every tab (plugins phase 4).
     ActionsSet,
+    /// The last entries of a Claude session's conversation in a tab (plugins phase 5), under `sessions`.
+    SessionRead,
+    /// Text typed into a tab's shell as one paste, and an Enter after it when asked (plugins phase 5), under `input`.
+    /// The only way a caller outside Flare's own interface writes into a shell (rule 2's plugin exception).
+    TabsInput,
+    /// A plugin's own small store (plugins phase 5): what it keeps, read back. No permission, never the agent's.
+    StorageGet,
+    StorageSet,
     PanelOpen,
     PanelClose,
     PanelState,
@@ -91,11 +99,14 @@ pub enum Namespace {
     /// Typing into a tab's shell (`tabs.input`), under `input`. Its own namespace, so it never rides on the open
     /// `Tabs` one.
     Input,
+    /// A plugin's own store (`storage.get`, `storage.set`): every plugin's, with no permission, and never the agent's
+    /// (design 13). It holds only what the plugin put there.
+    Storage,
 }
 
 impl Namespace {
     /// Every namespace.
-    pub const ALL: [Namespace; 15] = [
+    pub const ALL: [Namespace; 16] = [
         Namespace::Hello,
         Namespace::Tabs,
         Namespace::Decor,
@@ -111,13 +122,19 @@ impl Namespace {
         Namespace::Bar,
         Namespace::Session,
         Namespace::Input,
+        Namespace::Storage,
     ];
 
-    /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`),
-    /// for the agent's tools and for the app's own: no permission reaches those.
+    /// The one permission that opens this namespace to a plugin. `None` for the open ones (`hello`, `tabs.list`), for a
+    /// plugin's own store (every plugin's, see `Grant::may_enter`), for the agent's tools and for the app's own: no
+    /// permission reaches those.
     pub fn permission(self) -> Option<Permission> {
         match self {
-            Namespace::Hello | Namespace::Tabs | Namespace::AgentTools | Namespace::Ui => None,
+            Namespace::Hello
+            | Namespace::Tabs
+            | Namespace::AgentTools
+            | Namespace::Ui
+            | Namespace::Storage => None,
             Namespace::Decor => Some(Permission::Decorate),
             Namespace::Panel => Some(Permission::Panel),
             Namespace::View => Some(Permission::View),
@@ -135,7 +152,7 @@ impl Namespace {
 
 impl Method {
     /// Every method, in documentation order.
-    pub const ALL: [Method; 32] = [
+    pub const ALL: [Method; 36] = [
         Method::Hello,
         Method::TabsList,
         Method::TabsBadgeSet,
@@ -144,6 +161,10 @@ impl Method {
         Method::TabsProgressClear,
         Method::SidebarSet,
         Method::ActionsSet,
+        Method::SessionRead,
+        Method::TabsInput,
+        Method::StorageGet,
+        Method::StorageSet,
         Method::PanelOpen,
         Method::PanelClose,
         Method::PanelState,
@@ -181,6 +202,10 @@ impl Method {
             Method::TabsProgressClear => "tabs.progress.clear",
             Method::SidebarSet => "sidebar.set",
             Method::ActionsSet => "actions.set",
+            Method::SessionRead => "session.read",
+            Method::TabsInput => "tabs.input",
+            Method::StorageGet => "storage.get",
+            Method::StorageSet => "storage.set",
             Method::PanelOpen => "panel.open",
             Method::PanelClose => "panel.close",
             Method::PanelState => "panel.state",
@@ -223,6 +248,9 @@ impl Method {
             | Method::TabsProgressClear => Namespace::Decor,
             Method::SidebarSet => Namespace::Sidebar,
             Method::ActionsSet => Namespace::Actions,
+            Method::SessionRead => Namespace::Session,
+            Method::TabsInput => Namespace::Input,
+            Method::StorageGet | Method::StorageSet => Namespace::Storage,
             Method::PanelOpen | Method::PanelClose | Method::PanelState => Namespace::Panel,
             Method::ViewImage
             | Method::ViewFile
@@ -296,6 +324,7 @@ mod tests {
                 Namespace::Bar => prefix == "bar",
                 Namespace::Session => prefix == "session",
                 Namespace::Input => prefix == "tabs",
+                Namespace::Storage => prefix == "storage",
             };
             assert!(ok, "{} is filed under the wrong namespace", m.name());
         }
