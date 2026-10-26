@@ -14,6 +14,7 @@ pub mod indicator;
 pub mod keys;
 pub mod kinds;
 pub mod mark_motion;
+pub mod osc7501;
 pub mod plugin;
 pub mod poll;
 pub mod question;

@@ -17,6 +17,7 @@ use flare_agent::badge::{Attention, AttentionIn, attention_count};
 use flare_agent::detect::ProcRow;
 use flare_agent::indicator::{Effect, Event, Indicator, Screen};
 use flare_agent::kinds::{AgentKind, DetectedAgent};
+use flare_agent::osc7501::parse_program_status;
 use flare_agent::poll::{AGENT_POLL_MIN, AgentSend, PollDeps, PollHandle, PollWorker};
 use flare_agent::question_watch::{QuestionWatch, RowSource};
 use flare_agent::question_widget::ShownQuestion;
@@ -141,6 +142,7 @@ fn kind_word(k: DetectedAgent) -> String {
     match k {
         DetectedAgent::Claude => "claude",
         DetectedAgent::Codex => "codex",
+        DetectedAgent::Agy => "agy",
         DetectedAgent::Other => "other",
     }
     .to_string()
@@ -459,6 +461,17 @@ impl AgentHub {
                         );
                     }
                 }
+                HostEvent::Osc7501 { id, data } => {
+                    if let Some(status) = parse_program_status(data) {
+                        self.ind_handle(
+                            now,
+                            Event::Status {
+                                tab: id.clone(),
+                                status,
+                            },
+                        );
+                    }
+                }
                 HostEvent::Cwd { id, path } => {
                     self.folders.insert(id.clone(), path.clone());
                     self.ind.activity.mark_prompt(id, now);
@@ -575,10 +588,8 @@ impl AgentHub {
                     .unwrap_or(tab)
                     .to_string();
                 let agent = self.ind.agent_kind(tab).map(kind_word).or_else(|| {
-                    flare_agent::keys::AgentView::armed(&self.arms, tab).map(|k| match k {
-                        AgentKind::Claude => "claude".to_string(),
-                        AgentKind::Codex => "codex".to_string(),
-                    })
+                    flare_agent::keys::AgentView::armed(&self.arms, tab)
+                        .map(|k| k.as_str().to_string())
                 });
                 let state = tab_state(&self.ind, tab);
                 SendTab {
@@ -728,10 +739,13 @@ impl AgentHub {
         self.ind.agent_kind(tab).and_then(DetectedAgent::resumable)
     }
 
-    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not Codex.
-    /// Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
+    /// The Claude session the tab's agent is in, when the hooks (or a resume) named one and the tab's agent is not
+    /// Codex or agy. Only Claude's `flare-status` hooks carry a session, so a session here is Claude's. Gone with the agent.
     pub fn claude_session(&self, tab: &str) -> Option<&str> {
-        if self.ind.agent_kind(tab) == Some(DetectedAgent::Codex) {
+        if matches!(
+            self.ind.agent_kind(tab),
+            Some(DetectedAgent::Codex | DetectedAgent::Agy)
+        ) {
             return None;
         }
         self.sessions.get(tab).map(String::as_str)
@@ -836,6 +850,7 @@ fn event_tab(ev: &HostEvent) -> Option<&str> {
         | HostEvent::Bell { id }
         | HostEvent::ClipboardWrite { id, .. }
         | HostEvent::Osc777 { id, .. }
+        | HostEvent::Osc7501 { id, .. }
         | HostEvent::Output { id }
         | HostEvent::Typed { id }
         | HostEvent::AnswerKey { id, .. }
@@ -1206,6 +1221,30 @@ mod tests {
         r.print("b", b"\x1b]777;notify;Build;done\x07");
         assert!(!r.hub.agent_here("b"));
         assert!(r.hub.indicator().done_ids().len() == 1);
+    }
+
+    #[test]
+    fn an_agy_tab_is_marked_from_its_osc_7501_reports() {
+        let mut r = Rig::new();
+        r.open("a", None);
+        r.open("b", None);
+        r.hub.set_looking(Some("b"), true);
+        r.hub.queue_poll_answer("a", true, Some(DetectedAgent::Agy));
+        r.hub.drain_poll();
+        assert_eq!(r.hub.saved_agent("a"), Some(AgentKind::Agy));
+        r.print("a", b"\x1b]7501;state=working:app=agy\x1b\\");
+        r.pump_until("a working", |h| h.working("a"));
+        r.print("a", b"\x1b]7501;app=agy:kind=permission:state=blocked\x07");
+        r.pump_until("a asking", |h| h.question_tabs() == ["a"]);
+        r.print("a", b"\x1b]7501;state=done:app=agy\x1b\\");
+        r.pump_until("a done", |h| h.indicator().done_ids().contains("a"));
+        assert!(r.hub.question_tabs().is_empty());
+        assert_eq!(tab_of(&r.hub, "a").agent.as_deref(), Some("agy"));
+        assert_eq!(r.hub.claude_session("a"), None);
+        // A plain shell that reports lights nothing until something finds an agent there.
+        r.print("b", b"\x1b]7501;state=working:app=cargo\x1b\\");
+        r.advance(50);
+        assert!(!r.hub.agent_here("b"));
     }
 
     const SID: &str = "b44e954e-a9cf-4ba9-a3c0-99ec6795d1d9";

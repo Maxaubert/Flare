@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 regex.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 log.workspace = true
 windows-sys.workspace = true
 flare-win = { path = "../flare-win" }

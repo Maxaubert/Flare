@@ -213,7 +213,7 @@ export component TabStrip inherits Rectangle {
             AgentIcon {
                 x: 10px;
                 y: (parent.height - 18px) / 2;
-                kind: row.settings ? 3 : row.agent;
+                kind: row.settings ? 4 : row.agent;
                 ink: tab.ink;
             }
             Text {
@@ -277,7 +277,7 @@ export component TabStrip inherits Rectangle {
             AgentIcon {
                 x: (parent.width - 18px) / 2;
                 y: (parent.height - 18px) / 2;
-                kind: row.settings ? 3 : row.agent;
+                kind: row.settings ? 4 : row.agent;
                 ink: tab.ink;
             }
             if row.mark-kind == 1 : Rectangle {

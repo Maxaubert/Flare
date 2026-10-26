@@ -19,6 +19,9 @@ pub const CTL_PID_VAR: &str = "FLARE_CTL_PID";
 pub const MCP_EXE_VAR: &str = "FLARE_MCP_EXE";
 /// The Claude Code plugin folder list (`;`-separated).
 pub const PLUGIN_DIRS_VAR: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+/// agy's switch for its OSC 7501 status reports. agy asks the terminal first (`OSC 7501 ; ?`); Flare
+/// sets the switch instead of answering, so every shell gets it `on` unless the user set it already.
+pub const AGY_STATUS_VAR: &str = "AGY_CLI_OSC7501";
 /// Variables that name another session; a shell in a Flare tab never inherits them.
 pub const SESSION_MARKERS: [&str; 12] = [
     "CLAUDECODE",
@@ -129,6 +132,9 @@ pub fn pty_env(
     }
     out.push(("TERM".to_string(), "xterm-256color".to_string()));
     out.push(("COLORTERM".to_string(), "truecolor".to_string()));
+    if !env_has(&out, AGY_STATUS_VAR) {
+        out.push((AGY_STATUS_VAR.to_string(), "on".to_string()));
+    }
     if let Some(token) = tab_token {
         out.push((TAB_ID_VAR.to_string(), token.to_string()));
     }
@@ -281,6 +287,22 @@ mod tests {
         let r = pty_env(&[], Some("pwsh"), None, None, None, Some(&c));
         assert!(env_has(&r, TAB_TOKEN_VAR) && env_has(&r, CTL_PIPE_VAR));
         assert!(!env_has(&r, MCP_EXE_VAR));
+    }
+
+    #[test]
+    fn turns_agys_status_reports_on_unless_the_user_chose() {
+        let r = pty_env(&[], Some("pwsh"), None, None, None, None);
+        assert_eq!(get(&r, AGY_STATUS_VAR), Some("on"));
+        let r = pty_env(
+            &e(&[("agy_cli_osc7501", "off")]),
+            Some("cmd"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(get(&r, AGY_STATUS_VAR), Some("off"));
+        assert_eq!(count_upper(&r, AGY_STATUS_VAR), 1);
     }
 
     #[test]

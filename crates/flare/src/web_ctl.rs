@@ -262,6 +262,7 @@ pub fn agent_label(k: flare_agent::kinds::DetectedAgent) -> String {
     match k {
         D::Claude => "Claude",
         D::Codex => "Codex",
+        D::Agy => "Antigravity",
         D::Other => "An agent",
     }
     .to_string()
@@ -2963,6 +2964,10 @@ mod tests {
             "Codex is using this page"
         );
         assert_eq!(
+            ribbon_words(&agent_label(D::Agy)),
+            "Antigravity is using this page"
+        );
+        assert_eq!(
             ribbon_words(&agent_label(D::Other)),
             "An agent is using this page"
         );
@@ -2973,6 +2978,7 @@ mod tests {
         use flare_agent::kinds::DetectedAgent as D;
         assert_eq!(cursor_tag(&agent_label(D::Claude)), "Claude");
         assert_eq!(cursor_tag(&agent_label(D::Codex)), "Codex");
+        assert_eq!(cursor_tag(&agent_label(D::Agy)), "Antigravity");
         assert_eq!(cursor_tag(&agent_label(D::Other)), "Agent");
     }
 

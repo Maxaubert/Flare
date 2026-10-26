@@ -1,6 +1,6 @@
 //! Scanner (OSC and CSI > q).
 //!
-//! `alacritty_terminal` drops OSC 9, 52, the colour queries, 777 and `CSI > q` inside `vte`, and
+//! `alacritty_terminal` drops OSC 9, 52, the colour queries, 777, 7501 and `CSI > q` inside `vte`, and
 //! Flare needs them. The scanner runs over every chunk before `vte`, never alters the bytes, and
 //! reports where each sequence ended so the caller can feed `vte` up to that point, then act.
 

@@ -23,7 +23,7 @@ pub struct ProcRow {
 /// in its name never matches: the word must be a package scope, or a folder followed by the
 /// agent's entry file.
 const PACKAGE_PATTERN: &str = r#"(?i)@anthropic-ai[\\/]claude-code|@openai[\\/]codex|@google[\\/]gemini-cli|(?:^|[\\/"\s])(claude-code|gemini-cli)[\\/](?:cli\.[cm]?js|bin[\\/]|dist[\\/])"#;
-const PREFILTER_PATTERN: &str = r"(?i)claude|codex|aider|gemini";
+const PREFILTER_PATTERN: &str = r"(?i)claude|codex|aider|gemini|agy";
 
 static PACKAGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(PACKAGE_PATTERN).expect("PACKAGE_RE"));
@@ -110,6 +110,7 @@ fn agent_named(name: impl AsRef<str>) -> Option<DetectedAgent> {
     match name.as_ref() {
         "claude" => Some(DetectedAgent::Claude),
         "codex" => Some(DetectedAgent::Codex),
+        "agy" => Some(DetectedAgent::Agy),
         "aider" | "gemini" => Some(DetectedAgent::Other),
         _ => None,
     }
@@ -130,7 +131,7 @@ pub fn prefilter(cmd: &str) -> bool {
 }
 
 /// Which agent runs under `root_pid`, if any: Claude wins anywhere in the tree and returns at once;
-/// else Codex; else Other (an agent with nothing to resume). A seen-set survives pid cycles.
+/// else Codex; else agy; else Other (an agent with nothing to resume). A seen-set survives pid cycles.
 pub fn tree_agent_kind(rows: &[ProcRow], root_pid: u32) -> Option<DetectedAgent> {
     let mut kind: Option<DetectedAgent> = None;
     for_each_descendant(rows, root_pid, |child| match classify(&child.cmd) {
@@ -140,6 +141,12 @@ pub fn tree_agent_kind(rows: &[ProcRow], root_pid: u32) -> Option<DetectedAgent>
         }
         Some(DetectedAgent::Codex) => {
             kind = Some(DetectedAgent::Codex);
+            false
+        }
+        Some(DetectedAgent::Agy) => {
+            if kind != Some(DetectedAgent::Codex) {
+                kind = Some(DetectedAgent::Agy);
+            }
             false
         }
         Some(other) => {
@@ -252,6 +259,68 @@ mod tests {
             classify(r"pwsh -File C:\npm\codex.ps1"),
             Some(DetectedAgent::Codex)
         );
+    }
+
+    #[test]
+    fn agy_is_found_by_its_program_and_never_by_a_word() {
+        const AGY: &str = r#""C:\Users\Admin\AppData\Local\agy\bin\agy.exe""#;
+        for cmd in [
+            "agy",
+            "agy.exe",
+            "agy -c",
+            r#""agy.exe" --conversation 1b2c"#,
+            AGY,
+            r"C:/tools/agy.exe --model x",
+            r#"cmd.exe /c "C:\bin\agy.exe""#,
+        ] {
+            assert_eq!(classify(cmd), Some(DetectedAgent::Agy), "{cmd}");
+        }
+        for cmd in [
+            "legacy.exe",
+            "strategy",
+            r"node C:\src\legacy\agy\main.js",
+            r"git -C C:\src\agy status",
+            "notepad agy.txt",
+            "agyle.exe",
+        ] {
+            assert_eq!(classify(cmd), None, "{cmd}");
+        }
+        assert!(prefilter(AGY));
+        assert_eq!(
+            tree_agent_kind(&[row(70, 1, "pwsh.exe"), row(71, 70, AGY)], 70),
+            Some(DetectedAgent::Agy)
+        );
+    }
+
+    #[test]
+    fn claude_then_codex_win_over_agy_under_one_shell() {
+        let codex_first = [
+            row(80, 1, "pwsh.exe"),
+            row(81, 80, CODEX),
+            row(82, 80, "agy.exe"),
+        ];
+        assert_eq!(
+            tree_agent_kind(&codex_first, 80),
+            Some(DetectedAgent::Codex)
+        );
+        let agy_first = [
+            row(80, 1, "pwsh.exe"),
+            row(81, 80, "agy.exe"),
+            row(82, 80, CODEX),
+        ];
+        assert_eq!(tree_agent_kind(&agy_first, 80), Some(DetectedAgent::Codex));
+        let under_agy = [
+            row(80, 1, "pwsh.exe"),
+            row(81, 80, "agy.exe"),
+            row(82, 81, "claude"),
+        ];
+        assert_eq!(tree_agent_kind(&under_agy, 80), Some(DetectedAgent::Claude));
+        let beside_aider = [
+            row(80, 1, "pwsh.exe"),
+            row(81, 80, "aider"),
+            row(82, 80, "agy.exe"),
+        ];
+        assert_eq!(tree_agent_kind(&beside_aider, 80), Some(DetectedAgent::Agy));
     }
 
     #[test]
@@ -407,8 +476,10 @@ mod tests {
                     .lines()
                     .filter(|l| !l.trim_start().starts_with("//"))
                     .any(|line| {
-                        (line.contains("AgentKind::Claude") && line.contains("AgentKind::Codex"))
-                            || (line.contains("\"claude\"") && line.contains("\"codex\""))
+                        let kinds = ["AgentKind::Claude", "AgentKind::Codex", "AgentKind::Agy"];
+                        let words = ["\"claude\"", "\"codex\"", "\"agy\""];
+                        kinds.iter().filter(|k| line.contains(*k)).count() >= 2
+                            || words.iter().filter(|w| line.contains(*w)).count() >= 2
                     });
                 if hand {
                     offenders.push(path.display().to_string());

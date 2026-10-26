@@ -17,6 +17,7 @@ pub fn agent_name(a: DetectedAgent) -> &'static str {
     match a {
         DetectedAgent::Claude => "Claude",
         DetectedAgent::Codex => "Codex",
+        DetectedAgent::Agy => "Antigravity",
         DetectedAgent::Other => "The agent",
     }
 }
@@ -96,6 +97,7 @@ mod tests {
     fn agent_names() {
         assert_eq!(agent_name(DetectedAgent::Claude), "Claude");
         assert_eq!(agent_name(DetectedAgent::Codex), "Codex");
+        assert_eq!(agent_name(DetectedAgent::Agy), "Antigravity");
         assert_eq!(agent_name(DetectedAgent::Other), "The agent");
     }
 }

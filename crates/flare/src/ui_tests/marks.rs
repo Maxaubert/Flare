@@ -562,7 +562,7 @@ fn agent_icons_are_eighteen_pixels() {
             (380.0 * s) as u32,
             (36.0 * s) as u32,
         );
-        for kind in 0..4 {
+        for kind in 0..5 {
             let h = harness(s);
             h.comp.set_icon_kind(kind);
             let f = h.render();
@@ -595,6 +595,25 @@ fn agent_icons_are_eighteen_pixels() {
                     .unwrap();
                 let (w, hgt) = (cb.2 - cb.0 + 1, cb.3 - cb.1 + 1);
                 assert!(w > hgt, "Clawd is wider than tall at {s}: {w} x {hgt}");
+            } else if kind == 3 {
+                // The agy arch: its own colours, never the ink. A cell is 18/11 px, so at 100 % two
+                // one-cell columns fall across pixel edges and blend; from 150 % every colour shows pure.
+                assert_eq!(ink_px, 0, "the agy arch wears no ink at {s}");
+                let shown = flare_agent::icon::AGY_COLOURS
+                    .iter()
+                    .filter(|hex| {
+                        let c = u32::from_str_radix(&hex[1..], 16).unwrap();
+                        let want = [(c >> 16) as u8, (c >> 8) as u8, c as u8, 255];
+                        f.count_where(region.0, region.1, region.2, region.3, |p| {
+                            Frame::near(p, want, 6)
+                        }) > 0
+                    })
+                    .count();
+                let want = if s < 1.5 { 8 } else { 10 };
+                assert!(
+                    shown >= want,
+                    "the agy arch shows {shown} of its colours at {s}"
+                );
             } else {
                 assert_eq!(clawd_px, 0, "icon {kind} is never Clawd's orange at {s}");
                 assert!(ink_px > 0, "icon {kind} is the ink at {s}");

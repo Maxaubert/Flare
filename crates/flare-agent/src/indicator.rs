@@ -17,6 +17,7 @@ use crate::hook_state::{
     STOP_SETTLE_MS, hook_step, raised_while_seen, screen_decides,
 };
 use crate::kinds::DetectedAgent;
+use crate::osc7501::{ProgramState, ProgramStatus};
 use crate::question::{answers_question, looks_like_question, question_answered};
 use crate::signal::{AgentSignal, HookState};
 use crate::title::{AgentTitleState, TitleReader};
@@ -47,6 +48,11 @@ pub enum Event {
     Signal {
         tab: String,
         signal: AgentSignal,
+    },
+    /// An OSC 7501 program-status report (agy, and any agent that sends one).
+    Status {
+        tab: String,
+        status: ProgramStatus,
     },
     /// The pty printed (one per drained batch is enough).
     Output {
@@ -178,6 +184,9 @@ pub struct Indicator {
     failed_kinds: HashMap<String, String>,
     agent_kinds: HashMap<String, DetectedAgent>,
     hooked: HashMap<String, HookSession>,
+    /// The last OSC 7501 state of each tab that reports one: the third source, under the hooks and
+    /// over the titles and the output scoring.
+    status: HashMap<String, ProgramState>,
     titled: HashSet<String>,
     polled: HashSet<String>,
     title_state: HashMap<String, AgentTitleState>,
@@ -216,6 +225,7 @@ impl Indicator {
             failed_kinds: HashMap::new(),
             agent_kinds: HashMap::new(),
             hooked: HashMap::new(),
+            status: HashMap::new(),
             titled: HashSet::new(),
             polled: HashSet::new(),
             title_state: HashMap::new(),
@@ -242,6 +252,7 @@ impl Indicator {
             Event::Signal { tab, signal } => {
                 self.on_signal(now, &tab, signal, screen, &mut effects);
             }
+            Event::Status { tab, status } => self.on_status(now, &tab, status, &mut effects),
             Event::Output { tab } => self.on_output(now, &tab),
             Event::Key { tab, key } => self.on_key(now, &tab, &key),
         }
@@ -298,6 +309,7 @@ impl Indicator {
         self.failed_kinds.remove(tab);
         self.agent_kinds.remove(tab);
         self.hooked.remove(tab);
+        self.status.remove(tab);
         self.titled.remove(tab);
         self.polled.remove(tab);
         self.title_state.remove(tab);
@@ -358,6 +370,11 @@ impl Indicator {
 
     pub fn is_polled(&self, tab: &str) -> bool {
         self.polled.contains(tab)
+    }
+
+    /// Whether the tab's marks come from its OSC 7501 reports.
+    pub fn reports_status(&self, tab: &str) -> bool {
+        self.status.contains_key(tab)
     }
 
     // ---- internals ----
@@ -470,6 +487,7 @@ impl Indicator {
             self.agent_kinds.insert(tab.to_string(), k);
         } else if !present {
             self.agent_kinds.remove(tab);
+            self.status.remove(tab);
             self.titled.remove(tab);
             self.reader.forget(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -490,6 +508,14 @@ impl Indicator {
                 self.working.remove(tab);
             }
             self.agent_ids.insert(tab.to_string());
+            // A report that came before the poll named the agent is applied now.
+            if !was
+                && !self.hooked.contains_key(tab)
+                && self.agent_kinds.contains_key(tab)
+                && let Some(&state) = self.status.get(tab)
+            {
+                self.apply_status(tab, state);
+            }
         } else {
             self.agent_ids.remove(tab);
         }
@@ -539,6 +565,10 @@ impl Indicator {
             }
             return;
         }
+        // The program's own reports say more than its title.
+        if self.status.contains_key(tab) {
+            return;
+        }
         self.why(tab, &format!("title {}", r.state.as_str()));
         match r.state {
             AgentTitleState::Idle => self.check_question(now, tab),
@@ -573,6 +603,8 @@ impl Indicator {
             kind: signal.kind.clone(),
         });
         self.ask_look_for_kind(now, tab, DetectedAgent::Claude, effects);
+        // The hooks say more than a status report: they take the tab over.
+        self.status.remove(tab);
         if !self.hooked.contains_key(tab) {
             self.output_runs.remove(tab);
             self.timers.cancel(tab, Slot::Fallback);
@@ -585,10 +617,79 @@ impl Indicator {
         self.apply_hook(now, tab, HookEvent::Signal(signal), screen);
     }
 
-    /// PT `onTermData`: a hooked session says everything itself; a titled one only has its idle
-    /// question box read; the rest is scored by a sustained run of output.
-    fn on_output(&mut self, now: u64, tab: &str) {
+    /// An OSC 7501 report. Hooks win over it; it wins over titles and output. A plain program may
+    /// report too, so the marks wait until something found an agent in the tab (the report is kept
+    /// and applied when the poll names it).
+    fn on_status(&mut self, now: u64, tab: &str, status: ProgramStatus, effects: &mut Vec<Effect>) {
         if self.hooked.contains_key(tab) {
+            return;
+        }
+        let state = match status {
+            ProgramStatus::Clear => {
+                if self.status.remove(tab).is_some() {
+                    self.why(tab, "status cleared");
+                    self.working.remove(tab);
+                    self.question.remove(tab);
+                }
+                return;
+            }
+            ProgramStatus::Report(r) => r.state,
+        };
+        if self.status.insert(tab.to_string(), state).is_none() {
+            self.output_runs.remove(tab);
+            self.timers.cancel(tab, Slot::Fallback);
+            self.timers.cancel(tab, Slot::QuestionRead);
+            self.cancel_answer_reads(tab);
+        }
+        if !self.agent_kinds.contains_key(tab) {
+            self.ask_look(now, tab, effects);
+            return;
+        }
+        self.apply_status(tab, state);
+    }
+
+    /// The marks one status says: working, blocked (a question), done, error (failed) or idle.
+    fn apply_status(&mut self, tab: &str, state: ProgramState) {
+        self.why(tab, &format!("status {}", state.as_str()));
+        self.agent_ids.insert(tab.to_string());
+        let away = !self.looked_at(tab);
+        match state {
+            ProgramState::Working => {
+                self.working.insert(tab.to_string());
+                self.question.remove(tab);
+                self.failed_kinds.remove(tab);
+            }
+            ProgramState::Blocked => {
+                self.working.remove(tab);
+                self.question.insert(tab.to_string());
+            }
+            ProgramState::Idle | ProgramState::Done => {
+                self.working.remove(tab);
+                self.question.remove(tab);
+                if state == ProgramState::Done && away {
+                    self.done.insert(tab.to_string());
+                    self.hold_if_front_away(tab);
+                }
+            }
+            ProgramState::Error => {
+                self.working.remove(tab);
+                self.question.remove(tab);
+                self.failed_kinds.remove(tab);
+                if away {
+                    self.failed.insert(tab.to_string());
+                    self.hold_if_front_away(tab);
+                }
+            }
+        }
+    }
+
+    /// PT `onTermData`: a hooked session says everything itself; a titled one only has its idle
+    /// question box read; the rest is scored by a sustained run of output. A tab that reports its
+    /// status (OSC 7501) is not scored either.
+    fn on_output(&mut self, now: u64, tab: &str) {
+        if self.hooked.contains_key(tab)
+            || (self.status.contains_key(tab) && self.agent_kinds.contains_key(tab))
+        {
             return;
         }
         if self.titled.contains(tab) {
@@ -626,7 +727,8 @@ impl Indicator {
 
     /// PT `onTermKey`: a key that settles a box reads the screen again, four times, until it is gone.
     fn on_key(&mut self, now: u64, tab: &str, key: &str) {
-        if !answers_question(key) || !self.question.contains(tab) {
+        // A reporting program says itself when its question is answered.
+        if !answers_question(key) || !self.question.contains(tab) || self.status.contains_key(tab) {
             return;
         }
         self.cancel_answer_reads(tab);
@@ -2261,5 +2363,144 @@ mod tests {
                 assert_eq!(at(&with_output, *t), *s, "timeline {name} at {t}");
             }
         }
+    }
+
+    // ---- OSC 7501 (agy) ----
+
+    fn status(h: &mut H, now: u64, tab: &str, data: &str) -> Vec<Effect> {
+        let status = crate::osc7501::parse_program_status(data).expect("a report");
+        h.ev(
+            now,
+            Event::Status {
+                tab: tab.into(),
+                status,
+            },
+        )
+    }
+
+    #[test]
+    fn each_status_drives_its_mark_on_an_agy_tab_away() {
+        let mut h = H::fronted();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "t1", "state=idle:app=agy");
+        assert!(h.ind.reports_status("t1"));
+        assert!(!has(h.ind.working_ids(), "t1"));
+        status(&mut h, 20, "t1", "state=working:app=agy");
+        assert!(has(h.ind.working_ids(), "t1"));
+        status(&mut h, 30, "t1", "state=blocked:kind=permission:app=agy");
+        assert!(has(h.ind.question_ids(), "t1"));
+        assert!(!has(h.ind.working_ids(), "t1"));
+        status(&mut h, 40, "t1", "state=working");
+        assert!(!has(h.ind.question_ids(), "t1"));
+        assert!(has(h.ind.working_ids(), "t1"));
+        status(&mut h, 50, "t1", "state=done");
+        assert!(!has(h.ind.working_ids(), "t1"));
+        assert!(has(h.ind.done_ids(), "t1"), "done while away");
+        status(&mut h, 60, "t1", "state=working");
+        assert!(!has(h.ind.done_ids(), "t1"), "working again");
+        status(&mut h, 70, "t1", "state=error");
+        assert!(has(h.ind.failed_ids(), "t1"));
+        assert!(!has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn done_on_the_tab_in_front_raises_nothing_but_a_question_stays() {
+        let mut h = H::fronted();
+        h.poll(0, "front", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "front", "state=working");
+        status(&mut h, 20, "front", "state=done");
+        assert!(h.ind.done_ids().is_empty());
+        status(&mut h, 30, "front", "state=error");
+        assert!(h.ind.failed_ids().is_empty());
+        status(&mut h, 40, "front", "state=blocked:kind=question");
+        assert!(has(h.ind.question_ids(), "front"));
+    }
+
+    #[test]
+    fn a_report_before_the_poll_asks_a_look_and_is_applied_when_the_agent_is_found() {
+        let mut h = H::new();
+        let fx = status(&mut h, 0, "t1", "state=working:app=agy");
+        assert_eq!(fx, vec![Effect::AskLook { tab: "t1".into() }]);
+        assert!(
+            h.ind.agent_ids().is_empty(),
+            "a plain program lights nothing"
+        );
+        assert!(h.ind.working_ids().is_empty());
+        h.poll(100, "t1", true, Some(DetectedAgent::Agy));
+        assert!(has(h.ind.working_ids(), "t1"));
+        assert_eq!(h.ind.agent_kind("t1"), Some(DetectedAgent::Agy));
+    }
+
+    #[test]
+    fn a_reporting_tab_is_not_scored_from_its_output() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 4000, "t1", "state=idle");
+        for t in (5000..9000).step_by(200) {
+            h.ev(t, Event::Output { tab: "t1".into() });
+        }
+        assert!(!has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn without_reports_an_agy_tab_is_scored_from_its_output() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        for t in (5000..9000).step_by(200) {
+            h.ev(t, Event::Output { tab: "t1".into() });
+        }
+        assert!(has(h.ind.working_ids(), "t1"));
+    }
+
+    #[test]
+    fn clear_hands_the_tab_back_and_the_poll_losing_it_forgets_the_reports() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "t1", "state=blocked");
+        assert!(has(h.ind.question_ids(), "t1"));
+        status(&mut h, 20, "t1", "state=clear");
+        assert!(!h.ind.reports_status("t1"));
+        assert!(h.ind.question_ids().is_empty());
+        status(&mut h, 30, "t1", "state=working");
+        h.poll(40, "t1", false, None);
+        assert!(!h.ind.reports_status("t1"));
+        assert!(h.ind.working_ids().is_empty());
+    }
+
+    #[test]
+    fn hooks_win_over_status_reports() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        status(&mut h, 10, "t1", "state=working:app=claude-code");
+        assert!(h.ind.reports_status("t1"));
+        h.hook(20, "t1", HookState::Question);
+        assert!(!h.ind.reports_status("t1"));
+        status(&mut h, 30, "t1", "state=idle:app=claude-code");
+        assert!(!h.ind.reports_status("t1"));
+        assert!(
+            has(h.ind.question_ids(), "t1"),
+            "the hook's question stands"
+        );
+    }
+
+    #[test]
+    fn status_reports_win_over_titles() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Claude));
+        status(&mut h, 10, "t1", "state=working");
+        h.title(20, "t1", "\u{2733} Claude Code");
+        assert!(
+            has(h.ind.working_ids(), "t1"),
+            "an idle title does not undo a report"
+        );
+    }
+
+    #[test]
+    fn forget_drops_the_reports() {
+        let mut h = H::new();
+        h.poll(0, "t1", true, Some(DetectedAgent::Agy));
+        status(&mut h, 10, "t1", "state=working");
+        h.ind.forget("t1");
+        assert!(!h.ind.reports_status("t1"));
     }
 }

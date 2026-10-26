@@ -35,10 +35,13 @@ pub struct RevealState {
     pub revealed: bool,
 }
 
-/// The agent a resume id is for: `codex...` is Codex, anything else Claude.
+/// The agent a resume id is for: `codex...` is Codex, `agy...` is agy (no hex id starts with
+/// either), anything else Claude.
 pub fn agent_of_resume(resume: &str) -> AgentKind {
     if resume.starts_with("codex") {
         AgentKind::Codex
+    } else if resume.starts_with("agy") {
+        AgentKind::Agy
     } else {
         AgentKind::Claude
     }
@@ -243,6 +246,7 @@ mod tests {
             AgentKind::Claude
         );
         assert_eq!(agent_of_resume("codex:last"), AgentKind::Codex);
+        assert_eq!(agent_of_resume("agy:last"), AgentKind::Agy);
     }
 
     #[test]
@@ -262,6 +266,12 @@ mod tests {
         ));
         assert!(!names_agent("✳ Claude Code", AgentKind::Claude));
         assert!(names_agent("codex", AgentKind::Codex));
+        assert!(names_agent("agy", AgentKind::Agy));
+        assert!(names_agent(
+            r"C:\Users\me\AppData\Local\agy\bin\agy.exe",
+            AgentKind::Agy
+        ));
+        assert!(!names_agent(r"C:\src\agy", AgentKind::Agy));
     }
 
     #[test]

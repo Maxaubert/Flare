@@ -3,18 +3,21 @@
 
 use crate::kinds::AgentKind;
 
-/// ESC v (Alt+V) for Claude, ^V (0x16) for Codex, any other agent and a plain shell. EXACTLY ONE key.
+/// ESC v (Alt+V) for Claude, ^V (0x16) for Codex, agy, any other agent and a plain shell. EXACTLY
+/// ONE key. agy takes Codex's keys until its own are measured.
 pub fn image_paste_key(agent: Option<AgentKind>) -> &'static str {
     match agent {
         Some(AgentKind::Claude) => "\x1bv",
+        Some(AgentKind::Agy) => "\x16",
         Some(AgentKind::Codex) | None => "\x16",
     }
 }
 
-/// LF (Ctrl+J) for Claude; backslash then CR for everything else (Codex drops a bare LF).
+/// LF (Ctrl+J) for Claude; backslash then CR for everything else (Codex drops a bare LF; agy as Codex).
 pub fn newline_key(agent: Option<AgentKind>) -> &'static str {
     match agent {
         Some(AgentKind::Claude) => "\n",
+        Some(AgentKind::Agy) => "\\\r",
         Some(AgentKind::Codex) | None => "\\\r",
     }
 }
@@ -67,6 +70,12 @@ mod tests {
     fn newline_is_backslash_enter_for_codex_and_anything_else() {
         assert_eq!(newline_key(Some(AgentKind::Codex)), "\\\r");
         assert_eq!(newline_key(None), "\\\r");
+    }
+
+    #[test]
+    fn agy_takes_codexs_keys_until_measured() {
+        assert_eq!(image_paste_key(Some(AgentKind::Agy)), "\x16");
+        assert_eq!(newline_key(Some(AgentKind::Agy)), "\\\r");
     }
 
     #[test]
