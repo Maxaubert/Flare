@@ -38,23 +38,72 @@ pub fn profile_name(id: &str) -> String {
 }
 
 /// The extra arguments of the networked plugins' browser: the mini-apps' WebRTC policy, and a resolver for which the
-/// local names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) are not found, a wall behind
-/// the request wall's refusal of them. A plugin's own pages are answered by Flare and never use the resolver.
+/// local names (`localhost`, `.local`, `.localhost`, `.lan`, `.internal`, `.home.arpa`) and the local address ranges
+/// ([`local_address_patterns`]) are not found. A plugin's own pages are answered by Flare and never use the resolver.
+///
+/// The resolver is the wall for what the request wall never sees: a WebSocket (`wss:`, which the policy's `https:`
+/// matches) and WebTransport do not reach `WebResourceRequested`, and this browser has a real route (no dead proxy).
+/// A proxy script cannot take loopback and link-local addresses instead: Chromium sends those direct whatever the
+/// script says, and `<-loopback>` only works with a fixed proxy (`net/docs/proxy.md`, "Implicit bypass rules"). The
+/// resolver's rules apply to an address written as numbers too (Chromium's `HostMappingRules` matches the host as
+/// written, before an address is looked up or taken as it is), so no connection of the browser's own reaches them.
+/// Read from Chromium's source, not yet measured on this runtime.
 pub fn net_browser_arguments() -> String {
-    let local = [
+    let names = [
         "localhost",
         "*.localhost",
         "*.local",
         "*.lan",
         "*.internal",
         "*.home.arpa",
-    ]
-    .map(|n| format!("MAP {n} ~NOTFOUND"))
-    .join(", ");
+    ];
+    let rules = names
+        .into_iter()
+        .map(str::to_string)
+        .chain(local_address_patterns())
+        .map(|n| format!("MAP {n} ~NOTFOUND"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "{} --host-resolver-rules=\"{local}\"",
+        "{} --host-resolver-rules=\"{rules}\"",
         crate::app::WEBRTC_POLICY_FLAG
     )
+}
+
+/// The local address ranges as the resolver's patterns (`*` is any run of characters), past the two that take one a
+/// second octet: loopback (127/8), "this network" (0/8), private (10/8, 192.168/16), link-local (169.254/16), the
+/// protocol range (192.0.0/24), benchmarking (198.18/15) and broadcast; for IPv6, written with its brackets as the
+/// browser writes it: every address that begins `::` (loopback, unspecified, the IPv4-mapped and -compatible forms),
+/// unique-local (fc00::/7), link-local (fe80::/10) and NAT64 (64:ff9b::/96). A public name whose first label is one
+/// of these numbers (`10.example.com`) is not found either; that is the price of a pattern with no ranges.
+pub const LOCAL_ADDRESS_PATTERNS: [&str; 17] = [
+    "127.*",
+    "0.*",
+    "10.*",
+    "192.168.*",
+    "169.254.*",
+    "192.0.0.*",
+    "198.18.*",
+    "198.19.*",
+    "255.255.255.255",
+    "[::*",
+    "[fc*",
+    "[fd*",
+    "[fe8*",
+    "[fe9*",
+    "[fea*",
+    "[feb*",
+    "[64:ff9b:*",
+];
+
+/// [`LOCAL_ADDRESS_PATTERNS`] and the two ranges that need a pattern for each second octet: 172.16/12 and 100.64/10.
+fn local_address_patterns() -> Vec<String> {
+    LOCAL_ADDRESS_PATTERNS
+        .iter()
+        .map(|p| p.to_string())
+        .chain((16..32).map(|b| format!("172.{b}.*")))
+        .chain((64..128).map(|b| format!("100.{b}.*")))
+        .collect()
 }
 
 /// The user data folder of the networked plugins' browser (plugins phase 6), beside the sealed one: a browser started
@@ -333,6 +382,87 @@ mod tests {
         assert!(a.contains("MAP localhost ~NOTFOUND") && a.contains("MAP *.local ~NOTFOUND"));
         assert!(!a.contains("proxy-server"), "it has the real route");
         assert!(!a.contains("MAP * ~NOTFOUND"), "public names resolve");
+    }
+
+    /// `*` as the resolver's rules read it: any run of characters.
+    fn glob(p: &str, s: &str) -> bool {
+        match p.split_once('*') {
+            None => p == s,
+            Some((head, rest)) => {
+                s.starts_with(head)
+                    && (head.len()..=s.len()).any(|i| s.is_char_boundary(i) && glob(rest, &s[i..]))
+            }
+        }
+    }
+
+    #[test]
+    fn a_networked_plugins_resolver_knows_no_local_address_and_every_public_one() {
+        // A WebSocket never meets the request wall: the resolver is what refuses a local address written as numbers.
+        let a = net_browser_arguments();
+        let rules: Vec<&str> = a
+            .split("--host-resolver-rules=\"")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches('"')
+            .split(", ")
+            .map(|r| {
+                r.strip_prefix("MAP ")
+                    .unwrap()
+                    .strip_suffix(" ~NOTFOUND")
+                    .unwrap()
+            })
+            .collect();
+        // The host as the browser writes it, and with its port.
+        let mapped = |host: &str| {
+            let with_port = format!("{host}:443");
+            rules.iter().any(|p| glob(p, host) || glob(p, &with_port))
+        };
+        for local in [
+            "127.0.0.1",
+            "127.8.9.10",
+            "0.0.0.0",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.127.0.1",
+            "198.18.0.1",
+            "[::1]",
+            "[::]",
+            "[::ffff:7f00:1]",
+            "[fc00::1]",
+            "[fd12:3456::1]",
+            "[fe80::1]",
+            "[febf::1]",
+            "[64:ff9b::7f00:1]",
+            "localhost",
+            "router.lan",
+        ] {
+            assert!(mapped(local), "{local} is not found");
+            let ip = local.trim_start_matches('[').trim_end_matches(']');
+            if let Ok(ip) = ip.parse::<std::net::IpAddr>() {
+                assert!(
+                    !crate::net::is_public_https(&format!("https://{local}/")),
+                    "{ip}: the request wall refuses it too"
+                );
+            }
+        }
+        for public in [
+            "8.8.8.8",
+            "172.15.0.1",
+            "172.32.0.1",
+            "100.63.0.1",
+            "100.128.0.1",
+            "1.1.1.1",
+            "[2606:4700::1111]",
+            "example.com",
+            "fdroid.org",
+            "fe80.example.com",
+        ] {
+            assert!(!mapped(public), "{public} resolves");
+        }
     }
 
     #[test]

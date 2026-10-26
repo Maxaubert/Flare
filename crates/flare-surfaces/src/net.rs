@@ -5,7 +5,8 @@
 //!
 //! A Content-Security-Policy cannot name a range to leave out, so this is checked where a request is decided (the
 //! browser glue's request wall for a plugin's page) and before Flare uses an address itself; the plugins' networked
-//! browser also maps the local names to "not found" in its resolver. A public name that a resolver points at a
+//! browser also maps the local names and address ranges to "not found" in its resolver, the wall for a WebSocket,
+//! which never meets the request wall (`modview::net_browser_arguments`). A public name that a resolver points at a
 //! private address is not seen here (the browser's own private-network checks are the wall behind it).
 
 use std::net::{Ipv4Addr, Ipv6Addr};
