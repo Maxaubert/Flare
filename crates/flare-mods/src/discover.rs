@@ -137,7 +137,9 @@ fn folder_names(root: &Path, max_entries: usize, out: &mut Discovery) -> Vec<Str
             );
             break;
         }
+        // Install's own working folder is not a plugin and never reported as one.
         if let Ok(e) = entry
+            && e.file_name() != crate::install::STAGING
             && e.path().is_dir()
         {
             names.push(e.file_name().to_string_lossy().into_owned());
@@ -167,29 +169,28 @@ fn load_one(canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
             format!("the folder is a link to somewhere outside {WORDS}"),
         );
     }
-    let kind = match manifest_kind(&folder) {
-        Ok(k) => k,
-        Err(reason) => return refuse(out, name, reason),
-    };
-    let text = match read_manifest(&folder, kind.file()) {
-        Ok(t) => t,
-        Err(reason) => return refuse(out, name, reason),
-    };
-    let manifest = match parse_as(kind, &text) {
-        Ok(m) => m,
-        Err(reason) => return refuse(out, name, reason),
-    };
-    if manifest.id != name {
-        return refuse(
+    match check_folder(&folder) {
+        Ok(found) if found.manifest.id != name => refuse(
             out,
             name,
             format!(
                 "the folder is named \"{name}\" but {} says id \"{}\"; the folder name must be the id",
-                kind.file(),
-                manifest.id
+                found.manifest.kind().file(),
+                found.manifest.id
             ),
-        );
+        ),
+        Ok(found) => out.mods.push(found),
+        Err(reason) => refuse(out, name, reason),
     }
+}
+
+/// Every check of one canonical plugin folder but its name: exactly one manifest, valid, and every file it names a
+/// real file inside the folder. Install runs it on a staged copy before anything reaches the plugins folder.
+pub fn check_folder(folder: &Path) -> Result<Found, String> {
+    let kind = manifest_kind(folder)?;
+    let text = read_manifest(folder, kind.file())?;
+    let manifest = parse_as(kind, &text)?;
+    let folder = folder.to_path_buf();
     // Every file the manifest names must be a real file inside the folder.
     let page = |rel: Option<&str>, field: &str| -> Result<Option<PathBuf>, String> {
         rel.map(|r| paths::inside(&folder, r).map_err(|reason| format!("{field} {reason}")))
@@ -212,18 +213,15 @@ fn load_one(canon_root: &Path, root: &Path, name: &str, out: &mut Discovery) {
             .transpose()?;
         Ok::<_, String>((entry, background, bar, helper))
     })();
-    let (entry, background, bar, helper) = match files {
-        Ok(f) => f,
-        Err(reason) => return refuse(out, name, reason),
-    };
-    out.mods.push(Found {
+    let (entry, background, bar, helper) = files?;
+    Ok(Found {
         manifest,
         folder,
         entry,
         background,
         bar,
         helper,
-    });
+    })
 }
 
 /// Which manifest the folder holds: exactly one of `plugin.json` and `mod.json`.

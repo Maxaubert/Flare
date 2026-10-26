@@ -53,6 +53,11 @@ pub const INVENTORY: &[(&str, &str)] = &[
     ("e2e/src/scenarios/mini_app.rs", "Web panel"),
     // The mods scenario names the address a mod's page is served from (a local name Flare answers itself).
     ("e2e/src/scenarios/mods.rs", "Web panel"),
+    // Plugins phase 7: the download of a plugin zip from the https address the person pasted, only on Install or
+    // Update, under the phase 6 wall (https, a public host on every hop and every resolved address).
+    ("flare-mods/src/fetch.rs", "Installing a plugin"),
+    // The install field's placeholder text, `https://` (shown in the empty field; no request).
+    ("flare-settings/src/page/mods.rs", "Installing a plugin"),
     ("flare/src/web_ctl.rs", "Web panel"),
     ("e2e/src/scenarios/web.rs", "Web panel"),
 ];

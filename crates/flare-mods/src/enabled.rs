@@ -37,6 +37,9 @@ pub struct Entry {
     pub approved: Option<Vec<Permission>>,
     /// Who a protocol 2 plugin said it was when it was approved. Empty for a protocol 1 mod and an off entry.
     pub identity: Identity,
+    /// Where Settings installed it from and the hash of what it installed (plugins phase 7): kept whether the plugin
+    /// is on or off, under the entry's own `installed` key. Empty for a folder put in the plugins folder by hand.
+    pub installed: Identity,
 }
 
 /// What a plugin said about itself when the person approved it, kept with the approval: its `author` and
@@ -140,6 +143,62 @@ impl EnabledStore {
         self.read_only
     }
 
+    /// Where Settings installed the plugin from, and the hash of what it installed (only `source` and `hash` are
+    /// set), on or off. Empty when it was never installed by Settings.
+    pub fn installed(&self, id: &str) -> Identity {
+        self.mods
+            .get(id)
+            .map(|e| e.installed.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every install record, by id (the entries Settings installed).
+    pub fn all_installed(&self) -> Vec<(String, Identity)> {
+        self.mods
+            .iter()
+            .filter(|(_, e)| e.installed != Identity::default())
+            .map(|(id, e)| (id.clone(), e.installed.clone()))
+            .collect()
+    }
+
+    /// Keeps where the plugin was installed from and the hash of what was installed, and saves. An entry that is not
+    /// there yet is made off.
+    pub fn set_installed(
+        &mut self,
+        id: &str,
+        source: Option<&str>,
+        hash: Option<&str>,
+    ) -> Result<(), String> {
+        let mut entry = self.mods.get(id).cloned().unwrap_or_default();
+        entry.installed = Identity {
+            source: source.map(str::to_string),
+            hash: hash.map(str::to_string),
+            ..Identity::default()
+        };
+        self.put(id, entry)
+    }
+
+    /// Forgets the plugin entirely (removed): its switch, its approval and its install record, and saves.
+    pub fn forget(&mut self, id: &str) -> Result<(), String> {
+        if !self.mods.contains_key(id) {
+            return Ok(());
+        }
+        if self.read_only {
+            return Err(
+                "mods.json is a version this Flare does not read; the change is not saved".into(),
+            );
+        }
+        let before = self.mods.remove(id);
+        if let Err(e) = write_atomic(&self.file, &self.to_json()) {
+            // sync-ok: called on a worker
+            if let Some(v) = before {
+                self.mods.insert(id.to_string(), v);
+            }
+            return Err(format!("mods.json could not be saved: {e}"));
+        }
+        Ok(())
+    }
+
     /// Switches a mod on or off and saves. A refused id, a read-only store or a failed write changes
     /// nothing: the in-memory state goes back to what it was, and the error says why.
     /// Switching on takes the permissions the user is approving; off drops them.
@@ -155,14 +214,6 @@ impl EnabledStore {
         approved: &[Permission],
         identity: &Identity,
     ) -> Result<(), String> {
-        if !valid_id(id) {
-            return Err(format!("\"{id}\" is not a mod id"));
-        }
-        if self.read_only {
-            return Err(
-                "mods.json is a version this Flare does not read; the switch is not saved".into(),
-            );
-        }
         let entry = Entry {
             on: enabled,
             approved: enabled.then(|| approved.to_vec()),
@@ -171,7 +222,21 @@ impl EnabledStore {
             } else {
                 Identity::default()
             },
+            installed: self.installed(id),
         };
+        self.put(id, entry)
+    }
+
+    /// Puts one entry in and saves; on any refusal the entry before is kept.
+    fn put(&mut self, id: &str, entry: Entry) -> Result<(), String> {
+        if !valid_id(id) {
+            return Err(format!("\"{id}\" is not a mod id"));
+        }
+        if self.read_only {
+            return Err(
+                "mods.json is a version this Flare does not read; the switch is not saved".into(),
+            );
+        }
         let before = self.mods.insert(id.to_string(), entry);
         if let Err(e) = write_atomic(&self.file, &self.to_json()) {
             // sync-ok: called on a worker
@@ -194,7 +259,7 @@ impl EnabledStore {
             .mods
             .iter()
             .map(|(id, e)| {
-                let v = match &e.approved {
+                let mut v = match &e.approved {
                     Some(p) if e.on => {
                         let mut o = Map::new();
                         o.insert("on".into(), Value::Bool(true));
@@ -217,6 +282,16 @@ impl EnabledStore {
                     }
                     _ => json!({ "on": false }),
                 };
+                let i = &e.installed;
+                if i.source.is_some() || i.hash.is_some() {
+                    let mut o = Map::new();
+                    for (key, val) in [("source", &i.source), ("hash", &i.hash)] {
+                        if let Some(s) = val {
+                            o.insert(key.into(), Value::String(s.clone()));
+                        }
+                    }
+                    v["installed"] = Value::Object(o);
+                }
                 (id.clone(), v)
             })
             .collect();
@@ -276,6 +351,16 @@ fn entry_of(v: &Value) -> Option<Entry> {
     }
     let o = v.as_object()?;
     let on = o.get("on")?.as_bool()?;
+    let installed = o
+        .get("installed")
+        .and_then(Value::as_object)
+        .map(identity_of)
+        .map(|i| Identity {
+            source: i.source,
+            hash: i.hash,
+            ..Identity::default()
+        })
+        .unwrap_or_default();
     let approved = o
         .get("permissions")
         .and_then(Value::as_array)
@@ -284,23 +369,28 @@ fn entry_of(v: &Value) -> Option<Entry> {
                 .map(|n| n.as_str().and_then(Permission::parse))
                 .collect::<Option<Vec<_>>>()
         });
+    Some(Entry {
+        on,
+        approved,
+        identity: identity_of(o),
+        installed,
+    })
+}
+
+/// The identity keys of an entry (or of its `installed` object); a damaged one is dropped.
+fn identity_of(o: &Map<String, Value>) -> Identity {
     let text = |key: &str| {
         o.get(key)
             .and_then(Value::as_str)
             .filter(|s| s.chars().count() <= MAX_IDENTITY_CHARS && !s.chars().any(char::is_control))
             .map(str::to_string)
     };
-    let identity = Identity {
+    Identity {
         author: text("author"),
         homepage: text("homepage"),
         source: text("source"),
         hash: text("hash").filter(|h| crate::hash::is_hash(h)),
-    };
-    Some(Entry {
-        on,
-        approved,
-        identity,
-    })
+    }
 }
 
 /// Moves a damaged file to `<file>.bad`, replacing an older `.bad`. False when the move fails, and then the
@@ -522,6 +612,39 @@ mod tests {
         assert!(text.contains(r#""todo":{"on":false}"#), "{text}");
     }
 
+    #[test]
+    fn the_install_record_is_kept_on_and_off_and_forget_drops_the_whole_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mods.json");
+        let mut s = EnabledStore::load(&file);
+        let hash = format!("sha256:{}", "cd".repeat(32));
+        s.set_installed("todo", Some("https://example.com/t.zip"), Some(&hash))
+            .unwrap();
+        let text = std::fs::read_to_string(&file).unwrap(); // sync-ok: test code only
+        assert_eq!(
+            text,
+            format!(
+                r#"{{"version":1,"mods":{{"todo":{{"on":false,"installed":{{"source":"https://example.com/t.zip","hash":"{hash}"}}}}}}}}"#
+            )
+        );
+        assert!(!s.is_enabled("todo"), "an install record is not a switch");
+        s.set_with("todo", true, &[Permission::Decorate], &ident())
+            .unwrap();
+        s.set_with("todo", false, &[], &Identity::default())
+            .unwrap();
+        let again = EnabledStore::load(&file);
+        assert_eq!(
+            again.installed("todo").source.as_deref(),
+            Some("https://example.com/t.zip")
+        );
+        assert_eq!(again.installed("todo").hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(again.all_installed().len(), 1);
+        let mut again = again;
+        again.forget("todo").unwrap();
+        assert_eq!(again.installed("todo"), Identity::default());
+        let text = std::fs::read_to_string(&file).unwrap(); // sync-ok: test code only
+        assert!(!text.contains("todo"), "{text}");
+    }
     /// The store an older Flare reads: the same file, the same version, and for every entry the two keys it knows.
     #[test]
     fn an_older_reader_sees_every_switch_of_a_store_with_plugins() {

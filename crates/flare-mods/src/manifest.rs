@@ -214,6 +214,63 @@ impl Manifest {
     pub fn is_plugin(&self) -> bool {
         self.protocol == PROTOCOL_V2
     }
+
+    /// Which manifest file it came from.
+    pub fn kind(&self) -> Kind {
+        if self.is_plugin() {
+            Kind::Plugin
+        } else {
+            Kind::Mod
+        }
+    }
+}
+
+/// How two `version` texts compare (`MAJOR.MINOR.PATCH`, then a pre-release below its release); build metadata does
+/// not count. A text that does not read as a version compares equal, so it never blocks an install.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn split(v: &str) -> Option<([u64; 3], Option<&str>)> {
+        let core = v.split('+').next()?;
+        let (nums, pre) = match core.split_once('-') {
+            Some((n, p)) => (n, Some(p)),
+            None => (core, None),
+        };
+        let mut out = [0u64; 3];
+        let mut parts = nums.split('.');
+        for slot in &mut out {
+            *slot = parts.next()?.parse().ok()?;
+        }
+        parts.next().is_none().then_some((out, pre))
+    }
+    let (Some((na, pa)), Some((nb, pb))) = (split(a), split(b)) else {
+        return Ordering::Equal;
+    };
+    na.cmp(&nb).then_with(|| match (pa, pb) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            let (mut xs, mut ys) = (x.split('.'), y.split('.'));
+            loop {
+                match (xs.next(), ys.next()) {
+                    (None, None) => break Ordering::Equal,
+                    (None, Some(_)) => break Ordering::Less,
+                    (Some(_), None) => break Ordering::Greater,
+                    (Some(p), Some(q)) => {
+                        let o = match (p.parse::<u64>(), q.parse::<u64>()) {
+                            (Ok(m), Ok(n)) => m.cmp(&n),
+                            (Ok(_), Err(_)) => Ordering::Less,
+                            (Err(_), Ok(_)) => Ordering::Greater,
+                            (Err(_), Err(_)) => p.cmp(q),
+                        };
+                        if o != Ordering::Equal {
+                            break o;
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// The mod's panel: an HTML file inside the mod folder, shown under `title`.

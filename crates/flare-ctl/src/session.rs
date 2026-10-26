@@ -136,6 +136,8 @@ impl Bucket {
 pub struct ConnHandle {
     pub id: u64,
     tab: Mutex<Option<String>>,
+    /// The mod or plugin whose token the connection said hello with (a plugin's helper), for its own events.
+    owner: Mutex<Option<String>>,
     said_hello: AtomicBool,
     outbox: Mutex<VecDeque<Vec<u8>>>,
     /// Unblocks a worker stuck in a write to a client that never reads (set by the pipe code).
@@ -150,6 +152,7 @@ impl ConnHandle {
         Arc::new(Self {
             id,
             tab: Mutex::new(None),
+            owner: Mutex::new(None),
             said_hello: AtomicBool::new(false),
             outbox: Mutex::new(VecDeque::new()),
             abort: Mutex::new(None),
@@ -241,6 +244,26 @@ impl Hub {
             }
             if let Some(t) = tab
                 && c.tab.lock().unwrap_or_else(|e| e.into_inner()).as_deref() != Some(t)
+            {
+                continue;
+            }
+            c.push(line.clone());
+            n += 1;
+        }
+        n
+    }
+
+    /// Queues an event for every connection that said hello with the token of the mod or plugin `owner` (its
+    /// helper, plugins phase 7), whatever tab it is in. Never blocks on a client. Returns how many got it.
+    pub fn publish_to_owner(&self, event: &str, params: Value, owner: &str) -> usize {
+        let line = to_line(&Event {
+            event: event.into(),
+            params,
+        });
+        let mut n = 0;
+        for c in self.conns.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if !c.said_hello.load(Ordering::SeqCst)
+                || c.owner.lock().unwrap_or_else(|e| e.into_inner()).as_deref() != Some(owner)
             {
                 continue;
             }
@@ -599,6 +622,10 @@ fn answer(
             Ok(h) => {
                 let result = hello_result(shared, &h.ctx.grant, h.ctx.tab.as_deref());
                 *handle.tab.lock().unwrap_or_else(|e| e.into_inner()) = h.ctx.tab.clone();
+                *handle.owner.lock().unwrap_or_else(|e| e.into_inner()) = match &h.ctx.grant {
+                    Grant::Mod { id, .. } if h.token.is_some() => Some(id.clone()),
+                    _ => None,
+                };
                 // A client that reads only while it waits for an answer says `events: false`: it is sent no
                 // events, so a full pipe can never block this worker (and so deadlock a big request).
                 let wants_events = req.params.get("events").and_then(Value::as_bool) != Some(false);
@@ -1271,6 +1298,25 @@ mod tests {
         assert_eq!(ev["params"]["k"], 2);
         assert_eq!(r.shared.hub.publish("x", json!({}), None), 1);
         assert_eq!(r.recv()["event"], "x");
+        r.finish();
+    }
+
+    #[test]
+    fn an_owner_event_reaches_only_the_connections_of_that_plugins_token() {
+        let mut r = rig();
+        r.hello(r#","token":"good""#);
+        // A plain agent connection on the same server hears nothing of it.
+        let mut agent = Rig::on(r.fake.clone(), r.shared.clone(), 2);
+        agent.hello("");
+        assert_eq!(
+            r.shared.hub.publish_to_owner("tabs", json!({"k": 1}), "m"),
+            1
+        );
+        assert_eq!(r.shared.hub.publish_to_owner("tabs", json!({}), "other"), 0);
+        let ev = r.recv();
+        assert_eq!(ev["event"], "tabs");
+        assert_eq!(ev["params"]["k"], 1);
+        agent.finish();
         r.finish();
     }
 

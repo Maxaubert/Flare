@@ -1613,6 +1613,7 @@ dependencies = [
  "velopack",
  "wgpu",
  "windows-sys 0.61.2",
+ "zip 9.0.0",
 ]
 
 [[package]]
@@ -1743,7 +1744,10 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "ureq",
+ "url",
  "windows-sys 0.61.2",
+ "zip 9.0.0",
 ]
 
 [[package]]
