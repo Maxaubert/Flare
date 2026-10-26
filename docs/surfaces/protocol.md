@@ -278,7 +278,7 @@ is the `tab` of every `tabs` event a plugin page hears (`plugins.md`, "Events").
 
 ### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
 
-What a caller draws on its own tab: badges (small glyphs) and one progress, in an outlined chip Flare draws before the
+What a caller draws on its own tab: badges (small glyphs) and one progress, in a bare chip (no ring) Flare draws before the
 tab's end (strip) or left of its ring (sidebar row). Never at the tab's foot, where the agent's bar mark is; nothing in
 it moves. Namespace `Decor` (prefix `tabs`), permission `decorate`; the agent holds it, a protocol 1 mod cannot ask for
 it, a plugin can (phase 3: its pieces are its own source, `plugin:<id>`, and with `tabs` it may name any tab). Every

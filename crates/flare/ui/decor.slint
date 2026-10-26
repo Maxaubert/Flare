@@ -1,4 +1,4 @@
-// The decor chip of a tab (plugins phase 1): an outlined pill Flare draws, holding a progress meter and up to two
+// The decor chip of a tab (plugins phase 1): a bare row Flare draws (no ring since 2026-10-26), holding a progress meter and up to two
 // badge glyphs. It is drawn on the tab's middle, never at its foot (the agent's MarkBar lives there), it has no
 // TouchArea of its own (the tab's tooltip carries its words and a press still starts a drag) and nothing in it
 // moves: an unknown amount is a static row of dots.
@@ -47,9 +47,7 @@ export component DecorPill inherits Rectangle {
     width: root.items > 0 ? Px.snap(root.inner + 2 * root.pad) : 0px;
     height: 20px;
     visible: root.items > 0;
-    border-radius: 10px;
-    border-width: Px.hair();
-    border-color: root.ink.with-alpha(0.38);
+    // No ring (2026-10-26, Max): the glyphs stand bare beside the name, like the tab's own marks.
     background: transparent;
 
     pure function tone(t: int) -> color {

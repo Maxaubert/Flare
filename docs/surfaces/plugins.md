@@ -221,7 +221,7 @@ worker, and every limit spent there, before the window hears of it.
 | Tools (`tools`) | `tools.respond` (the bridge's `respond`) | 8 calls waiting per plugin |
 | Browser (`browser`) | `browser.*` | answered `unavailable` (not built) |
 
-**Decor.** A badge is a glyph in an outlined chip Flare draws before the tab's end (left of the ring on a sidebar row),
+**Decor.** A badge is a bare glyph (no ring) Flare draws before the tab's end (left of the ring on a sidebar row),
 in the tone `ink` (default), `accent` or `muted` (`mic` never `accent`, Flare's dictation mark). A progress is a static
 pill (`value` 0 to 1; no `value` draws a dotted pill for an unknown amount), never at the tab's foot, where the agent's
 mark lives; nothing animates. A tab draws at most 2 chips (progress first, then one badge per source; 2 on a named tab
@@ -374,7 +374,7 @@ Sample: `../../sample-plugins/todo/`.
 
 - **Exact permissions (S5).** The token maps to the approved permissions and nothing else; a plugin that is off has
   no token; every call checks the live grant and the plugin's generation.
-- **No spoofing.** Plugin badges sit in Flare's outlined chip, never in the agent's ring or mark; no `check` or `dot`
+- **No spoofing.** Plugin badges sit in Flare's decor chip, never in the agent's ring or mark; no `check` or `dot`
   icon; tones never equal the state colours; every tooltip line starts with the plugin's name. A plugin cannot style
   its sidebar section or draw over the tab strip.
 - **Untrusted manifest and untrusted pages.** Every field is checked before use, every path on every use, every page

@@ -85,11 +85,17 @@ fn the_pill_draws_before_the_end_in_the_tabs_middle() {
         decorate(&mut r[1]);
         let f = strip(s, r).render();
         let (x0, y0, x1, y1) = ink_of_tab1(&f, s).expect("the pill has ink");
-        // The end box is 16 px at 10 px from the right edge; the pill is 4 px before it: 8 + 18 + 3 + 14 = 43 wide.
-        let right = 150.0 + 150.0 - 10.0 - 16.0 - 4.0;
-        assert!(x1.abs_diff(px(s, right) - 1) <= 2, "scale {s}: right {x1}");
+        // The end box is 16 px at 10 px from the right edge; the pill is 4 px before it, 43 wide, and has no ring:
+        // its ink is the 18 + 3 + 14 = 35 px of chips inside its 4 px pads.
+        let right = 150.0 + 150.0 - 10.0 - 16.0 - 4.0 - 4.0;
+        // A glyph's ink stops up to 1.5 px inside its box, so the slack grows with the scale.
+        let slack = px(s, 2.0);
         assert!(
-            x0.abs_diff(px(s, right - 43.0)) <= 2,
+            x1.abs_diff(px(s, right) - 1) <= slack,
+            "scale {s}: right {x1}"
+        );
+        assert!(
+            x0.abs_diff(px(s, right - 35.0)) <= slack,
             "scale {s}: left {x0}"
         );
         // 20 px tall on the tab's middle.
@@ -141,13 +147,13 @@ fn chips_hide_without_room_and_on_icon_tabs() {
     decorate(&mut r[1]);
     r[1].chip_room = 0;
     assert_eq!(ink_of_tab1(&strip(1.0, r).render(), 1.0), None);
-    // Room for one: the progress only (8 + 18 wide).
+    // Room for one: the progress only (18 wide; the pads have no ink).
     let mut r = rows(1.0);
     decorate(&mut r[1]);
     r[1].chip_room = 1;
     let (x0, _, x1, _) = ink_of_tab1(&strip(1.0, r).render(), 1.0).expect("one chip");
     assert!(
-        (x1 + 1 - x0).abs_diff(26) <= 2,
+        (x1 + 1 - x0).abs_diff(18) <= 2,
         "one chip is {} wide",
         x1 + 1 - x0
     );
@@ -232,8 +238,8 @@ fn a_sidebar_row_draws_its_chips_and_only_that_row_changes() {
         }
     }
     let (x0, y0, x1, y1) = changed.expect("the decorated row changed");
-    // One pill with both chips (43 px) on one row (20 px), inside the 220 px sidebar.
-    assert!((x1 + 1 - x0).abs_diff(43) <= 3, "{x0}..{x1}");
+    // One pill with both chips (35 px of ink, no ring) on one row (20 px), inside the 220 px sidebar.
+    assert!((x1 + 1 - x0).abs_diff(35) <= 3, "{x0}..{x1}");
     assert!(y1 + 1 - y0 <= 22, "{y0}..{y1}");
     assert!(x1 < 220, "right of the sidebar: {x1}");
 }
