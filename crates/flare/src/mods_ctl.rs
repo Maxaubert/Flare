@@ -86,6 +86,20 @@ pub enum ModsMsg {
     ShowPanel { id: String },
     /// The ping timer (every [`PING_EVERY`] while a background page runs).
     Tick,
+    /// A tab's follower read new entries of its Claude session (plugins phase 5): for the pages that listen to
+    /// `session` and may see the tab.
+    Said {
+        tab: String,
+        session: String,
+        said: flare_convo::follow::Said,
+    },
+    /// The Enter a plugin's `tabs.input` asked for, due now (it follows the paste after a short wait).
+    Enter {
+        plugin: String,
+        tab: String,
+        /// The plugin's generation when the call was checked: a plugin switched off since presses nothing.
+        generation: u64,
+    },
 }
 
 /// A `ModsMsg` that can sit in a `UiMsg` (which is `Debug`): it prints its kind only, never a call's data.
@@ -101,6 +115,8 @@ impl std::fmt::Debug for ModsMsgBox {
             ModsMsg::SetEnabled { .. } => "ModsMsg::SetEnabled",
             ModsMsg::ShowPanel { .. } => "ModsMsg::ShowPanel",
             ModsMsg::Tick => "ModsMsg::Tick",
+            ModsMsg::Said { .. } => "ModsMsg::Said",
+            ModsMsg::Enter { .. } => "ModsMsg::Enter",
         })
     }
 }

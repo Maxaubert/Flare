@@ -7,6 +7,9 @@
 //!   while someone listens and hold a bounded queue.
 //! - `fold`: parses each line leniently and folds it into the model (edits, tasks, named files).
 //! - `diff`: a line diff of one edit, as capped hunks for the Changes panel.
+//! - `said`: what is said in a session (prompts, replies, tool calls) as entries a plugin hears, and the last entries
+//!   of a transcript read from its end (plugins phase 5).
+//! - `follow`: a worker that follows a session's transcript from its end and hands over each new entry.
 //!
 //! Fold and diff are not cheap (a diff can run a table of 4 million cells): call them on the tail worker or a
 //! background thread, never on the UI thread.
@@ -15,7 +18,9 @@
 
 pub mod diff;
 pub mod fold;
+pub mod follow;
 pub mod path;
+pub mod said;
 pub mod tail;
 pub mod track;
 pub mod view;

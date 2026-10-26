@@ -17,7 +17,7 @@
 //! [`Hub::grant_of_mod`]'s grant, and no `Debug` or `Snapshot` carries one.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -260,6 +260,16 @@ pub struct Hub {
     kept: OnceLock<Vec<crate::migrate::Kept>>,
     /// The budget of every protocol 2 plugin that is on (design 13), shared with the window and the browser glue.
     limits: Arc<Limits>,
+    /// Each plugin's own store (plugins phase 5), beside the switch file in `plugins-storage`.
+    storage: crate::storage::Storage,
+}
+
+/// Where the plugins' stores are kept: `plugins-storage` beside the switch file (the profile's folder).
+pub fn storage_dir(cfg: &Config) -> PathBuf {
+    cfg.state_file
+        .parent()
+        .map_or_else(|| cfg.dir.join(".storage"), Path::to_path_buf)
+        .join("plugins-storage")
 }
 
 /// A tool call routed to a mod, waiting for the page's answer.
@@ -275,12 +285,26 @@ pub struct Call {
 impl Hub {
     pub fn new(cfg: Config) -> Self {
         Self {
-            cfg,
             inner: Mutex::new(Inner::default()),
             store: Mutex::new(None),
             kept: OnceLock::new(),
             limits: Arc::new(Limits::default()),
+            storage: crate::storage::Storage::new(storage_dir(&cfg)),
+            cfg,
         }
+    }
+
+    /// Every plugin's own store (`storage.get`, `storage.set`). Its calls read and write the disk: a worker's.
+    pub fn storage(&self) -> &crate::storage::Storage {
+        &self.storage
+    }
+
+    /// Whether `id` is a protocol 2 plugin the hub found (a protocol 1 mod keeps exactly what it had: no store).
+    pub fn is_plugin(&self, id: &str) -> bool {
+        self.lock()
+            .found
+            .iter()
+            .any(|f| f.manifest.id == id && f.manifest.is_plugin())
     }
 
     /// The plugins' budgets: the window spends a page's messages from it, the browser glue looks at it before it

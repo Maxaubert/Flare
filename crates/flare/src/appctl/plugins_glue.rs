@@ -519,7 +519,7 @@ impl AppCtl {
 
     /// A change checked while the plugin was on is not applied once it is off, nor after it was switched off and
     /// on again (its generation moved on).
-    fn plugin_still_on(&self, plugin: &str, generation: u64) -> Result<(), CtlError> {
+    pub(super) fn plugin_still_on(&self, plugin: &str, generation: u64) -> Result<(), CtlError> {
         let on = self.mods.as_ref().is_some_and(|m| {
             m.hub().grant_of_mod(plugin).is_some() && m.hub().generation(plugin) == generation
         });

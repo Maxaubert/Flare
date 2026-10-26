@@ -169,6 +169,7 @@ pub enum UiMsg {
 
 mod mods_glue;
 mod plugins_glue;
+mod sessions_glue;
 mod surfaces7;
 mod web_glue;
 
@@ -438,6 +439,8 @@ pub struct AppCtl {
     plugin_top_model: Rc<VecModel<crate::PluginButton>>,
     /// The plugins' sidebar sections and actions (plugins phase 4).
     plugins: plugins_glue::PluginSurfaces,
+    /// The transcripts followed for the plugins that listen to `session`, and each plugin's share (plugins phase 5).
+    sessions: crate::plugin_sessions::PluginSessions,
     view: View,
     last_geom: Option<GeomData>,
     query: String,
@@ -854,6 +857,7 @@ impl AppCtl {
             plugin_rows_model,
             plugin_top_model,
             plugins: plugins_glue::PluginSurfaces::default(),
+            sessions: crate::plugin_sessions::PluginSessions::default(),
             view: View {
                 rows: Vec::new(),
                 geom: GeomData {
@@ -3660,6 +3664,15 @@ impl AppCtl {
                 state,
                 generation,
             } => self.ctl_actions_set(plugin, key, tab, state, generation),
+            // Sessions and typing (plugins phase 5): checked on the worker, applied in `sessions_glue`.
+            CtlOp::SessionOf { tab } => self.ctl_session_of(&tab),
+            CtlOp::TabInput {
+                plugin,
+                tab,
+                text,
+                enter,
+                generation,
+            } => self.ctl_tab_input(plugin, tab, text, enter, generation),
             // Answered by the browser's message, never here (see `ctl_browser`).
             CtlOp::BrowserOpen { .. }
             | CtlOp::BrowserNavigate { .. }

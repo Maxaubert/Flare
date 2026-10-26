@@ -15,6 +15,8 @@
 //! - plugins (phase 4): a click on one of the plugin's actions is the event `action` `{key, tab}`, and a click or a
 //!   tick on one of its sidebar items is `sidebar.item` `{key, item, checked?}`. A tool call answered by a
 //!   background page names the tab the agent called from (`tab`), so the page knows whose call it is.
+//! - plugins (phase 5): a page of a plugin that holds `sessions` may listen to `session`, one event per entry of a
+//!   Claude session's conversation in a tab it may see (`{tab, session, role, text, tool?, at?, dropped?}`).
 //!
 //! Everything the page sends is untrusted: [`parse_page_message`] checks the shape and the size before the host
 //! looks at a method name.
@@ -34,7 +36,7 @@ pub const BRIDGE_JS: &str = r#"(function () {
   if (window.flare) { return; }
   var wv = window.chrome && window.chrome.webview;
   if (!wv) { return; }
-  var names = ['tool', 'tabs', 'agent', 'plugin', 'action', 'sidebar.item'];
+  var names = ['tool', 'tabs', 'agent', 'plugin', 'action', 'sidebar.item', 'session'];
   var handlers = {};
   var seq = 0;
   var waiting = new Map();
@@ -72,7 +74,7 @@ pub const BRIDGE_JS: &str = r#"(function () {
   });
   var flare = {
     on: function (name, fn) {
-      if (names.indexOf(name) < 0) { throw new TypeError("window.flare.on: the events are 'tool', 'tabs', 'agent', 'plugin', 'action' and 'sidebar.item'"); }
+      if (names.indexOf(name) < 0) { throw new TypeError("window.flare.on: the events are 'tool', 'tabs', 'agent', 'plugin', 'action', 'sidebar.item' and 'session'"); }
       if (typeof fn !== 'function') { throw new TypeError('window.flare.on: the handler must be a function'); }
       if (handlers[name]) { throw new Error("window.flare.on: a '" + name + "' handler is already registered"); }
       handlers[name] = fn;
@@ -109,9 +111,16 @@ pub const BRIDGE_JS: &str = r#"(function () {
   Object.defineProperty(window, 'flare', { value: Object.freeze(flare), writable: false, configurable: false, enumerable: true });
 })();"#;
 
-/// The events a page may listen to besides `tool` (plugins phase 3; `action` and `sidebar.item` phase 4), each with
-/// one handler per page.
-pub const EVENTS: [&str; 5] = ["tabs", "agent", "plugin", "action", "sidebar.item"];
+/// The events a page may listen to besides `tool` (plugins phase 3; `action` and `sidebar.item` phase 4; `session`
+/// phase 5), each with one handler per page.
+pub const EVENTS: [&str; 6] = [
+    "tabs",
+    "agent",
+    "plugin",
+    "action",
+    "sidebar.item",
+    "session",
+];
 
 /// What the page sent.
 #[derive(Debug, PartialEq)]
@@ -181,7 +190,8 @@ pub fn parse_page_message(text: &str) -> Result<PageMsg, String> {
                 .and_then(Value::as_str)
                 .filter(|n| EVENTS.contains(n))
                 .ok_or_else(|| {
-                    "a page listens to tabs, agent, plugin, action or sidebar.item".to_string()
+                    "a page listens to tabs, agent, plugin, action, sidebar.item or session"
+                        .to_string()
                 })?;
             Ok(PageMsg::Listen {
                 name: name.to_string(),
@@ -282,7 +292,7 @@ mod tests {
         }
         for bad in [
             r#"{"t":"listen","name":"tool"}"#,
-            r#"{"t":"listen","name":"session"}"#,
+            r#"{"t":"listen","name":"sessions"}"#,
             r#"{"t":"listen"}"#,
             r#"{"t":"pong"}"#,
             r#"{"t":"pong","id":"1"}"#,
@@ -306,7 +316,9 @@ mod tests {
     #[test]
     fn the_script_takes_one_handler_per_event_and_answers_a_ping_itself() {
         assert!(
-            BRIDGE_JS.contains("['tool', 'tabs', 'agent', 'plugin', 'action', 'sidebar.item']")
+            BRIDGE_JS.contains(
+                "['tool', 'tabs', 'agent', 'plugin', 'action', 'sidebar.item', 'session']"
+            )
         );
         // Every event a page may listen to is a name the script takes, and `tool` is not one it listens to.
         for name in EVENTS {
