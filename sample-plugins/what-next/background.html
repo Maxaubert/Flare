@@ -28,7 +28,7 @@
   function clean(s, max) {
     s = String(s == null ? '' : s)
       .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
-      .replace(/[­؜᠎​-‏‪-‮⁠-⁤﻿]/g, '')
+      .replace(/[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     return s.length > max ? s.slice(0, max - 1) + '…' : s;
@@ -41,10 +41,11 @@
       if (list.source) { o.sub = clean(list.source, TEXT_MAX); }
       return o;
     });
-    flare.call('sidebar.set', { key: 'next', items: items }).catch(function () {});
+    return flare.call('sidebar.set', { key: 'next', items: items });
   }
 
-  // Checks and keeps a list; throws a sentence for one that does not fit.
+  // Checks and keeps a list; throws a sentence for one that does not fit. Returns the promise of showing it, so a
+  // refusal (a text Flare will not take, or more than 5 sets a second) reaches whoever asked.
   function keep(source, items) {
     if (!Array.isArray(items)) { throw 'items must be a list'; }
     if (items.length > MAX_ITEMS) { throw 'at most ' + MAX_ITEMS + ' items'; }
@@ -56,7 +57,7 @@
     });
     list = { source: clean(source, 80), items: out };
     flare.call('storage.set', { key: 'list', value: list }).catch(function () {});
-    render();
+    return render();
   }
 
   flare.on('tool', function (call) {
@@ -65,11 +66,14 @@
       return;
     }
     var input = call.input || {};
-    try { keep(input.source, input.items); } catch (why) {
+    var shown;
+    try { shown = keep(input.source, input.items); } catch (why) {
       flare.respond(call.callId, null, String(why));
       return;
     }
-    flare.respond(call.callId, { shown: list.items.length });
+    var n = list.items.length;
+    shown.then(function () { flare.respond(call.callId, { shown: n }); },
+      function (why) { flare.respond(call.callId, null, 'the sidebar did not take the list: ' + String(why)); });
   });
 
   // Path 2: the repository's oldest open issues (pull requests left out), again every 10 minutes.
@@ -82,11 +86,11 @@
           .filter(function (x) { return x && !x.pull_request; })
           .slice(0, MAX_ITEMS)
           .map(function (x) { return { title: x.title, number: x.number }; });
-        keep(REPO, items);
+        keep(REPO, items).catch(function () {});
       })
       .catch(function (why) {
         // Most often: no `network` permission, so the policy refused the fetch.
-        keep(REPO, [{ title: 'Could not fetch the issues (does the plugin have network?): ' + String(why) }]);
+        keep(REPO, [{ title: 'Could not fetch the issues (does the plugin have network?): ' + String(why) }]).catch(function () {});
       });
   }
 
@@ -94,7 +98,7 @@
     var v = r && r.value;
     if (v && Array.isArray(v.items)) { list = { source: String(v.source || ''), items: v.items }; }
   }).catch(function () {}).then(function () {
-    render();
+    render().catch(function () {});
     if (REPO) {
       fetchIssues();
       setInterval(fetchIssues, REFRESH_MS);
