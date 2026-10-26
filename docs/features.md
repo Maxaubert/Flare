@@ -1614,6 +1614,62 @@ Builder's calls (the owner may overrule):
 - `show_audio` with an address uses the networked mini-app browser whatever the mini-app network switch says (that
   switch is for pages the agent writes); the page is Flare's and its policy lets in one origin's media only.
 
+## Plugins phase 7: helper programs, install, update and remove, 2026-10-26
+
+The seventh phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 4, 9, 10 and 13). The
+contract: `docs/surfaces/mods.md`, "Helper, install, update and remove", and `docs/surfaces/protocol.md` ("Events", a
+plugin's helper).
+
+- **Helper programs.** `flare_mods::helper::Host` starts a plugin's `helper.command` (an `.exe` checked again inside
+  the folder by `paths::program_inside`) for a plugin that is on and holds `process` in its live grant
+  (`Hub::helper_of`), suspended, in a kill-on-close job object of its own, then resumed; `CREATE_NO_WINDOW`, the plugin
+  folder as its current folder, stdin closed, `FLARE_TAB_TOKEN` and `FLARE_RESUME_ID` removed, `FLARE_PLUGIN_TOKEN`
+  and `FLARE_CTL_PIPE` set on the child. stdout and stderr go to `<profile>\plugins-logs\<id>.log` (moved to `.log.1`
+  past 1 MB). An end by itself restarts it at once, 3 times in 5 minutes, then it stays stopped
+  (`helper::STOPPED_HELPER` in Settings) until the plugin is switched. Turning the plugin off terminates its job before
+  Settings hears it is off; the quit stops every helper. Starting, waiting and logging run on the helper's own threads.
+  The window: `appctl::install_glue` (`sync_helpers` after every change of the plugins, beside `sync_backgrounds`).
+- **Helper events.** `flare_ctl::session::Hub::publish_to_owner` routes an event to the connections that said hello
+  with one plugin's token; the window sends a helper the `tabs` and `agent` events of each refresh when its plugin
+  holds `tabs`, and `session` entries with `sessions` (and `tabs` or click scope).
+- **Install.** `flare_mods::install`: the zip rules (create-new writes, links, encryption, traversal, drives, `:`, `\`,
+  device names, case duplicates, 200 characters, 8 folders, 16 MB an entry, 100 MB, 50 MB, 2000 entries), staging in
+  `plugins\.staging\<random>` checked by `discover::check_folder` and hashed before anything lands, the commit by
+  rename with the old copy moved aside and put back on a failure, and the Recycle Bin (`SHFileOperationW`, silent).
+  `flare_mods::fetch`: the download (https on every hop, at most 5 redirects followed one at a time, the phase 6 address
+  wall and a resolver that drops local addresses, 50 MB counted, 60 seconds, no cookies, no proxy). The hub
+  (`hub::lifecycle`): `stage_install`, `pause`, `commit_install`, `remove_plugin`, one disk lock with the scan; the
+  install record (`source`, `hash`) in `mods.json` under `installed`; a change of source is a new approval like a change
+  of author or homepage, and wipes the plugin's storage and browser profile. The workers: `crate::plugin_install`.
+- **Settings > Plugins.** "Install a plugin" (Install from file, a file picker) and "From an address" (a text field,
+  the new `Control::Text` and `SetKind.text`, `SetTextField`; Install or Enter) under the folder row, and Update and
+  Remove on each card's switch row. One install, update or removal at a time; the install row's subtext is what the
+  last one said, a warning when it failed.
+- **Tests.** `flare_mods::install` (7: the name rules, traversal, case, links, the size and count limits, the layouts,
+  the commit and the old copy, leftovers), `flare_mods::fetch` (4: the limit, redirects and their rule, the resolver,
+  a server error), `flare_mods::helper` (7: the environment and the log, the job ends a stopped helper and its child,
+  the restart policy with real processes and as a counter, only an exe inside the folder, log rotation, no token in
+  `Debug`), `hub::lifecycle` (6: installed off with its record, an update asking for more turns off, a downgrade
+  refused, another source wipes storage and profile, remove forgets everything, `helper_of` only on and with
+  `process`), `enabled` (the install record), `flare_ctl::session` (owner events), `flare_surfaces::net`
+  (`ip_refusal`), `crate::plugin_install` (3: the rules, refused addresses, the id an update holds),
+  `appctl::tests::mods_tests::plugin_install` (7: from a file, a refused zip, update and its stop, remove, the
+  picker, a helper on and off with its events, a helper stopped after its restarts), `ui_tests::settings_mods` (the
+  install rows, the field and the buttons) and the Plugins page model.
+
+Builder's calls (the owner may overrule):
+- A downgrade is refused with a sentence instead of asked about (design 13 "a downgrade asks"); removing first installs
+  the older one.
+- "Installing over an existing id shows the differences" is the existing card: an update that asks for more turns the
+  plugin off and its card lists what it asks for now, with "Asks for new permissions"; there is no side-by-side view.
+- Remove asks nothing: the folder goes to the Recycle Bin, so it can be brought back by hand (its approval cannot).
+- Update downloads again from the address the plugin was installed from, or opens the file picker for one installed
+  from a file or by hand; the zip must hold the same id.
+- A plugin's browser profile is deleted as the folder `EBWebView\flare-mod-<id>` of both plugin browsers, after its
+  views closed; that this is WebView2's profile folder is read from WebView2's layout, not measured.
+- The design's "at most 4 pipe connections per plugin token" is not built in this phase.
+- A helper hears `tabs`, `agent` and `session` events without asking for them (a page asks with `window.flare.on`);
+  there is no `plugin` event for a helper, since it is stopped when the plugin turns off.
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,

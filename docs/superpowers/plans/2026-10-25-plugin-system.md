@@ -149,6 +149,18 @@ Built 2026-10-26, with these calls by the builder (the owner may overrule):
 4. Tests: zip limits and traversal refusals, URL scheme refusals, update with more permissions turns off, helper env
    and job.
 
+Built 2026-10-26, with these calls by the builder (the owner may overrule):
+- A downgrade is refused with one sentence (remove first) instead of asked about; "shows the differences" is the card
+  of an update that asks for more, turned off with the list it asks for now.
+- Remove asks nothing: the folder goes to the Recycle Bin. Update downloads again from the recorded address, or opens
+  the file picker; the zip must hold the same id.
+- The install record (`source`, `hash`) is kept under the entry's own `installed` key in `mods.json`, on and off; the
+  source goes into the approval, and a change of source is a new approval like a change of author or homepage.
+- A helper hears `tabs`, `agent` and `session` without asking; "at most 4 pipe connections per plugin token" is not
+  built yet.
+- A plugin's browser profile is deleted as `EBWebView\flare-mod-<id>` in both plugin browsers (read from WebView2's
+  layout, not measured).
+
 ## Phase 8: samples, call-me, docs
 
 1. `sample-plugins/`: `todo`, `browser-badge`, `what-next`, `sonara-bar` (UI with a fake source), `session-buttons`,
