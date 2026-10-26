@@ -952,6 +952,12 @@ Spec and plan: `docs/superpowers/specs/2026-10-26-agy-and-agent-motion.md`. Rese
   7501; a 7501 question is cleared only by the program's next report, never by Flare's screen reads; `msg` is kept only
   as clean text and shown nowhere yet. The icon has the mock's 32 cells (the spec's 46 was a guess), drawn as one Slint
   path per colour so PR 2's flow can shift colours per path. Settings' icon int moved from 3 to 4.
-- 2026-10-26, PR 1, **not done:** an agy entry in the command help (the catalogue is held to Prism Terminal's answers,
-  `flare-help` golden tests; adding one is a decision of its own), hooks for agy, Flare's MCP server in agy's config
+- 2026-10-26, PR 1, **the command help gets agy** (the spec's "help entry"): `agy-start` (`agy`) and `agy-continue`
+  (`agy -c`), and the agents category reads "Claude Code, Codex and Antigravity". They live in
+  `tools/oracle-help/flare.mjs`, laid over Prism Terminal's copied sources (which stay verbatim), and the golden vectors
+  are regenerated from Prism Terminal's own search over that catalogue.
+- 2026-10-26, PR 1, **a 7501 report goes with its program:** a prompt (the shell reported its folder) drops the tab's
+  report and the marks it set, and so does a poll answer naming another agent than the one stored, so an agent that quit
+  without `state=clear` never freezes the next one's marks, and a plain program's report is not applied to a later agent.
+- 2026-10-26, PR 1, **not done:** hooks for agy, Flare's MCP server in agy's config
   (`agy mcp add` writes the user's global file: a separate ask), dictation routing, and answering the 7501 query.

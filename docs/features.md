@@ -1768,7 +1768,12 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
   dropped, so a subtask's "done" never marks the tab. A report from a tab with no agent found yet lights nothing; it asks
   the poll to look and is applied when the poll names an agent (so a plain program's 7501 never makes a shell an agent).
   Claude's hooks take a tab over from 7501 (Claude Code may send both). A question raised by 7501 is cleared by the
-  program's next report, never by Flare's screen reads.
+  program's next report, never by Flare's screen reads. A report goes with its program: a prompt (the shell reported its
+  folder) or a poll answer naming another agent drops it and the marks it set, so an agent that quit without
+  `state=clear` never freezes the next one's marks.
+- **Help.** The command help has `agy` (start) and `agy -c` (carry on the last conversation) under "Claude Code, Codex and
+  Antigravity"; Flare's own entries sit in `tools/oracle-help/flare.mjs` over Prism Terminal's copied catalogue, and the
+  golden searches are regenerated from Prism Terminal's own search.
 - **Fallback.** With no 7501 (an older agy) the poll still names the agent and the output scoring gives working and idle.
 - **Resume.** A saved agy tab comes back with `agy:last`, started as `agy -c` (the most recent conversation in that folder);
   `valid_resume` accepts the marker, and no id travels.
@@ -1778,13 +1783,13 @@ Flare names an agent: `C:\Users\Admin\Documents\Claude\research\flare\2026-10-26
   `ui_text_marks.rs`. It stands still: the motions are Part 2.
 - **Keys.** agy takes Codex's image paste (^V) and newline (backslash, CR) until they are measured.
 - **Not in this PR.** Hooks for agy, Flare's MCP server in agy's config (`agy mcp add` writes the user's global file),
-  dictation routing, an agy entry in the command help (the catalogue is held to Prism Terminal's own answers, 328 entries
-  and its golden searches), answering the `OSC 7501 ; ?` query (the spec's reply is
+  dictation routing, answering the `OSC 7501 ; ?` query (the spec's reply is
   `OSC 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ST`; agy's own check is not
   captured yet).
 - Held by `agy_is_found_by_its_program_and_never_by_a_word`, `claude_then_codex_win_over_agy_under_one_shell`, the
   `osc7501` parser tests, `each_status_drives_its_mark_on_an_agy_tab_away` and the other OSC 7501 indicator tests,
   `an_agy_tab_is_marked_from_its_osc_7501_reports`, `osc_7501_is_passed_up_raw_with_either_terminator_and_across_chunks`,
+  `an_agent_that_follows_agy_without_a_clear_drives_its_own_marks`, `a_prompt_drops_the_report_of_the_program_that_ended`,
   `agy_gets_its_own_marker_and_its_word_round_trips`, `agy_resumes_its_last_conversation_with_no_id`,
   `an_agy_tab_comes_back_as_agy_c_wearing_its_icon_from_the_first_frame`, `turns_agys_status_reports_on_unless_the_user_chose`,
   `the_agy_icon_is_the_banners_rainbow_arch`, `the_agy_glyph_is_the_agent_crates_paths` and `agent_icons_are_eighteen_pixels`.
