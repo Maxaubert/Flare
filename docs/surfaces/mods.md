@@ -248,7 +248,8 @@ stops a mod from reading a page the user is logged into in another tab.
   never the web panel's profile and never the user's Edge profile. A profile name is the only per-mod name WebView2
   allows inside one browser, so the folder is not `...\plugins\<id>\profile`.
 - **No network from a mod.** The page is served from its folder with a strict policy. A mod that needs
-  the internet is not a v1 mod.
+  the internet is not a v1 mod. A protocol 2 plugin reaches it only with an approved `network` (plugins phase 6,
+  "Session bar, network and audio" below).
 - **The manifest is untrusted.** Every field is checked before anything is used. A path is checked three
   times: its syntax when read, its canonical location on disk (links and junctions included) when the mod is
   found, and the same location again on every request its page makes (the Serving rule).
@@ -407,7 +408,8 @@ by you).
   its actions. `tab-hover`: a small button in Flare's outlined chip on a tab while it is hovered (one per plugin, two on
   a tab at most; named tabs of 110 px or more and sidebar rows), left of the badges and never over the agent's ring.
   `top-bar`: a button left of the window buttons (one per plugin, 3 in all), kept apart from them by a gap. An action
-  without an icon shows its title's first letter. `session-bar` waits for the plugin bar (a later phase).
+  without an icon shows its title's first letter. `session-bar`: a chip at the right end of the plugin's own bar under
+  a tab's terminal, while its bar shows there (plugins phase 6).
 - **Events.** `window.flare.on('action', fn)` hears `{key, tab}` when you click an action (`tab` is the tab it was
   clicked on; for a top-bar button, the shell tab in front, or null). It goes to the plugin's background page when that
   page listens, else to every page of the plugin that does. `window.flare.on('sidebar.item', fn)` hears `{key, item}`
@@ -454,6 +456,48 @@ Design sections 6, 7 and 13.
   written; a set past that answers `too_large` and changes nothing. A set is answered at once; the file is written on a
   worker, at most twice a second (sets in between land together), to a `.tmp` file renamed over the old one. A file
   that is not a JSON object reads as empty. A protocol 1 mod has no store (`forbidden`), and neither has the agent.
+
+## Session bar, network and audio (plugins phase 6)
+
+Design sections 5.5, 5.6, 8 and 13.
+
+- **`bar.show {tab?}` and `bar.hide {tab?}` (`bar`).** The plugin's strip (its manifest's `bar.entry`) under the
+  terminal of a tab it may see (its own, any with `tabs`, or one a click gave it; a background page names one), as tall
+  as `bar.height` (24 to 160, kept within those). `show` answers `{tab, height}`, `hide` `{hidden}` (false when the
+  tab showed no bar of this plugin; another plugin's stays). One bar a tab: while another plugin's bar shows there,
+  `show` is `busy` with that plugin's name. Each is at most once a second per plugin per tab (`rate_limited`).
+- **The terminal gives up the height.** The grid is laid out shorter by the bar's height and the shell is resized once,
+  the same way a window resize goes; nothing is animated, so no frame shows it half way. The bar shows only while its
+  tab is in front with its terminal (not over Settings or a placeholder) and goes when the plugin stops (turned off, or
+  its background page ended) or the tab closes; a bar page that ends takes its bar off the tab (the plugin may show it
+  again).
+- **The bar's page.** A browser view in the plugins' browser and the plugin's own profile, served like its other pages
+  (the Serving rule), sealed as a bar: no script dialog, no right-click menu, no browser keys, no download, no new
+  window, no permission, own frames only, and never the keyboard (a click that gives it focus hands the keyboard back
+  to the terminal at once). It is made the first time its tab is in front with the bar, hidden while the tab is
+  behind or a Flare menu or dialog is open (a browser view paints over Flare), and kept for at most two tabs a plugin
+  (an older one behind is closed and made again when its tab comes back). It has the bridge like any page of the
+  plugin: its calls act on the tab it sits in, and it hears the events it listens to.
+- **`session-bar` actions.** Drawn by Flare as chips at the right end of the bar row (at most 4), with the action's
+  icon or first letter and `actions.set` state; the page's place leaves them their room. A click is `action`
+  `{key, tab}` and gives click scope on the tab.
+- **`network`.** The plugin's pages (panel, bar, background) run in a networked browser of the plugins' own
+  (`%LOCALAPPDATA%\Flare\WebView2-plugin-net`, its profile `flare-mod-<id>` there, so a plugin that gains or loses
+  `network` starts with empty page storage): the mini-apps' WebRTC policy and no dead proxy, and a resolver for which
+  `localhost`, `*.localhost`, `*.local`, `*.lan`, `*.internal` and `*.home.arpa` are not found. Every answer of its
+  pages carries `default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src
+  'self' data: https:; connect-src 'self' https:; media-src 'self' data: blob: https:; frame-src 'none'; form-action
+  'self'; base-uri 'none'`: it may fetch, and load pictures and sound, over https, never plain http, scripts from the
+  internet, frames or a form that posts elsewhere. The request wall lets a request out only to an https address on a
+  public host: loopback, the private, shared and link-local ranges (IPv4 and IPv6), a host without a dot and the local
+  names above are refused (`flare_surfaces::net`). It still cannot navigate away from its own address or open a window.
+  Without `network` the policy is the sealed one above. A protocol 1 mod never has it.
+- **`view.audio {path | url, title?, autoplay?}` (`view`).** Flare's own audio player in the plugin's panel (the agent's
+  is `show_audio`): a sound file (mp3, wav, ogg, oga, opus, m4a, aac, flac, webm, weba; checked like `view.file` and
+  copied beside the page, at most 100 MB), or a public https address (refused as above), which needs `network` too.
+  Play, pause and seek; Space, Left and Right work in the page. It never loops, and plays by itself only with
+  `autoplay: true`, once (a reload does not play it again). The page is Flare's: its policy lets in its own track or
+  that address's origin only.
 
 ## Tab bar and sidebar contributions (review 2026-10-25)
 
