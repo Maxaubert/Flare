@@ -8,7 +8,7 @@ code disagree, that is a bug in one of them: fix both in the same commit.
 
 Status of the methods in Flare (stages 4 to 8 are done): the framework (transport, hello, grants, errors,
 limits, timeouts, events) is built and tested in `flare-ctl`. Flare starts the server at launch and
-implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks`), `panel.close`, `panel.state`,
+implements `hello`, `tabs.list`, `panel.open` (kinds `web` and `changes`), `panel.close`, `panel.state`,
 `view.image|file|text|html|diagram`, `browser.open`, `browser.navigate`, the agent's hands on the page
 (`browser.look|click|type|press|scroll|wait|eval`, stage 4), the mini-apps and diagrams of stage 5
 (`view.html` and `view.diagram`), `convo.state` (stage 6, the conversation reader) and, with mods (stage 8),
@@ -230,8 +230,8 @@ makes a path absolute against **its own** working folder (the agent's, where Cla
 before it sends it, and its tool text says so; a client that wants the tab's folder sends the path as it
 is, from its own connection.
 
-`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"tasks"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
-(`changes` and `tasks`, stage 6, have neither a `path` nor a `url`).
+`PanelInfo` is `{"kind": "image"|"text"|"web"|"app"|"changes"|"mod:<id>", "title": string, "path"?: string, "url"?: string, "network"?: bool}`
+(`changes`, stage 6, has neither a `path` nor a `url`).
 A file or text panel has `path` (text handed over has neither); a web panel has `url` and no `path`, and its
 `title` is the page's title, else the address's host. A **mini-app or diagram** (`kind` `"app"`, stage 5) has
 neither `path` nor `url` (its address is Flare's own and means nothing to a client), its `title` is the one the
@@ -273,7 +273,7 @@ tab strip shows, `active` is "in front". Stage 2.
 A plugin that holds `tabs` (plugins phase 3) gets every shell tab, in strip order, with more:
 `{"id", "title", "folder", "active", "agent": "claude"|"codex"|null, "state": "working"|"question"|"done"|"failed"|"idle",
 "session": string|null, "panel": string|null}`. `panel` is what the tab's open panel shows: `browser` for the web
-panel, else its kind (`image`, `text`, `changes`, `tasks`, `app`, `mod:<id>`), null when none is open. The same object
+panel, else its kind (`image`, `text`, `changes`, `app`, `mod:<id>`), null when none is open. The same object
 is the `tab` of every `tabs` event a plugin page hears (`mods.md`, "Background pages and events").
 
 ### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
@@ -362,7 +362,7 @@ checked).
 
 ### panel.open
 
-Params: `kind` (string, required; `"web"`, `"changes"` or `"tasks"`), `url` (string, optional, `web` only;
+Params: `kind` (string, required; `"web"`, `"changes"` or `"mod:<id>"`), `url` (string, optional, `web` only;
 without it the panel opens `about:blank`).
 
 - `web` opens the tab's web panel (replacing an open one) and behaves exactly as `browser.open` with the same
@@ -373,16 +373,17 @@ without it the panel opens `about:blank`).
   `network`). The mod's page is made hidden when the tab is behind. A tab shows ONE panel, so it replaces what the
   tab showed. On a tab named by `tab` that is not the caller's own (plugins phase 3) it replaces only a closed panel
   or one showing the plugin already; else `busy`.
-- `changes` and `tasks` (stage 6) open the tab's conversation panel: the files the agent edited (with each file's
-  diff), or the agent's task list. They are native panels with no file or address behind them, so `url`, `path` and
-  `text` are refused (`bad_params`). The call answers at once with `{"panel": PanelInfo}` (`kind` `changes` or
-  `tasks`, `title` `Changes` or `Tasks`, no `path`). The panel replaces whatever the tab showed; a tab that is behind
-  keeps it stored and is not switched to. Opening one is what makes Flare read the tab's transcript (see
-  `convo.state`).
+- `changes` (stage 6) opens the tab's conversation panel: the files the agent edited (with each file's diff). It is
+  a native panel with no file or address behind it, so `url`, `path` and `text` are refused (`bad_params`). The call
+  answers at once with `{"panel": PanelInfo}` (`kind` `changes`, `title` `Changes`, no `path`). The panel replaces
+  whatever the tab showed; a tab that is behind keeps it stored and is not switched to. Opening it is what makes
+  Flare read the tab's transcript (see `convo.state`).
 - `board` (stage 7) was removed on 2026-10-22 with the agent board: it is an unknown kind, `bad_params`.
+- `tasks` (stage 6) was removed on 2026-10-26 with the Tasks panel (sessions never used it): it is an unknown kind,
+  `bad_params`.
 
 For images, files and text use `view.*`. Errors: `no_tab`, `bad_params` (no kind, another kind, `url`, `path` or
-`text` with `changes` or `tasks`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
+`text` with `changes`, or an address `browser.open` refuses), `unavailable` (`web`: there is no WebView2
 runtime), `timeout`.
 
 ### panel.close
@@ -606,21 +607,20 @@ page moves to.
 
 A compact summary of the caller's own tab's conversation, from what Flare has read of the Claude Code transcript.
 Params: none (a `tab` param is ignored, as for every method: the tab is the connection's own). Flare reads a
-tab's transcript ONLY while a Changes or Tasks panel is open on it and its Claude session is known (the session
+tab's transcript ONLY while a Changes panel is open on it and its Claude session is known (the session
 comes from the `flare-status` hooks), so the answer has two shapes.
 
 Not reading (no such panel, or no session yet): `{"tracking": false, "note": string}`. The note says that
-`panel.open` with kind `changes` or `tasks` makes Flare read it. This is an answer, not an error.
+`panel.open` with kind `changes` makes Flare read it. This is an answer, not an error.
 
 Reading: `{"tracking": true, "session": string, "found": bool, "files": int, "edits": int, "failed": int,
-"tasks": {"pending": int, "in_progress": int, "done": int, "other": int}, "subagent_lists": int,
-"active"?: string, "changed": [{"path": string, "edits": int, "failed": int}]}`.
+"changed": [{"path": string, "edits": int, "failed": int}]}`.
 
 - `found` is false until the transcript file exists; the counts are 0 until it is read.
 - `files` is the number of different files edited (Edit, MultiEdit, Write, NotebookEdit calls); `edits` the calls on
   them; `failed` the calls whose result was an error. A failed call stays counted because the agent made it.
-- `tasks` counts the MAIN agent's list by state; `subagent_lists` is how many subagents kept a list of their own;
-  `active` is the title of the main list's first task in progress.
+- `tasks`, `subagent_lists` and `active` (the agent's task list) were removed on 2026-10-26 with the Tasks panel;
+  a client must not expect them.
 - `changed` is the 20 newest changed files, newest first. No file contents and no diffs leave the app.
 
 Grant: the agent's own tab only (the `convo` permission for a mod). Errors: `no_tab`. Held by

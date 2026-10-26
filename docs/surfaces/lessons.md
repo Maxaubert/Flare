@@ -578,7 +578,9 @@ line of each item.
 - **Backpressure, not a bigger buffer.** A reader that queues every batch holds the whole file when the consumer is slow. Rust: a `sync_channel` of two, with the worker waiting while it is full. Electron: stop scheduling the next `fs.read` until the consumer has taken the last batch; never push into an unbounded array.
 - **Cap the model, not only the read.** A 4 MB read cap says nothing about memory when every edit's text is kept forever. Cap each stored text, the edit count and the total text bytes, and drop the oldest first.
 
-## Stage 6: the Changes and Tasks panels, 2026-10-22
+## Stage 6: the Changes and Tasks panels, 2026-10-22 (the Tasks panel was removed 2026-10-26)
+
+The notes on the task list below are kept for the record; the Tasks panel itself was removed (owner, 2026-10-26: sessions never used it), so do not port it.
 
 Holes hit while wiring the library into the window, with what each means for Prism Terminal (Electron).
 
@@ -599,8 +601,8 @@ Holes hit while wiring the library into the window, with what each means for Pri
 
 ### By hand, not machine-tested (Stage 6)
 
-- A real Claude Code session: the shapes of its real `tool_result` lines for a failed edit (`is_error` as a boolean), and `TaskCreate` and `TaskUpdate` (guessed in `convo.md`), against a live transcript. The fixtures are synthetic by rule.
-- The look of the diff and the task list in all 18 themes (the tints are alpha over the ground; a light theme and a glass theme were not checked by eye).
+- A real Claude Code session: the shapes of its real `tool_result` lines for a failed edit (`is_error` as a boolean), against a live transcript. The fixtures are synthetic by rule.
+- The look of the diff in all 18 themes (the tints are alpha over the ground; a light theme and a glass theme were not checked by eye).
 - A very long real session (a transcript of hundreds of megabytes): the first read is bounded at 4 MB a poll and the model at 2000 edits, but the time to the first full list was not measured.
 - `CLAUDE_CONFIG_DIR` set by a shell profile after Flare starts (not seen), and a profile that moves `.claude` with a junction.
 
@@ -610,7 +612,7 @@ Holes hit while wiring the library into the window, with what each means for Pri
 - **A snapshot is several pieces; track them separately.** One counter for "something changed" makes every update rebuild the diff and the task list even when only the file list moved. Keep a change count per piece (or give the renderer a keyed store) so unchanged lists keep their DOM/model. Electron: separate state slices per list, not one object replaced whole.
 - **A worker's answer can outlive the question.** A path check that comes back after the person switched panels must be dropped, not applied: carry what the click was about (here the picked file) and compare on arrival. Electron: an `AbortController` or a request id per click.
 - **A "not there yet" search needs a back-off.** A fresh Claude session has no transcript until its first prompt, and that state can last as long as the panel is open. Electron: the same doubling timer up to 30 s.
-- **Wrapped text has a fractional height; snap the sum, not only the constants.** At 125, 175 and 225 percent every row after a wrapped one sits off the pixel grid unless the text's own height is rounded (up). The software renderer rounds rectangles anyway, so only a test of the layout's total (`wrapped_task_rows_sit_on_whole_device_pixels_at_fractional_scales`) catches it.
+- **Wrapped text has a fractional height; snap the sum, not only the constants.** At 125, 175 and 225 percent every row after a wrapped one sits off the pixel grid unless the text's own height is rounded (up). The software renderer rounds rectangles anyway, so only a test of the layout's total catches it (it was `wrapped_task_rows_sit_on_whole_device_pixels_at_fractional_scales`, removed with the Tasks panel, 2026-10-26).
 - **`panelImage` at 225 percent failed 10 checks once (a click on a path timed out) and was not reproduced.** After the review fixes it ran 10 times in a row on this branch's release exe (66 checks, 0 failures each, 100 and 225 percent). The conversation views are `visible: false` while an image or text panel shows, so they take no pointer events; the one failure came while another builder was compiling on the same machine, and the scenario's click waits are timed. Treated as load, not as the branch, but it is NOT proven unrelated: if it comes back, make `ChangesView` and `TasksView` conditional (`if root.kind == 4`) and re-measure. The gate is run alone, with the display awake (see `docs/e2e.md`).
 - **Full e2e after the review fixes (2026-10-22):** everything green except the four dictation scenarios (the model and audio fixtures are not in the fixture cache on this machine; no download was made) and `monitorMove`, whose two "Ctrl+C brings the prompt back within 5 s" checks fail the same way on an older exe (the 2026-10-21 build in another target folder), so they are not from this branch. `panelImage`, `convoPanels`, `webPanel`, `agentBrowser` and `mcpBrowser` pass.
 
