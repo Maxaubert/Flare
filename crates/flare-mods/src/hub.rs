@@ -112,15 +112,21 @@ pub fn is_full_control(perms: &[Permission]) -> bool {
         .any(|p| matches!(p, Permission::Process | Permission::Input))
 }
 
-/// What the approval of `f` keeps about who made it: the manifest's author and homepage for a plugin (the source
-/// and the hash come later: install records the source, `persist` the hash), nothing for a protocol 1 mod.
-fn identity_of(f: &Found) -> Identity {
+/// What the approval of `f` keeps about who made it: where Settings installed it from (`installed`), and for a plugin
+/// also the manifest's author and homepage (the hash comes later, from `persist`). A protocol 1 mod dropped in the
+/// folder by hand keeps nothing, as before.
+fn identity_of(f: &Found, installed: Option<&Identity>) -> Identity {
+    let source = installed.and_then(|i| i.source.clone());
     if !f.manifest.is_plugin() {
-        return Identity::default();
+        return Identity {
+            source,
+            ..Identity::default()
+        };
     }
     Identity {
         author: f.manifest.author.clone(),
         homepage: f.manifest.homepage.clone(),
+        source,
         ..Identity::default()
     }
 }
@@ -170,9 +176,11 @@ pub struct ModEntry {
     pub homepage: Option<String>,
     /// Protocol 2: it has a background page.
     pub background: bool,
-    /// Its background page was stopped (it failed too often, or more are running than may): the sentence for
-    /// Settings.
+    /// Its background page was stopped (it failed too often, or more are running than may), or its helper program
+    /// was (it ended too often, or did not start): the sentence for Settings.
     pub stopped: Option<String>,
+    /// Where Settings installed it from (an `https` address or `a file`), when it did (plugins phase 7).
+    pub source: Option<String>,
 }
 
 /// What the hub knows now.
@@ -235,6 +243,14 @@ struct Inner {
     /// The tabs each plugin may act on because the person clicked one of its actions or sidebar items there
     /// (design 13, "click scope"), oldest click first. Gone when the tab closes or the plugin's token dies.
     clicked: BTreeMap<String, VecDeque<String>>,
+    /// Where Settings installed each plugin from, and the hash of what it installed (plugins phase 7), as the switch
+    /// file keeps it.
+    installed: BTreeMap<String, Identity>,
+    /// Plugins being replaced by an update: none of their views or helper may start until it is done.
+    paused: BTreeSet<String>,
+    /// Plugins whose helper program was stopped (it ended too often, or did not start), with the sentence. Cleared
+    /// when the plugin is switched.
+    helper_stopped: BTreeMap<String, String>,
 }
 
 /// The tabs one plugin may hold click scope on at once; a click on one more forgets the oldest.
@@ -262,7 +278,22 @@ pub struct Hub {
     limits: Arc<Limits>,
     /// Each plugin's own store (plugins phase 5), beside the switch file in `plugins-storage`.
     storage: crate::storage::Storage,
+    /// Held by a scan, an install, an update and a removal while they touch the plugins folder: they run one at a
+    /// time, whichever worker they are on (design 13, "one worker queue").
+    disk: Mutex<()>,
+    /// Where a removed or replaced plugin folder goes (the Recycle Bin; the tests delete it).
+    recycle: Mutex<Recycle>,
+    /// The browser profile folders of a plugin, for a removal to delete (set by the app; none in the tests).
+    profiles: Mutex<Option<ProfileDirs>>,
 }
+
+/// What takes a removed plugin folder.
+pub type Recycle = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+/// The browser profile folders of a plugin, by id.
+pub type ProfileDirs = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
+
+mod lifecycle;
+pub use lifecycle::{Installed, StagedInstall, logs_dir};
 
 /// Where the plugins' stores are kept: `plugins-storage` beside the switch file (the profile's folder).
 pub fn storage_dir(cfg: &Config) -> PathBuf {
@@ -290,6 +321,9 @@ impl Hub {
             kept: OnceLock::new(),
             limits: Arc::new(Limits::default()),
             storage: crate::storage::Storage::new(storage_dir(&cfg)),
+            disk: Mutex::new(()),
+            recycle: Mutex::new(Arc::new(crate::install::recycle)),
+            profiles: Mutex::new(None),
             cfg,
         }
     }
@@ -403,6 +437,7 @@ impl Hub {
                 f.manifest.is_plugin()
                     && f.manifest.background.is_some()
                     && g.tokens.token_of(&f.manifest.id).is_some()
+                    && !g.paused.contains(&f.manifest.id)
             })
             .map(|f| f.manifest.id.clone())
             .collect()
@@ -555,8 +590,16 @@ impl Hub {
     /// An id whose old folder stayed because the plugins folder holds one of the same name is turned off by the first
     /// scan, and saved off: its switch was given to the old folder, not to the one now read (design section 13).
     pub fn scan(&self) -> Change {
+        let _disk = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        self.scan_locked()
+    }
+
+    /// [`Hub::scan`] with the disk lock already held.
+    fn scan_locked(&self) -> Change {
         let mut clashed: Vec<String> = Vec::new();
         let kept = self.kept.get_or_init(|| {
+            // What an install of an earlier run left half done is cleared before anything is read.
+            crate::install::clean_staging(&self.cfg.dir); // sync-ok: runs on the scan worker
             let Some(old) = &self.cfg.old_mods_dir else {
                 return Vec::new();
             };
@@ -593,7 +636,7 @@ impl Hub {
                 false
             }
         };
-        let (store_ids, read_only) = {
+        let (store_ids, read_only, installed) = {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store
                 .as_ref()
@@ -606,12 +649,13 @@ impl Hub {
                             s.approved(&id).map(|a| (id, a, who))
                         })
                         .collect();
-                    (ids, s.is_read_only())
+                    (ids, s.is_read_only(), s.all_installed())
                 })
                 .unwrap_or_default()
         };
         let mut g = self.lock();
         if first_load {
+            g.installed = installed.into_iter().collect();
             // Safe mode reads the switches and applies none of them: nothing is on this run, nothing is written.
             if g.safe.is_none() {
                 g.on = store_ids.iter().map(|(id, ..)| id.clone()).collect();
@@ -662,9 +706,18 @@ impl Hub {
             };
             let asked = f.manifest.permissions.clone();
             // A plugin is also approved as who it said it was: another author or homepage is a new approval.
-            let same_maker = !f.manifest.is_plugin()
-                || g.identity.get(&id).is_some_and(|who| {
-                    who.author == f.manifest.author && who.homepage == f.manifest.homepage
+            // So is where Settings installed it from (a protocol 1 mod too): an update from another address is a new
+            // approval. And so is another protocol: a plugin's approval (its token, or a hash only a plugin's has)
+            // never carries over to a protocol 1 `mod.json` of the same id, nor the other way round.
+            let now = identity_of(f, g.installed.get(&id));
+            let plugin = f.manifest.is_plugin();
+            let same_protocol = g.tokens.plugin_of(&id).is_none_or(|p| p == plugin);
+            let same_maker = same_protocol
+                && g.identity.get(&id).map_or(!plugin, |who| {
+                    who.author == now.author
+                        && who.homepage == now.homepage
+                        && who.source == now.source
+                        && (plugin || who.hash.is_none())
                 });
             match g.approved.get(&id).cloned() {
                 Some(ok) if same_maker && asked.iter().all(|p| ok.contains(p)) => {
@@ -818,13 +871,20 @@ impl Hub {
         let before_tools: Vec<Route> = g.table.tools().cloned().collect();
         g.needs.remove(id);
         g.stopped.remove(id);
+        g.helper_stopped.remove(id);
         if on {
             // Switching on is the approval: the manifest's list as it stands now.
+            let installed = g.installed.get(id).cloned();
             let (asked, who) = g
                 .found
                 .iter()
                 .find(|f| f.manifest.id == id)
-                .map(|f| (f.manifest.permissions.clone(), identity_of(f)))
+                .map(|f| {
+                    (
+                        f.manifest.permissions.clone(),
+                        identity_of(f, installed.as_ref()),
+                    )
+                })
                 .unwrap_or_default();
             g.approved.insert(id.to_string(), asked);
             g.identity.insert(id.to_string(), who);
@@ -910,7 +970,15 @@ impl Hub {
                 author: f.manifest.author.clone(),
                 homepage: f.manifest.homepage.clone(),
                 background: f.manifest.is_plugin() && f.manifest.background.is_some(),
-                stopped: g.stopped.get(&f.manifest.id).cloned(),
+                stopped: g
+                    .stopped
+                    .get(&f.manifest.id)
+                    .or_else(|| g.helper_stopped.get(&f.manifest.id))
+                    .cloned(),
+                source: g
+                    .installed
+                    .get(&f.manifest.id)
+                    .and_then(|i| i.source.clone()),
             })
             .collect();
         let mut notes = Vec::new();

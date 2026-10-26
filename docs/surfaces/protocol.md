@@ -713,6 +713,17 @@ oldest, so an event is a hint to ask again (`panel.state`), not the only record.
 | `panel.changed` | `{"tab": string, "open": bool, "panel"?: PanelInfo}` | the tab's panel opened, closed or changed: by a `view.*`, `browser.*`, `panel.open` or `panel.close` call, a click on a path, the close button, the toggle chord, or a web panel moving to another address (its `url` in `PanelInfo`) |
 | `tabs.changed` | `{}` | a tab was added, removed or retitled (**reserved**: Flare does not send it yet) |
 | `mods.changed` | `{}` | the set of tools the agent sees changed (a mod was turned on or off, or a scan found a different set). Sent to EVERY connection that said hello, whatever its tab. `flare-mcp` answers it with `notifications/tools/list_changed` |
+| `tabs` | `{"kind": "opened" \| "closed" \| "focused" \| "renamed" \| "moved" \| "panel", "tab": TabInfo}` | plugins phase 7: to a plugin's helper only (below), when its plugin holds `tabs`. The same data a page's `tabs` event carries |
+| `agent` | `{"tab", "kind", "state", "session"}` | plugins phase 7: to a plugin's helper whose plugin holds `tabs`; a tab's agent kind, state or Claude session changed |
+| `session` | `{"tab", "session", "role", "text", "tool"?, "at"?, "dropped"?}` | plugins phase 7: to a plugin's helper whose plugin holds `sessions` and may see the tab (`tabs`, or a click there); new entries of the tab's Claude session, at most 50 a second per plugin |
+
+**A plugin's helper (plugins phase 7).** Flare starts a plugin's `helper` program (an `.exe` in its folder, for a plugin
+that is on and holds `process`) with `FLARE_PLUGIN_TOKEN` (the plugin's own token) and `FLARE_CTL_PIPE` in its
+environment and `FLARE_TAB_TOKEN` removed. It says `hello` with that `token` and gets the plugin's grant (`kind`
+`mod`, the plugin's id and approved permissions), with no tab of its own; its calls spend the plugin's one budget. The
+`tabs`, `agent` and `session` events above go to the connections that said hello with that plugin's token (routed by
+plugin id, `Hub::publish_to_owner`), never to another client, at most 32 of `tabs` and `agent` a refresh. A helper that
+says `events: false` gets none. Its token dies when the plugin is turned off, and the helper is stopped then.
 
 ## 8. Versioning
 

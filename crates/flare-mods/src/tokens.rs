@@ -143,6 +143,11 @@ impl Tokens {
             .map(|l| l.token.as_str())
     }
 
+    /// Whether the mod's live token is a protocol 2 plugin's; None when it holds none.
+    pub fn plugin_of(&self, id: &str) -> Option<bool> {
+        self.live.iter().find(|l| l.id == id).map(|l| l.plugin)
+    }
+
     /// The grant a presented token holds, or None for a token that is not live (a disabled mod's, or a
     /// guess).
     pub fn grant(&self, presented: &str) -> Option<Grant> {

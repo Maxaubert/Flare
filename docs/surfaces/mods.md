@@ -31,7 +31,7 @@ Prism Terminal port, which must reproduce the same rules.
 - A mod is OFF until the user turns it on in Settings > Mods, which shows its permissions first.
 - Turning it on mints the mod's token. Turning it off kills the token. Nothing is stored about tokens: a
   restart mints new ones for the mods still on.
-- Mods are not fetched from anywhere. There is no store, no signing and no network install.
+- Flare fetches no mod by itself. Settings > Plugins installs one from a `.zip` file or an `https` address the person gives (plugins phase 7, below), always off. There is no store and no signing.
 
 ## The manifest (`mod.json`)
 
@@ -499,6 +499,66 @@ Design sections 5.5, 5.6, 8 and 13.
   `autoplay: true`, once (a reload does not play it again). The page is Flare's: its policy lets in its own track or
   that address's origin only.
 
+## Helper, install, update and remove (plugins phase 7)
+
+Design sections 4, 9, 10 and 13.
+
+- **The helper.** A protocol 2 plugin that declares `helper` (`{command, args?}`, an `.exe` inside its folder, at most
+  16 arguments of 200 characters) and holds `process` gets its program started while it is on, and only then: never
+  for a plugin that is off, paused for an update, or stopped. `command` passes the entry checks again when it starts
+  (no `..`, no absolute or drive path, and it must resolve inside the folder, so a link swapped in since the scan is
+  refused), and the program is started by its canonical path, with the plugin folder as its current folder, no console
+  window and stdin closed. Its environment is Flare's own minus `FLARE_TAB_TOKEN` and `FLARE_RESUME_ID`, plus
+  `FLARE_PLUGIN_TOKEN` (the plugin's own grant token, set on the child only, never the agent's) and `FLARE_CTL_PIPE`
+  (the channel's pipe). It speaks the channel like any client: `hello` with `token`, then the methods its grant allows,
+  within the plugin's one budget (shared with its pages). It starts suspended, joins a kill-on-close job object of its
+  own and only then runs, so it and everything it starts end when the plugin is turned off (the job is terminated) and
+  when Flare ends. Its stdout and stderr go to `<profile>\plugins-logs\<id>.log`, moved to `<id>.log.1` (the one before
+  dropped) past 1 MB. A helper that ends by itself is started again at once, at most 3 times in 5 minutes; the next end
+  stops it and Settings says so ("Stopped: its program ended again after 3 restarts in 5 minutes...") until the plugin
+  is switched. A program that does not start is stopped with its reason. Spawning, waiting and the log run on threads of
+  their own (`flare_mods::helper`).
+- **What a helper hears.** The events a background page of the plugin would, as channel events on its connection
+  (`protocol.md`, "Events"): `tabs` and `agent` when the plugin holds `tabs` (a helper has no tab of its own, so without
+  `tabs` it hears no tab event), `session` with `sessions` and `tabs` (or a click on the tab), at most 32 a round.
+- **Install from a file or an address.** Settings > Plugins: "Install from file" (a file picker) or an `https` address
+  typed in the field and Install (or Enter). An address is downloaded on a worker into the staging folder: `https` on
+  the first address and on every redirect (at most 5, each checked again), a public host (phase 6's wall:
+  `flare_surfaces::net`), and no address the name resolves to on this PC or its network (the resolver drops those), at
+  most 50 MB counted while it streams, 60 seconds in all, no cookies, no proxy from the environment, never the web
+  panel's browser (`flare_mods::fetch`).
+- **The zip.** Each entry is written by Flare with create-new, never by a library's extract. Refused: links (a unix
+  link mode, a Windows reparse attribute), encrypted entries, absolute and drive paths, `:`, `\`, control and hidden
+  formatting characters (a refusal shows each as `?`), `<>"|?*`, `.` and `..` parts, parts that end in a dot or a space, Windows device names with any extension (`CON`,
+  `nul.txt`, `COM1`), names that differ only in case, paths over 200 characters or more than 8 folders deep. The real
+  decompressed bytes are counted: 16 MB an entry, 100 MB in all, 50 MB for the zip, 2000 entries. The layout is
+  `plugin.json` (or `mod.json`) at the top or in exactly one top folder. It is extracted to `plugins\.staging\<random>`
+  and the manifest and every file it names are checked on that copy, and its content hash taken, before anything
+  reaches `plugins\<id>`; the scan never reads `.staging` and its leftovers are cleared at start (`flare_mods::install`).
+- **Installed off.** A new plugin is never turned on by an install; turning it on is the approval, as for a folder put
+  there by hand. Where it came from (the address, none for a file) and the hash of what was installed are kept in
+  `mods.json` under the entry's `installed` key (`{"on":false,"installed":{"source":"https://...","hash":"sha256:..."}}`;
+  an older Flare ignores it), and the source goes into the approval when it is turned on.
+- **Update.** The card's Update button downloads again from the address it was installed from, or else opens the file
+  picker; the zip must hold the same plugin ("That zip holds the plugin "x", not "y"."). An older version than the one
+  installed is refused ("Remove it first to install an older one."). When the plugin is on, its views close and its
+  helper stops before the folder is replaced (it is paused meanwhile, so nothing starts again; the worker waits, at most
+  5 seconds, until every process of the helper's job has ended, since one whose current folder is the plugin's holds
+  it), the old folder is moved aside, the new one moved in by rename (the old one put back if that fails) and the old copy sent to the Recycle Bin;
+  then the plugins are scanned and the consent check decides: the same permissions and maker keep it on, as a new
+  generation (what was started for the old copy is never applied); more permissions, or another author, homepage,
+  source or protocol (a `mod.json` in place of an approved `plugin.json`, or the other way round; a protocol 1 mod
+  installed from an address is approved with that address too), turn it off until it is approved again ("asks for
+  more than you allowed"). Another maker or source also wipes
+  its storage and its browser profile.
+- **Remove.** The card's Remove button turns the plugin off (every view closes, its helper stops), then a worker waits
+  for its helper to end as an update does, sends its folder to the Recycle Bin (a link is unlinked, never followed) and
+  forgets its approval and install record (`mods.json`), its storage (`plugins-storage\<id>.json`), its helper log and
+  its browser profile folders; the window then drops its sections from the sidebar order and folds
+  (`plugins.sidebar.order`, `plugins.sidebar.folded`).
+- **One at a time.** Install, update, remove and the scan hold one disk lock in the hub, so they never run at once;
+  Settings' buttons wait while one runs, and the install row's subtext says what the last one said, in one sentence (a
+  warning when it failed).
 ## Tab bar and sidebar contributions (review 2026-10-25)
 
 Mods cannot draw on tabs, sidebar rows or the strip yet; the only screen area is the mod's panel page.

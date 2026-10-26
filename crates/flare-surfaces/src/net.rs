@@ -45,6 +45,17 @@ pub fn refusal(uri: &str) -> Option<&'static str> {
     }
 }
 
+/// Why an address a name resolved to may not be reached, or None for an address on the internet (the same ranges as
+/// [`refusal`]). Flare's own download of a plugin zip (plugins phase 7) checks each resolved address with it, so a public
+/// name pointed at this PC or its network is not reached.
+pub fn ip_refusal(ip: std::net::IpAddr) -> Option<&'static str> {
+    let public = match ip {
+        std::net::IpAddr::V4(v4) => public_v4(v4),
+        std::net::IpAddr::V6(v6) => public_v6(v6),
+    };
+    (!public).then_some("a local or private address is refused")
+}
+
 /// Whether a networked page may reach `uri` ([`refusal`] has no reason).
 pub fn is_public_https(uri: &str) -> bool {
     refusal(uri).is_none()
@@ -147,6 +158,24 @@ mod tests {
         ] {
             assert!(refusal(bad).is_some(), "{bad}");
             assert!(!is_public_https(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_resolved_address_is_refused_by_the_same_ranges() {
+        for bad in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(ip_refusal(bad.parse().unwrap()).is_some(), "{bad}");
+        }
+        for ok in ["8.8.8.8", "2606:4700::1111"] {
+            assert_eq!(ip_refusal(ok.parse().unwrap()), None, "{ok}");
         }
     }
 }

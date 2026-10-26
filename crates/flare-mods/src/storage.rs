@@ -282,6 +282,30 @@ impl Storage {
         }
     }
 
+    /// Deletes the plugin's store, in memory and on disk (the plugin was removed, or its maker changed). A write in
+    /// flight is waited for first, at most two seconds, so it cannot bring the file back. Runs on a worker.
+    pub fn wipe(&self, id: &str) -> Result<(), String> {
+        let slot = self.slot(id);
+        let t = Instant::now();
+        loop {
+            {
+                let mut s = lock(&slot);
+                if !s.writing || t.elapsed() > Duration::from_secs(2) {
+                    *s = Slot::default();
+                    break;
+                }
+                s.dirty = false;
+            }
+            std::thread::sleep(Duration::from_millis(20)); // sync-ok: runs on a worker (install or remove)
+        }
+        match std::fs::remove_file(self.file_of(id)) {
+            // sync-ok: runs on a worker (install or remove)
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("its storage could not be deleted: {e}")),
+        }
+    }
+
     /// One writer per store, on its own thread: it writes the newest state, at most every `write_every`, until
     /// nothing is left to write.
     fn start_writer(&self, id: &str, slot: Arc<Mutex<Slot>>) {

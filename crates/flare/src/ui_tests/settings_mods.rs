@@ -33,6 +33,8 @@ struct FakePort {
     /// What each switch carried (what the card listed).
     switched_with: RefCell<Vec<flare_mods::hub::Shown>>,
     shown: RefCell<Vec<String>>,
+    /// The install, update and remove asks, as `what:argument`.
+    installs: RefCell<Vec<String>>,
 }
 
 impl ModsPort for FakePort {
@@ -51,6 +53,18 @@ impl ModsPort for FakePort {
     }
     fn dir(&self) -> PathBuf {
         PathBuf::from(r"C:\Users\x\AppData\Roaming\Flare\plugins")
+    }
+    fn install_file(&self) {
+        self.installs.borrow_mut().push("file:".into());
+    }
+    fn install_url(&self, url: &str) {
+        self.installs.borrow_mut().push(format!("url:{url}"));
+    }
+    fn update(&self, id: &str) {
+        self.installs.borrow_mut().push(format!("update:{id}"));
+    }
+    fn remove(&self, id: &str) {
+        self.installs.borrow_mut().push(format!("remove:{id}"));
     }
 }
 
@@ -299,6 +313,54 @@ fn the_panel_button_waits_for_the_mod_and_the_folder_button_opens_the_mods_folde
         f.row("mods-folder").is_none(),
         "one folder row, the plugins one"
     );
+}
+
+#[test]
+fn the_install_buttons_the_address_field_and_each_cards_update_and_remove_reach_the_port() {
+    let f = fx_at(1.0, info(vec![notes(true)]));
+    f.page("mods");
+    let field = f.row("plugins-url").expect("the address row");
+    assert_eq!(field.kind, crate::SetKind::Text);
+    assert_eq!(field.placeholder.as_str(), "https://");
+    f.b()
+        .invoke_row_button("plugins-install".into(), "file".into());
+    // What is typed is kept with no rebuild, and Install (or Enter) sends it.
+    let before = f.ctl.borrow().rebuilds;
+    f.b()
+        .invoke_row_text("plugins-url".into(), " https://example.com/p.zip ".into());
+    assert_eq!(
+        f.ctl.borrow().rebuilds,
+        before,
+        "typing draws nothing again"
+    );
+    f.b().invoke_row_button("plugins-url".into(), "url".into());
+    f.b()
+        .invoke_row_button("plugins-url".into(), "submit".into());
+    f.b().invoke_row_button("mod:notes".into(), "update".into());
+    f.b().invoke_row_button("mod:notes".into(), "remove".into());
+    assert_eq!(
+        f.port.installs.borrow().as_slice(),
+        [
+            "file:",
+            "url:https://example.com/p.zip",
+            "url:https://example.com/p.zip",
+            "update:notes",
+            "remove:notes"
+        ]
+    );
+    // The page drawn again keeps the address in the field.
+    f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+    assert_eq!(
+        f.row("plugins-url").unwrap().value.as_str(),
+        " https://example.com/p.zip "
+    );
+    // What the install said is the install row's subtext, a warning when it failed.
+    let mut page = info(vec![notes(true)]);
+    page.install_note = Some((true, "The file is larger than 50 MB.".into()));
+    *f.port.info.borrow_mut() = page;
+    f.ctl.borrow_mut().on_msg(SettingsMsg::Mods);
+    let row = f.row("plugins-install").unwrap();
+    assert!(row.warn && row.sub.as_str() == "The file is larger than 50 MB.");
 }
 
 #[test]

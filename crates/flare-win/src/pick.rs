@@ -64,6 +64,29 @@ pub fn pick_folder(opts: PickOptions, done: impl FnOnce(Option<PathBuf>) + Send 
     });
 }
 
+/// Shows the file picker for one file of the kind `filter` names (a label and its extensions, no dot), as
+/// [`pick_folder`] does: on a worker, `done` with the file or None on a cancel, a seam answering at once.
+pub fn pick_file(
+    opts: PickOptions,
+    filter: (&'static str, &'static [&'static str]),
+    done: impl FnOnce(Option<PathBuf>) + Send + 'static,
+) {
+    if let Some(answer) = pick_seam(opts.seam.as_deref()) {
+        done(answer);
+        return;
+    }
+    thread::spawn(move || {
+        let mut dialog = rfd::FileDialog::new().add_filter(filter.0, filter.1);
+        if let Some(parent) = &opts.parent {
+            dialog = dialog.set_parent(parent);
+        }
+        if let Some(dir) = opts.default_dir.as_ref().filter(|d| d.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        done(dialog.pick_file());
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

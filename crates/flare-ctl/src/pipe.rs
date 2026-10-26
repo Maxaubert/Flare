@@ -256,6 +256,11 @@ impl Server {
         self.shared.hub.publish(event, params, tab)
     }
 
+    /// Queues an event for the clients that said hello with the token of mod or plugin `owner` (its helper).
+    pub fn publish_to_owner(&self, event: &str, params: Value, owner: &str) -> usize {
+        self.shared.hub.publish_to_owner(event, params, owner)
+    }
+
     /// Clients connected now.
     pub fn client_count(&self) -> usize {
         self.active.load(Ordering::SeqCst)

@@ -103,6 +103,7 @@ fn every_value_control_is_named_by_its_row_label_and_described_by_its_subtext() 
         ("settings/select.slint", "SetSelect"),
         ("settings/slider.slint", "SetSlider"),
         ("settings/colour.slint", "ColourField"),
+        ("settings/controls.slint", "SetTextField"),
     ];
     for (file, name) in cases {
         let body = component(&ui(file), name);
@@ -126,16 +127,16 @@ fn the_row_hands_its_label_and_subtext_to_each_control() {
     let view = ui("settings/view.slint");
     let controls = component(&view, "RowControls");
     // switch, segmented, select, slider and the colour field, then the dictation key field and the microphone
-    // (M8 Task 25): seven controls, each given both.
+    // (M8 Task 25), and the text field (plugins phase 7): eight controls, each given both.
     assert_eq!(
         controls.matches("label: root.data.label;").count(),
-        7,
-        "seven controls carry the row label"
+        8,
+        "eight controls carry the row label"
     );
     assert_eq!(
         controls.matches("sub: root.data.sub;").count(),
-        7,
-        "seven controls carry the row subtext"
+        8,
+        "eight controls carry the row subtext"
     );
 }
 

@@ -1097,7 +1097,28 @@ pub fn run_window(
             mods_hub.set_safe_mode(why);
         }
         let run_record = (!args.e2e).then(|| crate::plugin_safe::path_in(&inst.profile.dir));
+        // A removal (or a change of maker) deletes the plugin's browser profile in both of the plugins' browsers.
+        {
+            let web_dir = flare_surfaces::web::webview_folder(
+                args.user_data_dir.as_deref(),
+                flare_win::paths::local_app_data()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .as_deref(),
+            )
+            .unwrap_or_else(|| inst.profile.dir.join("WebView2"));
+            mods_hub.set_profile_dirs(Arc::new(move |id: &str| {
+                let name = flare_surfaces::modview::profile_name(id);
+                [
+                    flare_surfaces::modview::env_folder(&web_dir),
+                    flare_surfaces::modview::net_env_folder(&web_dir),
+                ]
+                .into_iter()
+                .map(|env| env.join("EBWebView").join(&name))
+                .collect()
+            }));
+        }
         let mut mods_dispatcher = None;
+        let mut owner_events = None;
         if let Some(instance) = &ctl_instance {
             let tabs = Arc::clone(&ctl_mgr);
             match crate::ctl_app::CtlServer::start(
@@ -1130,6 +1151,7 @@ pub fn run_window(
             ) {
                 Ok(server) => {
                     mods_dispatcher = Some(server.dispatcher());
+                    owner_events = Some(server.owner_events());
                     rc.borrow_mut().set_ctl(
                         server.events(),
                         crate::appctl::CtlInfo {
@@ -1144,8 +1166,36 @@ pub fn run_window(
             }
         }
         let plugin_limits = mods_hub.limits();
+        let plugin_logs = mods_hub.logs_dir();
         rc.borrow_mut().set_mods(mods_hub, mods_dispatcher);
         rc.borrow_mut().set_plugin_run_record(run_record);
+        // Plugins phase 7: helpers need the channel (their pipe), and Install from file its picker.
+        if let (Some(events), Some(instance)) = (owner_events, &ctl_instance) {
+            rc.borrow_mut().set_plugin_owner_events(events);
+            rc.borrow_mut()
+                .set_plugin_helpers(plugin_logs, instance.pipe.clone());
+        }
+        {
+            let weak = app.as_weak();
+            rc.borrow_mut().set_pick_zip(Rc::new(move |answer| {
+                let parent = weak
+                    .upgrade()
+                    .and_then(|a| hwnd_of(&a))
+                    .map(|hwnd| ParentWindow { hwnd });
+                // Under --e2e an unset seam is a cancel: no real dialog shows.
+                let seam =
+                    e2e::global().dialog_seam(&["FLARE_E2E", "_PICK_ZIP"].concat(), "", |_| true);
+                flare_win::pick::pick_file(
+                    PickOptions {
+                        parent,
+                        default_dir: None,
+                        seam,
+                    },
+                    ("Plugin (.zip)", &["zip"]),
+                    move |p| answer(p),
+                );
+            }));
+        }
         // The panels' file is read here, at start, before the restore gives the tabs their panels.
         let panels_store = Arc::new(flare_surfaces::store::PanelStore::new(
             inst.profile.panels_file(),

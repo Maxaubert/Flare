@@ -58,6 +58,21 @@ impl AppCtl {
                 out.entry(plugin).or_default().push(slot);
             }
         }
+        // A plugin's helper hears what its background page would (plugins phase 7): it has no slot, so its plugin is
+        // listed with the pages it has, or none.
+        if let Some(host) = m.helpers.as_ref() {
+            for plugin in host.running() {
+                let Some(Grant::Mod { permissions, .. }) = hub.grant_of_mod(&plugin) else {
+                    continue;
+                };
+                if permissions.contains(&Permission::Sessions)
+                    && (permissions.contains(&Permission::Tabs)
+                        || hub.has_click_scope(&plugin, tab))
+                {
+                    out.entry(plugin).or_default();
+                }
+            }
+        }
         out
     }
 
@@ -66,7 +81,8 @@ impl AppCtl {
         let listening = self
             .mods
             .as_ref()
-            .is_some_and(|m| m.any_listens(&["session"]));
+            .is_some_and(|m| m.any_listens(&["session"]))
+            || self.helpers_run();
         if !listening && self.sessions.count() == 0 {
             return;
         }
@@ -115,6 +131,14 @@ impl AppCtl {
                 data["session"] = json!(session);
                 if dropped > 0 {
                     data["dropped"] = json!(dropped);
+                }
+                if self
+                    .mods
+                    .as_ref()
+                    .and_then(|m| m.helpers.as_ref())
+                    .is_some_and(|h| h.is_running(plugin))
+                {
+                    self.to_helper(plugin, "session", &data);
                 }
                 let msg = bridge::event_message("session", &data);
                 let Some(m) = self.mods.as_mut() else { return };

@@ -202,6 +202,7 @@ impl AppCtl {
             hub: Arc::clone(m.hub()),
             post: Arc::clone(&self.deps.post),
             save_error: Arc::clone(&m.save_error),
+            install: Arc::clone(&m.install),
         }))
     }
 
@@ -296,12 +297,14 @@ impl AppCtl {
                 tab,
                 generation,
             } => self.plugin_enter(&plugin, &tab, generation),
+            // Install, update, remove and the helpers (plugins phase 7).
+            other => self.on_install_msg(other),
         }
     }
 
     /// What a change of the mods means for the window: the panels of a mod that lost its token close, and the
     /// agent's clients hear that the tools changed.
-    fn apply_mods_change(&mut self, change: &Change) {
+    pub(super) fn apply_mods_change(&mut self, change: &Change) {
         // Every view of a plugin that lost its token closes (its background page too) and its decor goes, before
         // Settings hears that it is off.
         for id in &change.revoked {
@@ -323,6 +326,7 @@ impl AppCtl {
         }
         self.sync_mods();
         self.sync_backgrounds();
+        self.sync_helpers();
         // What the plugins that are on add to the sidebar and the action places, read again.
         self.sync_plugin_surfaces();
         self.refresh();
@@ -355,9 +359,28 @@ impl AppCtl {
             }
         }
         self.stop_background(id);
+        self.stop_helper(id);
         self.clear_plugin_decor(id);
         self.clear_plugin_surfaces(id);
         self.sessions_plugin_off(id);
+    }
+
+    /// Every view of the plugin closes and its helper stops, as when it is turned off, though it stays on (an update
+    /// replaces its folder). Its panels close too.
+    pub(super) fn close_plugin_views(&mut self, id: &str) {
+        self.plugin_off(id);
+        let mut closed = Vec::new();
+        for (tab, mod_id) in self.panels.mod_tabs() {
+            if mod_id == id && self.panels.close(&tab) {
+                closed.push(tab);
+            }
+        }
+        self.sync_mods();
+        self.sync_plugin_surfaces();
+        self.refresh();
+        for tab in &closed {
+            self.panel_changed(tab);
+        }
     }
 
     /// Everything the plugin put on any tab goes. True when a tab lost something it showed.
@@ -577,6 +600,7 @@ impl AppCtl {
             .mods
             .as_ref()
             .is_some_and(|m| m.any_listens(&["tabs", "agent"]))
+            && !self.helpers_run()
         {
             self.plugin_seen = None;
             return;
@@ -634,6 +658,7 @@ impl AppCtl {
         for (slot, msg) in out {
             self.post_to_slot(&slot, &msg);
         }
+        self.deliver_to_helpers(events);
     }
 
     /// Lets go of the pages that are gone: a tab whose panel no longer shows the mod it was bound to has nothing
@@ -655,6 +680,10 @@ impl AppCtl {
     pub(super) fn mods_shutdown(&mut self) {
         if let Some(m) = &self.mods {
             m.hub().fail_all_calls("Flare is closing");
+            // Their jobs would end them when Flare's handles close; stopped now so the quit is the same either way.
+            if let Some(h) = &m.helpers {
+                h.stop_all();
+            }
         }
     }
 

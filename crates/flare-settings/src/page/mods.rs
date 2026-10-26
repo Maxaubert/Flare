@@ -1,6 +1,8 @@
 //! The Plugins page (Surfaces stage 8, plugins phase 2): the mods and plugins Flare found, what each may do in plain
 //! words, a switch for each (off until the user turns it on), the folders that are not mods and why, and a button
-//! that opens the plugins folder (the one folder for both protocols). The page keeps its key `mods` and is titled
+//! that opens the plugins folder (the one folder for both protocols). Plugins phase 7 adds the install rows (from a
+//! `.zip` file, or from an `https` address typed in a text field) and an Update and a Remove button on each card's
+//! switch row; what the last install said is the install row's subtext. The page keeps its key `mods` and is titled
 //! Plugins. A protocol 1 mod's
 //! rows are what they always were; a protocol 2 plugin adds who made it (`modby:<id>`) and, for the permissions
 //! that reach furthest, the warnings (`modwarn:<id>`). The rows are not in the closed row tables: there is one set
@@ -37,6 +39,8 @@ pub struct ModInfo {
     /// Protocol 2: its background page was stopped (it ended too often, or more run than may), with the sentence
     /// that says so. The switch row shows it in place of the description.
     pub stopped: Option<String>,
+    /// Where Settings installed it from (an `https` address); empty for a file or a folder put there by hand.
+    pub source: String,
 }
 
 /// A folder in the plugins folder that is not a mod (or one left in the old mods folder), and why.
@@ -62,6 +66,12 @@ pub struct ModsInfo {
     pub save_error: Option<String>,
     /// Every plugin is off for this start (safe mode, design 13), and why: shown at the top of the page.
     pub safe_mode: Option<String>,
+    /// An install, update or removal is running: its buttons wait.
+    pub installing: bool,
+    /// What the last install, update or removal said (one sentence), and whether it failed.
+    pub install_note: Option<(bool, String)>,
+    /// The address typed in the install field (Settings keeps it while the page is open).
+    pub url: String,
 }
 
 /// The id of the row that opens the plugins folder.
@@ -76,6 +86,14 @@ pub const TITLE: &str = "Plugins";
 pub const SWITCH_PREFIX: &str = "mod:";
 /// The prefix of a mod's permissions row (then the mod's id).
 pub const PERMS_PREFIX: &str = "modperm:";
+/// The row that installs a plugin from a file, and the one with the address field.
+pub const INSTALL_ROW: &str = "plugins-install";
+pub const URL_ROW: &str = "plugins-url";
+/// The install row's words while nothing was installed yet.
+pub const INSTALL_SUB: &str =
+    "From a .zip file, or from an https address below. A plugin is installed off.";
+/// The install row's words while an install runs.
+pub const INSTALLING: &str = "Working on it...";
 /// The words under the folder row while no path is known.
 pub const FOLDER_UNKNOWN: &str = "Where plugins are kept.";
 /// The maker row when the plugin does not say who made it.
@@ -200,6 +218,50 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
             )
         }));
     }
+    let (failed, said) = match (&info.install_note, info.installing) {
+        (_, true) => (false, INSTALLING.to_string()),
+        (Some((failed, text)), false) => (*failed, text.clone()),
+        (None, false) => (false, INSTALL_SUB.to_string()),
+    };
+    top.insert(
+        1,
+        BlockModel::Row(RowModel {
+            warn: failed,
+            buttons: vec![Button {
+                id: "file",
+                label: "Install from file".to_string(),
+                alt: None,
+                off: info.installing,
+            }],
+            ..plain(
+                INSTALL_ROW,
+                "download",
+                "Install a plugin".to_string(),
+                said,
+            )
+        }),
+    );
+    top.insert(
+        2,
+        BlockModel::Row(RowModel {
+            control: Control::Text {
+                value: info.url.clone(),
+                placeholder: "https://".to_string(),
+            },
+            buttons: vec![Button {
+                id: "url",
+                label: "Install".to_string(),
+                alt: None,
+                off: info.installing,
+            }],
+            ..plain(
+                URL_ROW,
+                "globe",
+                "From an address".to_string(),
+                "An https link to a plugin's .zip file.".to_string(),
+            )
+        }),
+    );
     sections.push(section("mods", String::new(), top));
 
     // One card per mod: the switch, and what the mod may do.
@@ -226,6 +288,21 @@ pub fn build(env: &PageEnv<'_>) -> PageModel {
         }
         switch.tap = true;
         switch.control = Control::Switch { on: m.enabled };
+        // Update installs a newer copy (from where it came, or a file); Remove sends the folder to the Recycle Bin.
+        switch.buttons = vec![
+            Button {
+                id: "update",
+                label: "Update".to_string(),
+                alt: None,
+                off: info.installing,
+            },
+            Button {
+                id: "remove",
+                label: "Remove".to_string(),
+                alt: None,
+                off: info.installing,
+            },
+        ];
         let mut perms = plain(perms_id, "key", "Allowed to".to_string(), words);
         if m.has_panel {
             perms.buttons.push(Button {
@@ -681,6 +758,64 @@ mod tests {
             let page = build(env);
             let r = row_of(&page, "mods-save-error").unwrap();
             assert!(r.warn && r.sub.contains("access denied"));
+        });
+    }
+
+    #[test]
+    fn the_install_rows_follow_the_folder_and_say_what_the_last_install_said() {
+        with_env_mods(info(vec![notes(false)]), |env| {
+            let page = build(env);
+            let ids = all_row_ids(&page);
+            assert_eq!(&ids[..3], [FOLDER_ROW, INSTALL_ROW, URL_ROW]);
+            let file = row_of(&page, INSTALL_ROW).unwrap();
+            assert_eq!(file.sub, INSTALL_SUB);
+            assert!(!file.warn);
+            assert_eq!(file.buttons[0].id, "file");
+            assert!(!file.buttons[0].off);
+            let url = row_of(&page, URL_ROW).unwrap();
+            assert_eq!(
+                url.control,
+                Control::Text {
+                    value: String::new(),
+                    placeholder: "https://".into()
+                }
+            );
+            assert_eq!(url.buttons[0].id, "url");
+            assert!(
+                !url.buttons[0].off,
+                "an empty address is answered with a sentence"
+            );
+            // Every card's switch row has Update and Remove; the permissions row keeps its Show panel alone.
+            let sw = row_of(&page, "mod:notes").unwrap();
+            let b: Vec<&str> = sw.buttons.iter().map(|b| b.id).collect();
+            assert_eq!(b, ["update", "remove"]);
+            assert_eq!(row_of(&page, "modperm:notes").unwrap().buttons.len(), 1);
+        });
+        let mut i = info(vec![notes(false)]);
+        i.url = "https://example.com/p.zip".into();
+        i.install_note = Some((
+            true,
+            "The zip entry \"../x\" goes up out of the plugin.".into(),
+        ));
+        with_env_mods(i.clone(), |env| {
+            let page = build(env);
+            let file = row_of(&page, INSTALL_ROW).unwrap();
+            assert!(file.warn && file.sub.contains("goes up"), "{}", file.sub);
+            assert!(!row_of(&page, URL_ROW).unwrap().buttons[0].off);
+        });
+        i.installing = true;
+        with_env_mods(i, |env| {
+            let page = build(env);
+            assert_eq!(row_of(&page, INSTALL_ROW).unwrap().sub, INSTALLING);
+            assert!(row_of(&page, INSTALL_ROW).unwrap().buttons[0].off);
+            assert!(row_of(&page, URL_ROW).unwrap().buttons[0].off);
+            assert!(
+                row_of(&page, "mod:notes")
+                    .unwrap()
+                    .buttons
+                    .iter()
+                    .all(|b| b.off)
+            );
         });
     }
 
