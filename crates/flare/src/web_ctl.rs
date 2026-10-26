@@ -1789,6 +1789,9 @@ impl WebCtl {
             let _ = reply.send(Err(CtlError::new(code::UNAVAILABLE, m.to_string())));
         };
         let now = self.now_ms();
+        // The cursor is drawn only where `cursor_on` lets it (the page live in front, its place known):
+        // elsewhere nothing waits for its glide.
+        let on_screen = self.cursor_on(tab);
         let Some(t) = self.tabs.get_mut(tab) else {
             // The tab has a web panel (the caller checked) but its page is not made: its tab is behind.
             say("the page is not ready yet; try again in a moment");
@@ -1822,10 +1825,6 @@ impl WebCtl {
             },
             other => other,
         };
-        // The cursor is drawn only over a page that is live in front: elsewhere nothing waits for its glide.
-        let on_screen = self.shown_tab.as_deref() == Some(tab)
-            && self.phase == Phase::Live
-            && !self.hwnd.is_some_and(window_minimized);
         let (job, out) = Job::start(op, &t.refs, now, &mut Ids(&mut self.call_ids));
         let Some(mut job) = job else {
             // Refused before it began (a bad ref, a bad point): nothing was sent to the page.
