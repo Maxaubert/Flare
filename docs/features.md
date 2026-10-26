@@ -1118,6 +1118,17 @@ MCP tools and how a look is written for the model).
   `the_ribbon_holds_after_a_call_that_finished_until_the_person_acts`, `the_ribbon_names_who_is_using_the_page` and the e2e (up
   during a 2.5 s call, still up right after, gone within 6 s, the browser window's rectangle unchanged with the ribbon up and after
   it goes; the ribbon's background is opaque so the page's title does not show through).
+- **The agent's cursor.** While an agent clicks, types into a ref or scrolls over a ref on the page in front, an orange arrow
+  (`#fe8f34`, white rim) with a tag naming the agent ("Claude", "Codex", else "Agent") glides there in 180 ms before the events go,
+  ripples on each press, stays while the ribbon holds and fades in 200 ms after. It is a window of Flare's own above the page,
+  never in it: the page cannot see or hide it and it is in no look. A takeover, a closed panel, a tab behind, a menu over the page
+  or a minimised window takes it away at once; it follows the window and the splitter. A page that is not live in front has no
+  cursor and no glide. Held by the `agent_cursor` tests (`flare-surfaces`, `flare-win`),
+  `a_click_finds_its_point_then_waits_for_the_glide_then_presses`,
+  `the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_press`,
+  `the_person_taking_over_takes_the_cursor_away_at_once`,
+  `a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait` and the e2e `agentBrowser` (at the
+  button's middle at 100 and 225 percent, gone after the hold).
 - **The person keeps control.** A key of theirs in the page, or a mouse button pressed over it, ends the running call with
   `interrupted` and drops the ribbon; the agent's own key presses are never the app's chords. Held by
   `a_key_of_the_persons_posts_a_takeover_only_while_an_agent_works`, `the_agents_own_key_press_is_neither_the_persons_nor_a_chord`,

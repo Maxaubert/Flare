@@ -36,6 +36,12 @@ impl AppCtl {
         self.web.set_factory(f);
     }
 
+    /// What draws the agent's cursor over the page: the real window once Flare's has a handle (a
+    /// recording stand-in until then, and always under `--e2e` and in the tests).
+    pub fn set_agent_cursor(&mut self, shell: Box<dyn flare_win::agent_cursor::CursorShell>) {
+        self.web.set_cursor_shell(shell);
+    }
+
     /// The browser's controllers now (0 while no web panel is open).
     pub fn web_controllers(&self) -> usize {
         self.web.controllers()
@@ -605,6 +611,7 @@ impl AppCtl {
                 "ribbon": self.web.ribbon_text(t),
                 "keys_heard": self.web.agent_keys_heard(),
             })),
+            "cursor": self.web.cursor_probe(),
             "url": tab.and_then(|t| self.web.tab_url(t)),
             "controller": probe.map(|p| json!({
                 "bounds": {"x": p.bounds.x, "y": p.bounds.y, "w": p.bounds.w, "h": p.bounds.h},

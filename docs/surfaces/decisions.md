@@ -876,3 +876,50 @@ The owner's words: "i see that word wrapping has been added for the sidepanel, c
   `a_stored_panel_of_the_removed_tasks_kind_is_dropped_and_the_tab_restores`). The Changes panel and its tracker are
   untouched. The stage 6 entries above that name tasks are kept for the record; do not port the Tasks panel to Prism
   Terminal.
+
+## The agent's cursor (`feat/agent-cursor`), 2026-10-26
+
+The owner's words: "can it use it like claude in chrome where i can see a cursor, and it can click elements on the site, not just go
+to links". The clicking already worked (stage 4); the cursor is new. Style A of six animated mockups
+(`agent-cursor-mock.html`): an orange arrow with a name tag, a ripple on each press. Spec and plan:
+`docs/superpowers/specs/2026-10-26-agent-cursor.md`.
+
+- 2026-10-26, **drawn by Flare in a window of its own, never in the page.** `flare_win::agent_cursor::CursorWindow` is a layered
+  popup (`WS_POPUP`, `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WM_NCHITTEST` answers
+  `HTTRANSPARENT`) owned by Flare's main window: it sits just above Flare and under any other app, takes no click and no focus, has no
+  taskbar button, and hides with the owner when it is minimised. It is made on the first show and destroyed with the controller.
+  Reason: an element injected into the page could be seen, moved or hidden by the page (a site could fake or bury the agent's
+  pointer), would be in `browser_look`'s picture and list, would be wiped by a navigation, and iframes and CSP make it fragile. The
+  page never learns the cursor exists; the e2e's look results are unchanged.
+- 2026-10-26, **pixels in Rust, no dependency.** The arrow is mockup A's path (24 unit box, 22 px wide at 100 %) as a polygon with
+  analytic anti-aliasing (signed distance to the edge, the taskbar disc's approach): white where the 1.6 px rim is (centred on the
+  path), `#fe8f34` inside it. The tag is an orange pill 19 px high at (14, 14) px from the tip with the name in 11 px Segoe UI
+  semibold, `#1a1a1a`, rasterised by GDI into a coverage mask. The ripple is an orange disc under the arrow at the tip, 34 px at
+  full size, growing 0.3 to 1.4 (ease-out) and fading from 0.5 to 0 in 400 ms. Everything is premultiplied BGRA, scaled by the
+  window's scale, and shown with `UpdateLayeredWindow`; the fade is the blend's constant alpha, so it needs no new bitmap. The arrow
+  and tag are drawn once per (scale, name) and cached; a frame is drawn only while it changes (a glide, a ripple, a fade, a move).
+- 2026-10-26, **coordinates:** a point is CSS pixels of the visual viewport with the viewport's size; on screen it is the page's
+  physical rectangle (`set_bounds`) plus the point times `bounds / viewport`, offset by the client origin (`ClientToScreen`). That
+  includes the browser's zoom. A click by point now asks `Page.getLayoutMetrics` first, so every point comes with its viewport (a
+  page whose size cannot be read is clicked all the same, with no cursor).
+- 2026-10-26, **the glide holds the events 180 ms, and nothing waits.** The job has a `Glide` stage after it knows the point
+  (`Job::take_point`); the agent tick (16 ms) ends it and the events go. The budget (`ACT_BUDGET_MS`) is unchanged and counts the
+  glide. **Chosen where the spec left it open:** the job always glides 180 ms when the cursor is drawn, the first appearance too
+  (the arrow appears at the target and the person sees it before the ripple); a page that is not live in front (its tab behind, a
+  menu's still, a minimised window) gets no glide and no cursor, so an agent working behind is not slowed. Typing into a ref asks
+  where the element is after `DOM.focus` (`Page.getLayoutMetrics` and `DOM.getContentQuads`); an element with no box types at once
+  with no cursor. A scroll over a ref glides; a scroll with nothing named, a key, a look, a wait and eval move nothing.
+- 2026-10-26, **a ripple per press**, seen as the `mousePressed` event goes out; two presses closer than 120 ms (a double click)
+  ripple one after the other so both show.
+- 2026-10-26, **when it goes:** it stays where it last acted while the ribbon is up (the call plus `RIBBON_HOLD_MS`), then fades in
+  200 ms. Gone at once on a takeover (`interrupted`, or the person's input while the ribbon holds), the panel closing, its tab going
+  behind, a Flare menu or dialog over the page (any phase but live) and a minimised window. The agent tick places it again every
+  turn while it shows (the timer keeps running until it has faded), so it follows a window move, a resize and the splitter.
+- 2026-10-26, **no setting**, as for the ribbon. **Under `--e2e` and in the tests** the window is never made: `WebCtl` starts with
+  `RecordCursor`, which keeps what it was told (`agent_cursor::recorded`), and the real window is handed in by `window.rs` once
+  Flare's window has a handle and the run is not `--e2e`. `web.state` reports `cursor` (drawn, the tip in client pixels, the tag,
+  the presses, what the shell was told). Held by the `agent_cursor` tests in `flare-surfaces` and `flare-win`, the glide tests in
+  `agent_job.rs`, the cursor tests in `web_tests.rs` and the e2e `agentBrowser` (at the button's middle at 100 and 225 %, gone after
+  the hold).
+- 2026-10-26, **not done:** the tag is not flipped when the arrow is near the panel's right or bottom edge (it can draw past the
+  page, over Flare's own window, never past another app); no cursor for mods' pages or plugin pages driving a page (a non-goal).

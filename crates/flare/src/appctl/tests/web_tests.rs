@@ -1549,6 +1549,15 @@ fn look(f: &Fx, tab: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
     )
 }
 
+/// The agent's clock moves on `ms` and its timer turns once (a glide, the ribbon, a fade pass).
+fn agent_turn(f: &Fx, ms: u64) {
+    f.ctl.borrow_mut().web.skip_clock(ms);
+    f.ctl
+        .borrow_mut()
+        .on_msg(UiMsg::Web(WebMsgBox(WebMsg::AgentTick)));
+    f.pump();
+}
+
 fn click_ref(f: &Fx, tab: &str, r: &str) -> Receiver<Result<Value, flare_ctl::CtlError>> {
     ask(
         f,
@@ -1661,6 +1670,8 @@ fn a_click_by_ref_uses_the_numbers_of_the_last_look() {
     rx.try_recv().unwrap().unwrap();
     let rx = click_ref(&f, &id, "e1");
     f.pump();
+    // The cursor glides to the button first; the agent's timer lets the click go.
+    agent_turn(&f, GLIDE_MS);
     let v = rx.try_recv().unwrap().unwrap();
     assert_eq!(v["clicked"], json!({"x": 140.0, "y": 110.0}));
     let presses: Vec<String> = cdp_calls(&slot)
@@ -1954,7 +1965,8 @@ fn the_person_taking_over_a_click_lets_go_of_the_button() {
     let (f, _h, _) = live(Opts::default());
     let slot = with_fake(&f);
     let id = up(&f, &slot);
-    // The browser never answers the first event: the press and the release are still queued.
+    // The browser answers the page's size and never the first event: the press and the release are still
+    // queued once the glide is over.
     let rx = ask(
         &f,
         agent_op(
@@ -1968,6 +1980,8 @@ fn the_person_taking_over_a_click_lets_go_of_the_button() {
         Duration::from_secs(5),
     );
     f.pump();
+    answer_all(&f, &slot, &id, &mut std::collections::HashSet::new());
+    agent_turn(&f, GLIDE_MS);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     f.ctl.borrow_mut().web_user_input();
     f.pump();
@@ -1981,6 +1995,191 @@ fn the_person_taking_over_a_click_lets_go_of_the_button() {
         sent.last().is_some_and(|p| p.contains("mouseReleased")),
         "{sent:?}"
     );
+}
+
+// ---- the agent's cursor ----
+
+use flare_surfaces::agent_cursor::{FADE_MS, GLIDE_MS};
+use flare_win::agent_cursor::recorded;
+
+/// A look of the shop, done.
+fn looked(f: &Fx, slot: &Slot, id: &str) {
+    with_shop(slot);
+    let rx = look(f, id);
+    f.pump();
+    rx.try_recv().unwrap().unwrap();
+}
+
+/// Where the cursor's tip is in client pixels, while it is drawn.
+fn cursor_at(f: &Fx) -> Option<(i64, i64)> {
+    let p = f.ctl.borrow().web.cursor_probe();
+    let c = &p["client"];
+    (p["shown"] == json!(true)).then(|| (c[0].as_i64().unwrap(), c[1].as_i64().unwrap()))
+}
+
+/// Where a CSS point of the shop's 600 x 400 viewport is in client pixels of the page's rectangle.
+fn on_page(f: &Fx, x: f64, y: f64) -> (i64, i64) {
+    let r = drawn(f);
+    (
+        i64::from(r.x) + (x * f64::from(r.w) / 600.0).round() as i64,
+        i64::from(r.y) + (y * f64::from(r.h) / 400.0).round() as i64,
+    )
+}
+
+#[test]
+fn the_cursor_shows_where_a_click_lands_before_it_presses_and_ripples_on_the_press() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    assert_eq!(cursor_at(&f), None, "a look moves nothing");
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    // The point is known and the arrow is there; nothing is pressed yet.
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 140.0, 110.0)));
+    assert!(recorded().shown, "the shell was told");
+    let pressed = |slot: &Slot| {
+        cdp_calls(slot)
+            .iter()
+            .filter(|(_, p)| p.contains("mousePressed"))
+            .count()
+    };
+    assert_eq!(pressed(&slot), 0);
+    assert_eq!(f.ctl.borrow().web.cursor_probe()["tag"], "Agent");
+    // The glide is over: the click goes, with a ripple.
+    agent_turn(&f, GLIDE_MS);
+    assert!(rx.try_recv().unwrap().is_ok());
+    assert_eq!(pressed(&slot), 1);
+    assert_eq!(f.ctl.borrow().web.cursor_probe()["presses"], 1);
+    // It stays while the ribbon holds, then fades and is gone.
+    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS / 2);
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 140.0, 110.0)));
+    agent_turn(&f, crate::web_ctl::RIBBON_HOLD_MS);
+    agent_turn(&f, FADE_MS / 2);
+    let a = recorded().alpha;
+    assert!(a > 0 && a < 255, "fading ({a})");
+    agent_turn(&f, FADE_MS);
+    assert_eq!(cursor_at(&f), None);
+    assert!(!recorded().shown, "gone after the hold");
+}
+
+#[test]
+fn the_next_action_glides_from_where_the_cursor_was() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MS);
+    rx.try_recv().unwrap().unwrap();
+    // Typing into the field: the arrow starts at the button and arrives at the field.
+    let rx = ask(
+        &f,
+        agent_op(
+            &id,
+            AgentOp::Type {
+                text: "3".into(),
+                target: Some("e2".into()),
+            },
+        ),
+        Duration::from_secs(5),
+    );
+    f.pump();
+    assert_eq!(
+        cursor_at(&f),
+        Some(on_page(&f, 140.0, 110.0)),
+        "it starts where it was"
+    );
+    agent_turn(&f, GLIDE_MS);
+    assert_eq!(rx.try_recv().unwrap().unwrap()["typed"], 1);
+    assert_eq!(cursor_at(&f), Some(on_page(&f, 200.0, 160.0)));
+    assert_eq!(
+        f.ctl.borrow().web.cursor_probe()["presses"],
+        1,
+        "typing presses nothing"
+    );
+}
+
+#[test]
+fn the_person_taking_over_takes_the_cursor_away_at_once() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(cursor_at(&f).is_some());
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::INTERRUPTED);
+    assert_eq!(cursor_at(&f), None);
+    assert!(!recorded().shown);
+    // And a held cursor after a finished click goes with the ribbon when the person acts.
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    agent_turn(&f, GLIDE_MS);
+    rx.try_recv().unwrap().unwrap();
+    assert!(cursor_at(&f).is_some());
+    f.ctl.borrow_mut().web_user_input();
+    f.pump();
+    assert_eq!(cursor_at(&f), None);
+}
+
+#[test]
+fn a_menu_over_the_page_or_a_tab_in_front_hides_the_cursor_and_a_hidden_page_does_not_wait() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(cursor_at(&f).is_some());
+    // A Flare menu opens over the page: its still is drawn and the cursor goes.
+    f.h.comp.set_dialog_open(true);
+    f.h.advance(0);
+    f.pump();
+    assert_ne!(f.ctl.borrow().web.phase_name(), "live");
+    assert_eq!(cursor_at(&f), None);
+    agent_turn(&f, GLIDE_MS);
+    assert!(rx.try_recv().unwrap().is_ok(), "the click still goes");
+    assert_eq!(cursor_at(&f), None, "and is not drawn over the menu");
+    f.h.comp.set_dialog_open(false);
+    f.h.advance(0);
+    f.pump();
+    // A second tab in front: a click on the page behind has no cursor and no glide to wait for.
+    assert_eq!(f.key(ctrl("t", "KeyT")), KeyOutcome::Consumed);
+    f.h.advance(0);
+    f.pump();
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(rx.try_recv().unwrap().is_ok(), "answered with no wait");
+    assert_eq!(cursor_at(&f), None);
+}
+
+#[test]
+fn closing_the_panel_takes_the_cursor_with_it() {
+    let (f, _h, _) = live(Opts::default());
+    let slot = with_fake(&f);
+    let id = up(&f, &slot);
+    f.h.advance(0);
+    looked(&f, &slot, &id);
+    let rx = click_ref(&f, &id, "e1");
+    f.pump();
+    assert!(cursor_at(&f).is_some());
+    f.h.comp.invoke_panel_close();
+    f.h.advance(0);
+    f.pump();
+    assert_eq!(rx.try_recv().unwrap().unwrap_err().code, code::UNAVAILABLE);
+    assert_eq!(cursor_at(&f), None);
+    assert!(!recorded().shown);
 }
 
 #[test]
