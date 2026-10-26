@@ -1,6 +1,6 @@
-//! ConvoCtl: the Changes and Tasks panels of the conversation (Surfaces stage 6).
+//! ConvoCtl: the Changes panel of the conversation (Surfaces stage 6).
 //!
-//! A tab whose open panel is Changes or Tasks, and whose Claude session is known, gets one transcript tracker
+//! A tab whose open panel is Changes, and whose Claude session is known, gets one transcript tracker
 //! (`flare_convo::track`): a worker that follows the session's file and hands back snapshots. Nothing runs for a tab
 //! without such a panel (the panels cost nothing while closed): closing the panel, switching it to another kind, losing
 //! the session or closing the tab drops the tracker, which stops its thread.
@@ -15,17 +15,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use flare_convo::track::{Snapshot, Source, Tracker};
-use flare_convo::view::{DiffRow, FileSummary, LINE_CHARS, MAX_TASK_ROWS, RowKind, TaskGroup};
+use flare_convo::view::{DiffRow, FileSummary, LINE_CHARS, RowKind};
 use flare_surfaces::PanelKind;
 use serde_json::{Value, json};
 use slint::{ModelRc, SharedString, VecModel};
 
 use crate::appctl::{Post, UiMsg};
-use crate::{AppWindow, ConvoDiffRow, ConvoFileRow, ConvoTaskRow};
+use crate::{AppWindow, ConvoDiffRow, ConvoFileRow};
 
-/// The window's `panel-kind` of the two panels.
+/// The window's `panel-kind` of the Changes panel.
 pub const KIND_CHANGES: i32 = 4;
-pub const KIND_TASKS: i32 = 5;
 
 /// The most characters of a diff line the viewport is made wide for.
 const COLS_MAX: usize = LINE_CHARS;
@@ -79,16 +78,13 @@ struct Tracked {
     /// Count up when that piece of the snapshot changed, so the window rebuilds only the model that is out of date.
     files_v: u64,
     diff_v: u64,
-    tasks_v: u64,
 }
 
 /// What the person did in a tab's panel; it lasts as long as the tracker.
 #[derive(Default)]
 struct TabView {
     selected: Option<String>,
-    /// Subagent groups folded shut, by key.
-    collapsed: HashSet<String>,
-    /// Counts up with each pick or fold, so the window knows its rows are out of date.
+    /// Counts up with each pick, so the window knows its rows are out of date.
     version: u64,
 }
 
@@ -102,7 +98,6 @@ struct Pushed {
     version: u64,
     files_v: u64,
     diff_v: u64,
-    tasks_v: u64,
 }
 
 pub struct ConvoCtl {
@@ -149,7 +144,7 @@ impl ConvoCtl {
     pub fn sync(&mut self, wants: &[Want]) -> bool {
         let mut changed = false;
         // A tab whose panel is open keeps its tracker when Claude leaves (the session is then unknown): what
-        // Claude changed and planned is what the person most wants to read at that moment. A different session
+        // Claude changed is what the person most wants to read at that moment. A different session
         // replaces it below, and a tab whose panel closed loses it.
         let open: HashSet<&str> = wants.iter().map(|w| w.tab.as_str()).collect();
         let before = self.tracked.len();
@@ -202,7 +197,6 @@ impl ConvoCtl {
                     snap: None,
                     files_v: 0,
                     diff_v: 0,
-                    tasks_v: 0,
                 },
             );
             changed = true;
@@ -283,24 +277,20 @@ impl ConvoCtl {
             Some(o) => {
                 t.files_v += u64::from(o.files != snap.files);
                 t.diff_v += u64::from(o.diff != snap.diff);
-                t.tasks_v += u64::from(o.groups != snap.groups);
             }
             None => {
                 t.files_v += 1;
                 t.diff_v += 1;
-                t.tasks_v += 1;
             }
         }
         t.snap = Some(snap);
         true
     }
 
-    /// The models the window holds, as (files, rows, tasks) rebuild counts (a test reads them).
+    /// The models the window holds, as (files, rows) rebuild counts (a test reads them).
     #[cfg(test)]
-    pub fn piece_versions(&self, tab: &str) -> Option<(u64, u64, u64)> {
-        self.tracked
-            .get(tab)
-            .map(|t| (t.files_v, t.diff_v, t.tasks_v))
+    pub fn piece_versions(&self, tab: &str) -> Option<(u64, u64)> {
+        self.tracked.get(tab).map(|t| (t.files_v, t.diff_v))
     }
 
     /// Shows one file's diff (None: the list).
@@ -318,32 +308,18 @@ impl ConvoCtl {
         true
     }
 
-    /// Folds a subagent's list shut, or opens it again.
-    pub fn toggle(&mut self, tab: &str, key: &str) -> bool {
-        if !self.tracked.contains_key(tab) {
-            return false;
-        }
-        let view = self.views.entry(tab.to_string()).or_default();
-        if !view.collapsed.remove(key) {
-            view.collapsed.insert(key.to_string());
-        }
-        view.version += 1;
-        true
-    }
-
     /// What `convo.state` answers for the tab.
     pub fn state_json(&self, tab: &str) -> Value {
         let Some(t) = self.tracked.get(tab) else {
             return json!({
                 "tracking": false,
-                "note": "Flare reads the conversation only while the Changes or Tasks panel is open on this tab. \
-                         panel.open with kind changes or tasks opens it.",
+                "note": "Flare reads the conversation only while the Changes panel is open on this tab. \
+                         panel.open with kind changes opens it.",
             });
         };
         let Some(s) = &t.snap else {
             return json!({"tracking": true, "session": t.session, "found": false, "files": 0,
-                "edits": 0, "failed": 0, "tasks": {"pending": 0, "in_progress": 0, "done": 0, "other": 0},
-                "changed": []});
+                "edits": 0, "failed": 0, "changed": []});
         };
         let changed: Vec<Value> = s
             .files
@@ -351,40 +327,25 @@ impl ConvoCtl {
             .take(STATE_FILES)
             .map(|f| json!({"path": f.path, "edits": f.edits, "failed": f.failed}))
             .collect();
-        let mut v = json!({
+        json!({
             "tracking": true,
             "session": t.session,
             "found": s.found,
             "files": s.summary.files,
             "edits": s.summary.edits,
             "failed": s.summary.failed,
-            "tasks": {
-                "pending": s.summary.tasks.pending,
-                "in_progress": s.summary.tasks.in_progress,
-                "done": s.summary.tasks.done,
-                "other": s.summary.tasks.other,
-            },
-            "subagent_lists": s.summary.subagent_lists,
             "changed": changed,
-        });
-        if let Some(a) = &s.summary.active {
-            v["active"] = json!(a);
-        }
-        v
+        })
     }
 
     /// Writes the front tab's panel into the window, or lets go of the rows when the front shows no conversation.
     /// `front` is the tab in front and the kind of its OPEN panel, when that kind is one of ours.
     pub fn push(&mut self, app: &AppWindow, front: Option<(&str, &PanelKind)>) {
-        let Some((tab, kind)) = front.filter(|(_, k)| k.is_convo()) else {
+        let Some((tab, _)) = front.filter(|(_, k)| k.is_convo()) else {
             self.release(app);
             return;
         };
-        let code = if *kind == PanelKind::Changes {
-            KIND_CHANGES
-        } else {
-            KIND_TASKS
-        };
+        let code = KIND_CHANGES;
         let t = self.tracked.get(tab);
         let view = self.views.get(tab);
         let key = Pushed {
@@ -395,13 +356,12 @@ impl ConvoCtl {
             version: view.map_or(0, |v| v.version),
             files_v: t.map_or(0, |t| t.files_v),
             diff_v: t.map_or(0, |t| t.diff_v),
-            tasks_v: t.map_or(0, |t| t.tasks_v),
         };
         if self.pushed.as_ref() == Some(&key) && app.get_panel_kind() == code {
             return;
         }
         // A model is written again only when its piece changed (or the tab, kind, session or the person's pick did).
-        let (all, files_new, diff_new, tasks_new) = match &self.pushed {
+        let (all, files_new, diff_new) = match &self.pushed {
             Some(p)
                 if self.populated
                     && p.tab == key.tab
@@ -414,15 +374,12 @@ impl ConvoCtl {
                     false,
                     p.files_v != key.files_v,
                     moved || p.diff_v != key.diff_v,
-                    moved || p.tasks_v != key.tasks_v,
                 )
             }
-            _ => (true, true, true, true),
+            _ => (true, true, true),
         };
         let snap = t.and_then(|t| t.snap.as_ref());
         let sel = view.and_then(|v| v.selected.clone());
-        let none = TabView::default();
-        let view = view.unwrap_or(&none);
 
         app.set_panel_kind(code);
         app.set_panel_picture(slint::Image::default());
@@ -431,58 +388,29 @@ impl ConvoCtl {
         app.set_panel_lines(ModelRc::default());
         app.set_panel_max_cols(0);
         app.set_panel_foot("".into());
-        let (note, sub);
-        match kind {
-            PanelKind::Changes => {
-                let list: &[FileSummary] = snap.map_or(&[], |s| s.files.as_slice());
-                if files_new {
-                    app.set_panel_convo_files(model(file_rows(list)));
-                }
-                if diff_new {
-                    let (r, c) = match (&sel, snap.and_then(|s| s.diff.as_ref())) {
-                        (Some(sel), Some((p, d))) if same_path(p, sel) => diff_rows(&d.rows),
-                        _ => (Vec::new(), 0),
-                    };
-                    app.set_panel_convo_rows(model(r));
-                    app.set_panel_convo_max_cols(i32::try_from(c).unwrap_or(i32::MAX));
-                }
-                if all {
-                    app.set_panel_convo_tasks(ModelRc::default());
-                }
-                sub = match list.len() {
-                    0 => String::new(),
-                    1 => "1 file".to_string(),
-                    n => format!("{n} files"),
-                };
-                note = if list.is_empty() {
-                    note_for(t.is_some(), snap, "Claude has not changed a file yet.")
-                } else {
-                    String::new()
-                };
-                app.set_panel_title("Changes".into());
-            }
-            _ => {
-                if all {
-                    app.set_panel_convo_files(ModelRc::default());
-                    app.set_panel_convo_rows(ModelRc::default());
-                    app.set_panel_convo_max_cols(0);
-                }
-                let groups: &[TaskGroup] = snap.map_or(&[], |s| s.groups.as_slice());
-                if tasks_new {
-                    app.set_panel_convo_tasks(model(task_rows(groups, &view.collapsed)));
-                }
-                sub = snap
-                    .and_then(|s| s.groups.first().filter(|g| g.key.is_empty()))
-                    .map(|g| format!("{} of {} done", g.done, g.tasks.len()))
-                    .unwrap_or_default();
-                note = if groups.is_empty() {
-                    note_for(t.is_some(), snap, "Claude has no task list yet.")
-                } else {
-                    String::new()
-                };
-                app.set_panel_title("Tasks".into());
-            }
+        let list: &[FileSummary] = snap.map_or(&[], |s| s.files.as_slice());
+        if files_new {
+            app.set_panel_convo_files(model(file_rows(list)));
         }
+        if diff_new {
+            let (r, c) = match (&sel, snap.and_then(|s| s.diff.as_ref())) {
+                (Some(sel), Some((p, d))) if same_path(p, sel) => diff_rows(&d.rows),
+                _ => (Vec::new(), 0),
+            };
+            app.set_panel_convo_rows(model(r));
+            app.set_panel_convo_max_cols(i32::try_from(c).unwrap_or(i32::MAX));
+        }
+        let sub = match list.len() {
+            0 => String::new(),
+            1 => "1 file".to_string(),
+            n => format!("{n} files"),
+        };
+        let note = if list.is_empty() {
+            note_for(t.is_some(), snap, "Claude has not changed a file yet.")
+        } else {
+            String::new()
+        };
+        app.set_panel_title("Changes".into());
         app.set_panel_sub(sub.into());
         app.set_panel_note(note.into());
         app.set_panel_convo_selected(sel.unwrap_or_default().into());
@@ -503,10 +431,9 @@ impl ConvoCtl {
         self.populated = false;
         app.set_panel_convo_files(ModelRc::default());
         app.set_panel_convo_rows(ModelRc::default());
-        app.set_panel_convo_tasks(ModelRc::default());
         app.set_panel_convo_selected("".into());
         app.set_panel_convo_max_cols(0);
-        if matches!(app.get_panel_kind(), KIND_CHANGES | KIND_TASKS) {
+        if app.get_panel_kind() == KIND_CHANGES {
             app.set_panel_kind(0);
             app.set_panel_title("".into());
             app.set_panel_sub("".into());
@@ -522,7 +449,7 @@ fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
 /// The empty-state words for a panel that has nothing to list yet.
 fn note_for(tracking: bool, snap: Option<&Arc<Snapshot>>, empty: &str) -> String {
     if !tracking {
-        return "Claude is not running in this tab yet. What it changes and plans will show here."
+        return "Claude is not running in this tab yet. What it changes will show here."
             .to_string();
     }
     match snap {
@@ -540,11 +467,7 @@ pub fn same_path(a: &str, b: &str) -> bool {
 
 /// Everything a window shows is equal (the sequence number aside).
 fn same_content(a: &Snapshot, b: &Snapshot) -> bool {
-    a.found == b.found
-        && a.files == b.files
-        && a.groups == b.groups
-        && a.summary == b.summary
-        && a.diff == b.diff
+    a.found == b.found && a.files == b.files && a.summary == b.summary && a.diff == b.diff
 }
 
 pub fn file_rows(files: &[FileSummary]) -> Vec<ConvoFileRow> {
@@ -603,75 +526,11 @@ pub fn diff_rows(rows: &[DiffRow]) -> (Vec<ConvoDiffRow>, usize) {
     (out, cols)
 }
 
-/// The task list as rows: a header per group when there is more than one list, then the group's tasks unless folded.
-pub fn task_rows(groups: &[TaskGroup], collapsed: &HashSet<String>) -> Vec<ConvoTaskRow> {
-    let headers = groups.len() > 1;
-    let mut out: Vec<ConvoTaskRow> = Vec::new();
-    for g in groups {
-        let folded = headers && collapsed.contains(&g.key);
-        if headers {
-            out.push(ConvoTaskRow {
-                kind: 0,
-                state: 0,
-                text: g.title.as_str().into(),
-                sub: SharedString::new(),
-                active: false,
-                key: g.key.as_str().into(),
-                collapsed: folded,
-                count: format!("{} of {} done", g.done, g.tasks.len()).into(),
-            });
-        }
-        if folded {
-            continue;
-        }
-        for t in &g.tasks {
-            if out.len() >= MAX_TASK_ROWS {
-                return out;
-            }
-            out.push(ConvoTaskRow {
-                kind: 1,
-                state: t.state.code(),
-                text: t.title.as_str().into(),
-                sub: if t.doing == t.title {
-                    SharedString::new()
-                } else {
-                    t.doing.as_str().into()
-                },
-                active: t.active,
-                key: SharedString::new(),
-                collapsed: false,
-                count: SharedString::new(),
-            });
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use flare_convo::fold::Convo;
     use flare_convo::view;
-
-    fn convo_with_two_lists() -> Convo {
-        let mut c = Convo::new();
-        c.fold_line(
-            &json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t",
-                "name": "TodoWrite", "input": {"todos": [
-                    {"content": "Read", "status": "completed", "activeForm": "Reading"},
-                    {"content": "Edit", "status": "in_progress", "activeForm": "Editing the file"},
-                    {"content": "Test", "status": "pending", "activeForm": "Testing"}]}}]}})
-            .to_string(),
-        );
-        c.fold_from(
-            "agent-abcdef0123.jsonl",
-            &json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "s",
-                "name": "TodoWrite", "input": {"todos": [
-                    {"content": "Look", "status": "pending", "activeForm": "Looking"}]}}]}})
-            .to_string(),
-        );
-        c
-    }
 
     #[test]
     fn the_tracker_outlives_the_session_while_the_panel_is_open() {
@@ -696,64 +555,6 @@ mod tests {
         // The panel closes: now it goes.
         c.sync(&[]);
         assert_eq!(c.tracker_count(), 0);
-    }
-
-    #[test]
-    fn a_single_list_has_no_header_and_marks_the_active_task() {
-        let mut c = Convo::new();
-        c.fold_line(
-            &json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t",
-                "name": "TodoWrite", "input": {"todos": [
-                    {"content": "Edit", "status": "in_progress", "activeForm": "Editing"}]}}]}})
-            .to_string(),
-        );
-        let rows = task_rows(&view::task_groups(&c), &HashSet::new());
-        assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].kind, rows[0].state, rows[0].active), (1, 1, true));
-        assert_eq!(rows[0].sub.as_str(), "Editing");
-    }
-
-    #[test]
-    fn two_lists_get_headers_and_a_folded_one_hides_its_tasks() {
-        let groups = view::task_groups(&convo_with_two_lists());
-        let open = task_rows(&groups, &HashSet::new());
-        assert_eq!(
-            open.len(),
-            2 + 3 + 1,
-            "two headers, three main tasks, one subagent task"
-        );
-        assert_eq!(open[0].kind, 0);
-        assert_eq!(open[0].count.as_str(), "1 of 3 done");
-        assert_eq!(open[4].kind, 0);
-        assert_eq!(open[4].key.as_str(), "agent-abcdef0123.jsonl");
-        assert_eq!(open[4].text.as_str(), "Subagent abcdef0");
-        let fold: HashSet<String> = ["agent-abcdef0123.jsonl".to_string()].into();
-        let folded = task_rows(&groups, &fold);
-        assert_eq!(folded.len(), 5, "the subagent's task is hidden");
-        assert!(folded[4].collapsed);
-        let fold_main: HashSet<String> = [String::new()].into();
-        assert_eq!(
-            task_rows(&groups, &fold_main).len(),
-            3,
-            "the main list folds too"
-        );
-    }
-
-    #[test]
-    fn a_long_list_is_cut_at_the_row_cap() {
-        let todos: Vec<Value> = (0..800)
-            .map(|i| json!({"content": format!("t{i}"), "status": "pending", "activeForm": "x"}))
-            .collect();
-        let mut c = Convo::new();
-        c.fold_line(
-            &json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t",
-                "name": "TodoWrite", "input": {"todos": todos}}]}})
-            .to_string(),
-        );
-        assert_eq!(
-            task_rows(&view::task_groups(&c), &HashSet::new()).len(),
-            MAX_TASK_ROWS
-        );
     }
 
     #[test]

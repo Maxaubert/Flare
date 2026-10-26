@@ -95,7 +95,7 @@ pub enum CtlOp {
         text: String,
         title: Option<String>,
     },
-    /// `panel.open` with kind `changes` or `tasks` (stage 6): that native panel on the tab.
+    /// `panel.open` with kind `changes` (stage 6): that native panel on the tab.
     ShowConvo {
         tab: String,
         kind: PanelKind,
@@ -1847,7 +1847,7 @@ impl Dispatcher for AppDispatcher {
                 }
                 match str_param(&params, "kind")? {
                     None => Err(CtlError::new(code::BAD_PARAMS, "kind is required")),
-                    Some(k @ ("changes" | "tasks")) => {
+                    Some(k @ "changes") => {
                         // Native panels (the conversation): no file, no address, nothing to wait for.
                         if let Some(extra) = ["url", "path", "text"]
                             .iter()
@@ -1890,7 +1890,7 @@ impl Dispatcher for AppDispatcher {
                     }
                     Some(_) => Err(CtlError::new(
                         code::BAD_PARAMS,
-                        "panel.open takes kind web, changes, tasks or mod:<id>; use view.image, view.file or view.text",
+                        "panel.open takes kind web, changes or mod:<id>; use view.image, view.file or view.text",
                     )),
                 }
             }
@@ -3361,16 +3361,15 @@ mod tests {
     #[test]
     fn panel_open_takes_the_conversation_kinds_and_nothing_more() {
         let r = rig(ok_all, false, FILES);
-        for kind in ["changes", "tasks"] {
-            let v =
-                r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": kind}))
-                    .unwrap();
-            assert!(v["panel"].is_object(), "{kind}");
-        }
-        assert_eq!(
-            r.ops.lock().unwrap().as_slice(),
-            ["CtlOp::ShowConvo", "CtlOp::ShowConvo"]
-        );
+        let v =
+            r.d.call(
+                &agent_in_tab(),
+                Method::PanelOpen,
+                json!({"kind": "changes"}),
+            )
+            .unwrap();
+        assert!(v["panel"].is_object());
+        assert_eq!(r.ops.lock().unwrap().as_slice(), ["CtlOp::ShowConvo"]);
         // A path, an address or a text does not go with them, and an unknown kind is refused.
         for extra in ["url", "path", "text"] {
             assert_eq!(
@@ -3397,8 +3396,13 @@ mod tests {
             "the agent board was removed (2026-10-22): its kind is unknown"
         );
         assert_eq!(
+            code_of(r.d.call(&agent_in_tab(), Method::PanelOpen, json!({"kind": "tasks"}))),
+            code::BAD_PARAMS,
+            "the Tasks panel was removed (2026-10-26): its kind is unknown"
+        );
+        assert_eq!(
             r.ops.lock().unwrap().len(),
-            2,
+            1,
             "the refusals never reached the window"
         );
     }

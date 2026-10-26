@@ -8,7 +8,7 @@
 import { Theme, Px, SettingsFixed } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
 import { ViewThumb } from "scrollbar.slint";
-import { ChangesView, TasksView, ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
+import { ChangesView, ConvoFileRow, ConvoDiffRow } from "convo.slint";
 
 // The header's close button: 20 px, the glyph 10 px, as the tab strip's close.
 component PanelClose inherits Rectangle {
@@ -440,7 +440,7 @@ export component PanelSlot inherits Rectangle {
     // The slot is drawn only while open. Everything else is set by app.slint from the controller.
     in property <bool> open;
     // 0 nothing yet (a note), 1 image, 2 text, 3 a web page (the browser's own window covers the box),
-    // 4 the Changes of the conversation, 5 its Tasks (stage 6).
+    // 4 the Changes of the conversation (stage 6).
     in property <int> kind;
     in property <string> title;
     in property <string> sub;
@@ -452,15 +452,13 @@ export component PanelSlot inherits Rectangle {
     in property <[string]> lines;
     in property <int> max-cols;
     in property <string> foot;
-    // The conversation (kinds 4 and 5): the changed files, the selected file's diff rows, the task rows.
+    // The conversation (kind 4): the changed files and the selected file's diff rows.
     in property <[ConvoFileRow]> convo-files;
     in property <[ConvoDiffRow]> convo-rows;
     in property <int> convo-max-cols;
     in property <string> convo-selected;
-    in property <[ConvoTaskRow]> convo-tasks;
     public function convo-reset-scroll() {
         changes.reset-scroll();
-        tasks.reset-scroll();
     }
     out property <int> convo-list-built: changes.list-built;
     out property <int> convo-list-first: changes.list-first;
@@ -468,11 +466,8 @@ export component PanelSlot inherits Rectangle {
     out property <int> convo-diff-first: changes.diff-first;
     out property <length> convo-diff-row-h: changes.diff-row-h;
     out property <length> convo-list-row-h: changes.list-row-h;
-    out property <int> convo-task-rows: tasks.row-count;
-    out property <length> convo-task-content-h: tasks.content-h;
     callback convo-select(string);
     callback convo-open(string);
-    callback convo-toggle(string);
     // A web page (kind 3): the bar, and the still drawn while an overlay hides the browser window.
     in property <string> web-url;
     // A mini-app: no bar (the address is Flare's own and the page cannot navigate).
@@ -580,14 +575,6 @@ export component PanelSlot inherits Rectangle {
                 if (event.text == Key.LeftArrow && changes.in-diff) { changes.scroll-by(Px.snap(24px), 0px); return accept; }
                 if (event.text == Key.RightArrow && changes.in-diff) { changes.scroll-by(-Px.snap(24px), 0px); return accept; }
                 if (event.text == Key.Backspace && changes.in-diff) { changes.back(); return accept; }
-            }
-            if (root.kind == 5) {
-                if (event.text == Key.UpArrow) { tasks.scroll-by(Px.snap(24px)); return accept; }
-                if (event.text == Key.DownArrow) { tasks.scroll-by(-Px.snap(24px)); return accept; }
-                if (event.text == Key.PageUp) { tasks.scroll-by(root.body-h - Px.snap(24px)); return accept; }
-                if (event.text == Key.PageDown) { tasks.scroll-by(-(root.body-h - Px.snap(24px))); return accept; }
-                if (event.text == Key.Home) { tasks.scroll-to(true); return accept; }
-                if (event.text == Key.End) { tasks.scroll-to(false); return accept; }
             }
             if (root.kind == 1) {
                 if (event.text == Key.UpArrow) { img.scroll-by(0px, Px.snap(24px)); return accept; }
@@ -774,14 +761,6 @@ export component PanelSlot inherits Rectangle {
                 selected: root.convo-selected;
                 select(p) => { root.convo-select(p); }
                 open(p) => { root.convo-open(p); }
-                pressed => { root.pressed(); }
-            }
-            tasks := TasksView {
-                width: parent.width;
-                height: parent.height;
-                visible: root.kind == 5;
-                rows: root.convo-tasks;
-                toggle(k) => { root.convo-toggle(k); }
                 pressed => { root.pressed(); }
             }
             if root.note != "": PanelNote {

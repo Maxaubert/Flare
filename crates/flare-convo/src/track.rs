@@ -1,8 +1,8 @@
 //! The tracker: one worker thread that follows a tab's transcript while a panel wants it and hands the app a snapshot
 //! each time something changed. Nothing runs when no tracker exists (the panels cost nothing while closed).
 //!
-//! The thread owns the tail subscription and the folded [`Convo`]; it builds a [`Snapshot`] (the file list, the task
-//! groups, the summary and, for the selected file, its diff rows) and calls `emit` with it. `emit` runs on the worker,
+//! The thread owns the tail subscription and the folded [`Convo`]; it builds a [`Snapshot`] (the file list, the
+//! summary and, for the selected file, its diff rows) and calls `emit` with it. `emit` runs on the worker,
 //! so the app posts it to the UI thread and nothing heavy happens there. A snapshot is built at most about every
 //! `WAKE` while news arrives, and again when the selection changes.
 //!
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crate::fold::Convo;
 use crate::path::{find_transcript_in, subagent_dir_of};
 use crate::tail::{self, Subscription};
-use crate::view::{self, FileDiff, FileSummary, Summary, TaskGroup};
+use crate::view::{self, FileDiff, FileSummary, Summary};
 
 /// How long the worker waits for a batch before it looks at the selection and the stop flag again.
 pub const WAKE: Duration = Duration::from_millis(100);
@@ -45,7 +45,6 @@ pub struct Snapshot {
     /// The transcript file exists (it may still be empty).
     pub found: bool,
     pub files: Vec<FileSummary>,
-    pub groups: Vec<TaskGroup>,
     pub summary: Summary,
     /// The diff of the file the app selected, with its path as the tracker knows it. None: nothing selected.
     pub diff: Option<(String, FileDiff)>,
@@ -246,7 +245,6 @@ impl Worker {
             seq,
             found,
             summary: view::summary(convo),
-            groups: view::task_groups(convo),
             files,
             diff,
         }
@@ -283,16 +281,6 @@ mod tests {
         serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
             "id": id, "name": "Edit",
             "input": {"file_path": path, "old_string": old, "new_string": new}}]}})
-        .to_string()
-    }
-
-    fn todo_line(items: &[(&str, &str)]) -> String {
-        let todos: Vec<_> = items
-            .iter()
-            .map(|(c, s)| serde_json::json!({"content": c, "status": s, "activeForm": c}))
-            .collect();
-        serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
-            "id": "todo", "name": "TodoWrite", "input": {"todos": todos}}]}})
         .to_string()
     }
 
@@ -364,18 +352,12 @@ mod tests {
     fn an_empty_transcript_gives_a_first_snapshot_and_news_gives_more() {
         let r = rig(true);
         let first = until(&r.rx, |_| true);
-        assert!(first.files.is_empty() && first.groups.is_empty());
-        append(
-            &r.file,
-            &[
-                edit_line("e1", r"C:\p\a.rs", "x", "y"),
-                todo_line(&[("Read", "completed"), ("Edit", "in_progress")]),
-            ],
-        );
-        let s = until(&r.rx, |s| !s.files.is_empty() && !s.groups.is_empty());
+        assert!(first.files.is_empty());
+        append(&r.file, &[edit_line("e1", r"C:\p\a.rs", "x", "y")]);
+        let s = until(&r.rx, |s| !s.files.is_empty());
         assert!(s.found);
         assert_eq!(s.files[0].name, "a.rs");
-        assert_eq!(s.summary.tasks.done, 1);
+        assert_eq!(s.summary.edits, 1);
         assert!(s.diff.is_none(), "nothing is selected");
         assert!(s.seq > first.seq);
     }
@@ -446,18 +428,17 @@ mod tests {
     }
 
     #[test]
-    fn subagent_tasks_arrive_from_their_own_file() {
+    fn subagent_edits_arrive_from_their_own_file() {
         let r = rig(true);
         let sub = r.file.with_extension("").join("subagents");
         std::fs::create_dir_all(&sub).unwrap(); // sync-ok: test code only
         append(
             &sub.join("agent-abc1234.jsonl"),
-            &[todo_line(&[("Look", "pending")])],
+            &[edit_line("s1", r"C:\p\side.rs", "x", "y")],
         );
-        let s = until(&r.rx, |s| {
-            s.groups.iter().any(|g| g.key.starts_with("agent-"))
-        });
-        assert_eq!(s.groups[0].tasks[0].title, "Look");
+        let s = until(&r.rx, |s| s.files.len() == 1);
+        assert_eq!(s.files[0].name, "side.rs");
+        assert!(s.files[0].by_subagent);
     }
 
     #[test]

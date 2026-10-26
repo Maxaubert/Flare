@@ -1,8 +1,6 @@
 //! Fold tests on the synthetic transcript in `tests/fixtures/session.jsonl` (hand-written, no real content).
 
-use flare_convo::fold::{
-    Convo, EditOp, MAX_EDIT_BYTES, MAX_EDITS, MAX_TEXT, Outcome, TaskStatus, Tool,
-};
+use flare_convo::fold::{Convo, EditOp, MAX_EDIT_BYTES, MAX_EDITS, MAX_TEXT, Outcome, Tool};
 use flare_convo::{Kind, transcript_path};
 
 fn folded() -> Convo {
@@ -125,72 +123,20 @@ fn the_sidechain_edit_is_tagged_and_kept_in_the_same_list() {
 }
 
 #[test]
-fn todowrite_replaces_the_whole_list_each_time() {
-    let convo = folded();
-    // toolu_06 replaced the three-item list from toolu_05 with two items; then TaskCreate added one.
-    assert_eq!(convo.tasks.len(), 3);
-    assert_eq!(convo.tasks[0].title, "Fix the lexer");
-    assert_eq!(convo.tasks[0].status, TaskStatus::Completed);
-    assert_eq!(convo.tasks[1].title, "Run the tests");
-    assert_eq!(convo.tasks[1].status, TaskStatus::InProgress);
-    assert!(convo.tasks.iter().all(|t| t.title != "Read the parser"));
-}
-
-#[test]
-fn a_task_tool_create_then_update_by_its_id() {
-    let convo = folded();
-    let task = &convo.tasks[2];
-    assert_eq!(task.title, "Write the release notes");
-    assert_eq!(
-        task.active_form.as_deref(),
-        Some("Writing the release notes")
-    );
-    assert_eq!(
-        task.id.as_deref(),
-        Some("7"),
-        "the id came from the create result"
-    );
-    assert_eq!(
-        task.status,
-        TaskStatus::InProgress,
-        "TaskUpdate found it by taskId"
-    );
-}
-
-#[test]
-fn a_subagent_updates_a_task_the_main_agent_made() {
-    let mut convo = folded();
-    let line = serde_json::json!({"type": "assistant", "message": {"content": [{
-        "type": "tool_use", "id": "toolu_sub_upd", "name": "TaskUpdate",
-        "input": {"taskId": "7", "status": "completed"}}]}})
-    .to_string();
-    convo.fold_from("agent-abc.jsonl", &line);
-    assert_eq!(
-        convo.tasks[2].status,
-        TaskStatus::Completed,
-        "the shared list is the main one's"
-    );
-    assert!(
-        !convo.side_tasks.contains_key("agent-abc.jsonl")
-            || convo.side_tasks["agent-abc.jsonl"].is_empty(),
-        "no phantom task on the subagent's own list"
-    );
-    // And a subagent may delete it.
-    let del = serde_json::json!({"type": "assistant", "message": {"content": [{
-        "type": "tool_use", "id": "toolu_sub_del", "name": "TaskUpdate",
-        "input": {"taskId": "7", "status": "deleted"}}]}})
-    .to_string();
-    convo.fold_from("agent-abc.jsonl", &del);
-    assert_eq!(convo.tasks.len(), 2);
-}
-
-#[test]
-fn a_subagent_todolist_never_replaces_the_main_one() {
-    let convo = folded();
-    assert_eq!(convo.side_tasks[""].len(), 1);
-    assert_eq!(convo.side_tasks[""][0].title, "Side task");
-    assert_eq!(convo.side_tasks[""][0].status, TaskStatus::Pending);
-    assert_eq!(convo.tasks.len(), 3);
+fn the_task_tools_fold_into_nothing() {
+    // The Tasks panel was removed (2026-10-26): TodoWrite, TaskCreate and TaskUpdate are tools the model ignores.
+    let mut convo = Convo::new();
+    for line in [
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Read","status":"pending","activeForm":"Reading"}]}}]}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"TaskCreate","input":{"subject":"Ship","activeForm":"Shipping"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Task #7 created"}]}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"TaskUpdate","input":{"taskId":"7","status":"completed"}}]}}"#,
+    ] {
+        convo.fold_line(line);
+    }
+    let mut want = Convo::new();
+    want.lines = 4;
+    assert_eq!(convo, want, "no edit, no file, no bad line");
 }
 
 #[test]
@@ -274,7 +220,7 @@ fn fold_agent(convo: &mut Convo, source: &str, fixture: &str) {
 }
 
 #[test]
-fn a_subagent_file_folds_as_sidechain_and_each_list_keeps_its_own_name() {
+fn a_subagent_file_folds_as_sidechain() {
     let mut convo = Convo::new();
     fold_agent(
         &mut convo,
@@ -292,12 +238,7 @@ fn a_subagent_file_folds_as_sidechain_and_each_list_keeps_its_own_name() {
         "every line of a subagent file is a sidechain line"
     );
     assert_eq!(e.outcome, Outcome::Applied);
-    assert_eq!(convo.side_tasks["agent-abc.jsonl"][0].title, "Side A");
-    assert_eq!(
-        convo.side_tasks["agent-def.jsonl"][0].title, "Side B",
-        "two subagents' lists do not overwrite each other"
-    );
-    assert!(convo.tasks.is_empty(), "no subagent replaces the main list");
+    assert!(convo.edits.iter().all(|e| e.sidechain));
 }
 
 #[test]

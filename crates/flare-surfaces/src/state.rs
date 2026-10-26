@@ -182,7 +182,7 @@ impl TabPanels {
         self.by_tab.values().filter(|p| p.open).count()
     }
 
-    /// The tabs whose OPEN panel shows the conversation (Changes or Tasks), with the kind. Only these tabs need a
+    /// The tabs whose OPEN panel shows the conversation (Changes), with the kind. Only these tabs need a
     /// transcript tracker.
     pub fn open_convo(&self) -> Vec<(String, PanelKind)> {
         let mut v: Vec<(String, PanelKind)> = self
@@ -287,7 +287,7 @@ mod tests {
     fn only_open_conversation_panels_are_listed_for_a_tracker() {
         let mut p = TabPanels::default();
         p.show("t1", PanelKind::Changes, "changes");
-        p.show("t2", PanelKind::Tasks, "tasks");
+        p.show("t2", PanelKind::Changes, "changes");
         p.show("t3", img(), "a.png");
         p.show("t4", PanelKind::Changes, "changes");
         p.close("t4");
@@ -295,7 +295,7 @@ mod tests {
             p.open_convo(),
             vec![
                 ("t1".to_string(), PanelKind::Changes),
-                ("t2".to_string(), PanelKind::Tasks)
+                ("t2".to_string(), PanelKind::Changes)
             ]
         );
         p.reopen("t4");

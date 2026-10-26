@@ -567,13 +567,12 @@ pub struct AppCtl {
     ctl_info: Option<CtlInfo>,
 }
 
-/// The rows the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
-/// owner needs no explanation). The rows show only on a tab that is Claude (a session or the detection), so
-/// they always name Claude. "Hide ..." is the same words while the panel is open.
+/// The row the terminal's menu gains on a tab that runs Claude (Surfaces stage 6; reworded 2026-10-22 so the
+/// owner needs no explanation; the task list row was removed 2026-10-26). The row shows only on a tab that is
+/// Claude (a session or the detection), so it always names Claude. "Hide ..." is the same words while the panel
+/// is open.
 const CONVO_SHOW_CHANGES: &str = "Show files Claude changed";
 const CONVO_HIDE_CHANGES: &str = "Hide files Claude changed";
-const CONVO_SHOW_TASKS: &str = "Show task list";
-const CONVO_HIDE_TASKS: &str = "Hide task list";
 
 /// How long the skeleton fades after the agent has painted (PT `ResumeSkeleton`).
 const SKELETON_FADE_MS: u64 = 180;
@@ -1304,8 +1303,6 @@ impl AppCtl {
             .convo_select(path.as_str()));
         bind!(app, rc, on_panel_convo_open, |c, path: SharedString| c
             .convo_open(path.as_str()));
-        bind!(app, rc, on_panel_convo_toggle, |c, key: SharedString| c
-            .convo_toggle(key.as_str()));
         bind!(app, rc, on_panel_wrap_toggled, |c| c.panel_wrap_toggled());
         bind!(app, rc, on_panel_wrap_cols_changed, |c| c
             .panel_wrap_cols_changed());
@@ -3123,7 +3120,7 @@ impl AppCtl {
 
     // ---- the conversation panels (Surfaces stage 6) ------------------------------------------------
 
-    /// Brings the transcript trackers in line with the open Changes and Tasks panels: one per such tab whose Claude
+    /// Brings the transcript trackers in line with the open Changes panels: one per such tab whose Claude
     /// session is known, none otherwise. True when one started or stopped (the window follows).
     fn sync_convo(&mut self) -> bool {
         let open = self.panels.open_convo();
@@ -3196,14 +3193,6 @@ impl AppCtl {
         }
     }
 
-    /// A subagent's list folded or opened in the Tasks panel of the front tab.
-    fn convo_toggle(&mut self, key: &str) {
-        let Some(id) = self.front_id() else { return };
-        if self.convo.toggle(&id, key) {
-            self.refresh();
-        }
-    }
-
     /// The path in a diff was clicked: a worker re-resolves it (rule 13) and, when it is a picture or a text file on
     /// the click allowlist (rule 14), the panel shows it. Anything else does nothing; nothing is ever run.
     fn convo_open(&mut self, path: &str) {
@@ -3242,8 +3231,8 @@ impl AppCtl {
         }
     }
 
-    /// The rows the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel and one for
-    /// the Tasks panel. A tab without Claude gets none, so the plain shell's menu does not change.
+    /// The row the terminal's menu gains on a tab that runs Claude: one to show or hide the Changes panel. A tab
+    /// without Claude gets none, so the plain shell's menu does not change.
     pub(crate) fn convo_menu_rows(&self, tab: &str) -> Vec<(MenuRowData, String)> {
         let claude = self.hub.agent_here(tab)
             && (self.hub.claude_session(tab).is_some()
@@ -3278,19 +3267,8 @@ impl AppCtl {
         } else {
             CONVO_SHOW_CHANGES
         };
-        vec![
-            // Their own group, after a rule: they are about the agent, not the terminal.
-            row(changes, crate::menus_ui::GLYPH_CHANGES, true),
-            row(
-                if open == Some(flare_surfaces::PanelKind::Tasks) {
-                    CONVO_HIDE_TASKS
-                } else {
-                    CONVO_SHOW_TASKS
-                },
-                crate::menus_ui::GLYPH_TASKS,
-                false,
-            ),
-        ]
+        // Its own group, after a rule: it is about the agent, not the terminal.
+        vec![row(changes, crate::menus_ui::GLYPH_CHANGES, true)]
     }
 
     /// A row of the convo part of the terminal's menu was picked. False for any other row.
@@ -3299,8 +3277,6 @@ impl AppCtl {
         let (kind, show) = match label {
             CONVO_SHOW_CHANGES => (PanelKind::Changes, true),
             CONVO_HIDE_CHANGES => (PanelKind::Changes, false),
-            CONVO_SHOW_TASKS => (PanelKind::Tasks, true),
-            CONVO_HIDE_TASKS => (PanelKind::Tasks, false),
             _ => return false,
         };
         if show {
@@ -3312,7 +3288,7 @@ impl AppCtl {
         true
     }
 
-    /// Opens the Changes or Tasks panel on the tab (the menu, and `panel.open` from the agent). False when the tab
+    /// Opens the Changes panel on the tab (the menu, and `panel.open` from the agent). False when the tab
     /// cannot hold one.
     pub(crate) fn open_convo_panel(&mut self, tab: &str, kind: flare_surfaces::PanelKind) -> bool {
         if !self.is_shell_tab(tab) || !self.panels.show_convo(tab, kind) {
@@ -4883,7 +4859,7 @@ impl AppCtl {
         if self.clear_agent_decor() {
             changed = true;
         }
-        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes or Tasks panel).
+        // A hook may have named a new Claude session: a tracker follows it (only for an open Changes panel).
         if self.sync_convo() {
             changed = true;
         }

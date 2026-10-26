@@ -5,7 +5,7 @@
 //! - `tail`: reads a growing transcript from an offset, bounded, restarting on truncation or replacement, with worker
 //!   helpers (`tail::subscribe`, `tail::subscribe_session` for the session file and its subagent files) that poll only
 //!   while someone listens and hold a bounded queue.
-//! - `fold`: parses each line leniently and folds it into the model (edits, tasks, named files).
+//! - `fold`: parses each line leniently and folds it into the model (edits, named files).
 //! - `diff`: a line diff of one edit, as capped hunks for the Changes panel.
 //! - `said`: what is said in a session (prompts, replies, tool calls) as entries a plugin hears, and the last entries
 //!   of a transcript read from its end (plugins phase 5).
@@ -26,7 +26,7 @@ pub mod track;
 pub mod view;
 
 pub use diff::{Diff, DiffLine, Hunk, Kind};
-pub use fold::{Convo, Edit, EditOp, NamedFile, Outcome, Task, TaskStatus, Tool};
+pub use fold::{Convo, Edit, EditOp, NamedFile, Outcome, Tool};
 pub use path::{
     claude_dir, find_transcript, find_transcript_in, subagent_dir, subagent_dir_of,
     transcript_path, transcript_path_in, valid_session_id,

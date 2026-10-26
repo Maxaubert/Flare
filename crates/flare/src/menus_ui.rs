@@ -23,10 +23,9 @@ pub const GLYPH_LINK: &str = "menu-link";
 pub const GLYPH_FOLDER: &str = "menu-folder";
 pub const GLYPH_FIND: &str = "menu-find";
 pub const GLYPH_HELP: &str = "menu-help";
-/// The Surfaces rows: a side pane, a diff page and a checklist.
+/// The Surfaces rows: a side pane and a diff page.
 pub const GLYPH_PANEL: &str = "menu-panel";
 pub const GLYPH_CHANGES: &str = "menu-changes";
-pub const GLYPH_TASKS: &str = "menu-tasks";
 /// The tab badges (plugins phase 1), one per `flare_ctl::decor::BADGE_ICONS` name.
 pub const GLYPH_BADGE_PHONE: &str = "badge-phone";
 pub const GLYPH_BADGE_GLOBE: &str = "badge-globe";
@@ -80,9 +79,6 @@ pub fn glyph_path(name: &str) -> &'static str {
         }
         GLYPH_CHANGES => {
             "M6 3.5h12a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 19V5A1.5 1.5 0 0 1 6 3.5zM12 7.5v5M9.5 10h5M9.5 16h5"
-        }
-        GLYPH_TASKS => {
-            "M4 6.5l1.7 1.7L9 4.8M12 7h8M4 12.5l1.7 1.7L9 11M12 13h8M4 18.5l1.7 1.7L9 17M12 19h8"
         }
         GLYPH_BADGE_PHONE => {
             "M5.5 3.5h3.5l1.5 4-2.2 1.6a11 11 0 0 0 6.6 6.6l1.6-2.2 4 1.5v3.5a2 2 0 0 1-2 2A16.5 16.5 0 0 1 3.5 5.5a2 2 0 0 1 2-2z"
@@ -430,7 +426,6 @@ mod tests {
             GLYPH_HELP,
             GLYPH_PANEL,
             GLYPH_CHANGES,
-            GLYPH_TASKS,
             GLYPH_BADGE_PHONE,
             GLYPH_BADGE_GLOBE,
             GLYPH_BADGE_BELL,
