@@ -685,6 +685,7 @@ mod tests {
             (token == "good" && !self.revoked.load(Ordering::SeqCst)).then(|| Grant::Mod {
                 id: "m".into(),
                 permissions: vec![crate::grant::Permission::View],
+                plugin: false,
             })
         }
         fn agent_grant(&self) -> Grant {
@@ -929,6 +930,15 @@ mod tests {
         let v = r.hello(r#","token":"good""#);
         assert_eq!(v["result"]["grant"]["kind"], "mod");
         assert_eq!(v["result"]["grant"]["id"], "m");
+        // A protocol 1 mod's `hello` lists what it had before plugins: its permission's methods, no store.
+        let caps: Vec<&str> = v["result"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        assert!(caps.contains(&"hello") && caps.contains(&"view.text"));
+        assert!(!caps.iter().any(|c| c.starts_with("storage.")), "{caps:?}");
         let v = r.ask(r#"{"id":1,"method":"view.text","params":{"text":"x"}}"#);
         assert_eq!(v["result"]["ok"], "view.text");
         let v = r.ask(r#"{"id":2,"method":"panel.close"}"#);

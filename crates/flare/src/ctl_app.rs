@@ -2385,6 +2385,7 @@ mod tests {
             Grant::Mod {
                 id: "todo".into(),
                 permissions: vec![Permission::Decorate],
+                plugin: true,
             },
         );
         d.call(
@@ -2588,6 +2589,7 @@ mod tests {
             Grant::Mod {
                 id: "todo".into(),
                 permissions: vec![Permission::Decorate],
+                plugin: true,
             },
         );
         d.call(&m, Method::TabsBadgeClear, json!({"key": "a"}))
@@ -2600,6 +2602,7 @@ mod tests {
             Grant::Mod {
                 id: "badger".into(),
                 permissions: perms.to_vec(),
+                plugin: true,
             },
         )
     }
@@ -3008,6 +3011,7 @@ mod tests {
                 Grant::Mod {
                     id: "m".into(),
                     permissions: p,
+                    plugin: true,
                 },
             )
         };
@@ -3486,6 +3490,7 @@ mod tests {
             Grant::Mod {
                 id: "m".into(),
                 permissions: vec![Permission::Panel, Permission::View],
+                plugin: true,
             },
         );
         for kind in ["web", "changes", "tasks", "mod:other"] {

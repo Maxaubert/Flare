@@ -652,34 +652,39 @@ impl Hub {
         for id in gone {
             g.needs.remove(&id);
         }
-        let live: Vec<(String, Vec<Permission>)> = g
+        let live: Vec<(String, Vec<Permission>, bool)> = g
             .found
             .iter()
             .filter(|f| g.on.contains(&f.manifest.id))
-            .map(|f| (f.manifest.id.clone(), f.manifest.permissions.clone()))
+            .map(|f| {
+                let m = &f.manifest;
+                (m.id.clone(), m.permissions.clone(), m.is_plugin())
+            })
             .collect();
         // A token of a mod that is off, gone or invalid dies.
         let dead: Vec<String> = g
             .tokens
             .ids()
             .into_iter()
-            .filter(|id| !live.iter().any(|(l, _)| l == id))
+            .filter(|id| !live.iter().any(|(l, ..)| l == id))
             .collect();
         for id in dead {
             g.tokens.revoke(&id);
             revoked.push(id);
         }
-        // A mod that is on gets a token if it has none; one whose permissions changed gets a new one.
-        for (id, perms) in &live {
+        // A mod that is on gets a token if it has none; one whose permissions or protocol changed gets a new one.
+        for (id, perms, plugin) in &live {
             let stale = g
                 .tokens
                 .token_of(id)
                 .and_then(|t| g.tokens.grant(t))
-                .is_some_and(|gr| gr != crate::tokens::mod_grant(id, perms));
+                .is_some_and(|gr| gr != crate::tokens::mod_grant(id, perms, *plugin));
             if stale {
                 revoked.push(id.clone());
             }
-            if (stale || g.tokens.token_of(id).is_none()) && g.tokens.mint(id, perms).is_err() {
+            if (stale || g.tokens.token_of(id).is_none())
+                && g.tokens.mint(id, perms, *plugin).is_err()
+            {
                 log::warn!("could not make a token for mod {id}; it stays off");
             }
         }
@@ -1264,7 +1269,8 @@ mod tests {
             g,
             Grant::Mod {
                 id: "notes".into(),
-                permissions: vec![Permission::Panel, Permission::Tools]
+                permissions: vec![Permission::Panel, Permission::Tools],
+                plugin: false,
             }
         );
         assert_eq!(w.hub.tools().len(), 1);
@@ -1829,7 +1835,8 @@ mod tests {
             w.hub.grant_of_mod("todo").unwrap(),
             Grant::Mod {
                 id: "todo".into(),
-                permissions: vec![Permission::Decorate, Permission::Tabs]
+                permissions: vec![Permission::Decorate, Permission::Tabs],
+                plugin: true,
             }
         );
         w.hub.persist("todo").unwrap();

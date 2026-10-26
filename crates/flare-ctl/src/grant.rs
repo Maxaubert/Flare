@@ -92,10 +92,12 @@ impl Permission {
 pub enum Grant {
     /// No token. `eval` is the user's switch for `browser.eval` (default off).
     Agent { eval: bool },
-    /// A mod's token: exactly these permissions.
+    /// A mod's token: exactly these permissions. `plugin` is true for a protocol 2 plugin, false for a protocol 1
+    /// mod, which keeps exactly what it had (no store).
     Mod {
         id: String,
         permissions: Vec<Permission>,
+        plugin: bool,
     },
     /// The app's own UI, in-process only.
     Ui,
@@ -179,12 +181,16 @@ impl Grant {
                 N::Sidebar | N::Actions | N::Bar | N::Session | N::Input | N::Storage => false,
                 N::Hello | N::Tabs | N::Ui => unreachable!("handled above"),
             },
-            Grant::Mod { permissions, .. } => match ns {
+            Grant::Mod {
+                permissions,
+                plugin,
+                ..
+            } => match ns {
                 // A mod cannot call another mod's tools, or its own: only the agent calls tools.
                 N::AgentTools => false,
-                // A plugin's own store needs no permission: it holds only what the plugin put there (the dispatcher
-                // keeps it to protocol 2 plugins and to the caller's own store).
-                N::Storage => true,
+                // A plugin's own store needs no permission: it holds only what the plugin put there. A protocol 1
+                // mod has none (the dispatcher checks that again, and keeps a plugin to its own store).
+                N::Storage => *plugin,
                 // Every other namespace is exactly its one permission.
                 _ => ns.permission().is_some_and(|p| permissions.contains(&p)),
             },
@@ -218,6 +224,15 @@ mod tests {
         Grant::Mod {
             id: "demo".into(),
             permissions: perms.to_vec(),
+            plugin: true,
+        }
+    }
+
+    fn v1_mod_with(perms: &[Permission]) -> Grant {
+        Grant::Mod {
+            id: "demo".into(),
+            permissions: perms.to_vec(),
+            plugin: false,
         }
     }
 
@@ -323,6 +338,30 @@ mod tests {
             );
             assert_eq!(g.may_call(m), open, "{}", m.name());
         }
+    }
+
+    /// A protocol 1 mod keeps exactly what it had: the same methods as a plugin with the same permissions, less the
+    /// store, so its `hello` lists no `storage.*` method it would only be refused.
+    #[test]
+    fn a_protocol_1_mod_has_no_store_and_otherwise_what_a_plugin_has() {
+        let all = Permission::ALL;
+        for perms in [&[][..], &[P::View, P::Tools][..], &all[..]] {
+            let v1 = v1_mod_with(perms);
+            let v2 = mod_with(perms);
+            assert!(!v1.may_enter(Namespace::Storage));
+            for m in Method::ALL {
+                let want = v2.may_call(m) && m.namespace() != Namespace::Storage;
+                assert_eq!(v1.may_call(m), want, "{}", m.name());
+            }
+            for m in [Method::StorageGet, Method::StorageSet] {
+                assert_eq!(v1.check(m).unwrap_err().code, code::FORBIDDEN);
+            }
+        }
+        let empty: Vec<Method> = Method::ALL
+            .into_iter()
+            .filter(|m| v1_mod_with(&[]).may_call(*m))
+            .collect();
+        assert_eq!(empty, [Method::Hello, Method::TabsList]);
     }
 
     /// The rule plugins keep: a caller with no permission reaches `hello`, its own-tab `tabs.list` and its own
@@ -450,6 +489,8 @@ mod tests {
             mod_with(&[P::View, P::Convo]),
             mod_with(&[P::Decorate]),
             mod_with(&all),
+            v1_mod_with(&[]),
+            v1_mod_with(&all),
             Grant::Ui,
         ];
         for g in grants {
@@ -469,11 +510,11 @@ mod tests {
                     Namespace::Bar => "bar",
                     Namespace::Session => "sessions",
                     Namespace::Input => "input",
-                    // Every plugin keeps its own store and the app reaches it; the agent never does.
+                    // Every plugin keeps its own store and the app reaches it; a protocol 1 mod and the agent never do.
                     Namespace::Storage => {
                         assert_eq!(
                             g.may_call(m),
-                            matches!(g, Grant::Mod { .. } | Grant::Ui),
+                            matches!(g, Grant::Mod { plugin: true, .. } | Grant::Ui),
                             "{} {}",
                             g.kind(),
                             m.name()
