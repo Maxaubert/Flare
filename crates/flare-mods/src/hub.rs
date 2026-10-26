@@ -48,7 +48,7 @@ pub fn permission_words(p: Permission) -> &'static str {
         Permission::Panel => "Show its panel in a tab",
         Permission::View => "Show images, files and text",
         Permission::Browser => "Open and use its own web page",
-        Permission::Convo => "Read the agent's tasks and changes",
+        Permission::Convo => "Read the agent's changes",
         Permission::Tools => "Answer the agent's tool calls",
         Permission::Eval => "Run scripts in pages (never allowed to a mod)",
         Permission::Decorate => "Put badges and progress on tabs",

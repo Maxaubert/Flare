@@ -3652,7 +3652,7 @@ mod tests {
                 plugin: true,
             },
         );
-        for kind in ["web", "changes", "tasks", "mod:other"] {
+        for kind in ["web", "changes", "mod:other"] {
             let e =
                 r.d.call(
                     &m,
