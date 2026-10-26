@@ -1,8 +1,8 @@
 //! Mods, Surfaces stage 8, the library part: no UI, no Win32 window, no WebView2.
 //!
 //! A mod is a folder under `%APPDATA%\Flare\plugins\<id>\` with a `mod.json` manifest that declares what
-//! it may do (`docs/surfaces/mods.md` is the contract). A plugin (protocol 2) is the same with a `plugin.json`, in
-//! the same folder: there is one folder for every plugin. This crate holds everything about a mod that is not
+//! it may do (`docs/surfaces/mods.md`). A plugin (protocol 2) is the same with a `plugin.json` (`docs/surfaces/plugins.md`
+//! is the contract), in the same folder: there is one folder for every plugin. This crate holds everything about a mod that is not
 //! drawing it:
 //!
 //! - `manifest`: the strict parse and validation of `mod.json` and `plugin.json` (every rule, with a

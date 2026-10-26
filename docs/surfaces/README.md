@@ -7,6 +7,8 @@ is what PT's build reads first, so it does not hit the same holes.
 - Design: `../superpowers/specs/2026-10-21-surfaces-design.md`
 - Plan and stages: `../superpowers/plans/2026-10-21-surfaces.md`
 - `protocol.md`: the control channel, every method (the contract both apps share).
+- `plugins.md`: the plugin contract (manifest, permissions, methods, events, limits, install); `mods.md` keeps the
+  protocol 1 notes.
 - `decisions.md`: every choice made while building, with the reason and date.
 - `lessons.md`: holes hit, what fixed them, and what it means for Electron.
 

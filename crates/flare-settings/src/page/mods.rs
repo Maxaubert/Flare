@@ -7,7 +7,7 @@
 //! rows are what they always were; a protocol 2 plugin adds who made it (`modby:<id>`) and, for the permissions
 //! that reach furthest, the warnings (`modwarn:<id>`). The rows are not in the closed row tables: there is one set
 //! per mod found, so their ids are made from the mod's id (`mod:<id>`, `modperm:<id>`) and interned once. The
-//! contract is `docs/surfaces/mods.md`.
+//! contract is `docs/surfaces/plugins.md` (protocol 1: `docs/surfaces/mods.md`).
 
 use std::collections::HashSet;
 use std::sync::Mutex;

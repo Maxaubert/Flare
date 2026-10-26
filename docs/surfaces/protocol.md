@@ -274,7 +274,7 @@ A plugin that holds `tabs` (plugins phase 3) gets every shell tab, in strip orde
 `{"id", "title", "folder", "active", "agent": "claude"|"codex"|null, "state": "working"|"question"|"done"|"failed"|"idle",
 "session": string|null, "panel": string|null}`. `panel` is what the tab's open panel shows: `browser` for the web
 panel, else its kind (`image`, `text`, `changes`, `app`, `mod:<id>`), null when none is open. The same object
-is the `tab` of every `tabs` event a plugin page hears (`mods.md`, "Background pages and events").
+is the `tab` of every `tabs` event a plugin page hears (`plugins.md`, "Events").
 
 ### tabs.badge.set, tabs.badge.clear, tabs.progress.set, tabs.progress.clear (plugins phase 1)
 
@@ -307,7 +307,7 @@ the tab: a plain shell's process holds the token too, and nothing would name or 
 
 ### sidebar.set, actions.set (plugins phase 4)
 
-A plugin's own sidebar sections and actions, declared in its `contributes` (`mods.md`, "Sidebar sections and
+A plugin's own sidebar sections and actions, declared in its `contributes` (`plugins.md`, "Sidebar sections and
 actions"). Namespaces `Sidebar` and `Actions`, permissions `sidebar` and `actions`; the agent and a protocol 1 mod
 cannot call them. Every param is checked on the channel's worker before the window hears of it; the window applies a
 change only for the plugin generation it was checked for (`unauthorized` after a switch off). Listed in `capabilities`
@@ -321,13 +321,13 @@ when the run has a mods hub.
 Limits: `sidebar.set` 5 a second per section, `actions.set` 20 a second per plugin (`rate_limited`). Errors:
 `bad_params` (an undeclared key, a field that is not one, a text too long or not clean, a list too long), `forbidden`
 (a tab the plugin may not see), `no_tab` (`actions.set` on a closed tab), `rate_limited`, `unauthorized`. The clicks come
-back as the page events `action` and `sidebar.item` (`mods.md`), not as channel events.
+back as the page events `action` and `sidebar.item` (`plugins.md`, "Events"), not as channel events.
 
 ### session.read, tabs.input, storage.get, storage.set (plugins phase 5)
 
 Namespaces `Session` (permission `sessions`), `Input` (`input`) and `Storage` (no permission: every protocol 2 plugin's
 own store). The agent enters none of them; the dispatcher also refuses any caller that is not a plugin. Listed in
-`capabilities` when the run has a mods hub. The contract and the `session` page event are in `mods.md` ("Sessions,
+`capabilities` when the run has a mods hub. The contract and the `session` page event are in `plugins.md` ("Sessions,
 typing and storage").
 
 | Method | Params | Result |
@@ -348,7 +348,7 @@ the call was checked), `unavailable` (the tab's shell is not running, a transcri
 ### bar.show, bar.hide (plugins phase 6)
 
 Namespace `Bar` (permission `bar`); the agent never enters it and the dispatcher refuses any caller that is not a plugin.
-Listed in `capabilities` when the run has a mods hub. The contract is in `mods.md` ("Session bar, network and audio").
+Listed in `capabilities` when the run has a mods hub. The contract is in `plugins.md` ("Session bar, network and audio").
 
 | Method | Params | Result |
 |---|---|---|
