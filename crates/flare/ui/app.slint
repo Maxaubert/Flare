@@ -23,7 +23,7 @@ import { ThemeEditor, AskThree } from "settings/wall.slint";
 import { DictAsk } from "settings/dictation.slint";
 import { HelpPanel, HelpBridge } from "settings/help_panel.slint";
 import { PanelSlot } from "panel.slint";
-import { ConvoFileRow, ConvoDiffRow, ConvoTaskRow } from "convo.slint";
+import { ConvoFileRow, ConvoDiffRow } from "convo.slint";
 import { PreviewChip } from "devchip.slint";
 import { UpdateChip, UpdateNotice, UpdateWindow, UpdateBridge, UpdateChipPreview, UpdateWindowPreview } from "update.slint";
 
@@ -42,7 +42,7 @@ export { StartScreenPreview } from "start.slint";
 export { MenusPreview } from "menus.slint";
 export { DialogPreview } from "dialog.slint";
 export { TabRow, StripGeom, Place, MenuRow, OverflowRow, PluginRow, PluginButton } from "types.slint";
-export { ConvoFileRow, ConvoDiffRow, ConvoTaskRow, ConvoInk } from "convo.slint";
+export { ConvoFileRow, ConvoDiffRow, ConvoInk } from "convo.slint";
 
 // The Settings tab (M7 Task 1): every file is listed so the compiler checks it, and the
 // previews, the real components and the two globals are reachable from Rust.
@@ -338,23 +338,19 @@ export component AppWindow inherits Window {
     in property <[string]> panel-lines;
     in property <int> panel-max-cols;
     in property <string> panel-foot;
-    // The conversation panels (stage 6): kinds 4 (Changes) and 5 (Tasks) of panel-kind.
+    // The conversation panel (stage 6): kind 4 (Changes) of panel-kind.
     in property <[ConvoFileRow]> panel-convo-files;
     in property <[ConvoDiffRow]> panel-convo-rows;
     in property <int> panel-convo-max-cols;
     in property <string> panel-convo-selected;
-    in property <[ConvoTaskRow]> panel-convo-tasks;
     out property <int> panel-convo-list-built: panel-slot.convo-list-built;
     out property <int> panel-convo-list-first: panel-slot.convo-list-first;
     out property <int> panel-convo-diff-built: panel-slot.convo-diff-built;
     out property <int> panel-convo-diff-first: panel-slot.convo-diff-first;
     out property <length> panel-convo-diff-row-h: panel-slot.convo-diff-row-h;
     out property <length> panel-convo-list-row-h: panel-slot.convo-list-row-h;
-    out property <int> panel-convo-task-rows: panel-slot.convo-task-rows;
-    out property <length> panel-convo-task-content-h: panel-slot.convo-task-content-h;
     callback panel-convo-select(string);
     callback panel-convo-open(string);
-    callback panel-convo-toggle(string);
     // The Preview chip (stage 7): "localhost:5173" while the front tab has a local dev server to offer, else empty.
     in property <string> preview-chip-label;
     // The full origin the chip opens, as its tooltip.
@@ -1106,10 +1102,8 @@ export component AppWindow inherits Window {
                         convo-rows: root.panel-convo-rows;
                         convo-max-cols: root.panel-convo-max-cols;
                         convo-selected: root.panel-convo-selected;
-                        convo-tasks: root.panel-convo-tasks;
                         convo-select(p) => { root.panel-convo-select(p); }
                         convo-open(p) => { root.panel-convo-open(p); }
-                        convo-toggle(k) => { root.panel-convo-toggle(k); }
                         web-url: root.panel-web-url;
                         web-app: root.panel-web-app;
                         web-loading: root.panel-web-loading;

@@ -63,7 +63,7 @@ pub struct TabFact {
     /// The Claude session the tab's agent is in, when one is known.
     pub session: Option<String>,
     /// What the tab's open panel shows: `browser` for the web panel, else the panel's kind (`image`, `text`,
-    /// `changes`, `tasks`, `app`, `mod:<id>`); None when no panel is open.
+    /// `changes`, `app`, `mod:<id>`); None when no panel is open.
     pub panel: Option<String>,
 }
 

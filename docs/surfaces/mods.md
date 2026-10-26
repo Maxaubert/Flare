@@ -53,10 +53,10 @@ ignored. Every refusal is one sentence that names the field; Settings > Mods sho
 
 | Name | What it allows the mod | Notes |
 |---|---|---|
-| `panel` | Show its panel in a tab. | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, `tasks`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
+| `panel` | Show its panel in a tab. | Required with a `panel`. `panel.open` from a mod takes only its OWN `mod:<id>`: any other kind (`web`, `changes`, another mod) is `forbidden`, because a web panel would reach the network in the user's shared profile (S4/S5). `panel.close` and `panel.state` are allowed. |
 | `view` | Show content through `view.*` (image, file, text, html) in its own panel or the user's. | Same checks as the agent (rule 13, 14). `view.html` with `allow_network: true` is `forbidden` for a mod: the user's mini-app network switch is consent for the AGENT's pages, never a mod's. |
 | `browser` | Drive the mod's own browser panel through `browser.*` (open, navigate, look, click, type, press, scroll, wait). | Never the user's Edge profile (S4), and never the shared web profile of the user's tabs. Its own profile (see "Which tab a mod acts on"). **v1 limit:** a mod that holds `browser` passes the grant, and the call is then answered `unavailable` ("a mod's own browser panel is not built yet"): the panel slot of a tab holds one panel, which for a mod is its page. A mod without `browser` is refused every `browser.*` method with `forbidden`, before anything runs. |
-| `convo` | Read `convo.state` (the session's tasks and changes). | |
+| `convo` | Read `convo.state` (the session's changes). | |
 | `tools` | Answer tool calls through `tools.respond`. | Required with a `tools` list. |
 
 A permission not in this list is refused with a reason. `eval` (`browser.eval`) is the user's own switch

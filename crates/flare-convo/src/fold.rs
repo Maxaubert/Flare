@@ -1,10 +1,10 @@
-//! Folds transcript lines into the model Flare shows: the edits, the task list and the files the agent named.
+//! Folds transcript lines into the model Flare shows: the edits and the files the agent named.
 //!
 //! Parsing is lenient. A line that is not a JSON object is counted in `bad_lines` and skipped. An object of an unknown
 //! `type`, or a tool the model does not know, is ignored. Nothing here panics on a field of the wrong shape: a missing
 //! or wrongly typed field simply makes that one item absent. The shapes this relies on are in `docs/surfaces/convo.md`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -73,26 +73,6 @@ pub struct Edit {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-    /// A status word this reader does not know, kept as it is not lost.
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Task {
-    /// A stable key inside its list: the `tool_use` id of the call that created it, or `todo:<index>` for a TodoWrite entry.
-    pub key: String,
-    /// The id the task tools use to refer to it (`TaskUpdate.taskId`), when the create result gave one.
-    pub id: Option<String>,
-    pub title: String,
-    pub active_form: Option<String>,
-    pub status: TaskStatus,
-}
-
 /// A file the assistant named in its text, as an absolute Windows path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedFile {
@@ -109,11 +89,6 @@ pub struct NamedFile {
 pub struct Convo {
     /// Every edit call, in order, main agent and subagents alike (see `Edit::sidechain`).
     pub edits: Vec<Edit>,
-    /// The main agent's task list. TodoWrite replaces it; the task tools add to and change it.
-    pub tasks: Vec<Task>,
-    /// Each subagent's task list, kept apart so it never replaces the main one. The key is the subagent's transcript
-    /// file name (`agent-<id>.jsonl`), or `""` for sidechain lines inside the session file itself.
-    pub side_tasks: BTreeMap<String, Vec<Task>>,
     /// Files and images the assistant named, first mention first, each path once.
     pub files: Vec<NamedFile>,
     /// Lines read (including bad ones).
@@ -121,11 +96,8 @@ pub struct Convo {
     /// Lines that were not a JSON object.
     pub bad_lines: u64,
     edit_index: HashMap<String, usize>,
-    created: HashSet<String>,
     /// Bytes of edit text currently kept (see `MAX_EDIT_BYTES`).
     edit_bytes: usize,
-    /// The source of the line being folded: `""` for the session file, the subagent's file name otherwise.
-    source: String,
 }
 
 impl Convo {
@@ -139,9 +111,8 @@ impl Convo {
     }
 
     /// Folds one line from `source`: `""` for the session file, or a subagent's transcript file name
-    /// (`agent-<id>.jsonl`). Lines of a subagent file are always sidechain lines, and its task list is kept under its name.
+    /// (`agent-<id>.jsonl`). Lines of a subagent file are always sidechain lines.
     pub fn fold_from(&mut self, source: &str, line: &str) {
-        self.source = source.to_string();
         self.lines += 1;
         let value: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -215,13 +186,6 @@ impl Convo {
                 } else {
                     Outcome::Applied
                 };
-            } else if self.created.contains(id) && !failed {
-                let text = result_text(block.get("content"));
-                if let Some(task_id) = task_id_in(&text)
-                    && let Some(task) = self.find_task_mut(id)
-                {
-                    task.id = Some(task_id);
-                }
             }
         }
     }
@@ -238,9 +202,6 @@ impl Convo {
             Some("MultiEdit") => self.edit_call(id, Tool::MultiEdit, input, sidechain, time),
             Some("Write") => self.edit_call(id, Tool::Write, input, sidechain, time),
             Some("NotebookEdit") => self.edit_call(id, Tool::NotebookEdit, input, sidechain, time),
-            Some("TodoWrite") => self.todo_write(input, sidechain),
-            Some("TaskCreate") => self.task_create(id, input, sidechain),
-            Some("TaskUpdate") => self.task_update(input, sidechain),
             _ => {}
         }
     }
@@ -341,137 +302,6 @@ impl Convo {
         }
     }
 
-    /// TodoWrite sends the whole list each time: it replaces the list it belongs to.
-    fn todo_write(&mut self, input: &Value, sidechain: bool) {
-        let Some(todos) = input.get("todos").and_then(Value::as_array) else {
-            return;
-        };
-        let list: Vec<Task> = todos
-            .iter()
-            .enumerate()
-            .filter_map(|(i, todo)| {
-                let title = todo.get("content").and_then(Value::as_str)?;
-                Some(Task {
-                    key: format!("todo:{i}"),
-                    id: None,
-                    title: title.to_string(),
-                    active_form: todo
-                        .get("activeForm")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    status: status_of(todo.get("status").and_then(Value::as_str)),
-                })
-            })
-            .collect();
-        if sidechain {
-            self.side_tasks.insert(self.source.clone(), list);
-        } else {
-            self.tasks = list;
-        }
-    }
-
-    /// The task tools (TaskCreate, TaskUpdate). Their shape is less certain than TodoWrite's; see `convo.md`.
-    fn task_create(&mut self, id: &str, input: &Value, sidechain: bool) {
-        let title = ["subject", "content", "description"]
-            .iter()
-            .find_map(|k| input.get(*k).and_then(Value::as_str));
-        let Some(title) = title else {
-            return;
-        };
-        let task = Task {
-            key: id.to_string(),
-            id: None,
-            title: title.to_string(),
-            active_form: input
-                .get("activeForm")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            status: TaskStatus::Pending,
-        };
-        self.created.insert(id.to_string());
-        self.list_mut(sidechain).push(task);
-    }
-
-    fn task_update(&mut self, input: &Value, sidechain: bool) {
-        let Some(task_id) = id_value(input.get("taskId")) else {
-            return;
-        };
-        let status = input.get("status").and_then(Value::as_str);
-        // The task list is shared: a subagent commonly updates a task the main agent made (and the main agent one
-        // a subagent made). The caller's own list is looked in first, then the main one, then every other.
-        let list = self.list_holding(&task_id, sidechain);
-        if status == Some("deleted") {
-            list.retain(|t| t.id.as_deref() != Some(task_id.as_str()) && t.key != task_id);
-            return;
-        }
-        let title = input
-            .get("subject")
-            .or_else(|| input.get("content"))
-            .and_then(Value::as_str);
-        let active = input.get("activeForm").and_then(Value::as_str);
-        let Some(task) = list
-            .iter_mut()
-            .find(|t| t.id.as_deref() == Some(task_id.as_str()) || t.key == task_id)
-        else {
-            return;
-        };
-        if let Some(status) = status {
-            task.status = status_of(Some(status));
-        }
-        if let Some(title) = title {
-            task.title = title.to_string();
-        }
-        if let Some(active) = active {
-            task.active_form = Some(active.to_string());
-        }
-    }
-
-    /// The list that holds the task `task_id` (by its id or its key): the caller's own, else the main one, else
-    /// a subagent's. The caller's own when none holds it.
-    fn list_holding(&mut self, task_id: &str, sidechain: bool) -> &mut Vec<Task> {
-        let has = |l: &Vec<Task>| {
-            l.iter()
-                .any(|t| t.id.as_deref() == Some(task_id) || t.key == task_id)
-        };
-        let own = if sidechain {
-            self.side_tasks.get(&self.source)
-        } else {
-            Some(&self.tasks)
-        };
-        if own.is_some_and(has) {
-            return self.list_mut(sidechain);
-        }
-        if has(&self.tasks) {
-            return &mut self.tasks;
-        }
-        let other = self
-            .side_tasks
-            .iter()
-            .find(|(_, l)| has(l))
-            .map(|(k, _)| k.clone());
-        match other {
-            Some(k) => self.side_tasks.entry(k).or_default(),
-            None => self.list_mut(sidechain),
-        }
-    }
-
-    fn list_mut(&mut self, sidechain: bool) -> &mut Vec<Task> {
-        if sidechain {
-            let key = self.source.clone();
-            self.side_tasks.entry(key).or_default()
-        } else {
-            &mut self.tasks
-        }
-    }
-
-    /// A task created by a call with this key, in any list.
-    fn find_task_mut(&mut self, key: &str) -> Option<&mut Task> {
-        self.tasks
-            .iter_mut()
-            .chain(self.side_tasks.values_mut().flatten())
-            .find(|t| t.key == key)
-    }
-
     fn named_files(&mut self, text: &str, sidechain: bool) {
         for caps in windows_path_re().captures_iter(text) {
             let Some(m) = caps.get(1) else {
@@ -542,51 +372,4 @@ fn edit_bytes(edit: &Edit) -> usize {
             EditOp::Full { content } => content.len(),
         })
         .sum()
-}
-
-fn status_of(word: Option<&str>) -> TaskStatus {
-    match word {
-        Some("pending") => TaskStatus::Pending,
-        Some("in_progress") => TaskStatus::InProgress,
-        Some("completed") => TaskStatus::Completed,
-        _ => TaskStatus::Other,
-    }
-}
-
-/// A `taskId` may be a string or a number.
-fn id_value(v: Option<&Value>) -> Option<String> {
-    match v? {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-/// The text of a tool result: a plain string, or the text blocks of an array, joined by newlines.
-fn result_text(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    }
-}
-
-/// A task id from a create result: a JSON `id` (or `task.id`), else the first `#<digits>` in the text. A guess at a
-/// format this reader has not seen written down; a miss only means `TaskUpdate` matches by key instead.
-fn task_id_in(text: &str) -> Option<String> {
-    if let Ok(v) = serde_json::from_str::<Value>(text)
-        && let Some(id) = id_value(v.pointer("/task/id")).or_else(|| id_value(v.get("id")))
-    {
-        return Some(id);
-    }
-    let at = text.find('#')?;
-    let digits: String = text[at + 1..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    (!digits.is_empty()).then_some(digits)
 }

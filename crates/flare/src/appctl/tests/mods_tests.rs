@@ -446,7 +446,7 @@ fn a_page_may_open_only_its_own_panel_not_another_kind() {
     let w = world(&f, |r| mod_with(r, "plain", &["panel", "tools"]));
     turn(&f, "plain", true);
     let tab = page_up(&f, &w, &slot, "plain");
-    let kinds = ["web", "changes", "tasks", "mod:other"];
+    let kinds = ["web", "changes", "mod:other"];
     for (i, k) in kinds.iter().enumerate() {
         page_says(
             &slot,
@@ -1859,7 +1859,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
                     reply: tx,
                 },
             )));
-        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        rx.recv_timeout(Duration::from_secs(5)).unwrap() // sync-ok: test code only
     };
     let e = stale(CtlOp::BadgeSet {
         tab: a.clone(),

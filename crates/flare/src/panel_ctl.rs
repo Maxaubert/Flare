@@ -278,17 +278,14 @@ fn target_ok(kind: &PanelKind, target: &str) -> bool {
     match kind {
         PanelKind::Web => flare_surfaces::web::normalize_url(target).as_deref() == Ok(target),
         // The conversation panels read no file: their target is the kind's own name, nothing else.
-        PanelKind::Changes | PanelKind::Tasks => kind.fixed_target() == Some(target),
+        PanelKind::Changes => kind.fixed_target() == Some(target),
         _ => preview::loadable(target, kind),
     }
 }
 
-/// The header of a panel that reads no file: the conversation's two.
-fn convo_title(kind: &PanelKind) -> &'static str {
-    match kind {
-        PanelKind::Changes => "Changes",
-        _ => "Tasks",
-    }
+/// The header of a panel that reads no file: the conversation's Changes.
+fn convo_title(_kind: &PanelKind) -> &'static str {
+    "Changes"
 }
 
 /// "12 KB", "3.4 MB": plain units, one decimal from a megabyte up.
@@ -529,7 +526,7 @@ impl PanelCtl {
         self.close(tab)
     }
 
-    /// Opens the Changes or Tasks panel on the tab (the conversation's, stage 6).
+    /// Opens the Changes panel on the tab (the conversation's, stage 6).
     /// False for any other kind.
     pub fn show_convo(&mut self, tab: &str, kind: PanelKind) -> bool {
         match kind.fixed_target() {
@@ -538,12 +535,12 @@ impl PanelCtl {
         }
     }
 
-    /// The tabs whose open panel is Changes or Tasks, with the kind: the tabs that need a transcript tracker.
+    /// The tabs whose open panel is Changes, with the kind: the tabs that need a transcript tracker.
     pub fn open_convo(&self) -> Vec<(String, PanelKind)> {
         self.panels.open_convo()
     }
 
-    /// The kind of the tab's OPEN panel when it is Changes or Tasks.
+    /// The kind of the tab's OPEN panel when it is Changes.
     pub fn open_convo_kind(&self, tab: &str) -> Option<PanelKind> {
         self.panels
             .open_on(tab)

@@ -729,7 +729,7 @@ The Opus review of the library (before the panels build on it) found these; each
 - **Rule 34 now scans this crate.** `crates/flare-convo/tests/sync_calls.rs` is a copy of the flare-agent scan. The one blocking import is marked. `next_timeout` is marked as a worker or test call; a UI caller uses `try_next`. Fold and diff are documented as off the UI thread.
 - **Diff line numbers are within the snippet, and that is documented, not changed.** The panel adds the file offset if it reads the file.
 
-## Stage 6: the Changes and Tasks panels (`surfaces-6-convo`, issues #25, #26, #27), 2026-10-22
+## Stage 6: the Changes and Tasks panels (`surfaces-6-convo`, issues #25, #26, #27), 2026-10-22 (the Tasks panel was removed 2026-10-26, see the end of this file)
 
 The library (`flare-convo`, above) is wired into the app. Format notes: `convo.md`; the channel method: `protocol.md` (`convo.state`, `panel.open`).
 
@@ -865,3 +865,14 @@ The owner's words: "i see that word wrapping has been added for the sidepanel, c
 - 2026-10-23, round 11, **the text preview wraps LIVE; this supersedes round 9's "the wrap is made once, when the width settles".** Reason: the owner wants it to follow the drag as an editor does, and the settle-only rule left text overflowing sideways during a drag. `panel_wrap_cols_changed` (every change of the view's columns, a splitter step or a window-edge step) calls `PanelCtl::live_wrap`, which wraps to the columns now and restores the top line (`top_line` / `restore_top`, as before). Under 200 KB of shaped text (`WRAP_LIVE_INLINE_MAX`, judged on the lines' bytes with tabs already spaces, as `is_big` does, cached in `Content::Text`) the wrap is made where the step lands (about 4 ms measured in a debug build for a 1000-line, 100 KB file, less in release); a bigger file goes to a worker with at most ONE wrap in flight: a step during it changes nothing, and its answer calls `live_wrap` again, which wraps to the newest width (older widths are dropped, never made). `settle_wrap` is still the exact final wrap (the release's refresh, a timer 120 ms after the last window-edge step, the setting) and replaces a wrap still in flight. While the width moves (`wrap_moving`, set by every step, cleared by the 120 ms timer, the release and the setting) a refresh wraps live too, never the exact way, so a window-edge drag never wraps a 200 KB to 1 MB file inline and never restarts the worker of a bigger one; `live_wrap` does nothing during a sidebar slide, answers included. A sidebar slide still wraps once at its end (rule 217). The terminal GRID still fits once at the release (rule 24): only the preview's wrap went live. Held by `a_splitter_drag_wraps_live_at_every_step_and_the_release_changes_nothing_more`, `a_live_drag_keeps_the_line_at_the_top_in_place`, `a_big_file_drag_never_stalls_the_ui_and_ends_exact` (100 and 225 percent), `a_window_edge_drag_never_wraps_a_mid_file_inline_nor_restarts_the_worker` and the e2e `panelSplitter`.
 
 - 2026-10-24, **"Notify me when an agent asks" is off by default; this supersedes stage 7's "default on".** Reason: the owner found the question toasts unwanted ("turn that setting off by default"). `agent_prefs::notify_ask_on` reads off unless a "1" is stored, so a profile that switched it on keeps it. Held by `the_question_notification_is_off_until_a_stored_one`, `by_default_a_question_shows_no_notification`, and the e2e `questionToast`, which stores the setting on for its "on" run and checks a fresh profile for its "off" run.
+
+- 2026-10-26, **the Tasks panel is removed, all of it** (owner: sessions never used it). The panel kind `tasks`, the
+  `TasksView` in `convo.slint`, the terminal menu's "Show task list" row and its `menu-tasks` glyph, `panel.open` kind
+  `tasks` (now `bad_params`, an unknown kind), the task list in `flare-convo` (TodoWrite, TaskCreate and TaskUpdate are
+  tools the fold now ignores; `Task`, `TaskStatus`, `side_tasks`, the view's `task_groups` and counts), the `tasks`,
+  `subagent_lists` and `active` fields of `convo.state`, the Tasks part of the `convoPanels` e2e and the tests that only
+  concerned it. A stored `tasks` panel in `panels.json` reads as an unknown kind and is dropped, the tab and its
+  neighbours stay (rule 40; `a_stored_tasks_panel_is_dropped_on_load`,
+  `a_stored_panel_of_the_removed_tasks_kind_is_dropped_and_the_tab_restores`). The Changes panel and its tracker are
+  untouched. The stage 6 entries above that name tasks are kept for the record; do not port the Tasks panel to Prism
+  Terminal.
