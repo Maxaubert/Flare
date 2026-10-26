@@ -132,7 +132,8 @@ are added as milestones land.
   text (L12). The lock mutex has an explicit one-ACE DACL and a medium label, so an elevated first instance
   still shows its lock to a normal launch (L11). A hand-off server that is not this user in this session
   refuses the launch instead of starting a second instance on the same profile (L41). The taskbar badge is
-  drawn again on `TaskbarButtonCreated` (L14). The stack sampler's abandon wait is bounded (L15).
+  set up once the window has a handle and drawn again whenever the window gains focus (L14; the
+  `TaskbarButtonCreated` subclass is gone: beside AccessKit's it crashed the window, 2026-10-26). The stack sampler's abandon wait is bounded (L15).
 - **Close.** One rule, not a setting: a plain shell closes unasked; a tab with an agent asks; the
   window close is held only while an agent is working. Held by the `close` tests (flare-agent) and
   `close_flow` (flare-tabs). The shells are killed and waited for, with a 3 s cap.
