@@ -1627,8 +1627,11 @@ pub fn run_window(
                 // No subclass for `TaskbarButtonCreated`: one beside AccessKit's crashed the window
                 // as the first overlay was set (2026-10-26). A gained focus redraws the badge instead.
                 if let Some(rc) = ctl.filter(|_| !e2e) {
-                    rc.borrow_mut()
-                        .set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
+                    let mut c = rc.borrow_mut();
+                    c.set_taskbar_badge(flare_win::taskbar::TaskbarBadge::new(hwnd));
+                    // The agent's cursor over the web panel: a window owned by this one (under --e2e
+                    // the recording stand-in WebCtl starts with stays).
+                    c.set_agent_cursor(Box::new(flare_win::agent_cursor::CursorWindow::new(hwnd)));
                 }
             },
         )
