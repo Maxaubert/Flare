@@ -751,5 +751,33 @@ mod tests {
         use flare_ctl::Permission as P;
         assert_eq!(m.permissions, [P::Tabs, P::Decorate]);
         assert!(m.tools.is_empty());
+        // The to-dos (plugins phase 4): a background page, one sidebar section, a tab-menu action and two tools.
+        let todo = d
+            .mods
+            .iter()
+            .find(|f| f.manifest.id == "todo")
+            .expect("the to-do sample");
+        let m = &todo.manifest;
+        assert!(todo.background.is_some() && todo.entry.is_none() && todo.bar.is_none());
+        assert_eq!(m.permissions, [P::Tabs, P::Sidebar, P::Actions, P::Tools]);
+        assert_eq!(m.contributes.sidebar.len(), 1);
+        assert_eq!(m.contributes.sidebar[0].key, "todos");
+        assert_eq!(m.contributes.actions[0].key, "add");
+        assert_eq!(
+            m.contributes.actions[0].places,
+            [crate::manifest::Place::TabMenu]
+        );
+        let tools: Vec<&str> = m.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(tools, ["add_todo", "todo_done"]);
+        let page = fs::read_to_string(todo.background.as_ref().unwrap()).unwrap(); // sync-ok: test code only
+        for uses in [
+            "sidebar.set",
+            "'sidebar.item'",
+            "'action'",
+            "localStorage",
+            "call.tab",
+        ] {
+            assert!(page.contains(uses), "the to-do page uses {uses}");
+        }
     }
 }

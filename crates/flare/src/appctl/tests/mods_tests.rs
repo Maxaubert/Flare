@@ -1538,6 +1538,8 @@ fn a_tool_of_a_plugin_with_a_background_page_is_answered_there_and_no_panel_open
         .find(|v| v["t"] == "tool")
         .unwrap();
     assert_eq!(ev["tool"], "ping");
+    // The background page hears which tab the agent called from (plugins phase 4).
+    assert_eq!(ev["tab"], json!(tab));
     bg_message(
         &f,
         &slot,
@@ -2104,3 +2106,6 @@ fn a_plugins_pages_share_one_budget_and_a_message_over_it_is_dropped_unread() {
     assert!(codes[..100].iter().all(|c| c == code::NO_TAB), "{codes:?}");
     assert_eq!(codes[100], code::RATE_LIMITED);
 }
+
+// The plugins' sidebar sections and actions (plugins phase 4) live in their own file beside these.
+mod plugin_surfaces;

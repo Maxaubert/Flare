@@ -10,7 +10,8 @@
 //!
 //! A connection's tab is named by its secret (`FLARE_TAB_TOKEN`), never by an id: see `docs/surfaces/protocol.md`.
 //! A plugin that holds `tabs` may name another tab in a call, by the public id `tabs.list` gives (never a secret);
-//! every other caller acts on its own tab only.
+//! so may a plugin on a tab where the person clicked one of its actions or sidebar items (click scope, design 13).
+//! Every other caller acts on its own tab only.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -169,6 +170,24 @@ pub enum CtlOp {
         source: DecorSource,
         key: String,
     },
+    /// `sidebar.set` (plugins phase 4): the items of one of the plugin's sections, every one checked on the call's
+    /// thread (the key is declared, the texts are clean, a tab is one the plugin may see).
+    SidebarSet {
+        plugin: String,
+        key: String,
+        items: Vec<crate::plugin_ui::Item>,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
+    /// `actions.set` (plugins phase 4): the state of one of the plugin's actions on `tab`, or on every tab.
+    ActionsSet {
+        plugin: String,
+        key: String,
+        tab: Option<String>,
+        state: crate::plugin_ui::ActionState,
+        /// As for `BadgeSet`.
+        generation: u64,
+    },
     /// `mods.call` (stage 8): hand a tool call to the mod's page in this tab, opening the mod's panel there
     /// first when it is not showing. Answered when the call is queued for the page; the page's own answer comes
     /// back through the hub.
@@ -225,6 +244,8 @@ impl std::fmt::Debug for CtlRequestBox {
             CtlOp::BadgeClear { .. } => "CtlOp::BadgeClear",
             CtlOp::ProgressSet { .. } => "CtlOp::ProgressSet",
             CtlOp::ProgressClear { .. } => "CtlOp::ProgressClear",
+            CtlOp::SidebarSet { .. } => "CtlOp::SidebarSet",
+            CtlOp::ActionsSet { .. } => "CtlOp::ActionsSet",
         })
     }
 }
@@ -304,6 +325,8 @@ pub struct AppDispatcher {
     decor_rate: Mutex<HashMap<(String, DecorSource), flare_ctl::session::Bucket>>,
     /// A plugin's decor limit across all its tabs (design 13): one bucket per plugin.
     decor_plugin_rate: Mutex<HashMap<String, flare_ctl::session::Bucket>>,
+    /// `sidebar.set` per section and `actions.set` per plugin (design 13), spent here like the decor limit.
+    surface_rate: Mutex<HashMap<String, flare_ctl::session::Bucket>>,
     /// The decor limit's clock (a test passes a still one).
     clock: fn() -> Instant,
 }
@@ -335,6 +358,7 @@ impl AppDispatcher {
             mods: None,
             decor_rate: Mutex::new(HashMap::new()),
             decor_plugin_rate: Mutex::new(HashMap::new()),
+            surface_rate: Mutex::new(HashMap::new()),
             clock: Instant::now,
         }
     }
@@ -342,11 +366,12 @@ impl AppDispatcher {
     /// The tab a call acts on (plugins phase 3): the `tab` it names, or else the caller's own. A caller may name its
     /// own tab; another one only with a grant that may act on any tab (a plugin that holds `tabs`). A background
     /// page has no tab of its own, so without `tabs` it can name none, and with it, it must name one. The id is
-    /// the public one `tabs.list` gives; a tab that is not open answers `no_tab` on the UI thread.
-    fn scoped_tab(ctx: &CallContext, params: &Value) -> Result<String, CtlError> {
+    /// the public one `tabs.list` gives; a tab that is not open answers `no_tab` on the UI thread. A tab where the
+    /// person clicked one of the plugin's actions or sidebar items counts as one it may name (click scope).
+    fn scoped_tab(&self, ctx: &CallContext, params: &Value) -> Result<String, CtlError> {
         match str_param(params, "tab")? {
             Some(t) if ctx.tab.as_deref() == Some(t) => Ok(t.to_string()),
-            Some(t) if ctx.grant.may_act_on_any_tab() => {
+            Some(t) if ctx.grant.may_act_on_any_tab() || self.clicked_on(ctx, t) => {
                 if t.is_empty() || t.len() > 64 {
                     return Err(CtlError::new(code::BAD_PARAMS, "tab is a tab's id"));
                 }
@@ -360,10 +385,29 @@ impl AppDispatcher {
         }
     }
 
+    /// Whether the person's click on one of the calling plugin's actions or sidebar items gave it scope on `tab`.
+    fn clicked_on(&self, ctx: &CallContext, tab: &str) -> bool {
+        match (&ctx.grant, &self.mods) {
+            (Grant::Mod { id, .. }, Some(hub)) => hub.has_click_scope(id, tab),
+            _ => false,
+        }
+    }
+
+    /// Whether the calling plugin may see `tab`: its own, any with `tabs`, or one a click gave it.
+    fn may_see_tab(&self, ctx: &CallContext, tab: &str) -> bool {
+        ctx.tab.as_deref() == Some(tab)
+            || ctx.grant.may_act_on_any_tab()
+            || self.clicked_on(ctx, tab)
+    }
+
     /// The tab a decor call is about, and who is calling: the caller's own tab, or for a plugin that holds `tabs`
     /// any tab it names ([`AppDispatcher::scoped_tab`]).
-    fn decor_target(ctx: &CallContext, params: &Value) -> Result<(String, DecorSource), CtlError> {
-        let tab = Self::scoped_tab(ctx, params)?;
+    fn decor_target(
+        &self,
+        ctx: &CallContext,
+        params: &Value,
+    ) -> Result<(String, DecorSource), CtlError> {
+        let tab = self.scoped_tab(ctx, params)?;
         let source = match &ctx.grant {
             Grant::Agent { .. } => DecorSource::Agent,
             Grant::Mod { id, .. } => DecorSource::Plugin(id.clone()),
@@ -447,7 +491,7 @@ impl AppDispatcher {
         let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
         // Read before anything is checked, so a switch off during the checks is seen by the window.
         let generation = self.generation_of(ctx);
-        let (tab, source) = Self::decor_target(ctx, params)?;
+        let (tab, source) = self.decor_target(ctx, params)?;
         let spend = (tab.clone(), source.clone());
         let key = str_param(params, "key")?
             .ok_or_else(|| bad("key is required".into()))?
@@ -530,6 +574,204 @@ impl AppDispatcher {
         // Only a call that is right spends from the limit.
         self.spend_decor(&spend.0, &spend.1)?;
         self.ask(op)
+    }
+
+    /// One call spent from the bucket `name` (`rate` a second, as many at once), or `rate_limited` with `what`.
+    fn spend_surface(&self, name: String, rate: f64, what: &str) -> Result<(), CtlError> {
+        let now = (self.clock)();
+        let mut map = self.surface_rate.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= DECOR_BUCKETS_MAX && !map.contains_key(&name) {
+            map.clear();
+        }
+        let ok = map
+            .entry(name)
+            .or_insert_with(|| flare_ctl::session::Bucket::new(rate, rate, now))
+            .take(now);
+        if ok {
+            Ok(())
+        } else {
+            Err(CtlError::new(
+                code::RATE_LIMITED,
+                format!("at most {rate} {what} a second"),
+            ))
+        }
+    }
+
+    /// The calling plugin's id and the hub, for `sidebar.set` and `actions.set`: only a plugin calls them.
+    fn surface_caller(&self, ctx: &CallContext) -> Result<(String, &Arc<Hub>), CtlError> {
+        match &ctx.grant {
+            Grant::Mod { id, .. } => Ok((id.clone(), self.hub()?)),
+            _ => Err(CtlError::new(
+                code::FORBIDDEN,
+                "sidebar sections and actions are a plugin's",
+            )),
+        }
+    }
+
+    /// `sidebar.set {key, items}`: every item is checked here, on the call's thread, and the call is spent from the
+    /// section's limit before the window is asked.
+    fn sidebar_set(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use crate::plugin_ui::{ITEM_ID_MAX, ITEM_TEXT_MAX, Item, MAX_ITEMS, SIDEBAR_RATE_PER_KEY};
+        let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        let generation = self.generation_of(ctx);
+        let (plugin, hub) = self.surface_caller(ctx)?;
+        let key = str_param(params, "key")?
+            .ok_or_else(|| bad("key is required".into()))?
+            .to_string();
+        if !hub.declares_section(&plugin, &key) {
+            return Err(bad(format!(
+                "\"{key}\" is not one of the plugin's contributes.sidebar sections"
+            )));
+        }
+        if let Some(k) = params.as_object().and_then(|o| {
+            o.keys()
+                .find(|k| !matches!(k.as_str(), "key" | "items"))
+                .cloned()
+        }) {
+            return Err(bad(format!("{k} is not a field of sidebar.set")));
+        }
+        let list = match params.get("items") {
+            Some(Value::Array(a)) => a,
+            _ => return Err(bad("items is a list of items".into())),
+        };
+        if list.len() > MAX_ITEMS {
+            return Err(bad(format!("a section holds at most {MAX_ITEMS} items")));
+        }
+        let mut items: Vec<Item> = Vec::with_capacity(list.len());
+        for (i, v) in list.iter().enumerate() {
+            let at = format!("items[{i}]");
+            let o = v
+                .as_object()
+                .ok_or_else(|| bad(format!("{at} must be an object")))?;
+            if let Some(k) = o.keys().find(|k| {
+                !matches!(
+                    k.as_str(),
+                    "id" | "text" | "sub" | "icon" | "checked" | "tab"
+                )
+            }) {
+                return Err(bad(format!("{at}.{k} is not a field of an item")));
+            }
+            let text_of = |name: &str| -> Result<Option<String>, CtlError> {
+                match o.get(name) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(s)) => Ok(Some(s.clone())),
+                    Some(_) => Err(bad(format!("{at}.{name} must be text"))),
+                }
+            };
+            let id = text_of("id")?.ok_or_else(|| bad(format!("{at}.id is required")))?;
+            let id = flare_mods::manifest::clean_line(id, &format!("{at}.id"), ITEM_ID_MAX)
+                .map_err(bad)?;
+            if items.iter().any(|it| it.id == id) {
+                return Err(bad(format!("{at}.id \"{id}\" is listed twice")));
+            }
+            let text = text_of("text")?.ok_or_else(|| bad(format!("{at}.text is required")))?;
+            let text = flare_mods::manifest::clean_line(text, &format!("{at}.text"), ITEM_TEXT_MAX)
+                .map_err(bad)?;
+            let sub = match text_of("sub")? {
+                None => String::new(),
+                Some(s) if s.is_empty() => s,
+                Some(s) => flare_mods::manifest::clean_line(s, &format!("{at}.sub"), ITEM_TEXT_MAX)
+                    .map_err(bad)?,
+            };
+            let icon = text_of("icon")?.unwrap_or_default();
+            if !icon.is_empty() && !self.badge_icon_ok(ctx, &icon) {
+                return Err(bad(format!(
+                    "{at}.icon is one of {} or one of the plugin's contributes.icons",
+                    flare_ctl::decor::BADGE_ICONS.join(", ")
+                )));
+            }
+            let checked = match o.get("checked") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => return Err(bad(format!("{at}.checked must be true or false"))),
+            };
+            let tab = match text_of("tab")? {
+                None => None,
+                Some(t) if t.is_empty() || t.len() > 64 => {
+                    return Err(bad(format!("{at}.tab is a tab's id")));
+                }
+                // An item may lead only to a tab the plugin may see.
+                Some(t) if !self.may_see_tab(ctx, &t) => {
+                    return Err(CtlError::new(
+                        code::FORBIDDEN,
+                        format!("{at}.tab: naming another tab needs the tabs permission"),
+                    ));
+                }
+                Some(t) => Some(t),
+            };
+            items.push(Item {
+                id,
+                text,
+                sub,
+                icon,
+                checked,
+                tab,
+            });
+        }
+        self.spend_surface(
+            format!("sidebar:{plugin}/{key}"),
+            SIDEBAR_RATE_PER_KEY,
+            "sidebar.set calls for one section",
+        )?;
+        self.ask(CtlOp::SidebarSet {
+            plugin,
+            key,
+            items,
+            generation,
+        })
+    }
+
+    /// `actions.set {key, tab?, enabled?, checked?, title?}`: on the named tab (one the plugin may act on), on the
+    /// caller's own when it names none, and on every tab when a background page names none.
+    fn actions_set(&self, ctx: &CallContext, params: &Value) -> Result<Value, CtlError> {
+        use crate::plugin_ui::{ACTION_TITLE_MAX, ACTIONS_RATE, ActionState};
+        let bad = |m: String| CtlError::new(code::BAD_PARAMS, m);
+        let generation = self.generation_of(ctx);
+        let (plugin, hub) = self.surface_caller(ctx)?;
+        let key = str_param(params, "key")?
+            .ok_or_else(|| bad("key is required".into()))?
+            .to_string();
+        if !hub.declares_action(&plugin, &key) {
+            return Err(bad(format!(
+                "\"{key}\" is not one of the plugin's contributes.actions"
+            )));
+        }
+        if let Some(k) = params.as_object().and_then(|o| {
+            o.keys()
+                .find(|k| !matches!(k.as_str(), "key" | "tab" | "enabled" | "checked" | "title"))
+                .cloned()
+        }) {
+            return Err(bad(format!("{k} is not a field of actions.set")));
+        }
+        let tab = match (str_param(params, "tab")?, &ctx.tab) {
+            (Some(_), _) => Some(self.scoped_tab(ctx, params)?),
+            (None, Some(own)) => Some(own.clone()),
+            (None, None) => None,
+        };
+        let title = match str_param(params, "title")? {
+            None => None,
+            Some(t) => Some(
+                flare_mods::manifest::clean_line(t.to_string(), "title", ACTION_TITLE_MAX)
+                    .map_err(bad)?,
+            ),
+        };
+        let state = ActionState {
+            enabled: bool_param(params, "enabled")?,
+            checked: bool_param(params, "checked")?,
+            title,
+        };
+        self.spend_surface(
+            format!("actions:{plugin}"),
+            ACTIONS_RATE,
+            "actions.set calls for one plugin",
+        )?;
+        self.ask(CtlOp::ActionsSet {
+            plugin,
+            key,
+            tab,
+            state,
+            generation,
+        })
     }
 
     /// The mods hub (stage 8).
@@ -639,7 +881,7 @@ impl AppDispatcher {
         mod_id: &str,
         params: &Value,
     ) -> Result<Value, CtlError> {
-        let tab = Self::scoped_tab(ctx, params)?;
+        let tab = self.scoped_tab(ctx, params)?;
         let hub = self.hub()?;
         let generation = hub.generation(mod_id);
         if hub.grant_of_mod(mod_id).is_none() {
@@ -1221,9 +1463,15 @@ impl Dispatcher for AppDispatcher {
         if self.apps.is_some() {
             all.extend([Method::ViewHtml, Method::ViewDiagram]);
         }
-        // Mods (stage 8) are listed only where there is a hub for them.
+        // Mods (stage 8) are listed only where there is a hub for them, and so are the plugins' own surfaces.
         if self.mods.is_some() {
-            all.extend([Method::ModsTools, Method::ModsCall, Method::ToolsRespond]);
+            all.extend([
+                Method::ModsTools,
+                Method::ModsCall,
+                Method::ToolsRespond,
+                Method::SidebarSet,
+                Method::ActionsSet,
+            ]);
         }
         all
     }
@@ -1266,7 +1514,7 @@ impl Dispatcher for AppDispatcher {
                 // `tabs` may open it on a tab it names.
                 let mod_kind = str_param(&params, "kind")?.is_some_and(|k| k.starts_with("mod:"));
                 let tab = if mod_kind {
-                    Self::scoped_tab(ctx, &params)?
+                    self.scoped_tab(ctx, &params)?
                 } else {
                     Self::tab_of_call(ctx)?
                 };
@@ -1385,6 +1633,8 @@ impl Dispatcher for AppDispatcher {
             | Method::TabsBadgeClear
             | Method::TabsProgressSet
             | Method::TabsProgressClear => self.decor_call(ctx, method, &params),
+            Method::SidebarSet => self.sidebar_set(ctx, &params),
+            Method::ActionsSet => self.actions_set(ctx, &params),
             Method::ModsTools => self.mods_tools(),
             Method::ModsCall => self.mods_call(ctx, &params),
             Method::ToolsRespond => self.tools_respond(ctx, &params),

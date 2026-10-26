@@ -15,7 +15,7 @@ implements `hello`, `tabs.list`, `panel.open` (kinds `web`, `changes` and `tasks
 `tools.respond`, `mods.tools` and `mods.call`. A run with no mods hub answers those three `unavailable` and does not
 list them in `capabilities`. Plugins phase 1 (2026-10-25) adds `tabs.badge.set|clear` and `tabs.progress.set|clear`
 for the agent's own tab; plugins phase 3 lets a plugin that holds `tabs` name any tab and see every tab in
-`tabs.list`. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
+`tabs.list`; plugins phase 4 adds `sidebar.set` and `actions.set` (a plugin's sections and actions) and click scope. Each method below says which stage owns its behaviour; the names, params and grants are fixed now.
 
 Design: `../superpowers/specs/2026-10-21-surfaces-design.md` (section "Control channel").
 
@@ -184,7 +184,8 @@ keeps the tab's identity out of anything that only sees `tabs.list`. A method ac
 connection's own tab (`ctx.tab`) and never on a `tab` field in its params, for the agent and mod grants
 alike, with one exception (plugins phase 3): the decor methods and `panel.open` kind `mod:<own id>` take an
 optional `tab`, the public id `tabs.list` gives. The connection's own id is always allowed; another one only for a
-plugin that holds `tabs` (`Grant::may_act_on_any_tab`), else `forbidden`. A plugin's background page sits in no tab,
+plugin that holds `tabs` (`Grant::may_act_on_any_tab`), or a tab where the person clicked one of the plugin's actions or
+sidebar items (click scope, plugins phase 4, until the tab closes or the plugin is turned off), else `forbidden`. A plugin's background page sits in no tab,
 so without `tabs` it can name none (`forbidden`) and with it, it must name one (`no_tab` otherwise). A secret given as
 `tab` is no tab's id (`no_tab`).
 
@@ -197,6 +198,8 @@ so without `tabs` it can name none (`forbidden`) and with it, it must name one (
 | `browser.eval` | only if the user switched "Let agents run scripts in pages" on (read at every request) | `browser` and `eval` | yes |
 | `convo.state` | yes (its own tab) | `convo` | yes |
 | `tabs.badge.set`, `tabs.badge.clear`, `tabs.progress.set`, `tabs.progress.clear` | yes (its own tab) | `decorate` (a `mod.json` cannot ask for it: not in `ASKABLE_V1`); any tab with `tabs` too | yes |
+| `sidebar.set` | no | `sidebar` | yes |
+| `actions.set` | no | `actions` | yes |
 | `tools.respond` | no | `tools` | yes |
 | `mods.tools`, `mods.call` | yes | **no** | yes |
 | `shell.input`, `settings.set`, `mods.enable` | **no** | **no** | yes |
@@ -295,6 +298,24 @@ one id to another (a first id after none does not), when the agent leaves the ta
 when the tab closes. They are not stored. Errors: `no_tab`, `forbidden` (another tab; or, for the agent's set, no agent in
 the tab: a plain shell's process holds the token too, and nothing would name or clear its pieces), `bad_params`,
 `rate_limited`.
+
+### sidebar.set, actions.set (plugins phase 4)
+
+A plugin's own sidebar sections and actions, declared in its `contributes` (`mods.md`, "Sidebar sections and
+actions"). Namespaces `Sidebar` and `Actions`, permissions `sidebar` and `actions`; the agent and a protocol 1 mod
+cannot call them. Every param is checked on the channel's worker before the window hears of it; the window applies a
+change only for the plugin generation it was checked for (`unauthorized` after a switch off). Listed in `capabilities`
+when the run has a mods hub.
+
+| Method | Params | Result |
+|---|---|---|
+| `sidebar.set` | `key` (a `contributes.sidebar` key), `items` (at most 50 of `{id, text, sub?, icon?, checked?, tab?}`: `id` 1 to 64 characters and unique, `text` and `sub` clean lines of at most 120, `icon` a built-in badge or the plugin's own, `checked` a bool, `tab` a tab the plugin may see) | `{}` |
+| `actions.set` | `key` (a `contributes.actions` key), `tab` (optional: one the plugin may act on; absent is the caller's own tab, or every tab for a background page), `enabled`, `checked` (bools), `title` (a clean line of at most 80) | `{}` |
+
+Limits: `sidebar.set` 5 a second per section, `actions.set` 20 a second per plugin (`rate_limited`). Errors:
+`bad_params` (an undeclared key, a field that is not one, a text too long or not clean, a list too long), `forbidden`
+(a tab the plugin may not see), `no_tab` (`actions.set` on a closed tab), `rate_limited`, `unauthorized`. The clicks come
+back as the page events `action` and `sidebar.item` (`mods.md`), not as channel events.
 
 ### panel.open
 
@@ -613,7 +634,7 @@ Reserved names. Every grant answers `forbidden` ("is for the app's own interface
 | `interrupted` | the person took over the page while the call ran (stage 4) | no |
 | `busy` | a plugin's `panel.open` on another tab whose open panel shows something else (plugins phase 3) | no |
 | `tool_error` | a mod answered a tool call with an error (stage 8); the message is the mod's own reason | no |
-| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, or a plugin's 50 messages and 2 MB a second) | no |
+| `rate_limited` | too many requests (the connection's 100 a second, a decor method's 10 a second per tab or 30 a second per plugin, `sidebar.set`'s 5 a second per section, `actions.set`'s 20 a second per plugin, or a plugin's 50 messages and 2 MB a second) | no |
 | `internal` | the server failed | no |
 
 On a closing error the server sends the error response first (with the request's id when it could be

@@ -31,7 +31,31 @@ export struct TabRow {
     chip-count: int,
     prog: float,
     chip-room: int,
+    // Plugin hover buttons (plugins phase 4): drawn while the tab is hovered, in Flare's chip, left of the decor and
+    // never over the ring. How many (0 to 2), and each one's glyph path ("" draws its letter), letter, tooltip, and
+    // whether it is ticked (on) or turned off (off).
+    hov-count: int,
+    hov1-cmd: string,
+    hov1-letter: string,
+    hov1-tip: string,
+    hov1-on: bool,
+    hov1-off: bool,
+    hov2-cmd: string,
+    hov2-letter: string,
+    hov2-tip: string,
+    hov2-on: bool,
+    hov2-off: bool,
 }
+
+// One row of the plugins' sidebar sections (plugins phase 4), the sidebar's and the Plugins dropdown's alike:
+// kind 0 a section's header (text the plugin's name, sub the section's title), 1 an item, 2 the note of an empty
+// section. `sid` is `<plugin>/<key>`; check -1 none, 0 unticked, 1 ticked; `jump` brings a tab to the front.
+export struct PluginRow { kind: int, sid: string, id: string, text: string, sub: string, icon: string, check: int,
+                          jump: bool, folded: bool, can-up: bool, can-down: bool }
+
+// A plugin's button in the top bar (plugins phase 4): its glyph path ("" draws its letter), its tooltip (the
+// plugin's name first), ticked, and enabled.
+export struct PluginButton { cmd: string, letter: string, tip: string, checked: bool, enabled: bool }
 
 export struct StripGeom { more-x: int, more-w: int, plus-x: int, plus-w: int, more-count: int, dots: [color] }
 

@@ -3,10 +3,11 @@
 // a grip on its right edge. Every edge between surfaces is a whole device pixel (Px).
 import { Theme, Px, Motion } from "theme.slint";
 import { Glyphs } from "glyphs.slint";
-import { TabRow } from "types.slint";
+import { TabRow, PluginRow } from "types.slint";
 import { MarkRing, MarkBar, AgentIcon } from "tabmark.slint";
 import { LoadingRing } from "tabs.slint";
-import { DecorPill } from "decor.slint";
+import { DecorPill, PluginChip } from "decor.slint";
+import { PluginSections } from "plugin_sections.slint";
 
 // One 46 px slot of the column; the visible card moves inside it by the carry offset.
 component SideRow inherits Rectangle {
@@ -19,9 +20,14 @@ component SideRow inherits Rectangle {
     callback closed();
     callback tab-menu(length, length);
     callback tip(string, length, length, length, length);
+    // A plugin's hover button (plugins phase 4) was clicked: its place, 0 or 1.
+    callback hover-action(int);
 
     property <bool> left-held: false;
-    property <bool> hov: ta.has-hover || xta.has-hover;
+    property <bool> hov: ta.has-hover || xta.has-hover || hb1.hovered || hb2.hovered;
+    // The plugins' hover buttons show while the row is hovered, left of the decor; the name gives them room.
+    property <bool> hov-shown: root.hov && root.tab.hov-count > 0 && !root.carrying;
+    property <length> hov-w: root.hov-shown ? root.tab.hov-count * 22px + (root.tab.hov-count - 1) * 3px : 0px;
     // The ring of a tab coming back; the X slides in beside it on hover.
     property <int> ring-state: root.tab.mark-kind == 1 ? root.tab.mark-state : 0;
     property <bool> has-ring: root.tab.loading || root.ring-state != 0;
@@ -95,7 +101,8 @@ component SideRow inherits Rectangle {
         VerticalLayout {
             x: 56px;
             y: 0px;
-            width: max(0px, card.width - 56px - 8px - root.end-w - 10px - (pill.width > 0 ? pill.width + 6px : 0px));
+            width: max(0px, card.width - 56px - 8px - root.end-w - 10px - (pill.width > 0 ? pill.width + 6px : 0px)
+                - (root.hov-w > 0 ? root.hov-w + 4px : 0px));
             height: 46px;
             alignment: center;
             padding-top: 4px;
@@ -139,6 +146,34 @@ component SideRow inherits Rectangle {
             chip2-cmd: root.tab.chip2-cmd;
             chip2-tone: root.tab.chip2-tone;
             ink: Theme.side-text;
+        }
+
+        // The plugins' hover buttons, left of the decor (never over the ring, which is in the end box).
+        hb1 := PluginChip {
+            x: Px.snap((pill.width > 0 ? pill.x - 4px : card.width - 8px - root.end-w - 6px) - root.hov-w);
+            y: Px.snap((46px - self.height) / 2);
+            visible: root.hov-shown;
+            cmd: root.tab.hov1-cmd;
+            letter: root.tab.hov1-letter;
+            tip-text: root.tab.hov1-tip;
+            on: root.tab.hov1-on;
+            off: root.tab.hov1-off;
+            ink: Theme.side-text;
+            clicked => { root.hover-action(0); }
+            tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+        }
+        hb2 := PluginChip {
+            x: hb1.x + 22px + 3px;
+            y: hb1.y;
+            visible: root.hov-shown && root.tab.hov-count > 1;
+            cmd: root.tab.hov2-cmd;
+            letter: root.tab.hov2-letter;
+            tip-text: root.tab.hov2-tip;
+            on: root.tab.hov2-on;
+            off: root.tab.hov2-off;
+            ink: Theme.side-text;
+            clicked => { root.hover-action(1); }
+            tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
         }
 
         // The end: the loading ring or the mark ring when there is one, and the X.
@@ -218,6 +253,10 @@ export component TabSidebar inherits Rectangle {
     in-out property <string> find-text <=> find-input.text;
     in property <string> find-key;
     in property <string> new-tab-title;
+    // The plugins' sections under the tab list (plugins phase 4); none takes no room.
+    in property <[PluginRow]> plugin-rows;
+    out property <length> sections-y: sec-box.absolute-position.y;
+    out property <length> sections-h: sec-box.height;
     out property <bool> find-has-focus: find-input.has-focus;
     out property <length> slot-width: collapsed ? 0px : side-width;
     out property <length> slot-visual: slot.width;
@@ -235,6 +274,10 @@ export component TabSidebar inherits Rectangle {
     callback grip-moved(length);
     callback grip-released(length);
     callback tip(string, length, length, length, length);
+    callback hover-action(string, int);
+    callback plugin-fold(string);
+    callback plugin-header-menu(string, length, length);
+    callback plugin-item(string, string, bool);
     public function focus-find() { find-input.focus(); }
 
     // The slide (audit V3): the glue eases both values frame by frame (side_slide.rs, 240 ms of
@@ -371,6 +414,33 @@ export component TabSidebar inherits Rectangle {
                         drag-released => { root.drag-released(); }
                         closed => { root.closed(row.id); }
                         tab-menu(x, y) => { root.tab-menu(row.id, x, y); }
+                        tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
+                        hover-action(n) => { root.hover-action(row.id, n); }
+                    }
+                }
+            }
+
+            // The plugins' sections (plugins phase 4): a hairline, then the sections, at most 45 percent of the
+            // sidebar's height (the rest scrolls inside).
+            sec-box := Rectangle {
+                height: root.plugin-rows.length > 0 ? Px.snap(min(sec.content-h + Px.hair(), root.height * 0.45)) : 0px;
+                visible: root.plugin-rows.length > 0;
+                Rectangle {
+                    y: 0px;
+                    height: Px.hair();
+                    background: Theme.divider;
+                }
+                Flickable {
+                    y: Px.hair();
+                    height: parent.height - Px.hair();
+                    content-height: sec.content-h;
+                    sec := PluginSections {
+                        width: parent.width;
+                        height: self.content-h;
+                        rows: root.plugin-rows;
+                        fold(s) => { root.plugin-fold(s); }
+                        header-menu(s, x, y) => { root.plugin-header-menu(s, x, y); }
+                        item(s, i, b) => { root.plugin-item(s, i, b); }
                         tip(t, x, y, w, h) => { root.tip(t, x, y, w, h); }
                     }
                 }
@@ -519,6 +589,9 @@ export component TabSidebarPreview inherits Window {
     // The label comes from the chord table (the tests set it); never typed by hand here.
     in property <string> find-key;
     in property <string> new-tab-title: "New tab (Ctrl+T). Right-click for recent folders";
+    in property <[PluginRow]> plugin-rows;
+    out property <length> sections-y: sb.sections-y;
+    out property <length> sections-h: sb.sections-h;
     out property <bool> find-has-focus: sb.find-has-focus;
     out property <length> slot-width: sb.slot-width;
     out property <length> slot-visual: sb.slot-visual;
@@ -537,6 +610,10 @@ export component TabSidebarPreview inherits Window {
     callback grip-moved(length);
     callback grip-released(length);
     callback tip(string, length, length, length, length);
+    callback hover-action(string, int);
+    callback plugin-fold(string);
+    callback plugin-header-menu(string, length, length);
+    callback plugin-item(string, string, bool);
     public function focus-find() { sb.focus-find(); }
     changed win-scale => { Px.scale = root.win-scale; }
     init => { Px.scale = root.win-scale; }
@@ -556,6 +633,11 @@ export component TabSidebarPreview inherits Window {
         carrying: root.carrying;
         find-key: root.find-key;
         new-tab-title: root.new-tab-title;
+        plugin-rows: root.plugin-rows;
+        hover-action(id, n) => { root.hover-action(id, n); }
+        plugin-fold(s) => { root.plugin-fold(s); }
+        plugin-header-menu(s, x, y) => { root.plugin-header-menu(s, x, y); }
+        plugin-item(s, i, b) => { root.plugin-item(s, i, b); }
         press(a, b, c, d, e, f) => { root.press(a, b, c, d, e, f); }
         drag-moved(y) => { root.drag-moved(y); }
         drag-released => { root.drag-released(); }
