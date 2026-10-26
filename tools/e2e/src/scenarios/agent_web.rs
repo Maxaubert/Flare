@@ -328,6 +328,46 @@ fn agent_on(ctx: &mut Ctx, app: &mut App, dpi: u32, at: &str) -> Result<(), Stri
         t == "clicked 1",
         format!("{at}: the page says it was clicked ({t:?})"),
     );
+    // ---- the agent's cursor: at the button's middle while the ribbon holds, then gone ----
+    let sc = state(app);
+    let cur = &sc["cursor"];
+    let (ex, ey) = element(&v, "button", "Press me")
+        .map(|e| {
+            (
+                e["center"][0].as_f64().unwrap_or(-1.0),
+                e["center"][1].as_f64().unwrap_or(-1.0),
+            )
+        })
+        .unwrap_or((-1.0, -1.0));
+    let b = &sc["controller"]["bounds"];
+    let num = |v: &Value| v.as_f64().unwrap_or(0.0);
+    let vh = v["viewport"]["height"].as_f64().unwrap_or(1.0);
+    let want = (
+        num(&b["x"]) + ex * num(&b["w"]) / vw.max(1.0),
+        num(&b["y"]) + ey * num(&b["h"]) / vh.max(1.0),
+    );
+    let got = (num(&cur["client"][0]), num(&cur["client"][1]));
+    ctx.ok(
+        cur["shown"] == json!(true)
+            && cur["recorded"]["shown"] == json!(true)
+            && (got.0 - want.0).abs() <= 2.0
+            && (got.1 - want.1).abs() <= 2.0,
+        format!(
+            "{at}: the agent's cursor is at the button's middle ({got:?}, want {want:?}; {cur})"
+        ),
+    );
+    ctx.ok(
+        cur["presses"].as_u64().is_some_and(|n| n >= 1),
+        format!("{at}: and the press rippled ({})", cur["presses"]),
+    );
+    let gone = ctx.until("the cursor to go after the ribbon", 6_000, &mut || {
+        let c = &state(app)["cursor"];
+        c["shown"] == json!(false) && c["recorded"]["shown"] == json!(false)
+    });
+    ctx.ok(
+        gone,
+        format!("{at}: the cursor fades out after the ribbon's hold"),
+    );
     // ---- click by point at the element's own centre (css pixels, whatever the display scale) ----
     let v2 = c
         .call(Method::BrowserLook, json!({}), LOAD)
