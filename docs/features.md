@@ -1360,7 +1360,7 @@ every later phase uses is built. The methods: `docs/surfaces/protocol.md` (`tabs
 
 The second phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 3, 4, 9 and 13). A plugin is
 a folder with a `plugin.json` that says protocol 2; a protocol 1 mod (`mod.json`) reads and behaves exactly as before.
-The keys of later phases are checked now and run later. The contract: `docs/surfaces/mods.md`, "Protocol 2".
+The keys of later phases are checked now and run later. The contract: `docs/surfaces/plugins.md`, "The manifest".
 
 - **The manifest.** `plugin.json` adds `author`, `homepage` (`https://` only), `background`, `bar {entry, height 24 to
   160}`, `contributes {sidebar (2), actions (8, places tab-menu, tab-hover, top-bar, session-bar), icons (32 SVG paths
@@ -1449,7 +1449,7 @@ run".
 ## Plugins phase 3: background pages, events, any tab, decor for plugins, 2026-10-25
 
 The third phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.1, 6, 10 and 13). The
-contract: `docs/surfaces/mods.md`, "Background pages and events", and `docs/surfaces/protocol.md` (the tab scope, the
+contract: `docs/surfaces/plugins.md`, "Background pages" and "Events", and `docs/surfaces/protocol.md` (the tab scope, the
 wide `tabs.list`, decor for plugins).
 
 - **Background pages.** A protocol 2 plugin that is on and has `background` gets a hidden view of it, tied to no tab,
@@ -1490,7 +1490,7 @@ wide `tabs.list`, decor for plugins).
 ## Plugins phase 4: sidebar sections and actions, 2026-10-25
 
 The fourth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.3, 5.4 and 13). The
-contract: `docs/surfaces/mods.md`, "Sidebar sections and actions", and `docs/surfaces/protocol.md` (`sidebar.set`,
+contract: `docs/surfaces/plugins.md`, "Sidebar sections and actions", and `docs/surfaces/protocol.md` (`sidebar.set`,
 `actions.set`, click scope).
 
 - **Sections.** Each `contributes.sidebar` entry of a plugin that is on is a section under the tab list in the vertical
@@ -1529,7 +1529,7 @@ contract: `docs/surfaces/mods.md`, "Sidebar sections and actions", and `docs/sur
 ## Plugins phase 5: sessions, typing and storage, 2026-10-26
 
 The fifth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 6, 7 and 13). The contract:
-`docs/surfaces/mods.md`, "Sessions, typing and storage", and `docs/surfaces/protocol.md` (`session.read`,
+`docs/surfaces/plugins.md`, "Sessions, typing and storage", and `docs/surfaces/protocol.md` (`session.read`,
 `tabs.input`, `storage.*`).
 
 - **Session events.** `window.flare.on('session', fn)` hears `{tab, session, role, text, tool?, at?, dropped?}` for
@@ -1563,7 +1563,7 @@ The fifth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design 
 ## Plugins phase 6: session bar, network and audio, 2026-10-26
 
 The sixth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 5.5, 5.6, 8 and 13). The
-contract: `docs/surfaces/mods.md`, "Session bar, network and audio", and `docs/surfaces/protocol.md` (`bar.show`,
+contract: `docs/surfaces/plugins.md`, "Session bar, network and audio", and `docs/surfaces/protocol.md` (`bar.show`,
 `bar.hide`, `view.audio`, `show_audio`).
 
 - **The session bar.** `bar.show {tab?}` and `bar.hide {tab?}` (namespace `Bar`, permission `bar`; once a second per
@@ -1617,7 +1617,7 @@ Builder's calls (the owner may overrule):
 ## Plugins phase 7: helper programs, install, update and remove, 2026-10-26
 
 The seventh phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 4, 9, 10 and 13). The
-contract: `docs/surfaces/mods.md`, "Helper, install, update and remove", and `docs/surfaces/protocol.md` ("Events", a
+contract: `docs/surfaces/plugins.md`, "Helper programs" and "Install, update, remove", and `docs/surfaces/protocol.md` ("Events", a
 plugin's helper).
 
 - **Helper programs.** `flare_mods::helper::Host` starts a plugin's `helper.command` (an `.exe` checked again inside
@@ -1670,6 +1670,40 @@ Builder's calls (the owner may overrule):
 - The design's "at most 4 pipe connections per plugin token" is not built in this phase.
 - A helper hears `tabs`, `agent` and `session` events without asking for them (a page asks with `window.flare.on`);
   there is no `plugin` event for a helper, since it is stopped when the plugin turns off.
+
+## Plugins phase 8: samples, call-me and the plugin docs, 2026-10-26
+
+The eighth phase of `docs/superpowers/plans/2026-10-25-plugin-system.md` (design sections 1, 11 and 13). No Rust
+behaviour changes.
+
+- **Samples.** `sample-plugins/` gains four, each small and commented, with a line in its README: `what-next` (a "Next
+  up" sidebar section Claude fills with `set_next`, kept in the plugin's store; adding `network` and a repository lets
+  the page fetch the open issues from `api.github.com` itself), `sonara-bar` (a bar with play and pause, a seek slider and
+  a title, back and skip as `session-bar` actions, driven by a fake source Claude sets with `sonara_now`; no real Sonara
+  integration), `session-buttons` ("Compact" and "Tell it to carry on" on the hover button, the tab menu and the bar,
+  typed with `tabs.input` and Enter into tabs where Claude runs; `input` is full control) and `look` (a star on a tab
+  whose agent finished while you were elsewhere, and a weighted progress chip from `set_steps`: the weights done over
+  all the weights, so 9 of 10 steps done reads 50 % when the last is half the work). Test:
+  `flare_mods::discover::tests::the_sample_plugins_are_valid` (every sample loads as a valid plugin with the
+  permissions it should hold and uses the methods it says).
+- **Docs.** `docs/surfaces/plugins.md` is the plugin contract (the manifest, the permissions in plain words, the methods
+  per namespace, the events, which tab a call acts on, the limits, the bridge, pages and the serving rule, helpers,
+  install, update and remove, the safety rules); `mods.md` keeps the protocol 1 notes and a pointer. The README's
+  plugin line and `sample-plugins/README.md` point to it.
+- **Call-me.** The call-me skill (outside the repo, `~/.claude/skills/call-me/SKILL.md`) calls
+  `set_tab_badge {key: "call-me", icon: "phone", tip: "Call-me is on"}` when it turns on inside Flare and
+  `clear_tab_badge {key: "call-me"}` when it turns off, and skips both when the tools are absent.
+
+Builder's calls (the owner may overrule):
+- The weighted progress is a plugin tool (`look`'s `set_steps`), in the page's JavaScript; there is no Rust helper to
+  unit test. A workflow without the plugin reports the same value with `set_tab_progress`.
+- The "Tell it" button is titled "Tell it to carry on" and types its preset line (set at the top of its page): a
+  plugin has no prompt to ask for the text.
+- `session-buttons` asks for `tabs` too, only to type nowhere but in Claude tabs (in a plain shell `/compact` and Enter
+  would run as a command).
+- `sonara-bar` and `session-buttons` show their bar from a tab-menu toggle (click scope), so they need no `tabs` for it.
+- `look` has no icon override or effect: `tabs.icon.*` and `tabs.effect.*` are not built.
+
 ## General review, 2026-10-23
 
 A review of the whole app by eight reviewers found these, all fixed on `fix/general-review` with a test each (rules 8,
