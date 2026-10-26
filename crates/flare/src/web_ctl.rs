@@ -1122,7 +1122,8 @@ impl WebCtl {
     /// window's bar row (its rectangle is the layout's `bar-web-*`), hidden while a Flare overlay is open or the grid is
     /// not in front. A view is made the first time its tab is in front with a bar (lazily), hidden while its tab is
     /// behind, closed when its tab no longer shows that plugin's bar, and an older one behind is closed past
-    /// [`crate::plugin_bar::LIVE_PER_PLUGIN`] a plugin. Only a change is sent to the browser.
+    /// [`crate::plugin_bar::LIVE_PER_PLUGIN`] a plugin and past [`crate::plugin_bar::MAX_VIEWS`] plugin views in all.
+    /// Only a change is sent to the browser.
     pub fn sync_bars(
         &mut self,
         app: &AppWindow,
@@ -1224,10 +1225,39 @@ impl WebCtl {
                 out.push(c);
             }
         }
+        // Then the total of every plugin view (design 13): the panels of mods and plugins and the background pages
+        // stay, an older bar behind goes.
+        let live: Vec<(String, String, u64)> = self
+            .bars
+            .iter()
+            .map(|(t, v)| (t.clone(), v.plugin.clone(), v.seen))
+            .collect();
+        for t in
+            crate::plugin_bar::over_total(&live, shown_tab.as_deref(), self.other_plugin_views())
+        {
+            if let Some(c) = self.close_bar(&t) {
+                out.push(c);
+            }
+        }
         if self.bars.is_empty() && !out.is_empty() {
             self.drop_idle_backend();
         }
         out
+    }
+
+    /// The plugin views that are not bars: the tabs whose panel shows a mod's or a plugin's page, and the background
+    /// pages.
+    fn other_plugin_views(&self) -> usize {
+        let panels = self
+            .tabs
+            .values()
+            .filter(|t| {
+                t.app_host
+                    .as_deref()
+                    .is_some_and(|h| flare_surfaces::modview::mod_of_host(h).is_some())
+            })
+            .count();
+        panels + self.backgrounds.len()
     }
 
     /// Closes the tab's bar view, if it has one.

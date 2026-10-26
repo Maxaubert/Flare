@@ -19,6 +19,9 @@ pub const CHIPS_MAX: usize = 4;
 /// Bar views one plugin keeps alive at most (design 13): the one in front and the last one before it; an older one
 /// behind is closed and made again when its tab comes back.
 pub const LIVE_PER_PLUGIN: usize = 2;
+/// Plugin views in Flare at most, of every kind (design 13): the panels, the background pages and the bars. The bars
+/// are what gives way: a bar view behind past this is closed, oldest first, and made again when its tab comes back.
+pub const MAX_VIEWS: usize = 12;
 
 /// The bar a tab shows: whose, and how tall.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +144,33 @@ pub fn surplus(live: &[(String, String, u64)], front: Option<&str>) -> Vec<Strin
     out
 }
 
+/// Which live bar views to close so that, with the `others` plugin views that are not bars (the panels and the
+/// background pages), at most [`MAX_VIEWS`] stay: `live` as for [`surplus`]. The front tab's is never closed, so it is
+/// the one bar that may stand past the total when the panels and background pages alone fill it. The oldest go first.
+pub fn over_total(
+    live: &[(String, String, u64)],
+    front: Option<&str>,
+    others: usize,
+) -> Vec<String> {
+    let room = MAX_VIEWS.saturating_sub(others);
+    if live.len() <= room {
+        return Vec::new();
+    }
+    let mut views: Vec<(&str, u64)> = live.iter().map(|(t, _, s)| (t.as_str(), *s)).collect();
+    // Newest first; the front tab counts as the newest of all and always stays.
+    views.sort_by_key(|(t, seen)| std::cmp::Reverse((Some(*t) == front, *seen)));
+    let keep = room.max(usize::from(
+        front.is_some_and(|f| views.first().is_some_and(|v| v.0 == f)),
+    ));
+    let mut out: Vec<String> = views
+        .into_iter()
+        .skip(keep)
+        .map(|(t, _)| t.to_string())
+        .collect();
+    out.sort();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +237,25 @@ mod tests {
         // The front one stays even when it was seen longest ago.
         assert_eq!(surplus(&live, Some("a")), ["c"]);
         assert!(surplus(&live[..2], None).is_empty());
+    }
+
+    #[test]
+    fn the_bars_give_way_so_that_twelve_plugin_views_stay_in_all() {
+        let live: Vec<(String, String, u64)> = (0..8)
+            .map(|i| (format!("t{i}"), format!("p{i}"), i as u64))
+            .collect();
+        // Eight bars and four other views fill the twelve: nothing goes.
+        assert!(over_total(&live, Some("t7"), 4).is_empty());
+        // Six background pages: two bars go, the oldest.
+        assert_eq!(over_total(&live, Some("t7"), 6), ["t0", "t1"]);
+        // The front one stays even when it was seen longest ago.
+        assert_eq!(over_total(&live, Some("t0"), 6), ["t1", "t2"]);
+        // Panels and background pages alone fill the twelve: only the front bar stays.
+        let gone = over_total(&live, Some("t3"), 12);
+        assert_eq!(gone.len(), 7);
+        assert!(!gone.contains(&"t3".to_string()));
+        // With no bar in front, none is kept past the total.
+        assert_eq!(over_total(&live, None, 12).len(), 8);
+        assert_eq!(MAX_VIEWS, 12);
     }
 }
