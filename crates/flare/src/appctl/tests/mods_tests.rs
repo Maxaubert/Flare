@@ -1859,7 +1859,7 @@ fn decor_or_a_panel_checked_before_a_plugin_was_switched_off_and_on_is_not_appli
                     reply: tx,
                 },
             )));
-        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        rx.recv_timeout(Duration::from_secs(5)).unwrap() // sync-ok: test code only
     };
     let e = stale(CtlOp::BadgeSet {
         tab: a.clone(),
