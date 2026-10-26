@@ -157,7 +157,8 @@ impl AppCtl {
                     hub.pause(&id);
                     self.close_plugin_views(&id);
                 }
-                if !crate::plugin_install::commit(hub, staged, post) {
+                let helpers = self.mods.as_ref().and_then(|m| m.helpers.clone());
+                if !crate::plugin_install::commit(hub, staged, helpers, post) {
                     if let Some(m) = self.mods.as_ref() {
                         m.hub().unpause(&id);
                     }
@@ -188,13 +189,15 @@ impl AppCtl {
                 }
                 self.stop_helper(&id);
                 let name = hub.name_of(&id);
-                if !crate::plugin_install::remove(hub, id, post) {
+                let helpers = self.mods.as_ref().and_then(|m| m.helpers.clone());
+                if !crate::plugin_install::remove(hub, id, helpers, post) {
                     self.install_end(true, format!("{name} could not be removed."));
                 }
             }
             ModsMsg::Removed { id, result } => match result {
                 Ok(change) => {
                     self.apply_mods_change(&change);
+                    self.forget_plugin_sections(&id);
                     self.install_end(
                         false,
                         format!("{id} was removed. Its folder is in the Recycle Bin."),

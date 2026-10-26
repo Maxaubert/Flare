@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use flare_mods::Hub;
 use flare_mods::fetch::{self, Rules};
+use flare_mods::helper::Host;
 
 use crate::appctl::{Post, UiMsg};
 use crate::mods_ctl::{ModsMsg, ModsMsgBox};
@@ -99,19 +100,34 @@ fn download_and_stage(
     got
 }
 
-/// Puts the staged plugin in place and scans, on a worker. Answers `ModsMsg::Installed`.
-pub fn commit(hub: Arc<Hub>, staged: Box<flare_mods::hub::StagedInstall>, post: Post) -> bool {
+/// Waits for the plugin's stopped helper to end (it holds the plugin folder until then), on the worker.
+fn wait_helper(helpers: Option<&Host>, id: &str) {
+    if let Some(h) = helpers {
+        h.wait_stopped(id, flare_mods::helper::STOP_WAIT);
+    }
+}
+
+/// Puts the staged plugin in place and scans, on a worker, once its stopped helper has ended. Answers
+/// `ModsMsg::Installed`.
+pub fn commit(
+    hub: Arc<Hub>,
+    staged: Box<flare_mods::hub::StagedInstall>,
+    helpers: Option<Host>,
+    post: Post,
+) -> bool {
     let answer = Arc::clone(&post);
     spawn("flare-plugin-install", move || {
+        wait_helper(helpers.as_ref(), staged.id());
         let result = hub.commit_install(*staged);
         post_mods(&answer, ModsMsg::Installed(result));
     })
 }
 
-/// Removes the plugin and scans, on a worker. Answers `ModsMsg::Removed`.
-pub fn remove(hub: Arc<Hub>, id: String, post: Post) -> bool {
+/// Removes the plugin and scans, on a worker, once its stopped helper has ended. Answers `ModsMsg::Removed`.
+pub fn remove(hub: Arc<Hub>, id: String, helpers: Option<Host>, post: Post) -> bool {
     let answer = Arc::clone(&post);
     spawn("flare-plugin-remove", move || {
+        wait_helper(helpers.as_ref(), &id);
         let result = hub.remove_plugin(&id);
         post_mods(&answer, ModsMsg::Removed { id, result });
     })

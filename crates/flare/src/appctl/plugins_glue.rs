@@ -366,6 +366,38 @@ impl AppCtl {
         self.refresh();
     }
 
+    /// A removed plugin's sections leave the person's order and folds, so one installed again with its id starts
+    /// afresh (design 13).
+    pub(super) fn forget_plugin_sections(&mut self, plugin: &str) {
+        let theirs = |sid: &String| plugin_ui::split_section(sid).is_some_and(|(p, _)| p == plugin);
+        // Read from the prefs until the sidebar first loads them.
+        let loaded = self.plugins.order.is_some();
+        let (order, folded) = if loaded {
+            let order = self.plugins.order.clone().unwrap_or_default();
+            (order, self.plugins.folded.iter().cloned().collect())
+        } else {
+            let pref = |key| plugin_ui::parse_ids(&self.prefs.get(key).unwrap_or_default());
+            (pref(plugin_ui::ORDER_PREF), pref(plugin_ui::FOLDED_PREF))
+        };
+        if order.iter().any(theirs) {
+            let kept: Vec<String> = order.into_iter().filter(|s| !theirs(s)).collect();
+            self.prefs
+                .set(plugin_ui::ORDER_PREF, &plugin_ui::join_ids(&kept));
+            if loaded {
+                self.plugins.order = Some(kept);
+            }
+        }
+        if folded.iter().any(theirs) {
+            let mut kept: Vec<String> = folded.into_iter().filter(|s| !theirs(s)).collect();
+            kept.sort();
+            self.prefs
+                .set(plugin_ui::FOLDED_PREF, &plugin_ui::join_ids(&kept));
+            if loaded {
+                self.plugins.folded = kept.into_iter().collect();
+            }
+        }
+    }
+
     /// A section's header menu: move it up, move it down, fold or unfold it.
     pub(super) fn plugin_header_menu(&mut self, sid: &str, x: f32, y: f32) {
         let Some(i) = self.plugins.drawn.iter().position(|d| d == sid) else {

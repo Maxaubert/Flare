@@ -22,24 +22,27 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE, ResumeThread,
+    THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 
 /// The variable that carries the plugin's own token to its helper.
@@ -53,6 +56,11 @@ pub const MAX_RESTARTS: usize = 3;
 pub const RESTART_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// The sentence Settings shows for a helper that ended too often.
 pub const STOPPED_HELPER: &str = "Stopped: its program ended again after 3 restarts in 5 minutes. Turn it off and on to start it again.";
+
+/// How long an update or a removal waits for a stopped helper's processes to end before it goes on anyway.
+pub const STOP_WAIT: Duration = Duration::from_secs(5);
+/// The most processes of one helper's job [`Host::wait_stopped`] waits on (the job's count covers the rest).
+const PIDS_MAX: usize = 64;
 
 /// Where a plugin's helper log is: `<logs>\<id>.log`.
 pub fn log_file(logs: &Path, id: &str) -> PathBuf {
@@ -176,6 +184,74 @@ impl Job {
             TerminateJobObject(self.0, 1);
         }
     }
+
+    /// A handle to wait on for each process in the job now (at most [`PIDS_MAX`]). Taken before the job is
+    /// terminated: a process is signalled only once its handles (its current folder among them) are closed.
+    fn processes(&self) -> Vec<OwnedHandle> {
+        #[repr(C)]
+        struct PidList {
+            assigned: u32,
+            listed: u32,
+            ids: [usize; PIDS_MAX],
+        }
+        let mut list = PidList {
+            assigned: 0,
+            listed: 0,
+            ids: [0; PIDS_MAX],
+        };
+        // SAFETY: `list` has the layout of JOBOBJECT_BASIC_PROCESS_ID_LIST with room for PIDS_MAX ids; its size is
+        // passed.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicProcessIdList,
+                std::ptr::from_mut(&mut list).cast(),
+                u32::try_from(std::mem::size_of::<PidList>()).unwrap_or(0),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Vec::new();
+        }
+        let listed = (list.listed as usize).min(PIDS_MAX);
+        list.ids[..listed]
+            .iter()
+            .filter_map(|&pid| {
+                let pid = u32::try_from(pid).ok()?;
+                // SAFETY: OpenProcess returns a handle or null; a handle is owned (closed once) from here.
+                let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                // SAFETY: `h` is a live handle no one else owns.
+                (!h.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(h.cast()) })
+            })
+            .collect()
+    }
+
+    /// How many processes of the job have not ended.
+    fn active(&self) -> u32 {
+        // SAFETY: a zeroed accounting record is a valid buffer; its size is passed.
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the job handle is live; the pointer and size describe `info`.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                std::ptr::from_mut(&mut info).cast(),
+                u32::try_from(std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
+                    .unwrap_or(0),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 { 0 } else { info.ActiveProcesses }
+    }
+}
+
+/// The processes of a job [`Host::stop`] terminated, until [`Host::wait_stopped`] sees them end.
+struct Ending {
+    /// The start it was ([`Run::seq`]).
+    seq: u64,
+    /// None while that start had no job yet: its own thread terminates what it spawned, and puts the job here.
+    job: Option<Arc<Job>>,
+    procs: Vec<OwnedHandle>,
 }
 
 impl Drop for Job {
@@ -296,6 +372,8 @@ struct Shared {
     pipe: String,
     notify: Box<dyn Fn(Note) + Send + Sync>,
     runs: Mutex<HashMap<String, Run>>,
+    /// Jobs stopped and maybe not yet ended, by plugin id (the latest stop of each).
+    ending: Mutex<HashMap<String, Ending>>,
     seq: Mutex<u64>,
     max_restarts: usize,
     window: Duration,
@@ -330,6 +408,7 @@ impl Host {
                 pipe,
                 notify: Box::new(notify),
                 runs: Mutex::new(HashMap::new()),
+                ending: Mutex::new(HashMap::new()),
                 seq: Mutex::new(0),
                 max_restarts,
                 window,
@@ -392,17 +471,108 @@ impl Host {
     }
 
     /// Stops the plugin's helper: its job is terminated now (every process of it ends), and its end is not counted.
-    /// Nothing waits here; the helper's own thread sees it end.
+    /// Nothing waits here; the helper's own thread sees it end, and [`Host::wait_stopped`] waits for it on a worker.
     pub fn stop(&self, id: &str) {
-        let job = {
+        let (seq, job) = {
             let mut g = self.lock();
             let Some(run) = g.remove(id) else { return };
-            run.job
+            (run.seq, run.job)
         };
-        if let Some(job) = job {
-            job.terminate();
+        match job {
+            Some(job) => self.end_job(id, seq, job),
+            // Still starting: its thread ends what it spawns; until then a wait waits for that.
+            None => {
+                self.ending().insert(
+                    id.to_string(),
+                    Ending {
+                        seq,
+                        job: None,
+                        procs: Vec::new(),
+                    },
+                );
+            }
         }
         log::info!("plugin {id}: its helper was stopped");
+    }
+
+    fn ending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Ending>> {
+        self.shared.ending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Terminates `job` of start `seq`, keeping what [`Host::wait_stopped`] waits on.
+    fn end_job(&self, id: &str, seq: u64, job: Arc<Job>) {
+        let procs = job.processes();
+        job.terminate();
+        self.ending().insert(
+            id.to_string(),
+            Ending {
+                seq,
+                job: Some(job),
+                procs,
+            },
+        );
+    }
+
+    /// A start stopped before it spawned anything: there is nothing to wait for.
+    fn nothing_spawned(&self, id: &str, seq: u64) {
+        let mut e = self.ending();
+        if e.get(id).is_some_and(|x| x.seq == seq && x.job.is_none()) {
+            e.remove(id);
+        }
+    }
+
+    /// Waits, at most `timeout`, until every process of the plugin's last stopped helper has ended and closed its
+    /// handles (a terminated job ends its processes a moment later, and the one in the plugin folder holds it until
+    /// then). True when they have, or none was stopped. It blocks: a worker's call, never the window's.
+    pub fn wait_stopped(&self, id: &str, timeout: Duration) -> bool {
+        let until = Instant::now() + timeout;
+        let left_ms = || {
+            u32::try_from(until.saturating_duration_since(Instant::now()).as_millis())
+                .unwrap_or(u32::MAX)
+        };
+        // A helper stopped while it started: its thread puts its job here, or says it spawned nothing.
+        let (job, procs) = loop {
+            let mut e = self.ending();
+            match e.remove(id) {
+                None => return true,
+                Some(Ending {
+                    job: Some(job),
+                    procs,
+                    ..
+                }) => break (job, procs),
+                Some(starting) => {
+                    e.insert(id.to_string(), starting);
+                }
+            }
+            drop(e);
+            if left_ms() == 0 {
+                log::warn!("plugin {id}: its stopped helper did not end in time");
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: a worker's wait
+        };
+        for p in &procs {
+            // SAFETY: `p` is a live process handle with SYNCHRONIZE access.
+            if unsafe { WaitForSingleObject(p.as_raw_handle().cast(), left_ms()) } != WAIT_OBJECT_0
+            {
+                log::warn!("plugin {id}: its stopped helper did not end in time");
+                return false;
+            }
+        }
+        while job.active() > 0 {
+            if left_ms() == 0 {
+                log::warn!("plugin {id}: its stopped helper did not end in time");
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10)); // sync-ok: a worker's wait
+        }
+        true
+    }
+
+    /// [`Host::stop`], then [`Host::wait_stopped`]: on a worker only.
+    pub fn stop_and_wait(&self, id: &str, timeout: Duration) -> bool {
+        self.stop(id);
+        self.wait_stopped(id, timeout)
     }
 
     /// Stops every helper (Flare quits; the jobs would end them when Flare's handles close anyway).
@@ -420,6 +590,7 @@ impl Host {
             .filter(|r| r.seq == seq)
             .map(|r| r.spec.clone())
         else {
+            self.nothing_spawned(id, seq);
             return;
         };
         match self.spawn(&spec) {
@@ -432,7 +603,7 @@ impl Host {
                     None => {
                         // Stopped while it started.
                         drop(g);
-                        job.terminate();
+                        self.end_job(id, seq, job);
                         return;
                     }
                 }
@@ -446,6 +617,7 @@ impl Host {
             }
             Err(why) => {
                 log::warn!("plugin {id}: its helper did not start: {why}");
+                self.nothing_spawned(id, seq);
                 let ours = self.lock().get(id).is_some_and(|r| r.seq == seq);
                 if ours {
                     self.lock().remove(id);
@@ -652,6 +824,40 @@ mod tests {
         wait_until("the helper process is gone", || !process_alive(pid));
         // No restart follows a stop.
         assert!(rx.recv_timeout(Duration::from_millis(800)).is_err());
+    }
+
+    #[test]
+    fn after_a_stop_and_wait_the_plugin_folder_can_be_moved_at_once() {
+        // The helper and its grandchild run in the plugin folder; a terminated job ends them a moment later, and an
+        // update renames that folder right after the wait.
+        let parent = tempfile::tempdir().unwrap();
+        let src = folder_with_cmd();
+        let folder = parent.path().join("demo");
+        let aside = parent.path().join("demo.old");
+        fs::create_dir(&folder).unwrap();
+        fs::copy(src.path().join("helper.exe"), folder.join("helper.exe")).unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Host::new(logs.path().to_path_buf(), "p".into(), move |n| {
+            let _ = tx.send(n);
+        });
+        for round in 0..5 {
+            host.start(spec(&folder, &["/d", "/c", "ping -n 60 127.0.0.1 >nul"]));
+            let started = rx.recv_timeout(Duration::from_secs(10)).expect("a note");
+            assert!(matches!(started, Note::Started { .. }), "{started:?}");
+            assert!(host.stop_and_wait("demo", STOP_WAIT), "round {round}");
+            fs::rename(&folder, &aside).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            fs::rename(&aside, &folder).unwrap();
+        }
+        // Stopped while it still starts: the wait covers what its thread spawns after the stop.
+        for round in 0..5 {
+            host.start(spec(&folder, &["/d", "/c", "ping -n 60 127.0.0.1 >nul"]));
+            assert!(host.stop_and_wait("demo", STOP_WAIT), "round {round}");
+            fs::rename(&folder, &aside).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            fs::rename(&aside, &folder).unwrap();
+        }
+        // Nothing stopped: nothing to wait for.
+        assert!(host.wait_stopped("other", Duration::ZERO));
     }
 
     #[test]

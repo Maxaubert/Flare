@@ -4,6 +4,7 @@
 //! hub, the workers and the helper host are the real ones; the Recycle Bin is a stand-in that deletes.
 
 use super::*;
+use crate::plugin_ui::{FOLDED_PREF, ORDER_PREF};
 use std::io::Write as _;
 
 fn plugin_json(version: &str, perms: &str, extra: &str) -> String {
@@ -158,6 +159,10 @@ fn an_update_that_asks_for_more_stops_the_plugin_and_turns_it_off() {
 #[test]
 fn remove_turns_the_plugin_off_and_forgets_its_approval_and_storage() {
     let f = fx();
+    // The person ordered and folded a section of it and one of another plugin.
+    for key in [ORDER_PREF, FOLDED_PREF] {
+        f.ctl.borrow().prefs.set(key, "demo/list\nother/list");
+    }
     let _slot = with_fake(&f);
     let w = world(&f, |_| {});
     recycle_by_deleting(&w);
@@ -185,6 +190,14 @@ fn remove_turns_the_plugin_off_and_forgets_its_approval_and_storage() {
     let state = std::fs::read_to_string(&w.state_file).unwrap(); // sync-ok: test code only
     assert!(!state.contains("demo"), "{state}");
     assert!(!w.hub.storage().file_of("demo").exists());
+    // Its sidebar order and fold are forgotten; the other plugin's stay.
+    for key in [ORDER_PREF, FOLDED_PREF] {
+        assert_eq!(
+            f.ctl.borrow().prefs.get(key).as_deref(),
+            Some("other/list"),
+            "{key}"
+        );
+    }
 }
 
 #[test]
@@ -232,12 +245,17 @@ fn helper_plugin(root: &Path, perms: &str, line: &str) {
     std::fs::create_dir_all(&to).unwrap(); // sync-ok: test code only, never the app
     let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     std::fs::copy(format!(r"{sys}\System32\cmd.exe"), to.join("helper.exe")).unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("plugin.json"), helper_json("1.0.0", perms, line)).unwrap(); // sync-ok: test code only, never the app
+    std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
+}
+
+/// The text of [`helper_plugin`]'s `plugin.json` at `version`.
+fn helper_json(version: &str, perms: &str, line: &str) -> String {
     let helper = format!(
         r#","helper":{{"command":"helper.exe","args":["/d","/c",{}]}}"#,
         serde_json::to_string(line).unwrap()
     );
-    std::fs::write(to.join("plugin.json"), plugin_json("1.0.0", perms, &helper)).unwrap(); // sync-ok: test code only, never the app
-    std::fs::write(to.join("bg.html"), "<p>bg</p>").unwrap(); // sync-ok: test code only, never the app
+    plugin_json(version, perms, &helper)
 }
 
 fn helpers_running(f: &Fx) -> Vec<String> {
@@ -327,4 +345,52 @@ fn a_helper_without_tabs_hears_no_tab_events_and_one_that_ends_too_often_is_stop
     // Switching it again lets it run again.
     turn(&f, "demo", false);
     assert!(w.hub.helper_stopped("demo").is_none());
+}
+
+#[test]
+fn an_update_of_a_plugin_whose_helper_runs_waits_for_it_to_end_and_starts_it_again() {
+    // The helper (and its grandchild) run in the plugin folder, which the update moves aside: the update waits for
+    // the stopped helper to end, or the move is refused.
+    let f = fx();
+    let _slot = with_fake(&f);
+    let line = "ping -n 60 127.0.0.1 >nul";
+    let w = world(&f, |root| helper_plugin(root, r#"["process"]"#, line));
+    recycle_by_deleting(&w);
+    f.ctl
+        .borrow_mut()
+        .set_plugin_helpers(f.dir.path().join("plugins-logs"), "p".into());
+    turn(&f, "demo", true);
+    assert_eq!(helpers_running(&f), ["demo"]);
+    let log = flare_mods::helper::log_file(&f.dir.path().join("plugins-logs"), "demo");
+    f.pump_until("the helper runs", |_| log.exists());
+    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let exe = std::fs::read(format!(r"{sys}\System32\cmd.exe")).unwrap(); // sync-ok: test code only, never the app
+    let mut cur = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut cur);
+        let o = zip::write::SimpleFileOptions::default();
+        z.start_file("plugin.json", o).unwrap();
+        z.write_all(helper_json("1.1.0", r#"["process"]"#, line).as_bytes())
+            .unwrap();
+        z.start_file("bg.html", o).unwrap();
+        z.write_all(b"<p>bg</p>").unwrap();
+        z.start_file("helper.exe", o).unwrap();
+        z.write_all(&exe).unwrap();
+        z.finish().unwrap();
+    }
+    let zip = f.dir.path().join("b.zip");
+    std::fs::write(&zip, cur.into_inner()).unwrap(); // sync-ok: test code only, never the app
+    install_file(&f, zip, Some("demo"));
+    let (failed, said) = note(&f).unwrap();
+    assert!(!failed, "{said}");
+    assert_eq!(w.hub.found("demo").unwrap().manifest.version, "1.1.0");
+    assert!(w.hub.is_enabled("demo"), "the same grant keeps it on");
+    assert_eq!(helpers_running(&f), ["demo"], "its helper runs again");
+    // Remove waits the same way before the folder goes.
+    mods_msg(&f, ModsMsg::Remove { id: "demo".into() });
+    f.pump_until("the removal ends", |f| !installing(f));
+    let (failed, said) = note(&f).unwrap();
+    assert!(!failed, "{said}");
+    assert!(!w.root.join("demo").exists());
+    assert!(helpers_running(&f).is_empty());
 }
